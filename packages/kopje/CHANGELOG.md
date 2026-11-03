@@ -22,6 +22,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   not. The `Follow` still cancels the earlier `Accept`s of the pair, and the follower's `Undo` of a follow now cancels
   that follow's own unsent `Accept` or `Reject`. No migration, no `wrangler.jsonc` change.
 
+### Security
+
+- The bundled dependencies of Fedify move past published advisories: undici 6.29.1 (GHSA-xjj6-f33q-929c,
+  GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm, GHSA-4qv8-2p9j-2685, GHSA-9fm3-97px-rjf6) and OpenTelemetry
+  `sdk-metrics`, `resources` and `core` 2.12.0 (GHSA-8988-4f7v-96qf). No known path in the Worker reached them:
+  Kopje fetches through its own document loaders and the Workers `fetch`, and the Baggage propagator is not in the
+  bundle. No migration, no `wrangler.jsonc` change.
+
 ## [0.2.0] - 2026-10-29
 
 The second release, published under the npm dist-tag `latest`. Two changes refuse what 0.1.0 accepted:

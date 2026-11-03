@@ -76,3 +76,9 @@ blockExoticSubdeps: true
 
 # Detect package trust/provenance downgrades.
 trustPolicy: no-downgrade
+
+# @fedify/fedify 2.4.5 pins @opentelemetry/sdk-metrics 2.7.1, which pins @opentelemetry/core 2.7.1
+# (GHSA-8988-4f7v-96qf, fixed in 2.8.0); this moves it to the version of its siblings. Drop it once Fedify releases
+# with a later sdk-metrics.
+overrides:
+  "@opentelemetry/sdk-metrics@2.7.1": 2.12.0
