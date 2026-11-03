@@ -95,8 +95,10 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
 3. Watch the workflow. If it fails in the check job, nothing was published: fix the cause on `main`, delete the tag
    and tag again.
 4. Update the template: bump `kopje` in `deploy/package.json` to the new version (Renovate opens this pull request as
-   soon as a stable version is on npm; bump it by hand for a release candidate the template should install), and, if the
-   release notes say so, change `deploy/wrangler.jsonc` the same way. The template must name a published version: CI
+   soon as a stable version is on npm, with `deploy/package-lock.json`; bump it by hand for a release candidate the
+   template should install, then run `npm install --package-lock-only` in `deploy/`), and, if the release notes say
+   so, change `deploy/wrangler.jsonc` the same way. `pnpm run check:kopje-package` fails when the lockfile does not pin
+   what `deploy/package.json` does, since `npm ci` refuses it. The template must name a published version: CI
    dry-runs it against the packed package, not against npm, so it passes even when the Deploy to Cloudflare button would
    fail to install. This step is what makes the button install the new version. To try the button from a branch before
    merging, open `https://deploy.workers.cloudflare.com/?url=https://github.com/shuymn/kopje/tree/<branch>/deploy`; the
@@ -119,11 +121,6 @@ So after a failed publish or release job, open the workflow run and choose **Re-
 tarball the check job uploaded (kept for 7 days); the release job leaves an existing GitHub release as it is. Rerun
 rather than delete and push the tag again: a new run packs a new tarball, and if it differs in any byte from the
 published one, the publish job refuses it.
-
-## After the first release
-
-The first release also needs `deploy/package-lock.json`: after step 4, run `npm install --package-lock-only` in
-`deploy/` and commit the lockfile, so every new instance and every Workers Builds run installs the same tree.
 
 ## Versions
 

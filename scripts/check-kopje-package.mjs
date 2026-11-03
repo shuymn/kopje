@@ -124,10 +124,12 @@ try {
   compareConfigs();
   // The wrangler the workspace resolves from its catalog.
   const ours = JSON.parse(readFileSync(join(repo, "node_modules", "wrangler", "package.json"), "utf8")).version;
-  const theirs = JSON.parse(readFileSync(join(template, "package.json"), "utf8")).devDependencies.wrangler;
+  const templateManifest = JSON.parse(readFileSync(join(template, "package.json"), "utf8"));
+  const theirs = templateManifest.devDependencies.wrangler;
   if (ours !== theirs) {
     fail(`deploy/package.json pins wrangler ${theirs}, the repository ${ours}: update them together`);
   }
+  checkTemplateLock(templateManifest, JSON.parse(readFileSync(join(template, "package-lock.json"), "utf8")));
 
   // 4. The template, running.
   await smoke(app, shipped);
@@ -239,6 +241,29 @@ function checkPackage(dir) {
   }
   checkSourceMap(join(dir, "dist", "worker.js"), "the packed bundle");
   checkNoWasm(join(dir, "dist"), "worker.js", "the packed bundle");
+}
+
+// The template's package-lock.json pins what its package.json does: `npm ci`, which the template's deploy workflow and
+// Workers Builds run, refuses a lockfile that does not match, so a bump without the lockfile would break every deploy.
+/**
+ * @param {{ dependencies?: Record<string, string>, devDependencies?: Record<string, string> }} manifest
+ * @param {{ packages?: Record<string, { version?: string, dependencies?: Record<string, string>, devDependencies?: Record<string, string> }> }} lock
+ */
+function checkTemplateLock(manifest, lock) {
+  const root = lock.packages?.[""] ?? {};
+  for (const field of /** @type {const} */ (["dependencies", "devDependencies"])) {
+    const wanted = manifest[field] ?? {};
+    const locked = root[field] ?? {};
+    if (JSON.stringify(wanted) !== JSON.stringify(locked)) {
+      fail(`deploy/package-lock.json ${field} ${JSON.stringify(locked)} differ from deploy/package.json's`);
+    }
+    for (const [name, pin] of Object.entries(wanted)) {
+      const resolved = lock.packages?.[`node_modules/${name}`]?.version;
+      if (resolved !== pin) {
+        fail(`deploy/package-lock.json resolves ${name} ${resolved}, deploy/package.json pins ${pin}`);
+      }
+    }
+  }
 }
 
 // The bundle imports no wasm module and none sits beside the script: wrangler would emit a CompiledWasm import as a
