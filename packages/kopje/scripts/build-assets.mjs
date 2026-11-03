@@ -433,7 +433,10 @@ export function releaseForCheck(root = ROOT, env = process.env) {
 export function build(root = ROOT) {
   const released = releasedAssets(root);
   if (released === null) {
-    throw new Error("build-assets: no release tag is reachable from HEAD; fetch the history and the tags");
+    throw new Error(
+      "build-assets: no release tag is reachable from HEAD; fetch the history and the tags " +
+        "(in a shallow clone, git fetch --unshallow --tags origin)",
+    );
   }
   const { versions, files } = plan(root, released);
   for (const name of readdirSync(join(root, ASSETS))) {

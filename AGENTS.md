@@ -31,6 +31,8 @@ The code is in `packages/kopje`, and `deploy/` is the instance template operator
 - `pnpm --filter kopje typecheck` checks types. `pnpm run lint` lints the repository with oxlint (`.oxlintrc.json`),
   `pnpm run pretty` checks formatting with oxfmt, and `pnpm exec oxfmt` fixes it.
 - `pnpm --filter kopje build` builds the assets and the package.
+- A shallow clone, such as a cloud session's, lacks the history and the `kopje-v*` tags that
+  `pnpm --filter kopje build` and `check:migrations` read; run `git fetch --unshallow --tags origin` first.
 - `pnpm --filter kopje bench:migration` measures migration cost locally (see `packages/kopje/RELEASING.md`).
 
 lefthook runs oxlint on the staged files, the formatter (which restages the files it fixes), a secret scan and, for
