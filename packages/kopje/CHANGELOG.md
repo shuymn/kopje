@@ -10,8 +10,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [0.2.1] - 2026-11-03
 
-A patch release under the npm dist-tag `latest`: follow fixes, and bundled dependencies moved past published
-advisories. No migration, no `wrangler.jsonc` change.
+A patch release, published under the npm dist-tag `latest`: fixes to follows, and dependencies moved past published
+advisories.
 
 ### Fixed
 
@@ -29,16 +29,16 @@ advisories. No migration, no `wrangler.jsonc` change.
 
 ### Security
 
-- The bundle carries OpenTelemetry `sdk-metrics`, `resources` and `core` 2.12.0 instead of 2.7.1, past
-  GHSA-8988-4f7v-96qf (unbounded memory in W3C Baggage parsing). The vulnerable propagator was not in the bundle, so no
-  path in the Worker reached it. The build's undici 6 (GHSA-xjj6-f33q-929c, GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm,
-  GHSA-4qv8-2p9j-2685, GHSA-9fm3-97px-rjf6) moves to 6.29.1; it was never bundled, which carries undici 7.30.1. No
-  migration, no `wrangler.jsonc` change.
+- OpenTelemetry `sdk-metrics`, `resources` and `core` move from 2.7.1 to 2.12.0, which fixes GHSA-8988-4f7v-96qf
+  (unbounded memory in W3C Baggage parsing). The bundle never included the vulnerable propagator, so no path in the
+  Worker reached it. The build's undici 6 moves to 6.29.1, past GHSA-xjj6-f33q-929c, GHSA-2m5v-pch6-74hx,
+  GHSA-qrxm-fqhp-jwvm, GHSA-4qv8-2p9j-2685 and GHSA-9fm3-97px-rjf6; the bundle never carried it, and carries undici
+  7.30.1. No migration, no `wrangler.jsonc` change.
 
 ### Instance changes
 
 - Store schema: unchanged from 0.2.0.
-- `wrangler.jsonc`: unchanged.
+- `wrangler.jsonc`: unchanged from 0.2.0.
 
 ## [0.2.0] - 2026-10-29
 
