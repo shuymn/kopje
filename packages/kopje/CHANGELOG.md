@@ -8,6 +8,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-03
+
+A patch release under the npm dist-tag `latest`: follow fixes, and bundled dependencies moved past published
+advisories. No migration, no `wrangler.jsonc` change.
+
 ### Fixed
 
 - An inbound `Block` of a local account by its remote follower now treats the blocker's own follow as Mastodon does:
@@ -24,11 +29,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Security
 
-- The bundled dependencies of Fedify move past published advisories: undici 6.29.1 (GHSA-xjj6-f33q-929c,
-  GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm, GHSA-4qv8-2p9j-2685, GHSA-9fm3-97px-rjf6) and OpenTelemetry
-  `sdk-metrics`, `resources` and `core` 2.12.0 (GHSA-8988-4f7v-96qf). No known path in the Worker reached them:
-  Kopje fetches through its own document loaders and the Workers `fetch`, and the Baggage propagator is not in the
-  bundle. No migration, no `wrangler.jsonc` change.
+- The bundle carries OpenTelemetry `sdk-metrics`, `resources` and `core` 2.12.0 instead of 2.7.1, past
+  GHSA-8988-4f7v-96qf (unbounded memory in W3C Baggage parsing). The vulnerable propagator was not in the bundle, so no
+  path in the Worker reached it. The build's undici 6 (GHSA-xjj6-f33q-929c, GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm,
+  GHSA-4qv8-2p9j-2685, GHSA-9fm3-97px-rjf6) moves to 6.29.1; it was never bundled, which carries undici 7.30.1. No
+  migration, no `wrangler.jsonc` change.
+
+### Instance changes
+
+- Store schema: unchanged from 0.2.0.
+- `wrangler.jsonc`: unchanged.
 
 ## [0.2.0] - 2026-10-29
 
