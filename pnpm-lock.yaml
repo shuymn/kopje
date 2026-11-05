@@ -49,8 +49,8 @@ catalogs:
       specifier: 2.0.5
       version: 2.0.5
     entities:
-      specifier: 8.1.0
-      version: 8.1.0
+      specifier: 9.0.0
+      version: 9.0.0
     es-toolkit:
       specifier: 1.53.1
       version: 1.53.1
@@ -190,7 +190,7 @@ importers:
         version: 2.0.5
       entities:
         specifier: 'catalog:'
-        version: 8.1.0
+        version: 9.0.0
       es-toolkit:
         specifier: 'catalog:'
         version: 1.53.1
@@ -1830,6 +1830,10 @@ packages:
     resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
     engines: {node: '>=20.19.0'}
 
+  entities@9.0.0:
+    resolution: {integrity: sha512-oJFNDJg3kTPwAD1cNn2+WmUq4wFoo09npc3Ydf1D7ED4smRiWrsKnaLxykrTWgyGEcusc87P5dxlAleol9kpkg==}
+    engines: {node: '>=20.19.0'}
+
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
 
@@ -3398,6 +3402,8 @@ snapshots:
       domhandler: 6.0.1
 
   entities@8.1.0: {}
+
+  entities@9.0.0: {}
 
   error-stack-parser-es@1.0.5: {}
 
