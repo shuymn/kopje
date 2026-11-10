@@ -20,6 +20,7 @@ import { post, remoteAccount } from "./status-helpers";
 const AT = new Date(NOW).toISOString();
 const big = (offset: number) => String(9007199254740992n + BigInt(offset));
 const TWO_53 = big(0);
+const INT64_MAX = "9223372036854775807";
 
 function inStore<T>(store: StoreStub, step: (db: Db) => T): Promise<T> {
   return runInDurableObject(store, (_instance, state) =>
@@ -178,6 +179,30 @@ describe("credential epochs past 2^53", () => {
     expect(await sql(w.h.store, "SELECT phase FROM moderation_jobs")).toEqual([{ phase: "reporters" }]);
   });
 
+  it("refuses a suspension from the largest epoch and rolls it back, and suspends into it", async () => {
+    const w = await world();
+    const state = () =>
+      sql(
+        w.h.store,
+        "SELECT suspended_at, CAST(credential_epoch AS TEXT) AS epoch FROM local_accounts WHERE account_id = ?",
+        w.alice.id,
+      );
+    // The guarded branch: from the largest epoch but one, the suspension moves to the largest.
+    await epochAt(w, w.alice.id, "9223372036854775806");
+    expect((await act(w, w.alice.id, { type: "suspend" })).status).toBe(200);
+    expect(await generations(w)).toEqual([
+      { kind: "suspension", generation: INT64_MAX },
+      { kind: "tokens", generation: INT64_MAX },
+    ]);
+    await settle(w.h.store);
+    const before = await state();
+    expect(before).toEqual([{ suspended_at: expect.any(String), epoch: INT64_MAX }]);
+    w.h.now.mockReturnValue(NOW + 1000);
+    expect((await act(w, w.alice.id, { type: "suspend" })).status).toBe(500);
+    expect(await state()).toEqual(before);
+    expect(await generations(w)).toEqual([]);
+  });
+
   it("grants no code of 2^53 once the epoch is 2^53 + 1, and one of 2^53 + 1", async () => {
     const w = await world();
     const app = await registerApp(w.h);
@@ -320,5 +345,79 @@ describe("instance domain block ids past 2^53", () => {
     expect(await sql(w.h.store, "SELECT CAST(id AS TEXT) AS id, domain FROM instance_domain_blocks")).toEqual([
       { id: TWO_53, domain: "seed.example" },
     ]);
+  });
+
+  it("finds no block for an id past the INTEGER range, which a cast would saturate to the largest", async () => {
+    const w = await world();
+    await sql(
+      w.h.store,
+      `INSERT INTO instance_domain_blocks (id, domain, severity, created_at, updated_at)
+			VALUES (9223372036854775807, 'max.example', 'noop', ?1, ?1)`,
+      AT,
+    );
+    // The guarded branch: the largest id itself is found.
+    expect((await w.h.request(`${BLOCKS}/${INT64_MAX}`, bearer(w.admin))).status).toBe(200);
+    const past = `${BLOCKS}/9223372036854775808`;
+    expect((await w.h.request(past, bearer(w.admin))).status).toBe(404);
+    expect((await w.h.request(past, bearer(w.admin, form({ severity: "suspend" }, { method: "PUT" })))).status).toBe(
+      404,
+    );
+    expect((await w.h.request(past, bearer(w.admin, { method: "DELETE" }))).status).toBe(404);
+    expect(await sql(w.h.store, "SELECT CAST(id AS TEXT) AS id, severity FROM instance_domain_blocks")).toEqual([
+      { id: INT64_MAX, severity: "noop" },
+    ]);
+  });
+
+  it("pages blocks in id order across a change of digit count", async () => {
+    const w = await world();
+    for (const id of [9, 10]) {
+      await sql(
+        w.h.store,
+        `INSERT INTO instance_domain_blocks (id, domain, severity, created_at, updated_at)
+				VALUES (?1, 'b' || ?1 || '.example', 'noop', ?2, ?2)`,
+        id,
+        AT,
+      );
+    }
+    const listed = await w.h.request(BLOCKS, bearer(w.admin));
+    expect((await listed.json<{ id: string }[]>()).map((block) => block.id)).toEqual(["10", "9"]);
+    const after = await w.h.request(`${BLOCKS}?min_id=0`, bearer(w.admin));
+    expect((await after.json<{ id: string }[]>()).map((block) => block.id)).toEqual(["10", "9"]);
+  });
+});
+
+describe("conversation ids and stream sequences", () => {
+  it("finds no conversation for an id past the INTEGER range", async () => {
+    const w = await world();
+    await sql(
+      w.h.store,
+      `INSERT INTO conversations (id, account_id, thread, participants, last_status_id, unread)
+			VALUES (9223372036854775807, ?, 'other', '[]', '000000000000000001', 1)`,
+      w.alice.id,
+    );
+    const past = "/api/v1/conversations/9223372036854775808";
+    expect((await w.h.request(`${past}/read`, bearer(w.alice.token, { method: "POST" }))).status).toBe(404);
+    expect((await w.h.request(past, bearer(w.alice.token, { method: "DELETE" }))).status).toBe(404);
+    expect(await sql(w.h.store, "SELECT CAST(id AS TEXT) AS id, unread FROM conversations")).toEqual([
+      { id: INT64_MAX, unread: 1 },
+    ]);
+    // The guarded branch: the largest id itself is found.
+    const read = `/api/v1/conversations/${INT64_MAX}/read`;
+    expect((await w.h.request(read, bearer(w.alice.token, { method: "POST" }))).status).toBe(200);
+    expect(await sql(w.h.store, "SELECT unread FROM conversations")).toEqual([{ unread: 0 }]);
+  });
+
+  it("stores the owner's streaming sequence past 2^53 as it is", async () => {
+    const w = await world();
+    await sql(
+      w.h.store,
+      "INSERT INTO stream_conversation_marks (account_id, seq) VALUES (?, CAST(? AS INTEGER))",
+      w.bob.id,
+      TWO_53,
+    );
+    await post(w.h, w.bob, { status: "@alice hi", visibility: "direct" });
+    expect(
+      await sql(w.h.store, "SELECT CAST(stream_seq AS TEXT) AS seq FROM conversations WHERE account_id = ?", w.bob.id),
+    ).toEqual([{ seq: big(1) }]);
   });
 });

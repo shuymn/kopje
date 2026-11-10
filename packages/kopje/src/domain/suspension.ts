@@ -142,17 +142,23 @@ function suspendedAt(db: Db, accountId: string): { suspended_at: string | null }
 // logged).
 export function suspendLocal(db: Db, accountId: string, by: Admin | null, now: number): string | null {
   const at = iso(now);
-  // The new epoch is incremented in SQL and read as TEXT (DATA-6).
-  const epoch = db.first<{ epoch: string }>(
+  // The new epoch is incremented in SQL and read as TEXT (DATA-6). An epoch at the largest INTEGER has no next one: the
+  // increment would store a REAL, so the suspension throws and its transaction rolls back.
+  const updated = db.first<{ epoch: string; exact: number }>(
     `UPDATE local_accounts SET suspended_at = ?, credential_epoch = credential_epoch + 1, accept_requests_after = NULL,
 			links_due_at = NULL, links_attempts = 0
-		WHERE account_id = ? RETURNING CAST(credential_epoch AS TEXT) AS epoch`,
+		WHERE account_id = ?
+		RETURNING CAST(credential_epoch AS TEXT) AS epoch, typeof(credential_epoch) = 'integer' AS exact`,
     at,
     accountId,
-  )?.epoch;
-  if (epoch === undefined) {
+  );
+  if (updated === undefined) {
     return null;
   }
+  if (updated.exact !== 1) {
+    throw new Error("the account's credential epoch is exhausted");
+  }
+  const epoch = updated.epoch;
   forgetAdminAccountId(db);
   const job = {
     account_id: accountId,

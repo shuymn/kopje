@@ -2,6 +2,7 @@ import type { Db } from "../db/sql";
 import type { PageQuery } from "./accounts";
 import { MAX_BLOCK_LABELS } from "./audience";
 import { type Admin, ADMIN_PERMISSION, adminReadOperation, adminWriteOperation } from "./auth";
+import { isIntegerKey } from "./ids";
 import {
   blockDomainOf,
   blockById,
@@ -98,9 +99,10 @@ export const getAdminDomainBlock = adminReadOperation<{ id: string }, DomainBloc
   (db, { id }) => found(db, id),
 );
 
-// An id as Mastodon's find reads it: digits only, else no record. Kept as decimal TEXT (DATA-6).
+// An id as Mastodon's find reads it: digits only, within the INTEGER range (isIntegerKey), else no record. Kept as
+// decimal TEXT (DATA-6).
 function blockId(id: string): string | null {
-  return /^\d{1,19}$/.test(id) ? id : null;
+  return isIntegerKey(id) ? id : null;
 }
 
 function found(db: Db, id: string): DomainBlockResult {

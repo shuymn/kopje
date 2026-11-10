@@ -274,12 +274,6 @@ function nextPushDueAt(db: Db, ownLease: string | null = null): number | null {
   );
 }
 
-// Moves whenever a push is recorded (AUTOINCREMENT, so a row deleted since still counts): an inbound activity that
-// recorded one rings the doorbell (domain/inbox.ts).
-export function pushSequence(db: Db): number {
-  return db.first<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name = 'push_deliveries'")?.seq ?? 0;
-}
-
 // Leases up to `limit` due pushes (an expired lease is due again), dropping those that may no longer be sent or have
 // used up their attempts.
 export const claimPushes = writeOperation<{ now: number; leaseToken: string; limit?: number }, PushClaim>(

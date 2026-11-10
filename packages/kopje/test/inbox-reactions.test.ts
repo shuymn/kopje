@@ -1102,6 +1102,23 @@ describe("DATA-6: favourite and Like ids past 2^53", () => {
     expect(await likes(t)).toEqual([{ id: TWO_53, daves: 1, uri: `${OTHER}/likes/dave` }]);
   });
 
+  it("rings the doorbell for a push recorded past 2^53", async () => {
+    const { t, bob } = await withNeko();
+    const uri = await seededLocal(t);
+    await favouritePushes(t);
+    // The pushes' sequence at 2^53: the Like's push moves it to 2^53 + 1, which reads as 2^53.
+    await sql(t.store, "DELETE FROM sqlite_sequence WHERE name = 'push_deliveries'");
+    await sql(
+      t.store,
+      "INSERT INTO sqlite_sequence (name, seq) VALUES ('push_deliveries', CAST(? AS INTEGER))",
+      TWO_53,
+    );
+    expect(await receiver(t, bob)(likeOf(bob, uri, "1"))).toMatchObject({ applied: true, delivers: true });
+    expect(
+      await sql(t.store, "SELECT CAST(seq AS TEXT) AS seq FROM sqlite_sequence WHERE name = 'push_deliveries'"),
+    ).toEqual([{ seq: "9007199254740993" }]);
+  });
+
   // From 2^53 bob's Like ids are 2^53 + 1 to 2^53 + 4, the first read as dave's; from 10^16 - 2 they are 10^16 - 1 and
   // then 17-digit ids, which sort first as TEXT.
   it.each([TWO_53, "9999999999999998"])("retires its own favourite's earliest aged id, after one at %s", async (id) => {

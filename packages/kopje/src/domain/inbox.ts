@@ -66,7 +66,6 @@ import { listsHolding } from "./lists";
 import { notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
 import { deleteAccountVotes, deletePollVotes, hasPollVotes } from "./polls";
-import { pushSequence } from "./push";
 import {
   acceptOurQuote,
   answerQuoteRequest,
@@ -349,27 +348,33 @@ function applied(reason: string, jobsPending = false): ReceiveResult {
 // What moves whenever a delivery, an outbound intent or a chunk of an intent's targets is recorded: the deliveries id
 // sequence (AUTOINCREMENT, so a row deleted since still counts), the newest intent (one recorded without its deliveries
 // yet, which a delivery round expands) and the newest target chunk (a later staging call of an intent recorded
-// earlier, which a delivery round expands too); and the pushes' id sequence (domain/push.ts).
-type OutboundMark = { deliveries: number; intents: number; targets: number; pushes: number };
+// earlier, which a delivery round expands too); and the pushes' id sequence (push_deliveries, AUTOINCREMENT too). Each
+// is read as TEXT and compared in SQL (DATA-6), so an advance past 2^53 still counts. m's SELECT without FROM always
+// yields its one row.
+const OUTBOUND_MARK = `WITH m(deliveries, intents, targets, pushes) AS (SELECT
+		IFNULL((SELECT seq FROM sqlite_sequence WHERE name = 'deliveries'), 0),
+		IFNULL((SELECT max(id) FROM outbound_activities), 0),
+		IFNULL((SELECT max(id) FROM outbound_targets), 0),
+		IFNULL((SELECT seq FROM sqlite_sequence WHERE name = 'push_deliveries'), 0))`;
+
+type OutboundMark = { mark: string };
 
 function outboundMark(db: Db): OutboundMark {
-  // A SELECT without FROM always yields its one row.
-  const row = db.first<Omit<OutboundMark, "pushes">>(
-    `SELECT IFNULL((SELECT seq FROM sqlite_sequence WHERE name = 'deliveries'), 0) AS deliveries,
-			IFNULL((SELECT max(id) FROM outbound_activities), 0) AS intents,
-			IFNULL((SELECT max(id) FROM outbound_targets), 0) AS targets`,
+  return db.first<OutboundMark>(
+    `${OUTBOUND_MARK} SELECT json_array(CAST(deliveries AS TEXT), CAST(intents AS TEXT), CAST(targets AS TEXT),
+			CAST(pushes AS TEXT)) AS mark FROM m`,
   )!;
-  return { ...row, pushes: pushSequence(db) };
 }
 
 // Whether anything for the doorbell was recorded since `before`.
 function outboundSince(db: Db, before: OutboundMark): boolean {
-  const now = outboundMark(db);
   return (
-    now.deliveries > before.deliveries ||
-    now.intents > before.intents ||
-    now.targets > before.targets ||
-    now.pushes > before.pushes
+    db.first<{ moved: number }>(
+      `${OUTBOUND_MARK} SELECT (deliveries > CAST(json_extract(?1, '$[0]') AS INTEGER)
+				OR intents > CAST(json_extract(?1, '$[1]') AS INTEGER) OR targets > CAST(json_extract(?1, '$[2]') AS INTEGER)
+				OR pushes > CAST(json_extract(?1, '$[3]') AS INTEGER)) AS moved FROM m`,
+      before.mark,
+    )!.moved === 1
   );
 }
 
