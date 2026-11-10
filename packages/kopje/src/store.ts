@@ -42,6 +42,7 @@ import * as deliveries from "./domain/deliveries";
 import { directory } from "./domain/directory";
 import * as endorsements from "./domain/endorsements";
 import * as featuredTags from "./domain/featured-tags";
+import * as federationReads from "./domain/federation-reads";
 import { kvCas, kvDelete, kvGet, kvList, kvSet } from "./domain/fedify-kv";
 import * as fieldLinks from "./domain/field-links";
 import * as filters from "./domain/filters";
@@ -145,6 +146,8 @@ type OperationInput<T> = T extends StoreOperation<infer I, unknown> ? I : never;
 // fetchPreparation: the signer and the policy verdict for its first request) is produced at the two answers that decide
 // a fetch, inboxGate and a receiveActivity need, and nowhere else; it is optional, and the Worker reads what is
 // missing (fetchSigner, fetchRefused) as it would without it.
+// A federation GET is one read, the setup check included (domain/federation-reads.ts; the routes not yet moved there
+// read the domain in the setup gate first, federation/setup-gate.ts).
 export class Store extends DurableObject<Env> {
   readonly #kernel: StoreKernel;
   readonly #admin: StoreAdmin;
@@ -631,10 +634,6 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, quotes.claimQuotes, input);
   }
 
-  quoteAuthorization(callerBuild: string, input: OperationInput<typeof quotes.quoteAuthorization>) {
-    return this.#kernel.execute(callerBuild, quotes.quoteAuthorization, input);
-  }
-
   // Verification of local profile links (domain/field-links.ts): claimed, recorded and finished by the cron's round
   // (federation/field-links.ts).
   claimFieldLinks(callerBuild: string, input: OperationInput<typeof fieldLinks.claimFieldLinks>) {
@@ -829,6 +828,23 @@ export class Store extends DurableObject<Env> {
 
   nodeInfoUsage(callerBuild: string, input: OperationInput<typeof getNodeInfoUsage>) {
     return this.#kernel.execute(callerBuild, getNodeInfoUsage, input);
+  }
+
+  // The federation GETs (domain/federation-reads.ts): one call a request, the setup check included.
+  apSite(callerBuild: string) {
+    return this.#kernel.execute(callerBuild, federationReads.apSite, undefined);
+  }
+
+  apNodeInfo(callerBuild: string, input: OperationInput<typeof federationReads.apNodeInfo>) {
+    return this.#kernel.execute(callerBuild, federationReads.apNodeInfo, input);
+  }
+
+  apQuoteAuthorization(callerBuild: string, input: OperationInput<typeof federationReads.apQuoteAuthorization>) {
+    return this.#kernel.execute(callerBuild, federationReads.apQuoteAuthorization, input);
+  }
+
+  apEmoji(callerBuild: string, input: OperationInput<typeof federationReads.apEmoji>) {
+    return this.#kernel.execute(callerBuild, federationReads.apEmoji, input);
   }
 
   saveSnapshot(callerBuild: string, input: OperationInput<typeof saveSnapshot>) {
@@ -1856,10 +1872,6 @@ export class Store extends DurableObject<Env> {
 
   customEmojis(callerBuild: string) {
     return this.#kernel.execute(callerBuild, localEmojis.customEmojis, undefined);
-  }
-
-  localEmojiObject(callerBuild: string, input: OperationInput<typeof localEmojis.localEmojiObject>) {
-    return this.#kernel.execute(callerBuild, localEmojis.localEmojiObject, input);
   }
 
   // Announcements (domain/announcements.ts): the signed-in user's list, dismissals and reactions; the Access admin's

@@ -1008,7 +1008,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   byte to the quoter and to the receipts and audiences of both statuses), then a `Reject` of every live request the
   quoting author had answered for the quote, by id, in the same lane, recorded as retractions like the `Delete`. Accepted risk: a receiver that applies an `Accept` and a `Reject`
   concurrently (Mastodon 4.5.11 checks `pending?` in memory) may keep the quote. _Enforced (main):_ `answerQuoteRequest`,
-  `quoteAuthorization`, `retireQuoteOf` and `revokeQuoteRow` in `src/domain/quotes.ts`, `mayQuoteSql` and
+  `quoteAuthorizationOf` (read with the domain in one Store call, `apQuoteAuthorization` in
+  `src/domain/federation-reads.ts`), `retireQuoteOf` and `revokeQuoteRow` in `src/domain/quotes.ts`, `mayQuoteSql` and
   `reachQuoters` in `src/domain/audience.ts`, `revokeQuote` in `src/domain/statuses.ts`, the immutable and `reachOf`
   envelopes in `src/domain/deliveries.ts`, migration `0038_quote_requests`; `test/quote-requests.test.ts`,
   `test/migrations.test.ts`, `test/quote-lifecycle.test.ts` (generated sequences of both sides' quotes,
@@ -1553,8 +1554,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Setup (SETUP)
 
 - **SETUP-1: nothing is published before setup.** Federation paths answer 503 until `/setup` has fixed the domain;
-  sign-in answers 503 until Access is configured. _Enforced (main):_ `src/federation/setup-gate.ts`,
-  `src/app/authorize.tsx`; `test/app.test.ts` ("answers 503 on federation routes until setup has fixed the domain"),
+  sign-in answers 503 until Access is configured. _Enforced (main):_ `src/federation/setup-gate.ts`; for the
+  federation GETs in `SELF_GATED_ROUTES` (`src/federation/routes.ts`: NodeInfo, `/actor/outbox`, quote stamps and
+  `/emojis/:id`), which the gate passes, the request's one Store read, which answers `not_set_up` before reading anything
+  else (`federationRead` in `src/domain/federation-reads.ts`); `src/app/authorize.tsx`; `test/app.test.ts` ("answers 503
+  on federation routes until setup has fixed the domain"), `test/federation-store-calls.test.ts` ("answers the setup
+  503 from the one read before setup"),
   `test/oauth.test.ts` ("answers 503 until Access is configured"). The wizard's steps before the bootstrap write only a
   draft in the setup session, so nothing is published until SETUP-3 commits; `test/setup.test.ts` ("confirms the host
   the request came to, and refuses workers.dev, IP addresses and ports").
@@ -1908,7 +1913,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   matches the Store when saved. Request hosts, arbitrary queries and remote documents never create or change one.
   Suspending an account removes the snapshots of its actor document and WebFinger answers in the same transaction, so
   the rescue path answers 503 for them, never with the document from before the suspension, until a live request keeps
-  the redacted one. _Enforced (main):_ `src/domain/snapshot.ts`, `src/federation/routes.ts`; `test/snapshot.test.ts`
+  the redacted one. A NodeInfo document is rendered from the request's one Store read (`apNodeInfo` in
+  `src/domain/federation-reads.ts`), the domain and the usage of one transaction. _Enforced (main):_
+  `src/domain/snapshot.ts`, `src/domain/federation-reads.ts`, `src/federation/routes.ts`; `test/snapshot.test.ts`
   ("snapshots of a suspended actor").
 
 ### Content (HTML)
@@ -3468,7 +3475,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   shown, never a cursor). It applies the rule to the window alone, whatever the count of quotes in any state; when the
   rule hides the window, the page is empty and its next link moves on by the window, so hidden quotes cost a request one
   window (`test/policy-bounds.test.ts` ("the quotes list reads a window")). A client that stops at an empty page sees
-  fewer quotes than exist, as on Mastodon (accepted). The stamp endpoint is one read by its id's unique index; a
+  fewer quotes than exist, as on Mastodon (accepted). The stamp endpoint is one Store call, the domain's row and the quote by its id's unique index; a
   request's cap reads at most 100 rows of its actor; a revoke's `Reject`s read at most 100 rows of the quoting author by
   one seek of `quote_requests_instrument`, whatever other actors' requests name the same instrument; quoters' reach
   reads the accepted quotes of the status through `quotes_accepted`, as its boosts are read.

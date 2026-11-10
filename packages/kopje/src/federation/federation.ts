@@ -297,7 +297,15 @@ function boundedContexts(loaderDeps: LoaderDeps, kv: DoKvStore): DocumentLoader 
   return async (url, options) => withinBounds(await cached(url, options));
 }
 
-export function createKopjeFederation(deps: FederationDeps, state: FederationState): Federation<FederationState> {
+// What the request's one Store read already answered (federation/routes.ts), so a dispatcher does not read it again.
+// Absent, a dispatcher reads it itself, as the maintenance worker's render does (OPS-7).
+export type FederationPreload = { nodeInfo?: { now: number; usage: NodeInfoUsage } };
+
+export function createKopjeFederation(
+  deps: FederationDeps,
+  state: FederationState,
+  preload: FederationPreload = {},
+): Federation<FederationState> {
   const { domain } = deps;
   const parts = federationParts(deps, state);
   const {
@@ -520,11 +528,15 @@ export function createKopjeFederation(deps: FederationDeps, state: FederationSta
   ]);
 
   federation.setNodeInfoDispatcher("/nodeinfo/2.1", async () => {
-    const now = deps.now();
-    const usage = await rpc((s) => s.nodeInfoUsage(build, { now }));
+    const { now, usage } = preload.nodeInfo ?? (await readNodeInfo());
     state.source = { kind: "nodeinfo", now, rendered: JSON.stringify(usage) };
     return nodeInfo(usage);
   });
+
+  async function readNodeInfo() {
+    const now = deps.now();
+    return { now, usage: await rpc((s) => s.nodeInfoUsage(build, { now })) };
+  }
 
   return federation;
 }

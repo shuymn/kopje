@@ -1,13 +1,26 @@
 import { nodeInfoToJson } from "@fedify/fedify";
 import type { Context, Handler } from "hono";
+import { routePath } from "hono/route";
 
+import type { NodeInfoUsage } from "../domain/actors";
+import type { EmojiTag } from "../domain/custom-emojis";
+import type { QuoteAuthorization } from "../domain/quotes";
 import type { SnapshotSource } from "../domain/snapshot";
 import { readConfig, userKek } from "../platform/config";
-import { callStore, type StoreResolver } from "../platform/store-client";
+import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import type { KeyGen } from "../security/key-wrap";
-import { createKopjeFederation, type FederationDeps, type FederationState, nodeInfo } from "./federation";
+import {
+  createKopjeFederation,
+  type FederationDeps,
+  type FederationPreload,
+  type FederationState,
+  nodeInfo,
+} from "./federation";
 import type { LoaderDeps } from "./loader";
+import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
+
+const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:authorization_id";
 
 // The federation GETs. All but the collections are always served (app/gate.ts) and kept as snapshots.
 export const FEDERATION_GET_ROUTES = [
@@ -24,9 +37,21 @@ export const FEDERATION_GET_ROUTES = [
   "/ap/users/:username/collections/featured",
   "/ap/users/:username/collections/tags",
   "/ap/o/:uuid",
-  "/ap/users/:username/quote_authorizations/:authorization_id",
+  QUOTE_AUTHORIZATION_ROUTE,
   "/emojis/:id",
 ];
+
+// The routes whose handler makes the request's one Store read, which also decides setup (domain/federation-reads.ts,
+// SETUP-1): the setup gate passes their GETs and HEADs (app/app.ts). Every other federation GET reads the domain in the
+// gate first.
+export const SELF_GATED_ROUTES: ReadonlySet<string> = new Set([
+  "/.well-known/nodeinfo",
+  "/nodeinfo/2.0",
+  "/nodeinfo/2.1",
+  "/actor/outbox",
+  QUOTE_AUTHORIZATION_ROUTE,
+  "/emojis/:id",
+]);
 
 export type FederationRouteDeps = {
   build: (env: Env) => string;
@@ -36,7 +61,8 @@ export type FederationRouteDeps = {
   loader: Omit<LoaderDeps, "userAgent">;
 };
 
-// The domain comes from the setup gate (setup-gate.ts), which has already read it from the Store.
+// The domain of a route outside SELF_GATED_ROUTES comes from the setup gate (setup-gate.ts), which has already read it
+// from the Store.
 type FederationEnv = { Bindings: Env; Variables: { domain: string } };
 
 const NODEINFO_20 = "http://nodeinfo.diaspora.software/ns/schema/2.0";
@@ -48,7 +74,11 @@ export function federationHandler(deps: FederationRouteDeps): Handler<Federation
     const url = new URL(c.req.url);
     // Taken before rendering: the Store refuses a save rendered earlier than the one it keeps.
     const renderedAt = deps.now();
-    const { response, source } = await respond(c, deps, url);
+    const answer = await respond(c, deps, url);
+    if (answer === null) {
+      return notSetUp(c);
+    }
+    const { response, source } = answer;
     const key = snapshotKey(url);
     if (source === null || key === null || response.status !== 200 || response.body === null) {
       return response;
@@ -67,50 +97,90 @@ export function federationHandler(deps: FederationRouteDeps): Handler<Federation
 // of actors.
 type Answer = { response: Response; source: SnapshotSource | null };
 
-async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url: URL): Promise<Answer> {
-  switch (url.pathname) {
-    case "/.well-known/nodeinfo":
-      return { response: nodeInfoLinks(c.get("domain")), source: { kind: "static" } };
+// null: setup has not fixed the domain (a self-gated route's read answered not_set_up). A Store refusal propagates to
+// app.onError, which answers the always-served routes from their snapshot.
+async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url: URL): Promise<Answer | null> {
+  // As mastodon/context.ts storeCall: the answer typed from the RPC, not inferred from the stub's union.
+  const read = <F extends (store: StoreStub, build: string) => unknown>(call: F) =>
+    callStore(() => Promise.resolve(call(deps.store(c.env), deps.build(c.env))) as Promise<Awaited<ReturnType<F>>>);
+  const route = routePath(c);
+  if (SELF_GATED_ROUTES.has(route) && !spelled(route, url.pathname)) {
+    // Hono matched the decoded path ('/.well-known/%6eodeinfo'); Fedify answers the raw one (404), from the domain alone.
+    const site = await read((s, b) => s.apSite(b));
+    return site.status === "ok" ? viaFedify(c, deps, site.domain, url) : null;
+  }
+  switch (route) {
+    case "/.well-known/nodeinfo": {
+      const site = await read((s, b) => s.apSite(b));
+      return site.status === "ok" ? { response: nodeInfoLinks(site.domain), source: { kind: "static" } } : null;
+    }
     case "/nodeinfo/2.0":
-      return nodeInfo20(c, deps);
+    case "/nodeinfo/2.1": {
+      const now = deps.now();
+      const info = await read((s, b) => s.apNodeInfo(b, { now }));
+      if (info.status !== "ok") {
+        return null;
+      }
+      if (url.pathname === "/nodeinfo/2.0") {
+        return {
+          response: nodeInfo20(info.usage),
+          source: { kind: "nodeinfo", now, rendered: JSON.stringify(info.usage) },
+        };
+      }
+      return viaFedify(c, deps, info.domain, url, { nodeInfo: { now, usage: info.usage } });
+    }
     case "/actor/outbox": {
+      const site = await read((s, b) => s.apSite(b));
+      if (site.status !== "ok") {
+        return null;
+      }
       // Its ids and links are built from the request URL (federation.ts, the instance actor's outbox).
       const cursor = url.searchParams.get("cursor");
       const canonical = new URL(url.pathname, url);
       if (cursor !== null) {
         canonical.searchParams.set("cursor", cursor);
       }
-      return viaFedify(c, deps, canonical);
+      return viaFedify(c, deps, site.domain, canonical);
     }
-    default: {
-      const stamp = STAMP.exec(url.pathname);
-      if (stamp !== null) {
-        return { response: await quoteAuthorization(c, deps, stamp[1]!, stamp[2]!), source: null };
-      }
-      if (url.pathname.startsWith("/emojis/")) {
-        return { response: await emojiObject(c, deps, url.pathname), source: null };
-      }
-      return LEGACY_OBJECT.test(url.pathname) ? objectOrAlias(c, deps, url) : viaFedify(c, deps, url);
+    case QUOTE_AUTHORIZATION_ROUTE: {
+      const stamp = STAMP.exec(url.pathname)!;
+      const input = { username: stamp[1]!, authorizationId: stamp[2]! };
+      const answer = await read((s, b) => s.apQuoteAuthorization(b, input));
+      return answer.status === "ok" ? { response: quoteAuthorization(answer.stamp), source: null } : null;
     }
+    case "/emojis/:id": {
+      const id = EMOJI.exec(url.pathname)?.[1];
+      const answer =
+        id === undefined
+          ? { ...(await read((s, b) => s.apSite(b))), emoji: null }
+          : await read((s, b) => s.apEmoji(b, { id }));
+      return answer.status === "ok" ? { response: emojiObject(answer.emoji), source: null } : null;
+    }
+    default:
+      return LEGACY_OBJECT.test(url.pathname) ? objectOrAlias(c, deps, url) : viaFedify(c, deps, c.get("domain"), url);
+  }
+}
+
+// Whether the raw path is one a self-gated route answers itself; any other spelling Hono matches goes to Fedify.
+function spelled(route: string, path: string): boolean {
+  switch (route) {
+    case QUOTE_AUTHORIZATION_ROUTE:
+      return STAMP.test(path);
+    case "/emojis/:id":
+      return path.startsWith("/emojis/");
+    default:
+      return path === route;
   }
 }
 
 const STAMP = /^\/ap\/users\/([A-Za-z0-9_]{1,64})\/quote_authorizations\/([0-9a-f]{32})$/;
 
 // FEP-044f's QuoteAuthorization of an accepted quote of a local status (Mastodon's QuoteAuthorizationsController,
-// QuoteAuthorizationSerializer), one read of the Store (quotes.ts quoteAuthorization): 404 unless it is the current
+// QuoteAuthorizationSerializer), from the request's one read (quotes.ts quoteAuthorizationOf): 404 unless it is the current
 // authorization, never retired, of a public or unlisted status of an available `username`. It names only ids, all of
 // public objects, so it is served unsigned to anyone. no-store: a revoke ends it at once, and no cache may answer 200
 // after that (VIS-28); it is never kept as a snapshot either.
-async function quoteAuthorization(
-  c: Context<FederationEnv>,
-  deps: FederationRouteDeps,
-  username: string,
-  authorizationId: string,
-): Promise<Response> {
-  const stamp = await callStore(() =>
-    deps.store(c.env).quoteAuthorization(deps.build(c.env), { username, authorizationId }),
-  );
+function quoteAuthorization(stamp: QuoteAuthorization | null): Response {
   if (stamp === null) {
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
   }
@@ -138,17 +208,11 @@ async function quoteAuthorization(
 const EMOJI = /^\/emojis\/(\d{18})$/;
 
 // A local custom emoji as its Emoji object (Mastodon's EmojisController#show,
-// app/controllers/emojis_controller.rb:8-17; domain/local-emojis.ts localEmojiObject), one primary-key read: any local
+// app/controllers/emojis_controller.rb:8-17; domain/local-emojis.ts localEmojiObjectOf), one primary-key read: any local
 // emoji, disabled ones included. It names only public data, so it is served unsigned to anyone, cached for three
 // minutes as Mastodon's (expires_in 3.minutes, public: true), and never kept as a snapshot. Any other id, or an emoji
 // whose time is not an instant (custom-emojis.ts emojiInstant), answers 404.
-async function emojiObject(c: Context<FederationEnv>, deps: FederationRouteDeps, path: string): Promise<Response> {
-  const id = EMOJI.exec(path)?.[1];
-  const origin = `https://${c.get("domain")}`;
-  const emoji =
-    id === undefined
-      ? null
-      : await callStore(() => deps.store(c.env).localEmojiObject(deps.build(c.env), { id, origin }));
+function emojiObject(emoji: EmojiTag | null): Response {
   if (emoji === null) {
     return new Response("Not Found", { status: 404 });
   }
@@ -166,7 +230,7 @@ const LEGACY_OBJECT = /^\/ap\/o\/[0-9A-Za-z-]{1,64}$/;
 // getLegacyObject). A remote proxy alias moves to the original for any client; an image is a document for ActivityPub
 // clients only, as a Note is. Neither is kept as a snapshot.
 async function objectOrAlias(c: Context<FederationEnv>, deps: FederationRouteDeps, url: URL): Promise<Answer> {
-  const answer = await viaFedify(c, deps, url);
+  const answer = await viaFedify(c, deps, c.get("domain"), url);
   if (answer.response.status !== 404 && answer.response.status !== 406) {
     return answer;
   }
@@ -183,8 +247,13 @@ async function objectOrAlias(c: Context<FederationEnv>, deps: FederationRouteDep
   return answer;
 }
 
-async function viaFedify(c: Context<FederationEnv>, deps: FederationRouteDeps, url: URL): Promise<Answer> {
-  const domain = c.get("domain");
+async function viaFedify(
+  c: Context<FederationEnv>,
+  deps: FederationRouteDeps,
+  domain: string,
+  url: URL,
+  preload?: FederationPreload,
+): Promise<Answer> {
   const config = readConfig(c.env);
   const { response, state } = await fetchFederation(
     {
@@ -198,6 +267,7 @@ async function viaFedify(c: Context<FederationEnv>, deps: FederationRouteDeps, u
     },
     c.req.raw,
     url,
+    preload,
   );
   if (state.storeError !== null) {
     throw state.storeError;
@@ -221,9 +291,10 @@ export async function fetchFederation(
   deps: FederationDeps,
   raw: Request,
   url: URL,
+  preload?: FederationPreload,
 ): Promise<{ response: Response; state: FederationState }> {
   const state: FederationState = { resolvedUsername: null, source: null, storeError: null, ticket: null };
-  const federation = createKopjeFederation(deps, state);
+  const federation = createKopjeFederation(deps, state, preload);
   // Fedify builds collection page links from the request URL, so the request is put on the fixed domain first.
   const request = new Request(new URL(`${url.pathname}${url.search}`, `https://${deps.domain}`), raw);
   const response = await federation.fetch(request, {
@@ -255,13 +326,10 @@ function nodeInfoLinks(domain: string): Response {
 }
 
 // NodeInfo 2.0 is 2.1 without software.repository and software.homepage.
-async function nodeInfo20(c: Context<FederationEnv>, deps: FederationRouteDeps): Promise<Answer> {
-  const now = deps.now();
-  const usage = await callStore(() => deps.store(c.env).nodeInfoUsage(deps.build(c.env), { now }));
+function nodeInfo20(usage: NodeInfoUsage): Response {
   const info = nodeInfo(usage);
   const json = nodeInfoToJson({ ...info, software: { name: info.software.name, version: info.software.version } });
-  const response = new Response(JSON.stringify({ ...(json as object), $schema: `${NODEINFO_20}#`, version: "2.0" }), {
+  return new Response(JSON.stringify({ ...(json as object), $schema: `${NODEINFO_20}#`, version: "2.0" }), {
     headers: { "content-type": `application/json; profile="${NODEINFO_20}#"` },
   });
-  return { response, source: { kind: "nodeinfo", now, rendered: JSON.stringify(usage) } };
 }

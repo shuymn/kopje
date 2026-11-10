@@ -5,7 +5,7 @@ import { Db } from "../src/db/sql";
 import { actorDocument } from "../src/domain/actor-update";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { emojiInstant, localEmojiTags } from "../src/domain/custom-emojis";
-import { localEmojiObject } from "../src/domain/local-emojis";
+import { localEmojiObjectOf } from "../src/domain/local-emojis";
 import { emojiCandidates } from "../src/federation/remote-emoji";
 import { publishScheduled } from "../src/jobs/scheduled";
 import { ACCOUNT_EMOJIS_BYTES, MAX_ENABLED_EMOJIS, presentedEmojiBytes } from "../src/platform/stored-bounds";
@@ -415,8 +415,8 @@ describe("local Emoji tag resolution", () => {
       const sql = malformed(state.storage.sql);
       return {
         tags: localEmojiTags(new Db(sql), snapshot, "https://kopje.test", ACCOUNT_EMOJIS_BYTES).map((tag) => tag.name),
-        badObject: localEmojiObject.run(sql, { id: bad.id, origin: "https://kopje.test" }),
-        goodObject: localEmojiObject.run(sql, { id: good.id, origin: "https://kopje.test" }) !== null,
+        badObject: localEmojiObjectOf(new Db(sql), bad.id, "https://kopje.test"),
+        goodObject: localEmojiObjectOf(new Db(sql), good.id, "https://kopje.test") !== null,
       };
     });
     expect(presented).toEqual({ tags: [":good:"], badObject: null, goodObject: true });

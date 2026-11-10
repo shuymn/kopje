@@ -74,16 +74,28 @@ describe("app skeleton", () => {
     const store = await migratedStore();
     const { request } = harness(store);
 
-    for (const path of [
-      "/.well-known/webfinger",
+    // The self-gated routes (federation/routes.ts SELF_GATED_ROUTES) answer it from their own read, invalid ids
+    // included; /nodeinfo/3.0 matches no route, so the gate answers it.
+    const stamp = `/ap/users/alice/quote_authorizations/${"0".repeat(32)}`;
+    const selfGated = [
       "/.well-known/nodeinfo",
-      "/ap/users/alice",
-      "/actor",
+      "/nodeinfo/2.0",
+      "/nodeinfo/2.1",
       "/actor/outbox",
-    ]) {
-      const response = await request(path);
-      expect(response.status, path).toBe(503);
-      expect(await response.json()).toEqual({ error: "This server has not been set up yet" });
+      "/actor/outbox?cursor=x",
+      stamp,
+      "/ap/users/alice/quote_authorizations/x",
+      "/emojis/123456789012345678",
+      "/emojis/abc",
+    ];
+    for (const path of ["/.well-known/webfinger", "/ap/users/alice", "/actor", "/nodeinfo/3.0", ...selfGated]) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await request(path, { method });
+        expect(response.status, `${method} ${path}`).toBe(503);
+        if (method === "GET") {
+          expect(await response.json()).toEqual({ error: "This server has not been set up yet" });
+        }
+      }
     }
     // The inboxes read the domain in their own gate, and answer as the setup gate does; x exists, so its inbox is
     // not refused as unknown first.
@@ -97,6 +109,10 @@ describe("app skeleton", () => {
 
     await completeSetup(store);
     expect((await request("/.well-known/webfinger")).status).toBe(400);
+    expect((await request("/nodeinfo/3.0")).status).toBe(404);
+    for (const path of [stamp, "/emojis/abc"]) {
+      expect((await request(path)).status, path).toBe(404);
+    }
   });
 
   it("reads the domain again for every inbox POST: removed, the next one answers 503; set again, it is applied", async () => {

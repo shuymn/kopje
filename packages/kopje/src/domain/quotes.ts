@@ -1261,16 +1261,17 @@ export type QuoteAuthorization = {
   interactionTarget: string;
 };
 
-// GET /ap/users/:username/quote_authorizations/:authorization_id (federation/routes.ts), one read: the stamp only while
-// it is the current authorization of an accepted quote, never retired, of a local original of the available account
-// `username` (the quoted author: the path binds it) that is public or unlisted, and while the quoting status is
-// there: a Delete of it retires the authorization in its first transaction (retireQuoteOf), and a purge of its author
-// (whose batches delete the quote last) hides it here at once. Ids only (FEP-044f: the quote post is never embedded).
-// The id is 128 random bits, never sequential, so stamps cannot be enumerated.
-export const quoteAuthorization = readOperation<
-  { username: string; authorizationId: string },
-  QuoteAuthorization | null
->((db, { username, authorizationId }) => {
+// GET /ap/users/:username/quote_authorizations/:authorization_id (federation/routes.ts, through federation-reads.ts
+// apQuoteAuthorization): the stamp only while it is the current authorization of an accepted quote, never retired, of
+// a local original of the available account `username` (the quoted author: the path binds it) that is public or
+// unlisted, and while the quoting status is there: a Delete of it retires the authorization in its first transaction
+// (retireQuoteOf), and a purge of its author (whose batches delete the quote last) hides it here at once. Ids only
+// (FEP-044f: the quote post is never embedded). The id is 128 random bits, never sequential, so stamps cannot be
+// enumerated.
+export function quoteAuthorizationOf(
+  db: Db,
+  { username, authorizationId }: { username: string; authorizationId: string },
+): QuoteAuthorization | null {
   const row = db.first<{ author_uri: string; interacting: string; target: string }>(
     `SELECT a.uri AS author_uri, s.uri AS interacting, t.uri AS target
 		FROM quotes q JOIN statuses s ON s.id = q.status_id JOIN statuses t ON t.id = q.quoted_status_id
@@ -1291,7 +1292,7 @@ export const quoteAuthorization = readOperation<
         interactingObject: row.interacting,
         interactionTarget: row.target,
       };
-});
+}
 
 export type RevocableQuote = {
   state: QuoteState;

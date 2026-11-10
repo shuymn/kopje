@@ -8,7 +8,12 @@ import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/i
 import { activityStreamsRequest, INBOX_ROUTES } from "../federation/inbox-request";
 import { signAsAuthor } from "../federation/ld-sign";
 import { createResolver } from "../federation/resolve";
-import { FEDERATION_GET_ROUTES, federationHandler, type FederationRouteDeps } from "../federation/routes";
+import {
+  FEDERATION_GET_ROUTES,
+  federationHandler,
+  type FederationRouteDeps,
+  SELF_GATED_ROUTES,
+} from "../federation/routes";
 import { FEDERATION_PATHS, requireSetup } from "../federation/setup-gate";
 import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
@@ -186,8 +191,15 @@ export function createApp({
     adminRoutes({ build, now, store, doorbell, jobs, loader, images, fetch: (input, init) => fetch(input, init) }),
   );
 
-  // The inbox POSTs read the domain in their own gate (federation/inbox.ts processInbox).
-  const setupGate = requireSetup(build, store, (c) => c.get("requestClass") === "inbox");
+  // The inbox POSTs read the domain in their own gate (federation/inbox.ts processInbox), and the self-gated
+  // federation GETs in their one read (federation/routes.ts SELF_GATED_ROUTES).
+  const setupGate = requireSetup(
+    build,
+    store,
+    (c) =>
+      c.get("requestClass") === "inbox" ||
+      (isRead(c.req.method) && matchedRoutes(c).some((r) => r.method === "GET" && SELF_GATED_ROUTES.has(r.path))),
+  );
   for (const path of FEDERATION_PATHS) {
     app.use(path, setupGate);
   }
