@@ -84,9 +84,13 @@ export class Policy {
   private readonly answerIds = new Set<string>();
   private seq = 0;
 
+  // unavailable (R38): whether the send-time check refuses every row to R now (docs/visibility.md, "The send-time
+  // check": R unavailable, or a block covering its inbox host), so a non-retraction is dropped at its claim and at its
+  // confirmation; a retraction never is. Machine 1's R is always available.
   constructor(
     readonly lUri: string,
     readonly rUri: string,
+    readonly unavailable: () => boolean = () => false,
   ) {}
 
   get followers(): number {
@@ -517,6 +521,26 @@ export class Policy {
     return true;
   }
 
+  // ---- R38's severing of one follow (docs/visibility.md, the remote suspension paragraphs and "Instance domain
+  // blocks") ----
+
+  // `out`, R's follow of L: an accepted one ends as a removal ends it, with a Reject that withdraws it and supersedes
+  // the Accepts still waiting; a request is deleted with no Reject. Either way its id is recorded as retracted and its
+  // follow notifications go. `in`, L's follow or request of R: it ends with its Undo. Returns the intent recorded.
+  sever(side: "out" | "in", now: number): Intent | null {
+    const before = this.lane.length;
+    if (side === "in") {
+      this.endLocalFollow(now);
+    } else if (this.rl?.state === "accepted") {
+      this.endRemoteFollow(now);
+    } else if (this.rl !== null) {
+      this.retractFollow(this.rl.uri);
+      this.rl = null;
+      this.dropFollowNotifications();
+    }
+    return this.lane.length > before ? this.lane.at(-1)! : null;
+  }
+
   // ---- Deliveries (NET-2) ----
 
   private leased(token: string): Intent | undefined {
@@ -536,7 +560,7 @@ export class Policy {
     if (!due) {
       return none;
     }
-    if (head.answer && head.superseded) {
+    if ((head.answer && head.superseded) || (!head.retracts && this.unavailable())) {
       this.remove(head, now);
       return { ...none, dropped: head };
     }
@@ -555,7 +579,7 @@ export class Policy {
     if (intent === undefined) {
       return { status: "stale" };
     }
-    if (intent.answer && intent.superseded) {
+    if ((intent.answer && intent.superseded) || (!intent.retracts && this.unavailable())) {
       this.remove(intent, now);
       return { status: "dropped" };
     }

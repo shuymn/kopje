@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { DeliveryOutcome } from "../src/domain/deliveries";
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { keptReject, net2Answer } from "./follow-exceptions";
 import { type Body, type Inbound, type Intent, PAIR_SHAPE_BYTES, Peer, Policy, pairShaped } from "./follow-model";
 import { BUILD } from "./helpers";
 import { storeReceive } from "./inbox-store-helpers";
@@ -804,36 +805,11 @@ function rlException(w: World, kopje: { state: string; uri: string } | null): Ex
   }
   const mine = peerState(kopje);
   const theirs = peer.rl;
-  // The attempts whose answer of an earlier generation R's server applied to g by the pair (accept.rb:24,
-  // reject.rb:25): each with its own confirmation, not that of another attempt of the same answer.
-  const pairApplied = peer.events.pairAnswer.get(g);
-  const reachedAnswers = w.attempts.filter(
-    (a) => a.intent.answer && a.intent.ref !== g && pairApplied?.has(a.token) === true,
-  );
-  const receivedG = w.receivedAt.get(g) ?? Number.POSITIVE_INFINITY;
-  // NET-2's accepted risk: such an answer POSTed before Kopje received g (its confirmation came first).
-  if (reachedAnswers.some((a) => a.confirmedAt < receivedG) && mine?.uri === g) {
-    if ((mine.state === "requested" && theirs?.state === "accepted" && theirs.uri === g) || theirs === null) {
-      return "net2-answer";
-    }
+  const race = { peer, attempts: w.attempts, receivedAt: w.receivedAt, undoReceivedAt: w.undoReceivedAt, mine };
+  if (net2Answer(race)) {
+    return "net2-answer";
   }
-  // NET-2's accepted risk of a kept Reject: g kept the Reject of an earlier generation h, and R's server ended g by
-  // the pair. Either R undid h and the attempt was confirmed before that Undo reached Kopje, or R's server followed
-  // again without undoing h (RefollowWorker, refollow_worker.rb:17-19). Kopje holds g; R's server holds nothing.
-  const undoSent = (h: string) =>
-    peer.sent.some(
-      (m) => m.activity.type === "Undo" && m.activity.object.type === "Follow" && m.activity.object.id === h,
-    );
-  const keptReject = reachedAnswers.some((a) => {
-    const h = a.intent.ref!;
-    const undoneAt = w.undoReceivedAt.get(h);
-    return (
-      a.intent.type === "Reject" &&
-      a.confirmedAt >= receivedG &&
-      ((undoneAt !== undefined && a.confirmedAt < undoneAt) || !undoSent(h))
-    );
-  });
-  if (keptReject && mine?.uri === g && theirs === null) {
+  if (keptReject(race)) {
     return "kept-reject";
   }
   // The accepted risk of a block and unblock racing a new Follow: L's Block reached R's server after R sent g, and
