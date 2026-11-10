@@ -1744,3 +1744,816 @@ describe("instance moderation P2: federation while decisions are in force, again
     console.log("instance moderation P2 coverage", JSON.stringify(STATS.P2, null, 1));
   }, 600_000);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// Deterministic witnesses through the same harness (every step checked against the policy, rounds by the ledger)
+// ---------------------------------------------------------------------------------------------------------------
+
+const without = (...gens: string[]): Seed => ({ ...ALL, follows: SEEDS.map((g) => !gens.includes(g)) });
+const block = (domain: Domain, severity: "suspend" | "noop" | "silence" = "suspend", rejectReports = false): Admin => ({
+  k: "create",
+  domain,
+  severity,
+  rejectReports,
+});
+const ROUND: Rounds = { k: "round" };
+
+async function steps(w: World, actions: readonly P2Action[]): Promise<void> {
+  for (const a of actions) {
+    await p2Act(w, a);
+  }
+}
+
+async function p1World(seed: Seed = ALL): Promise<World> {
+  const w = await setup(seed);
+  await check(w);
+  return w;
+}
+
+const source = (w: World, r: Remote) => w.last!.remotes.find((a) => a.id === w.remoteIds[r])?.source ?? null;
+const domainJob = (w: World) => w.last!.jobs.find((j) => j.kind === "domain");
+
+describe("instance moderation witnesses: decisions", () => {
+  // Witness 1 (visibility.md, "Precedence"): a child noop created before the parent's suspend exempts R2; the
+  // reverse order answers 422 exists; moving a child from suspend to noop resets the job, which clears R2's mark.
+  it("a child noop exempts its subdomain only when created first; a child moved to noop clears its mark", async () => {
+    const w = await p1World();
+    await steps(w, [block(SUB, "noop"), block(D)]);
+    await settle(w);
+    expect(w.policy.available("R2")).toBe(true);
+    expect(source(w, "R2")).toBeNull();
+    const v = await p1World();
+    await steps(v, [block(D), block(SUB, "noop")]);
+    expect(v.trace.at(-1)).toBe("  -> 422");
+    await steps(v, [block(SUB), ...Array.from({ length: 4 }, () => ROUND)]);
+    expect(source(v, "R2")).toBe("domain");
+    await steps(v, [{ k: "update", i: 1, severity: "noop", flag: null, value: false }]);
+    expect(domainJob(v)?.phase).toBe("clear");
+    await settle(v);
+    expect(source(v, "R2")).toBeNull();
+    expect(v.stats["mark cleared"]).toBe(1);
+  });
+
+  // Witness 2 (visibility.md, the remote suspension paragraphs): a domain mark alone cannot be unsuspended; an
+  // individual suspension under the block converts; an unblock clears the mark and ends the account job.
+  it("a domain mark answers 403; a covered unsuspension converts; an unblock clears the mark", async () => {
+    const w = await p1World();
+    await steps(w, [block(D)]);
+    await settle(w);
+    await unsuspend(w, "R1");
+    expect(w.trace.at(-1)).toBe("  -> 403");
+    await steps(w, [
+      { k: "suspend", r: "R1" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["unsuspension converted"]).toBe(1);
+    expect(source(w, "R1")).toBe("domain");
+    expect(w.last!.jobs.map((j) => [j.kind, j.mode])).toEqual([["account", "domain"]]);
+    await steps(w, [{ k: "delete", i: 0 }]);
+    await settle(w);
+    expect(source(w, "R1")).toBeNull();
+    expect(w.stats["job ended account"]).toBeGreaterThanOrEqual(1);
+  });
+
+  // Witness 9 (visibility.md: "flags and obfuscate reset nothing"; "silence answers 422").
+  it("flag and obfuscate toggles reset nothing, and silence changes nothing", async () => {
+    const w = await p1World();
+    await steps(w, [block(D)]);
+    await settle(w);
+    for (const flag of ["reject_media", "reject_reports", "obfuscate"] as const) {
+      await steps(w, [{ k: "update", i: 0, severity: null, flag, value: true }]);
+      expect(w.last!.jobs).toEqual([]);
+    }
+    await steps(w, [{ k: "update", i: 0, severity: "silence", flag: null, value: false }, block(OTHER, "silence")]);
+    expect(w.trace.filter((line) => line === "  -> 422")).toHaveLength(2);
+    expect(w.last!.jobs).toEqual([]);
+  });
+
+  // Witness 10 (VIS-29's fence; reports.ts:92-98): a report of a suspended account is not found; a report filed after
+  // the unsuspension is resolved by the next suspension's fence, and so is one of an account suspended already.
+  it("report fences: refused while suspended, resolved by a later suspension, also of a suspended account", async () => {
+    const w = await p1World({ ...ALL, reports: [false, false] });
+    await steps(w, [
+      { k: "suspend", r: "R1" },
+      { k: "report", r: "R1" },
+    ]);
+    expect(w.trace.at(-1)).toBe("  -> null");
+    expect(w.policy.reports).toEqual([]);
+    await steps(w, [
+      { k: "unsuspend", i: 0 },
+      { k: "report", r: "R1" },
+      { k: "suspend", r: "R1" },
+    ]);
+    await settle(w);
+    expect(w.policy.reports.map((r) => r.resolved)).toEqual([true]);
+    // Re-fencing: a report of the still suspended account, then a suspension again.
+    const [reporter] = await sql<{ id: string }>(w.store, "SELECT account_id AS id FROM reports");
+    await sql(
+      w.store,
+      "INSERT INTO reports (id, account_id, target_account_id, uri, created_at) VALUES (900, ?, ?, ?, ?)",
+      reporter!.id,
+      w.remoteIds.R1,
+      "https://kopje.test/reports/900",
+      new Date(NOW).toISOString(),
+    );
+    w.reportIds.set("900", "seeded");
+    w.policy.reports.push({ label: "seeded", target: "R1", resolved: false });
+    await check(w);
+    await steps(w, [{ k: "suspend", r: "R1" }]);
+    await settle(w);
+    expect(w.policy.reports.map((r) => r.resolved)).toEqual([true, true]);
+  });
+
+  // Witness 4 (visibility.md, "clear"): after an unblock, R1's document under the stored revision clears its stale
+  // mark before the clear round; a superseded one clears nothing.
+  it("an unblock, then R1's document: a superseded one clears nothing, a current one clears the mark", async () => {
+    const w = await p1World();
+    await steps(w, [block(D)]);
+    await settle(w);
+    await steps(w, [{ k: "delete", i: 0 }]);
+    await document(w, "R1", "name", true);
+    expect(source(w, "R1")).toBe("domain");
+    await document(w, "R1", "name", false);
+    expect(source(w, "R1")).toBeNull();
+    await settle(w);
+  });
+
+  // Witness 7 (visibility.md, "Writes"): no account is stored into a covered domain or host; one stored first is
+  // marked by the next block.
+  it("R5 on a covered host is not stored; stored first, it is marked by the next block", async () => {
+    const w = await p1World();
+    await steps(w, [block(D)]);
+    await document(w, "R5", "name", false);
+    expect(w.remoteIds.R5).toBeNull();
+    expect(w.trace.at(-1)).toBe('  -> "actor-suspended"');
+    const v = await p1World();
+    await document(v, "R5", "name", false);
+    expect(v.remoteIds.R5).not.toBeNull();
+    await steps(v, [block(D)]);
+    await settle(v);
+    expect(source(v, "R5")).toBe("domain");
+  });
+
+  // Witness 8 (visibility.md, "The admin API": reject_reports reads the reporter's stored domain only).
+  it("reject_reports refuses by the stored domain; a suspend refuses as actor-suspended", async () => {
+    const w = await p1World();
+    await steps(w, [block(D, "noop", true), { k: "flag", r: "R1" }, { k: "flag", r: "R3" }]);
+    expect(w.stats["flag reports-rejected"]).toBe(1);
+    expect(w.stats["flag filed"]).toBe(1);
+    await steps(w, [
+      { k: "update", i: 0, severity: "suspend", flag: null, value: false },
+      { k: "flag", r: "R3" },
+    ]);
+    expect(w.stats["flag actor-suspended"]).toBe(1);
+  });
+
+  // Witness 6 (visibility.md: a routing refresh; ID-1): only the individually suspended, uncovered account under the
+  // stored revision takes it, its routing only; the severing Reject then uses the new inbox.
+  it("a routing refresh applies to an individually suspended, uncovered account only", async () => {
+    const w = await p1World(without("R2>L1", "R4>L1"));
+    await steps(w, [{ k: "suspend", r: "R1" }]);
+    const route = async (stale: boolean) => {
+      const before = w.policy.remotes.R1.sharedInbox;
+      await document(w, "R1", "routing", stale);
+      return w.policy.remotes.R1.sharedInbox !== before;
+    };
+    expect(await route(true)).toBe(false);
+    expect(await route(false)).toBe(true);
+    await document(w, "R1", "name", false);
+    await document(w, "R1", "key", false);
+    expect(w.policy.remotes.R1).toMatchObject({ name: "R1", keys: ["R1-key-0"] });
+    await settle(w);
+    expect(w.sent.filter((s) => s.type === "Reject").map((s) => s.remote)).toEqual(["R1"]);
+    expect(w.stats["known defect G3F"]).toBeGreaterThan(0);
+    // Covered: nothing changes.
+    await steps(w, [block(D)]);
+    expect(await route(false)).toBe(false);
+  });
+
+  // Witness 5 (threat-model.md VIS-30: "confirmation is the send boundary").
+  it("a block between claim and confirmation drops a Follow; one after confirmation sends it", async () => {
+    const w = await p1World(without("L1>R1"));
+    await steps(w, [{ k: "follow", r: "R1" }, { k: "claim" }, block(D), { k: "confirm", i: 0 }]);
+    expect(w.stats["dropped at confirm: Follow"]).toBe(1);
+    const v = await p1World();
+    await steps(v, [{ k: "answer", r: "R1", accept: true }, { k: "claim" }, { k: "confirm", i: 0 }, block(D)]);
+    await steps(v, [{ k: "complete", i: 0 }]);
+    expect(v.sent.map((s) => s.type)).toEqual(["Accept"]);
+  });
+});
+
+describe("instance moderation witnesses: federation with R1's server", () => {
+  const peerSeed = without("R1>L1", "L1>R1");
+
+  // Witness 11 (NET-2): R1's Undo of the severed generation cancels the severing Reject not yet confirmed.
+  it("an Undo cancels a severing Reject not yet sent", async () => {
+    const w = await runP2(without("L1>R1"), [
+      { k: "suspend", r: "R1" },
+      ROUND,
+      ROUND,
+      { k: "peerUnfollow" },
+      { k: "deliver" },
+    ]);
+    expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toEqual([]);
+  });
+
+  it("an Undo while the severing Reject is leased drops it at confirmation", async () => {
+    const w = await runP2(without("L1>R1"), [
+      { k: "suspend", r: "R1" },
+      ROUND,
+      ROUND,
+      { k: "claim" },
+      { k: "peerUnfollow" },
+      { k: "deliver" },
+      { k: "confirm", i: 0 },
+    ]);
+    expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toEqual([]);
+  });
+
+  it("a severing Reject confirmed before the Undo is sent (the NET-2 risk)", async () => {
+    const w = await runP2(without("L1>R1"), [
+      { k: "suspend", r: "R1" },
+      ROUND,
+      ROUND,
+      { k: "claim" },
+      { k: "confirm", i: 0 },
+      { k: "peerUnfollow" },
+      { k: "deliver" },
+    ]);
+    expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toHaveLength(1);
+  });
+
+  // X1 (accepted risk): R1's Follow arriving while it is suspended is ignored with no answer.
+  it("X1: a Follow received while suspended stays requested at R1's server", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "suspend", r: "R1" },
+      { k: "peerFollow" },
+      { k: "deliver" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["exception X1"]).toBe(1);
+  });
+
+  // X1, the late answer: an Accept of h, confirmed before Kopje received g, applied to g by the pair at R1's server.
+  it("X1: an earlier Accept processed late accepts the ignored generation at R1's server", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "peerFollow" },
+      { k: "deliver" },
+      { k: "send" },
+      { k: "peerUnfollow" },
+      { k: "peerFollow" },
+      { k: "deliver" },
+      { k: "suspend", r: "R1" },
+      { k: "deliver" },
+      { k: "process" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["exception X1-late-answer"]).toBe(1);
+  });
+
+  // X2 (accepted risk): R1's Accept of L1's follow, received while R1 is suspended, is ignored.
+  it("X2: an Accept received while suspended leaves L1's follow pending", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "follow", r: "R1" },
+      { k: "send" },
+      { k: "suspend", r: "R1" },
+      { k: "process" },
+      { k: "deliver" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["exception X2"]).toBe(1);
+  });
+
+  // X3 (#1422, a known defect): L1's Follow queued at the suspension is dropped at send time and never sent again.
+  it("X3 (#1422): a Follow dropped at send time leaves L1's follow pending forever", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "follow", r: "R1" },
+      { k: "suspend", r: "R1" },
+      { k: "claim" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["dropped at claim: Follow"]).toBe(1);
+    expect(w.stats["exception X3"]).toBe(1);
+  });
+
+  // X5 (#1423, a known defect): R1's Accept dropped during a short suspension, ended before its severing round.
+  it("X5 (#1423): an Accept dropped during a short suspension leaves R1's server with a request", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "peerFollow" },
+      { k: "deliver" },
+      { k: "suspend", r: "R1" },
+      { k: "claim" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    expect(w.stats["dropped at claim: Accept"]).toBe(1);
+    expect(w.stats["exception X5"]).toBe(1);
+  });
+
+  // X4 (#1424, a known defect): an individual suspension deletes R1's pending request to locked L2 without a Reject
+  // and retracts its id, so R1's server keeps the request, and a redelivery of it is refused.
+  it("X4 (#1424): a suspension deletes a pending request with no Reject, and retracts its id", async () => {
+    const w = await p1World();
+    await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND, { k: "unsuspend", i: 0 }]);
+    await settle(w);
+    const uri = `${SPEC.R1.uri}#follows/seed-L2`;
+    expect(projection(w, w.last!).follows.some((f) => f.gen === "R1>L2")).toBe(false);
+    expect(w.sent.some((s) => s.local === "L2")).toBe(false);
+    const again = await storeReceive(
+      w.store,
+      SPEC.R1.uri,
+      { type: "Follow", id: uri, object: w.localUris.L2 },
+      w.clock,
+    );
+    expect(again.reason).toBe("retracted");
+  });
+
+  // G3F (#1425, a known defect): the severing Reject goes to R1's shared inbox.
+  it("G3F (#1425): the severing Reject's row is at the shared inbox", async () => {
+    const w = await p1World(without("R2>L1", "R4>L1"));
+    await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND]);
+    expect(w.last!.lanes.filter((row) => row.type === "Reject").map((row) => row.inbox)).toEqual([SPEC.R1.shared]);
+    expect(w.stats["known defect G3F"]).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Read-cap fixtures (F1-F7) and witnesses on stores seeded by SQL, as test/domain-job.test.ts seeds them: single
+// rounds through remoteModerationRound, each checked by the ledger and the frontier. Each expected count comes from
+// the fixture's own seed, never from the constant it binds.
+// ---------------------------------------------------------------------------------------------------------------
+
+async function bare() {
+  const base = await adminWorld();
+  const none = Object.fromEntries(REMOTES.map((r) => [r, null])) as Record<Remote, string | null>;
+  return {
+    ...base,
+    store: base.h.store,
+    remoteIds: none,
+    last: null as State | null,
+    fences: new Map<string, JobRow>(),
+  };
+}
+
+type Bare = Awaited<ReturnType<typeof bare>>;
+
+// `n` remote accounts on `domain` with ids from `base` + 1, each with its personal inbox; marked when asked.
+async function remotesOn(f: Bare, n: number, domain: string, base: bigint, marked = false): Promise<void> {
+  await sql(
+    f.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+		INSERT INTO accounts (id, uri, username, domain, created_at, inbox_url, suspended_at, suspension_source)
+		SELECT printf('%018d', CAST(?2 AS INTEGER) + i), 'https://' || ?3 || '/users/u' || (CAST(?2 AS INTEGER) + i),
+			'u' || i, ?3, ?4, 'https://' || ?3 || '/users/u' || (CAST(?2 AS INTEGER) + i) || '/inbox',
+			CASE WHEN ?5 THEN ?4 END, CASE WHEN ?5 THEN 'domain' END FROM n`,
+    n,
+    String(base),
+    domain,
+    new Date(NOW).toISOString(),
+    marked ? 1 : 0,
+  );
+}
+
+// `n` local accounts with ids from 500000000000000000, each with its local_accounts row.
+async function localsOf(f: Bare, n: number): Promise<string[]> {
+  await sql(
+    f.store,
+    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+		INSERT INTO accounts (id, uri, username, created_at) SELECT printf('%018d', 500000000000000000 + i),
+			'https://kopje.test/ap/users/l' || i, 'l' || i, ?2 FROM n`,
+    n,
+    new Date(NOW).toISOString(),
+  );
+  await sql(
+    f.store,
+    `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+		SELECT id, username || '@example.com', X'00', X'00', 'test' FROM accounts WHERE id LIKE '5000%'`,
+  );
+  return (await sql<{ id: string }>(f.store, "SELECT id FROM accounts WHERE id LIKE '5000%' ORDER BY id")).map(
+    (row) => row.id,
+  );
+}
+
+// Every local account in `locals` follows `target` (accepted), or `follower` asks to follow each (pending).
+async function followsOf(f: Bare, edges: { follower: string; target: string; state: string }[]): Promise<void> {
+  await sql(
+    f.store,
+    `INSERT INTO follows (account_id, target_account_id, state, created_at)
+		SELECT json_extract(value, '$.follower'), json_extract(value, '$.target'), json_extract(value, '$.state'), ?2
+		FROM json_each(?1)`,
+    JSON.stringify(edges),
+    new Date(NOW).toISOString(),
+  );
+}
+
+const count = async (f: Bare, query: string, ...params: SqlStorageValue[]) =>
+  (await sql<{ n: number }>(f.store, `SELECT count(*) AS n FROM (${query})`, ...params))[0]!.n;
+
+const markedOn = (f: Bare, domain: string) =>
+  count(f, "SELECT 1 FROM accounts WHERE domain = ? AND suspension_source = 'domain'", domain);
+
+async function fixtureRead(f: Bare): Promise<State> {
+  f.last ??= await read(f);
+  return f.last;
+}
+
+// One round through the ledger, with the rows it wrote.
+async function fixtureRound(f: Bare): Promise<{ id: string } | null> {
+  const before = await fixtureRead(f);
+  const { result, rows } = await writtenBy(f.store, (db) => remoteModerationRound(db, NOW));
+  const now = await read(f);
+  const failures = ledgerCheck({
+    before: { jobs: before.jobs, snap: before.snap },
+    after: { jobs: now.jobs, snap: now.snap },
+    ran: result?.id ?? null,
+    rows,
+    caps: CAPS,
+  });
+  expect(failures).toEqual([]);
+  f.last = now;
+  return result;
+}
+
+async function fixtureDrain(f: Bare): Promise<void> {
+  for (let i = 0; (await fixtureRound(f)) !== null; i++) {
+    expect(i).toBeLessThan(SETTLE_ROUNDS);
+  }
+  expect(settlementFailures(f.last!.snap, f.fences)).toEqual([]);
+}
+
+// A decision through the admin API; the store's state is read again after it.
+async function decide(f: Bare, path: string, init: RequestInit): Promise<number> {
+  const response = await f.h.request(path, bearer(f.admin, init));
+  f.last = await read(f);
+  if (path.endsWith("/action")) {
+    for (const job of f.last.jobs.filter((j) => j.kind === "account")) {
+      f.fences.set(job.subject, job);
+    }
+  }
+  return response.status;
+}
+
+const blockOf = (f: Bare, domain: string) =>
+  decide(f, "/api/v1/admin/domain_blocks", json({ domain, severity: "suspend" }));
+
+async function unblock(f: Bare, domain: string): Promise<number> {
+  const [row] = await sql<{ id: number }>(f.store, "SELECT id FROM instance_domain_blocks WHERE domain = ?", domain);
+  return decide(f, `/api/v1/admin/domain_blocks/${row!.id}`, { method: "DELETE" });
+}
+
+const suspendOf = (f: Bare, id: string) => decide(f, `/api/v1/admin/accounts/${id}/action`, form({ type: "suspend" }));
+const unsuspendOf = (f: Bare, id: string) => decide(f, `/api/v1/admin/accounts/${id}/unsuspend`, { method: "POST" });
+
+async function adminIds(f: Bare): Promise<string[] | 503> {
+  const ids: string[] = [];
+  let path: string | null = "/api/v2/admin/accounts?status=suspended";
+  while (path !== null) {
+    const response = await f.h.request(path, bearer(f.admin));
+    if (response.status === 503) {
+      return 503;
+    }
+    ids.push(...(await response.json<{ id: string }[]>()).map((a) => a.id));
+    const next = response.headers.get("Link")?.match(/<([^>]+)>; rel="next"/)?.[1] ?? null;
+    path = next === null ? null : new URL(next).pathname + new URL(next).search;
+  }
+  return ids.toSorted();
+}
+
+const COVERED = 700_000_000_000_000_000n;
+
+describe("instance moderation read caps (F1-F7)", () => {
+  // F1, MARK_ACCOUNTS: 101 covered accounts and no follows (no other cap binds first).
+  it("F1: the first mark round marks exactly 100 of 101 covered accounts; the admin list answers 503 meanwhile", async () => {
+    const f = await bare();
+    await remotesOn(f, 101, D, COVERED);
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(await markedOn(f, D)).toBe(101 - 1);
+    expect(await adminIds(f)).toBe(503);
+    await fixtureDrain(f);
+    expect(await adminIds(f)).toHaveLength(101);
+  }, 120_000);
+
+  // F2, SEVER_ROUND: one covered account's 101 pending requests to 101 local accounts, with no uri and no
+  // notification, about one row each, so the row cap does not bind first.
+  it("F2: a round severs exactly 100 of 101 follows", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, D, COVERED);
+    const locals = await localsOf(f, 101);
+    const r = (COVERED + 1n).toString();
+    await followsOf(
+      f,
+      locals.map((target) => ({ follower: r, target, state: "pending" })),
+    );
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(await count(f, "SELECT 1 FROM follows WHERE account_id = ?", r)).toBe(1);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // F3, CLEAR_ROUND: 501 stale domain marks (no block covers their domain); a transition elsewhere resets the job.
+  it("F3: the first clear round clears exactly 500 of 501 stale marks", async () => {
+    const f = await bare();
+    await remotesOn(f, 501, "stale.example", COVERED, true);
+    await blockOf(f, OTHER);
+    await fixtureRound(f);
+    expect(await markedOn(f, "stale.example")).toBe(1);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // F4, MARK_WINDOW: 2,000 accounts in all (the local and instance rows included) before one covered account.
+  it("F4: the first mark round walks exactly 2,000 accounts and stops before the 2,001st", async () => {
+    const f = await bare();
+    const existing = await count(f, "SELECT 1 FROM accounts");
+    await remotesOn(f, 2_000 - existing, "filler.example", 200_000_000_000_000_000n);
+    await remotesOn(f, 1, D, COVERED);
+    const [last] = await sql<{ id: string }>(f.store, "SELECT id FROM accounts ORDER BY id LIMIT 1 OFFSET 1999");
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(await markedOn(f, D)).toBe(0);
+    expect(JSON.parse(f.last!.jobs[0]!.cursor)).toEqual({ after: last!.id });
+    await fixtureRound(f);
+    expect(await markedOn(f, D)).toBe(1);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // F5, REPORT_ROUND: 101 reports of one account, all inside its suspension's fence.
+  it("F5: the first reports round resolves exactly 100 of 101 reports", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, OTHER, COVERED);
+    const r = (COVERED + 1n).toString();
+    await sql(
+      f.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i <= 100)
+			INSERT INTO reports (account_id, target_account_id, uri, created_at)
+			SELECT ?1, ?2, 'https://kopje.test/reports/' || i, ?3 FROM n`,
+      f.alice.id,
+      r,
+      new Date(NOW).toISOString(),
+    );
+    await suspendOf(f, r);
+    await fixtureRound(f);
+    expect(await count(f, "SELECT 1 FROM reports WHERE action_taken_at IS NULL")).toBe(1);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // F6, MODERATION_ROUNDS: five suspended accounts with a report each; one call of the opaque rounds.
+  it("F6: one runModerationJobs call resolves the reports of exactly four of five accounts", async () => {
+    const f = await bare();
+    await remotesOn(f, 5, OTHER, COVERED);
+    for (let i = 1n; i <= 5n; i++) {
+      const r = (COVERED + i).toString();
+      await sql(
+        f.store,
+        "INSERT INTO reports (account_id, target_account_id, uri, created_at) VALUES (?, ?, ?, ?)",
+        f.alice.id,
+        r,
+        `https://kopje.test/reports/${i}`,
+        new Date(NOW).toISOString(),
+      );
+      await suspendOf(f, r);
+    }
+    const before = await fixtureRead(f);
+    await f.h.store.runModerationJobs(BUILD, { now: NOW });
+    const now = await read(f);
+    expect(
+      ledgerCheck({
+        before: { jobs: before.jobs, snap: before.snap },
+        after: { jobs: now.jobs, snap: now.snap },
+        ran: null,
+        rows: null,
+        caps: CAPS,
+      }),
+    ).toEqual([]);
+    f.last = now;
+    expect(await count(f, "SELECT 1 FROM reports WHERE action_taken_at IS NULL")).toBe(5 - 4);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // F7, progress without change (threat-model.md: every batch moves a cursor, a phase or a row on): 201 covered
+  // accounts marked already and without follows, then one unmarked.
+  it("F7: two mark rounds change nothing but their cut; the third marks the last account", async () => {
+    const f = await bare();
+    await remotesOn(f, 201, D, COVERED, true);
+    await remotesOn(f, 1, D, COVERED + 1_000n);
+    await blockOf(f, D);
+    await fixtureRound(f);
+    const unchanged = async () => {
+      const before = f.last!;
+      await fixtureRound(f);
+      const { jobs: _jobs, snap: _snap, ...rest } = f.last!;
+      const { jobs: _was, snap: _wasSnap, ...was } = before;
+      expect(rest).toEqual(was);
+      expect(f.last!.jobs[0]!.cursor).not.toBe(before.jobs[0]!.cursor);
+    };
+    await unchanged();
+    await unchanged();
+    expect(await markedOn(f, D)).toBe(201);
+    await fixtureRound(f);
+    expect(await markedOn(f, D)).toBe(202);
+  }, 120_000);
+});
+
+describe("instance moderation witnesses: walks", () => {
+  // Witness 3 (visibility.md: "An individually suspended account is skipped"): a suspension while the domain job is
+  // inside R1's in side resumes nothing; R1's own job severs out only.
+  it("a suspension during the domain job's severing of an account resumes nothing", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, D, COVERED);
+    const r = (COVERED + 1n).toString();
+    const locals = await localsOf(f, 150);
+    await followsOf(
+      f,
+      locals.map((follower) => ({ follower, target: r, state: "accepted" })),
+    );
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    const left = await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r);
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(150);
+    expect(JSON.parse(f.last!.jobs[0]!.cursor)).toMatchObject({ severing: r, side: { dir: "in" } });
+    await suspendOf(f, r);
+    await fixtureDrain(f);
+    expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(left);
+  }, 120_000);
+
+  // Witness 14(a): a mark round crosses R1 only once it has marked and severed it, so a later unblock cannot hide
+  // a skip.
+  it("a skipped account cannot hide behind a later unblock", async () => {
+    const w = await p1World();
+    await steps(w, [block(D), ROUND, ROUND, { k: "delete", i: 0 }]);
+    expect(w.severedByRound.has("R1>L1")).toBe(true);
+    await settle(w);
+  });
+
+  // Witness 14(b): a round that reconciles R1 and stops inside R2 (150 local followers) has crossed R1.
+  it("a cut inside a later account has crossed every account before it", async () => {
+    const f = await bare();
+    await remotesOn(f, 2, D, COVERED);
+    const [r1, r2] = [(COVERED + 1n).toString(), (COVERED + 2n).toString()];
+    const locals = await localsOf(f, 150);
+    await followsOf(f, [
+      { follower: locals[0]!, target: r1, state: "accepted" },
+      ...locals.map((follower) => ({ follower, target: r2, state: "accepted" })),
+    ]);
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(JSON.parse(f.last!.jobs[0]!.cursor)).toMatchObject({ after: r1, severing: r2 });
+    await unblock(f, D);
+    expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r1)).toBe(0);
+    await fixtureDrain(f);
+  }, 120_000);
+
+  // Witness 14(c): the domain walk passes an individually suspended account; once converted, its own job severs it,
+  // and that is no failure of the walk.
+  it("a passed individually suspended account is severed by its converted job", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, D, COVERED);
+    await remotesOn(f, 100, D, COVERED + 10n);
+    const r = (COVERED + 1n).toString();
+    await followsOf(f, [{ follower: f.alice.id, target: r, state: "accepted" }]);
+    await suspendOf(f, r);
+    await fixtureDrain(f);
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(f.last!.jobs.map((j) => j.kind)).toEqual(["domain"]);
+    expect(await unsuspendOf(f, r)).toBe(200);
+    expect(f.last!.jobs.map((j) => [j.kind, j.mode])).toEqual([
+      ["domain", "domain"],
+      ["account", "domain"],
+    ]);
+    await fixtureDrain(f);
+    expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(0);
+  }, 120_000);
+
+  // Witness 12 (threat-model.md RES-5): a round that fails after its writes is rolled back and backs off; an unchanged
+  // decision leaves its retry state, a new one makes it fresh.
+  it("a failed round is rolled back, backs off, and is made fresh by a new decision", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, D, COVERED);
+    const r = (COVERED + 1n).toString();
+    await followsOf(f, [{ follower: f.alice.id, target: r, state: "accepted" }]);
+    await blockOf(f, D);
+    await fixtureRound(f);
+    await sql(
+      f.store,
+      `CREATE TRIGGER test_round_fails BEFORE UPDATE ON remote_moderation_jobs WHEN NEW.attempts = OLD.attempts
+			AND NEW.phase = 'mark' BEGIN SELECT RAISE(ABORT, 'test: the round fails'); END`,
+    );
+    await sql(
+      f.store,
+      "CREATE TRIGGER test_round_ends BEFORE DELETE ON remote_moderation_jobs BEGIN SELECT RAISE(ABORT, 'test: the round fails'); END",
+    );
+    const error = console.error;
+    console.error = () => {};
+    try {
+      await fixtureRound(f);
+    } finally {
+      console.error = error;
+    }
+    const [job] = f.last!.jobs;
+    expect(job).toMatchObject({ phase: "mark", attempts: 1 });
+    expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(1);
+    const entity = await f.h.request(`/api/v1/accounts/${r}`, bearer(f.alice.token));
+    expect((await entity.json<{ suspended?: boolean }>()).suspended).toBe(true);
+    expect((await f.h.store.runModerationJobs(BUILD, { now: NOW })).pending).toBe(false);
+    const [row] = await sql<{ id: number }>(f.store, "SELECT id FROM instance_domain_blocks");
+    await decide(f, `/api/v1/admin/domain_blocks/${row!.id}`, json({ severity: "suspend" }, { method: "PUT" }));
+    expect(f.last!.jobs[0]).toMatchObject({ attempts: 1 });
+    await blockOf(f, OTHER);
+    expect(f.last!.jobs[0]).toMatchObject({ attempts: 0, phase: "clear" });
+    await sql(f.store, "DROP TRIGGER test_round_fails");
+    await sql(f.store, "DROP TRIGGER test_round_ends");
+    await fixtureDrain(f);
+    expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(0);
+  }, 120_000);
+});
+
+// Witness 13: routing changes with activities outstanding, on R1's one origin (one lane). Outside the generated runs,
+// whose one-row lane model they leave (each intent's rows are asserted here).
+describe("instance moderation witnesses: routing with activities outstanding", () => {
+  const rows = (w: World) =>
+    w.last!.lanes.filter((row) => row.account === w.ids.L1).map((row) => [row.type, row.inbox, row.state]);
+  const moveShared = async (w: World) => {
+    const a = w.policy.remotes.R1;
+    const doc = { name: a.name, keys: a.keys, inbox: a.inbox, sharedInbox: "https://d.example/inbox-b" };
+    const [row] = await sql<{ revision: number }>(
+      w.store,
+      "SELECT document_revision AS revision FROM accounts WHERE id = ?",
+      w.remoteIds.R1,
+    );
+    const result = await w.store.receiveActivity(BUILD, {
+      now: w.clock,
+      origin: "https://kopje.test",
+      actorUri: a.uri,
+      actor: documentOf(w, "R1", doc),
+      actorRevision: row!.revision,
+      activity: { type: "UpdateActor", id: "https://d.example/updates/b" },
+    });
+    w.last = await read(w);
+    return result.reason;
+  };
+  const accepted = async () => {
+    const w = await setup(without("R1>L1", "L1>R1"));
+    await storeReceive(
+      w.store,
+      SPEC.R1.uri,
+      { type: "Follow", id: `${SPEC.R1.uri}#follows/g`, object: w.localUris.L1 },
+      w.clock,
+    );
+    w.last = await read(w);
+    expect(rows(w)).toEqual([["Accept", SPEC.R1.shared, "pending"]]);
+    return w;
+  };
+
+  it("(a) a removal's withdrawing Reject reaches the new shared inbox and the Accept's", async () => {
+    const w = await accepted();
+    expect(await moveShared(w)).toBe("actor-updated");
+    await call(w, `/api/v1/accounts/${w.remoteIds.R1}/remove_from_followers`, json({}), w.tokens.L1);
+    w.last = await read(w);
+    expect(rows(w)).toEqual([
+      ["Accept", SPEC.R1.shared, "pending"],
+      ["Reject", SPEC.R1.shared, "queued"],
+      ["Reject", "https://d.example/inbox-b", "queued"],
+    ]);
+  });
+
+  it("(b) a suspension's severing Reject, audienceOnly, has one row at the refreshed inbox", async () => {
+    const w = await accepted();
+    await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
+    expect(await moveShared(w)).toBe("actor-suspended");
+    for (let i = 0; i < 3; i++) {
+      await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
+    }
+    w.last = await read(w);
+    expect(
+      w.last.lanes.filter((row) => row.account === w.ids.L1).map((row) => [row.type, row.inbox, row.superseded]),
+    ).toEqual([
+      ["Accept", SPEC.R1.shared, 1],
+      ["Reject", "https://d.example/inbox-b", 0],
+    ]);
+  });
+
+  it("(c) an Accept leased at A when the severing Reject is recorded is dropped at confirmation", async () => {
+    const w = await accepted();
+    const claimed = await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: "lease-c", limit: 1 });
+    await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
+    await moveShared(w);
+    for (let i = 0; i < 3; i++) {
+      await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
+    }
+    const confirmed = await w.store.confirmDelivery(BUILD, {
+      id: claimed.deliveries[0]!.id,
+      leaseToken: "lease-c",
+      now: w.clock,
+    });
+    expect(confirmed.status).toBe("dropped");
+    w.last = await read(w);
+    expect(rows(w)).toEqual([["Reject", "https://d.example/inbox-b", "pending"]]);
+  });
+});
