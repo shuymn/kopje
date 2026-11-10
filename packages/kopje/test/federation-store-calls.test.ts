@@ -59,6 +59,9 @@ describe("self-gated federation GETs", () => {
     const { t, stamp } = await world();
     const rows: [string, number, string | null, string | null, string[]][] = [
       ["/.well-known/nodeinfo", 200, "application/json", null, ["apSite", "saveSnapshot"]],
+      // Hono matches the decoded template; the raw spelling is no route of Kopje's or Fedify's, as on main.
+      ["/.well-known/%6eodeinfo", 404, "text/plain;charset=UTF-8", null, ["apSite"]],
+      ["/nodeinfo/%32.0", 404, "text/plain;charset=UTF-8", null, ["apSite"]],
       ["/nodeinfo/2.0", 200, `${NODEINFO}2.0#"`, null, ["apNodeInfo", "saveSnapshot"]],
       ["/nodeinfo/2.1", 200, `${NODEINFO}2.1#"`, null, ["apNodeInfo", "saveSnapshot"]],
       ["/actor/outbox", 200, "application/activity+json", null, ["apSite"]],

@@ -20,6 +20,8 @@ import type { LoaderDeps } from "./loader";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
 
+const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:authorization_id";
+
 // The federation GETs. All but the collections are always served (app/gate.ts) and kept as snapshots.
 export const FEDERATION_GET_ROUTES = [
   "/.well-known/webfinger",
@@ -35,11 +37,9 @@ export const FEDERATION_GET_ROUTES = [
   "/ap/users/:username/collections/featured",
   "/ap/users/:username/collections/tags",
   "/ap/o/:uuid",
-  "/ap/users/:username/quote_authorizations/:authorization_id",
+  QUOTE_AUTHORIZATION_ROUTE,
   "/emojis/:id",
 ];
-
-const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:authorization_id";
 
 // The routes whose handler makes the request's one Store read, which also decides setup (domain/federation-reads.ts,
 // SETUP-1): the setup gate passes their GETs and HEADs (app/app.ts). Every other federation GET reads the domain in the
@@ -103,7 +103,13 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
   // As mastodon/context.ts storeCall: the answer typed from the RPC, not inferred from the stub's union.
   const read = <F extends (store: StoreStub, build: string) => unknown>(call: F) =>
     callStore(() => Promise.resolve(call(deps.store(c.env), deps.build(c.env))) as Promise<Awaited<ReturnType<F>>>);
-  switch (routePath(c)) {
+  const route = routePath(c);
+  if (SELF_GATED_ROUTES.has(route) && !spelled(route, url.pathname)) {
+    // Hono matched the decoded path ('/.well-known/%6eodeinfo'); Fedify answers the raw one (404), from the domain alone.
+    const site = await read((s, b) => s.apSite(b));
+    return site.status === "ok" ? viaFedify(c, deps, site.domain, url) : null;
+  }
+  switch (route) {
     case "/.well-known/nodeinfo": {
       const site = await read((s, b) => s.apSite(b));
       return site.status === "ok" ? { response: nodeInfoLinks(site.domain), source: { kind: "static" } } : null;
@@ -137,12 +143,7 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       return viaFedify(c, deps, site.domain, canonical);
     }
     case QUOTE_AUTHORIZATION_ROUTE: {
-      const stamp = STAMP.exec(url.pathname);
-      if (stamp === null) {
-        // No stamp has this path: Fedify answers it (404) from the domain alone.
-        const site = await read((s, b) => s.apSite(b));
-        return site.status === "ok" ? viaFedify(c, deps, site.domain, url) : null;
-      }
+      const stamp = STAMP.exec(url.pathname)!;
       const input = { username: stamp[1]!, authorizationId: stamp[2]! };
       const answer = await read((s, b) => s.apQuoteAuthorization(b, input));
       return answer.status === "ok" ? { response: quoteAuthorization(answer.stamp), source: null } : null;
@@ -157,6 +158,18 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
     }
     default:
       return LEGACY_OBJECT.test(url.pathname) ? objectOrAlias(c, deps, url) : viaFedify(c, deps, c.get("domain"), url);
+  }
+}
+
+// Whether the raw path is one a self-gated route answers itself; any other spelling Hono matches goes to Fedify.
+function spelled(route: string, path: string): boolean {
+  switch (route) {
+    case QUOTE_AUTHORIZATION_ROUTE:
+      return STAMP.test(path);
+    case "/emojis/:id":
+      return path.startsWith("/emojis/");
+    default:
+      return path === route;
   }
 }
 
