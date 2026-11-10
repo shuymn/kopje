@@ -595,7 +595,6 @@ function publish(db: Db, id: string, row: PublishRow, now: number, objectId: str
       ...input,
       idempotencyKey: row.client_key === null || keyTaken ? undefined : row.client_key,
       objectId,
-      origin: new URL(prepared.author.uri).origin,
       // A restored row's params hold any JSON: an id the bound refuses publishes the post without an app.
       applicationId: storedApplicationId(params.application_id),
     },

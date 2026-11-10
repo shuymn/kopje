@@ -178,10 +178,10 @@ export function featuresMost(db: Db, accountId: string): boolean {
 // Features the hashtag `display` (a valid hashtag name) for the account: the row, with its counts read from the
 // account's statuses as FeaturedTag#reset_data reads them, and the Add its followers are sent. The caller has checked
 // that it is not featured yet and that the account may feature one more (featuresMost).
-function insertFeatured(db: Db, accountId: string, display: string, now: number, origin: string): FeaturedRow | null {
+function insertFeatured(db: Db, accountId: string, display: string, now: number): FeaturedRow | null {
   const row = writeFeatured(db, accountId, display, now);
   if (row !== null) {
-    recordFeaturedChange(db, accountId, "Add", row, now, origin);
+    recordFeaturedChange(db, accountId, "Add", row, now);
   }
   return row;
 }
@@ -287,15 +287,15 @@ export const createFeaturedTag = userWriteOperation<
   if (errors.length > 0) {
     return { status: "invalid", errors };
   }
-  const row = insertFeatured(db, accountId, display, input.now, input.present.origin);
+  const row = insertFeatured(db, accountId, display, input.now);
   return row === null
     ? { status: "invalid", errors: [TAG_NAME_TOO_LONG] }
     : { status: "ok", value: presentFeatured(row, input.present.origin) };
 });
 
 // DELETE /api/v1/featured_tags/:id (RemoveFeaturedTagService): the viewer's own only; a Remove to their followers.
-export const deleteFeaturedTag = userWriteOperation<{ id: string; now: number; origin: string }, boolean>(
-  (db, { id, now, origin }, { accountId }) => {
+export const deleteFeaturedTag = userWriteOperation<{ id: string; now: number }, boolean>(
+  (db, { id, now }, { accountId }) => {
     const row = db.first<FeaturedRow>(
       `SELECT ${FEATURED_COLUMNS} ${FEATURED_FROM} WHERE f.id = ? AND f.account_id = ?`,
       id,
@@ -304,14 +304,14 @@ export const deleteFeaturedTag = userWriteOperation<{ id: string; now: number; o
     if (row === undefined) {
       return false;
     }
-    removeFeatured(db, accountId, row, now, origin);
+    removeFeatured(db, accountId, row, now);
     return true;
   },
 );
 
-function removeFeatured(db: Db, accountId: string, row: FeaturedRow, now: number, origin: string): void {
+function removeFeatured(db: Db, accountId: string, row: FeaturedRow, now: number): void {
   db.run("DELETE FROM featured_tags WHERE id = ?", row.id);
-  recordFeaturedChange(db, accountId, "Remove", row, now, origin);
+  recordFeaturedChange(db, accountId, "Remove", row, now);
 }
 
 // POST /api/v1/tags/:id/feature (CreateFeaturedTagService with a tag): features the hashtag `display` (a valid name)
@@ -321,7 +321,6 @@ export function featureTag(
   accountId: string,
   display: string,
   now: number,
-  origin: string,
 ): { status: "ok" } | { status: "invalid"; errors: string[] } {
   if (!featurableName(display)) {
     return { status: "invalid", errors: [TAG_NAME_TOO_LONG] };
@@ -332,16 +331,16 @@ export function featureTag(
   if (featuresMost(db, accountId)) {
     return { status: "invalid", errors: [TOO_MANY] };
   }
-  return insertFeatured(db, accountId, display, now, origin) === null
+  return insertFeatured(db, accountId, display, now) === null
     ? { status: "invalid", errors: [TAG_NAME_TOO_LONG] }
     : { status: "ok" };
 }
 
 // POST /api/v1/tags/:id/unfeature (RemoveFeaturedTagService with a tag): nothing when it is not featured.
-export function unfeatureTag(db: Db, accountId: string, name: string, now: number, origin: string): void {
+export function unfeatureTag(db: Db, accountId: string, name: string, now: number): void {
   const row = featuredTagNamed(db, accountId, name);
   if (row !== undefined) {
-    removeFeatured(db, accountId, row, now, origin);
+    removeFeatured(db, accountId, row, now);
   }
 }
 
@@ -349,15 +348,9 @@ export function unfeatureTag(db: Db, accountId: string, name: string, now: numbe
 // Hashtag (ActivityPub::HashtagSerializer: its name with a #, and the account's statuses with it) added to or removed
 // from the collection Mastodon names as the target, the actor's featured collection, which Mastodon's
 // ActivityPub::Activity::Add and Remove match against the actor's `featured`. Mastodon's has no id; Kopje's carries
-// one, as every activity it records does. Sent to the followers, as ActivityPub::AccountRawDistributionWorker sends it.
-function recordFeaturedChange(
-  db: Db,
-  accountId: string,
-  type: "Add" | "Remove",
-  row: FeaturedRow,
-  now: number,
-  origin: string,
-): void {
+// one, as every activity it records does. The href is on the actor's origin, as the Note's hashtags are (ID-5). Sent to
+// the followers, as ActivityPub::AccountRawDistributionWorker sends it.
+function recordFeaturedChange(db: Db, accountId: string, type: "Add" | "Remove", row: FeaturedRow, now: number): void {
   const actor = db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", accountId)?.uri;
   if (actor === undefined) {
     return;
@@ -374,7 +367,11 @@ function recordFeaturedChange(
         type,
         actor,
         target: `${actor}/collections/featured`,
-        object: { type: "Hashtag", href: taggedUrl(origin, row.username, row.name), name: `#${row.display_name}` },
+        object: {
+          type: "Hashtag",
+          href: taggedUrl(new URL(actor).origin, row.username, row.name),
+          name: `#${row.display_name}`,
+        },
       },
       audience: { followers: true, accounts: [] },
     },
