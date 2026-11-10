@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc", "import", "vitest", "promise"],
-  "jsPlugins": ["./packages/kopje/lint/signing-keys.js"],
+  "jsPlugins": ["./packages/kopje/lint/plugin.js"],
   "categories": { "correctness": "error", "suspicious": "error" },
   "options": { "typeAware": true, "reportUnusedDisableDirectives": "error" },
   "ignorePatterns": [
@@ -117,6 +117,14 @@
   "overrides": [
     // lint/signing-keys.js; test-node/signing-keys.test.ts pins this wiring.
     { "files": ["packages/kopje/src/**/*.ts"], "rules": { "kopje/signing-keys": "error" } },
+    // packages/kopje/lint/plugin.js; test-node/lint-config.test.ts pins this wiring.
+    {
+      "files": ["packages/kopje/src/**/*.{ts,tsx}"],
+      "rules": { "kopje/fedify-usage": "error", "kopje/layering": "error", "kopje/log-events": "error" }
+    },
+    // The setup wizard is not catalogued (docs/web-pages.md).
+    { "files": ["packages/kopje/src/web/**/*.tsx"], "rules": { "kopje/web-strings": "error" } },
+    { "files": ["packages/kopje/src/web/setup-pages.tsx"], "rules": { "kopje/web-strings": "off" } },
     // A nullish value must not reach SQL or HTML text through `${}` (test-node/lint-config.test.ts).
     {
       "files": ["packages/kopje/src/**/*.{ts,tsx}"],

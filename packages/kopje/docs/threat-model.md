@@ -163,7 +163,8 @@ against their own instance. TLS is assumed between all parties.
   verifies the same way; a proof that is present but does not verify, or none, forwards nothing, and the `Delete`
   applies as its actor's (`test/forward-delete.test.ts` ("an invalid proof deletes and forwards nothing", "an FEP-8b32
   proof forwards too")).
-  See `src/federation/ld-sign.ts`, `test/quote-requests.test.ts` and `test-node/fedify-usage.test.ts`.
+  See `src/federation/ld-sign.ts`, `test/quote-requests.test.ts` and the fedify-usage lint rule
+  (`packages/kopje/lint/fedify-usage.js`).
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
   after JSON-LD processing, and it must have the origin of the final response URL. The loader's literal `id` check is a
   pre-filter. Cross-origin redirects are refused. _Enforced (main):_ `src/federation/loader.ts`;
@@ -1683,9 +1684,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cap per kind, positively recognized types and 30 s; web pages unsigned, at most 3 redirects to any origin, a 1 MiB
   prefix and 10 s; Web Push and deliveries no redirects.
   Credentials and signatures never follow a redirect to another origin. Fedify's sending and queueing are not used.
-  _Enforced (main)_ for documents and the Fedify rule: `test-node/fedify-usage.test.ts` ("never sends or queues through
-  Fedify"). Deliveries: _Enforced (main):_ `assertPublicShape` and the DNS check before every
-  POST, no redirects, 30 s (`postActivity` in `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3:
+  _Enforced (main)_ for documents and the Fedify rule: the fedify-usage lint rule
+  (`packages/kopje/lint/fedify-usage.js`), which refuses sending or queueing through Fedify. Deliveries: _Enforced
+  (main):_ `assertPublicShape` and the DNS check before every POST, no redirects, 30 s (`postActivity` in `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3:
   refuses inboxes that fail the public-host rules"). Web Push: _Enforced (main):_ the same sink before every POST
   (`sendPush` in `src/jobs/push.ts`), and the rules that need no lookup at registration (`publicShapeRefusal` in
   `src/platform/http-url.ts`, shared with `assertPublicShape`); `test/push.test.ts` ("NET-3: refuses endpoints that are
@@ -3911,8 +3912,8 @@ heap).
   errors and assert they are absent. _Enforced (main):_ `errorFields` in
   `src/platform/error-message.ts`, used by `app.onError` (`src/app/app.ts`), the admin API's error handler, the queue
   and spool handlers, the snapshot saver and the Store kernel and admin; `test/log-redaction.test.ts`;
-  `test-node/log-events.test.ts` (a syntactic check of every log call's shape and fields). Access failures log only
-  jose's error code, and the CLI never prints secrets (`test/cli.test.ts`). A forward that is not recorded logs
+  the log-events lint rule (`packages/kopje/lint/log-events.js`, a syntactic check of every log call's shape and
+  fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`). A forward that is not recorded logs
   `kopje.inbox.forward_skipped` with its reason and size, and one past its owners' cap `kopje.inbox.forward_capped`
   with the cap, and a job bound that is no list of forwards `kopje.inbox.forward_bound_invalid` with its size (the
   intents it names are left staging, as RES-6 says), never

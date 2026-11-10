@@ -11,7 +11,7 @@ import { assertPublicShape, dnsCheckHost, type RequestSigner } from "./loader";
 //     lane account's key (its author's, or a forwarding booster's, whose body goes as received) with draft-cavage HTTP
 //     Signatures and a Digest (Fedify's signRequest via the keyring). Fedify's
 //     own sending path (sendActivity, its queue) is not used: it follows redirects and owns retries and keys
-//     (test-node/fedify-usage.test.ts).
+//     (the kopje/fedify-usage lint rule).
 //   - The whole path from the claim (key loading, DNS, signing, POST, response) is budgeted: it ends after
 //     DELIVERY_TIMEOUT_MS or at the round's deadline inside the lease, whichever is first, and sends nothing after.
 //   - The answer is classified as Mastodon's DeliveryWorker does: 2xx delivered; 401, 408, 429, other 4xx is permanent

@@ -40,4 +40,30 @@ describe("the lint config", () => {
       .toSorted();
     expect(flagged).toEqual(["packages/kopje/src/probe-a.ts", "packages/kopje/src/probe-b.ts"]);
   });
+
+  // lint/plugin.js: the source rules apply to packages/kopje/src, web-strings to its pages but the setup wizard.
+  it("turns the kopje rules on where they apply", () => {
+    const source = "import '../app/app'\nawait ctx.sendActivity(a, b, c)\nconsole.info({ event: 'kopje.store.x' })\n";
+    const page = "export const A = () => <p>Hello</p>;\n";
+    const flagged = lintProbe({
+      "packages/kopje/src/domain/probe.ts": source,
+      "packages/kopje/src/domain/probe-page.tsx": source,
+      "packages/kopje/probe-outside.ts": source,
+      "packages/kopje/src/web/pages/probe.tsx": page,
+      "packages/kopje/src/web/setup-pages.tsx": page,
+      "packages/kopje/src/domain/probe-text.tsx": page,
+    })
+      .filter((d) => d.code.startsWith("kopje(") && d.code !== "kopje(signing-keys)")
+      .map((d) => `${d.filename} ${d.code}`)
+      .toSorted();
+    expect(flagged).toEqual([
+      "packages/kopje/src/domain/probe-page.tsx kopje(fedify-usage)",
+      "packages/kopje/src/domain/probe-page.tsx kopje(layering)",
+      "packages/kopje/src/domain/probe-page.tsx kopje(log-events)",
+      "packages/kopje/src/domain/probe.ts kopje(fedify-usage)",
+      "packages/kopje/src/domain/probe.ts kopje(layering)",
+      "packages/kopje/src/domain/probe.ts kopje(log-events)",
+      "packages/kopje/src/web/pages/probe.tsx kopje(web-strings)",
+    ]);
+  });
 });

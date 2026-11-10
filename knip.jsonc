@@ -25,7 +25,7 @@
         // build-maintenance.mjs and mastodon-scopes.mjs are run by hand too, but are not entries: the build and the
         // tests import them, so their exports are checked.
         // The oxlint JS plugin (.oxlintrc.json `jsPlugins`), whose default export oxlint loads.
-        "lint/signing-keys.js",
+        "lint/plugin.js",
         // Loaded by a computed specifier from browser/render.ts.
         "browser/fixtures/pages.tsx",
         // The suites of each vitest config, whose `include` is an absolute path the plugin does not read. No module

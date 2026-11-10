@@ -1,5 +1,5 @@
 // Shared pieces of Kopje's log events (docs/observability.md; DATA-5 in docs/threat-model.md). The rules a log call
-// follows are checked by test-node/log-events.test.ts.
+// follows are checked by the kopje/log-events lint rule (lint/log-events.js).
 
 // A level above info: `error` when something that should have worked did not, `warn` when a bound or a degraded mode
 // was hit as designed. Lifecycle events and expected outcomes pass none.
