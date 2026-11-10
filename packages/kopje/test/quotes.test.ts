@@ -1097,6 +1097,26 @@ describe("relayed revocations (ID-1’s one exception)", () => {
   });
 });
 
+// The detached quote of a local status `uri` that is gone or withdrawn stays as it is under implicit and explicit Updates
+// (the latter at `minute`:01-:03) that name `uri` with Kopje's stamp, with another server's stamp, and in a legacy form
+// (VIS-28, R35).
+async function keepsDetached(t: Setup, bob: TestActor, carol: TestActor, quote: Note, uri: string, minute: string) {
+  const detached = { quoted_uri: uri, quoted_status_id: null, state: "deleted", approval_uri: null, legacy: 0 };
+  expect(await quoteOf(t, quote.id)).toMatchObject(detached);
+  const { quote: _q, ...legacy } = quote;
+  const variants = [
+    { ...quote, quoteAuthorization: `${ALICE_URI}/quote_authorizations/1` },
+    { ...quote, quoteAuthorization: stampUri(carol) },
+    legacy,
+  ];
+  for (const [i, note] of variants.entries()) {
+    expect(await t.post(bob, { ...update(bob, note, ""), id: `${quote.id}#implicit-${i}` })).toBe(202);
+    expect(await quoteOf(t, quote.id), `implicit ${i}`).toMatchObject(detached);
+    expect(await t.post(bob, update(bob, note, `${minute}:0${i + 1}Z`))).toBe(202);
+    expect(await quoteOf(t, quote.id), `explicit ${i}`).toMatchObject(detached);
+  }
+}
+
 describe("deleting a quoted or quoting status", () => {
   it("detaches the quotes of a remote status its author deletes, and removes its own", async () => {
     const { t, bob, carol } = await world();
@@ -1154,6 +1174,64 @@ describe("deleting a quoted or quoting status", () => {
       verify_after: null,
     });
     expect(await quotesCount(t, theirs.id)).toBe(0);
+  });
+
+  it("keeps a detached quote of a local status deleted under any Update that names it (VIS-28, R35)", async () => {
+    const { t, bob, carol } = await world();
+    const mine = await localStatus(t, { status: "quotable", visibility: "public" });
+    const other = await localStatus(t, { status: "kept", visibility: "public" });
+    const quote = quoting(bob, mine.uri, null);
+    expect(await t.post(bob, create(bob, quote))).toBe(202);
+    await sql(
+      t.store,
+      "UPDATE quotes SET state = 'accepted' WHERE status_id = (SELECT id FROM statuses WHERE uri = ?)",
+      quote.id,
+    );
+    const deleted = await t.request(`/api/v1/statuses/${mine.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    expect(deleted.status).toBe(200);
+    await settle(t.store);
+    await keepsDetached(t, bob, carol, quote, mine.uri, "2026-10-11T12:30");
+    // A Tombstone stays deleted, another quoted status starts over, and no quote removes it, as before.
+    const tombstone = { ...quote, quote: { type: "Tombstone", id: mine.uri } };
+    expect(await t.post(bob, update(bob, tombstone, "2026-10-11T12:31:00Z"))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ quoted_uri: mine.uri, state: "deleted" });
+    const moved = { ...quote, quote: other.uri, _misskey_quote: other.uri, quoteUri: other.uri };
+    expect(await t.post(bob, update(bob, moved, "2026-10-11T12:32:00Z"))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ quoted_uri: other.uri, state: "pending" });
+    const { quote: _q, _misskey_quote: _m, quoteUri: _u, ...plain } = quote;
+    expect(await t.post(bob, update(bob, plain as Note, "2026-10-11T12:33:00Z"))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toBeUndefined();
+    // A Tombstone of a local status that still exists, then a Note naming it: pending again, with its target.
+    const gone = { ...plain, quote: { type: "Tombstone", id: other.uri } };
+    expect(await t.post(bob, update(bob, gone, "2026-10-11T12:34:00Z"))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ quoted_uri: other.uri, state: "deleted" });
+    expect(await t.post(bob, update(bob, moved, "2026-10-11T12:35:00Z"))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ quoted_uri: other.uri, state: "pending" });
+    expect((await quoteOf(t, quote.id))?.quoted_status_id).not.toBeNull();
+  });
+
+  it("keeps a quote detached while its local status's removal runs deleted under any Update that names it", async () => {
+    const { t, bob, carol } = await world();
+    const mine = await localStatus(t, { status: "quotable", visibility: "public" });
+    const quote = quoting(bob, mine.uri, null);
+    expect(await t.post(bob, create(bob, quote))).toBe(202);
+    const deleted = await t.request(`/api/v1/statuses/${mine.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    expect(deleted.status).toBe(200);
+    expect(await sql(t.store, "SELECT withdrawn FROM statuses WHERE id = ?", mine.id)).toEqual([{ withdrawn: 1 }]);
+    // A batch of the removal detached the quote; the status row is still there, withdrawn.
+    await sql(
+      t.store,
+      `UPDATE quotes SET quoted_status_id = NULL, quoted_account_id = NULL, state = 'deleted', verify_after = NULL
+			WHERE quoted_status_id = ?`,
+      mine.id,
+    );
+    await keepsDetached(t, bob, carol, quote, mine.uri, "2026-10-11T12:30");
   });
 });
 
