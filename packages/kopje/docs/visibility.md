@@ -762,8 +762,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   availability are a function of the final decisions alone (the blocks, each account's suspension source), whatever
   the order of transitions and rounds, and every covered account it did not skip as individually suspended has its
   follows up to the last reset's bound severed. A skipped account that is converted later is severed by its own
-  account job (mode `domain`), so the follows of every covered account are severed only once all moderation jobs have
-  drained after the final decisions. Severing is monotone per follow generation (a follow row) and never reversed, as in
+  account job (mode `domain`), so the follows of every covered account that is not individually suspended, up to the
+  bounds of the jobs that reached it, are severed only once all moderation jobs have drained after the final decisions;
+  an individually suspended account's job keeps local accounts' follows of it. Severing is monotone per follow generation (a follow row) and never reversed, as in
   Mastodon: a generation severed while its account was covered stays severed after the block is lifted, so which
   generations were severed depends on the order of the decisions and the rounds. Every round reads at most `MARK_WINDOW`
   accounts or `CLEAR_ROUND` (500) suspended accounts, and `SEVER_ROUND` follows, and writes at most
