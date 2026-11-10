@@ -333,7 +333,7 @@ describe("record (recordRemoteMedia) under the fence", () => {
     // The first one's record comes after its reservation expired: its slot, claim and generation unchanged.
     w.clock.now += LATE_PUT_MS + 1;
     expect((await maintain(w)).counts.expired).toBeGreaterThanOrEqual(1);
-    const [slot] = (await w.slots()).filter((s) => s.id === expired.slot);
+    const [slot] = (await w.slots()).filter((s) => String(s.id) === expired.slot);
     expect(slot).toMatchObject({ claim: expired.claim, generation: expired.generation, url: expired.url });
     expect(await w.op(admitRemoteMedia, { ...fence(expired), hosts: ["files.example"] })).toEqual({ held: false });
     expect(await record(w, expired, stored())).toEqual({ held: false });
@@ -558,7 +558,7 @@ describe("maintenance (maintainRemoteMedia)", () => {
     ]);
     // Its still is missing: the object is doomed and the slot reset to pending.
     await w.op(recordRemoteMediaValidation, { results: [{ token: a!.token, missing: true }], now: w.clock.now });
-    expect((await w.slots()).find((s) => s.id === a!.slot)).toMatchObject({ token: null, due_at: w.clock.now });
+    expect((await w.slots()).find((s) => String(s.id) === a!.slot)).toMatchObject({ token: null, due_at: w.clock.now });
     const second = await maintain(w, restoredAt);
     expect(second.validation).toEqual([]);
     expect(await sql(w.t.store, "SELECT value FROM kopje_state WHERE name = 'remote_media_validated_at'")).toEqual([

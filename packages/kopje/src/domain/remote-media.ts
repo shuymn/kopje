@@ -42,6 +42,7 @@ import {
   hostMediaRejectedSql,
   suspendedSql,
 } from "./audience";
+import { isIntegerKey } from "./ids";
 import { hostCovered, hostMediaRejected } from "./instance-domain-blocks";
 import { writeOperation } from "./operation";
 
@@ -288,9 +289,9 @@ function doomObject(db: Db, token: string, now: number, immediate = false): void
 }
 
 // Dooms the live object of slot `id`, if any (at most one: remote_media_objects_slot is unique).
-function doomSlotObject(db: Db, id: number, now: number): void {
+function doomSlotObject(db: Db, id: string, now: number): void {
   const object = db.first<{ token: string }>(
-    `SELECT token FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_SLOT_INDEX} WHERE slot_id = ?1`,
+    `SELECT token FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_SLOT_INDEX} WHERE slot_id = CAST(?1 AS INTEGER)`,
     id,
   );
   if (object !== undefined) {
@@ -299,10 +300,10 @@ function doomSlotObject(db: Db, id: number, now: number): void {
 }
 
 // Deletes slot `id` and dooms its object; the pending count follows.
-function deleteSlot(db: Db, id: number, now: number): void {
+function deleteSlot(db: Db, id: string, now: number): void {
   doomSlotObject(db, id, now);
   const pending = db.first<{ due: number }>(
-    "DELETE FROM remote_media WHERE id = ?1 RETURNING due_at IS NOT NULL AS due",
+    "DELETE FROM remote_media WHERE id = CAST(?1 AS INTEGER) RETURNING due_at IS NOT NULL AS due",
     id,
   );
   if (pending?.due === 1) {
@@ -314,8 +315,11 @@ function deleteSlot(db: Db, id: number, now: number): void {
 // attempts, no failure, no object (its object doomed), enqueued and due now. The pending count changes by the
 // old-to-new pending-state delta: a slot already pending or claimed adds nothing. Applied only while it adds
 // nothing or the pending count is below REMOTE_MEDIA_PENDING_LIMIT; otherwise the slot is left as it was (false).
-function resetSlot(db: Db, id: number, url: string, host: string, now: number, category?: RemoteCategory): boolean {
-  const slot = db.first<{ due: number }>("SELECT due_at IS NOT NULL AS due FROM remote_media WHERE id = ?1", id);
+function resetSlot(db: Db, id: string, url: string, host: string, now: number, category?: RemoteCategory): boolean {
+  const slot = db.first<{ due: number }>(
+    "SELECT due_at IS NOT NULL AS due FROM remote_media WHERE id = CAST(?1 AS INTEGER)",
+    id,
+  );
   if (slot === undefined) {
     return false;
   }
@@ -327,7 +331,7 @@ function resetSlot(db: Db, id: number, url: string, host: string, now: number, c
     `UPDATE remote_media SET url = ?2, host = ?3, generation = min(generation + 1, ${SAFE_INTEGER_MAX}), attempts = 0,
 			failed_at = NULL, enqueued_at = ?4, due_at = ?4, token = NULL, ext = NULL, still_ext = NULL, stored_at = NULL,
 			category = coalesce(?5, category)
-		WHERE id = ?1`,
+		WHERE id = CAST(?1 AS INTEGER)`,
     id,
     url,
     host,
@@ -365,7 +369,7 @@ function slotUrl(db: Db, value: string | null, own: string): { url: string; host
   return stored?.past === 0 ? { url: value, host } : null;
 }
 
-type SlotRow = { id: number; url: string; failed_at: number | null };
+type SlotRow = { id: string; url: string; failed_at: number | null };
 
 // Inserts a pending slot of `kind` for `owner` (an account, or an attachment row of `account`) with `url`, due at
 // `due`, while the pending count is below REMOTE_MEDIA_PENDING_LIMIT: an attachment's file in lane 1, the rest lane 0.
@@ -429,7 +433,7 @@ export function syncProfileFiles(
   }
   for (const kind of ["avatar", "header"] as const) {
     const slot = db.first<SlotRow>(
-      `SELECT id, url, failed_at FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX}
+      `SELECT CAST(id AS TEXT) AS id, url, failed_at FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX}
 			WHERE owner_id = ?1 AND kind = ?2`,
       accountId,
       kind,
@@ -492,7 +496,7 @@ export function syncAttachmentFiles(db: Db, mediaId: string, now: number, due = 
   const category = remoteMediaCategory(row.type);
   for (const kind of ["attachment", "thumbnail"] as const) {
     const slot = db.first<SlotRow & { category: string }>(
-      `SELECT id, url, failed_at, category FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX}
+      `SELECT CAST(id AS TEXT) AS id, url, failed_at, category FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX}
 			WHERE owner_id = ?1 AND kind = ?2`,
       mediaId,
       kind,
@@ -525,8 +529,8 @@ export function syncAttachmentFiles(db: Db, mediaId: string, now: number, due = 
 // Deletes the slots of the remote attachment row `mediaId` and dooms their objects (writeMedia, before the row it drops
 // is deleted): at most 2 slots, 2 objects and the usage row.
 export function dropAttachmentFiles(db: Db, mediaId: string, now: number): void {
-  for (const { id } of db.all<{ id: number }>(
-    `SELECT id FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX} WHERE owner_id = ?1 AND kind IN ('attachment', 'thumbnail')`,
+  for (const { id } of db.all<{ id: string }>(
+    `SELECT CAST(id AS TEXT) AS id FROM remote_media INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX} WHERE owner_id = ?1 AND kind IN ('attachment', 'thumbnail')`,
     mediaId,
   )) {
     deleteSlot(db, id, now);
@@ -552,8 +556,8 @@ export function retireStatusMediaSlots(db: Db, statusId: string, budget: { left(
   if (local !== undefined) {
     return;
   }
-  const slots = db.all<{ id: number }>(
-    `SELECT r.id FROM (${statusMediaWindowSql("?1")}) w
+  const slots = db.all<{ id: string }>(
+    `SELECT CAST(r.id AS TEXT) AS id FROM (${statusMediaWindowSql("?1")}) w
 		CROSS JOIN remote_media r INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX} ON r.owner_id = w.id
 		WHERE w.file_token IS NULL AND r.kind IN ('attachment', 'thumbnail') LIMIT ?2`,
     statusId,
@@ -599,8 +603,8 @@ export function noteEmojiSnapshot(
     if (target === null || hostCovered(db, target.host)) {
       continue;
     }
-    const slot = db.first<{ id: number; failed_at: number | null; seen_at: number | null }>(
-      `SELECT id, failed_at, seen_at FROM remote_media INDEXED BY ${REMOTE_MEDIA_EMOJI_INDEX}
+    const slot = db.first<{ id: string; failed_at: number | null; seen_at: number | null }>(
+      `SELECT CAST(id AS TEXT) AS id, failed_at, seen_at FROM remote_media INDEXED BY ${REMOTE_MEDIA_EMOJI_INDEX}
 			WHERE kind = 'emoji' AND domain = ?1 AND url = ?2`,
       domain,
       target.url,
@@ -622,7 +626,7 @@ export function noteEmojiSnapshot(
       continue;
     }
     if (slot.seen_at === null || slot.seen_at < now - EMOJI_SEEN_STEP_MS) {
-      db.run("UPDATE remote_media SET seen_at = ?2 WHERE id = ?1", slot.id, now);
+      db.run("UPDATE remote_media SET seen_at = ?2 WHERE id = CAST(?1 AS INTEGER)", slot.id, now);
     }
     if (slot.failed_at !== null && slot.failed_at < now - FAILED_RESET_MS) {
       resetSlot(db, slot.id, target.url, target.host, now);
@@ -656,8 +660,8 @@ export function retireAccountSlots(
   now: number,
 ): "done" | "more" {
   for (;;) {
-    const slot = db.first<{ id: number }>(
-      `SELECT id FROM remote_media INDEXED BY ${REMOTE_MEDIA_ACCOUNT_INDEX} WHERE account_id = ?1 LIMIT 1`,
+    const slot = db.first<{ id: string }>(
+      `SELECT CAST(id AS TEXT) AS id FROM remote_media INDEXED BY ${REMOTE_MEDIA_ACCOUNT_INDEX} WHERE account_id = ?1 LIMIT 1`,
       accountId,
     );
     if (slot === undefined) {
@@ -673,7 +677,7 @@ export function retireAccountSlots(
 // ---- Claim
 
 export type RemoteMediaClaim = {
-  slot: number;
+  slot: string;
   claim: number;
   generation: number;
   token: string;
@@ -692,7 +696,7 @@ export type RemoteMediaClaims = {
 };
 
 type Walked = {
-  id: number;
+  id: string;
   kind: string;
   category: string;
   url: string;
@@ -718,13 +722,17 @@ export const claimRemoteMedia = writeOperation<
     return out;
   }
   out.domain = domain;
-  const expired = db.all<{ id: number }>(
-    `SELECT id FROM remote_media INDEXED BY ${REMOTE_MEDIA_EXPIRY_INDEX}
+  const expired = db.all<{ id: string }>(
+    `SELECT CAST(id AS TEXT) AS id FROM remote_media INDEXED BY ${REMOTE_MEDIA_EXPIRY_INDEX}
 		WHERE due_at IS NOT NULL AND enqueued_at < ?1 ORDER BY enqueued_at LIMIT ${EXPIRE_BATCH}`,
     now - EXPIRE_PENDING_MS,
   );
   for (const { id } of expired) {
-    const held = db.first("SELECT 1 AS x FROM remote_media WHERE id = ?1 AND attempts > 0 AND due_at > ?2", id, now);
+    const held = db.first(
+      "SELECT 1 AS x FROM remote_media WHERE id = CAST(?1 AS INTEGER) AND attempts > 0 AND due_at > ?2",
+      id,
+      now,
+    );
     if (held === undefined) {
       deleteSlot(db, id, now);
       out.expired++;
@@ -749,7 +757,8 @@ export const claimRemoteMedia = writeOperation<
     const tokensOfLane = given.slice(0, most);
     let claimed = 0;
     const walk = db.all<Walked>(
-      `SELECT r.id, r.kind, r.category, r.url, r.claim, r.generation, r.attempts, ${slotEligibleSql("r")}
+      `SELECT CAST(r.id AS TEXT) AS id, r.kind, r.category, r.url, r.claim, r.generation, r.attempts,
+				${slotEligibleSql("r")}
 				AND (r.kind NOT IN ('attachment', 'thumbnail') OR coalesce((SELECT rm.created_at >= ?3
 					FROM media_attachments rm INDEXED BY ${MEDIA_ID_INDEX} WHERE rm.id = r.owner_id), 0)) AS eligible
 			FROM (SELECT id FROM remote_media INDEXED BY ${REMOTE_MEDIA_DUE_INDEX} WHERE lane = ?2 AND due_at <= ?1
@@ -775,7 +784,7 @@ export const claimRemoteMedia = writeOperation<
         continue;
       }
       if (bytes + reservation > limit) {
-        db.run("UPDATE remote_media SET due_at = ?2 WHERE id = ?1", row.id, now + DEFER_MS);
+        db.run("UPDATE remote_media SET due_at = ?2 WHERE id = CAST(?1 AS INTEGER)", row.id, now + DEFER_MS);
         out.deferred++;
         continue;
       }
@@ -790,7 +799,7 @@ export const claimRemoteMedia = writeOperation<
       doomSlotObject(db, row.id, now);
       db.run(
         `INSERT INTO remote_media_objects (token, slot_id, state, charge, kind, claimed_at)
-				VALUES (?1, ?2, 'reserved', ?3, ?4, ?5)`,
+				VALUES (?1, CAST(?2 AS INTEGER), 'reserved', ?3, ?4, ?5)`,
         token,
         row.id,
         reservation,
@@ -800,7 +809,7 @@ export const claimRemoteMedia = writeOperation<
       chargeObject(db, token, { bytes: reservation });
       bytes += reservation;
       db.run(
-        "UPDATE remote_media SET claim = claim + 1, attempts = attempts + 1, due_at = ?2 WHERE id = ?1",
+        "UPDATE remote_media SET claim = claim + 1, attempts = attempts + 1, due_at = ?2 WHERE id = CAST(?1 AS INTEGER)",
         row.id,
         now + REMOTE_MEDIA_HOLD_MS,
       );
@@ -825,18 +834,19 @@ export const claimRemoteMedia = writeOperation<
 
 // ---- The fence, admission and record
 
-export type RemoteMediaFence = { slot: number; claim: number; generation: number; token: string };
+export type RemoteMediaFence = { slot: string; claim: number; generation: number; token: string };
 
 // The claim `fence` names is still open and the slot eligible: the token reserved for the slot, the slot's claim and
 // generation, slotEligibleSql.
 const FENCE = `SELECT 1 AS x FROM remote_media r
 	CROSS JOIN remote_media_objects o ON o.token = ?4 AND o.slot_id = r.id AND o.state = 'reserved'
-	WHERE r.id = ?1 AND r.claim = ?2 AND r.generation = ?3 AND r.due_at IS NOT NULL AND ${slotEligibleSql("r")}`;
+	WHERE r.id = CAST(?1 AS INTEGER) AND r.claim = ?2 AND r.generation = ?3 AND r.due_at IS NOT NULL AND ${slotEligibleSql("r")}`;
 
 function fenced(db: Db, fence: RemoteMediaFence): boolean {
   const { slot, claim, generation, token } = fence;
   return (
-    isTime(slot) &&
+    typeof slot === "string" &&
+    isIntegerKey(slot) &&
     isTime(claim) &&
     isTime(generation) &&
     typeof token === "string" &&
@@ -878,14 +888,14 @@ const EXTENSIONS: Readonly<Record<string, string>> = REMOTE_MEDIA_TYPES;
 
 // Moves the slot `id` after a failed attempt `attempts` (1 to REMOTE_MEDIA_MAX_ATTEMPTS): permanent or the last
 // attempt fails it for good (due_at NULL, failed_at set), otherwise it is due again after RETRY_DELAYS_MS.
-function failSlot(db: Db, id: number, attempts: number, permanent: boolean, now: number): void {
+function failSlot(db: Db, id: string, attempts: number, permanent: boolean, now: number): void {
   const delay = RETRY_DELAYS_MS[attempts - 1];
   if (permanent || delay === undefined || attempts >= REMOTE_MEDIA_MAX_ATTEMPTS) {
-    db.run("UPDATE remote_media SET due_at = NULL, failed_at = ?2 WHERE id = ?1", id, now);
+    db.run("UPDATE remote_media SET due_at = NULL, failed_at = ?2 WHERE id = CAST(?1 AS INTEGER)", id, now);
     addUsage(db, { pending: -1 });
     return;
   }
-  db.run("UPDATE remote_media SET due_at = ?2 WHERE id = ?1", id, now + delay);
+  db.run("UPDATE remote_media SET due_at = ?2 WHERE id = CAST(?1 AS INTEGER)", id, now + delay);
 }
 
 // The outcome of one claim. Out of the fence (another claim, a reset, an ineligible slot, a covered host, another
@@ -906,10 +916,13 @@ export const recordRemoteMedia = writeOperation<
   if (!isTime(now) || typeof token !== "string") {
     return { held: false };
   }
-  const row = db.first<{ attempts: number; category: string }>(
-    "SELECT attempts, category FROM remote_media WHERE id = ?1",
-    slot,
-  );
+  const row =
+    typeof slot === "string" && isIntegerKey(slot)
+      ? db.first<{ attempts: number; category: string }>(
+          "SELECT attempts, category FROM remote_media WHERE id = CAST(?1 AS INTEGER)",
+          slot,
+        )
+      : undefined;
   const stored =
     outcome.kind === "stored" &&
     row !== undefined &&
@@ -940,7 +953,7 @@ export const recordRemoteMedia = writeOperation<
     chargeObject(db, token, { bytes: actual - object.charge, pending: -1 });
     db.run(
       `UPDATE remote_media SET token = ?2, ext = ?3, still_ext = ?4, stored_at = ?5, due_at = NULL, failed_at = NULL,
-				attempts = 0 WHERE id = ?1`,
+				attempts = 0 WHERE id = CAST(?1 AS INTEGER)`,
       slot,
       token,
       EXTENSIONS[outcome.contentType] ?? null,
@@ -951,7 +964,11 @@ export const recordRemoteMedia = writeOperation<
   }
   doomObject(db, token, now);
   if (outcome.kind === "unattempted") {
-    db.run("UPDATE remote_media SET attempts = max(attempts - 1, 0), due_at = ?2 WHERE id = ?1", slot, now);
+    db.run(
+      "UPDATE remote_media SET attempts = max(attempts - 1, 0), due_at = ?2 WHERE id = CAST(?1 AS INTEGER)",
+      slot,
+      now,
+    );
   } else {
     // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- unchecked RPC input
     failSlot(db, slot, row.attempts, outcome.kind === "failed" && outcome.permanent === true, now);
@@ -1020,12 +1037,12 @@ function dueDeletions(db: Db, now: number): RemoteMediaDeletion[][] {
 // The validity walk: at most VALIDITY_WALK slots from the cursor by id (wrapping), each that fails slotEligibleSql, or
 // an emoji no snapshot named within EMOJI_UNSEEN_MS, deleted and its object doomed. Returns the slots retired.
 function validityWalk(db: Db, now: number): number {
-  const cursor = Number(state(db, STATE.walk) ?? "0");
-  const from = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
-  const rows = db.all<{ id: number; eligible: number }>(
-    `SELECT r.id, ${slotEligibleSql("r")}
+  const cursor = state(db, STATE.walk) ?? "0";
+  const from = isIntegerKey(cursor) ? cursor : "0";
+  const rows = db.all<{ id: string; eligible: number }>(
+    `SELECT CAST(r.id AS TEXT) AS id, ${slotEligibleSql("r")}
 			AND (r.kind <> 'emoji' OR coalesce(r.seen_at, r.enqueued_at) >= ?2) AS eligible
-		FROM (SELECT id FROM remote_media WHERE id > ?1 ORDER BY id LIMIT ${VALIDITY_WALK}) w
+		FROM (SELECT id FROM remote_media WHERE id > CAST(?1 AS INTEGER) ORDER BY id LIMIT ${VALIDITY_WALK}) w
 		CROSS JOIN remote_media r ON r.id = w.id`,
     from,
     now - EMOJI_UNSEEN_MS,
@@ -1037,7 +1054,7 @@ function validityWalk(db: Db, now: number): number {
       retired++;
     }
   }
-  setState(db, STATE.walk, rows.length < VALIDITY_WALK ? "0" : String(rows.at(-1)?.id ?? 0));
+  setState(db, STATE.walk, rows.length < VALIDITY_WALK ? "0" : (rows.at(-1)?.id ?? "0"));
   return retired;
 }
 
@@ -1056,8 +1073,8 @@ function suspendedWalk(db: Db, now: number): number {
   let last = cursor;
   let whole = true;
   for (const { id } of accounts) {
-    const slots = db.all<{ id: number }>(
-      `SELECT id FROM remote_media INDEXED BY ${REMOTE_MEDIA_ACCOUNT_INDEX} WHERE account_id = ?1 LIMIT ?2`,
+    const slots = db.all<{ id: string }>(
+      `SELECT CAST(id AS TEXT) AS id FROM remote_media INDEXED BY ${REMOTE_MEDIA_ACCOUNT_INDEX} WHERE account_id = ?1 LIMIT ?2`,
       id,
       SUSPENDED_SLOTS - retired + 1,
     );
@@ -1100,8 +1117,8 @@ function retentionWalk(db: Db, now: number, days: number): number {
     return 0;
   }
   const rows = ["attachment", "thumbnail"].flatMap((kind) =>
-    db.all<{ slot_id: number | null }>(
-      `SELECT slot_id FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_STORED_INDEX}
+    db.all<{ slot_id: string | null }>(
+      `SELECT CAST(slot_id AS TEXT) AS slot_id FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_STORED_INDEX}
 			WHERE state = 'stored' AND kind = ?1 AND stored_at < ?2 ORDER BY kind, stored_at LIMIT ${RETENTION_BATCH / 2}`,
       kind,
       now - days * DAY_MS,
@@ -1153,8 +1170,8 @@ function reclaim(db: Db, cap: number, now: number): number {
   const target = Math.min(0.9 * cap, cap - LANE1_HEADROOM);
   for (const kind of RECLAIM_ORDER) {
     while (victims < RECLAIM_VICTIMS && projected + need > target) {
-      const rows = db.all<{ token: string; slot_id: number | null; charge: number }>(
-        `SELECT token, slot_id, charge FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_STORED_INDEX}
+      const rows = db.all<{ token: string; slot_id: string | null; charge: number }>(
+        `SELECT token, CAST(slot_id AS TEXT) AS slot_id, charge FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_STORED_INDEX}
 				WHERE kind = ?1 AND state = 'stored' ORDER BY stored_at LIMIT ?2`,
         kind,
         Math.min(50, RECLAIM_VICTIMS - victims),
@@ -1576,15 +1593,15 @@ export const recordRemoteMediaValidation = writeOperation<
   let last = progress.cursor;
   let failures = { token: progress.failedToken, count: progress.failures };
   const missing = (token: string) => {
-    const slot = db.first<{ id: number; url: string; host: string }>(
-      `SELECT r.id, r.url, r.host FROM remote_media_objects o CROSS JOIN remote_media r ON r.id = o.slot_id
+    const slot = db.first<{ id: string; url: string; host: string }>(
+      `SELECT CAST(r.id AS TEXT) AS id, r.url, r.host FROM remote_media_objects o CROSS JOIN remote_media r ON r.id = o.slot_id
 			WHERE o.token = ?1 AND o.state = 'stored'`,
       token,
     );
     doomObject(db, token, now);
     if (slot !== undefined && !resetSlot(db, slot.id, slot.url, slot.host, now)) {
       db.run(
-        "UPDATE remote_media SET token = NULL, ext = NULL, still_ext = NULL, stored_at = NULL, failed_at = ?2 WHERE id = ?1",
+        "UPDATE remote_media SET token = NULL, ext = NULL, still_ext = NULL, stored_at = NULL, failed_at = ?2 WHERE id = CAST(?1 AS INTEGER)",
         slot.id,
         now,
       );

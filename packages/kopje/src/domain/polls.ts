@@ -6,6 +6,7 @@ import { type Present, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
 import { mayVoteSql, viewableStatusId } from "./audience";
 import { optionalUserReadOperation, userWriteOperation } from "./auth";
+import { requireExactIncrement } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
 import { type Poll, presentPoll, hasEnded } from "./poll-presenter";
@@ -152,15 +153,16 @@ function resetPoll(db: Db, statusId: string, removed: boolean): void {
   // The 'poll' notifications of the poll it replaces go with it (Mastodon destroys a poll's notifications with the
   // poll), so the next poll's end notifies again; at most one per local account.
   db.run("DELETE FROM notifications WHERE status_id = ? AND type = 'poll'", statusId);
-  db.run(
+  const row = db.first<{ exact: number }>(
     `UPDATE polls SET generation = generation + 1, stale = 1, removed = ?2, votes_count = 0,
 			voters_count = CASE WHEN voters_count IS NULL THEN NULL ELSE 0 END,
 			tallies = (SELECT json_group_array(0) FROM json_each(polls.tallies)), update_due_at = NULL,
 			ended = CASE WHEN ?2 THEN 1 ELSE 0 END
-		WHERE status_id = ?1`,
+		WHERE status_id = ?1 RETURNING typeof(generation) = 'integer' AS exact`,
     statusId,
     removed ? 1 : 0,
   );
+  requireExactIncrement(row?.exact ?? 1, "a poll's generation");
 }
 
 // The live poll of a status (not removed), with what a change of it compares.
@@ -215,8 +217,8 @@ export function editPoll(db: Db, statusId: string, poll: PollInput | null, now: 
 // poll's (poll, generation) index; a poll with none left is no longer stale. How many votes it deleted.
 export function sweepStaleVotes(db: Db, limit: number): number {
   let left = limit;
-  const polls = db.all<{ status_id: string; generation: number }>(
-    "SELECT status_id, generation FROM polls WHERE stale = 1 ORDER BY status_id LIMIT ?",
+  const polls = db.all<{ status_id: string; generation: string }>(
+    "SELECT status_id, CAST(generation AS TEXT) AS generation FROM polls WHERE stale = 1 ORDER BY status_id LIMIT ?",
     POLL_ROUND,
   );
   for (const poll of polls) {
@@ -227,7 +229,7 @@ export function sweepStaleVotes(db: Db, limit: number): number {
       db,
       {
         ids: `SELECT CAST(id AS TEXT) AS id FROM poll_votes INDEXED BY ${POLL_VOTES_KEY_INDEX}
-					WHERE poll_id = ?1 AND generation < ?2 LIMIT ?3`,
+					WHERE poll_id = ?1 AND generation < CAST(?2 AS INTEGER) LIMIT ?3`,
         each: "DELETE FROM poll_votes WHERE id = CAST(?1 AS INTEGER)",
       },
       poll.status_id,
@@ -236,7 +238,7 @@ export function sweepStaleVotes(db: Db, limit: number): number {
     );
     if (
       db.first(
-        `SELECT 1 AS x FROM poll_votes INDEXED BY ${POLL_VOTES_KEY_INDEX} WHERE poll_id = ? AND generation < ? LIMIT 1`,
+        `SELECT 1 AS x FROM poll_votes INDEXED BY ${POLL_VOTES_KEY_INDEX} WHERE poll_id = ? AND generation < CAST(? AS INTEGER) LIMIT 1`,
         poll.status_id,
         poll.generation,
       ) === undefined
@@ -295,7 +297,8 @@ type VotedPoll = {
   hide_totals: number;
   expires_at: string | null;
   ended: number;
-  generation: number;
+  // As TEXT, bound back with CAST (DATA-6).
+  generation: string;
   cut_options: number[];
 };
 
@@ -381,7 +384,7 @@ function updateSoon(db: Db, poll: VotedPoll, now: number): void {
 function votedPoll(db: Db, pollId: string): VotedPoll | undefined {
   const row = db.first<Omit<VotedPoll, "options" | "cut_options"> & { options: string; cut_options: string }>(
     `SELECT p.status_id, s.uri AS status_uri, s.account_id AS author_id, a.uri AS author_uri, a.domain IS NULL AS local,
-			p.options, p.multiple, p.hide_totals, p.expires_at, p.ended, p.generation, p.cut_options
+			p.options, p.multiple, p.hide_totals, p.expires_at, p.ended, CAST(p.generation AS TEXT) AS generation, p.cut_options
 		FROM polls p JOIN statuses s ON s.id = p.status_id JOIN accounts a ON a.id = s.account_id
 		WHERE p.status_id = ? AND p.removed = 0`,
     pollId,
@@ -421,7 +424,7 @@ export const vote = userWriteOperation<{ id: string; choices: string[]; now: num
     const now = iso(input.now);
     const before = db
       .all<{ choice: number }>(
-        "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = ? AND account_id = ?",
+        "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = CAST(? AS INTEGER) AND account_id = ?",
         pollId,
         poll.generation,
         accountId,
@@ -480,7 +483,7 @@ export function receiveVote(db: Db, input: RemoteVote): boolean {
   }
   const votes = db
     .all<{ choice: number }>(
-      "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = ? AND account_id = ?",
+      "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = CAST(? AS INTEGER) AND account_id = ?",
       poll.status_id,
       poll.generation,
       input.voterId,

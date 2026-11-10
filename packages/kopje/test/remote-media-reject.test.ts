@@ -314,7 +314,7 @@ describe("reject_media (R38) in the remote media cache", () => {
       const capture = async () => {
         const { result, plans } = await plannedRun(
           w.t,
-          /FROM remote_media WHERE id > \?1 ORDER BY id/,
+          /FROM remote_media WHERE id > CAST\(\?1 AS INTEGER\) ORDER BY id/,
           maintainRemoteMedia,
           { now: w.clock.now, restoredAt: null, cap: CAP },
           true,
