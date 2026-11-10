@@ -8,6 +8,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- A status posted or edited through a host other than the instance domain (such as the Worker's `workers.dev` address)
+  now links its mentions and hashtags on the instance's origin, as a scheduled post already did. Before, the stored
+  content, its edit history and the `Create` or `Update` sent to other servers linked to the host the request reached,
+  and the length check judged other content than what was stored. The `Add` and `Remove` sent when a hashtag is
+  featured or unfeatured now carry the instance's origin too. Content stored before this release keeps its links until
+  it is edited. No migration, no `wrangler.jsonc` change.
+
 ## [0.2.1] - 2026-11-03
 
 A patch release, published under the npm dist-tag `latest`: fixes to follows, and dependencies moved past published

@@ -114,7 +114,6 @@ export const deleteFeaturedTag: ApiHandler = async (c, deps) => {
     credential: userCredential(c, deps),
     id: c.req.param("id") ?? "",
     now: deps.now(),
-    origin: present(c).origin,
   };
   const deleted = authorized(await storeCall(c, deps, (s, b) => s.deleteFeaturedTag(b, input)));
   return deleted ? c.json({}) : NOT_FOUND();

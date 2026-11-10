@@ -253,12 +253,10 @@ export const unfollowTag = tagWrite((db, accountId, { tag }) => {
 
 // POST /api/v1/tags/:id/feature and /unfeature (CreateFeaturedTagService, RemoveFeaturedTagService with a tag). A
 // hashtag featured this way is shown under its normalized name.
-export const featureTagOperation = tagWrite((db, accountId, { tag, now, present }) =>
-  featureTag(db, accountId, tag, now, present.origin),
-);
+export const featureTagOperation = tagWrite((db, accountId, { tag, now }) => featureTag(db, accountId, tag, now));
 
-export const unfeatureTagOperation = tagWrite((db, accountId, { tag, now, present }) => {
-  unfeatureTag(db, accountId, tag, now, present.origin);
+export const unfeatureTagOperation = tagWrite((db, accountId, { tag, now }) => {
+  unfeatureTag(db, accountId, tag, now);
   return { status: "ok" };
 });
 

@@ -892,6 +892,54 @@ describe("outbound intents", () => {
     expect(activities[1]?.activity).toMatchObject({ type: "Like", object: "https://remote.example/n/1" });
     expect(activities[2]?.activity).toMatchObject({ type: "Announce", object: "https://remote.example/n/1" });
   });
+
+  // Content and activities are stored and federated, so their links are on the author's origin whatever host the
+  // request reached (ID-5); only the API answer is built on the request's (issue 1401).
+  it("stores and federates links on the author's origin when the request reaches another host (ID-5)", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice } = h.users;
+    await remoteFollows(h.store, await remoteAccount(h.store, "fan", "fans.example"), alice.id);
+    const other = (path: string, init: RequestInit) => h.send(new Request(`https://other.workers.dev${path}`, init));
+    const posted = await other(
+      "/api/v1/statuses",
+      bearer(alice.token, json({ status: "@bob #Cats", visibility: "public" })),
+    );
+    expect(posted.status).toBe(200);
+    const { id } = await posted.json<Status>();
+    await createsInFlight(h.store);
+    h.now.mockReturnValue(NOW + 1000);
+    const edit = { status: "@bob #Dogs" };
+    expect((await other(`/api/v1/statuses/${id}`, bearer(alice.token, json(edit, { method: "PUT" })))).status).toBe(
+      200,
+    );
+    expect((await other("/api/v1/tags/birds/feature", bearer(alice.token, json({})))).status).toBe(200);
+    expect((await other("/api/v1/tags/birds/unfeature", bearer(alice.token, json({})))).status).toBe(200);
+    expect((await other("/api/v1/featured_tags", bearer(alice.token, json({ name: "fish" })))).status).toBe(200);
+    const [fish] = (await getJson<{ id: string }[]>(h, "/api/v1/featured_tags", alice.token)).body;
+    const removed = await other(`/api/v1/featured_tags/${fish?.id ?? ""}`, bearer(alice.token, { method: "DELETE" }));
+    expect(removed.status).toBe(200);
+
+    const content = (tag: string) =>
+      `<p><span class="h-card"><a href="https://kopje.test/@bob" class="u-url mention">@<span>bob</span></a></span> <a href="https://kopje.test/tags/${tag.toLowerCase()}" class="mention hashtag" rel="tag">#<span>${tag}</span></a></p>`;
+    expect(await sql(h.store, "SELECT content FROM statuses WHERE id = ?", id)).toEqual([{ content: content("Dogs") }]);
+    expect(await sql(h.store, "SELECT content FROM status_edits WHERE status_id = ? ORDER BY id", id)).toEqual([
+      { content: content("Cats") },
+      { content: content("Dogs") },
+    ]);
+    const activities = (await outbound(h.store)).map(({ activity }) => activity);
+    expect(activities.map((a) => a.type)).toEqual(["Create", "Update", "Update", "Add", "Remove", "Add", "Remove"]);
+    expect(activities.slice(0, 2).map((a) => (a.object as { content: string }).content)).toEqual([
+      content("Cats"),
+      content("Dogs"),
+    ]);
+    expect(activities.slice(3).map((a) => (a.object as { href: string }).href)).toEqual([
+      "https://kopje.test/@alice/tagged/birds",
+      "https://kopje.test/@alice/tagged/birds",
+      "https://kopje.test/@alice/tagged/fish",
+      "https://kopje.test/@alice/tagged/fish",
+    ]);
+    expect(JSON.stringify(activities)).not.toContain("other.workers.dev");
+  });
 });
 
 describe("review regressions", () => {

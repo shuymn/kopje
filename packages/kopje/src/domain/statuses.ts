@@ -234,9 +234,10 @@ type Composed = {
 type QuoteLink = { url: string; uri: string };
 
 // `quoted`: the status the post quotes, while it is there (fallback line: status-text.ts quoteFallbackHtml, linksAny).
-function compose(db: Db, text: string, author: Author, origin: string, quoted: QuoteLink | null = null): Composed {
+// Links are on the author's origin, never the request's: the content is stored and federated (ID-5).
+function compose(db: Db, text: string, author: Author, quoted: QuoteLink | null = null): Composed {
   const parsed = parseStatusText(text);
-  const localHost = new URL(author.uri).host;
+  const { host: localHost, origin } = new URL(author.uri);
   const resolved = resolveMentions(db, parsed.mentions, localHost, author.id);
   const rendered = renderStatusHtml(parsed.segments, {
     mention: (ref) => {
@@ -499,8 +500,7 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
   if (text.trim() === "" && media.length === 0 && quoted === null) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
-  const origin = new URL(author.uri).origin;
-  const composed = compose(db, text, author, origin, quoted === null ? null : quoteLink(db, quoted.id));
+  const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
   if (exceedsStatusBounds(composed.content, spoilerText)) {
     return { status: "invalid", error: TOO_LONG };
   }
@@ -574,7 +574,6 @@ export function writePost(
   input: PostInput & {
     idempotencyKey?: string | undefined;
     objectId: string;
-    origin: string;
     applicationId: string | null;
   },
   { author, parent, media, visibility, quoted }: PreparedPost,
@@ -582,7 +581,7 @@ export function writePost(
   const origin = new URL(author.uri).origin;
   const text = storedText(input.text);
   const spoilerText = storedText(input.spoilerText);
-  const composed = compose(db, text, author, input.origin, quoted === null ? null : quoteLink(db, quoted.id));
+  const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
   const sensitive = (input.sensitive ?? author.default_sensitive === 1) || spoilerText !== "";
   const language = input.language ?? author.default_language;
   const quotePolicy = storedQuotePolicy(input.quotePolicy ?? author.default_quote_policy, visibility);
@@ -747,7 +746,7 @@ export function postNow(
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, input.present);
   }
-  const id = writePost(db, accountId, { ...input, origin: input.present.origin, applicationId }, prepared);
+  const id = writePost(db, accountId, { ...input, applicationId }, prepared);
   const status = presentOwn(db, accountId, id, { ...input.present, viewer });
   if (status === null) {
     throw new Error("created status cannot be presented");
@@ -998,7 +997,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   }
   const author = localAuthor(db, accountId);
   const quotedId = quote?.quotedStatusId ?? null;
-  const composed = compose(db, text, author, input.present.origin, quotedId === null ? null : quoteLink(db, quotedId));
+  const composed = compose(db, text, author, quotedId === null ? null : quoteLink(db, quotedId));
   if (exceedsStatusBounds(composed.content, spoilerText)) {
     return { status: "invalid", error: TOO_LONG };
   }
