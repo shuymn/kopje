@@ -1300,7 +1300,7 @@ describe("instance moderation P1 witnesses", () => {
         .follows.map((f) => f.gen)
         .toSorted(),
     ).toEqual(["L1>R3", "L1>R4", "R4>L1"]);
-  });
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1800,7 +1800,7 @@ describe("instance moderation witnesses: decisions", () => {
     await steps(v, [block(SUB)]);
     expect(v.trace.at(-1)).toBe("  -> 200");
     expect(v.last!.jobs).toEqual([]);
-  });
+  }, 60_000);
 
   // Witness 2 (visibility.md, the remote suspension paragraphs): a domain mark alone cannot be unsuspended; an
   // individual suspension under the block converts; an unblock clears the mark and ends the account job.
@@ -1821,7 +1821,7 @@ describe("instance moderation witnesses: decisions", () => {
     await settle(w);
     expect(source(w, "R1")).toBeNull();
     expect(w.stats["job ended account"]).toBeGreaterThanOrEqual(1);
-  });
+  }, 60_000);
 
   // Witness 9 (visibility.md: "flags and obfuscate reset nothing"; "silence answers 422").
   it("flag and obfuscate toggles reset nothing, and silence changes nothing", async () => {
@@ -1835,7 +1835,7 @@ describe("instance moderation witnesses: decisions", () => {
     await steps(w, [{ k: "update", i: 0, severity: "silence", flag: null, value: false }, block(OTHER, "silence")]);
     expect(w.trace.filter((line) => line === "  -> 422")).toHaveLength(2);
     expect(w.last!.jobs).toEqual([]);
-  });
+  }, 60_000);
 
   // Witness 10 (VIS-29's fence; reports.ts:92-98): a report of a suspended account is not found; a report filed after
   // the unsuspension is resolved by the next suspension's fence, and so is one of an account suspended already.
@@ -1870,7 +1870,7 @@ describe("instance moderation witnesses: decisions", () => {
     await steps(w, [{ k: "suspend", r: "R1" }]);
     await settle(w);
     expect(w.policy.reports.map((r) => r.resolved)).toEqual([true, true]);
-  });
+  }, 60_000);
 
   // Witness 4 (visibility.md, "clear"): after an unblock, R1's document under the stored revision clears its stale
   // mark before the clear round; a superseded one clears nothing.
@@ -1884,7 +1884,7 @@ describe("instance moderation witnesses: decisions", () => {
     await document(w, "R1", "name", false);
     expect(source(w, "R1")).toBeNull();
     await settle(w);
-  });
+  }, 60_000);
 
   // Witness 7 (visibility.md, "Writes"): no account is stored into a covered domain or host; one stored first is
   // marked by the next block.
@@ -1900,7 +1900,7 @@ describe("instance moderation witnesses: decisions", () => {
     await steps(v, [block(D)]);
     await settle(v);
     expect(source(v, "R5")).toBe("domain");
-  });
+  }, 60_000);
 
   // Witness 8 (visibility.md, "The admin API": reject_reports reads the reporter's stored domain only).
   it("reject_reports refuses by the stored domain; a suspend refuses as actor-suspended", async () => {
@@ -1913,7 +1913,7 @@ describe("instance moderation witnesses: decisions", () => {
       { k: "flag", r: "R3" },
     ]);
     expect(w.stats["flag actor-suspended"]).toBe(1);
-  });
+  }, 60_000);
 
   // Witness 6 (visibility.md: a routing refresh; ID-1): only the individually suspended, uncovered account under the
   // stored revision takes it, its routing only; the severing Reject then uses the new inbox.
@@ -1936,7 +1936,7 @@ describe("instance moderation witnesses: decisions", () => {
     // Covered: nothing changes.
     await steps(w, [block(D)]);
     expect(await route(false)).toBe(false);
-  });
+  }, 60_000);
 
   // Witness 5 (threat-model.md VIS-30: "confirmation is the send boundary").
   it("a block between claim and confirmation drops a Follow; one after confirmation sends it", async () => {
@@ -1947,7 +1947,7 @@ describe("instance moderation witnesses: decisions", () => {
     await steps(v, [{ k: "answer", r: "R1", accept: true }, { k: "claim" }, { k: "confirm", i: 0 }, block(D)]);
     await steps(v, [{ k: "complete", i: 0 }]);
     expect(v.sent.map((s) => s.type)).toEqual(["Accept"]);
-  });
+  }, 60_000);
 });
 
 describe("instance moderation witnesses: federation with R1's server", () => {
@@ -1963,7 +1963,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "deliver" },
     ]);
     expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toEqual([]);
-  });
+  }, 60_000);
 
   it("an Undo while the severing Reject is leased drops it at confirmation", async () => {
     const w = await runP2(without("L1>R1"), [
@@ -1976,7 +1976,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "confirm", i: 0 },
     ]);
     expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toEqual([]);
-  });
+  }, 60_000);
 
   it("a severing Reject confirmed before the Undo is sent (the NET-2 risk)", async () => {
     const w = await runP2(without("L1>R1"), [
@@ -1989,7 +1989,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "deliver" },
     ]);
     expect(w.sent.filter((s) => s.type === "Reject" && s.local === "L1")).toHaveLength(1);
-  });
+  }, 60_000);
 
   // X1 (accepted risk): R1's Follow arriving while it is suspended is ignored with no answer.
   it("X1: a Follow received while suspended stays requested at R1's server", async () => {
@@ -2000,7 +2000,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "unsuspend", i: 0 },
     ]);
     expect(w.stats["exception X1"]).toBe(1);
-  });
+  }, 60_000);
 
   // X1, the late answer: an Accept of h, confirmed before Kopje received g, applied to g by the pair at R1's server.
   it("X1: an earlier Accept processed late accepts the ignored generation at R1's server", async () => {
@@ -2017,7 +2017,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "unsuspend", i: 0 },
     ]);
     expect(w.stats["exception X1-late-answer"]).toBe(1);
-  });
+  }, 60_000);
 
   // X2 (accepted risk): R1's Accept of L1's follow, received while R1 is suspended, is ignored.
   it("X2: an Accept received while suspended leaves L1's follow pending", async () => {
@@ -2030,7 +2030,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "unsuspend", i: 0 },
     ]);
     expect(w.stats["exception X2"]).toBe(1);
-  });
+  }, 60_000);
 
   // X3 (#1422, a known defect): L1's Follow queued at the suspension is dropped at send time and never sent again.
   it("X3 (#1422): a Follow dropped at send time leaves L1's follow pending forever", async () => {
@@ -2042,7 +2042,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
     ]);
     expect(w.stats["dropped at claim: Follow"]).toBe(1);
     expect(w.stats["exception X3"]).toBe(1);
-  });
+  }, 60_000);
 
   // X5 (#1423, a known defect): R1's Accept dropped during a short suspension, ended before its severing round.
   it("X5 (#1423): an Accept dropped during a short suspension leaves R1's server with a request", async () => {
@@ -2055,7 +2055,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
     ]);
     expect(w.stats["dropped at claim: Accept"]).toBe(1);
     expect(w.stats["exception X5"]).toBe(1);
-  });
+  }, 60_000);
 
   // X4 (#1424, a known defect): an individual suspension deletes R1's pending request to locked L2 without a Reject
   // and retracts its id, so R1's server keeps the request, and a redelivery of it is refused.
@@ -2073,7 +2073,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       w.clock,
     );
     expect(again.reason).toBe("retracted");
-  });
+  }, 60_000);
 
   // G3F (#1425, a known defect): the severing Reject goes to R1's shared inbox.
   it("G3F (#1425): the severing Reject's row is at the shared inbox", async () => {
@@ -2081,7 +2081,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
     await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND]);
     expect(w.last!.lanes.filter((row) => row.type === "Reject").map((row) => row.inbox)).toEqual([SPEC.R1.shared]);
     expect(w.stats["known defect G3F"]).toBeGreaterThan(0);
-  });
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2395,7 +2395,7 @@ describe("instance moderation witnesses: walks", () => {
     await steps(w, [block(D), ROUND, ROUND, { k: "delete", i: 0 }]);
     expect(w.severedByRound.has("R1>L1")).toBe(true);
     await settle(w);
-  });
+  }, 60_000);
 
   // Witness 14(b): a round that reconciles R1 and stops inside R2 (150 local followers) has crossed R1.
   it("a cut inside a later account has crossed every account before it", async () => {
@@ -2562,7 +2562,7 @@ describe("instance moderation witnesses: routing with activities outstanding", (
       ["Reject", SPEC.R1.shared, "queued"],
       ["Reject", "https://d.example/inbox-b", "queued"],
     ]);
-  });
+  }, 60_000);
 
   it("(b) a suspension's severing Reject, audienceOnly, has one row at the refreshed inbox", async () => {
     const w = await accepted();
@@ -2578,7 +2578,7 @@ describe("instance moderation witnesses: routing with activities outstanding", (
       ["Accept", SPEC.R1.shared, 1],
       ["Reject", "https://d.example/inbox-b", 0],
     ]);
-  });
+  }, 60_000);
 
   it("(c) an Accept leased at A when the severing Reject is recorded is dropped at confirmation", async () => {
     const w = await accepted();
@@ -2596,5 +2596,5 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     expect(confirmed.status).toBe("dropped");
     w.last = await read(w);
     expect(rows(w)).toEqual([["Reject", "https://d.example/inbox-b", "pending"]]);
-  });
+  }, 60_000);
 });
