@@ -203,12 +203,19 @@ export function recordQuote(
       ? null
       : named.approvalUri;
   const legacy = named.legacy ? 1 : 0;
+  // An unchanged quote is only promoted. So is a deleted quote of a local status that is gone, which the Note still names:
+  // the status's removal detached it (R35), and only Kopje's answer to a QuoteRequest changes the state of a quote of a
+  // local status (VIS-28), never a received Note; Mastodon's update_quote! and update_quote_approval! likewise keep a
+  // quote whose quoted status is gone in its state.
   if (
     existing !== undefined &&
     existing.quoted_uri === named.uri &&
     existing.approval_uri === approval &&
     existing.legacy === legacy &&
-    (existing.state === "deleted") === named.tombstone
+    ((existing.state === "deleted") === named.tombstone ||
+      (existing.state === "deleted" &&
+        originOf(named.uri) === ctx.origin &&
+        db.first("SELECT 1 AS x FROM statuses WHERE uri = ? AND withdrawn = 0", named.uri) === undefined))
   ) {
     promoteQuote(db, status.id, arrival, ctx.now);
     return;
