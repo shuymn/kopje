@@ -15,6 +15,7 @@ import {
 } from "./audience";
 import { currentCredentialSql, type UserContext, userReadOperation, userWriteOperation } from "./auth";
 import { addToConversation } from "./conversations";
+import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_CLEARS, NOTIFICATION_DISMISSALS, runJobItem } from "./job-attempts";
 import { presentReport, type Report } from "./report-presenter";
 import { presentation, type Status, statusStream } from "./status-presenter";
@@ -455,8 +456,6 @@ export const listNotifications = userReadOperation<ListNotificationsInput, Page<
   },
 );
 
-export const NOTIFICATION_ID = /^\d{1,19}$/;
-
 export const getNotification = userReadOperation<{ id: string; present: Present }, Notification | null>(
   // Api::V1::NotificationsController#show finds any of the viewer's notifications, filtered or not.
   (db, { id, present }, _viewer, viewer) => notificationById(db, viewer, id, present, true),
@@ -504,7 +503,7 @@ function notificationById(
   present: Present,
   includeFiltered: boolean,
 ): Notification | null {
-  if (!NOTIFICATION_ID.test(id)) {
+  if (!isIntegerKey(id)) {
     return null;
   }
   const read = statusReads(viewer, { viewer: "?1", now: "?3" });
@@ -524,7 +523,7 @@ function notificationById(
 }
 
 export const dismissNotification = userWriteOperation<{ id: string }, boolean>((db, { id }, { accountId }) => {
-  if (!NOTIFICATION_ID.test(id)) {
+  if (!isIntegerKey(id)) {
     return false;
   }
   return db.run("DELETE FROM notifications WHERE account_id = ? AND id = CAST(? AS INTEGER)", accountId, id) > 0;

@@ -93,7 +93,7 @@ export const moderationLog = readOperation<
   const size = Math.min(Math.max(limit ?? MODERATION_LOG_PAGE, 1), MAX_MODERATION_LOG_PAGE);
   const rows = db.all<Omit<ModerationLogEntry, "detail"> & { detail: string }>(
     `SELECT CAST(id AS TEXT) AS id, actor, account_id, client_id, action, target_type, target_id, detail, created_at
-		FROM admin_actions WHERE id < coalesce(CAST(?1 AS INTEGER), 1e19) ORDER BY id DESC LIMIT ?2`,
+		FROM admin_actions WHERE id < coalesce(CAST(?1 AS INTEGER), 1e19) ORDER BY admin_actions.id DESC LIMIT ?2`,
     before ?? null,
     size,
   );

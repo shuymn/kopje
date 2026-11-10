@@ -283,7 +283,7 @@ export const claimPushes = writeOperation<{ now: number; leaseToken: string; lim
     const origin = instanceOrigin(db);
     const due = db.all<DueRow>(
       `SELECT CAST(id AS TEXT) AS id, attempts FROM push_deliveries WHERE next_attempt_at <= ?
-			ORDER BY next_attempt_at, id LIMIT ?`,
+			ORDER BY next_attempt_at, push_deliveries.id LIMIT ?`,
       now,
       max,
     );

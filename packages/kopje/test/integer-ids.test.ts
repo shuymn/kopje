@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { moderationLog } from "../src/domain/moderation-log";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { moderationRound, suspendLocal } from "../src/domain/suspension";
 import type { StoreStub } from "../src/platform/store-client";
@@ -383,6 +384,80 @@ describe("instance domain block ids past 2^53", () => {
     expect((await listed.json<{ id: string }[]>()).map((block) => block.id)).toEqual(["10", "9"]);
     const after = await w.h.request(`${BLOCKS}?min_id=0`, bearer(w.admin));
     expect((await after.json<{ id: string }[]>()).map((block) => block.id)).toEqual(["10", "9"]);
+  });
+});
+
+describe("notification and request ids past the INTEGER range", () => {
+  it("finds no notification for an id past the range, and finds the largest", async () => {
+    const w = await world();
+    await sql(
+      w.h.store,
+      `INSERT INTO notifications (id, account_id, type, from_account_id, created_at)
+			VALUES (9223372036854775807, ?, 'follow', ?, ?)`,
+      w.alice.id,
+      w.dan.id,
+      AT,
+    );
+    const past = "/api/v1/notifications/9223372036854775808";
+    expect((await w.h.request(past, bearer(w.alice.token))).status).toBe(404);
+    expect((await w.h.request(`${past}/dismiss`, bearer(w.alice.token, { method: "POST" }))).status).toBe(404);
+    expect(await sql(w.h.store, "SELECT CAST(id AS TEXT) AS id FROM notifications")).toEqual([{ id: INT64_MAX }]);
+    // The guarded branch: the largest id itself is found.
+    expect((await w.h.request(`/api/v1/notifications/${INT64_MAX}`, bearer(w.alice.token))).status).toBe(200);
+  });
+
+  it("finds no notification request for an id past the range, and finds the largest", async () => {
+    const w = await world();
+    await sql(
+      w.h.store,
+      `INSERT INTO notification_requests (id, account_id, from_account_id, notifications_count)
+			VALUES (9223372036854775807, ?, ?, 1)`,
+      w.alice.id,
+      w.dan.id,
+    );
+    const requests = "/api/v1/notifications/requests";
+    expect((await w.h.request(`${requests}/9223372036854775808`, bearer(w.alice.token))).status).toBe(404);
+    expect(
+      (await w.h.request(`${requests}/dismiss`, bearer(w.alice.token, form({ "id[]": "9223372036854775808" })))).status,
+    ).toBe(200);
+    expect(await sql(w.h.store, "SELECT CAST(id AS TEXT) AS id FROM notification_requests")).toEqual([
+      { id: INT64_MAX },
+    ]);
+    // The guarded branch: the largest id itself is found.
+    expect((await w.h.request(`${requests}/${INT64_MAX}`, bearer(w.alice.token))).status).toBe(200);
+  });
+});
+
+describe("pages ordered by INTEGER id across a change of digit count", () => {
+  it("lists the moderation log newest first", async () => {
+    const w = await world();
+    for (const id of [9, 10]) {
+      await sql(
+        w.h.store,
+        `INSERT INTO admin_actions (id, actor, action, target_type, target_id, detail, created_at)
+				VALUES (?, 'access', 'seed', 'Setting', 'seed', '{}', ?)`,
+        id,
+        AT,
+      );
+    }
+    const page = await runInDurableObject(w.h.store, (_instance, state) => moderationLog.run(state.storage.sql, {}));
+    expect(page.entries.map((entry) => entry.id)).toEqual(["10", "9"]);
+  });
+
+  it("claims pushes due at once in id order", async () => {
+    const w = await world({ VAPID_JWK: VAPID.env });
+    await sql(
+      w.h.store,
+      `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts)
+			VALUES (?, 'https://push.example/alice', 'p256dh', 'auth', '{"mention":true}')`,
+      await sha256Hex(w.alice.token),
+    );
+    await post(w.h, w.bob, { status: "@alice one" });
+    await post(w.h, w.bob, { status: "@alice two" });
+    // The two pushes at 9 and 10, due at the same time.
+    await sql(w.h.store, "UPDATE push_deliveries SET id = id + 8, next_attempt_at = ?", NOW);
+    const claim = await w.h.store.claimPushes(BUILD, { now: NOW, leaseToken: "a" });
+    expect(claim.pushes.map((push) => push.id)).toEqual(["9", "10"]);
   });
 });
 

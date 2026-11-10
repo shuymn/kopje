@@ -24,7 +24,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   gets its own push and an inbound activity that records one rings the delivery doorbell; a direct status joins its
   own new conversation with its exact streaming sequence; a favourite tracks, undoes and retires its own Like ids; the
   admin API answers, logs, reads and deletes an instance domain block by its exact id, now any id within the INTEGER
-  range, and an instance domain block or conversation id past that range names none. No migration, no
+  range, and an instance domain block, conversation, notification or notification request id past that range names
+  none; the moderation log and the push claim order by id across a change of digit count. No migration, no
   `wrangler.jsonc` change.
 
 ## [0.2.1] - 2026-11-03

@@ -13,6 +13,7 @@ import {
 } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { addToConversation } from "./conversations";
+import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_REQUEST_JOBS, runJobItem } from "./job-attempts";
 import { MAX_MEANINGFUL_COUNT, NOTIFICATION_CHUNK, REMOVAL_BATCHES, runRemovals } from "./notifications";
 import { writeOperation } from "./operation";
@@ -44,8 +45,6 @@ export const REQUEST_JOB_BATCHES = 4;
 // Api::V1::Notifications::RequestsController's accept_bulk and dismiss_bulk take any number of ids; Kopje takes at
 // most this many, so the request's writes are bounded.
 export const MAX_BULK_REQUESTS = 100;
-
-const REQUEST_ID = /^\d{1,19}$/;
 
 export type Policy = Record<PolicyColumn, PolicyChoice>;
 
@@ -233,7 +232,7 @@ export const listNotificationRequests = userReadOperation<
 // without_suspended); anyone else's is not found.
 export const getNotificationRequest = userReadOperation<{ id: string; present: Present }, NotificationRequest | null>(
   (db, { id, present }, _viewer, viewer) => {
-    if (!REQUEST_ID.test(id)) {
+    if (!isIntegerKey(id)) {
       return null;
     }
     const row = db.first<RequestRow>(
@@ -393,7 +392,7 @@ function takeRequests(db: Db, accountId: string, ids: readonly string[]): Answer
     `DELETE FROM notification_requests WHERE account_id = ?1
 			AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2)) RETURNING from_account_id`,
     accountId,
-    JSON.stringify(ids.filter((id) => REQUEST_ID.test(id))),
+    JSON.stringify(ids.filter((id) => isIntegerKey(id))),
   );
 }
 
