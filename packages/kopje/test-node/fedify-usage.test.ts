@@ -1,97 +1,75 @@
+import { RuleTester } from "oxlint/plugins-dev";
 import { describe, expect, it } from "vitest";
 
-import { guardFixtures, parse, sources, type Source } from "./source-scan.js";
+import { fedifyUsage } from "../lint/fedify-usage.js";
+import { parse, sources } from "./source-scan.js";
 
-// Outbound delivery goes through the deliveries table, never through Fedify: its queue carries private
-// keys in plain JWK, enqueues after the Store commit, and loses order. So the sources must not send with Fedify, give
-// it a queue, or run its queue.
-const FORBIDDEN: [RegExp, string][] = [
-  [/\.sendActivity\s*\(/, "sendActivity"],
-  [/\.forwardActivity\s*\(/, "forwardActivity"],
-  [/\.(startQueue|processQueuedTask)\s*\(/, "Fedify queue processing"],
-  [/\b(InProcessMessageQueue|ParallelMessageQueue|WorkersMessageQueue)\b/, "a Fedify message queue"],
-  [/@fedify\/cfworkers/, "a Fedify message queue"],
-  [/createFederation(Builder)?\s*(<[^>]*>)?\s*\(\s*\{[^}]*\bqueue\s*:/s, "a Fedify message queue"],
-];
+// The kopje/fedify-usage rule (lint/fedify-usage.js): the sources never send or queue through Fedify, verify author
+// proofs in author-proof.ts only, and sign Linked Data in ld-sign.ts only.
+RuleTester.describe = describe;
+RuleTester.it = it;
 
-const SOURCES = sources("src", [".ts"]);
+const PROBE = "packages/kopje/src/domain/probe.ts";
+const QUEUE = "uses a Fedify message queue";
+const VERIFIES = "verifyObject: Fedify's verifiers run in federation/author-proof.ts only";
+const flagged = (code: string, ...messages: string[]) => ({
+  code,
+  errors: messages.map((message) => ({ message })),
+  filename: PROBE,
+});
 
-function violations(files: readonly Source[]): string[] {
-  const found: string[] = [];
-  for (const source of files) {
-    const { code } = parse(source);
-    for (const [pattern, what] of FORBIDDEN) {
-      if (pattern.test(code)) {
-        found.push(`${source.path}: uses ${what}`);
-      }
-    }
-  }
-  return found;
-}
+new RuleTester().run("fedify-usage", fedifyUsage, {
+  invalid: [
+    flagged("await ctx.sendActivity({ identifier }, recipient, activity)", "uses sendActivity"),
+    flagged('await ctx.forwardActivity(sender, "followers")', "uses forwardActivity"),
+    flagged("federation.startQueue(data)", "uses Fedify queue processing"),
+    flagged("await federation.processQueuedTask(ctx, message)", "uses Fedify queue processing"),
+    flagged("import { InProcessMessageQueue } from '@fedify/fedify'", QUEUE, QUEUE),
+    flagged("const q: ParallelMessageQueue = make()", QUEUE),
+    flagged("import { WorkersMessageQueue } from '@fedify/cfworkers'", QUEUE, QUEUE, QUEUE),
+    flagged("createFederation<State>({ kv, queue: mq })", QUEUE),
+    flagged("createFederationBuilder({ kv, queue })", QUEUE),
+    flagged("fedify.createFederation({ kv: { a: 1 }, queue: mq })", QUEUE),
+    flagged("ctx['sendActivity'](sender, recipient, activity)", "uses sendActivity"),
+    flagged("const { forwardActivity } = ctx", "uses forwardActivity", "uses forwardActivity"),
+    flagged("const m = await import('@fedify/cfworkers')", QUEUE),
+    flagged("import { verifyObject } from '@fedify/fedify'", VERIFIES, VERIFIES),
+    flagged(
+      "const signed = await signJsonLd(doc, key, id)",
+      "signJsonLd: Kopje's LD signatures are made in federation/ld-sign.ts only",
+    ),
+  ],
+  valid: [
+    {
+      code: "// ctx.sendActivity(...), createFederation({ queue: q }), verifyObject, signJsonLd\nf()",
+      filename: PROBE,
+    },
+    { code: "const options = { queue: q }\ncreateFederation({ kv })", filename: PROBE },
+    {
+      code: "import { verifyObject } from '@fedify/fedify'\nawait verifyObject(doc)",
+      filename: "packages/kopje/src/federation/author-proof.ts",
+    },
+    {
+      code: "import { signJsonLd } from '@fedify/fedify'\nawait signJsonLd(doc, key, id)",
+      filename: "packages/kopje/src/federation/ld-sign.ts",
+    },
+  ],
+});
 
-const naming = (files: readonly Source[], names: RegExp) =>
-  files.filter((source) => names.test(parse(source).code)).map((source) => source.path);
-
-// A relayed revocation is applied on the author's proof (federation/author-proof.ts): Fedify's LD-signature and object
-// proof verifiers run there only, against a key the author's own document embeds, and nowhere else decides on them.
-const VERIFIERS = /\b(verifyJsonLd|verifyObject|verifyProof|verifySignature)\b/;
-// Kopje's own LD signatures (a stamp's Delete) are made in ld-sign.ts only, with the preloaded contexts and a key
-// unwrapped for the call (DATA-1).
-const SIGNERS = /\b(signJsonLd|signObject)\b/;
-
+// The rule allows the verifiers and signers in their files; these still use them, so the allowance is not stale.
 describe("Fedify usage", () => {
-  it("sees the federation sources", () => {
-    expect(SOURCES.map((s) => s.path)).toContain("src/federation/federation.ts");
+  const names = (path: string, pattern: RegExp) => {
+    const source = sources("src/federation", [".ts"]).find((s) => s.path === path);
+    return source !== undefined && pattern.test(parse(source).code);
+  };
+
+  it("verifies author proofs in author-proof.ts", () => {
+    expect(names("src/federation/author-proof.ts", /\b(verifyJsonLd|verifyObject|verifyProof|verifySignature)\b/)).toBe(
+      true,
+    );
   });
 
-  it("never sends or queues through Fedify", () => {
-    expect(violations(SOURCES)).toEqual([]);
-  });
-
-  it("verifies author proofs in author-proof.ts only", () => {
-    expect(naming(SOURCES, VERIFIERS)).toEqual(["src/federation/author-proof.ts"]);
-  });
-
-  it("signs Linked Data in ld-sign.ts only", () => {
-    expect(naming(SOURCES, SIGNERS)).toEqual(["src/federation/ld-sign.ts"]);
-  });
-
-  it("detects each forbidden use", () => {
-    const files = Object.entries({
-      "a.ts": "await ctx.sendActivity({ identifier }, recipient, activity)",
-      "b.ts": 'await ctx.forwardActivity(sender, "followers")',
-      "c.ts": "federation.startQueue(data)",
-      "d.ts": "import { InProcessMessageQueue } from '@fedify/fedify'",
-      "e.ts": "import { WorkersMessageQueue } from '@fedify/cfworkers'",
-      "f.ts": "createFederation<State>({ kv, queue: mq })",
-    }).map(([path, text]) => ({ path, text }));
-    expect(violations(files)).toEqual([
-      "a.ts: uses sendActivity",
-      "b.ts: uses forwardActivity",
-      "c.ts: uses Fedify queue processing",
-      "d.ts: uses a Fedify message queue",
-      "e.ts: uses a Fedify message queue",
-      "e.ts: uses a Fedify message queue",
-      "f.ts: uses a Fedify message queue",
-    ]);
-  });
-
-  const find = (files: readonly Source[]) => [
-    ...violations(files),
-    ...naming(files, VERIFIERS).map((path) => `${path} verifies`),
-    ...naming(files, SIGNERS).map((path) => `${path} signs`),
-  ];
-  guardFixtures(find, {
-    flagged: {
-      "a verifier outside author-proof.ts": [
-        "import { verifyObject } from '@fedify/fedify'",
-        "src/domain/probe.ts verifies",
-      ],
-      "a signer outside ld-sign.ts": ["const signed = await signJsonLd(doc, key, id)", "src/domain/probe.ts signs"],
-    },
-    passed: {
-      "names in comments": "// ctx.sendActivity(...), createFederation({ queue: q }), verifyObject, signJsonLd\nf()",
-      "a queue outside createFederation": "const options = { queue: q }\ncreateFederation({ kv })",
-    },
+  it("signs Linked Data in ld-sign.ts", () => {
+    expect(names("src/federation/ld-sign.ts", /\b(signJsonLd|signObject)\b/)).toBe(true);
   });
 });

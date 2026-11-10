@@ -22,8 +22,3 @@ export const signingKeys = {
     );
   },
 };
-
-export default {
-  meta: { name: "kopje" },
-  rules: { "signing-keys": signingKeys },
-};
