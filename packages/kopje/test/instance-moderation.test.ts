@@ -1362,6 +1362,8 @@ async function document(w: World, r: Remote, variant: Variant, stale: boolean): 
   } else if (variant === "key") {
     doc.keys = [`${r}-key-${n}`];
   } else if (!outstanding(w, r)) {
+    // A routing change renames the account too, which only a full refresh stores.
+    doc.name = `${r} ${n}`;
     doc.inbox = flip(doc.inbox);
     doc.sharedInbox = doc.sharedInbox === null ? null : flip(doc.sharedInbox);
   }
@@ -1792,6 +1794,12 @@ describe("instance moderation witnesses: decisions", () => {
     await settle(v);
     expect(source(v, "R2")).toBeNull();
     expect(v.stats["mark cleared"]).toBe(1);
+    // A stricter child under a suspend parent covers no new host: no reset.
+    await steps(v, [{ k: "delete", i: 1 }]);
+    await settle(v);
+    await steps(v, [block(SUB)]);
+    expect(v.trace.at(-1)).toBe("  -> 200");
+    expect(v.last!.jobs).toEqual([]);
   });
 
   // Witness 2 (visibility.md, the remote suspension paragraphs): a domain mark alone cannot be unsuspended; an
@@ -2429,6 +2437,39 @@ describe("instance moderation witnesses: walks", () => {
     ]);
     await fixtureDrain(f);
     expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(0);
+  }, 120_000);
+
+  // The account job's walk over more follows than a round reads (SEVER_ROUND): it ends only once all are severed.
+  it("an account job severs its follows across rounds, and a suspension again restarts its walk", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, OTHER, COVERED);
+    const r = (COVERED + 1n).toString();
+    const locals = await localsOf(f, 150);
+    await followsOf(
+      f,
+      locals.map((target) => ({ follower: r, target, state: "pending" })),
+    );
+    await suspendOf(f, r);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    const left = await count(f, "SELECT 1 FROM follows WHERE account_id = ?", r);
+    expect(left).toBeGreaterThan(0);
+    expect(f.last!.jobs[0]).toMatchObject({ phase: "follows" });
+    expect(f.last!.jobs[0]!.cursor).not.toBe("");
+    // A report of the still suspended account, then a suspension again: its walk starts over, reports first.
+    await sql(
+      f.store,
+      "INSERT INTO reports (account_id, target_account_id, uri, created_at) VALUES (?, ?, ?, ?)",
+      f.alice.id,
+      r,
+      "https://kopje.test/reports/again",
+      new Date(NOW).toISOString(),
+    );
+    await suspendOf(f, r);
+    expect(f.last!.jobs[0]).toMatchObject({ phase: "reports", cursor: "" });
+    await fixtureDrain(f);
+    expect(await count(f, "SELECT 1 FROM follows WHERE account_id = ?", r)).toBe(0);
+    expect(await count(f, "SELECT 1 FROM reports WHERE action_taken_at IS NULL")).toBe(0);
   }, 120_000);
 
   // Witness 12 (threat-model.md RES-5): a round that fails after its writes is rolled back and backs off; an unchanged
