@@ -402,11 +402,11 @@ export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
 
 // GET /emojis/:id (Mastodon's EmojisController#show, CustomEmoji.local.find): any local emoji, disabled ones included,
 // as its Emoji object; null for none, or when its url fails emojiHref or its time is not an instant (emojiTag).
-export const localEmojiObject = readOperation<{ id: string; origin: string }, EmojiTag | null>((db, { id, origin }) => {
+export function localEmojiObjectOf(db: Db, id: string, origin: string): EmojiTag | null {
   const row = db.first<{ id: string; shortcode: string; created_at: string; content_type: string; url: string }>(
     `SELECT e.id, e.shortcode, e.created_at, m.content_type, m.url
 			FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?`,
     id,
   );
   return row === undefined || emojiHref(row.url) !== row.url ? null : emojiTag(origin, row);
-});
+}

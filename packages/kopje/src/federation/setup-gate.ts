@@ -22,7 +22,8 @@ export function notSetUp(c: Context): Response {
   return c.json({ error: "This server has not been set up yet" }, 503);
 }
 
-// skip: requests whose handler reads the domain itself (the inbox POSTs), which pass without a Store call here.
+// skip: requests whose handler reads the domain itself (the inbox POSTs, the self-gated federation GETs of
+// federation/routes.ts), which pass without a Store call here.
 export function requireSetup(build: (env: Env) => string, store: StoreResolver, skip?: (c: Context) => boolean) {
   return createMiddleware<{ Bindings: Env; Variables: { domain: string } }>(async (c, next) => {
     if (skip?.(c) === true) {
