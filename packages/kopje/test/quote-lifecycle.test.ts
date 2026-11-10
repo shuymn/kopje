@@ -326,7 +326,6 @@ const log = (w: World, line: string) => {
 // ---------------------------------------------------------------------------------------------------------------
 
 const AUTH_PATH = "/quote_authorizations/";
-const DEBUG = false;
 const ACTIVE = "('queued', 'pending', 'leased')";
 
 async function project(w: World) {
@@ -406,14 +405,6 @@ async function project(w: World) {
     }
     return object;
   };
-  if (DEBUG) {
-    w.trace.push(
-      `  [store] ${JSON.stringify(raw.intents.map((i) => [i.type, i.object?.slice(-8), i.superseded, i.staged, i.rows]))}`,
-    );
-    w.trace.push(
-      `  [policy] ${JSON.stringify(p.lane.map((i) => [i.type, i.subject.slice(-8), i.superseded, i.staged, i.rows]))}`,
-    );
-  }
   const intents = raw.intents.map((i) => ({
     type: i.type,
     subject: subject(i.object),
@@ -760,8 +751,6 @@ async function claim(w: World): Promise<Attempt | null> {
   return attempt;
 }
 
-let inboxOf = new Map<string, string>();
-
 async function confirm(w: World, attempt: Attempt): Promise<void> {
   log(w, `confirm ${attempt.token} (${attempt.intent.type} ${attempt.intent.subject})`);
   const result = await w.store.confirmDelivery(BUILD, {
@@ -774,7 +763,6 @@ async function confirm(w: World, attempt: Attempt): Promise<void> {
   if (result.status === "send") {
     attempt.body = result.body;
     attempt.phase = "confirmed";
-    inboxOf.set(attempt.token, attempt.inbox);
     w.emit({ k: "confirm", token: attempt.token });
     const body = JSON.parse(result.body) as Body;
     await check(w, {
@@ -800,7 +788,7 @@ function transmit(w: World, attempt: Attempt, reached: boolean): void {
   attempt.reached = reached;
   w.emit({ k: "transmit", token: attempt.token, reached });
   if (reached) {
-    w.peer.receive(JSON.parse(attempt.body!) as Body, inboxOf.get(attempt.token)!, attempt.token);
+    w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.inbox, attempt.token);
   }
 }
 
@@ -1177,7 +1165,6 @@ function quiescence(w: World): void {
 }
 
 async function run(c: Case, actions: readonly Action[]): Promise<World> {
-  inboxOf = new Map();
   const w = await setup(c);
   for (const a of actions) {
     await act(w, a);
@@ -1995,6 +1982,19 @@ describe("quote lifecycle witnesses", () => {
     expect(w.stats["QuoteRequest quote-accepted"]).toBe(1);
     expect(w.stats["QuoteRequest duplicate"]).toBe(1);
     expect(w.policy.notifications).toEqual(new Set(["RQ1"]));
+    // G3: a new request id for the accepted quote is answered with the same stamp, and notifies nothing more.
+    const again = `${R_ORIGIN}/quote_requests/again`;
+    await receive(
+      w,
+      R,
+      { type: "QuoteRequest", id: again, object: uriOf(w, "SL1")!, instrument: rUri(w, "RQ1"), embedded: null },
+      true,
+      -1,
+      "receive",
+    );
+    expect(w.stats["QuoteRequest quote-accepted-again"]).toBe(1);
+    expect(w.policy.lane.filter((i) => i.type === "Accept").map((i) => i.subject)).toEqual(["stamp:a1", "stamp:a1"]);
+    expect(w.authId.size).toBe(1);
     const posted = (await api(w, "POST", "/api/v1/statuses", { status: "SL3", visibility: "private" })).body as {
       id: string;
       uri: string;
