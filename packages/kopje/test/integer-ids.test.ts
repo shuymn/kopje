@@ -2,7 +2,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { requestCollectionSync } from "../src/domain/collection-requests";
 import { moderationLog } from "../src/domain/moderation-log";
+import { editPoll, sweepStaleVotes } from "../src/domain/polls";
+import { ALL_PARTS } from "../src/domain/remote-collections";
+import { admitRemoteMedia, type RemoteMediaClaim } from "../src/domain/remote-media";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { moderationRound, suspendLocal } from "../src/domain/suspension";
 import type { StoreStub } from "../src/platform/store-client";
@@ -10,7 +14,9 @@ import { sha256Hex } from "../src/security/tokens";
 import { authorizationCode, bearer, exchange, form, json, registerApp, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { ACCESS, accessAdminStore } from "./ops-helpers";
 import { VAPID } from "./push-helpers";
+import { claimWith, fence, mediaWorld, type MediaWorld, record, storedOutcome } from "./remote-media-helpers";
 import { act, unsuspend, world, type World } from "./remote-suspension-helpers";
 import { post, remoteAccount } from "./status-helpers";
 
@@ -523,5 +529,197 @@ describe("conversation ids and stream sequences", () => {
     expect(
       await sql(w.h.store, "SELECT CAST(stream_seq AS TEXT) AS seq FROM conversations WHERE account_id = ?", w.bob.id),
     ).toEqual([{ seq: big(1) }]);
+  });
+});
+
+describe("remote media slot ids past 2^53", () => {
+  const slots = (w: MediaWorld) =>
+    sql<{ id: string; url: string; token: string | null }>(
+      w.t.store,
+      "SELECT CAST(id AS TEXT) AS id, url, token FROM remote_media ORDER BY remote_media.id",
+    );
+
+  // Two slots at 2^53 and 2^53 + 1 (remote_media.id has no stored bound): the second read as a number names the first.
+  it("resets and retires each slot by its own id", async () => {
+    const w = await mediaWorld();
+    const first = await w.remote();
+    const second = await w.remote();
+    await sql(w.t.store, "UPDATE remote_media SET id = id + 9007199254740991");
+    expect((await slots(w)).map((s) => s.id)).toEqual([TWO_53, big(1)]);
+    // A new avatar resets the second account's slot only.
+    await w.change(second.id, { avatar: "https://files.example/a/new.png", header: null });
+    expect(await slots(w)).toEqual([
+      { id: TWO_53, url: first.avatar, token: null },
+      { id: big(1), url: "https://files.example/a/new.png", token: null },
+    ]);
+    // No avatar retires it, and only it.
+    await w.change(second.id, { avatar: null, header: null });
+    expect(await slots(w)).toEqual([{ id: TWO_53, url: first.avatar, token: null }]);
+    await w.exact();
+  });
+
+  // Slots at 2^53 - 1 and 2^53: an object names a slot up to 2^53 - 1 (its stored bound, migration 0077), so the claim
+  // drops the one past it rather than fail the round on the bound.
+  it("claims and records the slot at the objects' bound and drops the one past it", async () => {
+    const w = await mediaWorld();
+    await w.remote();
+    await w.remote();
+    await sql(w.t.store, "UPDATE remote_media SET id = id + 9007199254740990");
+    let n = 0;
+    const claimed = await claimWith(w, () => `I${String(++n).padStart(42, "0")}`);
+    expect([claimed.claims.map((c) => c.slot), claimed.dropped]).toEqual([[big(-1)], 1]);
+    const [c] = claimed.claims as [RemoteMediaClaim];
+    expect(await w.op(admitRemoteMedia, { ...fence(c), hosts: ["files.example"] })).toEqual({ held: true });
+    expect(await record(w, c, storedOutcome())).toEqual({ held: true });
+    expect((await slots(w)).map((s) => [s.id, s.token])).toEqual([[big(-1), c.token]]);
+    await w.exact();
+  });
+});
+
+describe("poll generations past 2^53", () => {
+  async function poll(w: World, generation: string): Promise<string> {
+    const status = await post(w.h, w.alice, {
+      status: "which?",
+      visibility: "public",
+      poll: { options: ["a", "b"], expires_in: 3600 },
+    });
+    await sql(w.h.store, "UPDATE polls SET generation = CAST(? AS INTEGER) WHERE status_id = ?", generation, status.id);
+    return status.id;
+  }
+  const vote = (w: World, generation: string, pollId: string) =>
+    sql(
+      w.h.store,
+      `INSERT INTO poll_votes (poll_id, generation, account_id, choice, uri, created_at)
+			VALUES (?, CAST(? AS INTEGER), ?, 0, NULL, ?)`,
+      pollId,
+      generation,
+      w.bob.id,
+      AT,
+    );
+  const votes = (w: World, pollId: string) =>
+    sql(
+      w.h.store,
+      "SELECT CAST(generation AS TEXT) AS generation FROM poll_votes WHERE poll_id = ? ORDER BY generation",
+      pollId,
+    );
+
+  // A vote of generation 2^53 is past for a poll at 2^53 + 1, which read as a number is 2^53.
+  it("takes a vote beside one of the generation before", async () => {
+    const w = await world();
+    const pollId = await poll(w, big(1));
+    await vote(w, TWO_53, pollId);
+    const response = await w.h.request(`/api/v1/polls/${pollId}/votes`, bearer(w.bob.token, json({ choices: ["0"] })));
+    expect(response.status).toBe(200);
+    expect(await votes(w, pollId)).toEqual([{ generation: TWO_53 }, { generation: big(1) }]);
+  });
+
+  // The poll at 2^53 + 3 reads as 2^53 + 4 as a number: its own votes would be swept too.
+  it("sweeps the votes of the generation before and keeps the current ones", async () => {
+    const w = await world();
+    const pollId = await poll(w, big(3));
+    await vote(w, big(2), pollId);
+    await vote(w, big(3), pollId);
+    await sql(w.h.store, "UPDATE polls SET stale = 1 WHERE status_id = ?", pollId);
+    expect(await inStore(w.h.store, (db) => sweepStaleVotes(db, 10))).toBe(1);
+    expect(await votes(w, pollId)).toEqual([{ generation: big(3) }]);
+    expect(await sql(w.h.store, "SELECT stale FROM polls WHERE status_id = ?", pollId)).toEqual([{ stale: 0 }]);
+  });
+
+  it("refuses a reset from the largest generation and rolls it back, and resets into it", async () => {
+    const w = await world();
+    const pollId = await poll(w, "9223372036854775806");
+    const generation = () =>
+      sql(w.h.store, "SELECT CAST(generation AS TEXT) AS generation FROM polls WHERE status_id = ?", pollId);
+    // Each edit changes the choices, which resets the poll. The guarded branch: from the largest generation but one,
+    // the reset takes the largest.
+    const choices = (options: string[]) => ({ options, expiresIn: 3600, multiple: false, hideTotals: false });
+    await inStore(w.h.store, (db) => editPoll(db, pollId, choices(["c", "d"]), NOW));
+    expect(await generation()).toEqual([{ generation: INT64_MAX }]);
+    await expect(inStore(w.h.store, (db) => editPoll(db, pollId, choices(["e", "f"]), NOW))).rejects.toThrow(
+      "a poll's generation is exhausted",
+    );
+    expect(await generation()).toEqual([{ generation: INT64_MAX }]);
+  });
+});
+
+describe("remote collection generations past 2^53", () => {
+  const syncAt = async (w: World, account: string, generation: string, readThrough: string) => {
+    await sql(w.h.store, "DELETE FROM collection_syncs");
+    await sql(
+      w.h.store,
+      `INSERT INTO collection_syncs (account_id, due_at, generation, read_through)
+			VALUES (?, ?, CAST(? AS INTEGER), CAST(? AS INTEGER))`,
+      account,
+      NOW,
+      generation,
+      readThrough,
+    );
+  };
+
+  // A request at 2^53 + 1 not read through 2^53: read as numbers, both are 2^53 and the request is dropped.
+  it("reads a request through its own generation", async () => {
+    const w = await world();
+    const carol = await remoteAccount(w.h.store, "carol", "r.example");
+    await syncAt(w, carol, big(1), TWO_53);
+    const sync = await w.h.store.claimCollectionSync(BUILD, { now: NOW });
+    if (sync === null || sync === "more") {
+      throw new Error("no sync claimed");
+    }
+    expect([sync.phase, sync.generation]).toEqual(["read", big(1)]);
+    const [{ uri }] = (await sql<{ uri: string }>(w.h.store, "SELECT uri FROM accounts WHERE id = ?", carol)) as [
+      { uri: string },
+    ];
+    await w.h.store.completeCollectionRead(BUILD, {
+      now: NOW,
+      origin: "https://kopje.test",
+      accountUri: uri,
+      generation: sync.generation,
+      token: sync.token,
+      parts: ALL_PARTS,
+      pins: null,
+      tags: null,
+      hideCollections: null,
+      counts: { statuses: null, following: null, followers: null },
+    });
+    // Read through: nothing is left, so the sync is gone.
+    expect(await sql(w.h.store, "SELECT account_id FROM collection_syncs")).toEqual([]);
+  });
+
+  it("refuses a request past the largest generation and rolls it back, and requests into it", async () => {
+    const w = await world();
+    const carol = await remoteAccount(w.h.store, "carol", "r.example");
+    const generation = () => sql(w.h.store, "SELECT CAST(generation AS TEXT) AS generation FROM collection_syncs");
+    // The guarded branch: from the largest generation but one, the request takes the largest.
+    await syncAt(w, carol, "9223372036854775806", "0");
+    await inStore(w.h.store, (db) => requestCollectionSync(db, carol, NOW));
+    expect(await generation()).toEqual([{ generation: INT64_MAX }]);
+    await expect(inStore(w.h.store, (db) => requestCollectionSync(db, carol, NOW))).rejects.toThrow(
+      "a collection sync's generation is exhausted",
+    );
+    expect(await generation()).toEqual([{ generation: INT64_MAX }]);
+  });
+});
+
+describe("account invitation rowids past 2^53", () => {
+  // Carol's invitation at 2^53, Bob's at 2^53 + 1, which read as a number is Carol's.
+  it("removes the invitation it names", async () => {
+    const store = await accessAdminStore();
+    const invite = (rowid: string, username: string) =>
+      sql(
+        store,
+        `INSERT INTO account_invitations (rowid, email, username, created_at)
+				VALUES (CAST(?1 AS INTEGER), ?2 || '@example.com', ?2, ?3)`,
+        rowid,
+        username,
+        AT,
+      );
+    await invite(TWO_53, "carol");
+    await invite(big(1), "bob");
+    expect(
+      await store.removeInvitation(BUILD, { authority: ACCESS, email: "bob@example.com", now: NOW }),
+    ).toMatchObject({ ok: true, removed: { username: "bob" } });
+    expect(await sql(store, "SELECT CAST(rowid AS TEXT) AS rowid, username FROM account_invitations")).toEqual([
+      { rowid: TWO_53, username: "carol" },
+    ]);
   });
 });
