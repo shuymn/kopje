@@ -4,9 +4,11 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
 import {
+  clone,
   type CssNode,
   generate,
-  type List,
+  List,
+  type ListItem,
   parse as parseCss,
   type Selector,
   type SelectorList,
@@ -46,9 +48,10 @@ type Declaration = {
   commented: boolean;
 };
 
-// A stylesheet as CSSTree reads it: the declarations, every rule's full selector (nesting resolved: `&` is its parent,
-// a list of several as :is()), and the at-rules' names. Any parse error throws, so nothing CSSTree cannot read is kept
-// as raw text and passed unchecked; a rule nested without `&` is one.
+// A stylesheet as CSSTree reads it: the declarations, every rule's full selector (nesting resolved: each `&` node is
+// its parent, a list of several as :is()), and the at-rules' names. Any parse error throws, so nothing CSSTree cannot
+// read is kept as raw text and passed unchecked; a rule nested without `&` is one. A selector argument CSSTree keeps
+// raw (::cue()) is parsed as a selector list, and throws if it is not one.
 type Sheet = { declarations: Declaration[]; selectors: SelectorList[]; atrules: string[] };
 
 const refuse = (error: Error): never => {
@@ -56,7 +59,53 @@ const refuse = (error: Error): never => {
 };
 
 function selectorList(text: string): SelectorList {
-  return parseCss(text, { context: "selectorList", onParseError: refuse }) as SelectorList;
+  return readArguments(parseCss(text, { context: "selectorList", onParseError: refuse }) as SelectorList);
+}
+
+// `list` with each raw selector argument replaced by its parse.
+function readArguments(list: SelectorList): SelectorList {
+  const raw: [ListItem<CssNode>, List<CssNode>, string][] = [];
+  walkCss(list, (node, item, within) => {
+    if (node.type === "Raw") {
+      raw.push([item, within, node.value]);
+    }
+  });
+  for (const [item, within, text] of raw) {
+    within.replace(item, within.createItem(selectorList(text)));
+  }
+  return list;
+}
+
+// `own`, nested in `parent`, with each `&` node replaced by the parent (its one selector's nodes, or :is() of a list)
+// and a selector without one taken as relative to it (`& own`).
+function resolve(own: SelectorList, parent: SelectorList): SelectorList {
+  const full = clone(own) as SelectorList;
+  for (const selector of full.children) {
+    if (!contains(selector, (node) => node.type === "NestingSelector")) {
+      (selector as Selector).children.prependData({ type: "Combinator", name: " " });
+      (selector as Selector).children.prependData({ type: "NestingSelector" });
+    }
+  }
+  const nesting: [ListItem<CssNode>, List<CssNode>][] = [];
+  walkCss(full, (node, item, within) => {
+    if (node.type === "NestingSelector") {
+      nesting.push([item, within]);
+    }
+  });
+  for (const [item, within] of nesting) {
+    if (parent.children.size === 1) {
+      within.insertList((clone(parent.children.first!) as Selector).children, item);
+      within.remove(item);
+    } else {
+      const is: CssNode = {
+        type: "PseudoClassSelector",
+        name: "is",
+        children: new List<CssNode>().appendData(clone(parent)),
+      };
+      within.replace(item, within.createItem(is));
+    }
+  }
+  return full;
 }
 
 function readSheet(css: string): Sheet {
@@ -79,27 +128,24 @@ function readSheet(css: string): Sheet {
   const visit = (nodes: List<CssNode>, context: string[], rule: SelectorList | null, parent: SelectorList | null) => {
     for (const node of nodes) {
       if (node.type === "Declaration") {
-        const value = generate(node.value) + (node.important === false ? "" : " !important");
+        // `!important` is a part of its own, which no scale admits.
+        const important = node.important === false ? [] : ["!important"];
+        const value = [generate(node.value), ...important].join(" ");
         sheet.declarations.push({
           context,
           selector: context.join(" "),
           heading: rule !== null && headingRule(rule),
           property: node.property,
           value,
-          parts: node.value.type === "Value" ? node.value.children.toArray().map((part) => generate(part)) : [value],
+          parts: [
+            ...(node.value.type === "Value" ? node.value.children.toArray().map((part) => generate(part)) : [value]),
+            ...important,
+          ],
           commented: afterComment.has(node.loc!.start.offset),
         });
       } else if (node.type === "Rule") {
-        const own = node.prelude as SelectorList;
-        let full = own;
-        if (parent !== null) {
-          let nested = false;
-          walkCss(own, (inner) => {
-            nested ||= inner.type === "NestingSelector";
-          });
-          const outer = parent.children.size > 1 ? `:is(${generate(parent)})` : generate(parent);
-          full = selectorList((nested ? generate(own) : `& ${generate(own)}`).replaceAll("&", outer));
-        }
+        const own = readArguments(node.prelude as SelectorList);
+        const full = parent === null ? own : resolve(own, parent);
         sheet.selectors.push(full);
         visit(node.block.children, [...context, generate(own)], own, full);
       } else if (node.type === "Atrule") {
@@ -201,27 +247,53 @@ const HEADER_RULES = headerRules(HEADERS);
 const headerLinesOf = (path: string) =>
   HEADER_RULES.filter((rule) => matches(rule.pattern, path)).flatMap((rule) => rule.headers);
 
+// Whether a selector has a dialog compound that does not name it open, also inside a selector argument (:is(), :has()),
+// where an alternative's subject is open by its own [open] or by the [open] of the compound the argument is in.
+function closedDialog(selector: Selector, open = false): boolean {
+  const all = compounds(selector);
+  return all.some((compound, i) => {
+    const opened =
+      (open && i === all.length - 1) ||
+      compound.some((node) => node.type === "AttributeSelector" && node.name.name === "open");
+    return compound.some(
+      (node) =>
+        (node.type === "TypeSelector" && node.name === "dialog" && !opened) ||
+        argumentLists(node).some((list) =>
+          list.children.toArray().some((inner) => closedDialog(inner as Selector, opened)),
+        ),
+    );
+  });
+}
+
+// The selector lists a pseudo-class or pseudo-element takes as its argument (:is(), :has(), :nth-child(… of …)).
+function argumentLists(node: CssNode): SelectorList[] {
+  if ((node.type !== "PseudoClassSelector" && node.type !== "PseudoElementSelector") || node.children === null) {
+    return [];
+  }
+  return node.children.toArray().flatMap((child) => {
+    if (child.type === "SelectorList") {
+      return [child];
+    }
+    return child.type === "Nth" && child.selector !== null ? [child.selector] : [];
+  });
+}
+
 // Every full selector with a dialog compound that does not name it open: a rule that could give a closed dialog a
 // display.
 function closedDialogs(css: string): string[] {
   return readSheet(css)
     .selectors.flatMap((list) => list.children.toArray() as Selector[])
-    .filter((selector) =>
-      compounds(selector).some(
-        (compound) =>
-          compound.some((node) => node.type === "TypeSelector" && node.name === "dialog") &&
-          !compound.some((node) => node.type === "AttributeSelector" && node.name.name === "open"),
-      ),
-    )
+    .filter((selector) => closedDialog(selector))
     .map((selector) => generate(selector));
 }
 
-// The animation and transition declarations outside a prefers-reduced-motion: no-preference block.
+// The animation and transition declarations, vendor-prefixed ones included, outside a
+// prefers-reduced-motion: no-preference block.
 function motionOutside(css: string): string[] {
   return declarations(css)
     .filter(
       ({ context, property }) =>
-        /^(animation|transition)(-|$)/.test(property) &&
+        /^(-[a-z]+-)?(animation|transition)(-|$)/.test(property) &&
         !context.includes("@media (prefers-reduced-motion:no-preference)"),
     )
     .map(({ selector, property, value }) => `${selector} { ${property}: ${value} }`);
@@ -303,10 +375,19 @@ describe("the stylesheet", () => {
       ".x, dialog { gap: 0; }",
       "dialog { &[open] { gap: 0; } }",
       ".x { & dialog { gap: 0; } }",
+      // A dialog offered inside a selector argument, open or not by its own alternative.
+      ":is(dialog) { display: grid; }",
+      ":where(dialog) { display: grid; }",
+      ":is(dialog[open], .x dialog) { display: grid; }",
+      ".x:has(dialog) { gap: 0; }",
     ]) {
       expect(closedDialogs(css), css).toHaveLength(1);
     }
-    for (const css of ["dialog[open] { display: grid; }", "dialog[open]::backdrop, .x dialog[open] .y { gap: 0; }"]) {
+    for (const css of [
+      "dialog[open] { display: grid; }",
+      "dialog[open]::backdrop, .x dialog[open] .y { gap: 0; }",
+      ":is(dialog)[open], :where(dialog[open], .x) { gap: 0; }",
+    ]) {
       expect(closedDialogs(css), css).toEqual([]);
     }
   });
@@ -317,6 +398,8 @@ describe("the stylesheet", () => {
     for (const css of [
       "a { transition: color 1s; }",
       "a { animation-name: spin; }",
+      "a { -webkit-transition: opacity 1s; }",
+      "a { -webkit-animation: spin 1s infinite; }",
       "@media (prefers-reduced-motion: no-preference) { a { gap: 0; } } a { transition-delay: 1s; }",
       "@media screen and (prefers-reduced-motion: no-preference) { a { animation: spin 1s; } }",
       "@media (prefers-color-scheme: dark) { a { transition: color 1s; } }",
@@ -617,6 +700,9 @@ describe('the stylesheet’s scales (docs/web-pages.md, "UI rules")', () => {
       "a { line-height: 1.45; }",
       "a { font: 600 1rem sans-serif; }",
       "a { & b { gap: 1rem; } }",
+      "a { margin: var(--s3) !important; }",
+      "a { top: var(--s3) !important; }",
+      "a { border-radius: var(--r-card) !important; }",
       "a { border-radius: 8px; }",
       "a { color: #fff; }",
       "a { background: light-dark(#2228, #0009); }",
@@ -661,7 +747,14 @@ describe('the stylesheet’s scales (docs/web-pages.md, "UI rules")', () => {
   });
 
   it("refuses a stylesheet it cannot parse rather than skip what it could not read", () => {
-    for (const css of ["a { gap 9px; }", "a { gap: var(--s3; }", "a { .b { gap: 9px; } }", "a, { gap: 9px; }"]) {
+    for (const css of [
+      "a { gap 9px; }",
+      "a { gap: var(--s3; }",
+      "a { .b { gap: 9px; } }",
+      "a, { gap: 9px; }",
+      // A raw selector argument that is no selector list.
+      "::cue(1px) { gap: 9px; }",
+    ]) {
       expect(() => offScale(css), css).toThrow(/is expected/);
     }
     expect(offScale("a { gap: 9px; }")).toHaveLength(1);
@@ -896,15 +989,25 @@ const BUTTON_KINDS = new Set(["primary", "quiet", "danger", "icon", "alt"]);
 const isButton = (node: CssNode) =>
   (node.type === "TypeSelector" && node.name === "button") || (node.type === "ClassSelector" && node.name === "btn");
 
+// Whether a compound is a button: by its type or .btn, or by an :is() or :where() offering either. A compound that
+// only relates to a button (:has(), :not()) is not one.
+const buttonCompound = (compound: CssNode[]) =>
+  compound.some(
+    (node) =>
+      isButton(node) ||
+      (node.type === "PseudoClassSelector" &&
+        (node.name === "is" || node.name === "where") &&
+        contains(node, isButton)),
+  );
+
 // Every class a compound that is a button puts on it, wherever in the compound it is written (before or after the
-// type, after a pseudo-class, inside :is() or :where()): a compound is a button by its type or by .btn, at any depth
-// (an :is() or :where() offering either).
+// type, after a pseudo-class, inside :is() or :where() or a pseudo-element's argument).
 function buttonModifiers(css: string): string[] {
   return readSheet(css)
     .selectors.flatMap((list) => list.children.toArray() as Selector[])
     .flatMap((selector) =>
       compounds(selector).flatMap((compound) => {
-        if (!compound.some((node) => contains(node, isButton))) {
+        if (!buttonCompound(compound)) {
           return [];
         }
         const classes: string[] = [];
@@ -959,6 +1062,8 @@ describe("the stylesheet’s classes", () => {
     // Not a literal: a class built from a value, or named in a comment.
     const built: Source[] = [{ path: "src/y.ts", text: "// av40\nexport const c = (n: number) => `av${n}`" }];
     expect(unusedClasses(".av40 {}", built)).toEqual(["av40"]);
+    // A class inside a selector argument CSSTree keeps unparsed (::cue()).
+    expect(unusedClasses("::cue(.unused-x) {}", [])).toEqual(["unused-x"]);
   });
 
   it("gives buttons only their kinds: primary, quiet, danger and icon, and the ALT badge", () => {
@@ -976,6 +1081,18 @@ describe("the stylesheet’s classes", () => {
     for (const css of [".ghost.btn {}", "button:hover.ghost {}", ".btn:is(.ghost) {}", ":where(button).ghost {}"]) {
       expect(buttonModifiers(css), css).toEqual(["ghost"]);
     }
+    expect(buttonModifiers("video.btn::cue(.ghost) {}")).toEqual(["ghost"]);
+    // A compound only containing a button (:has()) is not one.
+    expect(buttonModifiers(".who:has(button) {} .x:not(.btn) {}")).toEqual([]);
+    // Nesting replaces `&` itself, not an `&` inside a string.
+    const nested = readSheet('button { &[data-label="&"].ghost {} } .a, .b { & > [title="&"] {} }').selectors;
+    expect(nested.map((list) => generate(list))).toEqual([
+      "button",
+      'button[data-label="&"].ghost',
+      ".a,.b",
+      ':is(.a,.b)>[title="&"]',
+    ]);
+    expect(buttonModifiers('button { &[data-label="&"].ghost {} }')).toEqual(["ghost"]);
   });
 });
 
