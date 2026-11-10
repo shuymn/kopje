@@ -327,7 +327,7 @@ ${DISTRIBUTABLE_SQL}`, never the literals.
 | R35 quotes                   | `quoteReads` (`audience.ts`): each quote's state and quoted status by `visibleSql`, `domainBlocksSql`, `blocksSql` and `mutesSql` for the viewer, read by the presenter (`status-presenter.ts`) for a response's statuses and originals, then for the quoted statuses it embeds; a `DELETE` response's source reads the quoted status in any state. The quotes list (`statusQuotes` in `statuses.ts`): `viewable` (R3) for the quoted status, then one window of accepted quotes (`acceptedQuoteWindow` in `quotes.ts`) under `listableSql` (R8), or `visibleSql` (R2) for the quoted author.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | R36 quote policies           | `quotePolicySql` (`audience.ts`) answers the policy flags (Mastodon's `Status#quote_policy_for_account`); `mayQuoteSql` checks visibility, ownership, boosts and account/domain blocks, and alone decides an inbound QuoteRequest. `storedQuotePolicy` stores nobody unless public or unlisted; `remoteQuotePolicy` stores a remote Note's; `quote_approval` shows the flags (a boost its original's) and `current_user` by `quoteApprovalReads` (R36 for the viewer). Posting a quote (`preparePost` in `statuses.ts`) applies `mayQuoteSql`. See the policy rules above.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R37 admin views              | Only the OAuth admin (`adminAccountId`, `admin-authority.ts`: the one local account whose email matches `admin_email`, failing closed), through a token covering the route's admin scope, reads or acts through `/api/v1/admin/*` (`adminReadOperation`, `adminWriteOperation` in `auth.ts`, checked in the operation's transaction, and only for the permissions in `ADMIN_PERMISSIONS`). The admin sees every report and its accounts (`presentAdminAccounts`, local emails included); a report's statuses only while its reporter may still see them (`accountStatusIds` with `viewerOf(admin, reporter)`, or for a remote reporter `remoteReportStatusIds` with its domain), presented with the admin as the viewer. With manage_users, the admin lists and shows every account, local and remote, with each local account's email (`listAdminAccounts`, `getAdminAccount` in `admin-accounts.ts`); an unavailable account (R1) is shown as suspended. It suspends and unsuspends local accounts other than its own (`actOnAccount`, `unsuspendAdminAccount`; `suspension.ts`), which makes them unavailable (R1) and fences their tokens; the Access admin unsuspends too (`unsuspendAccount`). An action of type `none` warns a local target other than its own (R42). The admin alone is shown a report's `admin.report` notification (R15). |
-| R38 instance suspension      | `suspendRemote`/`unsuspendRemote` and the jobs in `remote-suspension.ts`; `availableSql` makes a suspended account unavailable (R1) from the commit, and a `suspend` block every account it covers by either key (a host's rule is its longest matching block). The inbox gate (`receive` in `inbox.ts`), `upsertRemoteActor` and `storeRemoteStatus` gate inbound work; a running `Move` from it stops, `answerFollowRequest` refuses it and `listFollowRequests` leaves it out. Unsuspension restores availability, not what was severed. See the remote suspension paragraphs below and "Instance domain blocks".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| R38 instance suspension      | `suspendRemote`/`unsuspendRemote` and the jobs in `remote-suspension.ts`; `availableSql` makes a suspended account unavailable (R1) from the commit, and a `suspend` block every account it covers by either key (a host's rule is its longest matching block). The inbox gate (`receive` in `inbox.ts`), `upsertRemoteActor` and `storeRemoteStatus` gate inbound work; a running `Move` from it stops, `answerFollowRequest` refuses it and `listFollowRequests` leaves it out. Unsuspension restores availability when no `suspend` block still covers the account, not what was severed. See the remote suspension paragraphs below and "Instance domain blocks".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | R39 suggestions              | `suggestionSourceSql` and `suggestionCandidateSql`, then `listedForSql` (R12), in `suggestions` (`suggestions.ts`, `GET /api/v1/suggestions` and `/api/v2/suggestions`); see "Suggestions" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | R40 announcements            | `announcementShownSql` (`audience.ts`), in `announcements.ts` alone (the only module that reads or writes the three tables): a published announcement is shown to every signed-in local user alike, unpublished announcements are omitted from the list and answer 404 to dismiss and reaction requests; dismissals and a reaction's `me` are the viewer's own, counts are everyone's; mentions name available accounts only (R1); the text is the operator's own. No per-viewer filter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | R41 trends                   | `trendableStatusSql` (`audience.ts`) and `trendAllowedTagSql` / `trendAllowedStatusSql` / `trendAllowedLinkSql` (`trends.ts`), in `trends.ts` alone (the only module that reads or writes the eight trend tables): the trending statuses are each author's top-scoring stored rows, allowed (its review, its author's, the default) and trendable, the top 200, then the list rule (R8; R2 with no viewer); hashtags count public originals of available accounts only, links plain public originals of available authors and their public boosts by available boosters (VIS-12), both the same for everyone; a listed link shows its qualifying public copy's card; see "Trends" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -447,8 +447,8 @@ report under the Flag's id, once. Its named statuses are attached by the remote 
 Mastodon's `ReportService#reported_status_ids` for a remote source): the reported account's originals that are public
 or unlisted, private ones while the account has an accepted follower on the reporter's domain (two bounded probes), and
 any that itself mentions an account there. The admin is shown them while they still pass; the report's `status_ids`
-keep what was admitted. A domain block with `reject_reports` refuses the Flag, and one actor's unresolved reports are
-capped (RES-7).
+keep what was admitted. A domain block with `reject_reports` ruling the reporter's stored domain refuses the Flag
+(reason `reports-rejected`, nothing written), and one actor's unresolved reports are capped (RES-7).
 
 A report also notifies the OAuth admin (`admin.report`, Mastodon's `ReportService#notify_staff!`) when no other report
 of the same account is unresolved; the notification carries the report as its reporter sees it, and R15 shows it to
@@ -481,7 +481,8 @@ redacted and as suspended (presentation reads availability live, in the query th
 suspend it: not suspended, or only being deleted). Kopje does not fetch the account again at unsuspension, as Mastodon
 does. The suspension resets the account's one job row (`remote_moderation_jobs`) in its transaction, freezing the
 newest follow, report and moderation log id; each round first requires that the account is still individually
-suspended, so an unsuspension ends the job, and a suspension again restarts it. The job resolves the reports frozen
+suspended, so an unsuspension ends the job, and a suspension again, also of an account already suspended (Mastodon's
+`suspend!` runs again), restarts it from its reports stage with fresh bounds. The job resolves the reports frozen
 at the suspension (VIS-29's fence), then ends the account's follows of local accounts up to the follow bound: an
 accepted follow with a withdrawing `Reject` (VIS-3, a retraction, so neither admission nor the send-time check
 refuses it), a request by deleting it without one. The `Reject` goes to the follower's current inbox alone (its shared
@@ -490,7 +491,19 @@ not to the earlier receivers of the `Accept`s it withdraws: a Follow's answer ma
 Before it is recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after
 it. Local accounts' follows of it are kept; their `Follow` and any other content to it is dropped at send time
 (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted
-in bounded steps before the follow ends.
+in bounded steps before the follow ends. Severing a remote follower's follow or request deletes its `follow` and
+`follow_request` notifications and records its `Follow` id as retracted (ID-7), so a redelivery of it is refused
+while that retraction lives: not for a Misskey pair id, which is never recorded, nor when the id was not recorded yet
+and the follower is at its retraction cap, where the follow is severed all the same.
+
+Once the account job ends, the account's availability and `suspension_source` are a function of the final decisions
+alone (the account's suspension source and the blocks), whatever the order of decisions and rounds; its exact
+`suspended_at` is not, since a suspension writes its own time and a conversion keeps the one it finds. What the job
+severed and resolved is not either: severing is monotone per follow generation (a follow row), so a generation severed
+while the job held stays severed after the suspension is lifted, and which generations were severed depends on the
+order of the decisions and the rounds. Reports are resolved a batch per round (`REPORT_ROUND`), each committed round
+under its job generation's fence: a job ended or reset meanwhile keeps the batches already resolved and leaves the
+rest open, or to the next generation's fence.
 
 Unsuspending an account that a `suspend` block still covers answers 200 and converts the suspension: the
 account keeps `suspended_at` with `suspension_source = 'domain'`, so it stays unavailable and the entity shows
@@ -502,10 +515,12 @@ ends the job at its next round. An account held only by a domain mark answers 40
 Inbound, the gate runs in every round after the deleted-actor check and before the actor upsert: a verified document
 of an individually suspended actor updates only its inbox and shared inbox, so the job's `Reject` reaches a current
 inbox; then only its `Delete`, `DeleteActor`, `Undo` and `Reject` apply, with its stored row, which only remove state
-(a `Reject` of a local follow of it must apply, since those follows are kept). Mastodon also applies its `Update`;
-Kopje does not. `upsertRemoteActor` never refreshes an unavailable account's profile, keys or domain, on any path
-(search resolution, quotes, Announce originals, Move targets), and `storeRemoteStatus` stores nothing of an
-unavailable author.
+(a `Reject` of a local follow of it must apply, since those follows are kept); anything else is ignored with the
+reason `actor-suspended`, for an actor an instance domain block covers too. Mastodon also applies its `Update`; Kopje
+does not. Through the API, following an unavailable account (R1, a suspended one included) answers 404, and so do
+authorizing and rejecting a request from one (`answerFollowRequest`). `upsertRemoteActor` never refreshes an
+unavailable account's profile, keys or domain, on any path (search resolution, quotes, Announce originals, Move
+targets), and `storeRemoteStatus` stores nothing of an unavailable author.
 
 ### Local custom emoji
 
@@ -668,7 +683,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   `MAX_DOMAIN_BLOCKS_LIMIT` (500) blocks. The domain is validated on create only, since an update never changes it: a
   raw domain longer than `MAX_DOMAIN_INPUT` is refused before it is normalized, a normalized one beyond Mastodon's 255
   characters or 63 per label is invalid, and one deeper than `MAX_BLOCK_LABELS` is refused before any ruling block is
-  looked up. `reject_reports` refuses inbound Flags from domains ruled by that block (R34). `reject_media` keeps the
+  looked up. `reject_reports` refuses inbound Flags whose reporter's stored domain is ruled by that block (R34; the
+  actor host is not read, as for `reject_media`). `reject_media` keeps the
   media of the domains ruled by that block out of the remote media cache (below). `obfuscate` changes only how the
   public block list shows the domain.
 - **reject_media** (Mastodon's `DomainBlock.reject_media?`): the rule of a domain, its longest matching block as for
@@ -706,7 +722,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
 - **Precedence.** The rule of a host is the block on the host itself or on its nearest parent, the longest match
   (Mastodon's `DomainBlock.rule_for`). A host is covered when its rule is a `suspend`, so a child `noop` exempts its
   subdomain tree from a parent's `suspend`. Creating a block follows Mastodon's refusals: a domain already blocked, or
-  one whose ruling block is at least as strict (`stricter_than?`).
+  one whose ruling block is at least as strict (`stricter_than?`). An update checks no conflict: it keeps the domain
+  and may set any severity whatever its parents' and children's blocks are.
 - **The label bound.** A stored block has at most `MAX_BLOCK_LABELS` (8) labels (the table's CHECK; the create
   operation refuses a deeper one), so a host's rule is among its suffixes of at most 8 labels, and a deeper host is
   still matched by them. `hostCoveredSql` walks a host's suffixes from the longest and stops at the first one a block
@@ -734,15 +751,24 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always removed in
     one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round,
     one resumed from the round before included. An individually suspended account is skipped, so its local follows
-    are kept (`account` wins). **Limit (imported lists):** the memberships are removed before the follow ends,
+    are kept (`account` wins; for Mastodon's rule, see [mastodon-deviations.md](mastodon-deviations.md), remote
+    suspension). **Limit (imported lists):** the memberships are removed before the follow ends,
     and nothing restores them. A follower imported with more than about 259 lists that include a covered account
     needs several rounds for them; if the block is lifted meanwhile (an unblock, or a conversion back to an
     individual suspension), the follow can survive with some of those list memberships removed.
 
   No account is stored or moves into a covered domain, so the last walk after the last reset finds every covered
-  account, and whatever the order of transitions and rounds, marks and severing agree with the blocks once the job
-  ends. Severing is never reversed, as in Mastodon. Every round reads at most `MARK_WINDOW` accounts or `CLEAR_ROUND`
-  (500) suspended accounts, and `SEVER_ROUND` follows, and writes at most `MODERATION_ROUND_ROWS`.
+  account. Once the job ends, the domain marks (`suspension_source = 'domain'`; not their exact `suspended_at`) and
+  availability are a function of the final decisions alone (the blocks, each account's suspension source), whatever
+  the order of transitions and rounds, and every covered account it did not skip as individually suspended has its
+  follows up to the last reset's bound severed. A skipped account that is converted later is severed by its own
+  account job (mode `domain`), so the follows of every covered account that is not individually suspended, up to the
+  bounds of the jobs that reached it, are severed only once all moderation jobs have drained after the final decisions;
+  an individually suspended account's job keeps local accounts' follows of it. Severing is monotone per follow generation (a follow row) and never reversed, as in
+  Mastodon: a generation severed while its account was covered stays severed after the block is lifted, so which
+  generations were severed depends on the order of the decisions and the rounds. Every round reads at most `MARK_WINDOW`
+  accounts or `CLEAR_ROUND` (500) suspended accounts, and `SEVER_ROUND` follows, and writes at most
+  `MODERATION_ROUND_ROWS`.
 
 - **The admin's lists.** `status=active` walks `accounts_active` and `status=suspended` `accounts_suspended`, which
   hold or leave out marked accounts; while the domain job exists both answer 503 with `Retry-After: 30` and the error

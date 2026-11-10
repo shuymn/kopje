@@ -483,6 +483,25 @@ Admin account actions (`POST /api/v1/admin/accounts/:account_id/action`):
   `LocalNotificationWorker` runs.
 - The push title of a `moderation_warning` is the account's name; Mastodon's English locale has no subject for it.
 
+Remote suspension and instance domain blocks (`POST /api/v1/admin/accounts/:account_id/action` and `/unsuspend` for a
+remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility.md)):
+
+- A `suspend` block deletes no content of the accounts it covers: they are unavailable while it lasts, and their
+  statuses and profiles show again once it is lifted. Mastodon's `BlockDomainService#suspend_accounts!` runs
+  `DeleteAccountService`, which keeps only reported statuses.
+- A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
+  `Account.by_domain_and_subdomains` of the suspending block.
+- Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
+- Severity `silence` is refused with 422 on create and update.
+- A suspended actor's `Update` is not applied, as no profile of an unavailable account is refreshed; Mastodon's
+  `process_collection_service.rb` applies it.
+- Unsuspension does not fetch the account again; Mastodon's `unsuspend_account_service.rb` refetches it.
+- Unsuspending an individually suspended account that a `suspend` block covers converts its suspension to a domain
+  mark and keeps it unavailable, and an account held by a domain mark alone answers 403. Mastodon's admin unsuspend
+  clears the suspension directly, and `UnblockDomainService` lifts only suspensions whose timestamp equals the block's
+  `created_at`, so there an individual suspension with any other timestamp survives the unblock, as Kopje's
+  individual suspension does (`account` wins), and one with that timestamp does not.
+
 Request parameters:
 
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
@@ -642,6 +661,25 @@ Removing a favourite or bookmark (`POST /api/v1/statuses/:id/unfavourite` and `/
   404 in both. Without a favourite or bookmark the answer follows VIS-1: an author who blocks the viewer hides every
   visibility, where Mastodon's `show?` still shows a private, direct or limited status to a mentioned viewer. Accepted,
   2026-10-27.
+
+Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
+`docs/threat-model.md`):
+
+- A retraction lasts 30 days, so a `Create` replayed after that is accepted again. Mastodon's `Tombstone` has no expiry
+  (`delete.rb`, `create.rb`, `update.rb`) and is cleared when the account's key changes (`process_account_service.rb`).
+  Permanent tombstones, the wildcard ones included, would grow without bound.
+- A `Delete` of an object Kopje does not hold is recorded for its sender only. In Mastodon, which checks only that the
+  object's host is the sender's (`delete.rb`), another actor's `Delete` leaves a `Tombstone` that also blocks the
+  author's later `Create`.
+- An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
+  `updated`, else `edited_at`, else `published`); one whose version is equal or missing still refreshes the poll, the
+  quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!` does. Mastodon moves `edited_at`
+  only on a significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an
+  older content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
+  Mastodon's behaviour is an ordering bug.
+- An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
+  Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
+  again when the receiver's clock catches up.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):
