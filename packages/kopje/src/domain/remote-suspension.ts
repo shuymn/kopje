@@ -32,8 +32,10 @@ import { RowBudget } from "./row-budget";
 //   - mode 'account', set by a suspension: the account's suspended_at with suspension_source 'account' make it
 //     unavailable (R1, availableSql) from the commit on; each round requires that it is still individually suspended.
 //       - reports: resolves the account's reports the suspension froze (reports.ts resolveSuspensionReports, VIS-29).
-//       - follows: ends the account's follows of local accounts up to the follow bound (severing, below). Local
-//         accounts' follows of it are kept, and an unsuspension restores nothing that was severed.
+//       - follows: ends the account's accepted follows of local accounts up to the follow bound (severing, below).
+//         Its requests are kept, as SuspendAccountService#reject_remote_follows! keeps FollowRequests: unanswerable
+//         and unlisted while it is unavailable (answerPendingFollow, listFollowRequests), answerable again after an
+//         unsuspension. Local accounts' follows of it are kept, and an unsuspension restores nothing that was severed.
 //   - mode 'domain', set by the conversion: an unsuspension of an account a suspend block still covers keeps it
 //     suspended, as a domain mark (suspension_source 'domain'), and redirects the job with a fresh follow bound; each
 //     round requires the mark and live coverage. It severs both ways (out, then in), as the domain job severs a covered
@@ -54,10 +56,12 @@ import { RowBudget } from "./row-budget";
 // permitted refresh of a marked account clears its stale mark (upsertRemoteActor).
 //
 // Severing an account (sever): out, its follows of local accounts (follows_pair, by target), then in, local
-// accounts' follows of it (follows_target, by state and id), each up to the follow bound. A remote follower's accepted
-// follow ends with a withdrawing Reject to its current inbox alone (its shared inbox when known, else its personal
-// one), as Mastodon sends it; its request is deleted without one; a local follower's follow or request ends with its
-// Undo (blocks.ts severFollow). Row existence decides, so an Undo, a purge, a user's domain block cleanup or another
+// accounts' follows of it (follows_target, by state and id), each up to the follow bound; mode 'account' severs out
+// only and passes over requests, which it reads all the same. A remote follower's accepted follow ends with a
+// withdrawing Reject to its current personal inbox alone, as Mastodon's reject_remote_follows! and
+// DeleteAccountService send it to inbox_url; a request a domain mode severs is deleted without one, as
+// DeleteAccountService purges FollowRequests; a local follower's follow or request ends with its Undo (blocks.ts
+// severFollow). Row existence decides, so an Undo, a purge, a user's domain block cleanup or another
 // job that removed the follow first sends nothing more. Every round reads at most SEVER_ROUND follows and writes at
 // most MODERATION_ROUND_ROWS rows (moderation-bounds.ts, counted with total_changes). Ending a follow has two parts:
 //   - preparatory steps (prepared), each bounded by the round's room above SEVER_ROWS: every write of variable size
@@ -80,7 +84,7 @@ export const SEVER_ROUND = 100;
 // Rows the final step of ending a follow writes at most, its preparatory steps done, with the job's own update: 40
 // for the follow and its bookkeeping, which write 9 at most: the follow, its follow and follow_request notifications
 // (one each at most, notifications_natural; no push delivery left), the two counts, the retraction, the activity's
-// intent and its one chunk (one target: the remote account's current inbox; no earlier receivers), the earlier
+// intent and its one chunk (one target: the remote account's current personal inbox; no earlier receivers), the earlier
 // activities left to supersede (none), and the job's update; 1 for the follow delete's triggers, which for a local
 // follower remove its pin of the account (account_pins_follow_ended) and, its list memberships of the account already
 // deleted in preparatory steps, no list row (list_members_follow_ended); and 3 × EXPANSION_STEP for the expansion
@@ -351,14 +355,15 @@ function readSide(
   };
 }
 
-// Severs `account`'s follows from `side` up to `bound` (above), out only or both ways, within the round's budget.
+// Severs `account`'s follows from `side` up to `bound` (above), within the round's budget: in mode 'account'
+// (`domain` false) out only, passing over its requests, which stay; in mode 'domain' both ways, its requests included.
 // Returns the side where it stopped, or null when done, and whether an activity was recorded.
 function sever(
   db: Db,
   account: string,
   bound: string,
   side: Side,
-  both: boolean,
+  domain: boolean,
   spent: Budget,
   now: number,
 ): { side: Side | null; recorded: boolean } {
@@ -371,7 +376,7 @@ function sever(
     const { rows, next } = readSide(db, account, at, bound, spent.reads);
     spent.reads -= rows.length;
     for (const follow of rows) {
-      if (follow.bounded === 1) {
+      if (follow.bounded === 1 && (domain || follow.state === "accepted")) {
         if (!prepared(db, follow, spent.room) || spent.room() < 0) {
           return { side: at, recorded };
         }
@@ -383,7 +388,7 @@ function sever(
       // Read up to the budget: there may be more on this side.
       return { side: at, recorded };
     }
-    if (at.dir === "in" || !both) {
+    if (at.dir === "in" || !domain) {
       return { side: null, recorded };
     }
     at = { dir: "in", cursor: "" };

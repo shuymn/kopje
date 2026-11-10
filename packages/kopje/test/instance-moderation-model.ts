@@ -315,16 +315,19 @@ export function obligations(job: JobRow, snap: Snapshot): Obligation[] {
   const bound = big(job.followBound);
   const remotes = remoteById(snap);
   const member = new Set(snap.members.map((m) => `${m.follower} ${m.target}`));
-  // Both ways of `a`, up to the bound: its follows of local accounts (out, by target), local accounts' follows of it
-  // (in, by state and id), each with its list membership's removal first.
-  const severing = (a: string, both: boolean, at: (part: 1 | 2, f: Snapshot["follows"][number]) => Key) => {
+  // A domain mode severs both ways of `a`, up to the bound: its follows and requests of local accounts (out, by
+  // target), local accounts' follows of it (in, by state and id), each with its list membership's removal first. Mode
+  // `account` severs its accepted follows out only: its requests are kept (visibility.md R38).
+  const severing = (a: string, domain: boolean, at: (part: 1 | 2, f: Snapshot["follows"][number]) => Key) => {
     for (const f of snap.follows) {
       if (big(f.id) > bound) {
         continue;
       }
       if (f.follower === a) {
-        out.push({ kind: "sever", subject: f.id, key: at(1, f) });
-      } else if (both && f.target === a) {
+        if (domain || f.state === "accepted") {
+          out.push({ kind: "sever", subject: f.id, key: at(1, f) });
+        }
+      } else if (domain && f.target === a) {
         out.push({ kind: "sever", subject: f.id, key: at(2, f) });
         if (member.has(`${f.follower} ${a}`)) {
           out.push({ kind: "prepare", subject: `${f.follower} ${a}`, key: at(2, f) });
@@ -561,8 +564,8 @@ export function settlementFailures(snap: Snapshot, fences: ReadonlyMap<string, J
       }
     }
     if (a.source === "account") {
-      if (snap.follows.some((f) => f.follower === a.id)) {
-        failures.push(`individually suspended account ${a.id} keeps a follow of a local account`);
+      if (snap.follows.some((f) => f.follower === a.id && f.state === "accepted")) {
+        failures.push(`individually suspended account ${a.id} keeps an accepted follow of a local account`);
       }
       const fence = fences.get(a.id);
       if (fence !== undefined) {
