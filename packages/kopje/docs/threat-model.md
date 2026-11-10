@@ -3937,8 +3937,11 @@ heap).
   ids, fences and epochs: the moderation log's ids and the report fence (`logAction` in `src/domain/moderation-log.ts`,
   `actionBound` and `resolveSuspensionReports` in `src/domain/reports.ts`), credential epochs (`src/domain/suspension.ts`,
   `consumeCode` in `src/domain/oauth.ts`), push subscription ids (the tokens round, `completePush` in
-  `src/domain/push.ts`), the inserted notification's id passed to push selection, a new conversation's id, instance
-  domain block ids, and favourite and Like ids (`src/domain/inbox.ts`); `test/integer-ids.test.ts` and
+  `src/domain/push.ts`), the inserted notification's id passed to push selection, the inbound doorbell's marks
+  (`outboundSince` in `src/domain/inbox.ts`), a new conversation's id and streaming sequence, instance domain block ids,
+  and favourite and Like ids (`src/domain/inbox.ts`). A requested INTEGER key past 2^63 - 1 names no row
+  (`isIntegerKey` in `src/domain/ids.ts`), and a suspension from the largest epoch throws and rolls back;
+  `test/integer-ids.test.ts` and
   `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
   without a specific recipient are signed by the instance actor; fetches for a personal inbox by the recipient's key;
