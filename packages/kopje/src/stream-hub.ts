@@ -1,4 +1,5 @@
 import { noteActivity } from "./domain/auth";
+import { compareIntegers, isIntegerText } from "./domain/ids";
 import { keepInstanceActivity } from "./domain/instance-activity";
 import { JOURNAL_SPAN } from "./domain/stream-journal";
 import {
@@ -94,8 +95,8 @@ type Attachment = {
   tokenHash: string;
   accountId: string;
   grant: StreamGrant;
-  since: number;
-  convSeq: number;
+  since: string;
+  convSeq: string;
   rate: { window: number; count: number };
   subs: string[];
   tags: Record<string, string>;
@@ -108,7 +109,7 @@ type Socket = { ws: WebSocket; at: Attachment };
 type Unit = { subject: StreamSubject; viewer: string; sockets: Socket[]; lists: string[]; feeds: string[] };
 
 // A scan's walk: the position as this turn moved it, and an event passed over whose position write is pending.
-type Walk = { from: StreamPosition; skipTo: StreamPosition | null; ceiling: number };
+type Walk = { from: StreamPosition; skipTo: StreamPosition | null; ceiling: string };
 
 // A delete's units are read this many viewers at a time (at most 41 units each).
 const DELETE_PAGE = 8;
@@ -275,7 +276,7 @@ export class StreamHub {
       accountId,
       grant: accepted.grant,
       since: accepted.since,
-      convSeq: 0,
+      convSeq: "0",
       rate: { window: Date.now(), count: 0 },
       subs: [],
       tags: {},
@@ -379,7 +380,7 @@ export class StreamHub {
             ...current,
             subs: [...current.subs, key],
             tags: raw === null ? current.tags : { ...current.tags, [key]: raw },
-            convSeq: key === "direct" ? (registered.convSeq ?? 0) : current.convSeq,
+            convSeq: key === "direct" ? (registered.convSeq ?? "0") : current.convSeq,
           },
     );
   }
@@ -554,7 +555,7 @@ export class StreamHub {
       }
       const scan = await this.#run(streamEvents, { limit: SCAN });
       budget.charge({ checks: 1 });
-      if (!full && scan.head - scan.tail >= JOURNAL_SPAN - 1) {
+      if (!full && BigInt(scan.head) - BigInt(scan.tail) >= BigInt(JOURNAL_SPAN - 1)) {
         full = true;
         console.warn({ event: "kopje.stream.journal-full", head: scan.head, tail: scan.tail });
       }
@@ -570,7 +571,7 @@ export class StreamHub {
       }
       if (scan.events.length < SCAN) {
         const { from } = state;
-        const finished = from.account === null ? from.event : from.event - 1;
+        const finished = from.account === null ? from.event : String(BigInt(from.event) - 1n);
         // What is left to prune takes further turns, a bounded batch each.
         return (await this.#run(streamPrune, { upTo: finished })).more;
       }
@@ -625,9 +626,9 @@ export class StreamHub {
             if (ceiling === null) {
               return "lost";
             }
-            state.from = { event: event.id, subject: 0, account: event.subject };
+            state.from = { event: event.id, subject: "0", account: event.subject };
             state.ceiling = ceiling;
-            after = { account: event.subject, subject: 0 };
+            after = { account: event.subject, subject: "0" };
           }
           units = await this.#conversationUnits(event.subject, sockets, after.subject, state.ceiling);
           budget.charge({ checks: 1 });
@@ -637,7 +638,7 @@ export class StreamHub {
       } else {
         units = this.#units(
           event,
-          event.viewers.map((viewer) => ({ viewer, subject: { index: 0, id: event.subject } })),
+          event.viewers.map((viewer) => ({ viewer, subject: { index: "0", id: event.subject } })),
         );
         // The event's viewers after the position were all read: none is left to pass over.
         after = null;
@@ -654,7 +655,7 @@ export class StreamHub {
         const last = !more && i === units.length - 1;
         const to = {
           event: event.id,
-          subject: last ? 0 : unit.subject.index,
+          subject: last ? "0" : unit.subject.index,
           account: last ? null : unit.viewer,
         };
         if (!(await this.#unit(event, unit, state.from, to, budget))) {
@@ -668,7 +669,7 @@ export class StreamHub {
       }
     }
     if (state.from.event !== event.id || state.from.account !== null) {
-      state.skipTo = { event: event.id, subject: 0, account: null };
+      state.skipTo = { event: event.id, subject: "0", account: null };
     }
     return "next";
   }
@@ -698,7 +699,8 @@ export class StreamHub {
       let found = selected.get(viewer);
       if (found === undefined) {
         const sockets = this.#open(accountTag(viewer)).filter(
-          ({ at }) => at.since < event.id && at.subs.some((sub) => mayCarry(event.kind, at.grant, sub)),
+          ({ at }) =>
+            compareIntegers(at.since, event.id) < 0 && at.subs.some((sub) => mayCarry(event.kind, at.grant, sub)),
         );
         const subscribed = sockets.flatMap(({ at }) => at.subs.flatMap((sub) => keyList(sub) ?? []));
         const feeds = new Set(sockets.flatMap(({ at }) => at.subs.filter(isFeedKey)));
@@ -717,22 +719,28 @@ export class StreamHub {
   // change's sequence, and goes to the sockets whose convSeq is below it. Use convSeq (what the socket has been sent,
   // set from the owner's mark on subscribe), not `since`: a change written after it opened may join a row journaled
   // before.
-  async #conversationUnits(owner: string, sockets: Socket[], position: number, ceiling: number): Promise<Unit[]> {
-    const lowest = Math.min(...sockets.map(({ at }) => at.convSeq));
+  async #conversationUnits(owner: string, sockets: Socket[], position: string, ceiling: string): Promise<Unit[]> {
+    // Each sequence parsed once, exactly (DATA-6).
+    const sent = sockets.map(({ at }) => BigInt(at.convSeq));
+    const lowest = sent.reduce((a, b) => (a <= b ? a : b));
+    const within = BigInt(position);
     const changes = await this.#run(streamConversations, {
       accountId: owner,
-      after: Math.max(lowest, position),
+      after: String(lowest >= within ? lowest : within),
       upTo: ceiling,
       limit: CONVERSATIONS_PER_TURN,
     });
     return changes
-      .map(({ id, seq }) => ({
-        subject: { index: seq, id },
-        viewer: owner,
-        sockets: sockets.filter(({ at }) => at.convSeq < seq),
-        lists: [],
-        feeds: [],
-      }))
+      .map(({ id, seq }) => {
+        const change = BigInt(seq);
+        return {
+          subject: { index: seq, id },
+          viewer: owner,
+          sockets: sockets.filter((_, i) => sent[i]! < change),
+          lists: [],
+          feeds: [],
+        };
+      })
       .filter((unit) => unit.sockets.length > 0);
   }
 
@@ -806,7 +814,10 @@ export class StreamHub {
     }
     if (kind === "conversation") {
       for (const { ws } of unit.sockets) {
-        this.#update(ws, (at) => ({ ...at, convSeq: Math.max(at.convSeq, unit.subject.index) }));
+        this.#update(ws, (at) => ({
+          ...at,
+          convSeq: compareIntegers(at.convSeq, unit.subject.index) >= 0 ? at.convSeq : unit.subject.index,
+        }));
       }
     }
     let sent = 0;
@@ -907,8 +918,8 @@ function peek(ws: WebSocket): Attachment | null {
     grant !== null &&
     typeof grant.statuses === "boolean" &&
     typeof grant.notifications === "boolean" &&
-    Number.isSafeInteger(at.since) &&
-    Number.isSafeInteger(at.convSeq) &&
+    isIntegerText(at.since) &&
+    isIntegerText(at.convSeq) &&
     typeof rate === "object" &&
     rate !== null &&
     Number.isFinite(rate.window) &&

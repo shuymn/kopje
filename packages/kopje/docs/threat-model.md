@@ -3948,10 +3948,17 @@ heap).
   `consumeCode` in `src/domain/oauth.ts`), push subscription ids (the tokens round, `completePush` in
   `src/domain/push.ts`), the inserted notification's id passed to push selection, the inbound doorbell's marks
   (`outboundSince` in `src/domain/inbox.ts`), a new conversation's id and streaming sequence, instance domain block ids,
-  and favourite and Like ids (`src/domain/inbox.ts`). A requested INTEGER key past 2^63 - 1 names no row
-  (`isIntegerKey` in `src/domain/ids.ts`), and an increment past it, of a credential epoch by a suspension or of a
-  conversation streaming mark by a conversation write, throws and rolls back (`requireExactIncrement`);
-  `test/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
+  favourite and Like ids (`src/domain/inbox.ts`), the streaming journal's ids, the fan-out's position, a conversation
+  event's ceiling and the sockets' change sequences (`src/domain/streaming.ts`, `src/stream-hub.ts`, ordered in the
+  Worker by `compareIntegers`), remote media slot ids (`src/domain/remote-media.ts`: a due slot past the objects' bound
+  of 2^53 - 1 is dropped by the claim), poll generations (`src/domain/polls.ts`), remote collection generations
+  (`src/domain/remote-collections.ts`) and account invitation rowids. A requested INTEGER key past 2^63 - 1 names no
+  row (`isIntegerKey` in `src/domain/ids.ts`), and an increment past it, of a credential epoch by a suspension, of a
+  conversation streaming mark by a conversation write, of a poll's generation by its reset or of a collection sync's by
+  a request, throws and rolls back (`requireExactIncrement`); `test/integer-ids.test.ts`,
+  `test/streaming/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
+  _Gap_: the trigger `conversation_statuses_removed` increments a streaming mark in SQL without that check, so at
+  2^63 - 1 it stores a REAL; the stream reads such a mark as 2^63 - 1.
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
   without a specific recipient are signed by the instance actor; fetches for a personal inbox by the recipient's key;
   fetches on a remote account's behalf (a sync of its featured, featuredTags, following, followers and outbox

@@ -130,3 +130,22 @@ export function requireExactIncrement(exact: number, counter: string): void {
 export function isIntegerKey(id: string): boolean {
   return /^\d{1,19}$/.test(id) && (id.length < 19 || id <= "9223372036854775807");
 }
+
+const INTEGER_MIN = -(2n ** 63n);
+const INTEGER_MAX = 2n ** 63n - 1n;
+
+// Whether `value` is an INTEGER as `CAST(x AS TEXT)` spells it: canonical decimal within SQLite's range (DATA-6).
+export function isIntegerText(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(?:0|-?[1-9]\d{0,18})$/.test(value)) {
+    return false;
+  }
+  const n = BigInt(value);
+  return n >= INTEGER_MIN && n <= INTEGER_MAX;
+}
+
+// Orders two INTEGERs read as TEXT as SQLite orders the integers, exactly: negative, zero or positive (DATA-6).
+export function compareIntegers(a: string, b: string): number {
+  const x = BigInt(a);
+  const y = BigInt(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}

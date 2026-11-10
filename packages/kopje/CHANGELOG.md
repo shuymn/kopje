@@ -16,16 +16,22 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and the length check judged other content than what was stored. The `Add` and `Remove` sent when a hashtag is
   featured or unfeatured now carry the instance's origin too. Content stored before this release keeps its links until
   it is edited. No migration, no `wrangler.jsonc` change.
-- The Store keeps INTEGER ids, fences and epochs past 2^53 exact, as restored or imported rows may hold them (DATA-6): a
-  suspension's report fence no longer resolves a report the next admin action reopened; a suspension from such a
-  credential epoch no longer fails or keeps the earlier epoch's tokens, a code of the earlier epoch is refused, and a
-  suspension from the largest epoch, or a conversation write from the largest streaming sequence, fails and rolls back
+- The Store keeps INTEGER ids, fences, epochs and generations past 2^53 exact, as restored or imported rows may hold
+  them (DATA-6): a suspension's report fence no longer resolves a report the next admin action reopened; a suspension
+  from such a credential epoch no longer fails or keeps the earlier epoch's tokens, a code of the earlier epoch is
+  refused, and a suspension from the largest epoch, a conversation write from the largest streaming sequence, a poll
+  reset from the largest generation or a collection sync request from the largest generation fails and rolls back
   instead of storing a wrong one; a suspended account's tokens round and a refused push delete only their own push
   subscription; a new notification gets its own push and an inbound activity that records one rings the delivery
-  doorbell; a direct status joins its own new conversation with its exact streaming sequence; a favourite tracks, undoes
-  and retires its own Like ids; the admin API answers, logs, reads and deletes an instance domain block by its exact id,
-  now any id within the INTEGER range, and an instance domain block, conversation, notification or notification request
-  id past that range names none; the moderation log and the push claim order by id across a change of digit count. No
+  doorbell; a direct status joins its own new conversation with its exact streaming sequence; the streaming API no
+  longer stalls or skips events and conversation changes past such a journal id or streaming sequence; a favourite
+  tracks, undoes and retires its own Like ids; a vote is taken beside one of the poll's earlier generation, and the
+  sweep of earlier generations keeps the current one's votes; a remote account's collections are read for such a sync
+  request rather than dropped; a remote media slot is reset, retired, claimed and recorded by its own id, and a due slot
+  whose id no cached object may name (past 2^53 - 1) is dropped rather than failing the claim; removing an invitation
+  removes that one; the admin API answers, logs, reads and deletes an instance domain block by its exact id, now any id
+  within the INTEGER range, and an instance domain block, conversation, notification or notification request id past
+  that range names none; the moderation log and the push claim order by id across a change of digit count. No
   migration, no `wrangler.jsonc` change.
 
 ## [0.2.1] - 2026-11-03

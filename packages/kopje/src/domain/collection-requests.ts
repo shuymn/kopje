@@ -1,5 +1,6 @@
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
+import { requireExactIncrement } from "./ids";
 
 // The collections a remote actor's document names, and the request to sync them, which storing an actor makes
 // (remote-actors.ts). The sync itself is remote-collections.ts.
@@ -12,14 +13,15 @@ import { httpUrl } from "../platform/http-url";
 export function requestCollectionSync(db: Db, accountId: string, now: number): boolean {
   // A new request has its own MAX_SYNC_ATTEMPTS, and is due at once unless a round holds the sync (whose end leaves it
   // due, endRound): rounds that failed for the older one neither drop nor delay it.
-  const row = db.first<{ due: number }>(
+  const row = db.first<{ due: number; exact: number }>(
     `INSERT INTO collection_syncs (account_id, due_at) VALUES (?1, ?2)
 		ON CONFLICT (account_id) DO UPDATE SET generation = generation + 1, parts_read = 0, attempts = 0,
 			due_at = CASE WHEN token IS NOT NULL AND due_at > ?2 THEN due_at ELSE min(due_at, ?2) END
-		RETURNING due_at <= ?2 AS due`,
+		RETURNING due_at <= ?2 AS due, typeof(generation) = 'integer' AS exact`,
     accountId,
     now,
   );
+  requireExactIncrement(row?.exact ?? 1, "a collection sync's generation");
   return row?.due === 1;
 }
 

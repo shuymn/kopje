@@ -21,7 +21,8 @@ import { insertLocalAccount } from "./setup";
 
 export type Invitation = { email: string; username: string; created_at: string };
 
-type InvitationRow = Invitation & { rowid: number };
+// rowid as TEXT, bound back with CAST (DATA-6).
+type InvitationRow = Invitation & { rowid: string };
 
 // Every invitation, oldest first: a scan of at most MAX_ACCOUNT_INVITATIONS rows (its cap trigger).
 function invitations(db: Db): Invitation[] {
@@ -31,7 +32,7 @@ function invitations(db: Db): Invitation[] {
 // The invitation of an email, by account_invitations_email (unique, so at most one).
 function invitationOf(db: Db, email: string): InvitationRow | undefined {
   return db.first<InvitationRow>(
-    `SELECT rowid, email, username, created_at FROM account_invitations INDEXED BY account_invitations_email
+    `SELECT CAST(rowid AS TEXT) AS rowid, email, username, created_at FROM account_invitations INDEXED BY account_invitations_email
 		WHERE ${loginEmailMatchSql("email")}`,
     email,
   );
@@ -133,7 +134,7 @@ export const removeInvitation = writeOperation<
   if (row === undefined) {
     return { ok: false, code: "invitation-not-found", message: "no invitation has this email" };
   }
-  db.run("DELETE FROM account_invitations WHERE rowid = ?", row.rowid);
+  db.run("DELETE FROM account_invitations WHERE rowid = CAST(? AS INTEGER)", row.rowid);
   const detail = { username: row.username, email: row.email };
   logAction(db, authority, "destroy", { type: "AccountInvitation", id: row.username }, detail, now);
   return { ok: true, removed: { email: row.email, username: row.username, created_at: row.created_at } };
@@ -178,10 +179,10 @@ export const createInvitedAccount = writeOperation<
   // The stored username is ASCII by its CHECK, so the value read back is its bytes exactly.
   const accountId = insertLocalAccount(db, { domain, username: invitation.username, email, key, now });
   db.run(
-    "UPDATE local_accounts SET email = (SELECT email FROM account_invitations WHERE rowid = ?1) WHERE account_id = ?2",
+    "UPDATE local_accounts SET email = (SELECT email FROM account_invitations WHERE rowid = CAST(?1 AS INTEGER)) WHERE account_id = ?2",
     invitation.rowid,
     accountId,
   );
-  db.run("DELETE FROM account_invitations WHERE rowid = ?", invitation.rowid);
+  db.run("DELETE FROM account_invitations WHERE rowid = CAST(? AS INTEGER)", invitation.rowid);
   return { status: "ok", accountId, username: invitation.username };
 });

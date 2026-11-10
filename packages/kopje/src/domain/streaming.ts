@@ -6,6 +6,7 @@ import { streamedAnnouncement, streamedAnnouncementReaction } from "./announceme
 import { canView, deleteAudience, mentionsFilteredFor } from "./audience";
 import { authorize, authorizeStream, listenerContext, type UserContext } from "./auth";
 import { streamedConversation } from "./conversations";
+import { compareIntegers } from "./ids";
 import { ownList } from "./lists";
 import { mentionedStatus, streamedNotification } from "./notifications";
 import { readOperation, sessionOperation } from "./operation";
@@ -187,14 +188,17 @@ export const CONVERSATIONS_PER_TURN = 20;
 export const PRUNE_BATCH = 500;
 
 // The fan-out's position: the last unit sent, as (event id, viewer account id, subject index within the viewer's
-// units), the account null once the event is done.
-export type StreamPosition = { event: number; subject: number; account: string | null };
+// units), the account null once the event is done. Its INTEGERs, and every journal id, change sequence and ceiling
+// below, are read as TEXT and bound back with CAST (DATA-6), so a restored sequence past 2^53 neither stalls nor skips;
+// a change sequence or ceiling is read through CAST(… AS INTEGER) first, so a REAL one a trigger stored past 2^63 - 1
+// (conversation_statuses_removed) reads as that INTEGER rather than as text no comparison takes.
+export type StreamPosition = { event: string; subject: string; account: string | null };
 
 // The upgrade: the token is valid and a user's (Mastodon's accountFromToken joins users, so an app token fails), and
 // the instance is published. `since` is the journal head: a socket receives only later events.
 export const streamAccept = readOperation<
   { tokenHash: string; now: number },
-  { status: "ok"; accountId: string; grant: StreamGrant; since: number } | { status: "unauthenticated" }
+  { status: "ok"; accountId: string; grant: StreamGrant; since: string } | { status: "unauthenticated" }
 >((db, { tokenHash, now }) => {
   if (db.first("SELECT 1 AS x FROM kopje_state WHERE name = 'unpublished'") !== undefined) {
     throw storeMaintenanceError("unpublished");
@@ -228,11 +232,11 @@ export const streamTokens = readOperation<
 
 // A subject of a unit: its index among the viewer's units of the event (0 for the status, then a delete's captured
 // boosts by id; for a conversation event, the change's sequence), and its id.
-export type StreamSubject = { index: number; id: string };
+export type StreamSubject = { index: string; id: string };
 
 // A journal event and, but for a delete (read a page at a time: streamDeleteUnits), the accounts that may be sent it in
 // unit order, after the position within it.
-export type StreamEvent = { id: number; kind: string; subject: string; viewers: string[] };
+export type StreamEvent = { id: string; kind: string; subject: string; viewers: string[] };
 
 // The journal after `position`, oldest first, at most `limit` events, each with the accounts that may be sent it in
 // unit order: for a notification, its recipient while it exists; for a merge, its recipient; for a status, every
@@ -244,13 +248,13 @@ export type StreamEvent = { id: number; kind: string; subject: string; viewers: 
 // finished one is not, so a full window means more may follow. Also the journal's span.
 export const streamEvents = readOperation<
   { limit: number },
-  { position: StreamPosition; ceiling: number; events: StreamEvent[]; head: number; tail: number }
+  { position: StreamPosition; ceiling: string; events: StreamEvent[]; head: string; tail: string }
 >((db, { limit }) => {
   const { position, ceiling } = readCursor(db);
-  const rows = db.all<{ id: number; kind: string; subject: string; recipient: string | null }>(
-    `SELECT e.id, e.kind, e.subject, n.account_id AS recipient FROM stream_events e
+  const rows = db.all<{ id: string; kind: string; subject: string; recipient: string | null }>(
+    `SELECT CAST(e.id AS TEXT) AS id, e.kind, e.subject, n.account_id AS recipient FROM stream_events e
 			LEFT JOIN notifications n ON e.kind = 'notification' AND n.id = CAST(e.subject AS INTEGER)
-		WHERE e.id > ?1 OR (e.id = ?1 AND ?3 IS NOT NULL) ORDER BY e.id LIMIT ?2`,
+		WHERE e.id > CAST(?1 AS INTEGER) OR (e.id = CAST(?1 AS INTEGER) AND ?3 IS NOT NULL) ORDER BY e.id LIMIT ?2`,
     position.event,
     limit,
     position.account,
@@ -345,25 +349,27 @@ export const streamEvents = readOperation<
     return { id: row.id, kind: row.kind, subject: row.subject, viewers };
   });
   // Each bound its own subquery: one seek each (min and max together would scan the journal).
-  const span = db.first<{ head: number | null; tail: number | null }>(
-    "SELECT (SELECT max(id) FROM stream_events) AS head, (SELECT min(id) FROM stream_events) AS tail",
+  const span = db.first<{ head: string; tail: string }>(
+    `SELECT CAST(coalesce((SELECT max(id) FROM stream_events), 0) AS TEXT) AS head,
+			CAST(coalesce((SELECT min(id) FROM stream_events), 0) AS TEXT) AS tail`,
   );
-  return { position, ceiling, events, head: span?.head ?? 0, tail: span?.tail ?? 0 };
+  return { position, ceiling, events, head: span?.head ?? "0", tail: span?.tail ?? "0" };
 });
 
 // Where a page of a delete's units starts: after the unit (account, subject), or at the start.
-export type StreamUnitAfter = { account: string; subject: number } | null;
+export type StreamUnitAfter = { account: string; subject: string } | null;
 
 // A page of a delete event's units after `after`: at most `rows` viewers' captures (stream_delete_viewers, by its key),
 // each viewer's status (subject 0) then its captured boosts oldest first, each with the lists its capture allowed, so
 // the units read at once never exceed `rows` × 41 however many viewers the capture holds; and where the next page
-// starts, or null after the last.
+// starts, or null after the last. A delete's subject indexes are at most CAPTURE_LIMITS.boosts.
 export const streamDeleteUnits = readOperation<
-  { eventId: number; statusId: string; after: StreamUnitAfter; rows: number },
+  { eventId: string; statusId: string; after: StreamUnitAfter; rows: number },
   { units: { viewer: string; subject: StreamSubject; lists: string[] }[]; next: StreamUnitAfter }
 >((db, { eventId, statusId, after, rows }) => {
   const captured = db.all<{ account_id: string; lists: string; boosts: string }>(
-    `SELECT account_id, lists, boosts FROM stream_delete_viewers WHERE event_id = ?1 AND account_id >= ?2
+    `SELECT account_id, lists, boosts FROM stream_delete_viewers
+		WHERE event_id = CAST(?1 AS INTEGER) AND account_id >= ?2
 		ORDER BY account_id LIMIT ?3`,
     eventId,
     after?.account ?? "",
@@ -371,8 +377,15 @@ export const streamDeleteUnits = readOperation<
   );
   const units = captured.flatMap((row) =>
     [[statusId, JSON.parse(row.lists) as string[]] as const, ...(JSON.parse(row.boosts) as [string, string[]][])]
-      .map(([id, lists], index) => ({ viewer: row.account_id, subject: { index, id }, lists: [...lists] }))
-      .filter((unit) => after === null || unit.viewer > after.account || unit.subject.index > after.subject),
+      .map(([id, lists], index) => ({
+        viewer: row.account_id,
+        subject: { index: String(index), id },
+        lists: [...lists],
+      }))
+      .filter(
+        (unit) =>
+          after === null || unit.viewer > after.account || compareIntegers(unit.subject.index, after.subject) > 0,
+      ),
   );
   const last = captured.at(-1);
   return {
@@ -380,7 +393,7 @@ export const streamDeleteUnits = readOperation<
     next:
       captured.length < rows || last === undefined
         ? null
-        : { account: last.account_id, subject: Number.MAX_SAFE_INTEGER },
+        : { account: last.account_id, subject: String(Number.MAX_SAFE_INTEGER) },
   };
 });
 
@@ -414,7 +427,7 @@ export const streamUnit = readOperation<
     tokenHashes: readonly string[];
     lists?: readonly string[];
     feeds?: readonly string[];
-    eventId?: number;
+    eventId?: string;
     now: number;
   },
   StreamUnit
@@ -622,10 +635,10 @@ function tombstoneCarries(t: Tombstone, key: string): boolean {
 
 // The feeds among `feeds` the tombstone of the delete event `eventId` matches, when `subject` is the event's status
 // (one read, by the tombstone's key; a boost's subject finds none).
-function tombstoneFeeds(db: Db, eventId: number, subject: string, feeds: readonly string[]): string[] {
+function tombstoneFeeds(db: Db, eventId: string, subject: string, feeds: readonly string[]): string[] {
   const row = db.first<{ local: number; media: number; tags: string }>(
     `SELECT t.local, t.media, t.tags FROM stream_delete_tombstones t JOIN stream_events e ON e.id = t.event_id
-		WHERE t.event_id = ? AND e.subject = ?`,
+		WHERE t.event_id = CAST(? AS INTEGER) AND e.subject = ?`,
     eventId,
     subject,
   );
@@ -692,14 +705,14 @@ export function streamDelete(db: Db, statusId: string, now: number): void {
   if (audience.length === 0) {
     return;
   }
-  const event = db.first<{ id: number }>(
-    "INSERT INTO stream_events (kind, subject, created_at) VALUES ('delete', ?, ?) RETURNING id",
+  const event = db.first<{ id: string }>(
+    "INSERT INTO stream_events (kind, subject, created_at) VALUES ('delete', ?, ?) RETURNING CAST(id AS TEXT) AS id",
     statusId,
     new Date(now).toISOString(),
   )!.id;
   if (tombstone !== null) {
     db.run(
-      "INSERT INTO stream_delete_tombstones (event_id, local, media, tags) VALUES (?, ?, ?, ?)",
+      "INSERT INTO stream_delete_tombstones (event_id, local, media, tags) VALUES (CAST(? AS INTEGER), ?, ?, ?)",
       event,
       tombstone.local ? 1 : 0,
       tombstone.media ? 1 : 0,
@@ -717,7 +730,7 @@ export function streamDelete(db: Db, statusId: string, now: number): void {
       viewer.boosts.map((boost) => [boost, lists(boost)]),
     );
     db.run(
-      "INSERT INTO stream_delete_viewers (event_id, account_id, lists, boosts) VALUES (?, ?, ?, ?)",
+      "INSERT INTO stream_delete_viewers (event_id, account_id, lists, boosts) VALUES (CAST(? AS INTEGER), ?, ?, ?)",
       event,
       viewer.accountId,
       row.lists,
@@ -792,8 +805,8 @@ function captureRow(lists: string[], boosts: [string, string[]][]): { lists: str
 export const streamAdvance = sessionOperation<{ from: StreamPosition; to: StreamPosition }, boolean>(
   (db, { from, to }) =>
     db.run(
-      `UPDATE stream_cursor SET event_id = ?4, subject = ?5, account_id = ?6
-			WHERE id = 1 AND event_id = ?1 AND subject = ?2 AND account_id IS ?3`,
+      `UPDATE stream_cursor SET event_id = CAST(?4 AS INTEGER), subject = CAST(?5 AS INTEGER), account_id = ?6
+			WHERE id = 1 AND event_id = CAST(?1 AS INTEGER) AND subject = CAST(?2 AS INTEGER) AND account_id IS ?3`,
       from.event,
       from.subject,
       from.account,
@@ -809,20 +822,21 @@ export const streamAdvance = sessionOperation<{ from: StreamPosition; to: Stream
 // the event sends changes up to the ceiling only and ends after at most CONVERSATIONS_PER_TURN units. Returns the
 // ceiling, or null when another turn moved the position first.
 export const streamEnterConversation = sessionOperation<
-  { from: StreamPosition; eventId: number; owner: string },
-  number | null
+  { from: StreamPosition; eventId: string; owner: string },
+  string | null
 >((db, { from, eventId, owner }) => {
-  const row = db.first<{ ceiling: number | null }>(
-    `UPDATE stream_cursor SET event_id = ?4, subject = 0, account_id = ?5,
+  const row = db.first<{ ceiling: string }>(
+    `UPDATE stream_cursor SET event_id = CAST(?4 AS INTEGER), subject = 0, account_id = ?5,
 			ceiling = coalesce((SELECT seq FROM stream_conversation_marks WHERE account_id = ?5), 0)
-		WHERE id = 1 AND event_id = ?1 AND subject = ?2 AND account_id IS ?3 RETURNING ceiling`,
+		WHERE id = 1 AND event_id = CAST(?1 AS INTEGER) AND subject = CAST(?2 AS INTEGER) AND account_id IS ?3
+		RETURNING CAST(CAST(ceiling AS INTEGER) AS TEXT) AS ceiling`,
     from.event,
     from.subject,
     from.account,
     eventId,
     owner,
   );
-  return row === undefined ? null : (row.ceiling ?? 0);
+  return row?.ceiling ?? null;
 });
 
 // Deletes at most PRUNE_BATCH rows in all at or below `upTo`, a finished event, but the newest journal row: it keeps the
@@ -830,11 +844,11 @@ export const streamEnterConversation = sessionOperation<
 // shrinks as soon as the fan-out passes them; then, with what is left of the batch, the capture rows of finished
 // deletes, oldest first, viewers then tombstones (they name their event by id only, so nothing cascades). Returns how
 // many journal rows went, and whether prunable rows are left for another call.
-export const streamPrune = sessionOperation<{ upTo: number }, { pruned: number; more: boolean }>((db, { upTo }) => {
+export const streamPrune = sessionOperation<{ upTo: string }, { pruned: number; more: boolean }>((db, { upTo }) => {
   const changes = () => db.first<{ n: number }>("SELECT changes() AS n")?.n ?? 0;
   db.run(
     `DELETE FROM stream_events WHERE id IN (SELECT id FROM stream_events
-			WHERE id <= ?1 AND id < (SELECT max(id) FROM stream_events) ORDER BY id LIMIT ?2)`,
+			WHERE id <= CAST(?1 AS INTEGER) AND id < (SELECT max(id) FROM stream_events) ORDER BY id LIMIT ?2)`,
     upTo,
     PRUNE_BATCH,
   );
@@ -843,7 +857,8 @@ export const streamPrune = sessionOperation<{ upTo: number }, { pruned: number; 
   if (left > 0) {
     db.run(
       `DELETE FROM stream_delete_viewers WHERE (event_id, account_id) IN (SELECT event_id, account_id
-				FROM stream_delete_viewers WHERE event_id <= ?1 AND event_id < (SELECT max(id) FROM stream_events)
+				FROM stream_delete_viewers
+				WHERE event_id <= CAST(?1 AS INTEGER) AND event_id < (SELECT max(id) FROM stream_events)
 				ORDER BY event_id, account_id LIMIT ?2)`,
       upTo,
       left,
@@ -853,7 +868,8 @@ export const streamPrune = sessionOperation<{ upTo: number }, { pruned: number; 
   if (left > 0) {
     db.run(
       `DELETE FROM stream_delete_tombstones WHERE event_id IN (SELECT event_id FROM stream_delete_tombstones
-				WHERE event_id <= ?1 AND event_id < (SELECT max(id) FROM stream_events) ORDER BY event_id LIMIT ?2)`,
+				WHERE event_id <= CAST(?1 AS INTEGER) AND event_id < (SELECT max(id) FROM stream_events) ORDER BY event_id
+				LIMIT ?2)`,
       upTo,
       left,
     );
@@ -861,11 +877,11 @@ export const streamPrune = sessionOperation<{ upTo: number }, { pruned: number; 
   const more =
     db.first(
       `SELECT 1 AS x WHERE EXISTS (SELECT 1 FROM stream_events
-					WHERE id <= ?1 AND id < (SELECT max(id) FROM stream_events))
+					WHERE id <= CAST(?1 AS INTEGER) AND id < (SELECT max(id) FROM stream_events))
 				OR EXISTS (SELECT 1 FROM stream_delete_viewers
-					WHERE event_id <= ?1 AND event_id < (SELECT max(id) FROM stream_events))
+					WHERE event_id <= CAST(?1 AS INTEGER) AND event_id < (SELECT max(id) FROM stream_events))
 				OR EXISTS (SELECT 1 FROM stream_delete_tombstones
-					WHERE event_id <= ?1 AND event_id < (SELECT max(id) FROM stream_events))`,
+					WHERE event_id <= CAST(?1 AS INTEGER) AND event_id < (SELECT max(id) FROM stream_events))`,
       upTo,
     ) !== undefined;
   return { pruned, more };
@@ -877,7 +893,7 @@ export type StreamKeys = readonly { key: string; sockets: number }[];
 // unsubscribe and close. With `direct`, the account's conversation mark, made on its first subscription from the
 // highest stream_seq of its conversations (one seek of conversations_stream), never lowered; returned as where a socket
 // that subscribes now starts (its convSeq).
-export const streamRegister = sessionOperation<{ accountId: string; keys: StreamKeys }, { convSeq: number | null }>(
+export const streamRegister = sessionOperation<{ accountId: string; keys: StreamKeys }, { convSeq: string | null }>(
   (db, { accountId, keys }) => {
     db.run("DELETE FROM stream_subscriptions WHERE account_id = ?", accountId);
     insertKeys(db, accountId, keys);
@@ -891,8 +907,10 @@ export const streamRegister = sessionOperation<{ accountId: string; keys: Stream
       accountId,
     );
     return {
-      convSeq: db.first<{ seq: number }>("SELECT seq FROM stream_conversation_marks WHERE account_id = ?", accountId)!
-        .seq,
+      convSeq: db.first<{ seq: string }>(
+        "SELECT CAST(CAST(seq AS INTEGER) AS TEXT) AS seq FROM stream_conversation_marks WHERE account_id = ?",
+        accountId,
+      )!.seq,
     };
   },
 );
@@ -907,13 +925,13 @@ export const streamListOwned = readOperation<{ accountId: string; listId: string
 // event) and at most `upTo` (the event's ceiling): the newest `limit`, by conversations_stream, oldest of them first,
 // so they are sent in order and each socket's convSeq rises with each. Older changes are skipped.
 export const streamConversations = readOperation<
-  { accountId: string; after: number; upTo: number; limit: number },
-  { id: string; seq: number }[]
+  { accountId: string; after: string; upTo: string; limit: number },
+  { id: string; seq: string }[]
 >((db, { accountId, after, upTo, limit }) =>
   db
-    .all<{ id: string; seq: number }>(
-      `SELECT CAST(id AS TEXT) AS id, stream_seq AS seq FROM conversations WHERE account_id = ?1 AND stream_seq > ?2
-				AND stream_seq <= ?4
+    .all<{ id: string; seq: string }>(
+      `SELECT CAST(id AS TEXT) AS id, CAST(CAST(stream_seq AS INTEGER) AS TEXT) AS seq FROM conversations
+				WHERE account_id = ?1 AND stream_seq > CAST(?2 AS INTEGER) AND stream_seq <= CAST(?4 AS INTEGER)
 			ORDER BY stream_seq DESC LIMIT ?3`,
       accountId,
       after,
@@ -956,7 +974,7 @@ export const streamReconcile = sessionOperation<{ accounts: readonly { accountId
 export const streamCaughtUp = readOperation<void, boolean>((db) => {
   const position = readPosition(db);
   const head = journalHead(db);
-  return head === 0 || (position.event >= head && position.account === null);
+  return head === "0" || (compareIntegers(position.event, head) >= 0 && position.account === null);
 });
 
 // The operations the hub runs for itself: their commits start no turn.
@@ -981,13 +999,15 @@ function insertKeys(db: Db, accountId: string, keys: StreamKeys): void {
 
 // The position, and the ceiling of the conversation event it is within (streamEnterConversation; meaningless
 // elsewhere).
-function readCursor(db: Db): { position: StreamPosition; ceiling: number } {
-  const row = db.first<{ event_id: number; subject: number; account_id: string | null; ceiling: number | null }>(
-    "SELECT event_id, subject, account_id, ceiling FROM stream_cursor WHERE id = 1",
+function readCursor(db: Db): { position: StreamPosition; ceiling: string } {
+  const row = db.first<{ event_id: string; subject: string; account_id: string | null; ceiling: string | null }>(
+    `SELECT CAST(event_id AS TEXT) AS event_id, CAST(subject AS TEXT) AS subject, account_id,
+			CAST(CAST(ceiling AS INTEGER) AS TEXT) AS ceiling
+		FROM stream_cursor WHERE id = 1`,
   );
   return {
-    position: { event: row?.event_id ?? 0, subject: row?.subject ?? 0, account: row?.account_id ?? null },
-    ceiling: row?.ceiling ?? 0,
+    position: { event: row?.event_id ?? "0", subject: row?.subject ?? "0", account: row?.account_id ?? null },
+    ceiling: row?.ceiling ?? "0",
   };
 }
 
@@ -995,6 +1015,9 @@ function readPosition(db: Db): StreamPosition {
   return readCursor(db).position;
 }
 
-function journalHead(db: Db): number {
-  return db.first<{ head: number | null }>("SELECT max(id) AS head FROM stream_events")?.head ?? 0;
+function journalHead(db: Db): string {
+  return (
+    db.first<{ head: string }>("SELECT CAST(coalesce((SELECT max(id) FROM stream_events), 0) AS TEXT) AS head")?.head ??
+    "0"
+  );
 }

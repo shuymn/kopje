@@ -4678,7 +4678,7 @@ describe("R32: a delete's capture reads the smaller of the status's boosts and e
     };
     const few = await journal(1);
     const many = await journal(256);
-    const page = { eventId: 1, statusId: STATUS_ID, after: null, rows: 8 };
+    const page = { eventId: "1", statusId: STATUS_ID, after: null, rows: 8 };
     const made = await runInDurableObject(many, (_instance, state) => streamDeleteUnits.run(state.storage.sql, page));
     expect([made.units.length, made.next?.account]).toEqual([8 * 41, String(LISTENERS + 8n)]);
     const reads: [string, StoreOperation<never, unknown>, unknown][] = [
@@ -4857,7 +4857,12 @@ describe("streamed lists and conversations read their items, however large the l
       streams("conversation", await conversation(store, size.conversations), "conversation", ["direct"]),
       streams("conversation", await conversation(store, 1), "conversation", ["direct"]),
       ["owned", streamListOwned, { accountId: VIEWER_ID, listId: LIST_ID }, true],
-      ["changes", streamConversations, { accountId: VIEWER_ID, after: 0, upTo: size.conversations, limit: 20 }, 20],
+      [
+        "changes",
+        streamConversations,
+        { accountId: VIEWER_ID, after: "0", upTo: String(size.conversations), limit: 20 },
+        20,
+      ],
     ];
   }
 

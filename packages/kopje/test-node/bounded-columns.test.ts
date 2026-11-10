@@ -518,6 +518,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: "a number constant (the filter text cap of a status), naming no column",
   },
+  "src/domain/remote-media.ts interpolation SAFE_INTEGER_MAX": {
+    count: 1,
+    reason: "a number constant (the bound of a slot id an object may name), naming no column",
+  },
   // filterTextBoundSql: the stored choices' bytes, a number in an upper bound, never the choices.
   "src/domain/status-presenter.ts polls.options": { count: 1, reason: "octet_length of the stored choices, a number" },
   "src/domain/admin-measures.ts interpolation walk.kept": { count: 1, reason: MEASURE },

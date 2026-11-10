@@ -336,7 +336,7 @@ describe("R32: captures are pruned in bounded chunks", () => {
         const db = new Db(state.storage.sql);
         const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
         const before = changes();
-        const done = state.storage.transactionSync(() => streamPrune.run(state.storage.sql, { upTo: 3 }));
+        const done = state.storage.transactionSync(() => streamPrune.run(state.storage.sql, { upTo: "3" }));
         return { wrote: changes() - before, ...done };
       });
       calls.push(call);

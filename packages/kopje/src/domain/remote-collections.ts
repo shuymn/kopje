@@ -11,6 +11,7 @@ import {
   writeFeatured,
 } from "./featured-tags";
 import { type FollowerSigner, localFollower } from "./follower-signer";
+import { isIntegerText } from "./ids";
 import { writeOperation } from "./operation";
 import { promoteQuote, type QuoteArrival, quoteArrival } from "./quotes";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
@@ -200,7 +201,7 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 // token: the claim, unique to this round. Both are handed back. pending: another sync is due.
 export type CollectionSync = ActorCollections & {
   accountUri: string;
-  generation: number;
+  generation: string;
   token: string;
   phase: "read" | "pins";
   // Phase read: the parts already read for this generation (PART_*), which the round does not read again.
@@ -213,12 +214,14 @@ export type CollectionSync = ActorCollections & {
   pending: boolean;
 };
 
-type SyncRow = { account_id: string; attempts: number; generation: number; read_through: number; parts_read: number };
+// generation is read as TEXT and compared with read_through in SQL (DATA-6).
+type SyncRow = { account_id: string; attempts: number; generation: string; unread: number; parts_read: number };
 
 // The sync due first, by a seek of collection_syncs_due: the syncs rounds hold are due later, so none is read.
 function claimable(db: Db, now: number): SyncRow | undefined {
   return db.first<SyncRow>(
-    `SELECT account_id, attempts, generation, read_through, parts_read FROM collection_syncs
+    `SELECT account_id, attempts, CAST(generation AS TEXT) AS generation, generation > read_through AS unread, parts_read
+		FROM collection_syncs
 		WHERE due_at <= ? ORDER BY due_at LIMIT 1`,
     now,
   );
@@ -256,7 +259,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       `SELECT a.uri, a.raw FROM accounts a WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("?1")}`,
       row.account_id,
     );
-    let read = row.generation > row.read_through;
+    let read = row.unread === 1;
     // A read that ran out of attempts with pinned statuses pending gives way to them: the read is given up, the
     // pending statuses get attempts of their own.
     if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
@@ -298,16 +301,18 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
 // The end of a round of the account's sync: kept while a request is not read through or statuses are pending, due at
 // once with a fresh count of attempts after progress (or a request since the round claimed it), else after
 // SYNC_RETRY_MS; deleted when nothing is left. Returns whether a sync is due.
-function endRound(db: Db, accountId: string, generation: number, progressed: boolean, now: number): boolean {
-  const row = db.first<{ generation: number; read_through: number }>(
-    "SELECT generation, read_through FROM collection_syncs WHERE account_id = ?",
+function endRound(db: Db, accountId: string, generation: string, progressed: boolean, now: number): boolean {
+  const row = db.first<{ done: number; requested: number }>(
+    `SELECT generation <= read_through AS done, generation IS NOT CAST(?2 AS INTEGER) AS requested
+		FROM collection_syncs WHERE account_id = ?1`,
     accountId,
+    isIntegerText(generation) ? generation : null,
   );
   const pinsLeft = db.first("SELECT 1 AS x FROM collection_pins_pending WHERE account_id = ?", accountId) !== undefined;
-  if (row !== undefined && row.generation <= row.read_through && !pinsLeft) {
+  if (row !== undefined && row.done === 1 && !pinsLeft) {
     db.run("DELETE FROM collection_syncs WHERE account_id = ?", accountId);
   } else if (row !== undefined) {
-    const renewed = progressed || row.generation !== generation;
+    const renewed = progressed || row.requested === 1;
     db.run(
       `UPDATE collection_syncs SET due_at = ?, token = NULL, attempts = CASE WHEN ? THEN 0 ELSE attempts END
 			WHERE account_id = ?`,
@@ -319,7 +324,7 @@ function endRound(db: Db, accountId: string, generation: number, progressed: boo
   return claimable(db, now) !== undefined;
 }
 
-type RoundInput = { now: number; origin: string; accountUri: string; generation: number; token: string };
+type RoundInput = { now: number; origin: string; accountUri: string; generation: string; token: string };
 
 // The account of a round's end, while its claim is the current one (else the round's lease ended and another round
 // took the sync, or the sync was deleted and asked for anew: nothing changes) and it is an available remote account
@@ -379,11 +384,13 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
   if (input.tags !== null) {
     replaceFeaturedTags(db, account.id, input.tags, input.now);
   }
-  const before = db.first<{ parts_read: number }>(
-    "SELECT parts_read FROM collection_syncs WHERE account_id = ? AND generation = ?",
-    account.id,
-    input.generation,
-  );
+  const before = isIntegerText(input.generation)
+    ? db.first<{ parts_read: number }>(
+        "SELECT parts_read FROM collection_syncs WHERE account_id = ? AND generation = CAST(? AS INTEGER)",
+        account.id,
+        input.generation,
+      )
+    : undefined;
   const parts = (before?.parts_read ?? 0) | (input.parts & ALL_PARTS);
   if (before !== undefined) {
     if (input.hideCollections !== null) {
