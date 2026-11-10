@@ -33,6 +33,13 @@ new RuleTester().run("fedify-usage", fedifyUsage, {
     flagged("ctx['sendActivity'](sender, recipient, activity)", "uses sendActivity"),
     flagged("const { forwardActivity } = ctx", "uses forwardActivity", "uses forwardActivity"),
     flagged("const m = await import('@fedify/cfworkers')", QUEUE),
+    flagged("const q = new fedify[`InProcessMessageQueue`]()", QUEUE),
+    flagged("await fedify[`verifyObject`](doc)", VERIFIES),
+    flagged(
+      "await fedify[`signJsonLd`](doc, key, id)",
+      "signJsonLd: Kopje's LD signatures are made in federation/ld-sign.ts only",
+    ),
+    flagged("createFederation({ kv, [`queue`]: mq })", QUEUE),
     flagged("import { verifyObject } from '@fedify/fedify'", VERIFIES, VERIFIES),
     flagged(
       "const signed = await signJsonLd(doc, key, id)",
@@ -45,6 +52,7 @@ new RuleTester().run("fedify-usage", fedifyUsage, {
       filename: PROBE,
     },
     { code: "const options = { queue: q }\ncreateFederation({ kv })", filename: PROBE },
+    { code: "const m = fedify[`${name}`]", filename: PROBE },
     {
       code: "import { verifyObject } from '@fedify/fedify'\nawait verifyObject(doc)",
       filename: "packages/kopje/src/federation/author-proof.ts",

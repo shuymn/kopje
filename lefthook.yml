@@ -33,6 +33,10 @@ pre-push:
     - merge
     - rebase
   jobs:
+    # Lints the whole tree, whatever the suites skip: the kopje plugin's source rules (packages/kopje/lint) read every
+    # file under packages/kopje/src, and a commit lints only the files it stages.
+    - name: lint
+      run: pnpm run lint
     # Runs only the suites the branch can affect, and skips a clean tree that already passed them; see
     # scripts/test-affected.sh.
     - name: test

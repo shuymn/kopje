@@ -17,7 +17,9 @@ type Scan = { events: number; names: Set<string>; exceptions: Set<string>; offRu
 
 type LogCall = { event: { name: string; level: string } | null; exception: string | null };
 
-// Every log call of `files`, read as the rule reads it.
+// Every log call of `files`, read as the rule reads it. Its findings are left to the rule, which reports them for the
+// same calls over the same files (src/**/*.{ts,tsx} in the root .oxlintrc.json); the checks here need only the events
+// and exceptions, which a finding does not change.
 function scan(files: readonly Source[]): Scan {
   const names = new Set<string>();
   const exceptions = new Set<string>();

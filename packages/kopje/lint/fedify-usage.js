@@ -23,13 +23,19 @@ const SIGNERS = new Set(["signJsonLd", "signObject"]);
 const QUEUE_PACKAGE = "@fedify/cfworkers";
 const FACTORY = /^createFederation(Builder)?$/;
 
-// The name a key or property node spells statically: an identifier, or a string literal in brackets.
-const nameOf = (node) =>
-  node?.type === "Identifier"
-    ? node.name
-    : node?.type === "Literal" && typeof node.value === "string"
-      ? node.value
-      : null;
+// The name a key or property node spells statically: an identifier, or a string or expressionless template literal in
+// brackets.
+function nameOf(node) {
+  if (node?.type === "Identifier") {
+    return node.name;
+  }
+  if (node?.type === "Literal" && typeof node.value === "string") {
+    return node.value;
+  }
+  return node?.type === "TemplateLiteral" && node.expressions.length === 0
+    ? (node.quasis[0]?.value.cooked ?? null)
+    : null;
+}
 
 export const fedifyUsage = {
   create(context) {
@@ -57,6 +63,13 @@ export const fedifyUsage = {
       TemplateElement(node) {
         if ((node.value.cooked ?? node.value.raw).includes(QUEUE_PACKAGE)) {
           context.report({ node, message: "uses a Fedify message queue" });
+        }
+      },
+      // A template without expressions spells its name as statically as a string (`x[\`sendActivity\`]`).
+      TemplateLiteral(node) {
+        const name = nameOf(node);
+        if (name !== null) {
+          named(node, name);
         }
       },
       // A queue given to the federation's factory anywhere in its arguments, shorthand included.
