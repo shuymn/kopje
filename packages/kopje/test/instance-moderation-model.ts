@@ -429,6 +429,8 @@ export function ledgerCheck(input: {
   ran: string | null;
   rows: number | null;
   caps: Caps;
+  // The action's clock, for the call's progress rule.
+  now: number;
 }): string[] {
   const { before, after, ran, caps } = input;
   const failures: string[] = [];
@@ -468,6 +470,7 @@ export function ledgerCheck(input: {
   if (input.rows !== null && input.rows > caps.rows) {
     failures.push(`rule 5: ${input.rows} rows written, past ${caps.rows}`);
   }
+  const nothingDone = Object.values(done).every((items) => items.length === 0);
   if (ran === null) {
     const changed = before.jobs.filter((job) => {
       const now = after.jobs.find((j) => j.id === job.id);
@@ -475,6 +478,10 @@ export function ledgerCheck(input: {
     });
     if (changed.length > caps.rounds) {
       failures.push(`rule 5: ${changed.length} job rows changed in one call, past ${caps.rounds}`);
+    }
+    // Rule 3 for an opaque call: it runs a runnable, due job, so some job's state moves or the job ends.
+    if (changed.length === 0 && nothingDone && pendingAt(before.jobs, input.now)) {
+      failures.push("rule 3: a call left every runnable, due job unchanged");
     }
   }
   for (const job of ranJobs) {
@@ -487,6 +494,10 @@ export function ledgerCheck(input: {
     if (failed) {
       if (now.phase !== job.phase || now.cursor !== job.cursor) {
         failures.push(`rule 3: a failed round of ${job.kind} job ${job.subject} moved its cut`);
+      }
+      // A failed batch is rolled back whole: only its retry state may change (RES-5).
+      if (ran !== null && !nothingDone) {
+        failures.push(`rule 3: a failed round of ${job.kind} job ${job.subject} kept writes: ${JSON.stringify(done)}`);
       }
       continue;
     }
@@ -584,6 +595,9 @@ export class WorldPolicy {
   readonly listed = new Set<Remote>();
   readonly reports: PolicyReport[] = [];
   readonly jobs = new Map<string, JobState>();
+  // The statuses stored by author, and L1's mention notifications by author.
+  readonly statuses = new Map<Remote, number>();
+  readonly mentions = new Set<Remote>();
 
   constructor(
     readonly remotes: Record<Remote, RemoteState>,
@@ -799,6 +813,17 @@ export class WorldPolicy {
     }
     Object.assign(a, { ...doc, source: null });
     return true;
+  }
+
+  // A Create mentioning L1 is stored and notified only for an available author (visibility.md, the remote suspension
+  // paragraphs: `storeRemoteStatus` stores nothing of an unavailable author).
+  create(r: Remote): "actor-suspended" | null {
+    const refused = this.gate(r, "Create");
+    if (refused === null) {
+      this.statuses.set(r, (this.statuses.get(r) ?? 0) + 1);
+      this.mentions.add(r);
+    }
+    return refused;
   }
 
   // reject_reports refuses a Flag by the rule of the reporter's stored domain (visibility.md, "The admin API").

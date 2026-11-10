@@ -25,6 +25,7 @@ import {
   type Local,
   LOCALS,
   pendingAt,
+  ruleOf,
   type Remote,
   REMOTES,
   type RemoteState,
@@ -520,6 +521,7 @@ function projection(w: World, s: State) {
       .filter((n) => LOCALS.includes(name(n.account) as Local))
       .map((n) => `${name(n.account)} ${name(n.from)} ${n.type}`),
     retracted: s.retracted.map((r) => `${r.actor} ${r.target}`),
+    statuses: Object.fromEntries(s.statuses.map((row) => [name(row.account), row.n])),
     lanes,
     unexpanded: s.unexpanded,
     unrowed: s.unrowed.filter((type) => type !== "Update"),
@@ -595,8 +597,9 @@ function expected(w: World) {
     pins: [...p.pins].toSorted(),
     reports: p.reports.map((r) => ({ label: r.label, resolved: r.resolved })),
     counts,
-    notifications: notifications.toSorted(),
+    notifications: [...notifications, ...[...p.mentions].map((r) => `L1 ${r} mention`)].toSorted(),
     retracted: retracted.toSorted(),
+    statuses: Object.fromEntries(p.statuses),
     lanes,
     unexpanded: 0,
     unrowed: [] as string[],
@@ -732,6 +735,14 @@ async function admin(w: World, a: Admin): Promise<void> {
       );
       if (answer.status === 200) {
         w.blockIds.set(a.domain, (answer.body as { id: string }).id);
+      }
+      // C2: a refused create names the ruling block (ExistingDomainBlockErrorSerializer); silence has no such body.
+      const ruling = ruleOf(p.blocks, a.domain);
+      if (answer.status === 422 && a.severity !== "silence" && ruling !== undefined) {
+        expect(answer.body, context(w)).toMatchObject({
+          error: `You have already imposed stricter limits on ${ruling.domain}.`,
+          existing_domain_block: { domain: ruling.domain, severity: ruling.severity },
+        });
       }
       const predicted = p.createBlock(a.domain, a.severity, {
         rejectMedia: false,
@@ -879,6 +890,7 @@ function ledger(w: World, before: State, now: State, ran: string | null, rows: n
     ran,
     rows,
     caps: CAPS,
+    now: w.clock,
   });
   expect(failures, context(w)).toEqual([]);
 }
@@ -1583,7 +1595,8 @@ async function settleP2(w: World): Promise<void> {
   w.trace.push("-- settle");
   for (let i = 0; i < SETTLE_ROUNDS; i++) {
     let moved = false;
-    while ((await round(w)) !== null) {
+    for (let j = 0; (await round(w)) !== null; j++) {
+      expect(j, `settlement passed ${SETTLE_ROUNDS} rounds\n${context(w)}`).toBeLessThan(SETTLE_ROUNDS);
       moved = true;
     }
     for (const attempt of w.attempts.filter((t) => t.phase !== "done")) {
@@ -2096,6 +2109,7 @@ async function bare() {
   return {
     ...base,
     store: base.h.store,
+    clock: NOW,
     remoteIds: none,
     last: null as State | null,
     fences: new Map<string, JobRow>(),
@@ -2167,7 +2181,7 @@ async function fixtureRead(f: Bare): Promise<State> {
 // One round through the ledger, with the rows it wrote.
 async function fixtureRound(f: Bare): Promise<{ id: string } | null> {
   const before = await fixtureRead(f);
-  const { result, rows } = await writtenBy(f.store, (db) => remoteModerationRound(db, NOW));
+  const { result, rows } = await writtenBy(f.store, (db) => remoteModerationRound(db, f.clock));
   const now = await read(f);
   const failures = ledgerCheck({
     before: { jobs: before.jobs, snap: before.snap },
@@ -2175,6 +2189,7 @@ async function fixtureRound(f: Bare): Promise<{ id: string } | null> {
     ran: result?.id ?? null,
     rows,
     caps: CAPS,
+    now: f.clock,
   });
   expect(failures).toEqual([]);
   f.last = now;
@@ -2333,6 +2348,7 @@ describe("instance moderation read caps (F1-F7)", () => {
         ran: null,
         rows: null,
         caps: CAPS,
+        now: NOW,
       }),
     ).toEqual([]);
     f.last = now;
@@ -2499,6 +2515,8 @@ describe("instance moderation witnesses: walks", () => {
     }
     const [job] = f.last!.jobs;
     expect(job).toMatchObject({ phase: "mark", attempts: 1 });
+    // The batch is rolled back whole: the mark too.
+    expect(await markedOn(f, D)).toBe(0);
     expect(await count(f, "SELECT 1 FROM follows WHERE target_account_id = ?", r)).toBe(1);
     const entity = await f.h.request(`/api/v1/accounts/${r}`, bearer(f.alice.token));
     expect((await entity.json<{ suspended?: boolean }>()).suspended).toBe(true);
@@ -2539,6 +2557,13 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     w.last = await read(w);
     return result.reason;
   };
+  // Rounds of the remote jobs, each within the row budget.
+  const boundedRounds = async (w: World, n: number) => {
+    for (let i = 0; i < n; i++) {
+      const { rows } = await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
+      expect(rows).toBeLessThanOrEqual(MODERATION_ROUND_ROWS);
+    }
+  };
   const accepted = async () => {
     const w = await setup(without("R1>L1", "L1>R1"));
     await storeReceive(
@@ -2562,15 +2587,34 @@ describe("instance moderation witnesses: routing with activities outstanding", (
       ["Reject", SPEC.R1.shared, "queued"],
       ["Reject", "https://d.example/inbox-b", "queued"],
     ]);
+    // Both Reject rows are delivered, in lane order (the superseded Accept is dropped at its claim): the first one
+    // settling leaves the activity to the second.
+    const sent: [string, string][] = [];
+    for (let i = 0; i < 5 && (await sql(w.store, "SELECT 1 FROM deliveries")).length > 0; i++) {
+      const token = `lease-a${i}`;
+      const [delivery] = (await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: token, limit: 1 }))
+        .deliveries;
+      if (delivery === undefined) {
+        continue;
+      }
+      const confirmed = await w.store.confirmDelivery(BUILD, { id: delivery.id, leaseToken: token, now: w.clock });
+      if (confirmed.status === "send") {
+        sent.push([(JSON.parse(confirmed.body) as Body).type, delivery.inbox]);
+      }
+      await w.store.completeDelivery(BUILD, { id: delivery.id, leaseToken: token, now: w.clock, outcome: OK });
+    }
+    expect(sent).toEqual([
+      ["Reject", SPEC.R1.shared],
+      ["Reject", "https://d.example/inbox-b"],
+    ]);
+    expect(await sql(w.store, "SELECT 1 FROM deliveries")).toEqual([]);
   }, 60_000);
 
   it("(b) a suspension's severing Reject, audienceOnly, has one row at the refreshed inbox", async () => {
     const w = await accepted();
     await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
     expect(await moveShared(w)).toBe("actor-suspended");
-    for (let i = 0; i < 3; i++) {
-      await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
-    }
+    await boundedRounds(w, 3);
     w.last = await read(w);
     expect(
       w.last.lanes.filter((row) => row.account === w.ids.L1).map((row) => [row.type, row.inbox, row.superseded]),
@@ -2585,9 +2629,7 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     const claimed = await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: "lease-c", limit: 1 });
     await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
     await moveShared(w);
-    for (let i = 0; i < 3; i++) {
-      await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
-    }
+    await boundedRounds(w, 3);
     const confirmed = await w.store.confirmDelivery(BUILD, {
       id: claimed.deliveries[0]!.id,
       leaseToken: "lease-c",
@@ -2596,5 +2638,240 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     expect(confirmed.status).toBe("dropped");
     w.last = await read(w);
     expect(rows(w)).toEqual([["Reject", "https://d.example/inbox-b", "pending"]]);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Opaque calls, retries, revisions, domains, Create and the inbox rule
+// ---------------------------------------------------------------------------------------------------------------
+
+// One runModerationJobs call through the ledger (rule 3 for a call; rule 6 for its `pending`); its `pending`.
+async function fixtureModeration(f: Bare): Promise<boolean> {
+  const before = await fixtureRead(f);
+  const { pending } = await f.h.store.runModerationJobs(BUILD, { now: f.clock });
+  const now = await read(f);
+  const failures = ledgerCheck({
+    before: { jobs: before.jobs, snap: before.snap },
+    after: { jobs: now.jobs, snap: now.snap },
+    ran: null,
+    rows: null,
+    caps: CAPS,
+    now: f.clock,
+  });
+  expect(failures).toEqual([]);
+  expect(pending).toBe(pendingAt(now.jobs, f.clock));
+  f.last = now;
+  return pending;
+}
+
+// Runs `fn` while every update of a job row that leaves its attempts alone (its batch's save), or every delete of one
+// (its end), fails, as test/remote-suspension.test.ts fails a round after its writes.
+async function failing(f: Bare, writes: readonly ("update" | "delete")[], fn: () => Promise<void>): Promise<void> {
+  const triggers = {
+    update: `CREATE TRIGGER test_fails_update BEFORE UPDATE ON remote_moderation_jobs WHEN NEW.attempts = OLD.attempts
+			BEGIN SELECT RAISE(ABORT, 'test: the round fails'); END`,
+    delete: `CREATE TRIGGER test_fails_delete BEFORE DELETE ON remote_moderation_jobs
+			BEGIN SELECT RAISE(ABORT, 'test: the round fails'); END`,
+  };
+  for (const write of writes) {
+    await sql(f.store, triggers[write]);
+  }
+  const error = console.error;
+  console.error = () => {};
+  try {
+    await fn();
+  } finally {
+    console.error = error;
+    for (const write of writes) {
+      await sql(f.store, `DROP TRIGGER test_fails_${write}`);
+    }
+  }
+}
+
+async function sendDocument(
+  w: World,
+  r: Remote,
+  doc: Document,
+  revision: number | null,
+  confirmedDomain?: string,
+): Promise<string> {
+  const actor = { ...documentOf(w, r, doc), ...(confirmedDomain === undefined ? {} : { confirmedDomain }) };
+  const uri = w.policy.remotes[r].uri;
+  const result = await w.store.receiveActivity(BUILD, {
+    now: w.clock,
+    origin: "https://kopje.test",
+    actorUri: uri,
+    actor,
+    actorRevision: revision,
+    activity: { type: "UpdateActor", id: `${new URL(uri).origin}/updates/${++documentSequence}` },
+  });
+  return result.reason;
+}
+
+const revisionOf = async (w: World, r: Remote) =>
+  (
+    await sql<{ revision: number }>(
+      w.store,
+      "SELECT document_revision AS revision FROM accounts WHERE id = ?",
+      w.remoteIds[r],
+    )
+  )[0]!.revision;
+
+const rowOf = async (w: World, r: Remote) =>
+  (
+    await sql(
+      w.store,
+      "SELECT domain, display_name AS name, inbox_url AS inbox, shared_inbox_url AS shared FROM accounts WHERE id = ?",
+      w.remoteIds[r],
+    )
+  )[0];
+
+let statusSequence = 0;
+
+// A public Create by `r` mentioning L1, through the inbox's gate: stored and notified for an available author only.
+async function create(w: World, r: Remote): Promise<void> {
+  const uri = w.policy.remotes[r].uri;
+  const id = `${uri}/statuses/${++statusSequence}`;
+  log(w, `${r} posts a mention of L1`);
+  const result = await storeReceive(
+    w.store,
+    uri,
+    {
+      type: "Create",
+      id: `${id}/activity`,
+      object: {
+        uri: id,
+        url: null,
+        attributedTo: uri,
+        content: "<p>hello</p>",
+        text: "hello",
+        spoilerText: "",
+        sensitive: false,
+        language: "en",
+        published: new Date(w.clock).toISOString(),
+        updated: null,
+        inReplyTo: null,
+        to: ["https://www.w3.org/ns/activitystreams#Public"],
+        cc: [w.localUris.L1],
+        mentions: [w.localUris.L1],
+        tags: [],
+        emojiTags: [],
+        media: [],
+        raw: "{}",
+      },
+    },
+    w.clock,
+  );
+  const predicted = w.policy.create(r);
+  tally(w.stats, `create ${predicted ?? "stored"}`);
+  await after(w, { actual: result.applied ? null : result.reason, predicted });
+}
+
+describe("instance moderation witnesses: calls, retries and revisions", () => {
+  // Rule 3 for a call (threat-model.md RES-5): a runModerationJobs call runs the runnable, due domain job.
+  it("a call of the moderation rounds runs the runnable domain job", async () => {
+    const f = await bare();
+    await remotesOn(f, 3, D, COVERED);
+    await blockOf(f, D);
+    await fixtureModeration(f);
+    expect(await markedOn(f, D)).toBe(3);
+    expect(f.last!.jobs).toEqual([]);
+  }, 60_000);
+
+  // RES-5: an account job's failed round backs off; a suspension again resets its retry state with its generation.
+  it("an account job's failed round backs off, and a suspension again makes it fresh", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, OTHER, COVERED);
+    const r = (COVERED + 1n).toString();
+    await suspendOf(f, r);
+    await failing(f, ["update", "delete"], async () => {
+      await fixtureRound(f);
+    });
+    expect(f.last!.jobs[0]).toMatchObject({ kind: "account", phase: "reports", attempts: 1 });
+    expect(f.last!.jobs[0]!.dueAt).not.toBeNull();
+    await suspendOf(f, r);
+    expect(f.last!.jobs[0]).toMatchObject({ phase: "reports", attempts: 0, dueAt: null });
+    await fixtureDrain(f);
+  }, 60_000);
+
+  // Rule 6 (threat-model.md: a family's selection takes a due retry first, and its pending answer comes from the same
+  // seeks): five due retries, each finished by its next round; a call runs four, and the fifth keeps `pending` true.
+  it("five due retries: one call finishes four, and pending answers true for the fifth", async () => {
+    const f = await bare();
+    await remotesOn(f, 5, OTHER, COVERED);
+    for (let i = 1n; i <= 5n; i++) {
+      await suspendOf(f, (COVERED + i).toString());
+    }
+    await failing(f, ["delete"], async () => {
+      for (let i = 0; i < 10; i++) {
+        await fixtureRound(f);
+      }
+    });
+    expect(f.last!.jobs.map((j) => [j.phase, j.attempts])).toEqual(Array.from({ length: 5 }, () => ["follows", 1]));
+    f.clock = Math.max(...f.last!.jobs.map((j) => j.dueAt!));
+    expect(await fixtureModeration(f)).toBe(true);
+    expect(f.last!.jobs).toHaveLength(1);
+    await fixtureDrain(f);
+  }, 60_000);
+
+  // ID-1 (DocumentRevision): a store issues a new revision, so a document fetched under the one before stores
+  // nothing; a routing refresh issues one too.
+  it("a document under a superseded revision stores nothing, routing refreshes included", async () => {
+    const w = await p1World();
+    const r4 = { name: "R4", keys: ["R4-key-0"], inbox: `${SPEC.R4.uri}/inbox`, sharedInbox: null };
+    const g = await revisionOf(w, "R4");
+    expect(await sendDocument(w, "R4", { ...r4, name: "R4 a" }, g)).toBe("actor-updated");
+    expect(await revisionOf(w, "R4")).not.toBe(g);
+    expect(await sendDocument(w, "R4", { ...r4, name: "R4 b" }, g)).toBe("actor-changed");
+    expect(await rowOf(w, "R4")).toMatchObject({ name: "R4 a" });
+    await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
+    const r1 = { name: "R1", keys: ["R1-key-0"], inbox: `${SPEC.R1.uri}/inbox`, sharedInbox: SPEC.R1.shared };
+    const h = await revisionOf(w, "R1");
+    expect(await sendDocument(w, "R1", { ...r1, sharedInbox: "https://d.example/inbox-a" }, h)).toBe("actor-suspended");
+    expect(await revisionOf(w, "R1")).not.toBe(h);
+    expect(await sendDocument(w, "R1", { ...r1, sharedInbox: "https://d.example/inbox-c" }, h)).toBe("actor-suspended");
+    expect(await rowOf(w, "R1")).toMatchObject({ name: "R1", shared: "https://d.example/inbox-a" });
+  }, 60_000);
+
+  // C17 (visibility.md, "Writes"): no account moves into a covered domain. The domain an address confirms (the search
+  // resolver's confirmedDomain) is taken when no block covers it; into a covered domain the row stays as it was.
+  it("a document never moves an account into a covered domain", async () => {
+    const w = await p1World();
+    await steps(w, [block(D)]);
+    const before = await rowOf(w, "R4");
+    const doc = { name: "R4 moved", keys: ["R4-key-0"], inbox: `${SPEC.R4.uri}/inbox`, sharedInbox: null };
+    await sendDocument(w, "R4", doc, await revisionOf(w, "R4"), D);
+    expect(await rowOf(w, "R4")).toEqual(before);
+    await sendDocument(w, "R4", doc, await revisionOf(w, "R4"), "moved.example");
+    expect(await rowOf(w, "R4")).toMatchObject({ domain: "moved.example", name: "R4 moved" });
+  }, 60_000);
+
+  // visibility.md (the remote suspension paragraphs): storeRemoteStatus stores nothing of an unavailable author.
+  it("a Create mentioning L1 is stored and notified for an available author only", async () => {
+    const w = await p1World();
+    await create(w, "R4");
+    await steps(w, [{ k: "suspend", r: "R1" }]);
+    await create(w, "R1");
+    expect(w.stats["create stored"]).toBe(1);
+    expect(w.stats["create actor-suspended"]).toBe(1);
+    expect(projection(w, w.last!).statuses).toEqual({ R4: 1 });
+  }, 60_000);
+
+  // visibility.md, "The send-time check": the inbox rule refuses a row whose inbox host a block covers, though its
+  // recipient stays available.
+  it("a row to an available account whose inbox host alone is covered is dropped", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, OTHER, COVERED);
+    const r = (COVERED + 1n).toString();
+    await sql(f.store, "UPDATE accounts SET inbox_url = 'https://inbox.blocked.example/inbox' WHERE id = ?", r);
+    const followed = await f.h.request(`/api/v1/accounts/${r}/follow`, bearer(f.alice.token, json({})));
+    expect(followed.status).toBe(200);
+    expect(await count(f, "SELECT 1 FROM deliveries")).toBe(1);
+    expect(await blockOf(f, "blocked.example")).toBe(200);
+    const entity = await f.h.request(`/api/v1/accounts/${r}`, bearer(f.alice.token));
+    expect((await entity.json<{ suspended?: boolean }>()).suspended).not.toBe(true);
+    const claimed = await f.h.store.claimDeliveries(BUILD, { now: NOW, leaseToken: "lease-inbox", limit: 1 });
+    expect(claimed.deliveries).toEqual([]);
+    expect(await count(f, "SELECT 1 FROM deliveries")).toBe(0);
   }, 60_000);
 });
