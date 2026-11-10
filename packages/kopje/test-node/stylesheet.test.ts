@@ -76,6 +76,31 @@ const HEADER_RULES = headerRules(HEADERS);
 const headerLinesOf = (path: string) =>
   HEADER_RULES.filter((rule) => matches(rule.pattern, path)).flatMap((rule) => rule.headers);
 
+// Every selector naming a dialog that does not name an open one: a rule that could give a closed dialog a display.
+function closedDialogs(css: string): string[] {
+  return [...css.matchAll(/[^{};]*\bdialog\b[^{};]*(?=\{)/g)]
+    .map(([selector]) => selector)
+    .filter((selector) => !selector.includes("[open]"));
+}
+
+// The animation and transition declarations outside a prefers-reduced-motion: no-preference block.
+function motionOutside(css: string): string[] {
+  let outside = css;
+  const NO_PREFERENCE = /@media\s*\(prefers-reduced-motion:\s*no-preference\)/;
+  for (let at = outside.search(NO_PREFERENCE); at !== -1;) {
+    let depth = 0;
+    let end = outside.indexOf("{", at);
+    do {
+      const c = outside[end];
+      depth += c === "{" ? 1 : c === "}" ? -1 : 0;
+      end++;
+    } while (depth > 0 && end < outside.length);
+    outside = outside.slice(0, at) + outside.slice(end);
+    at = outside.search(NO_PREFERENCE);
+  }
+  return [...outside.matchAll(/\b(animation|transition)(-[a-z-]+)?\s*:/g)].map(([match]) => match);
+}
+
 describe("the stylesheet", () => {
   const TOKENS = tokens(CSS);
   const pair = (name: string) => {
@@ -146,29 +171,38 @@ describe("the stylesheet", () => {
 
   it("keeps hidden things hidden and closed dialogs unrendered", () => {
     expect(CSS).toMatch(/\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/);
-    // Every selector naming a dialog names an open one, so no rule gives a closed dialog a display.
-    for (const [selector] of CSS.matchAll(/[^{};]*\bdialog\b[^{};]*(?=\{)/g)) {
-      expect(selector, selector).toContain("[open]");
+    expect(closedDialogs(CSS)).toEqual([]);
+    for (const css of [
+      "dialog { display: grid; }",
+      ".x, dialog { gap: 0; }",
+      "dialog { &[open] { gap: 0; } }",
+      ".x { & dialog { gap: 0; } }",
+    ]) {
+      expect(closedDialogs(css), css).toHaveLength(1);
+    }
+    for (const css of ["dialog[open] { display: grid; }", "dialog[open]::backdrop, .x dialog[open] .y { gap: 0; }"]) {
+      expect(closedDialogs(css), css).toEqual([]);
     }
   });
 
   it("animates nothing outside prefers-reduced-motion: no-preference, and has no global override", () => {
     expect(CSS).not.toMatch(/prefers-reduced-motion:\s*reduce/);
-    // Each no-preference block, by its braces, is the only place an animation or transition may be.
-    let outside = CSS;
-    const NO_PREFERENCE = /@media\s*\(prefers-reduced-motion:\s*no-preference\)/;
-    for (let at = outside.search(NO_PREFERENCE); at !== -1;) {
-      let depth = 0;
-      let end = outside.indexOf("{", at);
-      do {
-        const c = outside[end];
-        depth += c === "{" ? 1 : c === "}" ? -1 : 0;
-        end++;
-      } while (depth > 0 && end < outside.length);
-      outside = outside.slice(0, at) + outside.slice(end);
-      at = outside.search(NO_PREFERENCE);
+    expect(motionOutside(CSS)).toEqual([]);
+    for (const css of [
+      "a { transition: color 1s; }",
+      "a { animation-name: spin; }",
+      "@media (prefers-reduced-motion: no-preference) { a { gap: 0; } } a { transition-delay: 1s; }",
+      "@media screen and (prefers-reduced-motion: no-preference) { a { animation: spin 1s; } }",
+      "@media (prefers-color-scheme: dark) { a { transition: color 1s; } }",
+    ]) {
+      expect(motionOutside(css), css).toHaveLength(1);
     }
-    expect(outside).not.toMatch(/\b(animation|transition)(-[a-z-]+)?\s*:/);
+    for (const css of [
+      "@media (prefers-reduced-motion: no-preference) { a { transition: color 1s; } .b { animation: spin 1s; } }",
+      "@media (prefers-reduced-motion:no-preference) { @supports (color: red) { a { animation-name: spin; } } }",
+    ]) {
+      expect(motionOutside(css), css).toEqual([]);
+    }
   });
 
   it("declares color-scheme in the order the pages’ meta tags use", () => {
