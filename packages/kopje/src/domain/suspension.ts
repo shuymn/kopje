@@ -304,15 +304,12 @@ function tokensRound(db: Db, job: Job, state: JobState): void {
 // Whether the generation a job was made for still holds: the account still in the job's epoch (compared in SQL,
 // DATA-6), and still suspended (suspension) or still unsuspended (reach).
 function current(db: Db, job: Job): boolean {
-  return (
-    db.first(
-      `SELECT 1 AS x FROM local_accounts WHERE account_id = ?1 AND credential_epoch = CAST(?2 AS INTEGER)
-			AND (suspended_at IS NOT NULL) = ?3`,
-      job.account_id,
-      job.generation,
-      job.kind === "suspension" ? 1 : 0,
-    ) !== undefined
+  const state = db.first<{ suspended_at: string | null; current: number }>(
+    "SELECT suspended_at, credential_epoch = CAST(?2 AS INTEGER) AS current FROM local_accounts WHERE account_id = ?1",
+    job.account_id,
+    job.generation,
   );
+  return state !== undefined && state.current === 1 && (state.suspended_at !== null) === (job.kind === "suspension");
 }
 
 // Stages the inboxes of remote accounts; returns how many were not staged yet. A capped source counts only these, as

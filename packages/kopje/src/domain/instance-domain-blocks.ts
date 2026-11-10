@@ -254,7 +254,7 @@ export function blocksPage(db: Db, page: PageQuery): InstanceDomainBlock[] {
   const ascending = page.minId !== undefined;
   const rows = db.all<BlockRow>(
     `SELECT ${COLUMNS} FROM instance_domain_blocks WHERE ${edgeRangeSql("id", "?1", "?2")}
-		ORDER BY id ${ascending ? "ASC" : "DESC"} LIMIT ?3`,
+		ORDER BY instance_domain_blocks.id ${ascending ? "ASC" : "DESC"} LIMIT ?3`,
     page.maxId ?? null,
     (ascending ? page.minId : page.sinceId) ?? null,
     page.limit,

@@ -453,13 +453,14 @@ export function consumeCode(db: Db, input: CodeInput): { accountId: string; scop
   }
   // A code of a suspended account, or one of an earlier credential epoch (currentCredentialSql), grants nothing. The
   // epochs are compared in SQL (DATA-6).
-  const current = db.first(
-    `SELECT 1 AS x FROM local_accounts
-		WHERE account_id = ? AND suspended_at IS NULL AND credential_epoch = CAST(? AS INTEGER)`,
+  const account = db.first<{ suspended_at: string | null; current: number }>(
+    "SELECT suspended_at, credential_epoch = CAST(?2 AS INTEGER) AS current FROM local_accounts WHERE account_id = ?1",
     code.account_id,
     code.epoch,
   );
-  return current !== undefined ? { accountId: code.account_id, scopes: code.scopes } : null;
+  return account?.suspended_at === null && account.current === 1
+    ? { accountId: code.account_id, scopes: code.scopes }
+    : null;
 }
 
 export type AppTokenInput = {

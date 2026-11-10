@@ -2923,7 +2923,7 @@ function trackLike(db: Db, favouriteId: string, uri: string, storeNow: number): 
 function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: string, now: number, storeNow: number): void {
   const stale = db.first<{ id: string; uri: string }>(
     `SELECT CAST(id AS TEXT) AS id, uri FROM favourite_likes WHERE favourite_id = CAST(? AS INTEGER) AND received_at <= ?
-		ORDER BY id LIMIT 1`,
+		ORDER BY favourite_likes.id LIMIT 1`,
     favouriteId,
     storeNow - LIKE_RETIRE_AFTER_MS,
   );

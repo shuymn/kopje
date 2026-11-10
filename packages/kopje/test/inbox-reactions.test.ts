@@ -1059,15 +1059,15 @@ describe("DATA-6: favourite and Like ids past 2^53", () => {
     vi.useRealTimers();
   });
 
-  // dave's favourite of the status `uri` at 2^53, tracking a Like id at 2^53: bob's next favourite and Like ids are
-  // 2^53 + 1, which reads as 2^53.
+  // dave's favourite of the status `uri` at `id`, tracking a Like id at `id`: bob's next favourite and Like ids follow
+  // it. At 2^53 the next, 2^53 + 1, reads as 2^53.
   const TWO_53 = "9007199254740992";
-  async function davesAt2To53(t: Setup, uri: string) {
+  async function davesAt(t: Setup, uri: string, id = TWO_53) {
     await sql(
       t.store,
       `INSERT INTO favourites (id, account_id, status_id, created_at)
 			SELECT CAST(?1 AS INTEGER), ?2, id, '2024-01-01T00:00:00.000Z' FROM statuses WHERE uri = ?3`,
-      TWO_53,
+      id,
       DAVE,
       uri,
     );
@@ -1075,7 +1075,7 @@ describe("DATA-6: favourite and Like ids past 2^53", () => {
       t.store,
       `INSERT INTO favourite_likes (id, favourite_id, uri, received_at)
 			VALUES (CAST(?1 AS INTEGER), CAST(?1 AS INTEGER), ?2, 0)`,
-      TWO_53,
+      id,
       `${OTHER}/likes/dave`,
     );
   }
@@ -1090,7 +1090,7 @@ describe("DATA-6: favourite and Like ids past 2^53", () => {
   it("tracks a Like on its own favourite, and its Undo deletes only its own id", async () => {
     const { t, bob } = await withNeko();
     const uri = await seededLocal(t);
-    await davesAt2To53(t, uri);
+    await davesAt(t, uri);
     const receive = receiver(t, bob);
     const liked = likeOf(bob, uri, "1");
     expect(await receive(liked)).toMatchObject({ applied: true, reason: "favourited" });
@@ -1102,10 +1102,12 @@ describe("DATA-6: favourite and Like ids past 2^53", () => {
     expect(await likes(t)).toEqual([{ id: TWO_53, daves: 1, uri: `${OTHER}/likes/dave` }]);
   });
 
-  it("retires its own favourite's earliest aged id, not the one it reads as", async () => {
+  // From 2^53 bob's Like ids are 2^53 + 1 to 2^53 + 4, the first read as dave's; from 10^16 - 2 they are 10^16 - 1 and
+  // then 17-digit ids, which sort first as TEXT.
+  it.each([TWO_53, "9999999999999998"])("retires its own favourite's earliest aged id, after one at %s", async (id) => {
     const { t, bob } = await withNeko();
     const uri = await seededLocal(t);
-    await davesAt2To53(t, uri);
+    await davesAt(t, uri, id);
     const receive = receiver(t, bob);
     const fresh = ["1", "2", "3", "4", "5"].map((n) => likeOf(bob, uri, n));
     for (const liked of fresh.slice(0, MAX_TRACKED_LIKES)) {
