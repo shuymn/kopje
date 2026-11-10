@@ -137,7 +137,7 @@ export type Event =
   | { k: "peerRevoke"; quoting: string; state: QuoteState; stamp: string; msg: number }
   | { k: "peerPolicy"; status: string }
   // Kopje received the peer's message `msg` and answered `reason`.
-  | { k: "kopje"; msg: number; type: Msg["type"]; reason: string }
+  | { k: "kopje"; msg: number; type: Msg["type"]; reason: string; step: number }
   // Kopje accepted R's quote (its quoting status's uri); R's server sent the Update of its quoting status carrying the
   // stamp (accept.rb:54-57), as message `msg`; a job round detached R's quote from its removed quoted status.
   | { k: "accepted"; quoting: string }
@@ -190,8 +190,11 @@ export type Intent = {
   // VIS-2 and VIS-3); null before. A local status's Delete has none until its job stages it.
   rows: number | null;
   staged: boolean;
-  // The order of its rows in the lane (a staged Delete's rows come when its job writes them).
+  // The order of its rows in the lane, as the policy recorded the intent: a staged Delete's rows come when its job
+  // writes them, the Deletes one job round stages together as one group (NET-2, VIS-3).
   rowOrder: number;
+  // Within such a group only, the order the Store wrote them in (the job's business, not the policy's).
+  tie?: number;
   // A local quoting status's Create or Update: the stamp its Note carries (quoteAuthorization), null for none (C13,
   // C14); undefined for any other activity.
   stamp?: string | null;
@@ -200,9 +203,6 @@ export type Intent = {
 export type Head = { kind: "pending"; dueAt: number } | { kind: "leased"; token: string; until: number };
 
 type Removal = { label: string };
-
-// The place of an intent whose rows are not written yet: after every row written.
-const UNWRITTEN = 1e12;
 
 export class QuotePolicy {
   readonly statuses = new Map<string, KStatus>();
@@ -291,7 +291,13 @@ export class QuotePolicy {
   headIntent(): Intent | undefined {
     return this.lane
       .filter((i) => (i.rows === null ? !i.staged : i.rows > 0))
-      .toSorted((a, b) => a.rowOrder - b.rowOrder)[0];
+      .toSorted((a, b) => a.rowOrder - b.rowOrder || (a.tie ?? 0) - (b.tie ?? 0))[0];
+  }
+
+  // AC-4: the intents recorded before `intent` (whatever their subject, superseded ones included: their rows are still
+  // sent) that still hold a row in the lane when a row of `intent` is claimed.
+  overtaken(intent: Intent): Intent[] {
+    return this.lane.filter((i) => i !== intent && i.rowOrder < intent.rowOrder && (i.rows ?? 0) > 0);
   }
 
   // NET-2 and G1: a retraction marks every earlier activity about its subject superseded (an operator's retry of it
@@ -320,7 +326,7 @@ export class QuotePolicy {
       superseded: false,
       rows: null,
       staged: input.staged === true,
-      rowOrder: UNWRITTEN + ++this.order,
+      rowOrder: ++this.order,
       ...(input.stamp === undefined ? {} : { stamp: input.stamp }),
     };
     this.lane.push(intent);
@@ -377,13 +383,14 @@ export class QuotePolicy {
   }
 
   // The intents the Store shows, bound in order: an intent whose rows are seen for the first time takes the Store's
-  // row count and the place of its first row (row counts belong to VIS-2 and VIS-3, not to this policy).
+  // row count (row counts belong to VIS-2 and VIS-3, not to this policy), and its first row's place only to order the
+  // Deletes of one job round among themselves.
   bind(rows: readonly { rows: number; first: number | null }[], now: number): void {
     this.lane.forEach((intent, i) => {
       const seen = rows[i];
       if (intent.rows === null && !intent.staged && seen !== undefined && seen.rows > 0 && seen.first !== null) {
         intent.rows = seen.rows;
-        intent.rowOrder = seen.first;
+        intent.tie = seen.first;
       }
     });
     this.promote(now);
@@ -594,11 +601,13 @@ export class QuotePolicy {
   // without a target, G4).
   jobs(now: number): boolean {
     const removals = this.removals.splice(0);
+    const group = ++this.order;
     for (const { label } of removals) {
       const s = this.statuses.get(label)!;
       const intent = this.lane.find((i) => i.type === "Delete" && i.subject === s.uri && i.staged);
       if (intent !== undefined) {
         intent.staged = false;
+        intent.rowOrder = group;
         const earlier = this.lane.some((i) => i !== intent && i.subject === s.uri && (i.rows ?? 1) > 0);
         if (this.receipts.has(label) || earlier || this.reachesR(label)) {
           this.promote(now);
@@ -1580,7 +1589,7 @@ export function knownDefect1449(
   log: readonly Logged[],
   quoting: string,
   stored: { state: string; quoted: string | null; activityUri: string | null } | undefined,
-  // The event at whose step the Store first showed the quote pending after a projection that showed it deleted.
+  // The step at which the Store first showed the quote pending after a projection that showed it deleted.
   revivedAt: number | null,
 ): boolean {
   const accepted = log.find((e) => e.k === "accepted" && e.quoting === quoting);
@@ -1599,7 +1608,7 @@ export function knownDefect1449(
         e.type === "Update" &&
         e.reason === "stale" &&
         e.n > detach.n &&
-        e.n === revivedAt,
+        e.step === revivedAt,
     ),
   );
   return (

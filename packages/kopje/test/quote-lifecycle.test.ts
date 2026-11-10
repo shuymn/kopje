@@ -193,7 +193,8 @@ async function setup(c: Case) {
     // The quote states the last projection showed, and the event at which a #1449 revival first showed.
     lastStates: new Map<string, string>(),
     revivedAt: new Map<string, number>(),
-    // L's quoting statuses posted so far: labels are never reused.
+    // L's quote labels allocated (never reused), and L's quotes posted (POSTS caps these alone).
+    lqLabels: 0,
     lqCount: 0,
   };
   // R's statuses as Mastodon serves them, fetched by Kopje through search (storing R too).
@@ -334,6 +335,19 @@ const log = (w: World, line: string) => {
 // ---------------------------------------------------------------------------------------------------------------
 
 const AUTH_PATH = "/quote_authorizations/";
+
+// An outbound activity's subject in the policy's terms: Kopje's stamps by their authorization's label.
+function subjectOf(w: World, object: string | null): string | null {
+  if (object === null) {
+    return null;
+  }
+  const at = object.indexOf(AUTH_PATH);
+  if (object.startsWith(LOCAL) && at >= 0) {
+    const id = object.slice(at + AUTH_PATH.length);
+    return `stamp:${w.authLabel.get(id) ?? `unbound ${id}`}`;
+  }
+  return object;
+}
 const ACTIVE = "('queued', 'pending', 'leased')";
 
 async function project(w: World) {
@@ -403,17 +417,7 @@ async function project(w: World) {
       w.authLabel.set(row.authorization_id, quote.authorization);
     }
   }
-  const subject = (object: string | null) => {
-    if (object === null) {
-      return null;
-    }
-    const at = object.indexOf(AUTH_PATH);
-    if (object.startsWith(LOCAL) && at >= 0) {
-      const id = object.slice(at + AUTH_PATH.length);
-      return `stamp:${w.authLabel.get(id) ?? `unbound ${id}`}`;
-    }
-    return object;
-  };
+  const subject = (object: string | null) => subjectOf(w, object);
   const intents = raw.intents.map((i) => ({
     type: i.type,
     subject: subject(i.object),
@@ -583,7 +587,8 @@ async function check(w: World, answer: { actual: unknown; predicted: unknown } |
     const actual = state.quotes.find((q) => q.label === row.label);
     const uri = uriOf(w, row.label);
     if (actual?.state === "pending" && w.lastStates.get(row.label) === "deleted" && !w.revivedAt.has(row.label)) {
-      w.revivedAt.set(row.label, w.log.at(-1)?.n ?? 0);
+      // The step that observed it, whatever event it logged (an API step logs none).
+      w.revivedAt.set(row.label, w.step);
     }
     const at = w.revivedAt.get(row.label) ?? null;
     if (row.state === "deleted" && !row.local && uri !== undefined && knownDefect1449(w.log, uri, actual, at)) {
@@ -618,7 +623,7 @@ async function receive(w: World, actor: string, msg: Msg, personal: boolean, seq
   });
   const predicted = w.policy.receive(actor, msg, w.clock.now, personal);
   w.trace.push(`  -> ${result.reason}`);
-  w.emit({ k: "kopje", msg: seq, type: msg.type, reason: result.reason });
+  w.emit({ k: "kopje", msg: seq, type: msg.type, reason: result.reason, step: w.step });
   if (msg.type === "QuoteRequest" && result.reason === "quote-accepted") {
     w.emit({ k: "accepted", quoting: msg.instrument });
   }
@@ -652,7 +657,7 @@ function describeMsg(msg: Msg): string {
 
 async function lPost(w: World, target: number): Promise<void> {
   const p = w.policy;
-  const label = `LQ${++w.lqCount}`;
+  const label = `LQ${++w.lqLabels}`;
   const quoted = `SR${target + 1}`;
   log(w, `L posts ${label} quoting ${quoted}`);
   const id = w.ids.get(quoted) ?? "1";
@@ -660,6 +665,7 @@ async function lPost(w: World, target: number): Promise<void> {
   const posted = answer.body as { id: string; uri: string };
   const predicted = p.postQuote(w.clock.now, label, quoted, () => posted.uri);
   if (answer.status === 200) {
+    w.lqCount++;
     w.ids.set(label, posted.id);
     p.labelOf.set(posted.uri, label);
   }
@@ -768,7 +774,12 @@ async function claim(w: World): Promise<Attempt | null> {
           d.id,
         )
       )[0]!;
-      return { type: row.type, first: row.first === 1, actor: result.signers[d.signer]?.actorUri };
+      return {
+        type: row.type,
+        subject: subjectOf(w, row.object),
+        first: row.first === 1,
+        actor: result.signers[d.signer]?.actorUri,
+      };
     }),
   );
   const leased = predicted.leased;
@@ -778,14 +789,13 @@ async function claim(w: World): Promise<Attempt | null> {
   w.trace.push(`  -> ${JSON.stringify(claimed)}`);
   await check(w, {
     actual: claimed,
-    predicted: leased === null ? [] : [{ type: leased.type, first: true, actor: L }],
+    predicted: leased === null ? [] : [{ type: leased.type, subject: leased.subject, first: true, actor: L }],
   });
   if (leased === null) {
     return null;
   }
-  // AC-4 and NET-2, by the order the policy recorded: no earlier activity about the same object still has a row (a
-  // status's Create before the Update that follows it, an Accept before its stamp's Delete).
-  const earlier = w.policy.lane.filter((i) => i.seq < leased.seq && i.subject === leased.subject && (i.rows ?? 0) > 0);
+  // AC-4 and NET-2, by the order the policy recorded: no intent recorded before it still has a row, whatever it is about.
+  const earlier = w.policy.overtaken(leased);
   expect(
     earlier.map((i) => `${i.type} ${i.subject}`),
     w.trace.join("\n"),
@@ -2320,6 +2330,88 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     await receive(w, R, { type: "StampDelete", id: `${s}#delete`, object: s, proven: true }, false, -1, "receive");
     expect(w.stats["StampDelete stamp-revoked"]).toBe(1);
     expect(await stateOf(w, "LQ1")).toBe("revoked");
+  });
+  // AC-4 by the policy's own record order: rows that the Store wrote in another order than their intents were recorded
+  // are not learned as the lane's order (the claim's subject is compared with the policy's head).
+  it("AC-4: the lane's order is the order the policy recorded, not the Store's row positions", () => {
+    const p = new QuotePolicy(L, R, { lr: false, rl: true });
+    for (const label of ["A", "B"]) {
+      p.addStatus({
+        label,
+        uri: `${LOCAL}/ap/o/${label}`,
+        author: "L",
+        visibility: "public",
+        policy: localStored("public"),
+        withdrawn: false,
+        boost: false,
+      });
+      p.recordCreate(NOW, label);
+    }
+    // The Store shows B's row first.
+    p.bind(
+      [
+        { rows: 1, first: 2 },
+        { rows: 1, first: 1 },
+      ],
+      NOW,
+    );
+    expect(p.claim(NOW, "lease").leased?.subject).toBe(`${LOCAL}/ap/o/A`);
+  });
+
+  it("posting quotes: refused posts do not use up the posts a case may make", async () => {
+    const w = await setup({ lr: true, rl: true, p: ["public", "public"], q: ["nobody", "nobody"] });
+    for (let i = 0; i < POSTS; i++) {
+      await act(w, { k: "lPost", s: 0 });
+    }
+    expect(w.stats["L posts _ quoting _ 404"]).toBe(POSTS);
+    expect(w.peer.setPolicy(SR[0], "public")).toBe(true);
+    await deliverAll(w);
+    await act(w, { k: "lPost", s: 0 });
+    expect(w.stats["L posts _ quoting _ 200"]).toBe(1);
+  });
+
+  it("W19 (known defect #1449, countertrace): a revival a later step shows is not the Update's", async () => {
+    const w = await setup(BASE);
+    w.peer.postQuote("RQ1", uriOf(w, "SL1")!);
+    w.policy.labelOf.set(rUri(w, "RQ1"), "RQ1");
+    await deliverAll(w);
+    await sendAll(w);
+    processAll(w);
+    await lDelete(w, "SL1");
+    await jobs(w);
+    const quoting = (await statusId(w, "RQ1"))!;
+    const [before] = await sql<{ state: string; activity_uri: string | null }>(
+      w.store,
+      "SELECT state, activity_uri FROM quotes WHERE status_id = ?",
+      quoting,
+    );
+    expect(before?.state).toBe("deleted");
+    // The linked Update is received after the detach, and in this countertrace leaves the row deleted.
+    const message = w.peer.outbox.shift()!;
+    expect(message.msg.type).toBe("Update");
+    log(w, "deliver the Update (the row kept deleted)");
+    const result = await w.store.receiveActivity(BUILD, {
+      now: w.clock.now,
+      origin: LOCAL,
+      actorUri: R,
+      actor: null,
+      actorRevision: null,
+      activity: activityOf(R, message.msg, w.clock.now),
+      recipient: null,
+    });
+    w.emit({ k: "kopje", msg: message.seq, type: "Update", reason: result.reason, step: w.step });
+    await sql(
+      w.store,
+      "UPDATE quotes SET state = ?, activity_uri = ? WHERE status_id = ?",
+      before!.state,
+      before!.activity_uri,
+      quoting,
+    );
+    await check(w);
+    // A later step (L's policy change) shows the row pending: the exception does not take it for the Update's.
+    await sql(w.store, "UPDATE quotes SET state = 'pending', activity_uri = NULL WHERE status_id = ?", quoting);
+    await expect(lPolicy(w, "SL2", "nobody")).rejects.toThrow("expected");
+    expect(w.revived.has("RQ1")).toBe(false);
   });
 });
 
