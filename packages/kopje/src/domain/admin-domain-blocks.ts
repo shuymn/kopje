@@ -101,13 +101,8 @@ export const getAdminDomainBlock = adminReadOperation<{ id: string }, DomainBloc
 
 // An id as Mastodon's find reads it: digits only, within the INTEGER range (isIntegerKey), else no record. Kept as
 // decimal TEXT (DATA-6).
-function blockId(id: string): string | null {
-  return isIntegerKey(id) ? id : null;
-}
-
 function found(db: Db, id: string): DomainBlockResult {
-  const key = blockId(id);
-  const block = key === null ? null : blockById(db, key);
+  const block = isIntegerKey(id) ? blockById(db, id) : null;
   return block === null ? { status: "not_found" } : { status: "ok", block };
 }
 
@@ -201,8 +196,7 @@ export const updateAdminDomainBlock = adminWriteOperation<BlockRequest & { id: s
 export const deleteAdminDomainBlock = adminWriteOperation<{ id: string }, DomainBlockResult>(
   ADMIN_PERMISSION.manageFederation,
   (db, { id }, admin) => {
-    const key = blockId(id);
-    const block = key === null ? null : deleteBlock(db, key);
+    const block = isIntegerKey(id) ? deleteBlock(db, id) : null;
     if (block === null) {
       return { status: "not_found" };
     }

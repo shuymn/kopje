@@ -508,11 +508,10 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
   const page = adminPage(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
   const input = { credential: optionalCredential(c, deps), page };
   const blocks = authorized(await storeCall(c, deps, (s, b) => s.adminDomainBlocks(b, input)));
-  const ids = blocks.map((block) => block.id);
   listLinks(c, (cursor) => listUrl(c, "/api/v1/admin/domain_blocks", ["limit"], p, cursor), {
     more: blocks.length === page.limit,
-    newest: ids[0] ?? null,
-    oldest: ids.at(-1) ?? null,
+    newest: blocks[0]?.id ?? null,
+    oldest: blocks.at(-1)?.id ?? null,
   });
   return c.json(await Promise.all(blocks.map(domainBlockEntity)));
 };

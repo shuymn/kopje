@@ -46,9 +46,6 @@ const COLUMNS = `CAST(id AS TEXT) AS id, last_status_id, unread,
 	(SELECT json_group_array(value ORDER BY key) FROM json_each(participants) WHERE key < ${MAX_PRESENTED_PARTICIPANTS})
 		AS participants`;
 
-// Mastodon's conversation ids are integers: anything else, or one past the INTEGER range, names none.
-const conversationId = isIntegerKey;
-
 // AccountConversation.add_status: the direct status `statusId` (not a boost) joins the conversation of `ownerId` with
 // its thread and participants, made if there is none. A status already in that conversation changes nothing;
 // otherwise it becomes the last status if it is the newest, and the conversation is unread unless the status is the
@@ -199,7 +196,7 @@ export function streamedConversation(
   id: string,
   present: Present,
 ): Conversation | null {
-  if (!conversationId(id)) {
+  if (!isIntegerKey(id)) {
     return null;
   }
   const row = db.first<ConversationRow>(
@@ -215,7 +212,7 @@ export const markConversation = userWriteOperation<
   { id: string; unread: boolean; present: Present },
   Conversation | null
 >((db, { id, unread, present }, _viewer, viewer) => {
-  if (!conversationId(id)) {
+  if (!isIntegerKey(id)) {
     return null;
   }
   if (
@@ -241,6 +238,6 @@ export const markConversation = userWriteOperation<
 // DELETE /api/v1/conversations/:id: the viewer's conversation goes (its statuses stay). Whether it was theirs.
 export const deleteConversation = userWriteOperation<{ id: string }, boolean>(
   (db, { id }, { accountId }) =>
-    conversationId(id) &&
+    isIntegerKey(id) &&
     db.run("DELETE FROM conversations WHERE id = CAST(? AS INTEGER) AND account_id = ?", id, accountId) > 0,
 );
