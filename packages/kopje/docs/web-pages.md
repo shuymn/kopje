@@ -12,10 +12,10 @@ states the rules every page follows.
   fingerprinted name (`/assets/kopje.<hash>.js`) beside the stylesheet's; what its pages' CSP allows is WEB-2 in
   [threat-model.md](threat-model.md).
 - **One stylesheet, served minified.** All pages share `src/web/kopje.css`, plain CSS with native nesting (a nested
-  selector names its parent with `&`) and `light-dark()` and no preprocessor. `scripts/build-assets.mjs` publishes it as `/assets/kopje.<hash>.css` with its
-  comments and whitespace removed by the pinned esbuild and nothing else rewritten; the browser job checks that
-  Chromium reads the same rules from both, and the budget of 16 KiB raw and 5 KiB gzip applies to the served file
-  (`test-node/stylesheet.test.ts`). Comments explaining a rule stay in the source.
+  selector names its parent with `&`) and `light-dark()` and no preprocessor. `scripts/build-assets.mjs` publishes it
+  as `/assets/kopje.<hash>.css` with its comments and whitespace removed by the pinned esbuild and nothing else
+  rewritten; the browser job checks that Chromium reads the same rules from both, and the budget of 16 KiB raw and
+  5 KiB gzip applies to the served file (`test-node/stylesheet.test.ts`). Comments explaining a rule stay in the source.
 - **Icons and default images under `/assets`.** Every page head links the favicon (`favicon.ico`, 16, 32 and 48 px),
   `favicon-192.png` and `apple-touch-icon.png`, named in `src/platform/brand-assets.ts` with the default avatar,
   header and thumbnail. There is no web manifest, since the pages' CSP has no `manifest-src`. These files keep stable

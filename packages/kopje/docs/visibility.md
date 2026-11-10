@@ -492,16 +492,15 @@ Before it is recorded, the job supersedes those earlier `Accept`s in bounded ste
 it. Local accounts' follows of it are kept; their `Follow` and any other content to it is dropped at send time
 (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted
 in bounded steps before the follow ends. Severing a remote follower's follow or request deletes its `follow` and
-`follow_request` notifications and records its `Follow` id as retracted (ID-7), so a redelivery of it is refused
-while that retraction lives: not for a Misskey pair id, which is never recorded, nor when the id was not recorded yet
-and the follower is at its retraction cap, where the follow is severed all the same.
+`follow_request` notifications and records its `Follow` id as retracted, under ID-7's rules for a pair id and the
+retraction cap.
 
 Once the account job ends, the account's availability and `suspension_source` are a function of the final decisions
 alone (the account's suspension source and the blocks), whatever the order of decisions and rounds; its exact
 `suspended_at` is not, since a suspension writes its own time and a conversion keeps the one it finds. What the job
-severed and resolved is not either: severing is monotone per follow generation (a follow row), so a generation severed
-while the job held stays severed after the suspension is lifted, and which generations were severed depends on the
-order of the decisions and the rounds. Reports are resolved a batch per round (`REPORT_ROUND`), each committed round
+severed and resolved is not either: severing is monotone per follow generation (a follow row) and never reversed, as in
+Mastodon, so a generation severed while the job held stays severed after the suspension or block is lifted, and which
+generations were severed depends on the order of the decisions and the rounds. Reports are resolved a batch per round (`REPORT_ROUND`), each committed round
 under its job generation's fence: a job ended or reset meanwhile keeps the batches already resolved and leaves the
 rest open, or to the next generation's fence.
 
@@ -684,8 +683,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   raw domain longer than `MAX_DOMAIN_INPUT` is refused before it is normalized, a normalized one beyond Mastodon's 255
   characters or 63 per label is invalid, and one deeper than `MAX_BLOCK_LABELS` is refused before any ruling block is
   looked up. `reject_reports` refuses inbound Flags whose reporter's stored domain is ruled by that block (R34; the
-  actor host is not read, as for `reject_media`). `reject_media` keeps the
-  media of the domains ruled by that block out of the remote media cache (below). `obfuscate` changes only how the
+  actor host is not read, as for `reject_media`). `reject_media` keeps the media of the domains ruled by that block
+  out of the remote media cache (below). `obfuscate` changes only how the
   public block list shows the domain.
 - **reject_media** (Mastodon's `DomainBlock.reject_media?`): the rule of a domain, its longest matching block as for
   coverage, has `reject_media` (`mediaRejectedSql` in `src/domain/audience.ts`: `hostMediaRejectedSql`,
@@ -760,13 +759,11 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   No account is stored or moves into a covered domain, so the last walk after the last reset finds every covered
   account. Once the job ends, the domain marks (`suspension_source = 'domain'`; not their exact `suspended_at`) and
   availability are a function of the final decisions alone (the blocks, each account's suspension source), whatever
-  the order of transitions and rounds, and every covered account it did not skip as individually suspended has its
-  follows up to the last reset's bound severed. A skipped account that is converted later is severed by its own
-  account job (mode `domain`), so the follows of every covered account that is not individually suspended, up to the
-  bounds of the jobs that reached it, are severed only once all moderation jobs have drained after the final decisions;
-  an individually suspended account's job keeps local accounts' follows of it. Severing is monotone per follow generation (a follow row) and never reversed, as in
-  Mastodon: a generation severed while its account was covered stays severed after the block is lifted, so which
-  generations were severed depends on the order of the decisions and the rounds. Every round reads at most `MARK_WINDOW`
+  the order of transitions and rounds, and every covered account it did not skip has its follows up to the last
+  reset's bound severed. A skipped account that is converted later is severed by its own account job (mode `domain`),
+  so the follows of every covered account that is not individually suspended, up to the bounds of the jobs that
+  reached it, are severed only once all moderation jobs have drained after the final decisions. Severing is monotone
+  and never reversed, as for the account job (remote suspension, above). Every round reads at most `MARK_WINDOW`
   accounts or `CLEAR_ROUND` (500) suspended accounts, and `SEVER_ROUND` follows, and writes at most
   `MODERATION_ROUND_ROWS`.
 
