@@ -190,6 +190,11 @@ async function setup(c: Case) {
     tag: ++worldSequence,
     // R's quotes the #1449 exception admitted (check).
     revived: new Set<string>(),
+    // The quote states the last projection showed, and the event at which a #1449 revival first showed.
+    lastStates: new Map<string, string>(),
+    revivedAt: new Map<string, number>(),
+    // L's quoting statuses posted so far: labels are never reused.
+    lqCount: 0,
   };
   // R's statuses as Mastodon serves them, fetched by Kopje through search (storing R too).
   for (const [i, uri] of SR.entries()) {
@@ -369,11 +374,12 @@ async function project(w: World) {
         type: string;
         object: string | null;
         superseded: number;
+        retracts: number;
         staged: string | null;
         rows: number;
         first: number | null;
       }>(
-        `SELECT json_extract(o.body, '$.activity.type') AS type, o.object_uri AS object, o.superseded, o.staged,
+        `SELECT json_extract(o.body, '$.activity.type') AS type, o.object_uri AS object, o.superseded, o.retracts, o.staged,
 					(SELECT count(*) FROM deliveries d WHERE d.activity_id = o.id AND d.state IN ${ACTIVE}) AS rows,
 					(SELECT min(d.id) FROM deliveries d WHERE d.activity_id = o.id AND d.state IN ${ACTIVE}) AS first
 				FROM outbound_activities o ORDER BY o.id`,
@@ -412,6 +418,7 @@ async function project(w: World) {
     type: i.type,
     subject: subject(i.object),
     superseded: i.superseded === 1,
+    retracts: i.retracts === 1,
     staged: i.staged !== null && i.rows === 0,
   }));
   p.bind(raw.intents, w.clock.now);
@@ -479,7 +486,13 @@ function expected(w: World) {
     retracted: [...p.retracted].toSorted(),
     mentions: [...p.mentions].toSorted(),
     notifications: [...p.notifications].toSorted(),
-    intents: p.lane.map((i) => ({ type: i.type, subject: i.subject, superseded: i.superseded, staged: i.staged })),
+    intents: p.lane.map((i) => ({
+      type: i.type,
+      subject: i.subject,
+      superseded: i.superseded,
+      retracts: i.retracts,
+      staged: i.staged,
+    })),
     gaveUp: 0,
     jobs: p.removals.length,
   };
@@ -569,13 +582,20 @@ async function check(w: World, answer: { actual: unknown; predicted: unknown } |
   for (const row of want.quotes) {
     const actual = state.quotes.find((q) => q.label === row.label);
     const uri = uriOf(w, row.label);
-    if (row.state === "deleted" && !row.local && uri !== undefined && knownDefect1449(w.log, uri, actual)) {
+    if (actual?.state === "pending" && w.lastStates.get(row.label) === "deleted" && !w.revivedAt.has(row.label)) {
+      w.revivedAt.set(row.label, w.log.at(-1)?.n ?? 0);
+    }
+    const at = w.revivedAt.get(row.label) ?? null;
+    if (row.state === "deleted" && !row.local && uri !== undefined && knownDefect1449(w.log, uri, actual, at)) {
       if (!w.revived.has(row.label)) {
         w.revived.add(row.label);
         tally(w.stats, "exception known-defect-1449");
       }
       Object.assign(row, { state: "pending", activityUri: null });
     }
+  }
+  for (const row of state.quotes) {
+    w.lastStates.set(String(row.label), row.state);
   }
   expect(state, context).toEqual(want);
   expect(await reads(w), context).toEqual(expectedReads(w));
@@ -632,7 +652,7 @@ function describeMsg(msg: Msg): string {
 
 async function lPost(w: World, target: number): Promise<void> {
   const p = w.policy;
-  const label = `LQ${[...p.statuses.keys()].filter((k) => k.startsWith("LQ")).length + 1}`;
+  const label = `LQ${++w.lqCount}`;
   const quoted = `SR${target + 1}`;
   log(w, `L posts ${label} quoting ${quoted}`);
   const id = w.ids.get(quoted) ?? "1";
@@ -763,6 +783,13 @@ async function claim(w: World): Promise<Attempt | null> {
   if (leased === null) {
     return null;
   }
+  // AC-4 and NET-2, by the order the policy recorded: no earlier activity about the same object still has a row (a
+  // status's Create before the Update that follows it, an Accept before its stamp's Delete).
+  const earlier = w.policy.lane.filter((i) => i.seq < leased.seq && i.subject === leased.subject && (i.rows ?? 0) > 0);
+  expect(
+    earlier.map((i) => `${i.type} ${i.subject}`),
+    w.trace.join("\n"),
+  ).toEqual([]);
   w.emit({ k: "claim", token, seq: leased.seq, type: leased.type, subject: leased.subject });
   const attempt: Attempt = {
     token,
@@ -792,16 +819,31 @@ async function confirm(w: World, attempt: Attempt): Promise<void> {
     w.emit({ k: "confirm", token: attempt.token });
     const body = JSON.parse(result.body) as Body;
     await check(w, {
-      actual: { status: "send", type: body.type, actor: body.actor },
+      actual: { status: "send", type: body.type, actor: body.actor, ...stampOf(body, predicted) },
       predicted:
         predicted.status === "send"
-          ? { status: "send", type: predicted.intent.type, actor: senderOf(predicted.intent) }
+          ? {
+              status: "send",
+              type: predicted.intent.type,
+              actor: senderOf(predicted.intent),
+              ...(predicted.intent.stamp === undefined ? {} : { stamp: predicted.intent.stamp }),
+            }
           : { status: predicted.status },
     });
     return;
   }
   attempt.phase = "done";
   await check(w, { actual: result.status, predicted: predicted.status });
+}
+
+// The stamp a confirmed Create or Update of a local quoting status carries, where the policy predicts one (or none).
+function stampOf(body: Body, predicted: { status: string; intent?: Intent }) {
+  const stamp = predicted.status === "send" ? predicted.intent?.stamp : undefined;
+  if (stamp === undefined) {
+    return {};
+  }
+  const object = body.object as { quoteAuthorization?: string } | undefined;
+  return { stamp: object?.quoteAuthorization ?? null };
 }
 
 // The actor of the body Kopje sends: L's own, but a forward of R's stamp Delete goes as R signed it (VIS-28).
@@ -935,7 +977,7 @@ async function act(w: World, a: Action): Promise<void> {
   const peer = w.peer;
   switch (a.k) {
     case "lPost":
-      if (labels("LQ", w).length < POSTS) {
+      if (w.lqCount < POSTS) {
         await lPost(w, a.s);
       }
       return;
@@ -1169,7 +1211,9 @@ function quiescence(w: World): void {
   const context = w.trace.join("\n");
   const kopje: Record<string, unknown> = {};
   const theirs: Record<string, unknown> = {};
-  for (const label of labels("", w).filter((l) => l.startsWith("LQ") || l.startsWith("RQ"))) {
+  // Every quoting status either side ever held, deleted ones included (AC-5): a deleted quote is live on neither.
+  const quoting = new Set([...w.policy.labelOf.values()].filter((l) => l.startsWith("LQ")));
+  for (const label of [...quoting, ...w.peer.rqs.keys()].toSorted()) {
     const mine = kopjeSide(w, label);
     const peer = peerSide(w, label);
     let exception: Excepted = null;
@@ -1202,9 +1246,10 @@ async function run(c: Case, actions: readonly Action[]): Promise<World> {
 }
 
 const STATS: Stats = {};
-const merge = (stats: Stats) => {
+const P2_STATS: Stats = {};
+const merge = (stats: Stats, into = STATS) => {
   for (const [key, n] of Object.entries(stats)) {
-    tally(STATS, key, n);
+    tally(into, key, n);
   }
 };
 
@@ -1363,7 +1408,7 @@ async function p2Act(w: PolicyWorld, a: P2Action): Promise<void> {
   const p = w.policy;
   switch (a.k) {
     case "lPost":
-      if (labels("LQ", w).length < POSTS && p.statuses.has(`SR${a.s + 1}`)) {
+      if (w.lqCount < POSTS && p.statuses.has(`SR${a.s + 1}`)) {
         await lPost(w, a.s);
       }
       return;
@@ -1445,7 +1490,8 @@ async function p2Act(w: PolicyWorld, a: P2Action): Promise<void> {
       await receive(
         w,
         actor,
-        { type: "StampDelete", id: `${stamp}#delete-${++p2Sequence}`, object: stamp, proven: a.proven },
+        // The Delete is the actor's own activity (its id on the actor's origin), whatever stamp it names.
+        { type: "StampDelete", id: `${actor}#deletes/p2-${++p2Sequence}`, object: stamp, proven: a.proven },
         false,
         -1,
         "receive",
@@ -1479,11 +1525,11 @@ describe("quote lifecycle: inbound activities Mastodon would not send, against t
         for (const a of actions) {
           await p2Act(w, a);
         }
-        merge(w.stats);
+        merge(w.stats, P2_STATS);
       }),
       runs(20, SEED),
     );
-    console.log("quote policy-only coverage", JSON.stringify(STATS, null, 1));
+    console.log("quote policy-only coverage", JSON.stringify(P2_STATS, null, 1));
   }, 300_000);
 });
 
@@ -1567,7 +1613,7 @@ async function finish(w: World): Promise<void> {
 
 const rUri = (w: World, label: string) => w.peer.rqs.get(label)!.uri;
 
-describe("quote lifecycle witnesses", () => {
+describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
   it("W1: R's Create first, then its request accepted; R applies Kopje's Accept from L", async () => {
     const w = await setup(BASE);
     expect(w.peer.postQuote("RQ1", uriOf(w, "SL1")!)).toBe(true);
@@ -2158,7 +2204,9 @@ describe("quote lifecycle witnesses", () => {
     expect(w.stats["exception known-defect-1449"]).toBe(1);
     await finish(w);
     const stored = (await project(w)).quotes.find((q) => q.label === "RQ1");
-    const holds = (log: readonly Logged[]) => knownDefect1449(log, rq1, stored);
+    const at = w.revivedAt.get("RQ1")!;
+    const holds = (log: readonly Logged[], revivedAt: number | null = at) =>
+      knownDefect1449(log, rq1, stored, revivedAt);
     expect(holds(w.log)).toBe(true);
     const update = w.log.find((e) => e.k === "peerUpdate" && e.quoting === rq1) as Logged & { msg: number };
     for (const cause of [
@@ -2176,7 +2224,102 @@ describe("quote lifecycle witnesses", () => {
     expect(
       holds(w.log.map((e) => (e === received ? { ...e, n: detach.n - 0.5 } : e)).toSorted((a, b) => a.n - b.n)),
     ).toBe(false);
-    expect(knownDefect1449(w.log, rq1, { ...stored!, state: "deleted" })).toBe(false);
+    expect(knownDefect1449(w.log, rq1, { ...stored!, state: "deleted" }, at)).toBe(false);
+    // The revival first shown at a later step than the Update's receipt is not caused by it.
+    expect(holds(w.log, at + 1)).toBe(false);
+    expect(holds(w.log, null)).toBe(false);
+  });
+  // C1, C5, C7 and C21, each on the path no property case reached.
+  it("W20 (C1): a request naming a stored remote status gets no answer", async () => {
+    const w = await setup(BASE);
+    const instrument = `${R}/statuses/c1`;
+    const note: PeerNote = {
+      uri: instrument,
+      author: R,
+      visibility: "public",
+      quote: { uri: SR[0], approvalUri: null },
+      policy: null,
+    };
+    expect(w.policy.statuses.get("SR1")?.author).toBe("R");
+    await receive(
+      w,
+      R,
+      { type: "QuoteRequest", id: `${R_ORIGIN}/quote_requests/c1`, object: SR[0], instrument, embedded: note },
+      true,
+      -1,
+      "receive",
+    );
+    expect(w.stats["QuoteRequest unknown-object"]).toBe(1);
+  });
+
+  it("W20 (C5): a revoked quote is accepted again by a later request, with a new authorization", async () => {
+    const w = await setup(BASE);
+    w.peer.postQuote("RQ1", uriOf(w, "SL1")!);
+    w.policy.labelOf.set(rUri(w, "RQ1"), "RQ1");
+    await deliverAll(w);
+    await lRevoke(w, "RQ1");
+    expect(await stateOf(w, "RQ1")).toBe("revoked");
+    await receive(
+      w,
+      R,
+      {
+        type: "QuoteRequest",
+        id: `${R_ORIGIN}/quote_requests/again`,
+        object: uriOf(w, "SL1")!,
+        instrument: rUri(w, "RQ1"),
+        embedded: null,
+      },
+      true,
+      -1,
+      "receive",
+    );
+    expect(await stateOf(w, "RQ1")).toBe("accepted");
+    expect([...w.authId.keys()]).toEqual(["a1", "a2"]);
+    expect(w.authId.get("a1")).not.toBe(w.authId.get("a2"));
+  });
+
+  it("W20 (C7): a revoke after two answered requests sends a Reject of each", async () => {
+    const w = await setup(BASE);
+    w.peer.postQuote("RQ1", uriOf(w, "SL1")!);
+    w.policy.labelOf.set(rUri(w, "RQ1"), "RQ1");
+    await deliverAll(w);
+    await receive(
+      w,
+      R,
+      {
+        type: "QuoteRequest",
+        id: `${R_ORIGIN}/quote_requests/second`,
+        object: uriOf(w, "SL1")!,
+        instrument: rUri(w, "RQ1"),
+        embedded: null,
+      },
+      true,
+      -1,
+      "receive",
+    );
+    expect(w.policy.answered.size).toBe(2);
+    await lRevoke(w, "RQ1");
+    const rejects = (await project(w)).intents.filter((i) => i.type === "Reject");
+    expect(rejects.map((i) => [i.subject, i.retracts])).toEqual([
+      [`${R_ORIGIN}/quote_requests/1`, true],
+      [`${R_ORIGIN}/quote_requests/second`, true],
+    ]);
+  });
+
+  it("W20 (C21): another actor's Delete of the quoted author's stamp revokes nothing; the author's does", async () => {
+    const w = await setup(BASE);
+    await lPost(w, 0);
+    const q1 = uriOf(w, "LQ1")!;
+    const s = `${R}/quote_authorizations/c21`;
+    const ref = { id: `${q1}#quote-request`, type: null, object: null, instrument: null };
+    await receive(w, R, { type: "Accept", id: `${R}#accepts/c21`, ref, result: s }, true, -1, "receive");
+    expect(await stateOf(w, "LQ1")).toBe("accepted");
+    await receive(w, F, { type: "StampDelete", id: `${s}#delete-f`, object: s, proven: true }, false, -1, "receive");
+    expect(w.stats["StampDelete retraction-recorded"]).toBe(1);
+    expect(await stateOf(w, "LQ1")).toBe("accepted");
+    await receive(w, R, { type: "StampDelete", id: `${s}#delete`, object: s, proven: true }, false, -1, "receive");
+    expect(w.stats["StampDelete stamp-revoked"]).toBe(1);
+    expect(await stateOf(w, "LQ1")).toBe("revoked");
   });
 });
 

@@ -192,6 +192,9 @@ export type Intent = {
   staged: boolean;
   // The order of its rows in the lane (a staged Delete's rows come when its job writes them).
   rowOrder: number;
+  // A local quoting status's Create or Update: the stamp its Note carries (quoteAuthorization), null for none (C13,
+  // C14); undefined for any other activity.
+  stamp?: string | null;
 };
 
 export type Head = { kind: "pending"; dueAt: number } | { kind: "leased"; token: string; until: number };
@@ -295,7 +298,13 @@ export class QuotePolicy {
   // is refused, its queued rows are still sent); an Update marks earlier Updates of its status only.
   private record(
     now: number,
-    input: { type: IntentType; subject: string; retracts?: boolean; staged?: boolean },
+    input: {
+      type: IntentType;
+      subject: string;
+      retracts?: boolean;
+      staged?: boolean;
+      stamp?: string | null | undefined;
+    },
   ): Intent {
     const retracts = input.retracts === true;
     for (const earlier of this.lane) {
@@ -312,6 +321,7 @@ export class QuotePolicy {
       rows: null,
       staged: input.staged === true,
       rowOrder: UNWRITTEN + ++this.order,
+      ...(input.stamp === undefined ? {} : { stamp: input.stamp }),
     };
     this.lane.push(intent);
     this.promote(now);
@@ -323,6 +333,10 @@ export class QuotePolicy {
   // Creates and Updates of the status still waiting for it there).
   private recordUpdate(now: number, label: string): void {
     const subject = this.statuses.get(label)!.uri;
+    // The Note carries the stamp of its own accepted quote of a status still there, and no stamp otherwise.
+    const q = this.quotes.get(label);
+    const target = q?.quoted == null ? undefined : this.statuses.get(q.quoted);
+    const stamp = !q?.local ? undefined : q.state === "accepted" && target?.withdrawn === false ? q.approvalUri : null;
     for (const earlier of this.lane) {
       if (earlier.type === "Update" && earlier.subject === subject) {
         earlier.superseded = true;
@@ -346,9 +360,9 @@ export class QuotePolicy {
           }
         }
       }
-      this.record(now, { type: "Create", subject });
+      this.record(now, { type: "Create", subject, stamp });
     }
-    this.record(now, { type: "Update", subject });
+    this.record(now, { type: "Update", subject, stamp });
     this.promote(now);
   }
 
@@ -472,7 +486,7 @@ export class QuotePolicy {
       activityUri: `${statusUri}#quote-request`,
     });
     this.mentions.add(`${label}>${quoted.author}`);
-    this.record(now, { type: "Create", subject: statusUri });
+    this.record(now, { type: "Create", subject: statusUri, stamp: null });
     this.record(now, { type: "QuoteRequest", subject: `${statusUri}#quote-request` });
     return 200;
   }
@@ -662,10 +676,15 @@ export class QuotePolicy {
         return this.accept(actor, msg, now);
       case "Reject":
         return this.reject(actor, msg, now);
+      // ID-6: a Delete names only an object of its actor's origin.
       case "StampDelete":
-        return this.stampDelete(actor, msg, now);
+        return this.originOf(msg.object) === this.originOf(actor)
+          ? this.stampDelete(actor, msg, now)
+          : { applied: false, reason: "foreign-object" };
       case "Delete":
-        return this.deleteRemote(actor, msg.object, now);
+        return this.originOf(msg.object) === this.originOf(actor)
+          ? this.deleteRemote(actor, msg.object, now)
+          : { applied: false, reason: "foreign-object" };
       case "Create":
         return this.store(actor, msg.note, personal, false, now);
       case "Update":
@@ -673,11 +692,12 @@ export class QuotePolicy {
     }
   }
 
+  private readonly labels = new Map<string, number>();
+
+  // A label is never reused, removed status or not: the quiescence check keeps every one it allocated.
   private nextLabel(prefix: string): string {
-    let n = 1;
-    while (this.statuses.has(`${prefix}${n}`) || this.quotes.has(`${prefix}${n}`)) {
-      n++;
-    }
+    const n = (this.labels.get(prefix) ?? 0) + 1;
+    this.labels.set(prefix, n);
     return `${prefix}${n}`;
   }
 
@@ -1191,7 +1211,12 @@ export class QuotePeer {
         this.update(body.object as Record<string, unknown>);
         return;
       case "Delete":
-        this.delete(typeof body.object === "string" ? body.object : (body.object as { id: string }).id);
+        if (typeof body.object === "string") {
+          this.delete(body.object, null);
+        } else {
+          const object = body.object as { id: string; type?: string };
+          this.delete(object.id, object.type ?? null);
+        }
         return;
       case "QuoteRequest":
         this.quoteRequest(body, token);
@@ -1257,7 +1282,36 @@ export class QuotePeer {
   // ActivityPub::Activity::Delete (delete.rb:20-44, :58-67): a stamp's Delete matches R's own quote by approval_uri,
   // its quoted account the sender, pending or accepted, and rejects it; a Note's, after the Tombstone (:30-32), deletes
   // the status.
-  private delete(object: string): void {
+  // ActivityPub::Activity::Delete#delete_object (delete.rb:20-44): the Tombstone first, then by the object's type: a
+  // QuoteAuthorization only revokes a quote (revoke_quote), a Note or Question only deletes a status, and anything else
+  // (a Tombstone, an untyped id) deletes a status or, when none matches, revokes a quote.
+  private delete(object: string, type: string | null): void {
+    this.tombstones.add(object);
+    if (type === "QuoteAuthorization") {
+      this.revokeQuote(object);
+    } else if (type === "Note" || type === "Question") {
+      this.deleteStatus(object);
+    } else if (!this.deleteStatus(object)) {
+      this.revokeQuote(object);
+    }
+  }
+
+  // delete.rb:47-56: a copy of L's status is removed; R's quotes of it lose their target (status.rb:83).
+  private deleteStatus(object: string): boolean {
+    if (!this.copies.has(object)) {
+      return false;
+    }
+    this.copies.delete(object);
+    for (const rq of this.rqs.values()) {
+      if (rq.quote.quoted === object) {
+        rq.quote.quoted = null;
+      }
+    }
+    return true;
+  }
+
+  // delete.rb:58-67: R's own quote whose approval_uri is the object, quoted account the sender, pending or accepted.
+  private revokeQuote(object: string): void {
     const own = [...this.rqs.values()].find(
       (rq) =>
         !rq.deleted &&
@@ -1266,17 +1320,6 @@ export class QuotePeer {
     );
     if (own !== undefined) {
       reject(own.quote);
-      return;
-    }
-    if (object.includes("/quote_authorizations/")) {
-      return;
-    }
-    this.tombstones.add(object);
-    this.copies.delete(object);
-    for (const rq of this.rqs.values()) {
-      if (rq.quote.quoted === object) {
-        rq.quote.quoted = null;
-      }
     }
   }
 
@@ -1399,10 +1442,11 @@ function reachedAttempts(log: readonly Logged[], request: string): Logged[] {
 export function replayedRequest(
   log: readonly Logged[],
   q: { uri: string; request: string; status: string },
-  kopje: Side,
+  kopje: Side & { state: string | null },
   peer: Side,
 ): boolean {
-  if (!peer.live || kopje.live) {
+  // Kopje still holds the quote, revoked or rejected: X1 never excuses a local quote that is gone.
+  if (!peer.live || kopje.live || (kopje.state !== "revoked" && kopje.state !== "rejected")) {
     return false;
   }
   const copies = log.filter((e): e is Logged & { k: "peerCopy" } => e.k === "peerCopy" && e.request === q.request);
@@ -1536,6 +1580,8 @@ export function knownDefect1449(
   log: readonly Logged[],
   quoting: string,
   stored: { state: string; quoted: string | null; activityUri: string | null } | undefined,
+  // The event at whose step the Store first showed the quote pending after a projection that showed it deleted.
+  revivedAt: number | null,
 ): boolean {
   const accepted = log.find((e) => e.k === "accepted" && e.quoting === quoting);
   const detach = log.find((e) => e.k === "detach" && e.quoting === quoting);
@@ -1547,7 +1593,13 @@ export function knownDefect1449(
   );
   const revived = updates.some((u) =>
     log.some(
-      (e) => e.k === "kopje" && e.msg === u.msg && e.type === "Update" && e.reason === "stale" && e.n > detach.n,
+      (e) =>
+        e.k === "kopje" &&
+        e.msg === u.msg &&
+        e.type === "Update" &&
+        e.reason === "stale" &&
+        e.n > detach.n &&
+        e.n === revivedAt,
     ),
   );
   return (
