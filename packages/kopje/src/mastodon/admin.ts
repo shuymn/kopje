@@ -453,7 +453,7 @@ export const unsuspendAccount: ApiHandler = async (c, deps) => {
 // digest is the SHA-256 of the domain (DomainBlock#domain_digest, domain_block.rb:104-106).
 async function domainBlockEntity(block: InstanceDomainBlock): Promise<object> {
   return {
-    id: String(block.id),
+    id: block.id,
     domain: block.domain,
     digest: await sha256Hex(block.domain),
     created_at: block.created_at,
@@ -508,7 +508,7 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
   const page = adminPage(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
   const input = { credential: optionalCredential(c, deps), page };
   const blocks = authorized(await storeCall(c, deps, (s, b) => s.adminDomainBlocks(b, input)));
-  const ids = blocks.map((block) => String(block.id));
+  const ids = blocks.map((block) => block.id);
   listLinks(c, (cursor) => listUrl(c, "/api/v1/admin/domain_blocks", ["limit"], p, cursor), {
     more: blocks.length === page.limit,
     newest: ids[0] ?? null,

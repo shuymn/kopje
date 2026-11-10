@@ -432,10 +432,10 @@ export function consumeCode(db: Db, input: CodeInput): { accountId: string; scop
     redirect_uri: string;
     code_challenge: string | null;
     expires_at: string;
-    epoch: number;
+    epoch: string;
   }>(
     `DELETE FROM oauth_tokens WHERE token_hash = ? AND kind = 'code'
-		RETURNING client_id, account_id, scopes, redirect_uri, code_challenge, expires_at, epoch`,
+		RETURNING client_id, account_id, scopes, redirect_uri, code_challenge, expires_at, CAST(epoch AS TEXT) AS epoch`,
     input.codeHash,
   );
   const nowIso = new Date(input.now).toISOString();
@@ -451,14 +451,15 @@ export function consumeCode(db: Db, input: CodeInput): { accountId: string; scop
   ) {
     return null;
   }
-  // A code of a suspended account, or one of an earlier credential epoch (currentCredentialSql), grants nothing.
-  const account = db.first<{ suspended_at: string | null; credential_epoch: number }>(
-    "SELECT suspended_at, credential_epoch FROM local_accounts WHERE account_id = ?",
+  // A code of a suspended account, or one of an earlier credential epoch (currentCredentialSql), grants nothing. The
+  // epochs are compared in SQL (DATA-6).
+  const current = db.first(
+    `SELECT 1 AS x FROM local_accounts
+		WHERE account_id = ? AND suspended_at IS NULL AND credential_epoch = CAST(? AS INTEGER)`,
     code.account_id,
+    code.epoch,
   );
-  return account?.suspended_at === null && account.credential_epoch === code.epoch
-    ? { accountId: code.account_id, scopes: code.scopes }
-    : null;
+  return current !== undefined ? { accountId: code.account_id, scopes: code.scopes } : null;
 }
 
 export type AppTokenInput = {

@@ -374,8 +374,9 @@ export const completePush = writeOperation<
   { id: string; leaseToken: string; now: number; outcome: DeliveryOutcome },
   PushCompletion
 >((db, { id, leaseToken, now, outcome }) => {
-  const row = db.first<{ subscription_id: number; attempts: number }>(
-    `SELECT subscription_id, attempts FROM push_deliveries
+  // The subscription's id as TEXT, bound back with CAST (DATA-6).
+  const row = db.first<{ subscription_id: string; attempts: number }>(
+    `SELECT CAST(subscription_id AS TEXT) AS subscription_id, attempts FROM push_deliveries
 		WHERE id = CAST(? AS INTEGER) AND state = 'leased' AND lease_token = ?`,
     id,
     leaseToken,
@@ -388,7 +389,7 @@ export const completePush = writeOperation<
     return { status: "delivered", nextDueAt: nextPushDueAt(db, leaseToken) };
   }
   if (unsubscribes(outcome)) {
-    db.run("DELETE FROM push_subscriptions WHERE id = ?", row.subscription_id);
+    db.run("DELETE FROM push_subscriptions WHERE id = CAST(? AS INTEGER)", row.subscription_id);
     return { status: "unsubscribed", nextDueAt: nextPushDueAt(db, leaseToken) };
   }
   if (row.attempts >= MAX_ATTEMPTS) {

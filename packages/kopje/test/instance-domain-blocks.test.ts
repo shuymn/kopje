@@ -86,10 +86,12 @@ describe("the Store operations", () => {
       await run((s) => updateInstanceDomainBlock.run(s, { ...FIELDS, id, severity: "noop", now: NOW })),
     ).toBeNull();
     // The newest id deleted is not given again (AUTOINCREMENT).
-    const newest = (await sql<{ id: number }>(h.store, "SELECT max(id) AS id FROM instance_domain_blocks"))[0]!.id;
+    const newest = (
+      await sql<{ id: string }>(h.store, "SELECT CAST(max(id) AS TEXT) AS id FROM instance_domain_blocks")
+    )[0]!.id;
     await run((s) => deleteInstanceDomainBlock.run(s, { id: newest }));
     const again = await create("again.example", "suspend");
-    expect(again.ok && again.block.id).toBe(newest + 1);
+    expect(again.ok && again.block.id).toBe(String(BigInt(newest) + 1n));
   });
 });
 

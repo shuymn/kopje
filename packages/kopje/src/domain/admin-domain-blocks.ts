@@ -82,7 +82,7 @@ function logBlockAction(db: Db, admin: Admin, action: "create" | "update" | "des
     db,
     admin,
     action,
-    { type: "DomainBlock", id: String(block.id) },
+    { type: "DomainBlock", id: block.id },
     { domain: block.domain, severity: block.severity },
     admin.now,
   );
@@ -98,9 +98,9 @@ export const getAdminDomainBlock = adminReadOperation<{ id: string }, DomainBloc
   (db, { id }) => found(db, id),
 );
 
-// An id as Mastodon's find reads it: digits only, else no record.
-function blockId(id: string): number | null {
-  return /^\d{1,15}$/.test(id) ? Number(id) : null;
+// An id as Mastodon's find reads it: digits only, else no record. Kept as decimal TEXT (DATA-6).
+function blockId(id: string): string | null {
+  return /^\d{1,19}$/.test(id) ? id : null;
 }
 
 function found(db: Db, id: string): DomainBlockResult {

@@ -72,13 +72,14 @@ export function addToConversation(db: Db, ownerId: string, statusId: string): vo
   if (held !== undefined) {
     return;
   }
-  const row = db.first<{ id: number }>(
+  // The conversation's id as TEXT, bound back with CAST (DATA-6).
+  const row = db.first<{ id: string }>(
     `INSERT INTO conversations (account_id, thread, participants, last_status_id, unread, stream_seq)
 		VALUES (?1, ?2, ?3, ?4, ?5, coalesce(?6, 0))
 		ON CONFLICT (account_id, thread, participants)
 			DO UPDATE SET last_status_id = max(last_status_id, excluded.last_status_id), unread = excluded.unread,
 				stream_seq = coalesce(?6, stream_seq)
-		RETURNING id`,
+		RETURNING CAST(id AS TEXT) AS id`,
     ...key,
     statusId,
     status.account_id === ownerId ? 0 : 1,
@@ -87,7 +88,11 @@ export function addToConversation(db: Db, ownerId: string, statusId: string): vo
   if (row === undefined) {
     throw new Error("the conversation was not written");
   }
-  db.run("INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (?, ?)", row.id, statusId);
+  db.run(
+    "INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (CAST(? AS INTEGER), ?)",
+    row.id,
+    statusId,
+  );
 }
 
 // The streaming API's change sequence (`direct`, migration 0032_streaming_lists): the owner's mark moved to its next

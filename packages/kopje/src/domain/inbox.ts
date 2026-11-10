@@ -2654,8 +2654,9 @@ const like: Handler<"Like"> = (db, actor, activity, { now, storeNow }) => {
     return ignored("duplicate");
   }
   // Outstanding: the tracked ids and the retained one.
-  const favourite = db.first<{ id: number; outstanding: number }>(
-    `SELECT f.id, (SELECT count(*) FROM favourite_likes l WHERE l.favourite_id = f.id) + (f.uri IS NOT NULL)
+  // Favourite and Like ids are read as TEXT and bound back with CAST (DATA-6).
+  const favourite = db.first<{ id: string; outstanding: number }>(
+    `SELECT CAST(f.id AS TEXT) AS id, (SELECT count(*) FROM favourite_likes l WHERE l.favourite_id = f.id) + (f.uri IS NOT NULL)
 			AS outstanding
 		FROM favourites f WHERE f.account_id = ? AND f.status_id = ?`,
     actor.id,
@@ -2668,8 +2669,8 @@ const like: Handler<"Like"> = (db, actor, activity, { now, storeNow }) => {
     trackLike(db, favourite.id, activity.id, storeNow);
     return applied("favourite-kept");
   }
-  const inserted = db.first<{ id: number }>(
-    "INSERT INTO favourites (account_id, status_id, created_at) VALUES (?, ?, ?) RETURNING id",
+  const inserted = db.first<{ id: string }>(
+    "INSERT INTO favourites (account_id, status_id, created_at) VALUES (?, ?, ?) RETURNING CAST(id AS TEXT) AS id",
     actor.id,
     status.id,
     new Date(now).toISOString(),
@@ -2905,8 +2906,13 @@ function authorDeleted(db: Db, id: string, now: number): boolean {
 }
 
 // received_at: the Store's clock (StoreReceiveInput).
-function trackLike(db: Db, favouriteId: number, uri: string, storeNow: number): void {
-  db.run("INSERT INTO favourite_likes (favourite_id, uri, received_at) VALUES (?, ?, ?)", favouriteId, uri, storeNow);
+function trackLike(db: Db, favouriteId: string, uri: string, storeNow: number): void {
+  db.run(
+    "INSERT INTO favourite_likes (favourite_id, uri, received_at) VALUES (CAST(? AS INTEGER), ?, ?)",
+    favouriteId,
+    uri,
+    storeNow,
+  );
 }
 
 // Makes room at the cap: the earliest tracked id (by row id) the Store received at least LIKE_RETIRE_AFTER_MS ago, by
@@ -2914,9 +2920,10 @@ function trackLike(db: Db, favouriteId: number, uri: string, storeNow: number): 
 // a retained favourites.uri has no time of receipt and is never retired. The favourite keeps the new Like, so its
 // count and notification stay. Without such an id, or without room for its retraction, nothing is written and the
 // Like is answered 503.
-function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: number, now: number, storeNow: number): void {
-  const stale = db.first<{ id: number; uri: string }>(
-    `SELECT id, uri FROM favourite_likes WHERE favourite_id = ? AND received_at <= ? ORDER BY id LIMIT 1`,
+function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: string, now: number, storeNow: number): void {
+  const stale = db.first<{ id: string; uri: string }>(
+    `SELECT CAST(id AS TEXT) AS id, uri FROM favourite_likes WHERE favourite_id = CAST(? AS INTEGER) AND received_at <= ?
+		ORDER BY id LIMIT 1`,
     favouriteId,
     storeNow - LIKE_RETIRE_AFTER_MS,
   );
@@ -2926,17 +2933,18 @@ function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: number, now: num
   if (!canRetract(db, actor.uri, [stale.uri], now)) {
     retryLater("retraction-cap");
   }
-  db.run("DELETE FROM favourite_likes WHERE id = ?", stale.id);
+  db.run("DELETE FROM favourite_likes WHERE id = CAST(? AS INTEGER)", stale.id);
   retract(db, actor.uri, stale.uri, now);
 }
 
-type TrackedLike = { id: number; favourite: string; status_id: string };
+type TrackedLike = { id: string; favourite: string; status_id: string };
 
 // The actor's favourite tracking the Like id `uri`: one row at most (favourite_likes_uri is unique), found by that
 // index, never by the actor's favourites, which are any number.
 function trackedLike(db: Db, actorId: string, uri: string): TrackedLike | undefined {
   return db.first<TrackedLike>(
-    `SELECT l.id, CAST(f.id AS TEXT) AS favourite, f.status_id FROM favourite_likes l INDEXED BY favourite_likes_uri
+    `SELECT CAST(l.id AS TEXT) AS id, CAST(f.id AS TEXT) AS favourite, f.status_id
+			FROM favourite_likes l INDEXED BY favourite_likes_uri
 			JOIN favourites f ON f.id = l.favourite_id
 		WHERE l.uri = ? AND f.account_id = ?`,
     uri,
@@ -3105,7 +3113,7 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
   let reason = "retraction-recorded";
   const undone = tracked === undefined ? retained : { id: tracked.favourite, status_id: tracked.status_id };
   if (tracked !== undefined) {
-    db.run("DELETE FROM favourite_likes WHERE id = ?", tracked.id);
+    db.run("DELETE FROM favourite_likes WHERE id = CAST(? AS INTEGER)", tracked.id);
   } else if (retained !== undefined) {
     db.run("UPDATE favourites SET uri = NULL WHERE id = CAST(? AS INTEGER)", retained.id);
   }

@@ -599,7 +599,8 @@ function writeReport(
   const changed = Object.entries(changes).filter(([column, value]) => row[column as keyof ReportRow] !== value);
   const saved = changed.length > 0 ? [...changed, ["updated_at", now]] : [];
   db.run(
-    `UPDATE reports SET ${[...saved.map(([column]) => `${column} = ?`), "last_action_id = ?"].join(", ")} WHERE id = ?`,
+    `UPDATE reports SET ${[...saved.map(([column]) => `${column} = ?`), "last_action_id = CAST(? AS INTEGER)"].join(", ")}
+		WHERE id = ?`,
     ...saved.map(([, value]) => value as string | null),
     logged,
     row.id,
@@ -704,9 +705,9 @@ export function reachReporters(
 }
 
 // The newest moderation log row, which a suspension freezes in its transaction: the action bound of the report fence
-// (resolveSuspensionReports).
-export function actionBound(db: Db): number {
-  return db.first<{ id: number | null }>("SELECT max(id) AS id FROM admin_actions")?.id ?? 0;
+// (resolveSuspensionReports), as decimal TEXT (DATA-6).
+export function actionBound(db: Db): string {
+  return db.first<{ id: string }>("SELECT CAST(coalesce(max(id), 0) AS TEXT) AS id FROM admin_actions")!.id;
 }
 
 // A suspension-job round (domain/suspension.ts) resolving the target's reports, as Admin::AccountAction
@@ -714,20 +715,21 @@ export function actionBound(db: Db): number {
 // reports_target_state in id order. Resolve only reports frozen at suspension (the report fence, VIS-29 and
 // 0042_report_action_fence): filed up to `bound`, still unresolved, and last stamped at or below `fence`, which also
 // stamps the reports resolved here. A null `fence` (unknown) resolves none. `by` names the suspending admin (null:
-// none). `bound`, `cursor` and the last report returned are report ids in decimal (reportBound). Returns the last
-// report read (null if none) and the resolved count; fewer than `limit` read means the range is done.
+// none). `bound`, `cursor` and the last report returned are report ids in decimal (reportBound), `fence` a log id in
+// decimal (actionBound), each compared in SQL (DATA-6). Returns the last report read (null if none) and the resolved
+// count; fewer than `limit` read means the range is done.
 export function resolveSuspensionReports(
   db: Db,
   target: string,
   bound: string,
-  fence: number | null,
+  fence: string | null,
   by: string | null,
   cursor: string,
   limit: number,
   now: string,
 ): { last: string | null; read: number; resolved: number } {
   const rows = db.all<{ id: string; frozen: number }>(
-    `SELECT CAST(id AS TEXT) AS id, (?5 IS NOT NULL AND coalesce(last_action_id, 0) <= ?5) AS frozen
+    `SELECT CAST(id AS TEXT) AS id, (?5 IS NOT NULL AND coalesce(last_action_id, 0) <= CAST(?5 AS INTEGER)) AS frozen
 		FROM reports INDEXED BY reports_target_state
 		WHERE target_account_id = ?1 AND (action_taken_at IS NULL) = 1 AND id > CAST(?2 AS INTEGER)
 			AND id <= CAST(?3 AS INTEGER)
@@ -742,7 +744,8 @@ export function resolveSuspensionReports(
   // Each report by its key: an IN over the ids lets statistics older than the Store's growth scan reports (RES-7).
   for (const key of frozen) {
     db.run(
-      `UPDATE reports SET action_taken_at = ?1, action_taken_by_account_id = ?2, updated_at = ?1, last_action_id = ?4
+      `UPDATE reports SET action_taken_at = ?1, action_taken_by_account_id = ?2, updated_at = ?1,
+				last_action_id = CAST(?4 AS INTEGER)
 			WHERE id = CAST(?3 AS INTEGER)`,
       now,
       by,

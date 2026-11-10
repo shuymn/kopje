@@ -146,13 +146,14 @@ export function notify(db: Db, input: NotifyInput): void {
     reportId,
     accountWarningId,
   );
-  const inserted = db.all<{ id: number }>(
+  // Each new row's id as TEXT, bound back with CAST (DATA-6).
+  const inserted = db.all<{ id: string }>(
     `INSERT INTO notifications (account_id, type, from_account_id, status_id, report_id, account_warning_id,
 			created_at, group_key, filtered)
 		SELECT ?1, ?2, ?3, ?4, CAST(?9 AS INTEGER), CAST(?10 AS INTEGER), ?5, ?6, ?7
 		WHERE EXISTS (SELECT 1 FROM local_accounts WHERE account_id = ?1)
 			AND ${notifiedSql("?1", "?2", "?3", "?4", "?5", "?8", "CAST(?10 AS INTEGER)")}
-		ON CONFLICT DO NOTHING RETURNING id`,
+		ON CONFLICT DO NOTHING RETURNING CAST(id AS TEXT) AS id`,
     input.recipientId,
     input.type,
     input.fromId,
@@ -257,7 +258,7 @@ export function pushWantedSql(p: string, t: string, n: string, now: string): str
 
 // One push per subscription of the recipient that wants notification `id`, due at once, within the room the backlog
 // has left: however many subscriptions want it, the total never passes MAX_PUSH_BACKLOG.
-function queuePushes(db: Db, id: number, now: number): void {
+function queuePushes(db: Db, id: string, now: number): void {
   const waiting =
     db.first<{ n: number }>("SELECT count(*) AS n FROM (SELECT 1 FROM push_deliveries LIMIT ?)", MAX_PUSH_BACKLOG)?.n ??
     0;
@@ -269,7 +270,7 @@ function queuePushes(db: Db, id: number, now: number): void {
 		SELECT p.id, n.id, ?2, ?2 FROM notifications n
 			JOIN oauth_tokens t ON t.account_id = n.account_id
 			JOIN push_subscriptions p ON p.token_hash = t.token_hash
-		WHERE n.id = ?1 AND ${pushWantedSql("p", "t", "n", "?3")}
+		WHERE n.id = CAST(?1 AS INTEGER) AND ${pushWantedSql("p", "t", "n", "?3")}
 		ORDER BY p.id LIMIT ?4
 		ON CONFLICT DO NOTHING`,
     id,

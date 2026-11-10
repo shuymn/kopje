@@ -43,21 +43,21 @@ export function blockDomain(store: StoreStub, domain: string, severity: Severity
 }
 
 // Sets a block's reject_media, its other fields kept.
-export async function setRejectMedia(store: StoreStub, id: number, rejectMedia: boolean): Promise<void> {
+export async function setRejectMedia(store: StoreStub, id: string, rejectMedia: boolean): Promise<void> {
   const updated = await runInDurableObject(store, (_instance, state) =>
     updateInstanceDomainBlock.run(state.storage.sql, { id, rejectMedia, now: NOW }),
   );
   expect(updated?.reject_media).toBe(rejectMedia);
 }
 
-export async function setSeverity(store: StoreStub, id: number, severity: Severity): Promise<void> {
+export async function setSeverity(store: StoreStub, id: string, severity: Severity): Promise<void> {
   const updated = await runInDurableObject(store, (_instance, state) =>
     updateInstanceDomainBlock.run(state.storage.sql, { ...FIELDS, id, severity, now: NOW }),
   );
   expect(updated?.severity).toBe(severity);
 }
 
-export async function unblockDomain(store: StoreStub, id: number): Promise<void> {
+export async function unblockDomain(store: StoreStub, id: string): Promise<void> {
   const deleted = await runInDurableObject(store, (_instance, state) =>
     deleteInstanceDomainBlock.run(state.storage.sql, { id }),
   );
