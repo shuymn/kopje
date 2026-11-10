@@ -18,6 +18,7 @@ import {
   type Event,
   type Intent,
   knownDefect1447,
+  knownDefect1449,
   type LocalPolicy,
   localStored,
   type Logged,
@@ -187,6 +188,8 @@ async function setup(c: Case) {
     stats: {} as Stats,
     rId: "",
     tag: ++worldSequence,
+    // R's quotes the #1449 exception admitted (check).
+    revived: new Set<string>(),
   };
   // R's statuses as Mastodon serves them, fetched by Kopje through search (storing R too).
   for (const [i, uri] of SR.entries()) {
@@ -525,7 +528,7 @@ function expectedReads(w: World) {
       // R35: an accepted quote whose quoted status is gone or withdrawn reads as deleted, as Mastodon's serializer
       // reads a discarded one (docs/visibility.md).
       const gone = q.quoted === null || p.statuses.get(q.quoted)?.withdrawn !== false;
-      states[label] = q.state === "accepted" && gone ? "deleted" : q.state;
+      states[label] = w.revived.has(label) ? "pending" : q.state === "accepted" && gone ? "deleted" : q.state;
     }
   }
   const approvals: Record<string, string> = {};
@@ -560,7 +563,21 @@ async function check(w: World, answer: { actual: unknown; predicted: unknown } |
   }
   // Targets a job staged are expanded by the next claim: only quiescence requires none left (settle).
   const { unexpanded: _, ...state } = await project(w);
-  expect(state, context).toEqual(expected(w));
+  const want = expected(w);
+  // Known defect #1449 (knownDefect1449): a quote the detach ended that R's Update revived reads as the Store holds it,
+  // only at the end of that chain; every other field of the projection is checked as the policy has it.
+  for (const row of want.quotes) {
+    const actual = state.quotes.find((q) => q.label === row.label);
+    const uri = uriOf(w, row.label);
+    if (row.state === "deleted" && !row.local && uri !== undefined && knownDefect1449(w.log, uri, actual)) {
+      if (!w.revived.has(row.label)) {
+        w.revived.add(row.label);
+        tally(w.stats, "exception known-defect-1449");
+      }
+      Object.assign(row, { state: "pending", activityUri: null });
+    }
+  }
+  expect(state, context).toEqual(want);
   expect(await reads(w), context).toEqual(expectedReads(w));
 }
 
@@ -582,6 +599,9 @@ async function receive(w: World, actor: string, msg: Msg, personal: boolean, seq
   const predicted = w.policy.receive(actor, msg, w.clock.now, personal);
   w.trace.push(`  -> ${result.reason}`);
   w.emit({ k: "kopje", msg: seq, type: msg.type, reason: result.reason });
+  if (msg.type === "QuoteRequest" && result.reason === "quote-accepted") {
+    w.emit({ k: "accepted", quoting: msg.instrument });
+  }
   tally(w.stats, `${msg.type} ${result.reason}`);
   await check(w, {
     actual: { applied: result.applied, reason: result.reason },
@@ -689,7 +709,13 @@ async function lDelete(w: World, label: string): Promise<void> {
 async function jobs(w: World): Promise<void> {
   log(w, "jobs");
   const result = await runStoreJobs(w.store, BUILD, { now: w.clock.now });
-  w.policy.jobs(w.clock.now);
+  const p = w.policy;
+  const removed = new Set(p.removals.map((r) => r.label));
+  const detached = [...p.quotes].filter(([, q]) => !q.local && q.quoted !== null && removed.has(q.quoted));
+  p.jobs(w.clock.now);
+  for (const [label] of detached) {
+    w.emit({ k: "detach", quoting: uriOf(w, label)! });
+  }
   await check(w);
   expect(result.pending, w.trace.join("\n")).toBe(false);
 }
@@ -1679,10 +1705,6 @@ describe("quote lifecycle witnesses", () => {
     w.policy.labelOf.set(rUri(w, "RQ2"), "RQ2");
     await deliverAll(w);
     expect(await stateOf(w, "RQ2")).toBe("accepted");
-    // R's server applies the Accept, and its Update with the stamp reaches Kopje, before L deletes SL2.
-    await sendAll(w);
-    processAll(w);
-    await deliverAll(w);
     await lDelete(w, "SL2");
     expect(await stateOf(w, "RQ2")).toBe("accepted");
     await lRevoke(w, "RQ2");
@@ -1899,7 +1921,6 @@ describe("quote lifecycle witnesses", () => {
     await sendAll(w);
     processAll(w);
     expect(w.peer.rqs.get("RQ1")!.quote.state).toBe("accepted");
-    await deliverAll(w);
     const sl1 = uriOf(w, "SL1")!;
     await lDelete(w, "SL1");
     expect(await stateOf(w, "RQ1")).toBe("accepted");
@@ -2110,6 +2131,52 @@ describe("quote lifecycle witnesses", () => {
       e === kopje[0] ? { ...e, n: kopje[1]!.n } : e === kopje[1] ? { ...e, n: kopje[0]!.n } : e,
     );
     expect(holds(swapped)).toBe(false);
+  });
+  it("W19 (known defect #1449): R's Update with the stamp, after the detach, revives the quote as pending", async () => {
+    const w = await setup(BASE);
+    w.peer.postQuote("RQ1", uriOf(w, "SL1")!);
+    w.policy.labelOf.set(rUri(w, "RQ1"), "RQ1");
+    const rq1 = rUri(w, "RQ1");
+    await deliverAll(w);
+    expect(await stateOf(w, "RQ1")).toBe("accepted");
+    await sendAll(w);
+    processAll(w);
+    // R's server applied Kopje's Accept: its Update carrying the stamp is in flight.
+    expect(w.peer.outbox.map((m) => m.msg.type)).toEqual(["Update"]);
+    await lDelete(w, "SL1");
+    await jobs(w);
+    expect(await stateOf(w, "RQ1")).toBe("deleted");
+    expect(w.log.some((e) => e.k === "detach" && e.quoting === rq1)).toBe(true);
+    await deliverAll(w);
+    expect(w.stats["Update stale"]).toBe(1);
+    // Today's behaviour (#1449): the documented rule keeps it deleted (C20).
+    expect((await project(w)).quotes.find((q) => q.label === "RQ1")).toMatchObject({
+      state: "pending",
+      quoted: null,
+      activityUri: null,
+    });
+    expect(w.stats["exception known-defect-1449"]).toBe(1);
+    await finish(w);
+    const stored = (await project(w)).quotes.find((q) => q.label === "RQ1");
+    const holds = (log: readonly Logged[]) => knownDefect1449(log, rq1, stored);
+    expect(holds(w.log)).toBe(true);
+    const update = w.log.find((e) => e.k === "peerUpdate" && e.quoting === rq1) as Logged & { msg: number };
+    for (const cause of [
+      (e: Logged) => e.k === "accepted" && e.quoting === rq1,
+      (e: Logged) => e.k === "peerUpdate" && e.quoting === rq1,
+      (e: Logged) => e.k === "detach" && e.quoting === rq1,
+      (e: Logged) => e.k === "kopje" && e.msg === update.msg,
+    ]) {
+      expect(w.log.some(cause)).toBe(true);
+      expect(holds(w.log.filter((e) => !cause(e)))).toBe(false);
+    }
+    // The Update received before the detach, and a quote still deleted, are not this chain.
+    const detach = w.log.find((e) => e.k === "detach" && e.quoting === rq1)!;
+    const received = w.log.find((e) => e.k === "kopje" && e.msg === update.msg)!;
+    expect(
+      holds(w.log.map((e) => (e === received ? { ...e, n: detach.n - 0.5 } : e)).toSorted((a, b) => a.n - b.n)),
+    ).toBe(false);
+    expect(knownDefect1449(w.log, rq1, { ...stored!, state: "deleted" })).toBe(false);
   });
 });
 

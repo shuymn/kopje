@@ -6,7 +6,7 @@
 //   policies, the quotes with their states, authorizations and stamps, the requests answered, the revocations and
 //   retractions, the quote notifications and silent mentions, and Kopje's outstanding intents for R in their lane.
 //   A rule the code follows that the docs do not state yet cites the doc-gap issue as G1-G8; a suspected defect is
-//   never policy, only a narrow known-defect exception (knownDefect1447).
+//   never policy, only a narrow known-defect exception (knownDefect1447, knownDefect1449).
 // - QuotePeer: R's server, Mastodon v4.5.11, written from its source (each rule cites the file and line it models),
 //   applying the bytes Kopje confirmed, each with the inbox it reached, and sending back what Mastodon would.
 // - The quiescence relation (live-accepted, stamps) and the exception predicates of the accepted risks X1 and X2 and of
@@ -137,7 +137,12 @@ export type Event =
   | { k: "peerRevoke"; quoting: string; state: QuoteState; stamp: string; msg: number }
   | { k: "peerPolicy"; status: string }
   // Kopje received the peer's message `msg` and answered `reason`.
-  | { k: "kopje"; msg: number; type: Msg["type"]; reason: string };
+  | { k: "kopje"; msg: number; type: Msg["type"]; reason: string }
+  // Kopje accepted R's quote (its quoting status's uri); R's server sent the Update of its quoting status carrying the
+  // stamp (accept.rb:54-57), as message `msg`; a job round detached R's quote from its removed quoted status.
+  | { k: "accepted"; quoting: string }
+  | { k: "peerUpdate"; quoting: string; stamp: string | null; msg: number }
+  | { k: "detach"; quoting: string };
 
 export type Logged = Event & { n: number };
 
@@ -1340,7 +1345,8 @@ export class QuotePeer {
     }
     own.quote.state = "accepted";
     own.quote.approvalUri = result;
-    this.send({ type: "Update", id: `${own.uri}#updates/${++this.n}`, note: this.noteOf(own.uri) }, false);
+    const msg = this.send({ type: "Update", id: `${own.uri}#updates/${++this.n}`, note: this.noteOf(own.uri) }, false);
+    this.emit({ k: "peerUpdate", quoting: own.uri, stamp: result, msg });
   }
 
   // ActivityPub::Activity::Reject (reject.rb:4-16, :42-47): the quoted account is the sender and the quoting status
@@ -1517,5 +1523,38 @@ export function knownDefect1447(
     peer.live &&
     peer.stamp === chain.revoke.stamp &&
     kopje.state === "pending"
+  );
+}
+
+// Known defect #1449: R's implicit Update of its quoting status, carrying Kopje's stamp, revives a quote the detach
+// ended. Kopje accepted R's quote of a local status; R's server sent that Update while it still held the quoted
+// status (its Accept handler requires it); a job round detached the quote (deleted, no target, R35); the Update reached
+// Kopje after the detach and was answered stale, and the quote is now pending with no target and no request. The
+// documented rule (C20: a received Update never changes the state of a quote of a local status) stays the policy; this
+// admits only that chain. Removed with its witness W19 when #1449 is decided.
+export function knownDefect1449(
+  log: readonly Logged[],
+  quoting: string,
+  stored: { state: string; quoted: string | null; activityUri: string | null } | undefined,
+): boolean {
+  const accepted = log.find((e) => e.k === "accepted" && e.quoting === quoting);
+  const detach = log.find((e) => e.k === "detach" && e.quoting === quoting);
+  if (accepted === undefined || detach === undefined || detach.n < accepted.n) {
+    return false;
+  }
+  const updates = log.filter(
+    (e): e is Logged & { k: "peerUpdate" } => e.k === "peerUpdate" && e.quoting === quoting && e.stamp !== null,
+  );
+  const revived = updates.some((u) =>
+    log.some(
+      (e) => e.k === "kopje" && e.msg === u.msg && e.type === "Update" && e.reason === "stale" && e.n > detach.n,
+    ),
+  );
+  return (
+    revived &&
+    stored !== undefined &&
+    stored.state === "pending" &&
+    stored.quoted === null &&
+    stored.activityUri === null
   );
 }
