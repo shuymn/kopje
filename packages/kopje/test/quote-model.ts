@@ -157,6 +157,8 @@ export type KStatus = {
   // the Delete in this world (docs/threat-model.md RES-6: the first batch runs in the Delete).
   withdrawn: boolean;
   boost: boolean;
+  // The status a boost boosts (by label).
+  of?: string;
 };
 
 export type KQuote = {
@@ -168,7 +170,7 @@ export type KQuote = {
   activityUri: string | null;
 };
 
-export type IntentType = "Create" | "QuoteRequest" | "Update" | "Delete" | "Accept" | "Reject";
+export type IntentType = "Create" | "QuoteRequest" | "Update" | "Delete" | "Accept" | "Reject" | "Announce" | "Undo";
 
 export type Intent = {
   seq: number;
@@ -197,9 +199,10 @@ const UNWRITTEN = 1e12;
 export class QuotePolicy {
   readonly statuses = new Map<string, KStatus>();
   readonly quotes = new Map<string, KQuote>();
-  // quote_revocations: Kopje's retired authorizations (by label) and R's revoked stamps (by uri).
+  // quote_revocations: Kopje's retired authorizations (by label) and the remote stamps revoked, as `actor uri` (a
+  // revocation is the actor's alone, ID-6).
   readonly revocations = new Set<string>();
-  // R's uris recorded as retracted (ID-7): its deleted statuses and its stamps' Deletes.
+  // The remote uris recorded as retracted (ID-7), as `actor uri`: deleted statuses and stamps' Deletes.
   readonly retracted = new Set<string>();
   // quote_requests: each answered request id, with its instrument's uri, its quoted status and when.
   readonly answered = new Map<string, { actor: string; instrument: string; quoted: string; at: number; n: number }>();
@@ -347,6 +350,11 @@ export class QuotePolicy {
   // A local status's Create to its followers (R, when R follows L).
   recordCreate(now: number, label: string): void {
     this.record(now, { type: "Create", subject: this.statuses.get(label)!.uri });
+  }
+
+  // A local boost's Announce to L's followers (R, when R follows L), about the boost itself.
+  recordAnnounce(now: number, subject: string): void {
+    this.record(now, { type: "Announce", subject });
   }
 
   // The intents the Store shows, bound in order: an intent whose rows are seen for the first time takes the Store's
@@ -497,9 +505,10 @@ export class QuotePolicy {
 
   // The requests answered for R's quote `quoting` of `quoted`, oldest first (VIS-28: a revoke sends a Reject of each).
   private answeredFor(quoting: string, quoted: string): string[] {
-    const instrument = this.statuses.get(quoting)?.uri;
+    const status = this.statuses.get(quoting);
+    const author = status === undefined ? undefined : this.uriOf(status.author);
     return [...this.answered]
-      .filter(([, a]) => a.instrument === instrument && a.quoted === quoted && a.actor === this.rUri)
+      .filter(([, a]) => a.instrument === status?.uri && a.quoted === quoted && a.actor === author)
       .toSorted(([ia, a], [ib, b]) => a.at - b.at || (ia < ib ? -1 : ia > ib ? 1 : 0))
       .map(([id]) => id);
   }
@@ -583,6 +592,13 @@ export class QuotePolicy {
           this.detach(q);
         }
       }
+      // L's boost of it is withdrawn, its Undo to the followers its Announce reached (VIS-3).
+      for (const boost of [...this.statuses.values()].filter((b) => b.boost && b.of === label)) {
+        if (this.follows.rl) {
+          this.record(now, { type: "Undo", subject: boost.uri, retracts: true });
+        }
+        this.removeStatus(boost.label);
+      }
       this.removeStatus(label);
     }
     return removals.length > 0;
@@ -636,7 +652,7 @@ export class QuotePolicy {
   receive(actor: string, msg: Msg, now: number, personal: boolean): Answer {
     switch (msg.type) {
       case "QuoteRequest":
-        return this.quoteRequest(actor, msg, now);
+        return this.quoteRequest(actor, msg, now, personal);
       case "Accept":
         return this.accept(actor, msg, now);
       case "Reject":
@@ -648,7 +664,7 @@ export class QuotePolicy {
       case "Create":
         return this.store(actor, msg.note, personal, false, now);
       case "Update":
-        return this.update(actor, msg.note, now);
+        return this.update(actor, msg.note, now, personal);
     }
   }
 
@@ -673,11 +689,17 @@ export class QuotePolicy {
     if (note.author !== actor) {
       return { applied: false, reason: "not-author" };
     }
-    if (this.retracted.has(note.uri)) {
+    if (this.retracted.has(`${actor} ${note.uri}`)) {
       return { applied: false, reason: "retracted" };
     }
-    if (this.byUri(note.uri) !== undefined) {
-      return personal ? { applied: true, reason: "audience-extended" } : { applied: false, reason: "duplicate" };
+    // A status stored already only gains a silent mention of the personal inbox's owner it lacks.
+    const existing = this.byUri(note.uri);
+    if (existing !== undefined) {
+      if (!personal || existing.boost || this.mentions.has(`${existing.label}>L`)) {
+        return { applied: false, reason: "duplicate" };
+      }
+      this.mentions.add(`${existing.label}>L`);
+      return { applied: true, reason: "audience-extended" };
     }
     const who = this.who(actor);
     if (!fetched && !personal && !this.followsLocal(who)) {
@@ -694,6 +716,10 @@ export class QuotePolicy {
       withdrawn: false,
       boost: false,
     });
+    // A Note delivered to L's personal inbox addresses L: a silent mention when its addressing names no one.
+    if (personal) {
+      this.mentions.add(`${label}>L`);
+    }
     if (note.quote !== null) {
       // A withdrawn target (its removal under way) is none (docs/visibility.md R35).
       const target = this.byUri(note.quote.uri);
@@ -717,13 +743,13 @@ export class QuotePolicy {
 
   // An Update: ID-7 refuses a retracted status; an implicit Update (no newer version) of a stored status changes only
   // its quote policy (C17) and never the state of a quote of a local status (C20).
-  private update(actor: string, note: PeerNote, now: number): Answer {
-    if (this.retracted.has(note.uri)) {
+  private update(actor: string, note: PeerNote, now: number, personal: boolean): Answer {
+    if (this.retracted.has(`${actor} ${note.uri}`)) {
       return { applied: false, reason: "retracted" };
     }
     const s = this.byUri(note.uri);
     if (s === undefined) {
-      return this.store(actor, note, false, false, now);
+      return this.store(actor, note, personal, false, now);
     }
     const policy = parsedStored(actor, note.policy);
     if (JSON.stringify(policy) !== JSON.stringify(s.policy)) {
@@ -738,7 +764,7 @@ export class QuotePolicy {
   private deleteRemote(actor: string, uri: string, now: number): Answer {
     void now;
     const s = this.byUri(uri);
-    this.retracted.add(uri);
+    this.retracted.add(`${actor} ${uri}`);
     if (s === undefined) {
       return { applied: true, reason: "retraction-recorded" };
     }
@@ -763,7 +789,7 @@ export class QuotePolicy {
   // id. An acceptance draws a fresh authorization and records an Accept carrying its stamp, a silent mention of the
   // quoted author and, with the count, a quote notification (G2); a new id for an accepted quote is answered with the
   // same stamp (G3).
-  private quoteRequest(actor: string, msg: Msg & { type: "QuoteRequest" }, now: number): Answer {
+  private quoteRequest(actor: string, msg: Msg & { type: "QuoteRequest" }, now: number, personal: boolean): Answer {
     if (this.answered.has(msg.id)) {
       return { applied: false, reason: "duplicate" };
     }
@@ -803,7 +829,7 @@ export class QuotePolicy {
       ) {
         return { applied: false, reason: "need-instrument" };
       }
-      const stored = this.store(actor, note, false, true, now);
+      const stored = this.store(actor, note, personal, true, now);
       quoting = this.byUri(msg.instrument);
       if (quoting === undefined) {
         return { applied: false, reason: stored.reason };
@@ -833,22 +859,20 @@ export class QuotePolicy {
   // the quoted author (ID-6), whose quote a detach has not cleared (G4).
   private answeredQuote(actor: string, ref: AnswerRef): string | undefined {
     const who = this.who(actor);
-    for (const [label, q] of this.quotes) {
+    const ours = [...this.quotes].filter(([label, q]) => {
       const s = this.statuses.get(label);
-      if (s === undefined || s.withdrawn || !q.local || q.quoted === null) {
-        continue;
-      }
-      if (this.statuses.get(q.quoted)?.author !== who) {
-        continue;
-      }
-      if (ref.id !== null && ref.id === q.activityUri) {
-        return label;
-      }
-      if (ref.type === "QuoteRequest" && ref.instrument === s.uri && ref.object === this.statuses.get(q.quoted)?.uri) {
-        return label;
-      }
+      return (
+        s !== undefined && !s.withdrawn && q.local && q.quoted !== null && this.statuses.get(q.quoted)?.author === who
+      );
+    });
+    const byId = ours.find(([, q]) => ref.id !== null && ref.id === q.activityUri);
+    if (byId !== undefined || ref.type !== "QuoteRequest") {
+      return byId?.[0];
     }
-    return undefined;
+    return ours.find(
+      ([label, q]) =>
+        ref.instrument === this.statuses.get(label)!.uri && ref.object === this.statuses.get(q.quoted!)?.uri,
+    )?.[0];
   }
 
   private originOf(uri: string | null): string | null {
@@ -865,8 +889,8 @@ export class QuotePolicy {
       label === undefined ||
       result === null ||
       this.originOf(result) !== this.originOf(actor) ||
-      this.revocations.has(result) ||
-      this.retracted.has(result)
+      this.revocations.has(`${actor} ${result}`) ||
+      this.retracted.has(`${actor} ${result}`)
     ) {
       return { applied: false, reason: "quote-unchanged" };
     }
@@ -903,7 +927,7 @@ export class QuotePolicy {
   // quote lets go of the stamp) and the stamp is revoked for good; another actor's Delete revokes nothing of this
   // one's.
   private stampDelete(actor: string, msg: Msg & { type: "StampDelete" }, now: number): Answer {
-    this.retracted.add(msg.object);
+    this.retracted.add(`${actor} ${msg.object}`);
     const who = this.who(actor);
     const held = [...this.quotes].find(
       ([, q]) =>
@@ -924,7 +948,7 @@ export class QuotePolicy {
       }
       q.approvalUri = null;
     }
-    this.revocations.add(msg.object);
+    this.revocations.add(`${actor} ${msg.object}`);
     return { applied: true, reason: "stamp-revoked" };
   }
 }
@@ -973,6 +997,25 @@ export class QuotePeer {
     readonly follows: { lr: boolean; rl: boolean },
     readonly emit: (e: Event) => void,
   ) {}
+
+  // A copy of R's server as it stands, for trying each processing order of its inbox (its events are not logged).
+  clone(): QuotePeer {
+    const copy = new QuotePeer(this.origin, this.rUri, this.lUri, this.follows, () => {});
+    const state = structuredClone({
+      srs: this.srs,
+      rqs: this.rqs,
+      copies: this.copies,
+      tombstones: this.tombstones,
+      inbox: this.inbox,
+      outbox: this.outbox,
+      sent: this.sent,
+      quoteId: this.quoteId,
+      n: this.n,
+      seq: this.seq,
+      inSeq: this.inSeq,
+    });
+    return Object.assign(copy, state);
+  }
 
   stamp(id: number): string {
     // tag_manager.rb:68-73: the stamp of a quote is named by the quote's id.
