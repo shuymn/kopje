@@ -11,7 +11,7 @@ import {
   writeFeatured,
 } from "./featured-tags";
 import { type FollowerSigner, localFollower } from "./follower-signer";
-import { isIntegerKey } from "./ids";
+import { isIntegerText } from "./ids";
 import { writeOperation } from "./operation";
 import { promoteQuote, type QuoteArrival, quoteArrival } from "./quotes";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
@@ -306,7 +306,7 @@ function endRound(db: Db, accountId: string, generation: string, progressed: boo
     `SELECT generation <= read_through AS done, generation IS NOT CAST(?2 AS INTEGER) AS requested
 		FROM collection_syncs WHERE account_id = ?1`,
     accountId,
-    isIntegerKey(generation) ? generation : null,
+    isIntegerText(generation) ? generation : null,
   );
   const pinsLeft = db.first("SELECT 1 AS x FROM collection_pins_pending WHERE account_id = ?", accountId) !== undefined;
   if (row !== undefined && row.done === 1 && !pinsLeft) {
@@ -384,7 +384,7 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
   if (input.tags !== null) {
     replaceFeaturedTags(db, account.id, input.tags, input.now);
   }
-  const before = isIntegerKey(input.generation)
+  const before = isIntegerText(input.generation)
     ? db.first<{ parts_read: number }>(
         "SELECT parts_read FROM collection_syncs WHERE account_id = ? AND generation = CAST(? AS INTEGER)",
         account.id,

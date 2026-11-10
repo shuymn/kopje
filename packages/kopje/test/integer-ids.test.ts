@@ -656,16 +656,20 @@ describe("remote collection generations past 2^53", () => {
     );
   };
 
-  // A request at 2^53 + 1 not read through 2^53: read as numbers, both are 2^53 and the request is dropped.
-  it("reads a request through its own generation", async () => {
+  // A request at 2^53 + 1 not read through 2^53: read as numbers, both are 2^53 and the request is dropped. The column
+  // admits any INTEGER (migration 0025) and is dumped, so a negative generation is read through as well.
+  it.each([
+    [big(1), TWO_53],
+    ["-1", "-2"],
+  ])("reads a request at %s through its own generation", async (requested, readThrough) => {
     const w = await world();
     const carol = await remoteAccount(w.h.store, "carol", "r.example");
-    await syncAt(w, carol, big(1), TWO_53);
+    await syncAt(w, carol, requested, readThrough);
     const sync = await w.h.store.claimCollectionSync(BUILD, { now: NOW });
     if (sync === null || sync === "more") {
       throw new Error("no sync claimed");
     }
-    expect([sync.phase, sync.generation]).toEqual(["read", big(1)]);
+    expect([sync.phase, sync.generation]).toEqual(["read", requested]);
     const [{ uri }] = (await sql<{ uri: string }>(w.h.store, "SELECT uri FROM accounts WHERE id = ?", carol)) as [
       { uri: string },
     ];
