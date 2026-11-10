@@ -115,6 +115,15 @@ export function storedIdOf(requested: string): string {
   return /^\d{1,18}$/.test(requested) ? requested.padStart(18, "0") : requested;
 }
 
+// A counter incremented in SQL past the largest INTEGER (2^63 - 1) becomes a REAL, whose TEXT is not its number: the
+// statement returns `typeof(<counter>) = 'integer' AS exact` beside it, and this throws unless it held, so the
+// operation rolls back rather than store or carry a wrong value (DATA-6).
+export function requireExactIncrement(exact: number, counter: string): void {
+  if (exact !== 1) {
+    throw new Error(`${counter} is exhausted`);
+  }
+}
+
 // Whether `id` is a decimal INTEGER key a request may name: 1 to 19 digits and at most SQLite's largest INTEGER
 // (2^63 - 1), compared as text, so `CAST(id AS INTEGER)` is that number exactly. A larger one would saturate to
 // 2^63 - 1 and name the row stored there (DATA-6).

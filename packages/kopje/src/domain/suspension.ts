@@ -4,6 +4,7 @@ import { forgetAdminAccountId } from "./admin-authority";
 import { type ReachedAccount, reachFollowers, reachFollowing, reachMentioned } from "./audience";
 import type { Admin } from "./auth";
 import { beginStagedUpdate, endStaging, isDeliverableInbox, stageTargets } from "./deliveries";
+import { requireExactIncrement } from "./ids";
 import { JOB_BOOKKEEPING_ROWS, MODERATION_JOBS, nextJob, REMOTE_MODERATION_JOBS, runJobItem } from "./job-attempts";
 import { REPORT_ROUND } from "./moderation-bounds";
 import { logAction } from "./moderation-log";
@@ -142,8 +143,8 @@ function suspendedAt(db: Db, accountId: string): { suspended_at: string | null }
 // logged).
 export function suspendLocal(db: Db, accountId: string, by: Admin | null, now: number): string | null {
   const at = iso(now);
-  // The new epoch is incremented in SQL and read as TEXT (DATA-6). An epoch at the largest INTEGER has no next one: the
-  // increment would store a REAL, so the suspension throws and its transaction rolls back.
+  // The new epoch is incremented in SQL and read as TEXT (DATA-6); an epoch at the largest INTEGER has no next one, so
+  // the suspension throws and rolls back (requireExactIncrement).
   const updated = db.first<{ epoch: string; exact: number }>(
     `UPDATE local_accounts SET suspended_at = ?, credential_epoch = credential_epoch + 1, accept_requests_after = NULL,
 			links_due_at = NULL, links_attempts = 0
@@ -155,9 +156,7 @@ export function suspendLocal(db: Db, accountId: string, by: Admin | null, now: n
   if (updated === undefined) {
     return null;
   }
-  if (updated.exact !== 1) {
-    throw new Error("the account's credential epoch is exhausted");
-  }
+  requireExactIncrement(updated.exact, "the account's credential epoch");
   const epoch = updated.epoch;
   forgetAdminAccountId(db);
   const job = {

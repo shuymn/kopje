@@ -7,7 +7,7 @@ import { suspendRemote } from "../src/domain/remote-suspension";
 import { moderationRound, suspendLocal } from "../src/domain/suspension";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
-import { authorizationCode, bearer, exchange, form, registerApp, settle, sql } from "./api-helpers";
+import { authorizationCode, bearer, exchange, form, json, registerApp, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { VAPID } from "./push-helpers";
@@ -480,6 +480,35 @@ describe("conversation ids and stream sequences", () => {
     const read = `/api/v1/conversations/${INT64_MAX}/read`;
     expect((await w.h.request(read, bearer(w.alice.token, { method: "POST" }))).status).toBe(200);
     expect(await sql(w.h.store, "SELECT unread FROM conversations")).toEqual([{ unread: 0 }]);
+  });
+
+  it("refuses a conversation write from the largest streaming sequence and rolls it back, and writes into it", async () => {
+    const w = await world();
+    const mark = (seq: string) =>
+      sql(
+        w.h.store,
+        `INSERT INTO stream_conversation_marks (account_id, seq) VALUES (?1, CAST(?2 AS INTEGER))
+				ON CONFLICT (account_id) DO UPDATE SET seq = excluded.seq`,
+        w.bob.id,
+        seq,
+      );
+    const state = () =>
+      sql(
+        w.h.store,
+        `SELECT (SELECT CAST(seq AS TEXT) FROM stream_conversation_marks WHERE account_id = ?1) AS mark,
+					(SELECT json_group_array(CAST(stream_seq AS TEXT)) FROM conversations WHERE account_id = ?1) AS seqs`,
+        w.bob.id,
+      );
+    const direct = (status: string) =>
+      w.h.request("/api/v1/statuses", bearer(w.bob.token, json({ status, visibility: "direct" })));
+    // The guarded branch: from the largest sequence but one, the write takes the largest.
+    await mark("9223372036854775806");
+    expect((await direct("@alice one")).status).toBe(200);
+    expect(await state()).toEqual([{ mark: INT64_MAX, seqs: `["${INT64_MAX}"]` }]);
+    const before = await sql(w.h.store, "SELECT count(*) AS n FROM statuses");
+    expect((await direct("@carol two")).status).toBe(500);
+    expect(await state()).toEqual([{ mark: INT64_MAX, seqs: `["${INT64_MAX}"]` }]);
+    expect(await sql(w.h.store, "SELECT count(*) AS n FROM statuses")).toEqual(before);
   });
 
   it("stores the owner's streaming sequence past 2^53 as it is", async () => {

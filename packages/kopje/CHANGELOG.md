@@ -19,7 +19,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The Store keeps INTEGER ids, fences and epochs past 2^53 exact, as restored or imported rows may hold them (DATA-6):
   a suspension's report fence no longer resolves a report the next admin action reopened; a suspension from such a
   credential epoch no longer fails or keeps the earlier epoch's tokens, a code of the earlier epoch is refused, and a
-  suspension from the largest epoch fails and rolls back instead of storing a wrong one; a
+  suspension from the largest epoch, or a conversation write from the largest streaming sequence, fails and rolls back
+  instead of storing a wrong one; a
   suspended account's tokens round and a refused push delete only their own push subscription; a new notification
   gets its own push and an inbound activity that records one rings the delivery doorbell; a direct status joins its
   own new conversation with its exact streaming sequence; a favourite tracks, undoes and retires its own Like ids; the

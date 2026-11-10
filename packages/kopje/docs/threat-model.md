@@ -3940,9 +3940,9 @@ heap).
   `src/domain/push.ts`), the inserted notification's id passed to push selection, the inbound doorbell's marks
   (`outboundSince` in `src/domain/inbox.ts`), a new conversation's id and streaming sequence, instance domain block ids,
   and favourite and Like ids (`src/domain/inbox.ts`). A requested INTEGER key past 2^63 - 1 names no row
-  (`isIntegerKey` in `src/domain/ids.ts`), and a suspension from the largest epoch throws and rolls back;
-  `test/integer-ids.test.ts` and
-  `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
+  (`isIntegerKey` in `src/domain/ids.ts`), and an increment past it, of a credential epoch by a suspension or of a
+  conversation streaming mark by a conversation write, throws and rolls back (`requireExactIncrement`);
+  `test/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
   without a specific recipient are signed by the instance actor; fetches for a personal inbox by the recipient's key;
   fetches on a remote account's behalf (a sync of its featured, featuredTags, following, followers and outbox

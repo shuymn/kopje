@@ -5,7 +5,7 @@ import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-bud
 import { statusReads, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { participantsSql } from "./conversation-rows";
-import { isIntegerKey } from "./ids";
+import { isIntegerKey, requireExactIncrement } from "./ids";
 import { presentation, type Status, statusStream } from "./status-presenter";
 import { statusCursor } from "./windows";
 
@@ -100,14 +100,19 @@ export function addToConversation(db: Db, ownerId: string, statusId: string): vo
 // value, which the conversation write stores in stream_seq, or null when the owner never subscribed to `direct` (then
 // nothing more is written). The mark is never lowered, so a turn sends each change once (stream-hub.ts). Every writer
 // of a conversation row takes it: addToConversation, markConversation, and the trigger conversation_statuses_removed.
-// Read as TEXT and bound back with CAST (DATA-6).
+// Read as TEXT and bound back with CAST; a mark at the largest INTEGER has no next value, so the write throws and rolls
+// back (requireExactIncrement, DATA-6).
 function nextStreamSeq(db: Db, ownerId: string): string | null {
-  return (
-    db.first<{ seq: string }>(
-      "UPDATE stream_conversation_marks SET seq = seq + 1 WHERE account_id = ? RETURNING CAST(seq AS TEXT) AS seq",
-      ownerId,
-    )?.seq ?? null
+  const mark = db.first<{ seq: string; exact: number }>(
+    `UPDATE stream_conversation_marks SET seq = seq + 1 WHERE account_id = ?
+		RETURNING CAST(seq AS TEXT) AS seq, typeof(seq) = 'integer' AS exact`,
+    ownerId,
   );
+  if (mark === undefined) {
+    return null;
+  }
+  requireExactIncrement(mark.exact, "the owner's conversation stream sequence");
+  return mark.seq;
 }
 
 // AfterBlockService#clear_conversations!: the owner's conversations with the account go. Reads the owner's
