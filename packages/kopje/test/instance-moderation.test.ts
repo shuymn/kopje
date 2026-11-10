@@ -597,7 +597,7 @@ function expected(w: World) {
     pins: [...p.pins].toSorted(),
     reports: p.reports.map((r) => ({ label: r.label, resolved: r.resolved })),
     counts,
-    notifications: [...notifications, ...[...p.mentions].map((r) => `L1 ${r} mention`)].toSorted(),
+    notifications: [...notifications, ...p.mentions.map((r) => `L1 ${r} mention`)].toSorted(),
     retracted: retracted.toSorted(),
     statuses: Object.fromEntries(p.statuses),
     lanes,
@@ -2850,11 +2850,57 @@ describe("instance moderation witnesses: calls, retries and revisions", () => {
   it("a Create mentioning L1 is stored and notified for an available author only", async () => {
     const w = await p1World();
     await create(w, "R4");
+    await create(w, "R4");
     await steps(w, [{ k: "suspend", r: "R1" }]);
     await create(w, "R1");
-    expect(w.stats["create stored"]).toBe(1);
+    expect(w.stats["create stored"]).toBe(2);
     expect(w.stats["create actor-suspended"]).toBe(1);
-    expect(projection(w, w.last!).statuses).toEqual({ R4: 1 });
+    const s = projection(w, w.last!);
+    expect(s.statuses).toEqual({ R4: 2 });
+    expect(s.notifications.filter((n) => n.endsWith("mention"))).toEqual(["L1 R4 mention", "L1 R4 mention"]);
+  }, 60_000);
+
+  // The ledger on a preparation spanning rounds (visibility.md: legacy lists past the round's room): a round that
+  // removes some of an eligible pair's list memberships, its cut unchanged, progresses; a failed round that kept such
+  // removals is not rolled back.
+  it("the ledger counts a partial preparation as progress, and as kept writes of a failed round", () => {
+    const a = "700000000000000001";
+    const local = "500000000000000000";
+    const snap = (lists: number): Snapshot => ({
+      blocks: new Map([
+        [D, { domain: D, severity: "suspend", rejectMedia: false, rejectReports: false, obfuscate: false }],
+      ]),
+      remotes: [{ id: a, uri: "https://d.example/users/a", domain: D, source: "domain" }],
+      follows: [{ id: "1", follower: local, target: a, state: "accepted" }],
+      members: Array.from({ length: lists }, () => ({ follower: local, target: a })),
+      reports: [],
+    });
+    const job = (attempts: number): JobRow => ({
+      id: "1",
+      kind: "domain",
+      subject: "",
+      mode: "domain",
+      phase: "mark",
+      cursor: JSON.stringify({ after: "", severing: a, side: { dir: "in", cursor: "" } }),
+      attempts,
+      dueAt: attempts === 0 ? null : NOW + 1,
+      followBound: "1",
+      reportBound: null,
+      actionBound: null,
+    });
+    const check = (from: number, to: number, attempts: number) =>
+      ledgerCheck({
+        before: { jobs: [job(0)], snap: snap(from) },
+        after: { jobs: [job(attempts)], snap: snap(to) },
+        ran: "1",
+        rows: 258,
+        caps: CAPS,
+        now: NOW,
+      });
+    expect(check(1_742, 1_484, 0)).toEqual([]);
+    expect(check(1_742, 1_742, 0)).toEqual([expect.stringContaining("made no progress")]);
+    expect(check(1_742, 1_742, 1)).toEqual([]);
+    expect(check(1_742, 1_484, 1)).toEqual([expect.stringContaining("kept writes")]);
   }, 60_000);
 
   // visibility.md, "The send-time check": the inbox rule refuses a row whose inbox host a block covers, though its

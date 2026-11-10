@@ -398,6 +398,7 @@ export function complete(ob: Obligation, after: Snapshot): boolean {
 // What an action completed, from the difference of two snapshots.
 export type Completed = {
   severed: string[];
+  // Pairs (follower, target) that lost list memberships, some (a preparation spanning rounds) or all.
   unlisted: string[];
   marked: string[];
   cleared: string[];
@@ -406,17 +407,35 @@ export type Completed = {
 
 export function completed(before: Snapshot, after: Snapshot): Completed {
   const afterFollows = new Set(after.follows.map((f) => f.id));
-  const afterMembers = new Set(after.members.map((m) => `${m.follower} ${m.target}`));
+  const memberships = (snap: Snapshot) => {
+    const counts = new Map<string, number>();
+    for (const m of snap.members) {
+      const key = `${m.follower} ${m.target}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const [was, now] = [memberships(before), memberships(after)];
   const sources = new Map(after.remotes.map((r) => [r.id, r.source]));
   const resolved = new Set(after.reports.filter((r) => r.resolved).map((r) => r.id));
   return {
     severed: before.follows.filter((f) => !afterFollows.has(f.id)).map((f) => f.id),
-    unlisted: before.members.map((m) => `${m.follower} ${m.target}`).filter((m) => !afterMembers.has(m)),
+    unlisted: [...was].filter(([key, n]) => (now.get(key) ?? 0) < n).map(([key]) => key),
     marked: before.remotes.filter((r) => r.source === null && sources.get(r.id) === "domain").map((r) => r.id),
     cleared: before.remotes.filter((r) => r.source === "domain" && sources.get(r.id) === null).map((r) => r.id),
     resolved: before.reports.filter((r) => !r.resolved && resolved.has(r.id)).map((r) => r.id),
   };
 }
+
+// The business state of a snapshot (all but the blocks, which no round writes), as one comparable value: accounts'
+// sources, follows, every list membership and reports.
+const business = (snap: Snapshot) =>
+  JSON.stringify([
+    snap.remotes,
+    snap.follows,
+    [...snap.members].map((m) => `${m.follower} ${m.target}`).toSorted(),
+    snap.reports,
+  ]);
 
 export type Caps = { rows: number; sever: number; mark: number; clear: number; reports: number; rounds: number };
 
@@ -496,7 +515,7 @@ export function ledgerCheck(input: {
         failures.push(`rule 3: a failed round of ${job.kind} job ${job.subject} moved its cut`);
       }
       // A failed batch is rolled back whole: only its retry state may change (RES-5).
-      if (ran !== null && !nothingDone) {
+      if (ran !== null && business(before.snap) !== business(after.snap)) {
         failures.push(`rule 3: a failed round of ${job.kind} job ${job.subject} kept writes: ${JSON.stringify(done)}`);
       }
       continue;
@@ -513,7 +532,10 @@ export function ledgerCheck(input: {
     }
     // Rule 3: progress of a round.
     if (ran !== null) {
-      const progressed = obs.some((ob) => complete(ob, after.snap)) || compare(to, from) > 0 || now === undefined;
+      // A preparation spanning rounds progresses by removing some of an eligible pair's list memberships.
+      const prepared = obs.some((ob) => ob.kind === "prepare" && done.unlisted.includes(ob.subject));
+      const progressed =
+        obs.some((ob) => complete(ob, after.snap)) || prepared || compare(to, from) > 0 || now === undefined;
       if (!progressed) {
         failures.push(`rule 3: a round of ${job.kind} job ${job.subject} made no progress`);
       }
@@ -597,7 +619,8 @@ export class WorldPolicy {
   readonly jobs = new Map<string, JobState>();
   // The statuses stored by author, and L1's mention notifications by author.
   readonly statuses = new Map<Remote, number>();
-  readonly mentions = new Set<Remote>();
+  // One mention notification per status (notifications_natural keys it by status).
+  readonly mentions: Remote[] = [];
 
   constructor(
     readonly remotes: Record<Remote, RemoteState>,
@@ -821,7 +844,7 @@ export class WorldPolicy {
     const refused = this.gate(r, "Create");
     if (refused === null) {
       this.statuses.set(r, (this.statuses.get(r) ?? 0) + 1);
-      this.mentions.add(r);
+      this.mentions.push(r);
     }
     return refused;
   }
