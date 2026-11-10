@@ -989,15 +989,19 @@ const BUTTON_KINDS = new Set(["primary", "quiet", "danger", "icon", "alt"]);
 const isButton = (node: CssNode) =>
   (node.type === "TypeSelector" && node.name === "button") || (node.type === "ClassSelector" && node.name === "btn");
 
-// Whether a compound is a button: by its type or .btn, or by an :is() or :where() offering either. A compound that
-// only relates to a button (:has(), :not()) is not one.
+// The pseudo-classes whose selector list restricts the compound's own subject: :is(), :where() and the `of S` of
+// :nth-child() and :nth-last-child().
+const SUBJECT_ARGUMENTS = new Set(["is", "where", "nth-child", "nth-last-child"]);
+
+// Whether a compound is a button: by its type or .btn, or by a subject argument offering either. A compound that only
+// relates to a button (:has(), :not()) is not one.
 const buttonCompound = (compound: CssNode[]) =>
   compound.some(
     (node) =>
       isButton(node) ||
       (node.type === "PseudoClassSelector" &&
-        (node.name === "is" || node.name === "where") &&
-        contains(node, isButton)),
+        SUBJECT_ARGUMENTS.has(node.name) &&
+        argumentLists(node).some((list) => contains(list, isButton))),
   );
 
 // Every class a compound that is a button puts on it, wherever in the compound it is written (before or after the
@@ -1082,6 +1086,10 @@ describe("the stylesheet’s classes", () => {
       expect(buttonModifiers(css), css).toEqual(["ghost"]);
     }
     expect(buttonModifiers("video.btn::cue(.ghost) {}")).toEqual(["ghost"]);
+    // An `of S` list restricts the subject as :is() does.
+    for (const css of [":nth-child(2n of .btn.who) { gap: 0; }", ":nth-last-child(2n of .btn.who) { gap: 0; }"]) {
+      expect(buttonModifiers(css), css).toEqual(["who"]);
+    }
     // A compound only containing a button (:has()) is not one.
     expect(buttonModifiers(".who:has(button) {} .x:not(.btn) {}")).toEqual([]);
     // Nesting replaces `&` itself, not an `&` inside a string.
