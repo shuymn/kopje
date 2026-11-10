@@ -704,12 +704,14 @@ type Walked = {
   generation: number;
   attempts: number;
   eligible: number;
+  // The slot's id is past the ledger's bound on remote_media_objects.slot_id (1 to 2^53 - 1, migration 0077).
+  beyond: number;
 };
 
 // See the module's head. `tokens`: the Worker's fresh tokens, one per claim it may start (at most LANE0_CLAIMS are
 // used); `cap`: REMOTE_MEDIA_CACHE_BYTES. First at most EXPIRE_BATCH slots pending more than EXPIRE_PENDING_MS are
 // deleted (never one under an open hold), then at most CLAIM_WALK due slots of lane 0 are walked by (lane, due_at, id),
-// each deleted (ineligible, attempts exhausted, a counter at its end), deferred by DEFER_MS when its reservation is
+// each deleted (ineligible, attempts exhausted, a counter at its end, an id no object may name), deferred by DEFER_MS when its reservation is
 // not admitted (bytes + R past the cap; no attempt charged), or claimed: its earlier object doomed, the token reserved
 // at R (bytes + R), and the slot's claim and attempts counted, due again after REMOTE_MEDIA_HOLD_MS.
 export const claimRemoteMedia = writeOperation<
@@ -758,6 +760,7 @@ export const claimRemoteMedia = writeOperation<
     let claimed = 0;
     const walk = db.all<Walked>(
       `SELECT CAST(r.id AS TEXT) AS id, r.kind, r.category, r.url, r.claim, r.generation, r.attempts,
+				r.id > ${SAFE_INTEGER_MAX} AS beyond,
 				${slotEligibleSql("r")}
 				AND (r.kind NOT IN ('attachment', 'thumbnail') OR coalesce((SELECT rm.created_at >= ?3
 					FROM media_attachments rm INDEXED BY ${MEDIA_ID_INDEX} WHERE rm.id = r.owner_id), 0)) AS eligible
@@ -777,7 +780,8 @@ export const claimRemoteMedia = writeOperation<
         row.eligible !== 1 ||
         reservation === null ||
         row.attempts >= REMOTE_MEDIA_MAX_ATTEMPTS ||
-        row.claim + 1 > SAFE_INTEGER_MAX
+        row.claim + 1 > SAFE_INTEGER_MAX ||
+        row.beyond === 1
       ) {
         deleteSlot(db, row.id, now);
         out.dropped++;
