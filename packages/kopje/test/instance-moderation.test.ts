@@ -1,0 +1,1746 @@
+import { runInDurableObject } from "cloudflare:test";
+import fc from "fast-check";
+import { describe, expect, it } from "vitest";
+
+import type { DeliveryOutcome } from "../src/domain/deliveries";
+import type { InboundActivity } from "../src/domain/inbox";
+import { MODERATION_ROUND_ROWS, REPORT_ROUND } from "../src/domain/moderation-bounds";
+import type { RemoteActorInput } from "../src/domain/remote-actors";
+import { CLEAR_ROUND, MARK_ACCOUNTS, remoteModerationRound, SEVER_ROUND } from "../src/domain/remote-suspension";
+import { MODERATION_ROUNDS } from "../src/domain/suspension";
+import type { StoreStub } from "../src/platform/store-client";
+import { bearer, form, json, recountFollows, sql } from "./api-helpers";
+import { NOW } from "./app-helpers";
+import { keptReject, net2Answer } from "./follow-exceptions";
+import { type Body, type Inbound, type Intent, Peer } from "./follow-model";
+import { BUILD } from "./helpers";
+import { storeReceive, writtenBy } from "./inbox-store-helpers";
+import {
+  type Block,
+  type Caps,
+  type Document,
+  inboxOf,
+  type JobRow,
+  ledgerCheck,
+  type Local,
+  LOCALS,
+  pendingAt,
+  type Remote,
+  REMOTES,
+  type RemoteState,
+  settlementFailures,
+  type Snapshot,
+  type Source,
+  WorldPolicy,
+} from "./instance-moderation-model";
+import { runs } from "./policy-world";
+import { world as adminWorld } from "./remote-suspension-helpers";
+
+// Model-based checks of instance domain blocks and remote suspension (R38, VIS-30; #1411, machine 3). Generated
+// sequences of admin decisions, the moderation rounds that apply them, local actions, remote activity and delivery
+// steps run through the production admin API, Store receive, moderation rounds and delivery operations. After every
+// step the Store's projection and every answer must equal the world policy's (test/instance-moderation-model.ts), and
+// each round is checked against the work ledger and the job's durable frontier. P1 compares a run with its twin whose
+// rounds all run at settlement; P2 compares R1's follows of L1 both ways with machine 1's Mastodon v4.5.11 peer once
+// settled, except where an accepted risk or a known defect names the difference.
+
+const D = "d.example";
+const SUB = "sub.d.example";
+const OTHER = "other.example";
+const DOMAINS = [D, SUB, OTHER] as const;
+type Domain = (typeof DOMAINS)[number];
+
+const OK: DeliveryOutcome = { kind: "delivered", status: 202 };
+const CAPS: Caps = {
+  rows: MODERATION_ROUND_ROWS,
+  sever: SEVER_ROUND,
+  mark: MARK_ACCOUNTS,
+  clear: CLEAR_ROUND,
+  reports: REPORT_ROUND,
+  rounds: MODERATION_ROUNDS,
+};
+const SETTLE_ROUNDS = 400;
+
+// The remote accounts (visibility.md: "covered by either key"): R1 and R2 under d.example by both keys, R3 on a host
+// under d.example with the stored domain other.example (a confirmed address), R4 the control, R5 absent at the start.
+const SPEC: Record<Remote, { id: string | null; uri: string; domain: string; shared: string | null }> = {
+  R1: { id: "300000000000000001", uri: "https://d.example/users/r1", domain: D, shared: "https://d.example/inbox" },
+  R2: { id: "300000000000000002", uri: "https://sub.d.example/users/r2", domain: SUB, shared: null },
+  R3: { id: "300000000000000003", uri: "https://x.d.example/users/r3", domain: OTHER, shared: null },
+  R4: { id: "300000000000000004", uri: "https://other.example/users/r4", domain: OTHER, shared: null },
+  R5: { id: null, uri: "https://new.d.example/users/r5", domain: "new.d.example", shared: null },
+};
+
+// The seeded follows, each named `follower>target`: L1 follows R1, R3 and R4; R1, R2 and R4 follow L1; R1 and R2
+// ask to follow locked L2.
+const SEEDS = ["L1>R1", "L1>R3", "L1>R4", "R1>L1", "R2>L1", "R4>L1", "R1>L2", "R2>L2"] as const;
+type Seed = { follows: boolean[]; list: boolean; pin: boolean; reports: [boolean, boolean] };
+
+const seedArb: fc.Arbitrary<Seed> = fc.record({
+  follows: fc.array(fc.constantFrom(true, true, false), { minLength: SEEDS.length, maxLength: SEEDS.length }),
+  list: fc.boolean(),
+  pin: fc.boolean(),
+  reports: fc.tuple(fc.boolean(), fc.boolean()),
+});
+
+const ALL: Seed = { follows: SEEDS.map(() => true), list: true, pin: true, reports: [true, true] };
+
+export type Stats = Record<string, number>;
+const tally = (stats: Stats, key: string, n = 1) => {
+  stats[key] = (stats[key] ?? 0) + n;
+};
+
+// ---------------------------------------------------------------------------------------------------------------
+// The world
+// ---------------------------------------------------------------------------------------------------------------
+
+type Attempt = {
+  token: string;
+  delivery: string;
+  local: Local;
+  remote: Remote;
+  intent: Intent;
+  phase: "claimed" | "confirmed" | "done";
+  body: string | null;
+  confirmedAt: number;
+};
+
+let sequence = 0;
+
+async function setup(seed: Seed) {
+  const base = await adminWorld();
+  const store = base.h.store;
+  const ids: Record<Local, string> = { L1: base.alice.id, L2: base.bob.id };
+  const tokens: Record<Local, string> = { L1: base.alice.token, L2: base.bob.token };
+  await sql(store, "UPDATE accounts SET locked = 1 WHERE id = ?", ids.L2);
+  const localUris = Object.fromEntries(
+    await Promise.all(
+      LOCALS.map(async (l) => [
+        l,
+        (await sql<{ uri: string }>(store, "SELECT uri FROM accounts WHERE id = ?", ids[l]))[0]!.uri,
+      ]),
+    ),
+  ) as Record<Local, string>;
+  const remotes = {} as Record<Remote, RemoteState>;
+  for (const r of REMOTES) {
+    const spec = SPEC[r];
+    remotes[r] = {
+      stored: spec.id !== null,
+      uri: spec.uri,
+      domain: spec.domain,
+      name: r,
+      keys: [`${r}-key-0`],
+      inbox: `${spec.uri}/inbox`,
+      sharedInbox: spec.shared,
+      source: null,
+    };
+    if (spec.id === null) {
+      continue;
+    }
+    const username = r.toLowerCase();
+    await sql(
+      store,
+      `INSERT INTO accounts (id, uri, username, domain, display_name, url, search_text, created_at, inbox_url,
+				shared_inbox_url, document_revision, confirmed_username)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?2, ?3, ?6, ?7, ?8, 1, ?9)`,
+      spec.id,
+      spec.uri,
+      username,
+      spec.domain,
+      r,
+      new Date(NOW).toISOString(),
+      `${spec.uri}/inbox`,
+      spec.shared,
+      new URL(spec.uri).hostname === spec.domain ? null : username,
+    );
+    await sql(
+      store,
+      "INSERT INTO remote_keys (key_id, account_id, pem, fetched_at) VALUES (?, ?, ?, ?)",
+      `${spec.uri}#main-key`,
+      spec.id,
+      `${r}-key-0`,
+      NOW,
+    );
+  }
+  const policy = new WorldPolicy(remotes, localUris, ["L2"]);
+  const w = {
+    h: base.h,
+    admin: base.admin,
+    store,
+    ids,
+    tokens,
+    localUris,
+    remoteIds: Object.fromEntries(REMOTES.map((r) => [r, SPEC[r].id])) as Record<Remote, string | null>,
+    policy,
+    clock: NOW,
+    step: 0,
+    trace: [] as string[],
+    stats: {} as Stats,
+    blockIds: new Map<string, string>(),
+    reportIds: new Map<string, string>(),
+    listId: "",
+    attempts: [] as Attempt[],
+    // The inbox each intent was recorded for (by pair and seq), and the severing Rejects among them (G3F).
+    inboxes: new Map<string, string>(),
+    severingRejects: new Map<string, string | null>(),
+    // Generations a round severed (P1), and the bodies confirmed (by pair).
+    severedByRound: new Set<string>(),
+    sent: [] as { local: Local; remote: Remote; type: string; ref: string | null }[],
+    fences: new Map<string, JobRow>(),
+    last: null as State | null,
+    peer: null as Peer | null,
+    // P2's records for the quiescence exceptions.
+    receivedAt: new Map<string, number>(),
+    undoReceivedAt: new Map<string, number>(),
+    ignoredFollows: new Map<string, number>(),
+    ignoredAccepts: new Set<string>(),
+    droppedUnavailable: new Map<string, string>(),
+    severedGens: new Set<string>(),
+    lastFollow: null as string | null,
+  };
+  for (const [i, label] of SEEDS.entries()) {
+    if (!seed.follows[i]) {
+      continue;
+    }
+    const [follower, target] = label.split(">") as [string, string];
+    const local = follower.startsWith("L");
+    const l = (local ? follower : target) as Local;
+    const r = (local ? target : follower) as Remote;
+    const pending = l === "L2";
+    const uri = local ? `${localUris[l]}#follows/seed-${r}` : `${SPEC[r].uri}#follows/seed-${l}`;
+    await sql(
+      store,
+      "INSERT INTO follows (account_id, target_account_id, state, uri, created_at) VALUES (?, ?, ?, ?, ?)",
+      local ? ids[l] : SPEC[r].id,
+      local ? SPEC[r].id : ids[l],
+      pending ? "pending" : "accepted",
+      uri,
+      new Date(NOW).toISOString(),
+    );
+    const pair = policy.pair(l, r);
+    if (local) {
+      pair.lr = { state: "accepted", uri };
+    } else {
+      pair.rl = { state: pending ? "pending" : "accepted", uri };
+      const type = pending ? "follow_request" : "follow";
+      pair.notifications.add(type);
+      await sql(
+        store,
+        "INSERT INTO notifications (account_id, type, from_account_id, created_at) VALUES (?, ?, ?, ?)",
+        ids[l],
+        type,
+        SPEC[r].id,
+        new Date(NOW).toISOString(),
+      );
+    }
+  }
+  await recountFollows(store, ids.L1);
+  await recountFollows(store, ids.L2);
+  const list = await w.h.request("/api/v1/lists", bearer(tokens.L1, json({ title: "watched" })));
+  w.listId = (await list.json<{ id: string }>()).id;
+  if (seed.list && policy.pair("L1", "R1").lr !== null) {
+    expect(await listAdd(w, "R1")).toBe(policy.listAdd("R1"));
+  }
+  if (seed.pin && policy.pair("L1", "R1").lr !== null) {
+    expect(await pin(w, "R1")).toBe(policy.pin("R1"));
+  }
+  for (const [i, r] of (["R1", "R2"] as const).entries()) {
+    if (seed.reports[i]) {
+      expect(await report(w, r)).toBe(200);
+    }
+  }
+  w.last = await read(w);
+  return w;
+}
+
+type World = Awaited<ReturnType<typeof setup>>;
+
+const log = (w: World, line: string) => {
+  w.step++;
+  w.trace.push(`${w.step} ${line}`);
+};
+
+const context = (w: World) => w.trace.join("\n");
+
+const labelOf = (w: World, id: string): string | null => {
+  for (const l of LOCALS) {
+    if (w.ids[l] === id) {
+      return l;
+    }
+  }
+  for (const r of REMOTES) {
+    if (w.remoteIds[r] === id) {
+      return r;
+    }
+  }
+  return null;
+};
+
+async function call(w: World, path: string, init: RequestInit, token: string) {
+  const response = await w.h.request(path, bearer(token, init));
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: text === "" ? null : (JSON.parse(text) as unknown),
+    link: response.headers.get("Link"),
+  };
+}
+
+async function listAdd(w: World, r: Remote): Promise<number> {
+  return (await call(w, `/api/v1/lists/${w.listId}/accounts`, json({ account_ids: [w.remoteIds[r]] }), w.tokens.L1))
+    .status;
+}
+
+async function pin(w: World, r: Remote): Promise<number> {
+  return (await call(w, `/api/v1/accounts/${w.remoteIds[r]}/pin`, json({}), w.tokens.L1)).status;
+}
+
+async function report(w: World, r: Remote): Promise<number> {
+  const label = `report ${++sequence}`;
+  const answer = await call(w, "/api/v1/reports", json({ account_id: w.remoteIds[r] }), w.tokens.L1);
+  const predicted = w.policy.report(r, label);
+  expect(answer.status, context(w)).toBe(predicted);
+  if (answer.status === 200) {
+    w.reportIds.set((answer.body as { id: string }).id, label);
+  }
+  return answer.status;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reading the Store
+// ---------------------------------------------------------------------------------------------------------------
+
+type LaneRow = {
+  type: string;
+  ref: string | null;
+  superseded: boolean;
+  inbox: string;
+  state: string;
+  token: string | null;
+};
+
+async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | null> }) {
+  const remoteIds = new Set(Object.values(w.remoteIds).filter((id) => id !== null));
+  return runInDurableObject(w.store, (_instance, state) => {
+    const q = <T extends Record<string, SqlStorageValue>>(query: string, ...params: SqlStorageValue[]) =>
+      state.storage.sql.exec<T>(query, ...params).toArray();
+    const blocks = q<{
+      domain: string;
+      severity: string;
+      reject_media: number;
+      reject_reports: number;
+      obfuscate: number;
+    }>(
+      "SELECT domain, severity, reject_media, reject_reports, obfuscate FROM instance_domain_blocks ORDER BY domain",
+    ).map((b): Block => ({
+      domain: b.domain,
+      severity: b.severity as Block["severity"],
+      rejectMedia: b.reject_media === 1,
+      rejectReports: b.reject_reports === 1,
+      obfuscate: b.obfuscate === 1,
+    }));
+    const remotes = q<{
+      id: string;
+      uri: string;
+      domain: string;
+      source: string | null;
+      suspended: number;
+      name: string;
+      inbox: string;
+      shared: string | null;
+      revision: number | null;
+    }>(
+      `SELECT id, uri, domain, suspension_source AS source, suspended_at IS NOT NULL AS suspended, display_name AS name,
+				inbox_url AS inbox, shared_inbox_url AS shared, document_revision AS revision
+			FROM accounts WHERE domain IS NOT NULL ORDER BY id`,
+    );
+    const keys = q<{ account: string; pem: string }>("SELECT account_id AS account, pem FROM remote_keys ORDER BY pem");
+    const jobs = q<{
+      id: string;
+      kind: "account" | "domain";
+      subject: string;
+      mode: "account" | "domain";
+      phase: string;
+      cursor: string;
+      attempts: number;
+      due: number | null;
+      follow_bound: string;
+      report_bound: string | null;
+      action_bound: number | null;
+    }>(
+      `SELECT CAST(id AS TEXT) AS id, kind, subject, mode, phase, cursor, attempts, due_at AS due,
+				CAST(follow_bound AS TEXT) AS follow_bound, CAST(report_bound AS TEXT) AS report_bound, action_bound
+			FROM remote_moderation_jobs ORDER BY id`,
+    ).map((j): JobRow => ({
+      id: j.id,
+      kind: j.kind,
+      subject: j.subject,
+      mode: j.mode,
+      phase: j.phase,
+      cursor: j.cursor,
+      attempts: j.attempts,
+      dueAt: j.due,
+      followBound: j.follow_bound,
+      reportBound: j.report_bound,
+      actionBound: j.action_bound,
+    }));
+    const follows = q<{ id: string; follower: string; target: string; state: string; uri: string | null }>(
+      `SELECT CAST(id AS TEXT) AS id, account_id AS follower, target_account_id AS target, state, uri FROM follows
+			ORDER BY id`,
+    );
+    const members = q<{ follower: string; target: string }>(
+      `SELECT l.account_id AS follower, m.account_id AS target FROM list_accounts m JOIN lists l ON l.id = m.list_id
+			ORDER BY 1, 2`,
+    );
+    const pins = q<{ owner: string; target: string }>(
+      "SELECT account_id AS owner, target_account_id AS target FROM account_pins ORDER BY 1, 2",
+    );
+    const reports = q<{ id: string; target: string; resolved: number; last: number }>(
+      `SELECT CAST(id AS TEXT) AS id, target_account_id AS target, action_taken_at IS NOT NULL AS resolved,
+				coalesce(last_action_id, 0) AS last FROM reports ORDER BY id`,
+    );
+    const counts = q<{ id: string; followers: number; following: number }>(
+      `SELECT a.id, followers_count AS followers, following_count AS following FROM accounts a
+			JOIN local_accounts l ON l.account_id = a.id`,
+    );
+    const notifications = q<{ account: string; from: string; type: string }>(
+      `SELECT account_id AS account, from_account_id AS "from", type FROM notifications ORDER BY 1, 2, 3`,
+    );
+    const retracted = q<{ actor: string; target: string }>(
+      "SELECT actor_uri AS actor, target_uri AS target FROM inbound_retractions ORDER BY 1, 2",
+    );
+    const statuses = q<{ account: string; n: number }>(
+      "SELECT account_id AS account, count(*) AS n FROM statuses GROUP BY account_id ORDER BY 1",
+    );
+    const lanes = q<{
+      account: string;
+      type: string;
+      id: string;
+      object: string | null;
+      superseded: number;
+      inbox: string;
+      state: string;
+      token: string | null;
+    }>(
+      `SELECT d.account_id AS account, json_extract(o.body, '$.activity.type') AS type,
+				json_extract(o.body, '$.activity.id') AS id,
+				CASE json_type(o.body, '$.activity.object') WHEN 'object' THEN json_extract(o.body, '$.activity.object.id')
+					ELSE json_extract(o.body, '$.activity.object') END AS object,
+				o.superseded, d.inbox_url AS inbox, d.state, d.lease_token AS token
+			FROM deliveries d JOIN outbound_activities o ON o.id = d.activity_id ORDER BY d.id`,
+    );
+    const unexpanded = q<{ n: number }>("SELECT count(*) AS n FROM outbound_targets")[0]!.n;
+    const unrowed = q<{ type: string }>(
+      `SELECT json_extract(body, '$.activity.type') AS type FROM outbound_activities o
+			WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = o.id)`,
+    ).map((row) => row.type);
+    const blockMap = new Map(blocks.map((b) => [b.domain, b]));
+    const snap: Snapshot = {
+      blocks: blockMap,
+      remotes: remotes.map((r) => ({ id: r.id, uri: r.uri, domain: r.domain, source: r.source as Source })),
+      follows: follows.map(({ id, follower, target, state }) => ({ id, follower, target, state })),
+      members,
+      reports: reports.map((r) => ({ id: r.id, target: r.target, resolved: r.resolved === 1, lastAction: r.last })),
+    };
+    return {
+      blocks,
+      remotes,
+      keys,
+      jobs,
+      follows,
+      members,
+      pins,
+      reports,
+      counts,
+      notifications,
+      retracted,
+      statuses,
+      lanes,
+      unexpanded,
+      unrowed,
+      snap,
+      remoteIds,
+    };
+  });
+}
+
+type State = Awaited<ReturnType<typeof read>>;
+
+// The projection compared with the policy, by label.
+function projection(w: World, s: State) {
+  const name = (id: string) => labelOf(w, id) ?? id;
+  const rowRef = (row: State["lanes"][number]) =>
+    row.type === "Update" ? null : row.type === "Follow" || row.type === "Block" ? row.id : row.object;
+  const lanes: Record<string, LaneRow[]> = {};
+  for (const row of s.lanes) {
+    const local = name(row.account);
+    const origin = new URL(row.inbox).origin;
+    const remote = REMOTES.find((r) => new URL(w.policy.remotes[r].uri).origin === origin) ?? origin;
+    (lanes[`${local} ${remote}`] ??= []).push({
+      type: row.type,
+      ref: rowRef(row),
+      superseded: row.superseded === 1,
+      inbox: row.inbox,
+      state: row.state,
+      token: row.token,
+    });
+  }
+  return {
+    blocks: s.blocks,
+    remotes: Object.fromEntries(
+      s.remotes.map((r) => [
+        name(r.id),
+        {
+          source: r.source,
+          suspended: r.suspended === 1,
+          name: r.name,
+          domain: r.domain,
+          inbox: r.inbox,
+          sharedInbox: r.shared,
+          keys: s.keys.filter((k) => k.account === r.id).map((k) => k.pem),
+        },
+      ]),
+    ),
+    jobs: s.jobs.map((j) => ({
+      kind: j.kind,
+      subject: j.subject === "" ? "" : name(j.subject),
+      mode: j.mode,
+      failing: j.attempts > 0,
+    })),
+    follows: s.follows.map((f) => ({ gen: `${name(f.follower)}>${name(f.target)}`, state: f.state, uri: f.uri })),
+    listed: s.members.filter((m) => m.follower === w.ids.L1).map((m) => name(m.target)),
+    pins: s.pins.filter((p) => p.owner === w.ids.L1).map((p) => name(p.target)),
+    reports: s.reports.map((r) => ({ label: w.reportIds.get(r.id) ?? r.id, resolved: r.resolved === 1 })),
+    counts: Object.fromEntries(
+      s.counts
+        .filter((c) => LOCALS.includes(name(c.id) as Local))
+        .map((c) => [name(c.id), { followers: c.followers, following: c.following }]),
+    ),
+    notifications: s.notifications
+      .filter((n) => LOCALS.includes(name(n.account) as Local))
+      .map((n) => `${name(n.account)} ${name(n.from)} ${n.type}`),
+    retracted: s.retracted.map((r) => `${r.actor} ${r.target}`),
+    lanes,
+    unexpanded: s.unexpanded,
+    unrowed: s.unrowed.filter((type) => type !== "Update"),
+  };
+}
+
+const sameOrigin = (a: string, b: string) => new URL(a).origin === new URL(b).origin;
+
+function expected(w: World) {
+  const p = w.policy;
+  const follows: { gen: string; state: string; uri: string | null }[] = [];
+  const notifications: string[] = [];
+  const retracted: string[] = [];
+  const lanes: Record<string, LaneRow[]> = {};
+  const counts: Record<string, { followers: number; following: number }> = {};
+  for (const l of LOCALS) {
+    counts[l] = { followers: 0, following: 0 };
+  }
+  for (const l of LOCALS) {
+    for (const r of REMOTES) {
+      const pair = p.pair(l, r);
+      counts[l]!.followers += pair.followers;
+      counts[l]!.following += pair.following;
+      if (pair.rl !== null) {
+        follows.push({ gen: `${r}>${l}`, state: pair.rl.state, uri: pair.rl.uri });
+      }
+      if (pair.lr !== null) {
+        follows.push({ gen: `${l}>${r}`, state: pair.lr.state, uri: pair.lr.uri });
+      }
+      for (const type of pair.notifications) {
+        notifications.push(`${l} ${r} ${type}`);
+      }
+      if (pair.lane.length > 0) {
+        lanes[`${l} ${r}`] = pair.lane.map((i) => ({
+          type: i.type,
+          ref: i.ref,
+          superseded: i.superseded,
+          inbox: w.inboxes.get(`${l} ${r} ${i.seq}`) ?? "unassigned",
+          state: i.head === null ? "queued" : i.head.kind,
+          token: i.head?.kind === "leased" ? i.head.token : null,
+        }));
+      }
+    }
+  }
+  for (const r of REMOTES) {
+    const uris = new Set(LOCALS.flatMap((l) => [...p.pair(l, r).retracted]));
+    for (const uri of uris) {
+      retracted.push(`${p.remotes[r].uri} ${uri}`);
+    }
+  }
+  return {
+    blocks: [...p.blocks.values()].toSorted((a, b) => (a.domain < b.domain ? -1 : 1)),
+    remotes: Object.fromEntries(
+      REMOTES.filter((r) => p.remotes[r].stored).map((r) => {
+        const a = p.remotes[r];
+        return [
+          r,
+          {
+            source: a.source,
+            suspended: a.source !== null,
+            name: a.name,
+            domain: a.domain,
+            inbox: a.inbox,
+            sharedInbox: a.sharedInbox,
+            keys: a.keys,
+          },
+        ];
+      }),
+    ),
+    jobs: [...p.jobs.values()].map((j) => ({ ...j, failing: false })),
+    follows,
+    listed: [...p.listed].toSorted(),
+    pins: [...p.pins].toSorted(),
+    reports: p.reports.map((r) => ({ label: r.label, resolved: r.resolved })),
+    counts,
+    notifications: notifications.toSorted(),
+    retracted: retracted.toSorted(),
+    lanes,
+    unexpanded: 0,
+    unrowed: [] as string[],
+  };
+}
+
+// Records the inbox of every intent recorded since the last step: the remote's current inbox (shared, else
+// personal), but the personal one for a severing Reject (Mastodon's reject_remote_follows!, which visibility.md claims
+// parity with; G3F below).
+function assignInboxes(w: World) {
+  for (const l of LOCALS) {
+    for (const r of REMOTES) {
+      for (const intent of w.policy.pair(l, r).lane) {
+        const key = `${l} ${r} ${intent.seq}`;
+        if (!w.inboxes.has(key)) {
+          const a = w.policy.remotes[r];
+          const severing = w.severingRejects.has(key);
+          w.inboxes.set(key, severing ? a.inbox : inboxOf(a));
+          if (severing) {
+            w.severingRejects.set(key, a.sharedInbox);
+          }
+        }
+      }
+    }
+  }
+}
+
+// G3F (#1425, a known defect): visibility.md says the severing Reject goes to the follower's current shared inbox
+// when known, "as Mastodon's ... send it"; Mastodon v4.5.11 sends it to the personal inbox
+// (suspend_account_service.rb:37; delete_account_service.rb:116-129). The policy predicts Mastodon's; a severing
+// Reject's row alone may stand at the shared inbox it had when recorded.
+function knownDefectG3F(w: World, want: ReturnType<typeof expected>, got: ReturnType<typeof projection>) {
+  for (const [lane, rows] of Object.entries(want.lanes)) {
+    const [l, r] = lane.split(" ") as [Local, Remote];
+    const intents = w.policy.pair(l, r).lane;
+    for (const [i, row] of rows.entries()) {
+      const shared = w.severingRejects.get(`${l} ${r} ${intents[i]!.seq}`);
+      const actual = got.lanes[lane]?.[i];
+      if (shared != null && actual?.inbox === shared && actual.type === "Reject") {
+        row.inbox = shared;
+        tally(w.stats, "known defect G3F");
+      }
+    }
+  }
+}
+
+async function check(w: World, answer: { actual: unknown; predicted: unknown } | null = null): Promise<State> {
+  if (answer !== null) {
+    expect(answer.actual, context(w)).toEqual(answer.predicted);
+  }
+  assignInboxes(w);
+  const s = await read(w);
+  const got = projection(w, s);
+  const want = expected(w);
+  knownDefectG3F(w, want, got);
+  got.follows.sort((a, b) => (a.gen < b.gen ? -1 : 1));
+  want.follows.sort((a, b) => (a.gen < b.gen ? -1 : 1));
+  got.listed.sort();
+  got.pins.sort();
+  expect(got, context(w)).toEqual(want);
+  w.last = s;
+  return s;
+}
+
+// The per-step API reads: availability as L1 sees it (`suspended`), and the admin's paged list of suspended accounts.
+async function apiReads(w: World): Promise<void> {
+  for (const r of REMOTES) {
+    const id = w.remoteIds[r];
+    if (id === null) {
+      continue;
+    }
+    const answer = await call(w, `/api/v1/accounts/${id}`, {}, w.tokens.L1);
+    expect({ r, suspended: (answer.body as { suspended?: boolean }).suspended === true }, context(w)).toEqual({
+      r,
+      suspended: !w.policy.available(r),
+    });
+  }
+  expect(await adminSuspended(w), context(w)).toEqual(w.policy.adminList());
+}
+
+async function adminSuspended(w: World): Promise<Remote[] | 503> {
+  const found: Remote[] = [];
+  let path: string | null = "/api/v2/admin/accounts?status=suspended";
+  while (path !== null) {
+    const answer = await call(w, path, {}, w.admin);
+    if (answer.status === 503) {
+      return 503;
+    }
+    expect(answer.status).toBe(200);
+    for (const account of answer.body as { id: string }[]) {
+      const label = labelOf(w, account.id);
+      if (label !== null && !label.startsWith("L")) {
+        found.push(label as Remote);
+      }
+    }
+    const next = answer.link?.match(/<([^>]+)>; rel="next"/)?.[1] ?? null;
+    path = next === null ? null : new URL(next).pathname + new URL(next).search;
+  }
+  return REMOTES.filter((r) => found.includes(r));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------------------------------------------
+
+type Admin =
+  | { k: "create"; domain: Domain; severity: "suspend" | "noop" | "silence"; rejectReports: boolean }
+  | { k: "update"; i: number; severity: "suspend" | "noop" | "silence" | null; flag: Flag | null; value: boolean }
+  | { k: "delete"; i: number }
+  | { k: "suspend"; r: Remote }
+  | { k: "unsuspend"; i: number };
+type Flag = "reject_media" | "reject_reports" | "obfuscate";
+type Rounds = { k: "round" } | { k: "moderation" };
+type LocalAction =
+  | { k: "unfollow"; r: Remote }
+  | { k: "remove"; r: Remote }
+  | { k: "report"; r: Remote }
+  | { k: "listPin"; pin: boolean };
+type Action = Admin | Rounds | LocalAction;
+
+const flagKey = { reject_media: "rejectMedia", reject_reports: "rejectReports", obfuscate: "obfuscate" } as const;
+
+async function admin(w: World, a: Admin): Promise<void> {
+  const p = w.policy;
+  switch (a.k) {
+    case "create": {
+      log(w, `create ${a.domain} ${a.severity}${a.rejectReports ? " reject_reports" : ""}`);
+      const answer = await call(
+        w,
+        "/api/v1/admin/domain_blocks",
+        json({ domain: a.domain, severity: a.severity, reject_reports: a.rejectReports }),
+        w.admin,
+      );
+      if (answer.status === 200) {
+        w.blockIds.set(a.domain, (answer.body as { id: string }).id);
+      }
+      const predicted = p.createBlock(a.domain, a.severity, {
+        rejectMedia: false,
+        rejectReports: a.rejectReports,
+        obfuscate: false,
+      });
+      return void (await after(w, { actual: answer.status, predicted }));
+    }
+    case "update": {
+      // An existing block, when there is one.
+      const domains = [...p.blocks.keys()];
+      const domain = domains.length > 0 ? domains[a.i % domains.length]! : DOMAINS[a.i % DOMAINS.length]!;
+      const id = w.blockIds.get(domain) ?? "999999";
+      const body: Record<string, unknown> = {};
+      const change: Parameters<WorldPolicy["updateBlock"]>[1] = {};
+      if (a.severity !== null) {
+        body.severity = a.severity;
+        change.severity = a.severity;
+      }
+      if (a.flag !== null) {
+        body[a.flag] = a.value;
+        change[flagKey[a.flag]] = a.value;
+      }
+      log(w, `update ${domain} ${JSON.stringify(body)}`);
+      const answer = await call(w, `/api/v1/admin/domain_blocks/${id}`, json(body, { method: "PUT" }), w.admin);
+      return void (await after(w, { actual: answer.status, predicted: p.updateBlock(domain, change) }));
+    }
+    case "delete": {
+      const domains = [...p.blocks.keys()];
+      const domain = domains.length > 0 ? domains[a.i % domains.length]! : DOMAINS[a.i % DOMAINS.length]!;
+      log(w, `delete ${domain}`);
+      const id = w.blockIds.get(domain) ?? "999999";
+      const answer = await call(w, `/api/v1/admin/domain_blocks/${id}`, { method: "DELETE" }, w.admin);
+      const predicted = p.deleteBlock(domain);
+      if (predicted === 200) {
+        w.blockIds.delete(domain);
+      }
+      return void (await after(w, { actual: answer.status, predicted }));
+    }
+    case "suspend":
+      return suspend(w, a.r);
+    case "unsuspend": {
+      // An individually suspended account, when there is one.
+      const held = REMOTES.filter((r) => p.remotes[r].stored && p.remotes[r].source === "account");
+      const stored = REMOTES.filter((r) => p.remotes[r].stored);
+      const r = held.length > 0 ? held[a.i % held.length]! : stored[a.i % stored.length]!;
+      return unsuspend(w, r);
+    }
+  }
+}
+
+async function suspend(w: World, r: Remote): Promise<void> {
+  log(w, `suspend ${r}`);
+  const answer = await call(w, `/api/v1/admin/accounts/${w.remoteIds[r]}/action`, form({ type: "suspend" }), w.admin);
+  const s = await after(w, { actual: answer.status, predicted: w.policy.suspend(r) });
+  // VIS-29's fence: the newest report at the suspension.
+  const job = s.jobs.find((j) => j.kind === "account" && j.subject === w.remoteIds[r])!;
+  const newest = s.reports.reduce((m, rep) => (BigInt(rep.id) > m ? BigInt(rep.id) : m), 0n);
+  expect(job.reportBound, context(w)).toBe(String(newest));
+  w.fences.set(job.subject, job);
+}
+
+async function unsuspend(w: World, r: Remote): Promise<void> {
+  log(w, `unsuspend ${r}`);
+  const answer = await call(w, `/api/v1/admin/accounts/${w.remoteIds[r]}/unsuspend`, { method: "POST" }, w.admin);
+  const predicted = w.policy.unsuspend(r);
+  w.trace.push(`  -> ${answer.status} ${predicted.outcome ?? ""}`);
+  if (predicted.outcome !== null) {
+    tally(w.stats, `unsuspension ${predicted.outcome}`);
+  }
+  await after(w, { actual: answer.status, predicted: predicted.status });
+}
+
+// After a step that is not a round: the answer, the projection, the API reads.
+async function after(w: World, answer: { actual: unknown; predicted: unknown }): Promise<State> {
+  w.trace.push(`  -> ${JSON.stringify(answer.actual)}`);
+  const s = await check(w, answer);
+  await apiReads(w);
+  return s;
+}
+
+// The completed set of a round or a call, applied to the policy: each severed follow by its pair and side (out before
+// in, as the walks sever), list memberships, marks and clears, resolved reports, and the jobs that ended.
+function adopt(w: World, before: State, now: State): void {
+  const p = w.policy;
+  const gone = new Set(now.follows.map((f) => f.id));
+  const severed = before.follows
+    .filter((f) => !gone.has(f.id))
+    .toSorted(
+      (a, b) => Number(labelOf(w, a.follower)!.startsWith("L")) - Number(labelOf(w, b.follower)!.startsWith("L")),
+    );
+  for (const f of severed) {
+    const follower = labelOf(w, f.follower)!;
+    const target = labelOf(w, f.target)!;
+    const out = follower.startsWith("R");
+    const l = (out ? target : follower) as Local;
+    const r = (out ? follower : target) as Remote;
+    const intent = p.sever(l, r, out ? "out" : "in", w.clock);
+    if (intent?.type === "Reject") {
+      w.severingRejects.set(`${l} ${r} ${intent.seq}`, null);
+    }
+    w.severedByRound.add(`${follower}>${target}`);
+    w.severedGens.add(f.uri ?? f.id);
+    tally(w.stats, `severed ${out ? "out" : "in"} ${f.state}`);
+  }
+  const members = new Set(now.members.map((m) => `${m.follower} ${m.target}`));
+  for (const m of before.members) {
+    if (!members.has(`${m.follower} ${m.target}`)) {
+      p.listed.delete(labelOf(w, m.target) as Remote);
+    }
+  }
+  const sources = new Map(now.remotes.map((r) => [r.id, r.source]));
+  for (const r of before.remotes) {
+    const label = labelOf(w, r.id) as Remote;
+    const source = sources.get(r.id) as Source;
+    if (r.source === null && source === "domain") {
+      p.remotes[label].source = "domain";
+      tally(w.stats, "marked");
+    } else if (r.source === "domain" && source === null) {
+      p.remotes[label].source = null;
+      tally(w.stats, "mark cleared");
+    }
+  }
+  const resolved = new Set(now.reports.filter((r) => r.resolved === 1).map((r) => r.id));
+  for (const rep of p.reports) {
+    const id = [...w.reportIds].find(([, label]) => label === rep.label)?.[0];
+    if (id !== undefined && resolved.has(id) && !rep.resolved) {
+      rep.resolved = true;
+      tally(w.stats, "report resolved");
+    }
+  }
+  const jobs = new Set(now.jobs.map((j) => `${j.kind} ${j.subject === "" ? "" : labelOf(w, j.subject)}`));
+  for (const key of p.jobs.keys()) {
+    if (!jobs.has(key)) {
+      p.jobs.delete(key);
+      tally(w.stats, `job ended ${key.split(" ")[0]}`);
+    }
+  }
+}
+
+function ledger(w: World, before: State, now: State, ran: string | null, rows: number | null): void {
+  const failures = ledgerCheck({
+    before: { jobs: before.jobs, snap: before.snap },
+    after: { jobs: now.jobs, snap: now.snap },
+    ran,
+    rows,
+    caps: CAPS,
+  });
+  expect(failures, context(w)).toEqual([]);
+}
+
+// One round of the remote jobs (remoteModerationRound in its own transaction, as runModerationJobs runs each), with
+// the rows it wrote; null when no job may run.
+async function round(w: World): Promise<{ id: string } | null> {
+  const before = w.last!;
+  const { result, rows } = await writtenBy(w.store, (db) => remoteModerationRound(db, w.clock));
+  log(w, `round ${result === null ? "(none)" : before.jobs.find((j) => j.id === result.id)?.kind}`);
+  const s = await read(w);
+  ledger(w, before, s, result?.id ?? null, rows);
+  if (result === null) {
+    expect(
+      before.jobs.filter((j) => pendingAt([j], w.clock)),
+      context(w),
+    ).toEqual([]);
+  }
+  adopt(w, before, s);
+  await check(w);
+  await apiReads(w);
+  return result;
+}
+
+async function moderation(w: World): Promise<boolean> {
+  const before = w.last!;
+  log(w, "moderation");
+  const { pending } = await w.store.runModerationJobs(BUILD, { now: w.clock });
+  const s = await read(w);
+  ledger(w, before, s, null, null);
+  // Rule 6: pending is "some job is fresh, or backing off and due".
+  expect(pending, context(w)).toBe(pendingAt(s.jobs, w.clock));
+  adopt(w, before, s);
+  await check(w);
+  await apiReads(w);
+  return pending;
+}
+
+async function local(w: World, a: LocalAction): Promise<void> {
+  const p = w.policy;
+  const now = w.clock;
+  switch (a.k) {
+    case "unfollow": {
+      log(w, `L1 unfollows ${a.r}`);
+      const answer = await call(w, `/api/v1/accounts/${w.remoteIds[a.r]}/unfollow`, json({}), w.tokens.L1);
+      return void (await after(w, { actual: answer.status, predicted: p.unfollow("L1", a.r, now) }));
+    }
+    case "remove": {
+      log(w, `L1 removes ${a.r}`);
+      const path = `/api/v1/accounts/${w.remoteIds[a.r]}/remove_from_followers`;
+      const answer = await call(w, path, json({}), w.tokens.L1);
+      return void (await after(w, { actual: answer.status, predicted: p.removeFollower("L1", a.r, now) }));
+    }
+    case "report": {
+      log(w, `L1 reports ${a.r}`);
+      await report(w, a.r);
+      return void (await after(w, { actual: null, predicted: null }));
+    }
+    case "listPin": {
+      log(w, a.pin ? "L1 pins R1" : "L1 lists R1");
+      const status = a.pin ? await pin(w, "R1") : await listAdd(w, "R1");
+      return void (await after(w, { actual: status, predicted: a.pin ? p.pin("R1") : p.listAdd("R1") }));
+    }
+  }
+}
+
+// ---- Deliveries (NET-2's lanes, one per pair here: each remote has an inbox origin of its own) ----
+
+let leaseSequence = 0;
+
+// The lane head the next claim takes (the first due row), as its pair.
+async function nextDue(w: World): Promise<{ local: Local; remote: Remote } | null> {
+  const row = (
+    await sql<{ account: string; inbox: string }>(
+      w.store,
+      `SELECT account_id AS account, inbox_url AS inbox FROM deliveries
+			WHERE state IN ('pending', 'leased') AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT 1`,
+      w.clock,
+    )
+  )[0];
+  if (row === undefined) {
+    return null;
+  }
+  const remote = REMOTES.find((r) => sameOrigin(w.policy.remotes[r].uri, row.inbox))!;
+  return { local: labelOf(w, row.account) as Local, remote };
+}
+
+async function claim(w: World): Promise<Attempt | null> {
+  const due = await nextDue(w);
+  if (due === null) {
+    return null;
+  }
+  const token = `lease-${++leaseSequence}`;
+  log(w, `claim ${due.local} -> ${due.remote}`);
+  const result = await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: token, limit: 1 });
+  const pair = w.policy.pair(due.local, due.remote);
+  // The head's inbox, as the last projection (checked against the policy) holds it.
+  const inbox = projection(w, w.last!).lanes[`${due.local} ${due.remote}`]?.[0]?.inbox;
+  const predicted = pair.claim(w.clock, token);
+  if (predicted.dropped !== null && !predicted.dropped.superseded) {
+    tally(w.stats, `dropped at claim: ${predicted.dropped.type}`);
+    w.droppedUnavailable.set(`${predicted.dropped.type} ${predicted.dropped.ref}`, due.remote);
+  }
+  await check(w, {
+    actual: result.deliveries.map((d) => d.inbox),
+    predicted: predicted.leased === null ? [] : [inbox],
+  });
+  if (predicted.leased === null) {
+    return null;
+  }
+  const attempt: Attempt = {
+    token,
+    delivery: result.deliveries[0]!.id,
+    local: due.local,
+    remote: due.remote,
+    intent: predicted.leased,
+    phase: "claimed",
+    body: null,
+    confirmedAt: 0,
+  };
+  w.attempts.push(attempt);
+  return attempt;
+}
+
+async function confirm(w: World, attempt: Attempt): Promise<void> {
+  log(w, `confirm ${attempt.token} (${attempt.intent.type} ${attempt.intent.ref})`);
+  const result = await w.store.confirmDelivery(BUILD, {
+    id: attempt.delivery,
+    leaseToken: attempt.token,
+    now: w.clock,
+  });
+  const predicted = w.policy.pair(attempt.local, attempt.remote).confirm(attempt.token, w.clock);
+  if (predicted.status === "dropped" && !attempt.intent.superseded) {
+    tally(w.stats, `dropped at confirm: ${attempt.intent.type}`);
+    w.droppedUnavailable.set(`${attempt.intent.type} ${attempt.intent.ref}`, attempt.remote);
+  }
+  attempt.phase = result.status === "send" ? "confirmed" : "done";
+  if (result.status === "send") {
+    attempt.body = result.body;
+    attempt.confirmedAt = w.step;
+    const body = JSON.parse(result.body) as Body;
+    const ref =
+      body.type === "Follow" ? body.id : typeof body.object === "string" ? body.object : (body.object.id ?? null);
+    w.sent.push({ local: attempt.local, remote: attempt.remote, type: body.type, ref });
+    await check(w, {
+      actual: { status: "send", type: body.type, ref },
+      predicted:
+        predicted.status === "send"
+          ? { status: "send", type: predicted.intent.type, ref: predicted.intent.ref }
+          : { status: predicted.status },
+    });
+    return;
+  }
+  await check(w, { actual: result.status, predicted: predicted.status });
+}
+
+async function complete(w: World, attempt: Attempt): Promise<void> {
+  log(w, `complete ${attempt.token}`);
+  const result = await w.store.completeDelivery(BUILD, {
+    id: attempt.delivery,
+    leaseToken: attempt.token,
+    now: w.clock,
+    outcome: OK,
+  });
+  attempt.phase = "done";
+  const predicted = w.policy.pair(attempt.local, attempt.remote).complete(attempt.token, true, w.clock, null);
+  await check(w, { actual: result.status, predicted });
+}
+
+// The usual path in one step: a claim whose row is confirmed and completed, its body handed to R1's server when it is
+// L1's to R1 and a peer runs.
+async function send(w: World): Promise<boolean> {
+  const attempt = await claim(w);
+  if (attempt === null) {
+    return (await nextDue(w)) !== null;
+  }
+  await confirm(w, attempt);
+  if (attempt.phase === "confirmed") {
+    if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
+      w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
+    }
+    await complete(w, attempt);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Settlement
+// ---------------------------------------------------------------------------------------------------------------
+
+// Rounds until no job is left, then deliveries until no row is left; then rule 4's settlement and rule 6.
+async function settle(w: World): Promise<void> {
+  w.trace.push("-- settle");
+  for (let i = 0; ; i++) {
+    expect(i, `settlement passed ${SETTLE_ROUNDS} rounds\n${context(w)}`).toBeLessThan(SETTLE_ROUNDS);
+    if ((await round(w)) === null) {
+      break;
+    }
+  }
+  expect(await moderation(w), context(w)).toBe(false);
+  const s = w.last!;
+  expect(s.jobs, context(w)).toEqual([]);
+  expect(settlementFailures(s.snap, w.fences), context(w)).toEqual([]);
+  await drainDeliveries(w);
+}
+
+async function drainDeliveries(w: World): Promise<void> {
+  for (let i = 0; i < SETTLE_ROUNDS; i++) {
+    for (const attempt of w.attempts.filter((a) => a.phase !== "done")) {
+      if (attempt.phase === "claimed") {
+        await confirm(w, attempt);
+      }
+      if (attempt.phase === "confirmed") {
+        if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
+          w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
+        }
+        await complete(w, attempt);
+      }
+    }
+    if (!(await send(w))) {
+      for (const l of LOCALS) {
+        for (const r of REMOTES) {
+          expect(w.policy.pair(l, r).lane, context(w)).toEqual([]);
+        }
+      }
+      return;
+    }
+  }
+  throw new Error(`deliveries did not settle\n${context(w)}`);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// P1: decisions and rounds, with a twin whose rounds all run at settlement
+// ---------------------------------------------------------------------------------------------------------------
+
+const remoteArb = (...rs: Remote[]) => fc.constantFrom(...rs);
+
+const adminArbs = [
+  {
+    arbitrary: fc.record({
+      k: fc.constant("create" as const),
+      domain: fc.constantFrom(...DOMAINS),
+      severity: fc.constantFrom(
+        ...(["suspend", "suspend", "suspend", "suspend", "suspend", "noop", "noop", "noop", "silence"] as const),
+      ),
+      rejectReports: fc.boolean(),
+    }),
+    weight: 6,
+  },
+  {
+    arbitrary: fc.record({
+      k: fc.constant("update" as const),
+      i: fc.nat(5),
+      severity: fc.constantFrom("suspend" as const, "noop" as const, "silence" as const, null),
+      flag: fc.constantFrom("reject_media" as const, "reject_reports" as const, "obfuscate" as const, null),
+      value: fc.boolean(),
+    }),
+    weight: 5,
+  },
+  { arbitrary: fc.record({ k: fc.constant("delete" as const), i: fc.nat(5) }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("suspend" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("unsuspend" as const), i: fc.nat(5) }), weight: 4 },
+];
+
+const p1Arb: fc.Arbitrary<Action> = fc.oneof(
+  ...adminArbs,
+  { arbitrary: fc.constant({ k: "round" as const }), weight: 6 },
+  { arbitrary: fc.constant({ k: "moderation" as const }), weight: 3 },
+  { arbitrary: fc.record({ k: fc.constant("unfollow" as const), r: remoteArb("R1", "R3", "R4") }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("remove" as const), r: remoteArb("R1", "R2", "R4") }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("report" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 1 },
+  { arbitrary: fc.record({ k: fc.constant("listPin" as const), pin: fc.boolean() }), weight: 1 },
+);
+
+async function act(w: World, a: Action): Promise<void> {
+  switch (a.k) {
+    case "round":
+      return void (await round(w));
+    case "moderation":
+      return void (await moderation(w));
+    case "unfollow":
+    case "remove":
+    case "report":
+    case "listPin":
+      return local(w, a);
+    default:
+      return admin(w, a);
+  }
+}
+
+async function runP1(seed: Seed, actions: readonly Action[], deferred: boolean): Promise<World> {
+  const w = await setup(seed);
+  await check(w);
+  await apiReads(w);
+  for (const a of actions) {
+    if (deferred && (a.k === "round" || a.k === "moderation")) {
+      continue;
+    }
+    await act(w, a);
+  }
+  await settle(w);
+  return w;
+}
+
+const SEED_LABELS = SEEDS as readonly string[];
+
+// The P1 relation ("P1" in the design): what is a function of the final decisions is equal; severing is monotone, so
+// the twin severed a subset, and every generation only the run severed was severed by a round in which it was
+// eligible (each round's ledger check); reports alike; each ended generation had at most one ending intent of its
+// type.
+function p1Relation(a: World, b: World): void {
+  const trace = `${context(a)}\n-- twin\n${context(b)}`;
+  const decided = (w: World) => ({
+    blocks: [...w.policy.blocks.values()].toSorted((x, y) => (x.domain < y.domain ? -1 : 1)),
+    sources: REMOTES.map((r) => w.policy.remotes[r].source),
+    available: REMOTES.map((r) => w.policy.available(r)),
+    jobs: [...w.policy.jobs.keys()],
+    admin: w.policy.adminList(),
+    pins: [...w.policy.pins].filter((r) => w.policy.pair("L1", r).lr?.state !== "accepted"),
+    listed: [...w.policy.listed].filter((r) => w.policy.pair("L1", r).lr?.state !== "accepted"),
+  });
+  expect(decided(a), trace).toEqual(decided(b));
+  expect(decided(a).pins, trace).toEqual([]);
+  expect(decided(a).listed, trace).toEqual([]);
+  const present = (w: World) =>
+    new Set(
+      projection(w, w.last!)
+        .follows.map((f) => f.gen)
+        .filter((g) => SEED_LABELS.includes(g)),
+    );
+  const [inA, inB] = [present(a), present(b)];
+  const seeded = SEED_LABELS.filter(
+    (g) => inA.has(g) || inB.has(g) || a.severedByRound.has(g) || b.severedByRound.has(g),
+  );
+  for (const g of SEED_LABELS) {
+    if (!inA.has(g) && inB.has(g) && !a.severedByRound.has(g)) {
+      throw new Error(`generation ${g} absent only in the run, but no round severed it\n${trace}`);
+    }
+    expect(!inB.has(g) && inA.has(g), `${g} absent only in the twin\n${trace}`).toBe(false);
+  }
+  for (const w of [a, b]) {
+    for (const r of REMOTES) {
+      if (w.policy.covered(r) && w.policy.remotes[r].source !== "account") {
+        expect(
+          [...present(w)].filter((g) => g.includes(r)),
+          trace,
+        ).toEqual([]);
+      }
+      if (w.policy.remotes[r].source === "account") {
+        expect(
+          [...present(w)].filter((g) => g.startsWith(`${r}>`)),
+          trace,
+        ).toEqual([]);
+      }
+    }
+    // Ending intents: a withdrawing Reject for an accepted remote follower, none for a request, an Undo for a local
+    // follower; at most one each.
+    for (const g of seeded) {
+      const [follower, target] = g.split(">") as [string, string];
+      const uri = follower.startsWith("L")
+        ? `${w.localUris[follower as Local]}#follows/seed-${target}`
+        : `${SPEC[follower as Remote].uri}#follows/seed-${target}`;
+      const types = w.sent.filter((s) => s.ref === uri && s.type !== "Accept").map((s) => s.type);
+      const want = follower.startsWith("L") ? "Undo" : target === "L2" ? null : "Reject";
+      expect(types.length <= 1 && types.every((t) => t === want), `${g}: ${types.join(", ")}\n${trace}`).toBe(true);
+    }
+  }
+  const resolved = (w: World) => new Set(w.policy.reports.filter((r) => r.resolved).map((r) => r.label));
+  const [ra, rb] = [resolved(a), resolved(b)];
+  expect(
+    [...rb].filter((label) => !ra.has(label)),
+    trace,
+  ).toEqual([]);
+}
+
+const STATS: Record<string, Stats> = {};
+const merge = (name: string, stats: Stats) => {
+  const into = (STATS[name] ??= {});
+  for (const [key, n] of Object.entries(stats)) {
+    tally(into, key, n);
+  }
+};
+
+const P1_CASES = 30;
+const SEED = 1411_3;
+
+describe("instance moderation P1: decisions and rounds against the policy, the ledger and a twin", () => {
+  it("agrees with the policy after every step, and with its twin once settled", async () => {
+    await fc.assert(
+      fc.asyncProperty(seedArb, fc.array(p1Arb, { minLength: 12, maxLength: 20 }), async (seed, actions) => {
+        // Report labels are positional, so each run counts its own from the same start.
+        const start = sequence;
+        const a = await runP1(seed, actions, false);
+        sequence = start;
+        const b = await runP1(seed, actions, true);
+        p1Relation(a, b);
+        merge("P1", a.stats);
+      }),
+      runs(P1_CASES, SEED),
+    );
+    console.log("instance moderation P1 coverage", JSON.stringify(STATS.P1, null, 1));
+  }, 600_000);
+});
+
+describe("instance moderation P1 witnesses", () => {
+  it("severs a covered account both ways and keeps an individually suspended account's local followers", async () => {
+    const w = await runP1(
+      ALL,
+      [
+        { k: "create", domain: D, severity: "suspend", rejectReports: false },
+        { k: "suspend", r: "R3" },
+        { k: "moderation" },
+        { k: "moderation" },
+      ],
+      false,
+    );
+    expect(
+      projection(w, w.last!)
+        .follows.map((f) => f.gen)
+        .toSorted(),
+    ).toEqual(["L1>R3", "L1>R4", "R4>L1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// P2: federation while decisions are in force (R1's server is machine 1's Mastodon v4.5.11 peer for R1 and L1)
+// ---------------------------------------------------------------------------------------------------------------
+
+type Variant = "name" | "key" | "routing";
+type P2Action =
+  | Action
+  | { k: "peerFollow" | "peerUnfollow" | "peerRemoveFollower" | "deliver" | "process" }
+  | { k: "document"; r: Remote; variant: Variant; stale: boolean }
+  | { k: "flag"; r: Remote }
+  | { k: "follow"; r: Remote }
+  | { k: "answer"; r: Remote; accept: boolean }
+  | { k: "claim" | "send" }
+  | { k: "confirm" | "complete"; i: number };
+
+let flagSequence = 0;
+let documentSequence = 0;
+
+// A verified actor document of `r`, as remote-actor.ts reads one, with the routing given.
+function documentOf(w: World, r: Remote, doc: Document): RemoteActorInput {
+  const a = w.policy.remotes[r];
+  return {
+    uri: a.uri,
+    username: r.toLowerCase(),
+    domain: a.domain,
+    actorType: "Person",
+    displayName: doc.name,
+    note: "",
+    url: a.uri,
+    avatarUrl: null,
+    headerUrl: null,
+    locked: false,
+    discoverable: null,
+    indexable: false,
+    inboxUrl: doc.inbox,
+    sharedInboxUrl: doc.sharedInbox,
+    published: null,
+    keys: doc.keys.map((pem) => ({ id: `${a.uri}#main-key`, pem })),
+    emojiTags: [],
+    raw: "{}",
+    movedTo: null,
+  };
+}
+
+const outstanding = (w: World, r: Remote) => LOCALS.some((l) => w.policy.pair(l, r).lane.length > 0);
+
+// A document carried by an Update of the actor: its name, its key or its routing changed (a routing change only while
+// nothing is outstanding to the remote, so each intent keeps one row at its current inbox; witness 13 covers the
+// rest), under the stored revision or a superseded one.
+async function document(w: World, r: Remote, variant: Variant, stale: boolean): Promise<void> {
+  const a = w.policy.remotes[r];
+  const n = ++documentSequence;
+  const flip = (url: string) => (url.endsWith("2") ? url.slice(0, -1) : `${url}2`);
+  const doc: Document = { name: a.name, keys: [...a.keys], inbox: a.inbox, sharedInbox: a.sharedInbox };
+  if (variant === "name") {
+    doc.name = `${r} ${n}`;
+  } else if (variant === "key") {
+    doc.keys = [`${r}-key-${n}`];
+  } else if (!outstanding(w, r)) {
+    doc.inbox = flip(doc.inbox);
+    doc.sharedInbox = doc.sharedInbox === null ? null : flip(doc.sharedInbox);
+  }
+  const revision = (
+    await sql<{ revision: number | null }>(
+      w.store,
+      "SELECT document_revision AS revision FROM accounts WHERE uri = ?",
+      a.uri,
+    )
+  )[0];
+  const expected = revision === undefined ? null : stale ? (revision.revision ?? 0) + 1 : revision.revision;
+  log(w, `${r} document (${variant}${stale ? ", superseded" : ""})`);
+  const result = await w.store.receiveActivity(BUILD, {
+    now: w.clock,
+    origin: "https://kopje.test",
+    actorUri: a.uri,
+    actor: documentOf(w, r, doc),
+    actorRevision: expected,
+    activity: { type: "UpdateActor", id: `${new URL(a.uri).origin}/updates/${n}` },
+  });
+  const gate = w.policy.gate(r, "UpdateActor");
+  const current = !stale || revision === undefined;
+  const changed = gate === null || (a.stored && a.source === "account") ? w.policy.document(r, doc, current) : false;
+  if (changed && w.remoteIds[r] === null) {
+    w.remoteIds[r] = (await sql<{ id: string }>(w.store, "SELECT id FROM accounts WHERE uri = ?", a.uri))[0]!.id;
+    tally(w.stats, "R5 stored");
+  }
+  const predicted = gate ?? (current ? "actor-updated" : "actor-changed");
+  tally(w.stats, `document ${predicted}`);
+  await after(w, { actual: result.reason, predicted });
+}
+
+async function flag(w: World, r: Remote): Promise<void> {
+  const a = w.policy.remotes[r];
+  log(w, `${r} flags L1`);
+  const activity: InboundActivity = {
+    type: "Flag",
+    id: `${new URL(a.uri).origin}/flags/${++flagSequence}`,
+    objects: [w.localUris.L1],
+    content: "",
+  };
+  const before = new Set(w.last!.reports.map((rep) => rep.id));
+  const result = await storeReceive(w.store, a.uri, activity, w.clock);
+  const label = `flag ${flagSequence}`;
+  const predicted = w.policy.gate(r, "Flag") ?? w.policy.flag(r, label);
+  const filed = (await sql<{ id: string }>(w.store, "SELECT CAST(id AS TEXT) AS id FROM reports")).filter(
+    (rep) => !before.has(rep.id),
+  );
+  for (const rep of filed) {
+    w.reportIds.set(rep.id, label);
+  }
+  tally(w.stats, `flag ${predicted ?? "filed"}`);
+  await after(w, { actual: result.applied ? null : result.reason, predicted });
+}
+
+// R1's message to Kopje, through the inbox's gate.
+async function deliverToKopje(w: World, activity: Inbound): Promise<void> {
+  const ref = activity.type === "Follow" || activity.type === "Block" ? activity.id : activity.object.id;
+  log(w, `deliver ${activity.type} ${ref}`);
+  const result = await storeReceive(w.store, w.policy.remotes.R1.uri, activity, w.clock);
+  if (activity.type === "Follow" && !w.receivedAt.has(activity.id)) {
+    w.receivedAt.set(activity.id, w.step);
+  }
+  if (activity.type === "Undo" && activity.object.id !== null && !w.undoReceivedAt.has(activity.object.id)) {
+    w.undoReceivedAt.set(activity.object.id, w.step);
+  }
+  const gate = w.policy.gate("R1", activity.type);
+  if (gate !== null) {
+    if (activity.type === "Follow") {
+      w.ignoredFollows.set(activity.id, w.step);
+    }
+    if (activity.type === "Accept" && activity.object.id !== null) {
+      w.ignoredAccepts.add(activity.object.id);
+    }
+    tally(w.stats, `ignored ${activity.type} while unavailable`);
+    return void (await after(w, { actual: [result.applied, result.reason], predicted: [false, gate] }));
+  }
+  const predicted = w.policy.pair("L1", "R1").receive(activity, w.clock);
+  w.policy.followEnded("L1", "R1");
+  await after(w, { actual: [result.applied, result.reason], predicted: [predicted.applied, predicted.reason] });
+}
+
+async function p2Local(w: World, a: P2Action & { k: "follow" | "answer" }): Promise<void> {
+  const p = w.policy;
+  if (a.k === "follow") {
+    log(w, `L1 follows ${a.r}`);
+    const answer = await call(w, `/api/v1/accounts/${w.remoteIds[a.r]}/follow`, json({}), w.tokens.L1);
+    const uri = (
+      await sql<{ uri: string }>(
+        w.store,
+        "SELECT uri FROM follows WHERE account_id = ? AND target_account_id = ?",
+        w.ids.L1,
+        w.remoteIds[a.r],
+      )
+    )[0]?.uri;
+    const predicted = p.follow("L1", a.r, w.clock, () => uri ?? "no follow stored");
+    if (a.r === "R1" && p.pair("L1", "R1").lr !== null) {
+      w.lastFollow = p.pair("L1", "R1").lr!.uri;
+    }
+    return void (await after(w, { actual: answer.status, predicted }));
+  }
+  log(w, `L2 ${a.accept ? "authorizes" : "rejects"} ${a.r}`);
+  const path = `/api/v1/follow_requests/${w.remoteIds[a.r]}/${a.accept ? "authorize" : "reject"}`;
+  const answer = await call(w, path, json({}), w.tokens.L2);
+  await after(w, { actual: answer.status, predicted: p.answer("L2", a.r, a.accept, w.clock) });
+}
+
+async function p2Act(w: World, a: P2Action): Promise<void> {
+  const peer = w.peer!;
+  switch (a.k) {
+    case "peerFollow":
+      if (peer.follow()) {
+        log(w, "peer follows");
+      }
+      return;
+    case "peerUnfollow":
+      if (peer.unfollow()) {
+        log(w, "peer unfollows");
+      }
+      return;
+    case "peerRemoveFollower":
+      if (peer.removeFollower()) {
+        log(w, "peer removes L1");
+      }
+      return;
+    case "deliver": {
+      const message = peer.outbox.shift();
+      if (message !== undefined) {
+        await deliverToKopje(w, message.activity);
+      }
+      return;
+    }
+    case "process": {
+      const body = peer.process(0, w.clock);
+      if (body !== null) {
+        log(w, `peer processes ${body.type}`);
+      }
+      return;
+    }
+    case "document":
+      if (w.policy.remotes[a.r].stored || a.r === "R5") {
+        await document(w, a.r, a.variant, a.stale);
+      }
+      return;
+    case "flag":
+      return flag(w, a.r);
+    case "follow":
+    case "answer":
+      return p2Local(w, a);
+    case "claim":
+      return void (await claim(w));
+    case "send":
+      return void (await send(w));
+    case "confirm": {
+      const open = w.attempts.filter((t) => t.phase === "claimed");
+      if (open.length > 0) {
+        await confirm(w, open[a.i % open.length]!);
+      }
+      return;
+    }
+    case "complete": {
+      const open = w.attempts.filter((t) => t.phase === "confirmed");
+      if (open.length > 0) {
+        const attempt = open[a.i % open.length]!;
+        if (attempt.local === "L1" && attempt.remote === "R1") {
+          peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
+        }
+        await complete(w, attempt);
+      }
+      return;
+    }
+    default:
+      return act(w, a);
+  }
+}
+
+const p2Arb: fc.Arbitrary<P2Action> = fc.oneof(
+  ...adminArbs,
+  { arbitrary: fc.constant({ k: "round" as const }), weight: 8 },
+  { arbitrary: fc.constant({ k: "moderation" as const }), weight: 4 },
+  { arbitrary: fc.constant({ k: "peerFollow" as const }), weight: 4 },
+  { arbitrary: fc.constant({ k: "peerUnfollow" as const }), weight: 2 },
+  { arbitrary: fc.constant({ k: "peerRemoveFollower" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "deliver" as const }), weight: 6 },
+  { arbitrary: fc.constant({ k: "process" as const }), weight: 5 },
+  {
+    arbitrary: fc.record({
+      k: fc.constant("document" as const),
+      r: remoteArb("R1", "R2", "R3", "R4", "R5"),
+      variant: fc.constantFrom<Variant>("name", "key", "routing"),
+      stale: fc.boolean(),
+    }),
+    weight: 10,
+  },
+  { arbitrary: fc.record({ k: fc.constant("flag" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 5 },
+  {
+    arbitrary: fc.record({ k: fc.constant("follow" as const), r: remoteArb("R1", "R1", "R2", "R3", "R4") }),
+    weight: 5,
+  },
+  { arbitrary: fc.record({ k: fc.constant("unfollow" as const), r: remoteArb("R1", "R3", "R4") }), weight: 3 },
+  {
+    arbitrary: fc.record({ k: fc.constant("answer" as const), r: remoteArb("R1", "R2"), accept: fc.boolean() }),
+    weight: 3,
+  },
+  { arbitrary: fc.record({ k: fc.constant("remove" as const), r: remoteArb("R1", "R2", "R4") }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("report" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 2 },
+  { arbitrary: fc.constant({ k: "claim" as const }), weight: 5 },
+  { arbitrary: fc.record({ k: fc.constant("confirm" as const), i: fc.nat(3) }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("complete" as const), i: fc.nat(3) }), weight: 4 },
+  { arbitrary: fc.constant({ k: "send" as const }), weight: 7 },
+);
+
+// Settles both sides: rounds until no job is left, deliveries, and R1's server's processing and messages, each in
+// order, until nothing moves.
+async function settleP2(w: World): Promise<void> {
+  const peer = w.peer!;
+  w.trace.push("-- settle");
+  for (let i = 0; i < SETTLE_ROUNDS; i++) {
+    let moved = false;
+    while ((await round(w)) !== null) {
+      moved = true;
+    }
+    for (const attempt of w.attempts.filter((t) => t.phase !== "done")) {
+      if (attempt.phase === "claimed") {
+        await confirm(w, attempt);
+      }
+      if (attempt.phase === "confirmed") {
+        await p2Act(w, { k: "complete", i: w.attempts.filter((t) => t.phase === "confirmed").indexOf(attempt) });
+      }
+      moved = true;
+    }
+    if ((await nextDue(w)) !== null) {
+      await send(w);
+      continue;
+    }
+    while (peer.inbox.length > 0) {
+      await p2Act(w, { k: "process" });
+      moved = true;
+    }
+    while (peer.outbox.length > 0) {
+      await p2Act(w, { k: "deliver" });
+      moved = true;
+    }
+    if (!moved) {
+      expect(await moderation(w), context(w)).toBe(false);
+      expect(settlementFailures(w.last!.snap, w.fences), context(w)).toEqual([]);
+      return;
+    }
+  }
+  throw new Error(`P2 did not settle\n${context(w)}`);
+}
+
+const peerState = (edge: { state: string; uri: string | null } | null) =>
+  edge === null ? null : { state: edge.state === "pending" ? "requested" : edge.state, uri: edge.uri ?? "" };
+
+// The differences allowed on R1's follow of L1 at quiescence, each naming R1's newest generation g and the events that
+// produced it.
+function rlException(w: World, mine: { state: string; uri: string } | null): string | null {
+  const peer = w.peer!;
+  const g = peer.lastRGeneration;
+  if (g === null) {
+    return null;
+  }
+  const attempts = w.attempts.filter((a) => a.local === "L1" && a.remote === "R1");
+  const race = { peer, attempts, receivedAt: w.receivedAt, undoReceivedAt: w.undoReceivedAt, mine };
+  if (net2Answer(race)) {
+    return "net2-answer";
+  }
+  if (keptReject(race)) {
+    return "kept-reject";
+  }
+  const theirs = peer.rl;
+  const ignoredAt = w.ignoredFollows.get(g);
+  // X1 (accepted risk): g arrived while R1 was unavailable and was ignored, with no answer, as in Mastodon
+  // (process_collection_service.rb:55-60); R1's server keeps it requested.
+  if (ignoredAt !== undefined && mine === null && theirs?.state === "requested" && theirs.uri === g) {
+    return "X1";
+  }
+  // X1, the late answer: an Accept of an earlier generation h, confirmed before Kopje received g, reached R1's server
+  // after g and was applied to it by the pair (accept.rb:4-35).
+  const applied = peer.events.pairAnswer.get(g);
+  if (
+    ignoredAt !== undefined &&
+    mine === null &&
+    theirs?.state === "accepted" &&
+    theirs.uri === g &&
+    attempts.some(
+      (a) =>
+        a.intent.type === "Accept" &&
+        a.intent.ref !== g &&
+        a.body !== null &&
+        a.confirmedAt < (w.receivedAt.get(g) ?? 0) &&
+        applied?.has(a.token) === true,
+    )
+  ) {
+    return "X1-late-answer";
+  }
+  // X5 (#1423, a known defect): g's Accept was dropped for R1's unavailability, g was never severed (R1 was
+  // unsuspended before its job's round), so Kopje holds g accepted while R1's server holds it requested.
+  if (
+    w.droppedUnavailable.has(`Accept ${g}`) &&
+    !w.severedGens.has(g) &&
+    mine?.uri === g &&
+    mine.state === "accepted" &&
+    theirs?.uri === g &&
+    theirs.state === "requested"
+  ) {
+    return "X5";
+  }
+  return null;
+}
+
+// The differences allowed on L1's follow of R1, named by L1's newest follow id u.
+function lrException(w: World, mine: { state: string; uri: string } | null): string | null {
+  const u = w.lastFollow;
+  const theirs = w.peer!.lr;
+  if (u === null) {
+    return null;
+  }
+  // X2 (accepted risk): R1's Accept of u arrived while R1 was unavailable and was ignored, as in Mastodon.
+  if (w.ignoredAccepts.has(u) && mine?.uri === u && mine.state === "requested" && theirs?.uri === u) {
+    return "X2";
+  }
+  // X3 (#1422, a known defect): u's Follow was dropped at send time for R1's unavailability; the local follow stays
+  // pending, and R1's server never heard of it.
+  if (w.droppedUnavailable.has(`Follow ${u}`) && mine?.uri === u && mine.state === "requested" && theirs === null) {
+    return "X3";
+  }
+  return null;
+}
+
+function quiescence(w: World): void {
+  const s = projection(w, w.last!);
+  const edge = (gen: string) => peerState(s.follows.find((f) => f.gen === gen) ?? null);
+  const rl = edge("R1>L1");
+  const lr = edge("L1>R1");
+  const rlx = rlException(w, rl);
+  const lrx = lrException(w, lr);
+  for (const e of [rlx, lrx]) {
+    if (e !== null) {
+      tally(w.stats, `exception ${e}`);
+    }
+  }
+  const peer = w.peer!;
+  expect({ rl: rlx ?? rl, lr: lrx ?? lr }, context(w)).toEqual({ rl: rlx ?? peer.rl, lr: lrx ?? peer.lr });
+}
+
+async function runP2(seed: Seed, actions: readonly P2Action[]): Promise<World> {
+  const w = await setup(seed);
+  w.peer = new Peer("https://d.example", w.policy.remotes.R1.uri, w.localUris.L1);
+  // R1's server holds what the seed holds for R1 and L1.
+  const pair = w.policy.pair("L1", "R1");
+  w.peer.rl = pair.rl === null ? null : { state: "accepted", uri: pair.rl.uri! };
+  w.peer.lr = pair.lr === null ? null : { state: "accepted", uri: pair.lr.uri };
+  if (pair.rl !== null) {
+    w.peer.lastRGeneration = pair.rl.uri;
+    w.peer.generations.push(pair.rl.uri!);
+  }
+  w.lastFollow = pair.lr?.uri ?? null;
+  await check(w);
+  await apiReads(w);
+  for (const a of actions) {
+    await p2Act(w, a);
+  }
+  await settleP2(w);
+  quiescence(w);
+  return w;
+}
+
+const P2_CASES = 30;
+
+describe("instance moderation P2: federation while decisions are in force, against the policy and a peer", () => {
+  it("agrees with the policy after every step and with R1's Mastodon server once settled", async () => {
+    await fc.assert(
+      fc.asyncProperty(seedArb, fc.array(p2Arb, { minLength: 12, maxLength: 20 }), async (seed, actions) => {
+        merge("P2", (await runP2(seed, actions)).stats);
+      }),
+      runs(P2_CASES, SEED),
+    );
+    console.log("instance moderation P2 coverage", JSON.stringify(STATS.P2, null, 1));
+  }, 600_000);
+});
