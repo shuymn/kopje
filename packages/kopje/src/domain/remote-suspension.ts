@@ -106,7 +106,8 @@ type RemoteJob = {
   // The newest follow at the job's reset, read as TEXT (DATA-6).
   follow_bound: string;
   report_bound: string | null;
-  action_bound: number | null;
+  // The report fence (VIS-29), read as TEXT (DATA-6).
+  action_bound: string | null;
   phase: string;
   cursor: string;
 };
@@ -126,13 +127,13 @@ function resetAccountJob(
     phase: string;
     actor: string | null;
     reportBound: string | null;
-    actionBound: number | null;
+    actionBound: string | null;
   },
 ): void {
   db.run(
     `INSERT INTO remote_moderation_jobs (kind, subject, mode, actor_account_id, follow_bound, report_bound,
 			action_bound, phase, cursor)
-		VALUES ('account', ?1, ?2, ?3, ${NEWEST_FOLLOW}, ?4, ?5, ?6, '')
+		VALUES ('account', ?1, ?2, ?3, ${NEWEST_FOLLOW}, ?4, CAST(?5 AS INTEGER), ?6, '')
 		ON CONFLICT (kind, subject) DO UPDATE SET mode = excluded.mode, actor_account_id = excluded.actor_account_id,
 			follow_bound = excluded.follow_bound, report_bound = excluded.report_bound,
 			action_bound = excluded.action_bound, phase = excluded.phase, cursor = excluded.cursor, ${FRESH_ATTEMPTS_SQL}`,
@@ -505,7 +506,8 @@ function markRound(db: Db, job: RemoteJob, now: number): boolean {
 }
 
 const JOB_COLUMNS = `CAST(id AS TEXT) AS id, kind, subject, mode, actor_account_id,
-	CAST(follow_bound AS TEXT) AS follow_bound, CAST(report_bound AS TEXT) AS report_bound, action_bound, phase, cursor`;
+	CAST(follow_bound AS TEXT) AS follow_bound, CAST(report_bound AS TEXT) AS report_bound,
+	CAST(action_bound AS TEXT) AS action_bound, phase, cursor`;
 
 // One round of the next remote job (nextJob: the first due retry, else the first fresh job after id `after`, else the
 // oldest), of both kinds, in its own savepoint (runJobItem, as suspension.ts moderationRound). Null when no job may

@@ -274,12 +274,6 @@ function nextPushDueAt(db: Db, ownLease: string | null = null): number | null {
   );
 }
 
-// Moves whenever a push is recorded (AUTOINCREMENT, so a row deleted since still counts): an inbound activity that
-// recorded one rings the doorbell (domain/inbox.ts).
-export function pushSequence(db: Db): number {
-  return db.first<{ seq: number }>("SELECT seq FROM sqlite_sequence WHERE name = 'push_deliveries'")?.seq ?? 0;
-}
-
 // Leases up to `limit` due pushes (an expired lease is due again), dropping those that may no longer be sent or have
 // used up their attempts.
 export const claimPushes = writeOperation<{ now: number; leaseToken: string; limit?: number }, PushClaim>(
@@ -289,7 +283,7 @@ export const claimPushes = writeOperation<{ now: number; leaseToken: string; lim
     const origin = instanceOrigin(db);
     const due = db.all<DueRow>(
       `SELECT CAST(id AS TEXT) AS id, attempts FROM push_deliveries WHERE next_attempt_at <= ?
-			ORDER BY next_attempt_at, id LIMIT ?`,
+			ORDER BY next_attempt_at, push_deliveries.id LIMIT ?`,
       now,
       max,
     );
@@ -374,8 +368,9 @@ export const completePush = writeOperation<
   { id: string; leaseToken: string; now: number; outcome: DeliveryOutcome },
   PushCompletion
 >((db, { id, leaseToken, now, outcome }) => {
-  const row = db.first<{ subscription_id: number; attempts: number }>(
-    `SELECT subscription_id, attempts FROM push_deliveries
+  // The subscription's id as TEXT, bound back with CAST (DATA-6).
+  const row = db.first<{ subscription_id: string; attempts: number }>(
+    `SELECT CAST(subscription_id AS TEXT) AS subscription_id, attempts FROM push_deliveries
 		WHERE id = CAST(? AS INTEGER) AND state = 'leased' AND lease_token = ?`,
     id,
     leaseToken,
@@ -388,7 +383,7 @@ export const completePush = writeOperation<
     return { status: "delivered", nextDueAt: nextPushDueAt(db, leaseToken) };
   }
   if (unsubscribes(outcome)) {
-    db.run("DELETE FROM push_subscriptions WHERE id = ?", row.subscription_id);
+    db.run("DELETE FROM push_subscriptions WHERE id = CAST(? AS INTEGER)", row.subscription_id);
     return { status: "unsubscribed", nextDueAt: nextPushDueAt(db, leaseToken) };
   }
   if (row.attempts >= MAX_ATTEMPTS) {

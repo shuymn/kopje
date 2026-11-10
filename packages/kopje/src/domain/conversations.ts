@@ -5,6 +5,7 @@ import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-bud
 import { statusReads, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { participantsSql } from "./conversation-rows";
+import { isIntegerKey, requireExactIncrement } from "./ids";
 import { presentation, type Status, statusStream } from "./status-presenter";
 import { statusCursor } from "./windows";
 
@@ -45,9 +46,6 @@ const COLUMNS = `CAST(id AS TEXT) AS id, last_status_id, unread,
 	(SELECT json_group_array(value ORDER BY key) FROM json_each(participants) WHERE key < ${MAX_PRESENTED_PARTICIPANTS})
 		AS participants`;
 
-// Mastodon's conversation ids are integers; anything else names none.
-const CONVERSATION_ID = /^\d{1,19}$/;
-
 // AccountConversation.add_status: the direct status `statusId` (not a boost) joins the conversation of `ownerId` with
 // its thread and participants, made if there is none. A status already in that conversation changes nothing;
 // otherwise it becomes the last status if it is the newest, and the conversation is unread unless the status is the
@@ -72,13 +70,14 @@ export function addToConversation(db: Db, ownerId: string, statusId: string): vo
   if (held !== undefined) {
     return;
   }
-  const row = db.first<{ id: number }>(
+  // The conversation's id as TEXT, bound back with CAST (DATA-6).
+  const row = db.first<{ id: string }>(
     `INSERT INTO conversations (account_id, thread, participants, last_status_id, unread, stream_seq)
-		VALUES (?1, ?2, ?3, ?4, ?5, coalesce(?6, 0))
+		VALUES (?1, ?2, ?3, ?4, ?5, coalesce(CAST(?6 AS INTEGER), 0))
 		ON CONFLICT (account_id, thread, participants)
 			DO UPDATE SET last_status_id = max(last_status_id, excluded.last_status_id), unread = excluded.unread,
-				stream_seq = coalesce(?6, stream_seq)
-		RETURNING id`,
+				stream_seq = coalesce(CAST(?6 AS INTEGER), stream_seq)
+		RETURNING CAST(id AS TEXT) AS id`,
     ...key,
     statusId,
     status.account_id === ownerId ? 0 : 1,
@@ -87,20 +86,30 @@ export function addToConversation(db: Db, ownerId: string, statusId: string): vo
   if (row === undefined) {
     throw new Error("the conversation was not written");
   }
-  db.run("INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (?, ?)", row.id, statusId);
+  db.run(
+    "INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (CAST(? AS INTEGER), ?)",
+    row.id,
+    statusId,
+  );
 }
 
 // The streaming API's change sequence (`direct`, migration 0032_streaming_lists): the owner's mark moved to its next
 // value, which the conversation write stores in stream_seq, or null when the owner never subscribed to `direct` (then
 // nothing more is written). The mark is never lowered, so a turn sends each change once (stream-hub.ts). Every writer
 // of a conversation row takes it: addToConversation, markConversation, and the trigger conversation_statuses_removed.
-function nextStreamSeq(db: Db, ownerId: string): number | null {
-  return (
-    db.first<{ seq: number }>(
-      "UPDATE stream_conversation_marks SET seq = seq + 1 WHERE account_id = ? RETURNING seq",
-      ownerId,
-    )?.seq ?? null
+// Read as TEXT and bound back with CAST; a mark at the largest INTEGER has no next value, so the write throws and rolls
+// back (requireExactIncrement, DATA-6).
+function nextStreamSeq(db: Db, ownerId: string): string | null {
+  const mark = db.first<{ seq: string; exact: number }>(
+    `UPDATE stream_conversation_marks SET seq = seq + 1 WHERE account_id = ?
+		RETURNING CAST(seq AS TEXT) AS seq, typeof(seq) = 'integer' AS exact`,
+    ownerId,
   );
+  if (mark === undefined) {
+    return null;
+  }
+  requireExactIncrement(mark.exact, "the owner's conversation stream sequence");
+  return mark.seq;
 }
 
 // AfterBlockService#clear_conversations!: the owner's conversations with the account go. Reads the owner's
@@ -187,7 +196,7 @@ export function streamedConversation(
   id: string,
   present: Present,
 ): Conversation | null {
-  if (!CONVERSATION_ID.test(id)) {
+  if (!isIntegerKey(id)) {
     return null;
   }
   const row = db.first<ConversationRow>(
@@ -203,7 +212,7 @@ export const markConversation = userWriteOperation<
   { id: string; unread: boolean; present: Present },
   Conversation | null
 >((db, { id, unread, present }, _viewer, viewer) => {
-  if (!CONVERSATION_ID.test(id)) {
+  if (!isIntegerKey(id)) {
     return null;
   }
   if (
@@ -216,7 +225,7 @@ export const markConversation = userWriteOperation<
     return null;
   }
   const row = db.first<ConversationRow>(
-    `UPDATE conversations SET unread = ?3, stream_seq = coalesce(?4, stream_seq)
+    `UPDATE conversations SET unread = ?3, stream_seq = coalesce(CAST(?4 AS INTEGER), stream_seq)
 		WHERE id = CAST(?1 AS INTEGER) AND account_id = ?2 RETURNING ${COLUMNS}`,
     id,
     viewer.accountId,
@@ -229,6 +238,6 @@ export const markConversation = userWriteOperation<
 // DELETE /api/v1/conversations/:id: the viewer's conversation goes (its statuses stay). Whether it was theirs.
 export const deleteConversation = userWriteOperation<{ id: string }, boolean>(
   (db, { id }, { accountId }) =>
-    CONVERSATION_ID.test(id) &&
+    isIntegerKey(id) &&
     db.run("DELETE FROM conversations WHERE id = CAST(? AS INTEGER) AND account_id = ?", id, accountId) > 0,
 );

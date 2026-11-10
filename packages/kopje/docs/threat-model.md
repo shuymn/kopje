@@ -2841,9 +2841,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   SQL (DATA-6), so an imported id past 2^53 neither names another row nor stalls or skips a batch: the integer keys of
   these job rows; a domain block cleanup's follow cursor and bound; the local and remote moderation jobs' follow bound,
   their followers' cursor and the severing cursor; a notification request job's cursor and the notification ids it
-  reads; a clear's or dismissal's mark. A request job's cursor is inclusive, the highest notification id it still
-  reads: it starts at the newest notification and goes on below its window's lowest, so no cursor passes an INTEGER's
-  range. The other values these jobs carry (action bounds, credential epochs, subscription ids) are not covered here.
+  reads; a clear's or dismissal's mark; the moderation jobs' action bounds, a local job's credential epoch (its
+  generation, incremented in SQL) and the push subscriptions its tokens round deletes. A request job's cursor is
+  inclusive, the highest notification id it still reads: it starts at the newest notification and goes on below its
+  window's lowest, so no cursor passes an INTEGER's range.
   A round takes the first due retry, else the oldest fresh item (the moderation tables taking turns, a call's fresh jobs
   each in turn), and asks for another only while one may run. A request's first batch is such an item, so its failure
   leaves the request committed and its item backing off: a domain block and its cleanup, the answered notification
@@ -3937,7 +3938,16 @@ heap).
   for status cursors: `statusCursor` in `src/domain/windows.ts` (_Gap: untested_). _Enforced (main)_ for
   forwards: their intent ids are TEXT in the job's `bound` (`{"forwards": [...]}`) and sought with
   `CAST(? AS INTEGER)`, beside an intent with the largest id there is (`recordForwards` in `src/domain/inbox.ts`;
-  `test/forward-delete.test.ts` ("plans no scan of a large table")).
+  `test/forward-delete.test.ts` ("plans no scan of a large table")). _Enforced (main)_ for the Store's other INTEGER
+  ids, fences and epochs: the moderation log's ids and the report fence (`logAction` in `src/domain/moderation-log.ts`,
+  `actionBound` and `resolveSuspensionReports` in `src/domain/reports.ts`), credential epochs (`src/domain/suspension.ts`,
+  `consumeCode` in `src/domain/oauth.ts`), push subscription ids (the tokens round, `completePush` in
+  `src/domain/push.ts`), the inserted notification's id passed to push selection, the inbound doorbell's marks
+  (`outboundSince` in `src/domain/inbox.ts`), a new conversation's id and streaming sequence, instance domain block ids,
+  and favourite and Like ids (`src/domain/inbox.ts`). A requested INTEGER key past 2^63 - 1 names no row
+  (`isIntegerKey` in `src/domain/ids.ts`), and an increment past it, of a credential epoch by a suspension or of a
+  conversation streaming mark by a conversation write, throws and rolls back (`requireExactIncrement`);
+  `test/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
   without a specific recipient are signed by the instance actor; fetches for a personal inbox by the recipient's key;
   fetches on a remote account's behalf (a sync of its featured, featuredTags, following, followers and outbox

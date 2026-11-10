@@ -24,6 +24,7 @@ import {
   ALICE,
   announce,
   create,
+  DAVE,
   followed,
   like,
   localStatus,
@@ -1046,5 +1047,94 @@ describe("a dump round trip of tracked and legacy favourites", () => {
     const refused = await migratedStore();
     await copyConfig(t.store, refused);
     await expect(importViaRpc(refused, crafted)).rejects.toThrow(/more than 4 Like ids for one favourite/);
+  });
+});
+
+describe("DATA-6: favourite and Like ids past 2^53", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // dave's favourite of the status `uri` at `id`, tracking a Like id at `id`: bob's next favourite and Like ids follow
+  // it. At 2^53 the next, 2^53 + 1, reads as 2^53.
+  const TWO_53 = "9007199254740992";
+  async function davesAt(t: Setup, uri: string, id = TWO_53) {
+    await sql(
+      t.store,
+      `INSERT INTO favourites (id, account_id, status_id, created_at)
+			SELECT CAST(?1 AS INTEGER), ?2, id, '2024-01-01T00:00:00.000Z' FROM statuses WHERE uri = ?3`,
+      id,
+      DAVE,
+      uri,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO favourite_likes (id, favourite_id, uri, received_at)
+			VALUES (CAST(?1 AS INTEGER), CAST(?1 AS INTEGER), ?2, 0)`,
+      id,
+      `${OTHER}/likes/dave`,
+    );
+  }
+  const likes = (t: Setup) =>
+    sql(
+      t.store,
+      `SELECT CAST(l.id AS TEXT) AS id, f.account_id = ? AS daves, l.uri FROM favourite_likes l
+			JOIN favourites f ON f.id = l.favourite_id ORDER BY l.id`,
+      DAVE,
+    );
+
+  it("tracks a Like on its own favourite, and its Undo deletes only its own id", async () => {
+    const { t, bob } = await withNeko();
+    const uri = await seededLocal(t);
+    await davesAt(t, uri);
+    const receive = receiver(t, bob);
+    const liked = likeOf(bob, uri, "1");
+    expect(await receive(liked)).toMatchObject({ applied: true, reason: "favourited" });
+    expect(await likes(t)).toEqual([
+      { id: TWO_53, daves: 1, uri: `${OTHER}/likes/dave` },
+      { id: "9007199254740993", daves: 0, uri: liked.id },
+    ]);
+    expect(await receive(undoOf(bob, liked))).toMatchObject({ applied: true });
+    expect(await likes(t)).toEqual([{ id: TWO_53, daves: 1, uri: `${OTHER}/likes/dave` }]);
+  });
+
+  it("rings the doorbell for a push recorded past 2^53", async () => {
+    const { t, bob } = await withNeko();
+    const uri = await seededLocal(t);
+    await favouritePushes(t);
+    // The pushes' sequence at 2^53: the Like's push moves it to 2^53 + 1, which reads as 2^53.
+    await sql(t.store, "DELETE FROM sqlite_sequence WHERE name = 'push_deliveries'");
+    await sql(
+      t.store,
+      "INSERT INTO sqlite_sequence (name, seq) VALUES ('push_deliveries', CAST(? AS INTEGER))",
+      TWO_53,
+    );
+    expect(await receiver(t, bob)(likeOf(bob, uri, "1"))).toMatchObject({ applied: true, delivers: true });
+    expect(
+      await sql(t.store, "SELECT CAST(seq AS TEXT) AS seq FROM sqlite_sequence WHERE name = 'push_deliveries'"),
+    ).toEqual([{ seq: "9007199254740993" }]);
+  });
+
+  // From 2^53 bob's Like ids are 2^53 + 1 to 2^53 + 4, the first read as dave's; from 10^16 - 2 they are 10^16 - 1 and
+  // then 17-digit ids, which sort first as TEXT.
+  it.each([TWO_53, "9999999999999998"])("retires its own favourite's earliest aged id, after one at %s", async (id) => {
+    const { t, bob } = await withNeko();
+    const uri = await seededLocal(t);
+    await davesAt(t, uri, id);
+    const receive = receiver(t, bob);
+    const fresh = ["1", "2", "3", "4", "5"].map((n) => likeOf(bob, uri, n));
+    for (const liked of fresh.slice(0, MAX_TRACKED_LIKES)) {
+      expect(await receive(liked)).toMatchObject({ applied: true });
+    }
+    vi.setSystemTime(NOW + LIKE_RETIRE_AFTER_MS);
+    expect(await receive(fresh[MAX_TRACKED_LIKES]!)).toMatchObject({ applied: true, reason: "favourite-kept" });
+    expect((await likes(t)).map((row) => row.uri)).toEqual([
+      `${OTHER}/likes/dave`,
+      ...fresh.slice(1).map((liked) => liked.id),
+    ]);
   });
 });

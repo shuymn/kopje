@@ -38,8 +38,8 @@ export type ModerationTarget = {
   id: string;
 };
 
-// Logs one admin write; returns its row's id, which is never given twice (0029_admin_reports), so it orders the
-// writes (the report fence, reports.ts resolveSuspensionReports).
+// Logs one admin write; returns its row's id as decimal TEXT (DATA-6), which is never given twice (0029_admin_reports),
+// so it orders the writes (the report fence, reports.ts resolveSuspensionReports).
 export function logAction(
   db: Db,
   actor: ModerationActor,
@@ -47,11 +47,11 @@ export function logAction(
   target: ModerationTarget,
   detail: Record<string, unknown>,
   now: number,
-): number {
+): string {
   const oauth = "accountId" in actor;
-  const id = db.first<{ id: number }>(
+  const id = db.first<{ id: string }>(
     `INSERT INTO admin_actions (actor, account_id, client_id, action, target_type, target_id, detail, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
     oauth ? "oauth" : "access",
     oauth ? actor.accountId : null,
     oauth ? actor.clientId : null,
@@ -63,8 +63,9 @@ export function logAction(
   )!.id;
   db.run(
     `DELETE FROM admin_actions WHERE id IN
-			(SELECT id FROM admin_actions WHERE id <= ? ORDER BY id LIMIT ${MODERATION_LOG_PRUNE})`,
-    id - MODERATION_LOG_KEEP,
+			(SELECT id FROM admin_actions WHERE id <= CAST(?1 AS INTEGER) - ?2 ORDER BY id LIMIT ${MODERATION_LOG_PRUNE})`,
+    id,
+    MODERATION_LOG_KEEP,
   );
   return id;
 }
@@ -92,7 +93,7 @@ export const moderationLog = readOperation<
   const size = Math.min(Math.max(limit ?? MODERATION_LOG_PAGE, 1), MAX_MODERATION_LOG_PAGE);
   const rows = db.all<Omit<ModerationLogEntry, "detail"> & { detail: string }>(
     `SELECT CAST(id AS TEXT) AS id, actor, account_id, client_id, action, target_type, target_id, detail, created_at
-		FROM admin_actions WHERE id < coalesce(CAST(?1 AS INTEGER), 1e19) ORDER BY id DESC LIMIT ?2`,
+		FROM admin_actions WHERE id < coalesce(CAST(?1 AS INTEGER), 1e19) ORDER BY admin_actions.id DESC LIMIT ?2`,
     before ?? null,
     size,
   );

@@ -20,7 +20,8 @@ import { edgeRangeSql } from "./windows";
 export type Severity = "suspend" | "noop";
 
 export type InstanceDomainBlock = {
-  id: number;
+  // Read as TEXT and bound back with CAST (DATA-6).
+  id: string;
   domain: string;
   severity: Severity;
   reject_media: boolean;
@@ -47,8 +48,8 @@ type BlockRow = Omit<InstanceDomainBlock, "reject_media" | "reject_reports" | "o
   obfuscate: number;
 };
 
-const COLUMNS =
-  "id, domain, severity, reject_media, reject_reports, obfuscate, private_comment, public_comment, created_at, updated_at";
+const COLUMNS = `CAST(id AS TEXT) AS id, domain, severity, reject_media, reject_reports, obfuscate, private_comment,
+	public_comment, created_at, updated_at`;
 
 function present(row: BlockRow): InstanceDomainBlock {
   return {
@@ -195,9 +196,12 @@ export const createInstanceDomainBlock = writeOperation(createBlock);
 // Applies the given fields; the domain and omitted fields stay. Null for an unknown id.
 export function updateBlock(
   db: Db,
-  input: { [K in keyof BlockFields]?: BlockFields[K] | undefined } & { id: number; now: number },
+  input: { [K in keyof BlockFields]?: BlockFields[K] | undefined } & { id: string; now: number },
 ): InstanceDomainBlock | null {
-  const before = db.first<BlockRow>(`SELECT ${COLUMNS} FROM instance_domain_blocks WHERE id = ?`, input.id);
+  const before = db.first<BlockRow>(
+    `SELECT ${COLUMNS} FROM instance_domain_blocks WHERE id = CAST(? AS INTEGER)`,
+    input.id,
+  );
   if (before === undefined) {
     return null;
   }
@@ -207,7 +211,7 @@ export function updateBlock(
   const row = db.first<BlockRow>(
     `UPDATE instance_domain_blocks SET severity = ?, reject_media = ?, reject_reports = ?, obfuscate = ?,
 			private_comment = ?, public_comment = ?, updated_at = ?
-		WHERE id = ? RETURNING ${COLUMNS}`,
+		WHERE id = CAST(? AS INTEGER) RETURNING ${COLUMNS}`,
     severity,
     flag(input.rejectMedia, before.reject_media),
     flag(input.rejectReports, before.reject_reports),
@@ -222,8 +226,11 @@ export function updateBlock(
 
 export const updateInstanceDomainBlock = writeOperation(updateBlock);
 
-export function deleteBlock(db: Db, id: number): InstanceDomainBlock | null {
-  const row = db.first<BlockRow>(`DELETE FROM instance_domain_blocks WHERE id = ? RETURNING ${COLUMNS}`, id);
+export function deleteBlock(db: Db, id: string): InstanceDomainBlock | null {
+  const row = db.first<BlockRow>(
+    `DELETE FROM instance_domain_blocks WHERE id = CAST(? AS INTEGER) RETURNING ${COLUMNS}`,
+    id,
+  );
   if (row === undefined) {
     return null;
   }
@@ -231,12 +238,12 @@ export function deleteBlock(db: Db, id: number): InstanceDomainBlock | null {
   return present(row);
 }
 
-export const deleteInstanceDomainBlock = writeOperation<{ id: number }, InstanceDomainBlock | null>((db, { id }) =>
+export const deleteInstanceDomainBlock = writeOperation<{ id: string }, InstanceDomainBlock | null>((db, { id }) =>
   deleteBlock(db, id),
 );
 
-export function blockById(db: Db, id: number): InstanceDomainBlock | null {
-  const row = db.first<BlockRow>(`SELECT ${COLUMNS} FROM instance_domain_blocks WHERE id = ?`, id);
+export function blockById(db: Db, id: string): InstanceDomainBlock | null {
+  const row = db.first<BlockRow>(`SELECT ${COLUMNS} FROM instance_domain_blocks WHERE id = CAST(? AS INTEGER)`, id);
   return row === undefined ? null : present(row);
 }
 
@@ -247,7 +254,7 @@ export function blocksPage(db: Db, page: PageQuery): InstanceDomainBlock[] {
   const ascending = page.minId !== undefined;
   const rows = db.all<BlockRow>(
     `SELECT ${COLUMNS} FROM instance_domain_blocks WHERE ${edgeRangeSql("id", "?1", "?2")}
-		ORDER BY id ${ascending ? "ASC" : "DESC"} LIMIT ?3`,
+		ORDER BY instance_domain_blocks.id ${ascending ? "ASC" : "DESC"} LIMIT ?3`,
     page.maxId ?? null,
     (ascending ? page.minId : page.sinceId) ?? null,
     page.limit,

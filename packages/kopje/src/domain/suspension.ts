@@ -4,6 +4,7 @@ import { forgetAdminAccountId } from "./admin-authority";
 import { type ReachedAccount, reachFollowers, reachFollowing, reachMentioned } from "./audience";
 import type { Admin } from "./auth";
 import { beginStagedUpdate, endStaging, isDeliverableInbox, stageTargets } from "./deliveries";
+import { requireExactIncrement } from "./ids";
 import { JOB_BOOKKEEPING_ROWS, MODERATION_JOBS, nextJob, REMOTE_MODERATION_JOBS, runJobItem } from "./job-attempts";
 import { REPORT_ROUND } from "./moderation-bounds";
 import { logAction } from "./moderation-log";
@@ -73,14 +74,14 @@ type Job = {
   id: string;
   kind: JobKind;
   account_id: string;
-  // The credential epoch the job was made in.
-  generation: number;
+  // The credential epoch the job was made in, read as TEXT and compared in SQL (DATA-6).
+  generation: string;
   actor_account_id: string | null;
   intent_id: string | null;
   report_bound: string | null;
   // A suspension job's report fence (VIS-29): its suspend row in the moderation log, or without an admin the newest
-  // row at the suspension. Null: unknown (0042_report_action_fence), which resolves none.
-  action_bound: number | null;
+  // row at the suspension, read as TEXT (DATA-6). Null: unknown (0042_report_action_fence), which resolves none.
+  action_bound: string | null;
   // The newest follow at the job's start, read as TEXT (DATA-6).
   follow_bound: string | null;
   cutoff: string | null;
@@ -111,7 +112,7 @@ function insertJob(db: Db, job: Omit<Job, "id" | "state">): void {
   db.run(
     `INSERT INTO moderation_jobs (kind, account_id, generation, actor_account_id, intent_id, report_bound,
 			action_bound, follow_bound, cutoff, phase)
-		VALUES (?, ?, ?, ?, CAST(? AS INTEGER), ?, ?, CAST(? AS INTEGER), ?, ?)`,
+		VALUES (?, ?, CAST(? AS INTEGER), ?, CAST(? AS INTEGER), ?, CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ?)`,
     job.kind,
     job.account_id,
     job.generation,
@@ -125,11 +126,10 @@ function insertJob(db: Db, job: Omit<Job, "id" | "state">): void {
   );
 }
 
-type LocalState = { suspended_at: string | null; credential_epoch: number };
-
-function localState(db: Db, accountId: string): LocalState | undefined {
-  return db.first<LocalState>(
-    "SELECT suspended_at, credential_epoch FROM local_accounts WHERE account_id = ?",
+// A local account's suspension time, or undefined for one that is not local.
+function suspendedAt(db: Db, accountId: string): { suspended_at: string | null } | undefined {
+  return db.first<{ suspended_at: string | null }>(
+    "SELECT suspended_at FROM local_accounts WHERE account_id = ?",
     accountId,
   );
 }
@@ -143,16 +143,21 @@ function localState(db: Db, accountId: string): LocalState | undefined {
 // logged).
 export function suspendLocal(db: Db, accountId: string, by: Admin | null, now: number): string | null {
   const at = iso(now);
-  const epoch = db.first<{ epoch: number }>(
+  // The new epoch is incremented in SQL and read as TEXT (DATA-6); an epoch at the largest INTEGER has no next one, so
+  // the suspension throws and rolls back (requireExactIncrement).
+  const updated = db.first<{ epoch: string; exact: number }>(
     `UPDATE local_accounts SET suspended_at = ?, credential_epoch = credential_epoch + 1, accept_requests_after = NULL,
 			links_due_at = NULL, links_attempts = 0
-		WHERE account_id = ? RETURNING credential_epoch AS epoch`,
+		WHERE account_id = ?
+		RETURNING CAST(credential_epoch AS TEXT) AS epoch, typeof(credential_epoch) = 'integer' AS exact`,
     at,
     accountId,
-  )?.epoch;
-  if (epoch === undefined) {
+  );
+  if (updated === undefined) {
     return null;
   }
+  requireExactIncrement(updated.exact, "the account's credential epoch");
+  const epoch = updated.epoch;
   forgetAdminAccountId(db);
   const job = {
     account_id: accountId,
@@ -189,16 +194,16 @@ export function suspendLocal(db: Db, accountId: string, by: Admin | null, now: n
 // the suspension stay refused and new ones are valid at once. Returns false for an account that is not local or not
 // suspended.
 export function unsuspendLocal(db: Db, accountId: string, now: number): boolean {
-  const state = localState(db, accountId);
+  const state = suspendedAt(db, accountId);
   if (state?.suspended_at == null) {
     return false;
   }
   // A suspension from before the epoch existed (0034_admin_suspension) never moved it: it moves once now, so the
   // credentials from before that suspension end too.
-  const epoch = db.first<{ epoch: number }>(
+  const epoch = db.first<{ epoch: string }>(
     `UPDATE local_accounts SET suspended_at = NULL,
 			credential_epoch = credential_epoch + (credential_epoch = 0) WHERE account_id = ?
-		RETURNING credential_epoch AS epoch`,
+		RETURNING CAST(credential_epoch AS TEXT) AS epoch`,
     accountId,
   )!.epoch;
   forgetAdminAccountId(db);
@@ -242,15 +247,17 @@ function finish(db: Db, job: Job): void {
 
 // One round of the tokens job: the account's tokens after the cursor, in token order (oauth_tokens_account), each one
 // of an epoch before the job's deleted child-first (with its push subscription, at most one per token, read with it);
-// one of the job's epoch or later is passed over. The round stops before writing more than TOKEN_ROUND_ROWS rows, and
+// one of the job's epoch or later is passed over. The epochs are compared in SQL, and the subscription's id is read as
+// TEXT and bound back with CAST (DATA-6). The round stops before writing more than TOKEN_ROUND_ROWS rows, and
 // the job ends once the walk reaches the last token.
 function tokensRound(db: Db, job: Job, state: JobState): void {
   const budget = new RowBudget(db, TOKEN_ROUND_ROWS);
   // What the round may still write, keeping one row for the job's own update or delete and one for its retry state.
   const room = () => TOKEN_ROUND_ROWS - 1 - JOB_BOOKKEEPING_ROWS - budget.spent();
-  const tokens = db.all<{ token_hash: string; epoch: number; subscription: number | null }>(
-    `SELECT t.token_hash, t.epoch, p.id AS subscription FROM oauth_tokens t INDEXED BY oauth_tokens_account
-		LEFT JOIN push_subscriptions p ON p.token_hash = t.token_hash AND t.epoch < ?4
+  const tokens = db.all<{ token_hash: string; stale: number; subscription: string | null }>(
+    `SELECT t.token_hash, t.epoch < CAST(?4 AS INTEGER) AS stale, CAST(p.id AS TEXT) AS subscription
+		FROM oauth_tokens t INDEXED BY oauth_tokens_account
+		LEFT JOIN push_subscriptions p ON p.token_hash = t.token_hash AND t.epoch < CAST(?4 AS INTEGER)
 		WHERE t.account_id = ?1 AND t.token_hash > ?2 ORDER BY t.token_hash LIMIT ?3`,
     job.account_id,
     String(state.cursor ?? ""),
@@ -260,7 +267,7 @@ function tokensRound(db: Db, job: Job, state: JobState): void {
   let cursor = String(state.cursor ?? "");
   let stopped = false;
   for (const token of tokens) {
-    if (token.epoch < job.generation) {
+    if (token.stale === 1) {
       const subscription = token.subscription === null ? undefined : { id: token.subscription };
       if (subscription !== undefined) {
         // Room for the subscription and the token after the deliveries.
@@ -268,20 +275,22 @@ function tokensRound(db: Db, job: Job, state: JobState): void {
         if (deliveries > 0) {
           db.run(
             `DELETE FROM push_deliveries WHERE id IN
-							(SELECT id FROM push_deliveries WHERE subscription_id = ? LIMIT ?)`,
+							(SELECT id FROM push_deliveries WHERE subscription_id = CAST(? AS INTEGER) LIMIT ?)`,
             subscription.id,
             deliveries,
           );
         }
         if (
           room() < 2 ||
-          db.first("SELECT 1 AS x FROM push_deliveries WHERE subscription_id = ? LIMIT 1", subscription.id) !==
-            undefined
+          db.first(
+            "SELECT 1 AS x FROM push_deliveries WHERE subscription_id = CAST(? AS INTEGER) LIMIT 1",
+            subscription.id,
+          ) !== undefined
         ) {
           stopped = true;
           break;
         }
-        db.run("DELETE FROM push_subscriptions WHERE id = ?", subscription.id);
+        db.run("DELETE FROM push_subscriptions WHERE id = CAST(? AS INTEGER)", subscription.id);
       } else if (room() < 1) {
         stopped = true;
         break;
@@ -297,15 +306,15 @@ function tokensRound(db: Db, job: Job, state: JobState): void {
   }
 }
 
-// Whether the generation a job was made for still holds: the account still in the job's epoch, and still suspended
-// (suspension) or still unsuspended (reach).
+// Whether the generation a job was made for still holds: the account still in the job's epoch (compared in SQL,
+// DATA-6), and still suspended (suspension) or still unsuspended (reach).
 function current(db: Db, job: Job): boolean {
-  const state = localState(db, job.account_id);
-  return (
-    state !== undefined &&
-    state.credential_epoch === job.generation &&
-    (state.suspended_at !== null) === (job.kind === "suspension")
+  const state = db.first<{ suspended_at: string | null; current: number }>(
+    "SELECT suspended_at, credential_epoch = CAST(?2 AS INTEGER) AS current FROM local_accounts WHERE account_id = ?1",
+    job.account_id,
+    job.generation,
   );
+  return state !== undefined && state.current === 1 && (state.suspended_at !== null) === (job.kind === "suspension");
 }
 
 // Stages the inboxes of remote accounts; returns how many were not staged yet. A capped source counts only these, as
@@ -532,9 +541,9 @@ function mentionsRound(db: Db, job: Job, state: JobState): void {
   }
 }
 
-const JOB_COLUMNS = `CAST(id AS TEXT) AS id, kind, account_id, generation, actor_account_id, CAST(intent_id AS TEXT) AS intent_id,
-	CAST(report_bound AS TEXT) AS report_bound, action_bound, CAST(follow_bound AS TEXT) AS follow_bound, cutoff, phase,
-	state`;
+const JOB_COLUMNS = `CAST(id AS TEXT) AS id, kind, account_id, CAST(generation AS TEXT) AS generation, actor_account_id,
+	CAST(intent_id AS TEXT) AS intent_id, CAST(report_bound AS TEXT) AS report_bound,
+	CAST(action_bound AS TEXT) AS action_bound, CAST(follow_bound AS TEXT) AS follow_bound, cutoff, phase, state`;
 
 // One round of the next job (nextJob: the first due retry, else the first fresh job after id `after`, else the oldest),
 // so a call's fresh jobs take turns and a long token history cannot hold back another's Update. The round runs in its

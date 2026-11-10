@@ -106,7 +106,7 @@ describe("the stale-vote sweep with stale statistics (RES-7)", () => {
 
 describe("a suspension's report resolution with stale statistics (RES-7)", () => {
   const resolve = writeOperation<{ target: string }, unknown>((db, { target }) =>
-    resolveSuspensionReports(db, target, "999999999999999999", 0, null, "0", 100, AT),
+    resolveSuspensionReports(db, target, "999999999999999999", "0", null, "0", 100, AT),
   );
 
   it("stamps each frozen report by key, other accounts' reports grown after ANALYZE", async () => {

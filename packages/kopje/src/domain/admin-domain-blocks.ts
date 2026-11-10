@@ -2,6 +2,7 @@ import type { Db } from "../db/sql";
 import type { PageQuery } from "./accounts";
 import { MAX_BLOCK_LABELS } from "./audience";
 import { type Admin, ADMIN_PERMISSION, adminReadOperation, adminWriteOperation } from "./auth";
+import { isIntegerKey } from "./ids";
 import {
   blockDomainOf,
   blockById,
@@ -82,7 +83,7 @@ function logBlockAction(db: Db, admin: Admin, action: "create" | "update" | "des
     db,
     admin,
     action,
-    { type: "DomainBlock", id: String(block.id) },
+    { type: "DomainBlock", id: block.id },
     { domain: block.domain, severity: block.severity },
     admin.now,
   );
@@ -98,14 +99,10 @@ export const getAdminDomainBlock = adminReadOperation<{ id: string }, DomainBloc
   (db, { id }) => found(db, id),
 );
 
-// An id as Mastodon's find reads it: digits only, else no record.
-function blockId(id: string): number | null {
-  return /^\d{1,15}$/.test(id) ? Number(id) : null;
-}
-
+// An id as Mastodon's find reads it: digits only, within the INTEGER range (isIntegerKey), else no record. Kept as
+// decimal TEXT (DATA-6).
 function found(db: Db, id: string): DomainBlockResult {
-  const key = blockId(id);
-  const block = key === null ? null : blockById(db, key);
+  const block = isIntegerKey(id) ? blockById(db, id) : null;
   return block === null ? { status: "not_found" } : { status: "ok", block };
 }
 
@@ -199,8 +196,7 @@ export const updateAdminDomainBlock = adminWriteOperation<BlockRequest & { id: s
 export const deleteAdminDomainBlock = adminWriteOperation<{ id: string }, DomainBlockResult>(
   ADMIN_PERMISSION.manageFederation,
   (db, { id }, admin) => {
-    const key = blockId(id);
-    const block = key === null ? null : deleteBlock(db, key);
+    const block = isIntegerKey(id) ? deleteBlock(db, id) : null;
     if (block === null) {
       return { status: "not_found" };
     }

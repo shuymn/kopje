@@ -14,10 +14,10 @@ import { adminAccountIdOnce } from "./admin-authority";
 import { admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, firstUses, jsonBytes } from "./answer-budget";
 import { statusReads } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
+import { isIntegerKey } from "./ids";
 import {
   GROUPABLE_TYPES,
   NOTIFICATION_COLUMNS,
-  NOTIFICATION_ID,
   removeNotifications,
   type Scope,
   type ShownColumns,
@@ -548,7 +548,7 @@ export const listGroupedNotifications = userReadOperation<ListGroupedInput, Grou
 function firstOfGroup(db: Db, viewer: UserContext, groupKey: string): Shown | undefined {
   if (groupKey.startsWith("ungrouped-")) {
     const id = groupKey.slice("ungrouped-".length);
-    return NOTIFICATION_ID.test(id)
+    return isIntegerKey(id)
       ? shownNotifications(db, viewer, { includeFiltered: true }, "n.id = CAST(?3 AS INTEGER)", "", id)[0]
       : undefined;
   }
@@ -639,7 +639,7 @@ export const dismissNotificationGroup = userWriteOperation<{ groupKey: string },
   (db, { groupKey }, { accountId, now }) => {
     if (groupKey.startsWith("ungrouped-")) {
       const id = groupKey.slice("ungrouped-".length);
-      if (NOTIFICATION_ID.test(id)) {
+      if (isIntegerKey(id)) {
         db.run("DELETE FROM notifications WHERE account_id = ? AND id = CAST(? AS INTEGER)", accountId, id);
       }
       return null;
