@@ -393,7 +393,7 @@ export const streamDeleteUnits = readOperation<
     next:
       captured.length < rows || last === undefined
         ? null
-        : { account: last.account_id, subject: String(CAPTURE_LIMITS.boosts) },
+        : { account: last.account_id, subject: String(Number.MAX_SAFE_INTEGER) },
   };
 });
 
