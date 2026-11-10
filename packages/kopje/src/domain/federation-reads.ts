@@ -11,10 +11,10 @@ import { type QuoteAuthorization, quoteAuthorizationOf } from "./quotes";
 
 type NotSetUp = { status: "not_set_up" };
 
-export type FederationAnswer<O> = NotSetUp | (O & { status: "ok"; domain: string });
+type FederationAnswer<O> = NotSetUp | (O & { status: "ok"; domain: string });
 
 // A federation read: `run` gets the stored domain.
-export function federationRead<I, O extends object>(run: (db: Db, input: I, domain: string) => O) {
+function federationRead<I, O extends object>(run: (db: Db, input: I, domain: string) => O) {
   return readOperation<I, FederationAnswer<O>>((db, input) => {
     const domain = instanceDomainOf(db);
     return domain === null ? { status: "not_set_up" } : { ...run(db, input, domain), status: "ok", domain };
