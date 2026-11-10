@@ -3,6 +3,16 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import {
+  type CssNode,
+  generate,
+  type List,
+  parse as parseCss,
+  type Selector,
+  type SelectorList,
+  type StyleSheet,
+  walk as walkCss,
+} from "css-tree";
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
@@ -22,13 +32,128 @@ const CSS = SERVED.toString("utf8");
 const HEADERS = readFileSync(new URL("public/_headers", PACKAGE), "utf8");
 const ASSET_NAMES = readdirSync(new URL("public/assets/", PACKAGE));
 
+// A declaration in source order: the preludes it is nested in (an at-rule's as `@name prelude`) and their join,
+// whether the innermost one is a rule ending every selector at a heading element, its value as CSSTree prints it
+// (`!important` kept), the value's top-level parts, and whether a comment sits directly above it (only whitespace
+// between).
+type Declaration = {
+  context: string[];
+  selector: string;
+  heading: boolean;
+  property: string;
+  value: string;
+  parts: string[];
+  commented: boolean;
+};
+
+// A stylesheet as CSSTree reads it: the declarations, every rule's full selector (nesting resolved: `&` is its parent,
+// a list of several as :is()), and the at-rules' names. Any parse error throws, so nothing CSSTree cannot read is kept
+// as raw text and passed unchecked; a rule nested without `&` is one.
+type Sheet = { declarations: Declaration[]; selectors: SelectorList[]; atrules: string[] };
+
+const refuse = (error: Error): never => {
+  throw error;
+};
+
+function selectorList(text: string): SelectorList {
+  return parseCss(text, { context: "selectorList", onParseError: refuse }) as SelectorList;
+}
+
+function readSheet(css: string): Sheet {
+  // The offset of the first non-space after each comment: a declaration starting there is commented.
+  const afterComment = new Set<number>();
+  const next = /\S/g;
+  const tree = parseCss(css, {
+    positions: true,
+    parseCustomProperty: true,
+    onParseError: refuse,
+    onComment: (_, loc) => {
+      next.lastIndex = loc.end.offset;
+      const found = next.exec(css);
+      if (found !== null) {
+        afterComment.add(found.index);
+      }
+    },
+  });
+  const sheet: Sheet = { declarations: [], selectors: [], atrules: [] };
+  const visit = (nodes: List<CssNode>, context: string[], rule: SelectorList | null, parent: SelectorList | null) => {
+    for (const node of nodes) {
+      if (node.type === "Declaration") {
+        const value = generate(node.value) + (node.important === false ? "" : " !important");
+        sheet.declarations.push({
+          context,
+          selector: context.join(" "),
+          heading: rule !== null && headingRule(rule),
+          property: node.property,
+          value,
+          parts: node.value.type === "Value" ? node.value.children.toArray().map((part) => generate(part)) : [value],
+          commented: afterComment.has(node.loc!.start.offset),
+        });
+      } else if (node.type === "Rule") {
+        const own = node.prelude as SelectorList;
+        let full = own;
+        if (parent !== null) {
+          let nested = false;
+          walkCss(own, (inner) => {
+            nested ||= inner.type === "NestingSelector";
+          });
+          const outer = parent.children.size > 1 ? `:is(${generate(parent)})` : generate(parent);
+          full = selectorList((nested ? generate(own) : `& ${generate(own)}`).replaceAll("&", outer));
+        }
+        sheet.selectors.push(full);
+        visit(node.block.children, [...context, generate(own)], own, full);
+      } else if (node.type === "Atrule") {
+        sheet.atrules.push(node.name);
+        if (node.block !== null) {
+          const prelude = node.prelude === null ? "" : ` ${generate(node.prelude)}`;
+          visit(node.block.children, [...context, `@${node.name}${prelude}`], null, parent);
+        }
+      }
+    }
+  };
+  visit((tree as StyleSheet).children, [], null, null);
+  return sheet;
+}
+
+// A selector's compounds: its nodes split at each combinator.
+function compounds(selector: Selector): CssNode[][] {
+  const found: CssNode[][] = [[]];
+  for (const node of selector.children) {
+    if (node.type === "Combinator") {
+      found.push([]);
+    } else {
+      found.at(-1)!.push(node);
+    }
+  }
+  return found;
+}
+
+// Whether a node, or any node inside it, passes `test`.
+function contains(node: CssNode, test: (inner: CssNode) => boolean): boolean {
+  let found = false;
+  walkCss(node, (inner) => {
+    found ||= test(inner);
+  });
+  return found;
+}
+
+// Whether every selector of a rule ends at a heading element (h1.oneline, not h1 span).
+const headingRule = (rule: SelectorList) =>
+  rule.children.toArray().every((selector) => {
+    const first = compounds(selector as Selector)
+      .at(-1)!
+      .find((node) => node.type !== "NestingSelector");
+    return first?.type === "TypeSelector" && /^h[1-6]$/i.test(first.name);
+  });
+
 // The light and dark value of each token: `--name: light-dark(#light, #dark)`.
 function tokens(css: string): Map<string, { light: string; dark: string }> {
   const found = new Map<string, { light: string; dark: string }>();
-  for (const [, name, light, dark] of css.matchAll(
-    /--([a-z0-9-]+):\s*light-dark\((#[0-9a-f]{3,6}),\s*(#[0-9a-f]{3,6})\)/g,
-  )) {
-    found.set(name!, { light: light!, dark: dark! });
+  for (const { property, value } of declarations(css, true)) {
+    const [, light, dark] = /^light-dark\((#[0-9a-f]{3,6}),\s*(#[0-9a-f]{3,6})\)$/.exec(value) ?? [];
+    if (light !== undefined && dark !== undefined) {
+      found.set(property.slice(2), { light, dark });
+    }
   }
   return found;
 }
@@ -76,29 +201,30 @@ const HEADER_RULES = headerRules(HEADERS);
 const headerLinesOf = (path: string) =>
   HEADER_RULES.filter((rule) => matches(rule.pattern, path)).flatMap((rule) => rule.headers);
 
-// Every selector naming a dialog that does not name an open one: a rule that could give a closed dialog a display.
+// Every full selector with a dialog compound that does not name it open: a rule that could give a closed dialog a
+// display.
 function closedDialogs(css: string): string[] {
-  return [...css.matchAll(/[^{};]*\bdialog\b[^{};]*(?=\{)/g)]
-    .map(([selector]) => selector)
-    .filter((selector) => !selector.includes("[open]"));
+  return readSheet(css)
+    .selectors.flatMap((list) => list.children.toArray() as Selector[])
+    .filter((selector) =>
+      compounds(selector).some(
+        (compound) =>
+          compound.some((node) => node.type === "TypeSelector" && node.name === "dialog") &&
+          !compound.some((node) => node.type === "AttributeSelector" && node.name.name === "open"),
+      ),
+    )
+    .map((selector) => generate(selector));
 }
 
 // The animation and transition declarations outside a prefers-reduced-motion: no-preference block.
 function motionOutside(css: string): string[] {
-  let outside = css;
-  const NO_PREFERENCE = /@media\s*\(prefers-reduced-motion:\s*no-preference\)/;
-  for (let at = outside.search(NO_PREFERENCE); at !== -1;) {
-    let depth = 0;
-    let end = outside.indexOf("{", at);
-    do {
-      const c = outside[end];
-      depth += c === "{" ? 1 : c === "}" ? -1 : 0;
-      end++;
-    } while (depth > 0 && end < outside.length);
-    outside = outside.slice(0, at) + outside.slice(end);
-    at = outside.search(NO_PREFERENCE);
-  }
-  return [...outside.matchAll(/\b(animation|transition)(-[a-z-]+)?\s*:/g)].map(([match]) => match);
+  return declarations(css)
+    .filter(
+      ({ context, property }) =>
+        /^(animation|transition)(-|$)/.test(property) &&
+        !context.includes("@media (prefers-reduced-motion:no-preference)"),
+    )
+    .map(({ selector, property, value }) => `${selector} { ${property}: ${value} }`);
 }
 
 describe("the stylesheet", () => {
@@ -220,88 +346,17 @@ describe("the stylesheet", () => {
   });
 });
 
-// A stylesheet's declarations in source order, each with the selectors it is nested in (`rule` the innermost) and
-// whether a comment sits directly above it (after the previous declaration or brace). Custom properties are left out.
-type Declaration = { selector: string; rule: string; property: string; value: string; commented: boolean };
-
-// `custom`: the custom-property definitions (`--name: value`) instead of the other declarations.
+// A stylesheet's declarations (readSheet). `custom`: the custom-property definitions (`--name: value`) instead of the
+// other declarations.
 function declarations(css: string, custom = false): Declaration[] {
-  const found: Declaration[] = [];
-  const selectors: string[] = [];
-  let text = "";
-  let commented = false;
-  for (let at = 0; at < css.length;) {
-    if (css.startsWith("/*", at)) {
-      commented ||= text.trim() === "";
-      at = css.indexOf("*/", at + 2) + 2;
-      continue;
-    }
-    const c = css[at]!;
-    if (c === "'" || c === '"') {
-      const end = css.indexOf(c, at + 1);
-      text += css.slice(at, end + 1);
-      at = end + 1;
-      continue;
-    }
-    if (c === "{") {
-      selectors.push(text.trim());
-    } else if (c === ";" || c === "}") {
-      const declaration = text.trim();
-      const colon = declaration.indexOf(":");
-      if (declaration !== "" && declaration.startsWith("--") === custom) {
-        found.push({
-          selector: selectors.join(" "),
-          rule: selectors.at(-1) ?? "",
-          property: declaration.slice(0, colon).trim(),
-          value: declaration.slice(colon + 1).trim(),
-          commented,
-        });
-      }
-      if (c === "}") {
-        selectors.pop();
-      }
-    } else {
-      text += c;
-      at++;
-      continue;
-    }
-    text = "";
-    commented = false;
-    at++;
-  }
-  return found;
-}
-
-// `text` split at each character `delimiter` matches outside parentheses, parenthesized runs kept whole, empty pieces
-// left out.
-function splitOutside(text: string, delimiter: RegExp): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let part = "";
-  for (const c of text) {
-    depth += c === "(" ? 1 : c === ")" ? -1 : 0;
-    if (depth === 0 && delimiter.test(c)) {
-      if (part !== "") {
-        out.push(part);
-      }
-      part = "";
-    } else {
-      part += c;
-    }
-  }
-  return part === "" ? out : [...out, part];
-}
-
-// A value's space-separated parts, keeping parenthesized ones whole.
-function parts(value: string): string[] {
-  return splitOutside(value, /\s/);
+  return readSheet(css).declarations.filter(({ property }) => property.startsWith("--") === custom);
 }
 
 const SPACING = /^(margin|padding)(-|$)|^(row-|column-)?gap$/;
 const GEOMETRY = /^(top|right|bottom|left|inset)(-|$)/;
 const RADIUS = /^border(-[a-z]+)*-radius$/;
 const STEP = /^var\(--(s[1-6]|pad)\)$/;
-const NEGATIVE_STEP = /^calc\(-1 \* var\(--(s[1-6]|pad)\)\)$/;
+const NEGATIVE_STEP = /^calc\(-1\*var\(--(s[1-6]|pad)\)\)$/;
 const COLOUR_FUNCTION = /\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark|device-cmyk)\(/i;
 // Properties whose values name things other than colours.
 const NOT_COLOURS = /^(font-family|content|counter-|container|grid-|animation|transition|will-change)/;
@@ -469,19 +524,6 @@ function writesColour(value: string): boolean {
   );
 }
 
-// Whether every selector of a rule ends at a heading element (h1.oneline, not h1 span).
-const headingRule = (rule: string) =>
-  rule
-    .split(",")
-    .map((part) =>
-      part
-        .trim()
-        .split(/[\s>+~]+/)
-        .at(-1)!
-        .replace(/^&/, ""),
-    )
-    .every((compound) => /^h[1-6](?![\w-])/.test(compound));
-
 // Every margin, padding and gap declaration outside the spacing scale, and every font size, weight and line height
 // outside the type scale (kopje.css's header, docs/web-pages.md "UI rules"). A spacing part is a step, 0 or auto; a
 // negative step, a negative length (a bleed) or an em length (rich content) only with a comment directly above. A
@@ -491,10 +533,10 @@ const headingRule = (rule: string) =>
 // written outside :root, as a hex, a function or a name.
 function offScale(css: string): string[] {
   const off: string[] = [];
-  for (const { selector, rule, property, value, commented } of declarations(css)) {
+  for (const { selector, heading, property, value, parts, commented } of declarations(css)) {
     const allowed = (() => {
       if (SPACING.test(property)) {
-        return parts(value).every(
+        return parts.every(
           (part) =>
             part === "0" ||
             part === "auto" ||
@@ -505,11 +547,11 @@ function offScale(css: string): string[] {
       if (GEOMETRY.test(property)) {
         return (
           commented ||
-          parts(value).every((part) => part === "0" || part === "auto" || /^-?[\d.]+%$/.test(part) || STEP.test(part))
+          parts.every((part) => part === "0" || part === "auto" || /^-?[\d.]+%$/.test(part) || STEP.test(part))
         );
       }
       if (RADIUS.test(property)) {
-        return parts(value).every((part) => /^var\(--r-(control|inset|card|pill)\)$/.test(part));
+        return parts.every((part) => /^var\(--r-(control|inset|card|pill)\)$/.test(part));
       }
       if (!NOT_COLOURS.test(property) && selector !== ":root" && writesColour(value)) {
         return false;
@@ -518,7 +560,7 @@ function offScale(css: string): string[] {
         case "font-size":
           return /^var\(--t[1-5]\)$/.test(value) || value === "inherit";
         case "font-weight":
-          return value === "400" || value === "600" || (value === "700" && headingRule(rule));
+          return value === "400" || value === "600" || (value === "700" && heading);
         case "line-height":
           return ["1", "1.25", "1.6"].includes(value) || commented;
         case "font":
@@ -539,8 +581,8 @@ describe('the stylesheet’s scales (docs/web-pages.md, "UI rules")', () => {
   const SOURCE = readFileSync(new URL("src/web/kopje.css", PACKAGE), "utf8");
 
   it("defines the spacing and type scales on :root", () => {
-    const root = /:root\s*\{([^}]*)\}/.exec(SOURCE)![1]!;
-    const value = (name: string) => new RegExp(`--${name}:\\s*([^;]+);`).exec(root)?.[1];
+    const root = declarations(SOURCE, true).filter(({ selector }) => selector === ":root");
+    const value = (name: string) => root.find(({ property }) => property === `--${name}`)?.value;
     expect(["s1", "s2", "s3", "s4", "s5", "s6", "pad"].map(value)).toEqual([
       "0.25rem",
       "0.5rem",
@@ -617,6 +659,13 @@ describe('the stylesheet’s scales (docs/web-pages.md, "UI rules")', () => {
       expect(offScale(css), css).toEqual([]);
     }
   });
+
+  it("refuses a stylesheet it cannot parse rather than skip what it could not read", () => {
+    for (const css of ["a { gap 9px; }", "a { gap: var(--s3; }", "a { .b { gap: 9px; } }", "a, { gap: 9px; }"]) {
+      expect(() => offScale(css), css).toThrow(/is expected/);
+    }
+    expect(offScale("a { gap: 9px; }")).toHaveLength(1);
+  });
 });
 
 // The token definitions off their scales (docs/web-pages.md, "UI rules"): a token is defined exactly once, in the
@@ -648,7 +697,9 @@ const FONT_STACKS = new Set(["--sans", "--mono"]);
 const SCHEME_COLOUR = /^light-dark\(#[0-9a-f]{3,8},\s*#[0-9a-f]{3,8}\)$/;
 
 function offScaleTokens(css: string): string[] {
-  const registered = /@property\b/.test(css.replace(/\/\*[\s\S]*?\*\//g, "")) ? ["@property"] : [];
+  const registered = readSheet(css)
+    .atrules.filter((name) => name === "property")
+    .map((name) => `@${name}`);
   const defined = declarations(css, true);
   const colours = new Set(
     defined.filter((d) => d.selector === ":root" && SCHEME_COLOUR.test(d.value)).map((d) => d.property),
@@ -729,58 +780,17 @@ describe('the stylesheet’s tokens (docs/web-pages.md, "UI rules")', () => {
   });
 });
 
-// Whether a selector is a list (a comma outside any parentheses).
-function listed(selector: string): boolean {
-  let depth = 0;
-  for (const c of selector) {
-    depth += c === "(" ? 1 : c === ")" ? -1 : 0;
-    if (c === "," && depth === 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Every rule's full selector, nesting resolved (`&` is its parent, a list of several as :is()), comments left out.
-function fullSelectors(css: string): string[] {
-  const found: string[] = [];
-  const stack: string[] = [];
-  let text = "";
-  const plain = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const c of plain) {
-    if (c === "{") {
-      const own = text.trim().replace(/\s+/g, " ");
-      const parent = stack.at(-1);
-      const full =
-        parent === undefined || parent.startsWith("@")
-          ? own
-          : own.includes("&")
-            ? own.replaceAll("&", listed(parent) ? `:is(${parent})` : parent)
-            : `${parent} ${own}`;
-      stack.push(own.startsWith("@") ? (parent ?? own) : full);
-      if (!own.startsWith("@")) {
-        found.push(full);
-      }
-      text = "";
-    } else if (c === "}") {
-      stack.pop();
-      text = "";
-    } else if (c === ";") {
-      text = "";
-    } else {
-      text += c;
-    }
-  }
-  return found;
-}
-
 // The classes a stylesheet's selectors name.
 function selectorClasses(css: string): string[] {
-  return [
-    ...new Set(
-      fullSelectors(css).flatMap((selector) => [...selector.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]!)),
-    ),
-  ].toSorted();
+  const found = new Set<string>();
+  for (const list of readSheet(css).selectors) {
+    walkCss(list, (node) => {
+      if (node.type === "ClassSelector") {
+        found.add(node.name);
+      }
+    });
+  }
+  return [...found].toSorted();
 }
 
 // What names a class: a JSX `class` or `className` attribute, a `class:` or `className:` property (a component's
@@ -883,24 +893,31 @@ function unusedClasses(css: string, files: readonly Source[]): string[] {
 // component a button styles of its own (the ALT badge).
 const BUTTON_KINDS = new Set(["primary", "quiet", "danger", "icon", "alt"]);
 
-// A selector's compounds: split at its top-level commas and combinators (whitespace, >, +, ~), parentheses kept whole.
-function compounds(selector: string): string[] {
-  return splitOutside(selector, /[\s,>+~]/);
-}
+const isButton = (node: CssNode) =>
+  (node.type === "TypeSelector" && node.name === "button") || (node.type === "ClassSelector" && node.name === "btn");
 
 // Every class a compound that is a button puts on it, wherever in the compound it is written (before or after the
-// type, after a pseudo-class, inside :is() or :where()): a compound is a button by its type, by .btn, or by an :is()
-// or :where() offering either.
+// type, after a pseudo-class, inside :is() or :where()): a compound is a button by its type or by .btn, at any depth
+// (an :is() or :where() offering either).
 function buttonModifiers(css: string): string[] {
-  return fullSelectors(css).flatMap((selector) =>
-    compounds(selector).flatMap((compound) => {
-      const button =
-        /^button(?![\w-])/.test(compound) ||
-        /\.btn(?![\w-])/.test(compound) ||
-        /:(is|where)\((?:[^()]*[\s,])?(button|\.btn)(?![\w-])/.test(compound);
-      return button ? [...compound.matchAll(/\.([\w-]+)/g)].map((m) => m[1]!).filter((name) => name !== "btn") : [];
-    }),
-  );
+  return readSheet(css)
+    .selectors.flatMap((list) => list.children.toArray() as Selector[])
+    .flatMap((selector) =>
+      compounds(selector).flatMap((compound) => {
+        if (!compound.some((node) => contains(node, isButton))) {
+          return [];
+        }
+        const classes: string[] = [];
+        for (const node of compound) {
+          walkCss(node, (inner) => {
+            if (inner.type === "ClassSelector" && inner.name !== "btn") {
+              classes.push(inner.name);
+            }
+          });
+        }
+        return classes;
+      }),
+    );
 }
 
 describe("the stylesheet’s classes", () => {
