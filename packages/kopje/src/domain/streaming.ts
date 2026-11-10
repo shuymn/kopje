@@ -393,7 +393,7 @@ export const streamDeleteUnits = readOperation<
     next:
       captured.length < rows || last === undefined
         ? null
-        : { account: last.account_id, subject: String(Number.MAX_SAFE_INTEGER) },
+        : { account: last.account_id, subject: String(CAPTURE_LIMITS.boosts) },
   };
 });
 
@@ -825,7 +825,7 @@ export const streamEnterConversation = sessionOperation<
   { from: StreamPosition; eventId: string; owner: string },
   string | null
 >((db, { from, eventId, owner }) => {
-  const row = db.first<{ ceiling: string | null }>(
+  const row = db.first<{ ceiling: string }>(
     `UPDATE stream_cursor SET event_id = CAST(?4 AS INTEGER), subject = 0, account_id = ?5,
 			ceiling = coalesce((SELECT seq FROM stream_conversation_marks WHERE account_id = ?5), 0)
 		WHERE id = 1 AND event_id = CAST(?1 AS INTEGER) AND subject = CAST(?2 AS INTEGER) AND account_id IS ?3
@@ -836,7 +836,7 @@ export const streamEnterConversation = sessionOperation<
     eventId,
     owner,
   );
-  return row === undefined ? null : (row.ceiling ?? "0");
+  return row?.ceiling ?? null;
 });
 
 // Deletes at most PRUNE_BATCH rows in all at or below `upTo`, a finished event, but the newest journal row: it keeps the

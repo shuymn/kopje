@@ -720,21 +720,27 @@ export class StreamHub {
   // set from the owner's mark on subscribe), not `since`: a change written after it opened may join a row journaled
   // before.
   async #conversationUnits(owner: string, sockets: Socket[], position: string, ceiling: string): Promise<Unit[]> {
-    const lowest = sockets.map(({ at }) => at.convSeq).reduce((a, b) => (compareIntegers(a, b) <= 0 ? a : b));
+    // Each sequence parsed once, exactly (DATA-6).
+    const sent = sockets.map(({ at }) => BigInt(at.convSeq));
+    const lowest = sent.reduce((a, b) => (a <= b ? a : b));
+    const within = BigInt(position);
     const changes = await this.#run(streamConversations, {
       accountId: owner,
-      after: compareIntegers(lowest, position) >= 0 ? lowest : position,
+      after: String(lowest >= within ? lowest : within),
       upTo: ceiling,
       limit: CONVERSATIONS_PER_TURN,
     });
     return changes
-      .map(({ id, seq }) => ({
-        subject: { index: seq, id },
-        viewer: owner,
-        sockets: sockets.filter(({ at }) => compareIntegers(at.convSeq, seq) < 0),
-        lists: [],
-        feeds: [],
-      }))
+      .map(({ id, seq }) => {
+        const change = BigInt(seq);
+        return {
+          subject: { index: seq, id },
+          viewer: owner,
+          sockets: sockets.filter((_, i) => sent[i]! < change),
+          lists: [],
+          feeds: [],
+        };
+      })
       .filter((unit) => unit.sockets.length > 0);
   }
 
