@@ -11578,7 +11578,7 @@ describe("0090_exact_conversation_seq", () => {
 
   // A conversation of OWNER holding two statuses, the newer its last, and OWNER's mark at `seq`: the newer status's
   // delete (a status delete cascades to its conversation_statuses row) moves the mark on.
-  async function removeLast(migrations: number, seq: string) {
+  async function removeLast(migrations: number, seq: string, markType: "INTEGER" | "REAL" = "INTEGER") {
     return runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
       await kernel(state, MIGRATIONS.slice(0, migrations)).upgrade();
@@ -11607,7 +11607,11 @@ describe("0090_exact_conversation_seq", () => {
       for (const id of [older, newer]) {
         sql.exec("INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (?, ?)", conversation, id);
       }
-      sql.exec("INSERT INTO stream_conversation_marks (account_id, seq) VALUES (?, CAST(? AS INTEGER))", OWNER, seq);
+      sql.exec(
+        `INSERT INTO stream_conversation_marks (account_id, seq) VALUES (?, CAST(? AS ${markType}))`,
+        OWNER,
+        seq,
+      );
       let error: string | null = null;
       try {
         state.storage.transactionSync(() => sql.exec("DELETE FROM statuses WHERE id = ?", newer));
@@ -11642,6 +11646,14 @@ describe("0090_exact_conversation_seq", () => {
     expect([below.mark, below.conversation]).toEqual([
       { seq: MAX, type: "integer" },
       { seq: MAX, type: "integer", last: "200000000000000001" },
+    ]);
+    // A mark stored as a REAL (the column's INTEGER affinity keeps one only when no INTEGER holds its value) has no
+    // next INTEGER either: the delete is refused.
+    const real = await removeLast(at + 1, "1e19", "REAL");
+    expect(real.error).toMatch(EXHAUSTED);
+    expect([real.mark, real.conversation]).toEqual([
+      { seq: "1.0e+19", type: "real" },
+      { seq: "1", type: "integer", last: "200000000000000002" },
     ]);
     // Before 0090 the same delete stored a REAL in both (DATA-6).
     const before = await removeLast(at, MAX);
