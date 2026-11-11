@@ -35,7 +35,7 @@ type ActionInput = { id: string; now: number; present: Present };
 // local by its own row (accounts.domain IS NULL, 0000_initial, as its trigger local_accounts_local_insert judges it),
 // which a pin's foreign key requires before the pin, so no order of an import's rows lets a local account's pins be
 // judged by the remote limit; no account row reads as local, the lower limit.
-export function pinCapSql(account: string): string {
+function pinCapSql(account: string): string {
   return `iif((SELECT a.domain FROM accounts a WHERE a.id = ${account}) IS NULL, ${PIN_LIMIT}, ${MAX_REMOTE_PINS})`;
 }
 
