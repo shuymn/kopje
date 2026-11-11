@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- `GET /api/v2/search` and `GET /api/v1/accounts/search` with `resolve=true` no longer contact other servers while
+  the instance does not accept writes: the env's `MAINTENANCE` is `readonly`, the Store is in readonly maintenance, or
+  an import is not yet published. The search then answers as without `resolve=true`, from local data. Before,
+  `/api/v2/search` fetched the query's target in all three cases and stored it under the env's `MAINTENANCE=readonly`,
+  and `/api/v1/accounts/search` fetched it in the last two. When the Store comes to refuse writes while a search is
+  resolving, the answer is now the plain search too, so a URL query finds local matches instead of nothing, and a
+  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch.
+  No migration, no `wrangler.jsonc` change.
+
 ### Fixed
 
 - A status's `published_at` and `edited_at` are now held to the stored time form (`YYYY-MM-DDTHH:MM:SS.sssZ`, years
@@ -45,6 +56,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A remote quote of a local status that was detached when the quoted status was deleted now stays deleted when an
   `Update` of the quoting status naming it arrives later. Before, that `Update` turned it pending with no quoted status.
   A quote already revived this way stays pending. No migration, no `wrangler.jsonc` change.
+- Suspending a remote account through the admin API now keeps its pending follow requests to local accounts, as
+  Mastodon does: they stay out of the follow request list and cannot be answered while it is suspended, and can be
+  answered again after it is unsuspended. Before, the suspension deleted them, so the remote server kept a request that
+  could never be answered. A request deleted by an earlier suspension is not restored. An instance domain block still
+  deletes the requests of the accounts it covers, as Mastodon does. No migration, no `wrangler.jsonc` change.
+- The `Reject` that a remote account's suspension sends for each of its follows of a local account now goes to the
+  follower's personal inbox, as Mastodon sends it, instead of its shared inbox. No migration, no `wrangler.jsonc`
+  change.
 
 ## [0.2.1] - 2026-11-03
 

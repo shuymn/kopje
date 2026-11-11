@@ -1125,19 +1125,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   nothing but retractions (a forwarded `Delete` of a remote original it boosted among them, VIS-3), and its inbound
   activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
   `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its follows of local accounts are
-  severed in bounded, generation-bound rounds (R38), each accepted one with a withdrawing `Reject` to the follower's
-  current inbox alone, as Mastodon sends it (a retraction, never refused, but not sent to the earlier receivers of what
-  it withdraws); local follows of it are kept.
+  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
+  accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
+  current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
+  sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
+  unanswerable while it is unavailable, as Mastodon keeps `FollowRequest`s; local follows of it are kept.
   An instance domain block of severity `suspend` (R38) covers a host by its longest matching block (a child `noop`
   exempts its subdomains), with at most `MAX_BLOCK_LABELS` (8) labels per stored block; a covered account (by its stored
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
-  the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need) comes with
-  that answer and is spent on that request alone; every other request, redirect hops included, reads it anew
-  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in `src/federation/federation.ts`;
-  `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts` "Store calls on the inbox cold
-  path"). Its inbound
+  the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
+  resolution's `resolutionGate` and its `actorRevision` before the actor's fetch) comes with that answer and is spent
+  on that request alone; every other request,
+  redirect hops included, reads it anew (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts`
+  "Store calls on the inbox cold path", `test/search-resolution-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -1629,7 +1631,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/health-runtime.test.ts` ("runtime check in healthReport").
 - **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
   shared inbox; an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient
-  through its object) goes to the recipient's shared inbox when it has one, and moves to its distinct personal inbox on
+  through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
+  personal inbox, as Mastodon's `reject_remote_follows!` sends it), and moves to its distinct personal inbox on
   the same origin (same lane, within the row's attempts) if the shared inbox answers 404, 405 or 410; targets pass
   NET-3; a non-public activity is never sent to a redirect target. Claims serialize each lane; the POST timeout (30 s)
   is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
@@ -1881,7 +1884,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. An account's canonical
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
+  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker,
+  with no gate read) or the Store refuses writes (readonly, an unpublished import, OPS-8). The latter is decided in one
+  read before any DNS check or fetch, in this order: the token (a failing one is answered first), then the Store's
+  write refusal, which answers the reason and reads nothing more (no signer, no instance key), then the domain and the
+  first request's preparation (`resolutionGate` in `src/domain/inbox.ts`, `executeDeciding` in
+  `src/platform/store-kernel.ts`, `resolveQuery` in `src/mastodon/search.ts`). A write the Store comes to refuse while
+  resolving (the final store, or the instance key's creation) also leaves the answer to the plain search, which judges
+  the token again. An account's canonical
   address is decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and
   `ResolveAccountService` decide it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
@@ -1906,7 +1917,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/federation/federation.ts`, `src/federation/resolve.ts`; `test/inbox-statuses.test.ts` ("signed by the instance
   actor (NET-4)", "resolves a status URL as the instance actor", "answers 401 without a token and fetches nothing",
   "account search with resolve=true (NET-4, VIS-1)"), `test/inbox-statuses-edge.test.ts` ("NET-4: search resolution
-  fetches nothing without a valid token").
+  fetches nothing without a valid token"), `test/search-resolution-store-calls.test.ts` ("a resolving search refused
+  before any network work").
 - **NET-5: snapshots come only from authoritative local data.** A rescue snapshot holds only a canonical actor,
   WebFinger or NodeInfo document rendered on the fixed domain from Store columns, and is kept only if its source still
   matches the Store when saved. Request hosts, arbitrary queries and remote documents never create or change one.
@@ -3881,8 +3893,9 @@ heap).
 
 - **DATA-1: private keys stay wrapped outside cryptographic use.** Actor and instance keys are stored wrapped with
   `USER_KEK` in the legacy format. They are unwrapped per call in the Worker, only to sign and for the health key check,
-  are never cached, and never appear in responses or logs. The Store hands them over wrapped only, `inboxGate` and a
-  `receiveActivity` need included (their fetch preparation), and the Worker unwraps such a key on the request's first
+  are never cached, and never appear in responses or logs. The Store hands them over wrapped only, `inboxGate`, a
+  `receiveActivity` need and `resolutionGate` included (their fetch preparation), and the Worker unwraps such a key on
+  the request's first
   fetch, or never. _Enforced (main):_ `src/security/key-wrap.ts`,
   `src/security/keyring.ts`; `test/keyring.test.ts`, `test/health-keys.test.ts`.
 - **DATA-2: VAPID keys are never regenerated implicitly.** `VAPID_JWK` is a secret that Kopje only reads; an invalid
@@ -3985,7 +3998,8 @@ heap).
   account's, and its key is chosen only while it is available and still follows the remote account, which is checked
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
-  preparation of `inboxGate` and of a `receiveActivity` need; `src/federation/collections.ts`, `receiveInbound` in
+  preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
+  actor); `src/federation/collections.ts`, `receiveInbound` in
   `src/federation/inbound.ts`; `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
@@ -4234,7 +4248,8 @@ heap).
   HTTP writes get 503 (no federation side effects). An inbound request, live or replayed, is checked against the Store's
   write admission before any loader is made or anything fetched, so nothing is signed with an imported key, and it is
   held as in maintenance (spooled, or requeued without counting a retry); the gate hands over no signing key while
-  writes are refused (`Store.inboxGate`); the write's own transaction checks again. The
+  writes are refused (`Store.inboxGate`; a search resolution's `Store.resolutionGate` likewise, and nothing is fetched,
+  NET-4); the write's own transaction checks again. The
   scheduled backup's runner lease is refused in its transaction, so cron makes no S3 call and takes no dump freeze
   (an operator's rescue dump still works). Reads and sessions pass, so imported data can be read and the owner can sign
   in for the checks before publication. `publish` (an Access admin, or `IMPORT_TOKEN` while the Store has no
@@ -4394,6 +4409,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | A delivery whose completion was lost is POSTed again after its lease (at-least-once); a Mastodon server that processes the repeated `Follow` after the `Undo` sent behind it follows again (each body it receives is its own job), while Kopje has ended the follow                                                                                                                                                                                                                                                                                                                                                                                                                       | Receivers deduplicate by activity id; exactly-once needs the receiver's cooperation, and Mastodon repeats a delivery whose answer it lost the same way                                                                                                                                                                                                                                                                                                   | a receiver is seen to apply a repeat                                                                                     |
 | A `QuoteRequest` of a local account's quote that reaches a Mastodon server more than once (Kopje sends it again when a POST's result was lost, NET-2) is answered there each time from the state at that time: Mastodon accepts a quote in any state under the same stamp (`quote_request.rb:31-32`, `quote.rb:48-56`) and refuses without changing its own copy (`quote_request.rb:55-65`), while Kopje applies an `Accept` only to a pending quote and a `Reject` to a pending or accepted one. So after a revoke or a policy change between the copies, the quoted server may hold the quote accepted, and serve its stamp, while Kopje shows it revoked or rejected (VIS-28)          | Mastodon parity: a Mastodon quoter applies those answers the same way (`accept.rb:49`, `reject.rb:42-47`) and retries the same request (`delivery_worker.rb:11-21`); `test/quote-lifecycle.test.ts` allows exactly this difference (`replayedRequest` in `test/quote-model.ts`, witnesses W10a-c)                                                                                                                                                        | Mastodon answers a request id once, or stops accepting a quote it revoked                                                |
 | A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`). When Kopje receives the `Accept` before the `Delete`, it ends revoked while the quoted server holds the quote accepted (VIS-28)                                                                                                                                                                                                                                                                                                   | Mastodon parity: a Mastodon quoter applies the `Accept`, then `revoke_quote` (`delete.rb:58-67`), and ends the same way; `test/quote-lifecycle.test.ts` allows exactly this difference (`revokedPendingReaccepted` in `test/quote-model.ts`, witness W18)                                                                                                                                                                                                | Mastodon stops accepting a quote it revoked                                                                              |
+| A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`). When Kopje receives the `Delete` before the `Accept`, it records the stamp as retracted and refuses the `Accept` while the retraction lasts (30 days, ID-7), so it holds the quote pending while the quoted server holds it accepted and serves its stamp (VIS-28); no quote held the stamp, so it is not revoked for good, and an `Accept` that arrives after the retraction expires applies                                     | While a stamp's retraction lasts, a forged or replayed `Accept` naming it cannot take effect; a Mastodon quoter would apply the `Accept` (`accept.rb:49`), a departure (docs/mastodon-deviations.md, quote approvals); `test/quote-lifecycle.test.ts` allows exactly this difference (`revokedPendingAcceptRefused` in `test/quote-model.ts`, witness W17)                                                                                               | Mastodon stops accepting a quote it revoked                                                                              |
 | Misskey with several silent recipients of one status on one server: only the first copy Misskey processes sets the note's audience, so the other silent recipients there cannot see it. Supported: one silent recipient per Misskey server                                                                                                                                                                                                                                                                                                                                                                                                                                                | Misskey keeps the first `Create` of a note; a combined copy would name the recipients to each other, and recipient-specific object ids would split the status                                                                                                                                                                                                                                                                                            | Misskey honours a later copy, or a peer needs it                                                                         |
 | A retraction staged over several batches (a job's Undo of a local boost, a local status's `Delete`, a forward) misses a follow made after its staging began, and a delivery row moved in place to a personal inbox after the rows' walk passed it whose receipt sorts behind the receipts' cursor or that gets none                                                                                                                                                                                                                                                                                                                                                                       | Each source is read once from its own cursor (RES-6); following later changes of every source would read them again at each call                                                                                                                                                                                                                                                                                                                         | such follows or moves are seen to lose a retraction                                                                      |
 | A boost again after an unboost may reach a server before the earlier boost's `Undo`, whose targets its job writes later: a Mastodon receiver then ignores the new `Announce` (it holds the earlier boost) and removes the earlier boost on the `Undo`, so the new boost is lost there                                                                                                                                                                                                                                                                                                                                                                                                     | Mastodon's own `RemovalWorker` and `DistributionWorker` race the same way; the unreblog asks for the job's round at once, which narrows the window                                                                                                                                                                                                                                                                                                       | a receiver is seen to lose boosts this way in practice                                                                   |

@@ -1,9 +1,10 @@
 import { FetchError } from "@fedify/fedify";
 
+import type { ResolutionStart } from "../domain/inbox";
 import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
-import type { Resolved } from "../domain/remote-statuses";
+import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
 import { readConfig, userKek } from "../platform/config";
-import { hostDomain, normalizeDomain, parseAddress } from "../platform/domain-name";
+import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import {
@@ -42,20 +43,28 @@ export type ResolverDeps = {
   loader: FederationDeps["loader"];
 };
 
-export type Resolver = (env: Env, query: string) => Promise<Resolved>;
+// start: what the Store's resolution gate answered before any network work (domain/inbox.ts resolutionGate), its
+// preparation serving the first request (its verdict) and every signed fetch (its signer); absent (the interaction
+// look-up), the domain is read here and the loaders read their signer and verdicts themselves.
+export type Resolver = (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
 
 const NONE: Resolved = { kind: "none" };
 
 export function createResolver(deps: ResolverDeps): Resolver {
-  return async (env, query) => {
+  return async (env, query, start) => {
     const build = deps.build(env);
     const store = () => deps.store(env);
-    const domain = await callStore(() => store().instanceDomain(build));
+    const domain = start === undefined ? await callStore(() => store().instanceDomain(build)) : start.domain;
     if (domain === null) {
       return NONE;
     }
     const config = readConfig(env);
-    const state: FederationState = { resolvedUsername: null, source: null, storeError: null, ticket: null };
+    const state: FederationState = {
+      resolvedUsername: null,
+      source: null,
+      storeError: null,
+      ticket: start?.prefetch?.ticket ?? null,
+    };
     const loaders = createRemoteLoaders(
       {
         domain,
@@ -69,8 +78,14 @@ export function createResolver(deps: ResolverDeps): Resolver {
       state,
       null,
       requestBudget(Date.now()),
+      start?.prefetch?.signer,
     );
-    const revisionOf = (uri: string) => callStore(() => store().actorRevision(build, { uri }));
+    // The verdict that comes with the revision serves the actor's fetch, the next request, alone (refusesHost).
+    const revisionOf = async (uri: string) => {
+      const read = await callStore(() => store().actorRevision(build, { uri }));
+      state.ticket = read.ticket;
+      return read.revision;
+    };
     const resolved = await resolveWith({ ...loaders, revisionOf }, query.trim(), domain);
     if (state.storeError !== null) {
       throw state.storeError;
@@ -93,19 +108,15 @@ async function actorAfterRevision(
   return { fetched: await fetchActor(uri, afterRevisionRead(loaders).document, loaders.context), revision };
 }
 
+// A local address or URL is answered from stored data (resolveSearch's lookup by uri).
 async function resolveWith(loaders: Resolving, query: string, domain: string): Promise<Resolved> {
-  const address = parseAddress(query);
-  if (address !== null) {
-    return address.domain === domain ? NONE : resolveAddress(loaders, address.username, address.domain);
-  }
-  let url: URL;
-  try {
-    url = new URL(query);
-  } catch {
+  const target = resolutionTarget(query, domain);
+  if (target === null) {
     return NONE;
   }
-  // A local URL is answered from stored data (resolveSearch's lookup by uri).
-  return url.host === domain ? NONE : resolveUrl(loaders, url.href);
+  return target.kind === "address"
+    ? resolveAddress(loaders, target.username, target.domain)
+    : resolveUrl(loaders, target.href);
 }
 
 // An actor, with the canonical address its host declares (declaredDomain), and its revision before the fetch.
@@ -134,11 +145,9 @@ async function webfingerAt(
   username: string,
   host: string,
 ): Promise<WebFinger | "missing" | null> {
-  const resource = `acct:${username}@${host}`;
   let jrd: unknown;
   try {
-    jrd = (await loaders.webfinger(`https://${host}/.well-known/webfinger?resource=${encodeURIComponent(resource)}`))
-      .document;
+    jrd = (await loaders.webfinger(webfingerUrl(username, host))).document;
   } catch (error) {
     const status = error instanceof FetchError ? error.response?.status : undefined;
     return status === 404 || status === 410 ? "missing" : null;

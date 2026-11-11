@@ -1237,13 +1237,12 @@ describe("account search with resolve=true (NET-4, VIS-1)", () => {
     });
 
     // AUTH-1: the final search judges the token at its own time, after the resolution.
-    it(`${endpoint.name}: refuses a token that expired while resolving, the Store in maintenance`, async () => {
+    it(`${endpoint.name}: refuses a token that expired while resolving, the Store entering maintenance`, async () => {
       const clock = { now: NOW };
       const t = await setup(clock);
       const bob = await mastodonActor(t.web, "bob");
       serveWebFinger(t.web, "acct:bob@mastodon.example", "acct:bob@mastodon.example", bob.uri);
       const q = encodeURIComponent("bob@mastodon.example");
-      // The instance actor's key exists, so the resolution fetches in maintenance and only its storing is refused.
       await search(t, `resolve=true&q=${q}`);
       await sql(
         t.store,
@@ -1251,10 +1250,11 @@ describe("account search with resolve=true (NET-4, VIS-1)", () => {
         new Date(NOW + 60_000).toISOString(),
         ALICE,
       );
-      await t.store.setMaintenance(BUILD, true);
+      // Maintenance begins once the resolution has passed its gate, so only its storing is refused.
       const held = t.web.hold(bob.uri);
       const response = t.api(endpoint.path(`resolve=true&q=${q}`));
       await held.reached;
+      await t.store.setMaintenance(BUILD, true);
       clock.now = NOW + 120_000;
       held.release();
       expect((await response).status).toBe(401);
@@ -1282,18 +1282,18 @@ describe("account search with resolve=true (NET-4, VIS-1)", () => {
     expect(await sql(t.store, "SELECT name FROM instance_settings WHERE name = 'instance_actor_key'")).toEqual([]);
   });
 
-  it("answers from local data when the Store in maintenance cannot store the instance key (v1)", async () => {
+  it("answers from local data, fetching nothing, while the Store is in maintenance (v1)", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     serveWebFinger(t.web, "acct:bob@mastodon.example", "acct:bob@mastodon.example", bob.uri);
     await seedAccount(t.store, { username: "bob", domain: "mastodon.example" });
-    // Cold: the key is created on first use, a write the Store in maintenance refuses.
+    // Cold: the key would be created on first use; the resolution gate refuses before that.
     await sql(t.store, "DELETE FROM instance_settings WHERE name = 'instance_actor_key'");
     await t.store.setMaintenance(BUILD, true);
     expect(await accts(t, "/api/v1/accounts/search?resolve=true&q=bob%40mastodon.example")).toEqual([
       "bob@mastodon.example",
     ]);
-    expect(t.web.fetched.length).toBeGreaterThan(0);
+    expect(t.web.fetched).toEqual([]);
     expect(await sql(t.store, "SELECT name FROM instance_settings WHERE name = 'instance_actor_key'")).toEqual([]);
   });
 });
