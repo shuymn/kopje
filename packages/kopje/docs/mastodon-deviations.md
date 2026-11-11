@@ -496,6 +496,10 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 - A suspended actor's `Update` is not applied, as no profile of an unavailable account is refreshed; Mastodon's
   `process_collection_service.rb` applies it.
 - Unsuspension does not fetch the account again; Mastodon's `unsuspend_account_service.rb` refetches it.
+- Nothing but retractions is sent to an unavailable account (VIS-30's send-time check); a `Follow` of a local
+  account's, or a local account's `Accept` of the account's follow, that the check drops is held and sent once the
+  account is available again (visibility.md, "Held handshakes"). Mastodon's `ActivityPub::DeliveryWorker` has no such
+  check and sends them during the suspension.
 - Unsuspending an individually suspended account that a `suspend` block covers converts its suspension to a domain
   mark and keeps it unavailable, and an account held by a domain mark alone answers 403. Mastodon's admin unsuspend
   clears the suspension directly, and `UnblockDomainService` lifts only suspensions whose timestamp equals the block's

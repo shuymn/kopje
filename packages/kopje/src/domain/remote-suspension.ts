@@ -35,7 +35,8 @@ import { RowBudget } from "./row-budget";
 //       - follows: ends the account's accepted follows of local accounts up to the follow bound (severing, below).
 //         Its requests are kept, as SuspendAccountService#reject_remote_follows! keeps FollowRequests: unanswerable
 //         and unlisted while it is unavailable (answerPendingFollow, listFollowRequests), answerable again after an
-//         unsuspension. Local accounts' follows of it are kept, and an unsuspension restores nothing that was severed.
+//         unsuspension. Local accounts' follows of it are kept (a Follow the send-time check drops meanwhile is held,
+//         handshake-replays.ts), and an unsuspension restores nothing that was severed.
 //   - mode 'domain', set by the conversion: an unsuspension of an account a suspend block still covers keeps it
 //     suspended, as a domain mark (suspension_source 'domain'), and redirects the job with a fresh follow bound; each
 //     round requires the mark and live coverage. It severs both ways (out, then in), as the domain job severs a covered
