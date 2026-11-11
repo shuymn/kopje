@@ -351,9 +351,17 @@ describe("plan audit baseline", () => {
 });
 
 describe("plan audit residuals", () => {
-  // Statements of #1468 group 1's sweep put back as they stood before it, each a residual of a fixed row whatever its
-  // group or its scans.
+  // Statements of #1468's sweeps put back as they stood before them, each a residual of a fixed row whatever its group
+  // or its scans.
   it.each([
+    ["statusFacts", "src/domain/activities.ts#statusFacts", "statuses: SCAN s", 2],
+    ["the local emoji tags", "src/domain/custom-emojis.ts#localEmojiTags", "media_attachments: SCAN m", 2],
+    ["a featured hashtag's count", "src/domain/featured-tags.ts#decrement", "featured_tags: SCAN featured_tags", 2],
+    ["the interactors' accounts", "src/domain/statuses.ts#interactorsWithin", "favourites: SCAN e", 2],
+    ["the media to attach", "src/domain/statuses.ts#mediaToAttach", "media_attachments: SCAN m LEFT-JOIN", 2],
+    ["the journal's recipients", "src/domain/streaming.ts#<anonymous> in streamEvents", "notifications: SCAN n", 2],
+    ["a delete's tombstone", "src/domain/streaming.ts#tombstoneFeeds", "stream_delete_tombstones: SCAN t", 2],
+    ["the outbox's hydration", "src/domain/local-notes.ts#<anonymous> in getOutbox", "statuses: SCAN o LEFT-JOIN", 2],
     ["the follow walk of a collection page", "src/domain/actors.ts#<anonymous> in getCollection", "follows: SCAN f", 5],
     [
       "NodeInfo's active users",

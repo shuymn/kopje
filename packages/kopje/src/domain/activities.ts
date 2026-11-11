@@ -1,4 +1,4 @@
-import { STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
@@ -226,7 +226,8 @@ export function statusFacts(
     `SELECT s.id, s.uri, s.visibility, s.content, s.spoiler_text, s.sensitive, s.language,
 			${statusPublishedSql("s")} AS published_at, ${statusEditedSql("s")} AS edited_at,
 			s.in_reply_to_uri, s.in_reply_to_id, s.quote_policy, s.emojis, a.uri AS actor_uri, a.username
-		FROM statuses s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`,
+		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id WHERE s.id = ?`,
     statusId,
   );
   if (row === undefined) {
@@ -917,7 +918,8 @@ export type LegacyObject = { location: string | null; image: string | null };
 
 export const getLegacyObject = readOperation<{ uuid: string; origin: string }, LegacyObject>((db, { uuid, origin }) => {
   const remote = db.first<{ uri: string }>(
-    `SELECT s.uri FROM statuses s JOIN accounts a ON a.id = s.account_id
+    `SELECT s.uri FROM statuses s INDEXED BY statuses_legacy_ap_o
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
 		WHERE s.legacy_ap_o = ? AND a.domain IS NOT NULL AND s.reblog_of_id IS NULL AND s.visibility = 'public'`,
     uuid,
   );
@@ -927,8 +929,10 @@ export const getLegacyObject = readOperation<{ uuid: string; origin: string }, L
   }
   const image = db.first<{ url: string; description: string; content_type: string | null; author: string }>(
     `SELECT m.url, m.description, m.content_type, a.uri AS author
-		FROM media_attachments m JOIN statuses s ON s.id = m.status_id
-		JOIN local_accounts l ON l.account_id = s.account_id JOIN accounts a ON a.id = s.account_id
+		FROM media_attachments m INDEXED BY media_attachments_legacy_ap_o
+		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = m.status_id
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
 		WHERE m.legacy_ap_o = ? AND s.reblog_of_id IS NULL AND ${SERVABLE}`,
     uuid,
   );

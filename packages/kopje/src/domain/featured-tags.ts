@@ -2,6 +2,7 @@ import {
   ACCOUNTS_ID_INDEX,
   FEATURED_TAGS_ACCOUNT_INDEX,
   FEATURED_TAGS_ID_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
@@ -390,7 +391,8 @@ export type FeaturedOfStatus = { accountId: string; publishedAt: string; id: str
 export function featuredOfStatus(db: Db, statusId: string): FeaturedOfStatus | null {
   const status = db.first<{ account_id: string; published_at: string; counted: number }>(
     `SELECT s.account_id, ${statusPublishedSql("s")} AS published_at, s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL} AS counted
-		FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id WHERE s.id = ?`,
+		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id WHERE s.id = ?`,
     statusId,
   );
   if (status === undefined || status.counted !== 1) {
@@ -422,7 +424,7 @@ export function countFeaturedTags(db: Db, statusId: string, before: FeaturedOfSt
     // FeaturedTag#increment. Mastodon sets last_status_at to the status's time even when the status is older than
     // the newest with the hashtag (an edit adding it to an old status); Kopje keeps the newest.
     db.run(
-      `UPDATE featured_tags SET statuses_count = statuses_count + 1,
+      `UPDATE featured_tags INDEXED BY ${FEATURED_TAGS_ACCOUNT_INDEX} SET statuses_count = statuses_count + 1,
 				last_status_at = max(coalesce(last_status_at, ''), ?3)
 			WHERE account_id = ?1 AND name IN (SELECT value FROM json_each(?2))`,
       after.accountId,
@@ -442,7 +444,7 @@ function decrement(db: Db, status: FeaturedOfStatus): void {
     return;
   }
   db.run(
-    `UPDATE featured_tags SET statuses_count = max(statuses_count - 1, 0),
+    `UPDATE featured_tags INDEXED BY ${FEATURED_TAGS_ACCOUNT_INDEX} SET statuses_count = max(statuses_count - 1, 0),
 			last_status_at = CASE
 				WHEN statuses_count <= 1 THEN NULL
 				WHEN last_status_at > ?3 THEN last_status_at

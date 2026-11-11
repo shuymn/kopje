@@ -1,3 +1,4 @@
+import { CUSTOM_EMOJIS_ID_INDEX, MEDIA_FILE_TOKEN_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN } from "../platform/media-files";
@@ -287,7 +288,8 @@ export function localEmojiTags(db: Db, stored: string | null, origin: string, by
   }
   const rows = db.all<{ url: string; content_type: string; id: string; shortcode: string; created_at: string }>(
     `SELECT m.url, m.content_type, e.id, e.shortcode, e.created_at FROM json_each(?1) j
-		CROSS JOIN media_attachments m ON m.file_token = j.value JOIN custom_emojis e ON e.id = m.id`,
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_FILE_TOKEN_INDEX} ON m.file_token = j.value
+		CROSS JOIN custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX} ON e.id = m.id`,
     JSON.stringify(tokens.slice(0, MAX_EMOJIS)),
   );
   const byUrl = new Map(rows.map((row) => [row.url, row]));
