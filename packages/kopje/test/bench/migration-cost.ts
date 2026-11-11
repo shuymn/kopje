@@ -4,6 +4,7 @@ import { expect, inject, it } from "vitest";
 import { MIGRATIONS } from "../../src/db/migrations";
 import { MAX_FEATURED_TAGS } from "../../src/domain/featured-tags";
 import { JOURNAL_SPAN } from "../../src/domain/stream-journal";
+import { statusTimesPastBoundSql } from "../../src/platform/stored-bounds";
 import { BUILD, freshStore, testKernel } from "../helpers";
 
 // The migration cost benchmark (RELEASING.md): pending migration files applied to a
@@ -78,7 +79,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // characters and a 2,210-byte profile URL, and 1,000 media rows with a 2,210-byte URL and a description of 12,000
 // characters; for 0049_instance_bounds one row past its bound of each covered instance setting (a 2,000 code point
 // title and description, a 300-byte contact address, 70,000 bytes of rules, three 60,000-byte documents, a malformed
-// date, switch and two stamps). It grows every table a phase A migration reads (accounts, follows, statuses with their
+// date, switch and two stamps); for 0088_status_times 1,000 statuses with a space for the T in published_at and an
+// unreadable edited_at. It grows every table a phase A migration reads (accounts, follows, statuses with their
 // mentions and tags, notifications, reports, quotes), what 0043_read_window_indexes indexes (favourites, boosts), what
 // 0045_remote_suspension indexes (accounts, outbound activities), what 0048_stored_bounds rewrites (accounts, statuses,
 // media attachments, earlier versions), what 0049_instance_bounds rewrites and indexes (instance settings, instance
@@ -99,7 +101,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // reads no row (a column of statuses and three triggers); 0080_inbound_job_attempts adds two checked columns to
 // inbound_jobs and indexes it; 0082_public_replies indexes the statuses' public and unlisted replies (1,000,000 of
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
-// 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them. A migration that
+// 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them;
+// 0088_status_times walks statuses and rewrites the rows past its bound. A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -151,6 +154,7 @@ const SHAPE = {
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
+  oddTimes: 1_000,
 };
 
 it("applies the migration to the benchmark store within the budget", async () => {
@@ -794,9 +798,19 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
+    if (pending("0088_status_times")) {
+      run(
+        `UPDATE statuses SET published_at = replace(published_at, 'T', ' '), edited_at = 'soon'
+				WHERE id >= '500000000000000000' AND id < CAST(500000000000000000 + ?1 AS TEXT)`,
+        SHAPE.oddTimes,
+      );
+    }
     const count = (table: string) => sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n;
     // The rows under the jamo spelling of 가, which 0087_tag_key_fixed_points renames.
     const jamoKeys = () => count("status_tags INDEXED BY status_tags_name WHERE name = char(0x1100, 0x1161)");
+    // The statuses whose times 0088_status_times rewrites.
+    const rewritesTimes = applied.includes("0088_status_times");
+    const oddTimes = () => (rewritesTimes ? count(`statuses WHERE ${statusTimesPastBoundSql("statuses")}`) : 0);
     const seeded = {
       accounts: count("accounts"),
       local: count("local_accounts"),
@@ -832,6 +846,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       ],
       journal: fullJournal ? count("stream_events") : 0,
       jamoKeys: jamoKeys(),
+      oddTimes: oddTimes(),
     };
     expect(sql.exec("SELECT count(*) AS n FROM kopje_migrations").one().n).toBe(at);
 
@@ -852,8 +867,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
     );
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
+    const timesLeft = oddTimes();
     if (foreignKeyCheck !== "skipped") {
-      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft } };
+      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, timesLeft } };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
     // the retry on a fresh kernel, which finds nothing pending and verifies the whole Store.
@@ -871,7 +887,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
       expect.objectContaining({ event: "kopje.store.upgrade.start", foreignKeyCheck: "store" }),
     );
     await state.storage.deleteAlarm();
-    return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft } };
+    return {
+      seeded,
+      measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft, timesLeft },
+    };
   });
   expect(seeded).toMatchObject({ accounts, local: SHAPE.local, statuses, notifications, reports, inboundJobs });
   if (at > MIGRATIONS.findIndex((migration) => migration.name === "0067_status_cards")) {
@@ -892,6 +911,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
   // The hashtag keys were there to repair, and the repair ran.
   if (hasTagKeys && applied.includes("0087_tag_key_fixed_points") && skewedRows > 0) {
     expect([seeded.jamoKeys > 0, measured.jamoLeft]).toEqual([true, 0]);
+  }
+  // The status times were there to rewrite, and the rewrite ran.
+  if (applied.includes("0088_status_times") && statuses > 0) {
+    expect([seeded.oddTimes, measured.timesLeft]).toEqual([Math.min(SHAPE.oddTimes, statuses), 0]);
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));

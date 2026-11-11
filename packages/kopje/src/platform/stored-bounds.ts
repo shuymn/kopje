@@ -2852,6 +2852,66 @@ END;`,
   ].join("\n\n")}\n`;
 }
 
+// ---- Status times: migration 0088_status_times
+
+// statuses.published_at, and edited_at where it is not NULL, hold a stored time (isoTimeSql). The writers store
+// storedTime's output, a time they cannot store being replaced as each says.
+
+// The stored form of the time `ms` (ms since the epoch), or null when it is no time or its year is outside 0 to 9999.
+export function storedTime(ms: number): string | null {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const text = date.toISOString();
+  return isIsoTime(text) ? text : null;
+}
+
+// True when a status row's times are past their stored bound.
+export function statusTimesPastBoundSql(row: string): string {
+  return `${isoTimeSql(`${row}.published_at`)} IS NULL
+  OR (${row}.edited_at IS NOT NULL AND ${isoTimeSql(`${row}.edited_at`)} IS NULL)`;
+}
+
+// The longest stored time 0088 reads in a format of SQLite's (a fraction of nanoseconds and a zone offset take 35), in
+// UTF-8 bytes.
+const TIME_FORMAT_BYTES = 64;
+
+// `column` read as a time by SQLite, in the stored form, else NULL: judged by its bytes, then NUL, then the form, and
+// read only when it starts with a calendar date (strftime reads a bare number as a Julian day). strftime applies a zone
+// offset; its '+0 seconds' carries an hour of 24 into the next day.
+function timeFromSql(column: string): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES}
+	AND instr(CAST(${column} AS BLOB), x'00') = 0
+	AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+	THEN ${isoTimeSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)} END`;
+}
+
+// What 0088 stores for a published_at past the bound: the time it names, else the row's arrival (created_at), as a
+// remote writer stores a time it cannot read, else the epoch, which no window counts as recent.
+function publishedFromSql(): string {
+  return `coalesce(${timeFromSql("published_at")}, ${timeFromSql("created_at")}, '1970-01-01T00:00:00.000Z')`;
+}
+
+// Migration 0088_status_times after its header (test/migrations.test.ts compares them): every row past the bound
+// rewritten in one walk of statuses (an edited_at it cannot read becomes the row's published_at, so the status stays
+// edited), then triggers that refuse a write where statusTimesPastBoundSql holds of the NEW row.
+export function statusTimesMigrationSql(): string {
+  return `${[
+    `UPDATE statuses SET
+  published_at = ${publishedFromSql()},
+  edited_at = CASE WHEN edited_at IS NOT NULL THEN coalesce(${timeFromSql("edited_at")}, ${publishedFromSql()}) END
+WHERE ${statusTimesPastBoundSql("statuses")};`,
+    ...boundTriggers(
+      "statuses_times",
+      "statuses",
+      "published_at, edited_at",
+      statusTimesPastBoundSql("NEW"),
+      "statuses: a time past its stored bound",
+    ),
+  ].join("\n\n")}\n`;
+}
+
 // ---- Account counts (accounts.followers_count, following_count, statuses_count)
 //
 // INTEGER NOT NULL DEFAULT 0 with no CHECK or trigger (0000_initial): an imported row may hold TEXT, REAL or a BLOB of

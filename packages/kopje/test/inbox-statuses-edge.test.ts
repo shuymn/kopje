@@ -166,6 +166,28 @@ describe("ID-7: versions of a status first seen late", () => {
   });
 });
 
+describe("RES-2: remote times the Store cannot hold (0088_status_times)", () => {
+  it("stores a Note, its edit and a boost dated before year 0 at their arrival", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const arrival = new Date(NOW).toISOString();
+    const note = mastodonNote(bob, { published: "-000001-06-01T00:00:00Z" });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({ published_at: arrival, edited_at: null });
+    // A newer version that is still before year 0: the edit applies, at its arrival.
+    const edit = update(bob, { ...note, content: "<p>edited</p>" }, "-000001-07-01T00:00:00Z");
+    expect(await t.post(bob, edit)).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({ content: "<p>edited</p>", edited_at: arrival });
+    const local = await localStatus(t, { status: "boost target", visibility: "public" });
+    const boost = announce(bob, local.uri, { published: "-000001-06-01T00:00:00Z" });
+    expect(await t.post(bob, boost)).toBe(202);
+    expect(await sql(t.store, "SELECT published_at FROM statuses WHERE uri = ?", boost.id)).toEqual([
+      { published_at: arrival },
+    ]);
+  });
+});
+
 describe("ID-7: retractions at the per-actor cap", () => {
   it("answers 503 to a Delete or Undo it cannot record, and changes nothing", async () => {
     const t = await setup();

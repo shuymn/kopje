@@ -37,6 +37,7 @@ import {
   storedProfileUrl,
   storedStatusUrl,
   storedText,
+  storedTime,
 } from "./kopje-runtime.js";
 
 const PUBLIC = "https://www.w3.org/ns/activitystreams#Public";
@@ -105,8 +106,8 @@ function when(value) {
     return null;
   }
   const spaced = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/.exec(value);
-  const ms = Date.parse(spaced === null ? value : `${spaced[1]}T${spaced[2]}${spaced[3] ?? "Z"}`);
-  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+  // As the Store holds a time (RES-2): none outside years 0 to 9999.
+  return storedTime(Date.parse(spaced === null ? value : `${spaced[1]}T${spaced[2]}${spaced[3] ?? "Z"}`));
 }
 
 /**

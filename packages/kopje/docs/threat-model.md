@@ -2545,7 +2545,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
   its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
   imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
-  `test/filter-text-units.test.ts`). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
+  `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at`, and `edited_at`
+  unless NULL, hold the 24-byte ISO form (`isoTimeSql`), so a presented `created_at` or `edited_at` is 24 bytes; the
+  triggers `statuses_times_insert` and `statuses_times_update` of migration `0088_status_times` refuse any other value,
+  imports included (`statusTimesPastBoundSql` in `src/platform/stored-bounds.ts`), and the migration rewrote each
+  existing value past it to the time SQLite reads in it, else the row's arrival or the epoch, removing no status. The
+  remote writers (`remoteTime` in `src/domain/remote-statuses.ts`, a boost in `src/domain/inbox.ts`) and the cutover's
+  converter keep a time through `storedTime`, which shares the acceptance rule, and store the arrival (the converter
+  its fallback) for any other, so a write is never refused for it (`test/migrations.test.ts` ("0088_status_times"),
+  `test/inbox-statuses-edge.test.ts` ("remote times the Store cannot hold")). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
   and `statuses_count` have no stored bound (an INTEGER column, no CHECK or trigger; adding one would rewrite every
   account), so an imported or converted row may hold any value there. Writers store only integers from 0 to 2^53−1
   (`MAX_ACCOUNT_COUNT`): local recounts, and a remote account's learned `totalItems` (`totalItemsOf` in

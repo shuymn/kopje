@@ -69,4 +69,5 @@ export const {
   storedProfileUrl,
   storedStatusUrl,
   storedText,
+  storedTime,
 } = runtime;

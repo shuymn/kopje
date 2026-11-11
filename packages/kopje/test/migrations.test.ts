@@ -108,6 +108,9 @@ import {
   LOCAL_USERNAME_BYTES,
   MAX_ACCOUNT_INVITATIONS,
   storedInvitationEmail,
+  isoTimeSql,
+  statusTimesMigrationSql,
+  storedTime,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -11297,4 +11300,165 @@ describe("0087_tag_key_fixed_points under stale statistics", () => {
     expect((small - base) / 990).toBeLessThanOrEqual(200);
     expect((large - small) / 1000).toBeLessThanOrEqual((1.1 * (small - base)) / 990);
   }, 300_000);
+});
+
+describe("0088_status_times", () => {
+  const NAME = "0088_status_times";
+  const at = NAMES.indexOf(NAME);
+  const LOCAL = "100000000000000001";
+  const REFUSED = /statuses: a time past its stored bound/;
+  const T = "2026-10-22T00:00:00.000Z";
+  const ARRIVAL = "2026-10-21T12:00:00.000Z";
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+  const idOf = (i: number) => `2${String(i).padStart(17, "0")}`;
+  const author = (sql: SqlStorage) =>
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/a', 'a', NULL)",
+      LOCAL,
+    );
+
+  it("holds statusTimesMigrationSql's output after its header, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0087_tag_key_fixed_points");
+    expectGenerated(at, statusTimesMigrationSql());
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  // Converted rows: published_at, edited_at and created_at as stored before 0088, and the two times 0088 leaves.
+  type Times = [SqlStorageValue, SqlStorageValue, SqlStorageValue];
+  const CONVERTED: [string, Times, [string, string | null]][] = [
+    ["in the stored form", [T, null, ARRIVAL], [T, null]],
+    ["in the stored form, edited", [T, "2026-10-23T00:00:00.000Z", ARRIVAL], [T, "2026-10-23T00:00:00.000Z"]],
+    [
+      "at each end of years 0 to 9999",
+      ["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", ARRIVAL],
+      ["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z"],
+    ],
+    ["past 64 bytes", [T + "x".repeat(1000), T + "x".repeat(41), ARRIVAL], [ARRIVAL, ARRIVAL]],
+    ["one byte past the form, which SQLite does not read", [`${T}Z`, null, ARRIVAL], [ARRIVAL, null]],
+    [
+      "with a space, without a fraction, and with a zone",
+      ["2026-10-22 01:02:03", "2026-10-22T10:00:00+09:00", ARRIVAL],
+      ["2026-10-22T01:02:03.000Z", "2026-10-22T01:00:00.000Z"],
+    ],
+    [
+      "with a longer fraction, and an hour of 24",
+      ["2026-10-22T23:59:59.9999Z", "2026-10-22T24:00:00Z", ARRIVAL],
+      ["2026-10-22T23:59:59.999Z", "2026-10-23T00:00:00.000Z"],
+    ],
+    ["a calendar date", ["2026-10-22", null, ARRIVAL], [T, null]],
+    ["a Julian day, a NUL, and a number for the arrival", ["2461000.5", `${T}\u0000`, 1_700_000_000], [EPOCH, EPOCH]],
+    ["a BLOB of the stored form", [blob(T), null, ARRIVAL], [T, null]],
+    [
+      "outside years 0 to 9999 once its zone applies",
+      ["0000-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00", ARRIVAL],
+      [ARRIVAL, ARRIVAL],
+    ],
+    ["unreadable, with an unreadable arrival", ["yesterday", "soon", "unknown"], [EPOCH, EPOCH]],
+    ["readable, edited unreadably", [T, "soon", ARRIVAL], [T, T]],
+  ];
+
+  it("rewrites each converted row to the time SQLite reads in it, else its arrival, and removes none", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      author(sql);
+      for (const [i, [, [published, edited, created]]] of CONVERTED.entries()) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, edited_at, created_at)
+					VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, 'public', ?3, ?4, ?5)`,
+          idOf(i),
+          LOCAL,
+          published,
+          edited,
+          created,
+        );
+      }
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const rows = sql
+        .exec<{ p: string; e: string | null; t: string }>(
+          "SELECT published_at AS p, edited_at AS e, typeof(published_at) AS t FROM statuses ORDER BY id",
+        )
+        .toArray();
+      expect(rows).toHaveLength(CONVERTED.length);
+      for (const [i, [name, , expected]] of CONVERTED.entries()) {
+        expect([rows[i]?.p, rows[i]?.e, rows[i]?.t], name).toEqual([...expected, "text"]);
+      }
+    });
+  });
+
+  it("refuses a time past the bound on insert and update, and takes the stored form and a NULL edited_at", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      author(sql);
+      let n = 1;
+      const insert = (published: SqlStorageValue, edited: SqlStorageValue) =>
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, edited_at)
+					VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, 'public', ?3, ?4)`,
+          idOf(n++),
+          LOCAL,
+          published,
+          edited,
+        );
+      insert(T, null);
+      const own = idOf(1);
+      const set = (column: string, value: SqlStorageValue) =>
+        sql.exec(`UPDATE statuses SET ${column} = ? WHERE id = ?`, value, own);
+      // Each probed alone in each column: past the bytes, one byte past, another format, an hour of 24, a NUL, a
+      // BLOB of the stored form, a number, and a year past 9999 as toISOString writes it.
+      const refused: [string, SqlStorageValue][] = [
+        ["past the bytes", T + "x".repeat(1000)],
+        ["one byte past", `${T}Z`],
+        ["a space for the T", "2026-10-22 00:00:00.000Z"],
+        ["an hour of 24", "2026-10-22T24:00:00.000Z"],
+        ["a NUL", `${T.slice(0, 23)}\u0000`],
+        ["a BLOB", blob(T)],
+        ["a number", 1_700_000_000],
+        ["year 10000", "+010000-01-01T00:00:00.000Z"],
+      ];
+      for (const [name, value] of refused) {
+        expect(() => insert(value, null), name).toThrow(REFUSED);
+        expect(() => insert(T, value), name).toThrow(REFUSED);
+        expect(() => set("published_at", value), name).toThrow(REFUSED);
+        expect(() => set("edited_at", value), name).toThrow(REFUSED);
+      }
+      expect(sql.exec("SELECT published_at AS p, edited_at AS e FROM statuses").toArray()).toEqual([{ p: T, e: null }]);
+      for (const value of ["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z"]) {
+        insert(value, value);
+        set("published_at", value);
+        set("edited_at", value);
+      }
+      set("edited_at", null);
+      expect(sql.exec("SELECT edited_at AS e FROM statuses WHERE id = ?", own).one()).toEqual({ e: null });
+    });
+  });
+
+  it("storedTime writes what the trigger takes, at each end of years 0 to 9999, and nothing past them", async () => {
+    await runInDurableObject(freshStore(), (_instance, state) => {
+      const sql = state.storage.sql;
+      const accepted = (text: string) =>
+        sql.exec<{ v: number }>(`SELECT (${isoTimeSql("?1")}) IS ?1 AS v`, text).one().v === 1;
+      const first = Date.parse("0000-01-01T00:00:00.000Z");
+      const last = Date.parse("9999-12-31T23:59:59.999Z");
+      expect([storedTime(first), storedTime(last)]).toEqual(["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z"]);
+      expect([storedTime(first - 1), storedTime(last + 1), storedTime(Number.NaN), storedTime(8.64e15 + 1)]).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ]);
+      expect([accepted(new Date(first - 1).toISOString()), accepted(new Date(last + 1).toISOString())]).toEqual([
+        false,
+        false,
+      ]);
+      fc.assert(
+        fc.property(fc.integer({ min: -8.64e15, max: 8.64e15 }), (ms) => {
+          const written = storedTime(ms);
+          expect(written === null ? accepted(new Date(ms).toISOString()) : accepted(written)).toBe(written !== null);
+        }),
+        { numRuns: 500 },
+      );
+    });
+  }, 60_000);
 });
