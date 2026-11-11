@@ -14,10 +14,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `local`, `remote`, `only_media`, `all` or `none` (the profile's Posts, Media and tagged tabs and the hashtag page
   included), now reads at most 2,000 index entries before applying those conditions, however many statuses they leave
   out: the sum of its streams' limits over the entries the audience rule passes (statuses hidden by their visibility
-  are still walked past at their number, the RES-7 gap in docs/threat-model.md). A page whose budget runs out first may be short or empty, and its `Link` continues from the last entry read, so
-  a client following `Link` still reaches every status; one that stops at a short page stops early, where Mastodon
-  fills the page (docs/mastodon-deviations.md). Before, such a page read every status the conditions left out until it
-  had a page. No migration, no `wrangler.jsonc` change.
+  are still walked past at their number, the RES-7 gap in docs/threat-model.md). A page whose budget runs out first
+  may be short or empty, and its `Link` continues from the last entry read, so a client following `Link` still reaches
+  every status; one that stops at a short page stops early, where Mastodon fills the page
+  (docs/mastodon-deviations.md). Before, such a page read every status the conditions left out until it had a page. No
+  migration, no `wrangler.jsonc` change.
+- `GET /api/v2/search` and `GET /api/v1/accounts/search` with `resolve=true` no longer contact other servers while
+  the instance does not accept writes: the env's `MAINTENANCE` is `readonly`, the Store is in readonly maintenance, or
+  an import is not yet published. The search then answers as without `resolve=true`, from local data. Before,
+  `/api/v2/search` fetched the query's target in all three cases and stored it under the env's `MAINTENANCE=readonly`,
+  and `/api/v1/accounts/search` fetched it in the last two. When the Store comes to refuse writes while a search is
+  resolving, the answer is now the plain search too, so a URL query finds local matches instead of nothing, and a
+  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch.
+  No migration, no `wrangler.jsonc` change.
 
 ### Fixed
 
