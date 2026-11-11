@@ -483,17 +483,20 @@ does. The suspension resets the account's one job row (`remote_moderation_jobs`)
 newest follow, report and moderation log id; each round first requires that the account is still individually
 suspended, so an unsuspension ends the job, and a suspension again, also of an account already suspended (Mastodon's
 `suspend!` runs again), restarts it from its reports stage with fresh bounds. The job resolves the reports frozen
-at the suspension (VIS-29's fence), then ends the account's follows of local accounts up to the follow bound: an
-accepted follow with a withdrawing `Reject` (VIS-3, a retraction, so neither admission nor the send-time check
-refuses it), a request by deleting it without one. The `Reject` goes to the follower's current inbox alone (its shared
-inbox when known, else its personal one), as Mastodon's `RejectFollowService` and `reject_remote_follows!` send it,
-not to the earlier receivers of the `Accept`s it withdraws: a Follow's answer matters to the follower's server only.
-Before it is recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after
-it. Local accounts' follows of it are kept; their `Follow` and any other content to it is dropped at send time
-(VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted
-in bounded steps before the follow ends. Severing a remote follower's follow or request deletes its `follow` and
-`follow_request` notifications and records its `Follow` id as retracted, under ID-7's rules for a pair id and the
-retraction cap.
+at the suspension (VIS-29's fence), then ends the account's accepted follows of local accounts up to the follow bound,
+each with a withdrawing `Reject` (VIS-3, a retraction, so neither admission nor the send-time check refuses it). Its
+requests are kept, as Mastodon's `reject_remote_follows!` keeps `FollowRequest`s: the walk reads them (within its
+`SEVER_ROUND`) and passes over them, so no `Reject` is sent, no notification goes and no id is recorded as retracted.
+While the account is unavailable, `listFollowRequests` leaves such a request out and `answerFollowRequest` refuses it;
+after an unsuspension it is listed and answered again. The `Reject` goes to the follower's current personal inbox
+alone, as Mastodon's `reject_remote_follows!` sends it (`inbox_url`), never to its shared inbox and not to the earlier
+receivers of the `Accept`s it withdraws: a Follow's answer matters to the follower's server only. Before it is
+recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
+accounts' follows of it are kept; their `Follow` and any other content to it is dropped at send time (VIS-30). Each
+round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps
+before the follow ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
+the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
+under ID-7's rules for a pair id and the retraction cap.
 
 Once the account job ends, the account's availability and `suspension_source` are a function of the final decisions
 alone (the account's suspension source and the blocks), whatever the order of decisions and rounds; its exact
@@ -507,8 +510,9 @@ rest open, or to the next generation's fence.
 Unsuspending an account that a `suspend` block still covers answers 200 and converts the suspension: the
 account keeps `suspended_at` with `suspension_source = 'domain'`, so it stays unavailable and the entity shows
 `suspended: true`, and the same transaction resets its job to mode `domain` with a fresh follow bound. In that mode
-each round requires the domain mark and live coverage, and the job severs both ways, as the domain job severs a
-covered account (below). Suspending it again sets mode `account` back, which keeps local follows of it; a stale mode
+each round requires the domain mark and live coverage, and the job severs both ways, its requests included, as the
+domain job severs a covered account (below). Suspending it again sets mode `account` back, which keeps local follows
+of it and its requests; a stale mode
 ends the job at its next round. An account held only by a domain mark answers 403: lowering the block lifts it.
 
 Inbound, the gate runs in every round after the deleted-actor check and before the actor upsert: a verified document
@@ -657,7 +661,8 @@ the cleanup in `blocks.ts`); until the cleanup reaches a follower there, it is s
 
 `audienceTargets` turns the recipients into targets: followers and accounts named in `to` or `cc` by shared inbox,
 a silent recipient of an addressed activity by a copy of its own at its personal inbox (VIS-2), and the recipient of
-an activity without `to` by shared inbox, else personal inbox. No other SQL turns follows into inboxes or reads an
+an activity without `to` by shared inbox, else personal inbox (R38's severing `Reject` by personal inbox alone, its
+`personalInbox` option). No other SQL turns follows into inboxes or reads an
 account's shared inbox (the architecture test below).
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted is forwarded through
@@ -742,7 +747,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   - **mark** (only while a `suspend` block exists): every account by id, `MARK_WINDOW` (2,000) a round, the predicate
     evaluated for each remote one. A covered account that is not individually suspended is marked if it is not yet,
     and severed both ways up to the bound, marked or not: its follows of local accounts (an accepted one with a
-    withdrawing `Reject`, a request deleted without one) and local accounts' follows and requests of it (each with
+    withdrawing `Reject` to its personal inbox, a request deleted without one, as Mastodon's `DeleteAccountService`
+    purges `FollowRequest`s) and local accounts' follows and requests of it (each with
     its `Undo`), through `severFollow` with the account job's preparation. Before a local follower's follow ends,
     the preparation removes the account from that follower's lists, writing at most the round's room (about 259
     rows) a round, so the follow's final delete writes no list row. Its reads are not bounded the same way: each

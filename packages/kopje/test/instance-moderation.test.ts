@@ -181,9 +181,9 @@ async function setup(seed: Seed) {
     reportIds: new Map<string, string>(),
     listId: "",
     attempts: [] as Attempt[],
-    // The inbox each intent was recorded for (by pair and seq), and the severing Rejects among them (G3F).
+    // The inbox each intent was recorded for (by pair and seq), and the severing Rejects among them.
     inboxes: new Map<string, string>(),
-    severingRejects: new Map<string, string | null>(),
+    severingRejects: new Set<string>(),
     // Generations a round severed (P1), and the bodies confirmed (by pair).
     severedByRound: new Set<string>(),
     sent: [] as { local: Local; remote: Remote; type: string; ref: string | null }[],
@@ -607,8 +607,8 @@ function expected(w: World) {
 }
 
 // Records the inbox of every intent recorded since the last step: the remote's current inbox (shared, else
-// personal), but the personal one for a severing Reject (Mastodon's reject_remote_follows!, which visibility.md claims
-// parity with; G3F below).
+// personal), but the personal one for a severing Reject (visibility.md R38, as Mastodon v4.5.11's
+// reject_remote_follows! sends it to inbox_url: suspend_account_service.rb:37; delete_account_service.rb:116-129).
 function assignInboxes(w: World) {
   for (const l of LOCALS) {
     for (const r of REMOTES) {
@@ -618,29 +618,10 @@ function assignInboxes(w: World) {
           const a = w.policy.remotes[r];
           const severing = w.severingRejects.has(key);
           w.inboxes.set(key, severing ? a.inbox : inboxOf(a));
-          if (severing) {
-            w.severingRejects.set(key, a.sharedInbox);
+          if (severing && a.sharedInbox !== null && a.sharedInbox !== a.inbox) {
+            tally(w.stats, "severing Reject at a personal inbox beside a shared one");
           }
         }
-      }
-    }
-  }
-}
-
-// G3F (#1425, a known defect): visibility.md says the severing Reject goes to the follower's current shared inbox
-// when known, "as Mastodon's ... send it"; Mastodon v4.5.11 sends it to the personal inbox
-// (suspend_account_service.rb:37; delete_account_service.rb:116-129). The policy predicts Mastodon's; a severing
-// Reject's row alone may stand at the shared inbox it had when recorded.
-function knownDefectG3F(w: World, want: ReturnType<typeof expected>, got: ReturnType<typeof projection>) {
-  for (const [lane, rows] of Object.entries(want.lanes)) {
-    const [l, r] = lane.split(" ") as [Local, Remote];
-    const intents = w.policy.pair(l, r).lane;
-    for (const [i, row] of rows.entries()) {
-      const shared = w.severingRejects.get(`${l} ${r} ${intents[i]!.seq}`);
-      const actual = got.lanes[lane]?.[i];
-      if (shared != null && actual?.inbox === shared && actual.type === "Reject") {
-        row.inbox = shared;
-        tally(w.stats, "known defect G3F");
       }
     }
   }
@@ -654,7 +635,6 @@ async function check(w: World, answer: { actual: unknown; predicted: unknown } |
   const s = await read(w);
   const got = projection(w, s);
   const want = expected(w);
-  knownDefectG3F(w, want, got);
   got.follows.sort((a, b) => (a.gen < b.gen ? -1 : 1));
   want.follows.sort((a, b) => (a.gen < b.gen ? -1 : 1));
   got.listed.sort();
@@ -842,7 +822,7 @@ function adopt(w: World, before: State, now: State): void {
     const r = (out ? follower : target) as Remote;
     const intent = p.sever(l, r, out ? "out" : "in", w.clock);
     if (intent?.type === "Reject") {
-      w.severingRejects.set(`${l} ${r} ${intent.seq}`, null);
+      w.severingRejects.add(`${l} ${r} ${intent.seq}`);
     }
     w.severedByRound.add(`${follower}>${target}`);
     w.severedGens.add(f.uri ?? f.id);
@@ -1239,9 +1219,12 @@ function p1Relation(a: World, b: World): void {
           trace,
         ).toEqual([]);
       }
+      // An individual suspension ends the account's accepted follows and keeps its requests (R38).
       if (w.policy.remotes[r].source === "account") {
         expect(
-          [...present(w)].filter((g) => g.startsWith(`${r}>`)),
+          projection(w, w.last!)
+            .follows.filter((f) => f.gen.startsWith(`${r}>`) && f.state === "accepted")
+            .map((f) => f.gen),
           trace,
         ).toEqual([]);
       }
@@ -1929,7 +1912,7 @@ describe("instance moderation witnesses: decisions", () => {
   }, 60_000);
 
   // Witness 6 (visibility.md: a routing refresh; ID-1): only the individually suspended, uncovered account under the
-  // stored revision takes it, its routing only; the severing Reject then uses the new inbox.
+  // stored revision takes it, its routing only; the severing Reject then uses the new personal inbox.
   it("a routing refresh applies to an individually suspended, uncovered account only", async () => {
     const w = await p1World(without("R2>L1", "R4>L1"));
     await steps(w, [{ k: "suspend", r: "R1" }]);
@@ -1945,7 +1928,8 @@ describe("instance moderation witnesses: decisions", () => {
     expect(w.policy.remotes.R1).toMatchObject({ name: "R1", keys: ["R1-key-0"] });
     await settle(w);
     expect(w.sent.filter((s) => s.type === "Reject").map((s) => s.remote)).toEqual(["R1"]);
-    expect(w.stats["known defect G3F"]).toBeGreaterThan(0);
+    expect(w.policy.remotes.R1.inbox).toBe(`${SPEC.R1.uri}/inbox2`);
+    expect(w.stats["severing Reject at a personal inbox beside a shared one"]).toBe(1);
     // Covered: nothing changes.
     await steps(w, [block(D)]);
     expect(await route(false)).toBe(false);
@@ -2070,30 +2054,40 @@ describe("instance moderation witnesses: federation with R1's server", () => {
     expect(w.stats["exception X5"]).toBe(1);
   }, 60_000);
 
-  // X4 (#1424, a known defect): an individual suspension deletes R1's pending request to locked L2 without a Reject
-  // and retracts its id, so R1's server keeps the request, and a redelivery of it is refused.
-  it("X4 (#1424): a suspension deletes a pending request with no Reject, and retracts its id", async () => {
+  // #1424 (visibility.md R38): an individual suspension's job ends R1's accepted follow of L1 and keeps its pending
+  // request to locked L2, as Mastodon v4.5.11's reject_remote_follows! keeps FollowRequests: unanswerable while R1 is
+  // suspended, with no Reject and no retraction, and answerable after the unsuspension. The ledger's rule 1 refuses a
+  // severed request in mode `account`.
+  it("#1424: an individual suspension keeps a pending request, answerable after the unsuspension", async () => {
     const w = await p1World();
-    await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND, { k: "unsuspend", i: 0 }]);
-    await settle(w);
     const uri = `${SPEC.R1.uri}#follows/seed-L2`;
-    expect(projection(w, w.last!).follows.some((f) => f.gen === "R1>L2")).toBe(false);
+    await steps(w, [{ k: "suspend", r: "R1" }]);
+    await settle(w);
+    const edges = () => projection(w, w.last!).follows.filter((f) => f.gen.startsWith("R1>"));
+    expect(edges()).toEqual([{ gen: "R1>L2", state: "pending", uri }]);
+    expect(w.stats["severed out accepted"]).toBe(1);
+    expect(w.stats["severed out pending"]).toBeUndefined();
     expect(w.sent.some((s) => s.local === "L2")).toBe(false);
-    const again = await storeReceive(
-      w.store,
-      SPEC.R1.uri,
-      { type: "Follow", id: uri, object: w.localUris.L2 },
-      w.clock,
-    );
-    expect(again.reason).toBe("retracted");
+    expect(projection(w, w.last!).retracted).not.toContain(`${SPEC.R1.uri} ${uri}`);
+    await steps(w, [{ k: "answer", r: "R1", accept: true }]);
+    expect(edges()).toEqual([{ gen: "R1>L2", state: "pending", uri }]);
+    await steps(w, [
+      { k: "unsuspend", i: 0 },
+      { k: "answer", r: "R1", accept: true },
+    ]);
+    expect(edges()).toEqual([{ gen: "R1>L2", state: "accepted", uri }]);
   }, 60_000);
 
-  // G3F (#1425, a known defect): the severing Reject goes to R1's shared inbox.
-  it("G3F (#1425): the severing Reject's row is at the shared inbox", async () => {
+  // #1425 (visibility.md R38): the severing Reject goes to R1's personal inbox, though its shared one is known, as
+  // Mastodon v4.5.11's reject_remote_follows! sends it to inbox_url.
+  it("#1425: the severing Reject's row is at the personal inbox", async () => {
     const w = await p1World(without("R2>L1", "R4>L1"));
     await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND]);
-    expect(w.last!.lanes.filter((row) => row.type === "Reject").map((row) => row.inbox)).toEqual([SPEC.R1.shared]);
-    expect(w.stats["known defect G3F"]).toBeGreaterThan(0);
+    expect(SPEC.R1.shared).not.toBeNull();
+    expect(w.last!.lanes.filter((row) => row.type === "Reject").map((row) => row.inbox)).toEqual([
+      `${SPEC.R1.uri}/inbox`,
+    ]);
+    expect(w.stats["severing Reject at a personal inbox beside a shared one"]).toBe(1);
   }, 60_000);
 });
 
@@ -2273,6 +2267,27 @@ describe("instance moderation read caps (F1-F7)", () => {
     await fixtureRound(f);
     expect(await count(f, "SELECT 1 FROM follows WHERE account_id = ?", r)).toBe(1);
     await fixtureDrain(f);
+  }, 120_000);
+
+  // F2 in mode `account`: an individually suspended account's 101 pending requests, each kept (#1424) but read, so a
+  // round's reads stay at SEVER_ROUND when every follow it walks is a request: the second round (the first is its
+  // reports stage) passes exactly 100 and stops at the 100th target.
+  it("F2 (individual): a round reads exactly 100 of 101 requests it keeps", async () => {
+    const f = await bare();
+    await remotesOn(f, 1, OTHER, COVERED);
+    const locals = await localsOf(f, 101);
+    const r = (COVERED + 1n).toString();
+    await followsOf(
+      f,
+      locals.map((target) => ({ follower: r, target, state: "pending" })),
+    );
+    await suspendOf(f, r);
+    await fixtureRound(f);
+    await fixtureRound(f);
+    expect(f.last!.jobs[0]).toMatchObject({ phase: "follows", cursor: locals[99] });
+    await fixtureDrain(f);
+    expect(f.last!.jobs).toEqual([]);
+    expect(await count(f, "SELECT 1 FROM follows WHERE account_id = ? AND state = 'pending'", r)).toBe(101);
   }, 120_000);
 
   // F3, CLEAR_ROUND: 501 stale domain marks (no block covers their domain); a transition elsewhere resets the job.
@@ -2463,7 +2478,7 @@ describe("instance moderation witnesses: walks", () => {
     const locals = await localsOf(f, 150);
     await followsOf(
       f,
-      locals.map((target) => ({ follower: r, target, state: "pending" })),
+      locals.map((target) => ({ follower: r, target, state: "accepted" })),
     );
     await suspendOf(f, r);
     await fixtureRound(f);
@@ -2538,9 +2553,12 @@ describe("instance moderation witnesses: walks", () => {
 describe("instance moderation witnesses: routing with activities outstanding", () => {
   const rows = (w: World) =>
     w.last!.lanes.filter((row) => row.account === w.ids.L1).map((row) => [row.type, row.inbox, row.state]);
-  const moveShared = async (w: World) => {
+  // R1's verified document moves both its inboxes, on the same origin.
+  const SHARED_B = "https://d.example/inbox-b";
+  const PERSONAL_B = `${SPEC.R1.uri}/inbox-b`;
+  const moveInboxes = async (w: World) => {
     const a = w.policy.remotes.R1;
-    const doc = { name: a.name, keys: a.keys, inbox: a.inbox, sharedInbox: "https://d.example/inbox-b" };
+    const doc = { name: a.name, keys: a.keys, inbox: PERSONAL_B, sharedInbox: SHARED_B };
     const [row] = await sql<{ revision: number }>(
       w.store,
       "SELECT document_revision AS revision FROM accounts WHERE id = ?",
@@ -2579,13 +2597,13 @@ describe("instance moderation witnesses: routing with activities outstanding", (
 
   it("(a) a removal's withdrawing Reject reaches the new shared inbox and the Accept's", async () => {
     const w = await accepted();
-    expect(await moveShared(w)).toBe("actor-updated");
+    expect(await moveInboxes(w)).toBe("actor-updated");
     await call(w, `/api/v1/accounts/${w.remoteIds.R1}/remove_from_followers`, json({}), w.tokens.L1);
     w.last = await read(w);
     expect(rows(w)).toEqual([
       ["Accept", SPEC.R1.shared, "pending"],
       ["Reject", SPEC.R1.shared, "queued"],
-      ["Reject", "https://d.example/inbox-b", "queued"],
+      ["Reject", SHARED_B, "queued"],
     ]);
     // Both Reject rows are delivered, in lane order (the superseded Accept is dropped at its claim): the first one
     // settling leaves the activity to the second.
@@ -2605,22 +2623,22 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     }
     expect(sent).toEqual([
       ["Reject", SPEC.R1.shared],
-      ["Reject", "https://d.example/inbox-b"],
+      ["Reject", SHARED_B],
     ]);
     expect(await sql(w.store, "SELECT 1 FROM deliveries")).toEqual([]);
   }, 60_000);
 
-  it("(b) a suspension's severing Reject, audienceOnly, has one row at the refreshed inbox", async () => {
+  it("(b) a suspension's severing Reject, audienceOnly, has one row at the refreshed personal inbox", async () => {
     const w = await accepted();
     await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
-    expect(await moveShared(w)).toBe("actor-suspended");
+    expect(await moveInboxes(w)).toBe("actor-suspended");
     await boundedRounds(w, 3);
     w.last = await read(w);
     expect(
       w.last.lanes.filter((row) => row.account === w.ids.L1).map((row) => [row.type, row.inbox, row.superseded]),
     ).toEqual([
       ["Accept", SPEC.R1.shared, 1],
-      ["Reject", "https://d.example/inbox-b", 0],
+      ["Reject", PERSONAL_B, 0],
     ]);
   }, 60_000);
 
@@ -2628,7 +2646,7 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     const w = await accepted();
     const claimed = await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: "lease-c", limit: 1 });
     await call(w, `/api/v1/admin/accounts/${w.remoteIds.R1}/action`, form({ type: "suspend" }), w.admin);
-    await moveShared(w);
+    await moveInboxes(w);
     await boundedRounds(w, 3);
     const confirmed = await w.store.confirmDelivery(BUILD, {
       id: claimed.deliveries[0]!.id,
@@ -2637,7 +2655,7 @@ describe("instance moderation witnesses: routing with activities outstanding", (
     });
     expect(confirmed.status).toBe("dropped");
     w.last = await read(w);
-    expect(rows(w)).toEqual([["Reject", "https://d.example/inbox-b", "pending"]]);
+    expect(rows(w)).toEqual([["Reject", PERSONAL_B, "pending"]]);
   }, 60_000);
 });
 
