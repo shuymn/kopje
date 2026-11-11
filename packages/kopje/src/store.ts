@@ -114,7 +114,6 @@ import {
 import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
-import type { MaintenanceReason } from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
 import { StoreKernel, type StoreOperation } from "./platform/store-kernel";
 import { StreamHub } from "./stream-hub";
@@ -1993,15 +1992,11 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, resolveSearch, input);
   }
 
-  // Search with resolve=true, before any network work (inbox.ts resolutionGate): the credential, the domain and the
-  // first request's preparation, or refused (the maintenance reason) while writes are refused, with nothing prepared, so
-  // no key leaves the Store and nothing is fetched (OPS-8). A failing credential is answered first.
-  async resolutionGate(
-    callerBuild: string,
-    input: OperationInput<typeof inbox.resolutionGate>,
-  ): Promise<inbox.ResolutionGate | { status: "refused"; reason: MaintenanceReason }> {
-    const { output, refused } = await this.#kernel.executeProbing(callerBuild, inbox.resolutionGate, input, "write");
-    return output.status !== "ok" || refused === null ? output : { status: "refused", reason: refused };
+  // Search with resolve=true, before any network work (inbox.ts resolutionGate): the credential, then whether writes
+  // are refused (the maintenance reason, decided in the same transaction, after which nothing is read: no key leaves the
+  // Store and nothing is fetched, OPS-8), then the domain and the first request's preparation.
+  resolutionGate(callerBuild: string, input: Omit<OperationInput<typeof inbox.resolutionGate>, "refused">) {
+    return this.#kernel.executeDeciding(callerBuild, inbox.resolutionGate, input, "write");
   }
 
   // /authorize_interaction: the look-up stores what the Worker fetched as search resolution does and shows

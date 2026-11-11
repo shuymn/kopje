@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { seedAccount, sql } from "./api-helpers";
 import { countingStore, harness, NOW, seedInstanceKey } from "./app-helpers";
@@ -7,7 +7,7 @@ import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD } from "./helpers";
 import { LOCAL, MASTODON, mastodonActor, type RemoteWeb, serveWebFinger } from "./inbox-helpers";
-import { AS, mastodonNote, setup, type Setup } from "./inbox-status-helpers";
+import { ALICE, AS, mastodonNote, setup, type Setup } from "./inbox-status-helpers";
 
 // The Store calls of a resolving search (GET /api/v2/search and GET /api/v1/accounts/search with resolve=true): one
 // read before any network work (Store.resolutionGate: the token, the domain and the first request's preparation, or a
@@ -15,6 +15,26 @@ import { AS, mastodonNote, setup, type Setup } from "./inbox-status-helpers";
 
 const WEBFINGER = `${MASTODON}/.well-known/webfinger?resource=${encodeURIComponent("acct:bob@mastodon.example")}`;
 const INSTANCE_KEY = `${LOCAL}/actor#main-key`;
+
+// The fetches a test holds and the requests it leaves running, released and settled after each test, also when an
+// assertion failed before the test released them (docs/engineering.md, "Tests").
+const holds: { release: () => void }[] = [];
+const outstanding: Promise<unknown>[] = [];
+afterEach(async () => {
+  for (const held of holds.splice(0)) {
+    held.release();
+  }
+  await Promise.allSettled(outstanding.splice(0));
+});
+function hold(t: Setup, url: string) {
+  const held = t.web.hold(url);
+  holds.push(held);
+  return held;
+}
+function track<T>(request: Promise<T>): Promise<T> {
+  outstanding.push(request);
+  return request;
+}
 
 // The app over the counted Store, its fetches through `web`, each DNS check recorded.
 function counted(t: Setup, web: RemoteWeb = t.web, env: Record<string, unknown> = {}) {
@@ -73,7 +93,10 @@ describe("Store calls of a resolving search", () => {
       expect(c.calls()).toEqual(["resolutionGate", ...ensure, "actorRevision", "resolveSearch"]);
       expect(gateOf(c.records)).toMatchObject({
         status: "ok",
-        value: { prefetch: { signer: { username: null }, ticket: { host: "mastodon.example", refused: false } } },
+        value: {
+          refused: null,
+          prefetch: { signer: { username: null }, ticket: { host: "mastodon.example", refused: false } },
+        },
       });
       expect(t.web.fetched).toEqual([note.id, bob.uri]);
       expect(t.web.signers).toEqual([INSTANCE_KEY, INSTANCE_KEY]);
@@ -106,8 +129,8 @@ describe("Store calls of a resolving search", () => {
   it("stops before the actor fetch for a block committed while the WebFinger response was awaited (VIS-30)", async () => {
     const { t, bob } = await world(false);
     const c = counted(t);
-    const held = t.web.hold(WEBFINGER);
-    const response = c.request(`/api/v1/accounts/search?resolve=true&q=${ADDRESS}`);
+    const held = hold(t, WEBFINGER);
+    const response = track(c.request(`/api/v1/accounts/search?resolve=true&q=${ADDRESS}`));
     await held.reached;
     await blockDomain(t.store, "mastodon.example");
     held.release();
@@ -165,11 +188,103 @@ describe("a resolving search refused before any network work", () => {
       ]);
       const reason = name === "the Store readonly" ? "maintenance" : "unpublished";
       for (const record of c.records.filter((r) => r.name === "resolutionGate")) {
-        expect(record.answer).toEqual({ status: "refused", reason });
+        expect(record.answer).toEqual({ status: "ok", value: { refused: reason } });
       }
       expect([t.web.fetched, c.dns]).toEqual([[], []]);
     });
+
+    // An instance key that cannot be parsed: a read of it (readInstanceKey, the signer's) throws, so an answer shows
+    // that the refused gate never read it.
+    it(`reads no signer under ${name}: the refusal is decided before the preparation`, async () => {
+      const { t, note } = await refusedWorld();
+      await sql(t.store, "UPDATE instance_settings SET value = 'not json' WHERE name = 'instance_actor_key'");
+      const c = counted(t);
+      const path = `/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`;
+      // The guarded branch: with writes admitted, the gate reads the key, and the request fails on it.
+      expect((await c.request(path)).status).toBe(500);
+      await refuse(t);
+      expect((await c.request(path)).status).toBe(200);
+      expect(c.records.filter((r) => r.name === "resolutionGate").map((r) => r.error === undefined)).toEqual([
+        false,
+        true,
+      ]);
+      expect([t.web.fetched, c.dns]).toEqual([[], []]);
+    });
   }
+
+  // The Store comes to refuse writes while the last response is awaited: the final store is refused, and the search
+  // answers as the plain search does, judging the token again at its own time.
+  describe("refused while resolving", () => {
+    async function heldWorld() {
+      const { t, bob, note } = await refusedWorld();
+      // erin's display name holds the URL, so the plain search finds her for the URL query.
+      await seedAccount(t.store, { username: "erin", displayName: note.id });
+      return { t, bob, note };
+    }
+    const during = async (t: Setup, url: string, path: string) => {
+      const c = counted(t);
+      const held = hold(t, url);
+      const response = track(c.request(path));
+      await held.reached;
+      await t.store.setMaintenance(BUILD, true);
+      held.release();
+      return { c, response: await response };
+    };
+
+    it("answers a v2 URL query with the plain search", async () => {
+      const { t, bob, note } = await heldWorld();
+      const { c, response } = await during(t, bob.uri, `/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
+      expect(response.status).toBe(200);
+      const body = await response.json<{ accounts: { acct: string }[]; statuses: unknown[] }>();
+      expect([body.accounts.map((a) => a.acct), body.statuses]).toEqual([["erin"], []]);
+      expect(c.calls()).toEqual(["resolutionGate", "actorRevision", "resolveSearch", "search"]);
+      expect(t.web.fetched).toEqual([note.id, bob.uri]);
+    });
+
+    for (const [endpoint, path] of [
+      ["v2", `/api/v2/search?resolve=true&type=accounts&q=${ADDRESS}`],
+      ["v1", `/api/v1/accounts/search?resolve=true&q=${ADDRESS}`],
+    ] as const) {
+      it(`answers a ${endpoint} address query with the plain search`, async () => {
+        const { t, bob } = await heldWorld();
+        const { response } = await during(t, bob.uri, path);
+        const body = await response.json<{ accounts: { acct: string }[] } | { acct: string }[]>();
+        const accounts = Array.isArray(body) ? body : body.accounts;
+        expect([response.status, accounts.map((a) => a.acct)]).toEqual([200, ["carol"]]);
+        expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", bob.uri)).toEqual([{ n: 0 }]);
+      });
+    }
+
+    it("refuses a token that expired in that window, on a v2 URL query (AUTH-1)", async () => {
+      const clock = { now: NOW };
+      const { t, bob, note } = await heldWorld();
+      await sql(
+        t.store,
+        "UPDATE oauth_tokens SET expires_at = ? WHERE account_id = ?",
+        new Date(NOW + 60_000).toISOString(),
+        ALICE,
+      );
+      const c = countingStore(t.store);
+      const h = harness(c.stub, {}, BUILD, { keygen: fixtureKeyGen, loader: t.web.loader }, () => clock.now);
+      const held = hold(t, bob.uri);
+      const response = track(
+        h.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`, {
+          headers: { authorization: `Bearer ${t.tokens.alice}` },
+        }),
+      );
+      await held.reached;
+      await t.store.setMaintenance(BUILD, true);
+      clock.now = NOW + 120_000;
+      held.release();
+      expect((await response).status).toBe(401);
+      expect(c.calls.filter((name) => name !== "noteActivity")).toEqual([
+        "resolutionGate",
+        "actorRevision",
+        "resolveSearch",
+        "search",
+      ]);
+    });
+  });
 
   it("answers an invalid token 401 under the Store readonly: the gate judges the token first", async () => {
     const { t, note } = await refusedWorld();

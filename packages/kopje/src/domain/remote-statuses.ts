@@ -793,13 +793,16 @@ export function webfingerUrl(username: string, host: string): string {
   return `https://${host}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${username}@${host}`)}`;
 }
 
-// The first request a search resolution of the trimmed `query` makes (federation/resolve.ts resolveWith): an address's
-// WebFinger, or the URL itself; null when it makes none: an address on the instance `domain`, a URL on its host (both
-// answered from stored data), or a query that is neither.
-export function resolutionFirstRequest(query: string, domain: string): string | null {
+// What a search resolution of the trimmed `query` fetches (federation/resolve.ts resolveWith), read one way for the
+// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; null when nothing is
+// fetched: an address on the instance `domain`, a URL on its host (both answered from stored data), or a query that is
+// neither.
+export type ResolutionTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+
+export function resolutionTarget(query: string, domain: string): ResolutionTarget | null {
   const address = parseAddress(query);
   if (address !== null) {
-    return address.domain === domain ? null : webfingerUrl(address.username, address.domain);
+    return address.domain === domain ? null : { kind: "address", ...address };
   }
   let url: URL;
   try {
@@ -807,7 +810,12 @@ export function resolutionFirstRequest(query: string, domain: string): string | 
   } catch {
     return null;
   }
-  return url.host === domain ? null : url.href;
+  return url.host === domain ? null : { kind: "url", href: url.href };
+}
+
+// The first request a resolution of `target` makes.
+export function firstRequestOf(target: ResolutionTarget): string {
+  return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
 export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };

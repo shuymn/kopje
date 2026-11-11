@@ -2,9 +2,9 @@ import { FetchError } from "@fedify/fedify";
 
 import type { ResolutionStart } from "../domain/inbox";
 import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
-import { type Resolved, webfingerUrl } from "../domain/remote-statuses";
+import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
 import { readConfig, userKek } from "../platform/config";
-import { hostDomain, normalizeDomain, parseAddress } from "../platform/domain-name";
+import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import {
@@ -108,19 +108,15 @@ async function actorAfterRevision(
   return { fetched: await fetchActor(uri, afterRevisionRead(loaders).document, loaders.context), revision };
 }
 
+// A local address or URL is answered from stored data (resolveSearch's lookup by uri).
 async function resolveWith(loaders: Resolving, query: string, domain: string): Promise<Resolved> {
-  const address = parseAddress(query);
-  if (address !== null) {
-    return address.domain === domain ? NONE : resolveAddress(loaders, address.username, address.domain);
-  }
-  let url: URL;
-  try {
-    url = new URL(query);
-  } catch {
+  const target = resolutionTarget(query, domain);
+  if (target === null) {
     return NONE;
   }
-  // A local URL is answered from stored data (resolveSearch's lookup by uri).
-  return url.host === domain ? NONE : resolveUrl(loaders, url.href);
+  return target.kind === "address"
+    ? resolveAddress(loaders, target.username, target.domain)
+    : resolveUrl(loaders, target.href);
 }
 
 // An actor, with the canonical address its host declares (declaredDomain), and its revision before the fetch.

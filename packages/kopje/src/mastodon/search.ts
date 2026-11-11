@@ -24,8 +24,8 @@ import { offsetParam, type Params, parseBoolean } from "./params";
 // answers with what it resolved to alone, if the viewer may see it; an address query answers the account search with
 // the resolved account first, which the Store's search puts there (resolvedAccountId), so the answer budget (RES-3)
 // covers it. Unauthenticated requests are refused before anything is fetched (401, the route's scope), and a request
-// the Store could not store for (resolveQuery) is answered as without resolve=true, fetching nothing. The final
-// search takes a fresh credential, so a token that expired while resolving is refused. GET /api/v1/accounts/search
+// the Store could not store for (resolveQuery) is answered as without resolve=true. The final search takes a fresh
+// credential, so a token that expired while resolving is refused. GET /api/v1/accounts/search
 // resolves addresses only, through the same resolveQuery (mastodon/accounts.ts).
 
 // The raw bound of q before it is normalized and split (RES-1). Terms beyond the eighth are ignored (search-text.ts).
@@ -106,12 +106,13 @@ export const search: ApiHandler = async (c, deps) => {
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
 
-// Fetches and stores the query's target; null: resolution is refused before any network work, and the caller answers
-// as a plain search (resolve=false). Refused while the env's MAINTENANCE is not off (KEK rotation runs readonly with no
-// Store flag), with no Store call, and while the Store refuses writes (readonly, an unpublished import), answered by the
-// resolution gate, which also checks the token, so nothing is fetched or signed for a request that cannot store it
-// (engineering.md, "a writing path checks the Store's flags and the maintenance mode"). A Store that enters maintenance
-// while resolving cannot store it: the search then answers from local data as it is.
+// Fetches and stores the query's target; null: nothing was resolved for a reason that is not the query's, and the
+// caller answers as a plain search (resolve=false), whose own Store call judges the token again at its time. That is so
+// while the env's MAINTENANCE is not off (KEK rotation runs readonly with no Store flag), with no Store call; while the
+// Store refuses writes (readonly, an unpublished import), which the resolution gate answers after the token and before
+// any signer read, so nothing is fetched for a request that cannot store it (engineering.md, "a writing path checks
+// the Store's flags and the maintenance mode"); and when the Store comes to refuse a write while resolving (the instance
+// key's creation, or the final store).
 export async function resolveQuery(
   c: Parameters<ApiHandler>[0],
   deps: Parameters<ApiHandler>[1],
@@ -121,17 +122,17 @@ export async function resolveQuery(
   if (!config.ok || config.config.MAINTENANCE !== "off") {
     return null;
   }
-  const gate = await storeCall(c, deps, (s, b) => s.resolutionGate(b, { credential: userCredential(c, deps), query }));
-  if (gate.status === "refused") {
+  const gate = authorized(
+    await storeCall(c, deps, (s, b) => s.resolutionGate(b, { credential: userCredential(c, deps), query })),
+  );
+  if (gate.refused !== null) {
     return null;
   }
-  const start = authorized(gate);
-  const none: Found = { accounts: [], statuses: [] };
   if (deps.resolve === undefined) {
-    return none;
+    return { accounts: [], statuses: [] };
   }
-  const resolved = await deps.resolve(c.env, query, start);
   try {
+    const resolved = await deps.resolve(c.env, query, gate);
     const found = authorized(
       await storeCall(c, deps, (s, b) =>
         s.resolveSearch(b, {
@@ -151,7 +152,7 @@ export async function resolveQuery(
     return found;
   } catch (error) {
     if (error instanceof StoreUnavailableError) {
-      return none;
+      return null;
     }
     throw error;
   }

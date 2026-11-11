@@ -10,6 +10,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
+import type { MaintenanceReason } from "../platform/store-errors";
 import {
   isoTimeSql,
   MOVED_TO_INDEX,
@@ -35,7 +36,7 @@ import {
   REACHES_FOLLOWERS_SQL,
   removalBegunSql,
 } from "./audience";
-import { type AuthFailure, authorize, type UserCredential } from "./auth";
+import { userReadOperation } from "./auth";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -110,7 +111,8 @@ import {
   hasLocalFollowers,
   MAX_STATUS_AUDIENCE,
   MAX_STATUS_MENTION_ROWS,
-  resolutionFirstRequest,
+  firstRequestOf,
+  resolutionTarget,
   type StoreContext,
   storeRemoteStatus,
   updateRemoteStatus,
@@ -3479,7 +3481,7 @@ export type FetchPreparation = { signer: FetchSigner; ticket: PolicyTicket | nul
 
 // The one producer of FetchPreparation, for the three answers that decide a fetch: the inbox gate, a receiveActivity
 // need and a search resolution's gate (resolutionGate). Null for a target of this instance's own origin: the paths it
-// serves never fetch one (federation/inbound.ts fetchNeeded and prepare; resolutionFirstRequest), so no key leaves the
+// serves never fetch one (federation/inbound.ts fetchNeeded and prepare; resolutionTarget), so no key leaves the
 // Store for it; a signature key at this origin, which Fedify may still fetch, then costs the Worker its own signer and
 // policy reads.
 function fetchPreparation(db: Db, by: string | FollowerSigner | null, target: string): FetchPreparation | null {
@@ -3490,26 +3492,31 @@ function fetchPreparation(db: Db, by: string | FollowerSigner | null, target: st
   return { signer: fetchSignerOf(db, by), ticket: ticketFor(db, target) };
 }
 
-// What a search resolution (federation/resolve.ts) is decided on before any network work, in one read: the credential
-// (as checkCredential judges it), the instance domain (null before /setup: nothing is resolved) and the preparation of
-// the resolution's first request (resolutionFirstRequest), signed by the instance actor (DATA-7); none for a failing
-// credential or a query that fetches nothing. Store.resolutionGate refuses it, with nothing prepared, while writes are
-// refused, so resolution stops before any loader is made (OPS-8). Advisory: resolveSearch is authorized and admitted
-// again in its own transaction.
-export type ResolutionGate = AuthFailure | { status: "ok"; value: ResolutionStart };
+// What a search resolution (federation/resolve.ts) is decided on before any network work, in one read, in this order:
+// the credential (as checkCredential judges it, so a failing token is answered first); then whether writes are refused
+// (`refused`, decided by Store.resolutionGate in the same transaction), which answers the reason and reads nothing more,
+// so no signer or key is read for a request that cannot store what it would fetch (OPS-8); then the instance domain
+// (null before /setup: nothing is resolved) and the preparation of the resolution's first request (resolutionTarget),
+// signed by the instance actor (DATA-7), none for a query that fetches nothing. Advisory: resolveSearch is authorized
+// and admitted again in its own transaction.
 export type ResolutionStart = { domain: string | null; prefetch: FetchPreparation | null };
+export type ResolutionDecision = ({ refused: null } & ResolutionStart) | { refused: MaintenanceReason };
 
-export const resolutionGate = readOperation<{ credential: UserCredential; query: string }, ResolutionGate>(
-  (db, { credential, query }) => {
-    const auth = authorize(db, credential);
-    if (auth.status !== "ok") {
-      return auth;
-    }
-    const domain = instanceDomainOf(db);
-    const first = domain === null ? null : resolutionFirstRequest(query.trim(), domain);
-    return { status: "ok", value: { domain, prefetch: first === null ? null : fetchPreparation(db, null, first) } };
-  },
-);
+export const resolutionGate = userReadOperation<
+  { query: string; refused: MaintenanceReason | null },
+  ResolutionDecision
+>((db, { query, refused }) => {
+  if (refused !== null) {
+    return { refused };
+  }
+  const domain = instanceDomainOf(db);
+  const target = domain === null ? null : resolutionTarget(query.trim(), domain);
+  return {
+    refused: null,
+    domain,
+    prefetch: target === null ? null : fetchPreparation(db, null, firstRequestOf(target)),
+  };
+});
 
 // now: judges the stored key only to decide whether a fetch follows (verification judges it again at its lookup,
 // federation/inbound.ts lookupKey). fetches: the URL the activity's handling fetches first whatever the key

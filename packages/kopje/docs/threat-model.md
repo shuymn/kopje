@@ -1883,10 +1883,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
   with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
-  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` or the Store refuses writes
-  (readonly, an unpublished import, OPS-8): the token, the domain, the refusal and the first request's preparation come
-  in one read before any signer read, DNS check or fetch (`resolutionGate` in `src/domain/inbox.ts`, `resolveQuery` in
-  `src/mastodon/search.ts`). An account's canonical
+  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker,
+  with no gate read) or the Store refuses writes (readonly, an unpublished import, OPS-8). The latter is decided in one
+  read before any DNS check or fetch, in this order: the token (a failing one is answered first), then the Store's
+  write refusal, which answers the reason and reads nothing more (no signer, no instance key), then the domain and the
+  first request's preparation (`resolutionGate` in `src/domain/inbox.ts`, `executeDeciding` in
+  `src/platform/store-kernel.ts`, `resolveQuery` in `src/mastodon/search.ts`). A write the Store comes to refuse while
+  resolving (the final store, or the instance key's creation) also leaves the answer to the plain search, which judges
+  the token again. An account's canonical
   address is decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and
   `ResolveAccountService` decide it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
