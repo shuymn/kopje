@@ -1923,7 +1923,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
   the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker,
   with no gate read) or the Store refuses writes (readonly, an unpublished import, OPS-8). The latter is decided in one
-  read before any DNS check or fetch, in this order: the token (a failing one is answered first), then the Store's
+  read before any DNS check or fetch, the first after the host check's domain read that every API request makes
+  (WEB-6), in this order: the token (a failing one is answered first), then the Store's
   write refusal, which answers the reason and reads nothing more (no signer, no instance key), then the domain and the
   first request's preparation (`resolutionGate` in `src/domain/inbox.ts`, `executeDeciding` in
   `src/platform/store-kernel.ts`, `resolveQuery` in `src/mastodon/search.ts`). A write the Store comes to refuse while

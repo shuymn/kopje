@@ -29,7 +29,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `/api/v2/search` fetched the query's target in all three cases and stored it under the env's `MAINTENANCE=readonly`,
   and `/api/v1/accounts/search` fetched it in the last two. When the Store comes to refuse writes while a search is
   resolving, the answer is now the plain search too, so a URL query finds local matches instead of nothing, and a
-  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch.
+  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch:
+  one read, its gate, after the domain read every API request makes (see Changed).
   No migration, no `wrangler.jsonc` change.
 
 ### Fixed
