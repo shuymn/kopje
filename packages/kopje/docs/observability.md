@@ -79,7 +79,9 @@ so a change made only in the dashboard does not last.
 | `kopje.remote_media.type_refused` | A cached remote file's stored type is not the one its path names; it answers 404                                     | [threat-model.md](threat-model.md), MEDIA-4        |
 
 `kopje.jobs.item.parked` is logged at warn, not error: the attempt that parks the job also logs `kopje.jobs.item.failed`
-at error with `parked: true`, and error is kept for events whose name says they failed.
+at error with `parked: true`, and error is kept for events whose name says they failed. Family `handshake_replays` is a
+held `Follow` or `Accept` whose replay keeps failing (VIS-30): the handshake stays owed, and is recorded once the cause
+is fixed and the job retried.
 
 `kopje.delivery.stale_follow_answer` (level warn) records a follow answer (`type`: `Accept`, `Reject`, or `other` for an
 imported answer without either) that a newer `Follow` of its pair, the follower's `Undo` of its generation or a block

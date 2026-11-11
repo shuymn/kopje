@@ -69,9 +69,20 @@ export const pairShaped = (id: string): boolean => /^\/follows\/[^/]+\/[^/]+$/.t
 export const PAIR_SHAPE_BYTES = 4096;
 const utf8 = new TextEncoder();
 
+// VIS-30's held handshakes (docs/visibility.md, "Held handshakes"): the fixed wait before a hold's availability is read
+// again.
+export const HANDSHAKE_RECHECK_MS = 5 * 60_000;
+
+const sameEdge = (a: RemoteEdge, b: RemoteEdge) => a?.state === b?.state && a?.uri === b?.uri;
+
 export class Policy {
-  rl: RemoteEdge = null;
-  lr: Edge = null;
+  private rlEdge: RemoteEdge = null;
+  private lrEdge: Edge = null;
+  // The held handshake of each edge (VIS-30): when its replay next reads availability, null for none. An edge holds
+  // one at most, and any change of the edge, its uri or its state ends it (the follow's delete cascades to its hold, and
+  // handshake_replays_generation ends it on an update).
+  heldLR: number | null = null;
+  heldRL: number | null = null;
   blockRL: string | null = null;
   blockLR: string | null = null;
   locked = false;
@@ -92,6 +103,28 @@ export class Policy {
     readonly rUri: string,
     readonly unavailable: () => boolean = () => false,
   ) {}
+
+  get rl(): RemoteEdge {
+    return this.rlEdge;
+  }
+
+  set rl(edge: RemoteEdge) {
+    if (!sameEdge(this.rlEdge, edge)) {
+      this.heldRL = null;
+    }
+    this.rlEdge = edge;
+  }
+
+  get lr(): Edge {
+    return this.lrEdge;
+  }
+
+  set lr(edge: Edge) {
+    if (!sameEdge(this.lrEdge, edge)) {
+      this.heldLR = null;
+    }
+    this.lrEdge = edge;
+  }
 
   get followers(): number {
     return this.rl?.state === "accepted" ? 1 : 0;
@@ -137,12 +170,15 @@ export class Policy {
       undoes?: Intent["undoes"];
       answer?: boolean;
       retracts?: boolean;
+      // A replay of a held handshake, whose hold it consumed.
+      replayed?: boolean;
     },
   ): void {
     const answer = input.answer === true;
     // ID-7: an answer's id derives from the Follow it answers, so a pair-shaped Follow id, never recorded as retracted,
-    // answers each generation of the pair under the same id; any other id is answered once.
-    if (answer && (input.ref === null || !pairShaped(input.ref))) {
+    // answers each generation of the pair under the same id; any other id is answered once, except once more through
+    // each hold the send-time check consumed (a replay).
+    if (answer && input.replayed !== true && (input.ref === null || !pairShaped(input.ref))) {
       const key = `${input.type} ${input.ref}`;
       if (this.answerIds.has(key)) {
         throw new Error(`policy: the ${key} answer is recorded twice (ID-7)`);
@@ -165,8 +201,9 @@ export class Policy {
         this.remove(earlier, now);
       }
     }
+    const { replayed: _, ...intent } = input;
     this.lane.push({
-      ...input,
+      ...intent,
       undoes: input.undoes ?? null,
       seq: ++this.seq,
       answer,
@@ -560,7 +597,11 @@ export class Policy {
     if (!due) {
       return none;
     }
-    if ((head.answer && head.superseded) || (!head.retracts && this.unavailable())) {
+    const refused = !head.retracts && this.unavailable();
+    if (refused || (head.answer && head.superseded)) {
+      if (refused) {
+        this.hold(head, now);
+      }
       this.remove(head, now);
       return { ...none, dropped: head };
     }
@@ -579,11 +620,48 @@ export class Policy {
     if (intent === undefined) {
       return { status: "stale" };
     }
-    if ((intent.answer && intent.superseded) || (!intent.retracts && this.unavailable())) {
+    // A superseded answer is stale before the send-time check is read (deliveries.ts confirmDelivery).
+    const stale = intent.answer && intent.superseded;
+    if (stale || (!intent.retracts && this.unavailable())) {
+      if (!stale) {
+        this.hold(intent, now);
+      }
       this.remove(intent, now);
       return { status: "dropped" };
     }
     return { status: "send", intent };
+  }
+
+  // VIS-30: a row the send-time check refuses holds its follow when it is that follow's owed handshake, not superseded:
+  // a Follow of L's pending follow under its id, or an Accept of R's accepted follow under the Follow it answers.
+  private hold(intent: Intent, now: number): void {
+    if (intent.superseded || intent.retracts) {
+      return;
+    }
+    if (intent.type === "Follow" && this.lr?.state === "pending" && this.lr.uri === intent.ref) {
+      this.heldLR = now + HANDSHAKE_RECHECK_MS;
+    } else if (
+      intent.type === "Accept" &&
+      intent.answer &&
+      this.rl?.state === "accepted" &&
+      this.rl.uri === intent.ref
+    ) {
+      this.heldRL = now + HANDSHAKE_RECHECK_MS;
+    }
+  }
+
+  // A held handshake replayed (handshake-replays.ts): the edge's current generation's Follow or Accept is recorded
+  // again with its id, and the hold is consumed.
+  replay(side: "lr" | "rl", now: number): void {
+    if (side === "lr") {
+      const edge = this.lr!;
+      this.heldLR = null;
+      this.record(now, { type: "Follow", ref: edge.uri, subject: edge.uri });
+    } else {
+      const edge = this.rl!;
+      this.heldRL = null;
+      this.record(now, { type: "Accept", ref: edge.uri, subject: edge.uri, answer: true, replayed: true });
+    }
   }
 
   complete(

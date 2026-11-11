@@ -333,6 +333,12 @@ describe("the severing round's budget and its preparatory steps", () => {
       "UPDATE deliveries SET exposed = 1 WHERE activity_id IN (SELECT id FROM outbound_activities WHERE follow_pair = ?)",
       r,
     );
+    // The follow's Accept held as well (handshake-replays.ts): its delete cascades to the hold, in SEVER_ROWS.
+    await sql(
+      w.h.store,
+      "INSERT INTO handshake_replays (follow_id, check_at) SELECT id, 0 FROM follows WHERE account_id = ?",
+      r,
+    );
     return { r, uri };
   }
 

@@ -29,7 +29,7 @@ import {
   statusPublishedSql,
   storedCountSql,
 } from "../platform/stored-bounds";
-import { ACCOUNT_COLUMN_MAP, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
+import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "./admin-authority";
 import { QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
 import { actorUriSql, usernameSql } from "./profile-bounds";
@@ -328,7 +328,7 @@ function statusRowTerms(viewer: string, filterRows: string): string {
 				+ CASE WHEN a.domain IS NULL OR a.header_url IS NULL THEN 0 ELSE ${cachedImage} END
 				+ CASE WHEN a.moved_to_account_id IS NULL THEN 0 ELSE ${movedHeap} END
 			FROM statuses w INDEXED BY ${STATUSES_ID_INDEX}
-			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id LEFT JOIN local_accounts l ON l.account_id = a.id WHERE w.id = x.id`),
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN} WHERE w.id = x.id`),
     `CASE WHEN (SELECT o.reblog_of_id FROM statuses o WHERE o.id = x.id) IS NULL THEN ${children} ELSE 0 END`,
     fixed(FILTER_MATCH_COLUMNS, filterRows),
     `CASE WHEN ${viewer} IS NULL THEN 0 ELSE ${balancedSum([

@@ -1,4 +1,4 @@
-import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, ACCOUNTS_URI_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT } from "../platform/identity-bounds";
@@ -28,6 +28,7 @@ import {
 } from "./audience";
 import { EXPANSION_STEP } from "./delivery-bounds";
 import { hostCovered } from "./instance-domain-blocks";
+import { FRESH_ATTEMPTS_SQL, SAFE_MS } from "./job-attempts";
 import { readOperation, writeOperation } from "./operation";
 import { RowBudget } from "./row-budget";
 
@@ -71,6 +72,8 @@ import { RowBudget } from "./row-budget";
 //     targets reads them from the receipts, so they are written until it is staged).
 //   - Claims and completions return nextDueAt, the earliest time any work is due, so the Worker can ring for it.
 //   - Send-time check (VIS-30): each target's Provenance is copied onto its row; sendRefused and confirmDelivery below.
+//     A refused row that is its follow's owed Follow or Accept holds that follow (holdHandshake), which
+//     handshake-replays.ts records again once the recipient is available.
 //   - Signer: an activity is signed by its lane's account, its author, except one recorded as signed by the instance
 //     actor (signedBy 'instance', DATA-7): a forwarded report's Flag (reports.ts), which Mastodon sends from
 //     Account.representative. Its lane is still the reporter's, which owns the intent and orders it with the reporter's
@@ -461,6 +464,8 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // neutral copy to each addressed account at its personal inbox, never its shared one. R38's severing Reject takes both
 // (blocks.ts endFollow): a Follow's Reject matters to the follower's server only, at its current personal inbox, as
 // Mastodon's reject_remote_follows! sends it to inbox_url.
+// Returns whether this call inserted an intent with at least one target (a chunk); the expansion it runs, which may
+// expand other intents, does not count. A handshake replay ends its hold only then (handshake-replays.ts).
 export type OutboundOptions = { withdraws?: boolean; audienceOnly?: boolean; personalInbox?: boolean };
 
 export function enqueueActivity(
@@ -469,7 +474,7 @@ export function enqueueActivity(
   envelope: DeliveryEnvelope,
   now: number,
   options: OutboundOptions = {},
-): void {
+): boolean {
   const found = targetsOf(
     db,
     signerId,
@@ -507,6 +512,7 @@ export function enqueueActivity(
       object,
     );
   }
+  let inserted = false;
   // An actor Update goes unchanged to every target and replaces its waiting profile Updates, so quick edits deliver
   // only the latest document. A status Update follows the rule above; poll voters hold the status and take its counts
   // from an Update only (DistributePollUpdateWorker).
@@ -529,20 +535,21 @@ export function enqueueActivity(
       new Set(targets.filter((t) => t.inbox !== "").map((t) => laneOf(t.inbox))),
       now,
     );
-    insertIntent(db, signerId, envelope, object, false, targets, now);
+    inserted = insertIntent(db, signerId, envelope, object, false, targets, now);
   } else if (object !== null && envelope.activity.type === "Update") {
     const having = serversWithObject(db, signerId, object);
     const fresh = targets.filter((t) => t.inbox !== "" && !having.has(laneOf(t.inbox)) && !voters.has(t.inbox));
     if (fresh.length > 0) {
       replaceWaiting(db, signerId, object, new Set(fresh.map((t) => laneOf(t.inbox))), now);
       const creation = { ...envelope, activity: createOfCurrent(envelope.activity) };
-      insertIntent(db, signerId, creation, object, false, fresh, now);
+      inserted = insertIntent(db, signerId, creation, object, false, fresh, now);
     }
-    insertIntent(db, signerId, envelope, object, false, targets, now);
+    inserted = insertIntent(db, signerId, envelope, object, false, targets, now) || inserted;
   } else {
-    insertIntent(db, signerId, envelope, object, retracts, targets, now);
+    inserted = insertIntent(db, signerId, envelope, object, retracts, targets, now);
   }
   expandPending(db, now, EXPANSION_STEP);
+  return inserted;
 }
 
 // The earlier activities about an object that a new one supersedes. A moderation Update still staging (retracts 0,
@@ -1928,10 +1935,10 @@ function insertIntent(
   retracts: boolean,
   targets: Target[],
   now: number,
-): void {
+): boolean {
   const chunks = chunked(targets);
   if (chunks.length === 0) {
-    return;
+    return false;
   }
   const { followPair, ...stored } = envelope;
   const intent = db.first<{ id: string }>(
@@ -1945,6 +1952,7 @@ function insertIntent(
     followPair ?? null,
   )!;
   insertChunks(db, intent.id, chunks);
+  return true;
 }
 
 // Writes chunks (chunked) as the intent's targets still to expand, one row each.
@@ -2438,6 +2446,12 @@ function hostOf(inbox: string): string | null {
   }
 }
 
+// The send-time check's host rule: an instance domain block covers the inbox's host (one without a host is not).
+export function inboxCovered(db: Db, inbox: string): boolean {
+  const host = hostOf(inbox);
+  return host !== null && hostCovered(db, host);
+}
+
 // VIS-30's send-time check, at the claim and again at confirmation (the rules: docs/visibility.md, "The send-time
 // check"). The exemption reads the persisted retracts flag, never the activity's kind worked out again. The accounts
 // rule joins accounts, because availableSql reads a missing id as available and a purged recipient must count as gone,
@@ -2453,8 +2467,7 @@ function sendRefused(db: Db, row: DueRow): boolean {
   if (row.refused_sender === 1) {
     return true;
   }
-  const host = hostOf(row.inbox_url);
-  if (host !== null && hostCovered(db, host)) {
+  if (inboxCovered(db, row.inbox_url)) {
     return true;
   }
   if (
@@ -2478,6 +2491,48 @@ function sendRefused(db: Db, row: DueRow): boolean {
   }
   const domains = row.recipient_domains === null ? [] : (JSON.parse(row.recipient_domains) as string[]);
   return domains.length > 0 && domains.every((domain) => hostCovered(db, domain));
+}
+
+// The wait before a held handshake's availability is read again (handshake-replays.ts): a fixed interval.
+export const HANDSHAKE_RECHECK_MS = 5 * 60_000;
+
+// The time a hold is next read at `now`, clamped to its stored bound (migration 0088_handshake_replays: SAFE_MS).
+export function recheckAtSql(now: string): string {
+  return `min(CAST(max(${now}, 0) AS INTEGER) + ${HANDSHAKE_RECHECK_MS}, ${SAFE_MS})`;
+}
+
+// The follow whose current generation the intent ?1 is the handshake of, when it is still owed: a Follow whose local
+// follow of the account its object names (by uri, ACCOUNTS_URI_INDEX) is pending under that Follow's id, or a follow
+// pair's Accept whose remote follow is accepted under the Follow it answers (IS: an edge without a uri, answered by an
+// Accept that names no Follow id). Neither superseded nor a retraction. Each id is compared by its bytes, in SQL. A
+// quote's Accept carries no follow pair, and content no Follow or Accept type, so neither ever matches.
+const OWED_HANDSHAKE = `SELECT f.id FROM main.outbound_activities o NOT INDEXED
+		CROSS JOIN main.accounts t INDEXED BY ${ACCOUNTS_URI_INDEX}
+			ON t.uri = json_extract(o.body, '$.activity.object')
+		CROSS JOIN main.follows f INDEXED BY follows_pair ON f.account_id = o.account_id AND f.target_account_id = t.id
+	WHERE o.id = CAST(?1 AS INTEGER) AND o.superseded = 0 AND o.retracts = 0
+		AND json_extract(o.body, '$.activity.type') = 'Follow'
+		AND f.state = 'pending' AND f.uri = json_extract(o.body, '$.activity.id')
+	UNION ALL SELECT f.id FROM main.outbound_activities o NOT INDEXED
+		CROSS JOIN main.follows f INDEXED BY follows_pair ON f.account_id = o.follow_pair AND f.target_account_id = o.account_id
+	WHERE o.id = CAST(?1 AS INTEGER) AND o.superseded = 0 AND o.retracts = 0 AND o.follow_pair IS NOT NULL
+		AND json_extract(o.body, '$.activity.type') = 'Accept'
+		AND f.state = 'accepted' AND f.uri IS json_extract(o.body, '$.activity.object.id')`;
+
+// VIS-30's held handshakes: a row the send-time check refused because of its recipient (its sender available) that
+// is its follow's owed Follow or Accept (OWED_HANDSHAKE) holds that follow, fresh and due at the recheck, for
+// handshake-replays.ts to record again once the recipient is available. Run before the row is dropped, which may
+// delete its intent. One row at most (the follow's hold, its primary key).
+function holdHandshake(db: Db, row: DueRow, now: number): void {
+  if (row.refused_sender === 1) {
+    return;
+  }
+  db.run(
+    `INSERT INTO handshake_replays (follow_id, check_at) SELECT id, ${recheckAtSql("?2")} FROM (${OWED_HANDSHAKE}) WHERE 1
+		ON CONFLICT (follow_id) DO UPDATE SET check_at = excluded.check_at, ${FRESH_ATTEMPTS_SQL}`,
+    row.activity_id,
+    now,
+  );
 }
 
 function dropRow(db: Db, row: LaneRow, now: number): void {
@@ -2505,6 +2560,7 @@ export const claimDeliveries = writeOperation<{ now: number; leaseToken: string;
     for (const row of due) {
       // A row whose activity is gone is never refused here; its confirmation drops it.
       if (row.found === 1 && sendRefused(db, row)) {
+        holdHandshake(db, row, now);
         dropRow(db, row, now);
         continue;
       }
@@ -2581,7 +2637,12 @@ export const confirmDelivery = writeOperation<{ id: string; leaseToken: string; 
     if (row === undefined) {
       return { status: "stale" };
     }
-    if (row.found === 0 || row.activity === null || row.stale_answer === 1 || sendRefused(db, row)) {
+    const gone = row.found === 0 || row.activity === null || row.stale_answer === 1;
+    const refused = !gone && sendRefused(db, row);
+    if (refused) {
+      holdHandshake(db, row, now);
+    }
+    if (gone || refused || row.activity === null) {
       dropRow(db, row, now);
       if (row.stale_answer === 1) {
         staleAnswer(row.answer_type, "confirm");
