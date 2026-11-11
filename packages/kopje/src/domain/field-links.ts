@@ -1,3 +1,4 @@
+import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import {
@@ -73,7 +74,7 @@ const DOMAIN = /^[a-z0-9.-]{1,253}$/;
 // The values of the bounded fields of the local account ?1 that may be verified and are neither verified nor checked
 // and not verified, in field order, distinct.
 const CANDIDATES = `SELECT v FROM (SELECT f.value ->> '$.value' AS v, f.key AS k
-		FROM local_accounts l, json_each(${boundedLocalFieldsSql("l.fields")}) f
+		FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}, json_each(${boundedLocalFieldsSql("l.fields")}) f
 		WHERE l.account_id = ?1 AND f.type = 'object' AND json_type(f.value, '$.value') = 'text'
 			AND f.value ->> '$.value' NOT IN (SELECT e.value ->> '$[0]' FROM json_each(l.verified_links) e)
 			AND f.value ->> '$.value' NOT IN (SELECT e.value FROM json_each(l.unverified_links) e))

@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
   ACCOUNT_EMOJIS_BYTES,
@@ -99,7 +100,8 @@ export const updateCredentials = userMediaDeleteOperation<
     locked: number;
   }>(
     `SELECT a.username, a.display_name, a.actor_type, l.hide_collections, a.locked
-		FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?`,
+		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
   );
   if (current === undefined) {
@@ -161,7 +163,9 @@ export const updateCredentials = userMediaDeleteOperation<
   // Every save takes the profile's local emoji again (custom-emojis.ts localEmojiSnapshot), from the stored display
   // name, note and fields, as Mastodon's Account#emojis reads them (app/models/account.rb:450-451, 486-488).
   const profile = db.first<{ display_name: string; note: string; fields: string }>(
-    "SELECT a.display_name, a.note, l.fields FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?",
+    `SELECT a.display_name, a.note, l.fields
+		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
   );
   const texts =

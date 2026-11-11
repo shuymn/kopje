@@ -1,3 +1,4 @@
+import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import { utf8Length } from "../platform/dump-format";
 import { presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
 import {
@@ -48,7 +49,8 @@ export const getOutbox = readOperation<{ username: string; before: string | null
   (db, { username, before }) => {
     const owner = db.first<{ id: string; uri: string; statuses_count: number }>(
       `SELECT a.id, a.uri, ${presentedCountSql("a.statuses_count")} AS statuses_count
-			FROM accounts a JOIN local_accounts l ON l.account_id = a.id
+			FROM accounts a INDEXED BY accounts_local_username
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 			WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1 AND ${availableLocalSql("l")}`,
       username,
     );
@@ -166,8 +168,9 @@ export type FeaturedItem = { uri: string; note: string | null };
 // their primary key: at most PIN_LIMIT.
 export const getFeatured = readOperation<{ username: string }, FeaturedItem[] | null>((db, { username }) => {
   const owner = db.first<{ id: string }>(
-    `SELECT a.id FROM accounts a JOIN local_accounts l ON l.account_id = a.id
-		WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1 AND ${availableLocalSql("l")}`,
+    `SELECT a.id FROM accounts a INDEXED BY accounts_local_username
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+			WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1 AND ${availableLocalSql("l")}`,
     username,
   );
   if (owner === undefined) {

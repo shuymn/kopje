@@ -277,6 +277,33 @@ describe("plan audit identity", () => {
   });
 });
 
+// Whether the call frame `frame` is at the manifest site `site` (a function, or the declaration enclosing an anonymous
+// one).
+function at(frame: string, site: string): boolean {
+  const [path, name] = site.split("#") as [string, string];
+  if (!frame.startsWith(`${path}#`)) {
+    return false;
+  }
+  const [head, enclosing] = frame.slice(path.length + 1).split(" in ");
+  return head === name || head!.endsWith(`.${name}`) || enclosing === name;
+}
+
+// The pending and write entries of any group first recorded at a fixed row's functions, whatever they scan, that no
+// other row names by id (a function may hold another row's statement, as getOutbox holds group 2's outbox hydration):
+// a fixed row's statements are all pinned, so any such entry is a residual its sweep left.
+function residuals(entries: readonly PlanAuditEntry[]): string[] {
+  const fixed = ROWS_1468.filter((row) => row.status === "fixed").flatMap((row) => row.sites);
+  const named = new Set(ROWS_1468.flatMap((row) => ("ids" in row && row.ids !== undefined ? row.ids : [])));
+  return entries
+    .filter(
+      (entry) =>
+        (entry.disposition === "pending" || entry.disposition === "write") &&
+        !named.has(entry.id) &&
+        fixed.some((site) => at(entry.site.split(" < ")[0]!, site)),
+    )
+    .map((entry) => entry.id);
+}
+
 describe("plan audit baseline", () => {
   it("lists each identity once, with what is known of it", () => {
     const ids = PLAN_AUDIT_ENTRIES.map((entry) => entry.id);
@@ -291,22 +318,15 @@ describe("plan audit baseline", () => {
     }
   });
 
-  // AC8: every row of #1468 is observed, outside the predicate, or unobserved; an identity a row names is an entry of
-  // the row's group, recorded at one of the row's functions (or, for a fragment, scanning by its pattern), and named by
-  // no other row.
+  // AC8: every row of #1468 is fixed, observed, outside the predicate, or unobserved; no pending or write entry is first
+  // recorded at a fixed row's functions; an identity a row names is an entry of the row's group, recorded at one of the
+  // row's functions (or, for a fragment, scanning by its pattern), and named by no other row.
   it("maps the rows of #1468 onto the entries", () => {
     const byId = new Map(PLAN_AUDIT_ENTRIES.map((entry) => [entry.id, entry]));
-    const at = (frame: string, site: string) => {
-      const [path, name] = site.split("#") as [string, string];
-      if (!frame.startsWith(`${path}#`)) {
-        return false;
-      }
-      const [head, enclosing] = frame.slice(path.length + 1).split(" in ");
-      return head === name || head!.endsWith(`.${name}`) || enclosing === name;
-    };
     const named = ROWS_1468.flatMap((row) => ("ids" in row && row.ids !== undefined ? row.ids : []));
     expect(new Set(named).size).toBe(named.length);
     expect(named.length).toBeGreaterThan(0);
+    expect(residuals(PLAN_AUDIT_ENTRIES)).toEqual([]);
     for (const row of ROWS_1468) {
       for (const id of "ids" in row && row.ids !== undefined ? row.ids : []) {
         const entry = byId.get(id);
@@ -326,6 +346,35 @@ describe("plan audit baseline", () => {
           ).toBe(true);
         }
       }
+    }
+  });
+});
+
+describe("plan audit residuals", () => {
+  // Statements of #1468 group 1's sweep put back as they stood before it, each a residual of a fixed row whatever its
+  // group or its scans.
+  it.each([
+    ["the follow walk of a collection page", "src/domain/actors.ts#<anonymous> in getCollection", "follows: SCAN f", 5],
+    [
+      "NodeInfo's active users",
+      "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf",
+      "statuses: SCAN s",
+      1,
+    ],
+    ["NodeInfo's local posts", "src/domain/actors.ts#nodeInfoUsageOf", "statuses: SCAN s", 1],
+    ["the staged actor Update rewrite", "src/domain/deliveries.ts#enqueueActivity", "outbound_activities: SCAN o", 8],
+    ["the field-link candidates", "src/domain/field-links.ts#linkCandidates", "local_accounts: SCAN l", 1],
+    ["the profile image release", "src/domain/media.ts#applyProfileImage", "media_attachments: SCAN m", 7],
+  ])("fails %s put back", (_name, site, scan, group) => {
+    for (const disposition of ["pending", "write"] as const) {
+      const stray: PlanAuditEntry = {
+        id: "0000000000000000",
+        scans: [scan],
+        site,
+        disposition,
+        issue: `#1468 group ${group}`,
+      };
+      expect(residuals([...PLAN_AUDIT_ENTRIES, stray])).toEqual([stray.id]);
     }
   });
 });

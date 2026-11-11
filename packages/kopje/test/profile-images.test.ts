@@ -8,6 +8,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
 import { bytes, multipartForm, r2Keys, TestCodec } from "./media-helpers";
+import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
 import { scopedToken } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
@@ -381,14 +382,16 @@ describe("profile image release", () => {
       );
       state.storage.sql.exec(`UPDATE accounts SET avatar_url = ${raw} WHERE id = ?`, alice);
     });
-    // No ANALYZE: the plan holds with no statistics.
-    const plan = await runInDurableObject(h.store, (_instance, state) =>
-      state.storage.sql
+    // Planned under the plan audit's singleton statistics (a Store analyzed while small), where only the pin keeps the
+    // account index (RES-7).
+    const plan = await runInDurableObject(h.store, (_instance, state) => {
+      singletonStatistics(state.storage.sql);
+      return state.storage.sql
         .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${profileReleaseSql("avatar")}`, alice, "x")
         .toArray()
         .map((row) => row.detail)
-        .join("\n"),
-    );
+        .join("\n");
+    });
     expect(plan).toMatch(/SEARCH media_attachments USING INDEX media_attachments_account \(account_id=\?\)/);
     expect(plan).not.toMatch(/SCAN/);
     expect((await patch(h, h.users.alice.token, formOf([["avatar", png()]]))).status).toBe(200);

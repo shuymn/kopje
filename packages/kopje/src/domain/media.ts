@@ -401,7 +401,7 @@ export function profileUploadReady(db: Db, accountId: string, id: string, now: n
 // The release of the upload behind the account's `kind` image (?1 the account, ?2 the doom time): applyProfileImage.
 export function profileReleaseSql(kind: ProfileImage): string {
   const { own, other } = PROFILE_COLUMNS[kind];
-  return `UPDATE media_attachments SET gc_at = ?2
+  return `UPDATE media_attachments INDEXED BY media_attachments_account SET gc_at = ?2
 		WHERE account_id = ?1 AND status_id IS NULL AND gc_at IS NULL
 			AND url = (SELECT ${own} FROM accounts WHERE id = ?1)
 			AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = ?1 AND a.${other} = media_attachments.url)

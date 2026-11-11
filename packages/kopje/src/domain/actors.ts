@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import type { ImportAuthority } from "../platform/store-admin";
 import { ACCOUNT_EMOJIS_BYTES, presentedLocalFieldsSql } from "../platform/stored-bounds";
@@ -59,8 +60,11 @@ type ActorRow = {
   emojis: string | null;
 };
 
-const LOCAL_BY_USERNAME =
-  "FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.domain IS NULL AND lower(a.username) = lower(?)";
+// A local account and its local row by username, in any case, through accounts_local_username and then the local
+// row's key (RES-7).
+const LOCAL_BY_USERNAME = `FROM accounts a INDEXED BY accounts_local_username
+	CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+	WHERE a.domain IS NULL AND lower(a.username) = lower(?)`;
 
 // The domain /setup fixed, or null before setup.
 export function instanceDomainOf(db: Db): string | null {
@@ -131,11 +135,12 @@ export const getLocalKey = readOperation<{ username: string }, StoredKey | null>
 // The key of a local account, by its exact username, that signs a fetch as itself (the recipient of a personal inbox, a
 // QuoteRequest's quoted author as Mastodon's on_behalf_of): only while the account is available, so an account
 // suspended or being deleted never signs; null otherwise. Publishing its public key is getLocalKey's, which has no
-// such check.
+// such check. The exact name is sought through accounts_local_username, whose key it implies (RES-7).
 function signingKeyOf(db: Db, username: string): FetchSigner | null {
   const row = db.first<KeyRow>(
-    `SELECT a.username, l.privkey, l.privkey_salt, l.pubkey FROM accounts a JOIN local_accounts l ON l.account_id = a.id
-		WHERE a.domain IS NULL AND a.username = ? AND ${availableLocalSql("l")}`,
+    `SELECT a.username, l.privkey, l.privkey_salt, l.pubkey FROM accounts a INDEXED BY accounts_local_username
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+		WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1 AND ${availableLocalSql("l")}`,
     username,
   );
   return row === undefined ? null : { username: row.username, key: storedKey(row) };
@@ -146,7 +151,8 @@ function signingKeyOf(db: Db, username: string): FetchSigner | null {
 // and the remote account is available; null otherwise.
 function followerKeyOf(db: Db, { follower, of }: FollowerSigner): FetchSigner | null {
   const row = db.first<KeyRow>(
-    `SELECT a.username, l.privkey, l.privkey_salt, l.pubkey FROM local_accounts l JOIN accounts a ON a.id = l.account_id
+    `SELECT a.username, l.privkey, l.privkey_salt, l.pubkey FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
 		WHERE l.account_id = ?1 AND ${availableLocalSql("l")} AND ${availableSql("?2")}
 			AND EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?2 AND f.state = 'accepted')`,
     follower,
@@ -195,12 +201,14 @@ export const ensureInstanceActorKey = writeOperation<EncodedKey, EncodedKey>((db
   return readInstanceKey(db) ?? key;
 });
 
-// Every key this instance signs with, for the key check of healthReport. owner is the username, or null for the
-// instance actor.
+// Every key this instance signs with, for the key check of healthReport: every local row (operator-sized, a deployment
+// assumption of the threat model), each account by its key. owner is the username, or null for the instance actor.
 export const listLocalKeys = readOperation<void, { owner: string | null; key: StoredKey }[]>((db) => {
   const users = db
     .all<KeyRow>(
-      "SELECT a.username, l.privkey, l.privkey_salt, l.pubkey FROM local_accounts l JOIN accounts a ON a.id = l.account_id ORDER BY a.username",
+      `SELECT a.username, l.privkey, l.privkey_salt, l.pubkey
+			FROM local_accounts l CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
+			ORDER BY a.username`,
     )
     .map((row) => ({ owner: row.username, key: storedKey(row) }));
   const instance = readInstanceKey(db);
@@ -229,8 +237,10 @@ export type RewrapKeyPage = { keys: RewrapKey[]; next: string | null; done: bool
 export const listRewrapKeys = readOperation<{ after: string | null }, RewrapKeyPage>((db, { after }) => {
   const users = db
     .all<KeyRow & { account_id: string }>(
-      `SELECT l.account_id, a.username, l.privkey, l.privkey_salt, l.pubkey FROM local_accounts l
-			JOIN accounts a ON a.id = l.account_id WHERE l.account_id > ? ORDER BY l.account_id LIMIT ?`,
+      `SELECT l.account_id, a.username, l.privkey, l.privkey_salt, l.pubkey
+			FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
+			WHERE l.account_id > ? ORDER BY l.account_id LIMIT ?`,
       after ?? "",
       KEY_PAGE,
     )
@@ -323,8 +333,12 @@ export const getCollection = readOperation<
   if (owner === undefined) {
     return null;
   }
-  const [self, other] =
-    kind === "followers" ? ["target_account_id", "account_id"] : ["account_id", "target_account_id"];
+  // Each direction walks its own index of the owner's follows (follows_target, follows_following), then the account by
+  // its key (RES-7).
+  const [self, other, index] =
+    kind === "followers"
+      ? ["target_account_id", "account_id", "follows_target"]
+      : ["account_id", "target_account_id", "follows_following"];
   const total =
     db.first<{ n: number }>(`SELECT count(*) AS n FROM follows WHERE ${self} = ? AND state = 'accepted'`, owner.id)
       ?.n ?? 0;
@@ -333,7 +347,8 @@ export const getCollection = readOperation<
     return { total, items: [], hasNext: false, hidden };
   }
   const items = db.all<{ uri: string; inbox: string | null }>(
-    `SELECT a.uri, a.inbox_url AS inbox FROM follows f JOIN accounts a ON a.id = f.${other}
+    `SELECT a.uri, a.inbox_url AS inbox FROM follows f INDEXED BY ${index}
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = f.${other}
 		WHERE f.${self} = ? AND f.state = 'accepted' ORDER BY f.id DESC LIMIT ? OFFSET ?`,
     owner.id,
     COLLECTION_PAGE_SIZE + 1,
@@ -381,13 +396,19 @@ export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Usage for NodeInfo. Active means "posted in the window", the only activity the Store records for local users.
+// Usage for NodeInfo. Active means "posted in the window", the only activity the Store records for local users. Each
+// count walks the local rows (operator-sized, a deployment assumption of the threat model) and reads only local
+// statuses (RES-7). An active account is probed newest first through statuses_account and stops at its first status in
+// the window, so its older history is not read; no index orders an account's statuses by published_at, so an account
+// with none in the window is walked to its first status. localPosts walks each account's statuses_account_originals
+// prefix: statuses_count is no substitute, as it counts boosts and leaves direct and limited statuses out.
 export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
   const since = (days: number) => new Date(now - days * DAY_MS).toISOString();
   const active = (days: number) =>
     db.first<{ n: number }>(
-      `SELECT count(DISTINCT s.account_id) AS n FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id
-			WHERE s.published_at >= ?`,
+      `SELECT count(*) AS n FROM local_accounts l
+			WHERE (SELECT 1 FROM statuses s INDEXED BY statuses_account
+				WHERE s.account_id = l.account_id AND s.published_at >= ? ORDER BY s.id DESC LIMIT 1) IS NOT NULL`,
       since(days),
     )?.n ?? 0;
   return {
@@ -397,7 +418,9 @@ export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
     activeHalfyear: active(180),
     localPosts:
       db.first<{ n: number }>(
-        `SELECT count(*) AS n FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id
+        `SELECT count(*) AS n
+				FROM local_accounts l
+				CROSS JOIN statuses s INDEXED BY statuses_account_originals ON s.account_id = l.account_id
 				WHERE s.reblog_of_id IS NULL`,
       )?.n ?? 0,
   };

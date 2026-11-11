@@ -10,7 +10,7 @@ import { community, post } from "./status-helpers";
 
 // The claims the plan audit (test/plan-audit.ts) rests on, in workerd's SQLite, and the audit catching a removed pin.
 
-// localActorOf's join (src/domain/actors.ts) as it stands, and pinned as RES-7 asks.
+// localActorOf's join (src/domain/actors.ts LOCAL_BY_USERNAME) unpinned, and pinned as RES-7 asks.
 const UNPINNED = `SELECT a.id, l.pubkey FROM accounts a JOIN local_accounts l ON l.account_id = a.id
 	WHERE a.domain IS NULL AND lower(a.username) = lower(?)`;
 const PINNED = `SELECT a.id, l.pubkey FROM accounts a INDEXED BY accounts_local_username
