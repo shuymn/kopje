@@ -3461,7 +3461,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   most one key insert per account and UTC day (`test/instance-activity.test.ts`).
 - **RES-7: query work is bounded, not only the rows returned.** Feeds apply visibility and filters in the query before
   `LIMIT`. Context traversal visits a bounded number of statuses before sorting. A status keeps a bounded number and
-  size of edits. _Enforced (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap:
+  size of edits. _Enforced (main)_ for scans under stale statistics: every statement the domain code runs in the
+  Workers suites is planned under singleton statistics, and a whole-table or whole-index read fails the suite unless
+  `test/plan-audit-entries.ts` lists it for that statement (`test/plan-audit.test.ts` ("fails a statement whose pin is
+  removed")); _Gap:_ the listed statements (#1468), statements no test runs, and prefix or range walks the plan shows
+  as a search. _Enforced (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap:
   untested_); the tag feed's candidates are the hashtags of public statuses (`status_tags.public`, through a partial
   index), so it never reads the tag's unlisted, private, direct or limited statuses, and it reads each requested tag
   (at most five) in id order from the cursor until it has a page, so a page reads the same rows however long the tag's

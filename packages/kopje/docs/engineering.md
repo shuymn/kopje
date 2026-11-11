@@ -79,7 +79,11 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 
 - **A query bound is shown by `EXPLAIN QUERY PLAN` of the production SQL** at saturation with stale statistics
   (`ANALYZE` taken before the data grew), and a regression witness crosses the real cap. A query joining a large table
-  pins its join order (`CROSS JOIN`, `INDEXED BY`) wherever stale statistics could choose a scan (RES-7).
+  pins its join order (`CROSS JOIN`, `INDEXED BY`) wherever stale statistics could choose a scan (RES-7). The Workers
+  suites audit every statement the domain code runs in them (`test/sql-depth-setup.ts`, `test/plan-audit.ts`): planned
+  under singleton statistics, a plan that reads a whole table or index (a scan, an automatic index, a Bloom filter, a
+  skip-scan) fails its suite unless `test/plan-audit-entries.ts` lists that scan of that statement. The audit sees no
+  prefix or range walk that EQP shows as a search; those keep a witness that grows under the same key.
 - **A cap counts raw candidates before any residual predicate**: an inner stage reads the candidates by the walk's
   index and the predicate is applied outside it (paged reads: [visibility.md](visibility.md), "Read bounds"). Where
   passing the cap must be detected (a refusal or a cut past it), the inner stage reads cap + 1.
