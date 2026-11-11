@@ -616,9 +616,10 @@ const MAX_TAG_TIMELINE_NAMES = 5;
 
 // Public statuses with the tag or any of `any`, all of `all` and none of `none` (Mastodon's TagFeed). Each name is a
 // stream of candidates read from the public rows of status_tags (status_tags.public, through the partial index
-// status_tags_public) in status id order, with every condition but the rule: so the read never goes through the tag's
-// unlisted, private, direct or limited statuses. A page merges the names' streams into one window (tagWindow), as
-// home does, and applies the list rule to it.
+// status_tags_public) in status id order, public originals within the audience: so the read never goes through the
+// tag's unlisted, private, direct or limited statuses. A page merges the names' streams into one window (tagWindow), as
+// home does, testing the request's conditions on the candidates by key when it has any, and applies the list rule to
+// it.
 export const tagTimeline = optionalUserReadOperation<TagTimelineInput, Page<Status>>(
   (db, input, viewer) => tagTimelineWithin(db, input, viewer, answerAdmission).page,
 );

@@ -8,6 +8,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- A page of an account's statuses with `only_media`, `tagged` or `exclude_replies`, or of a hashtag timeline with
+  `local`, `remote`, `only_media`, `all` or `none` (the profile's Posts, Media and tagged tabs and the hashtag page
+  included), now reads at most 2,000 index entries before applying those conditions, however many statuses they leave
+  out. A page whose budget runs out first may be short or empty, and its `Link` continues from the last entry read, so
+  a client following `Link` still reaches every status; one that stops at a short page stops early, where Mastodon
+  fills the page (docs/mastodon-deviations.md). Before, such a page read every status the conditions left out until it
+  had a page. No migration, no `wrangler.jsonc` change.
+
 ### Fixed
 
 - A status posted or edited through a host other than the instance domain (such as the Worker's `workers.dev` address)
