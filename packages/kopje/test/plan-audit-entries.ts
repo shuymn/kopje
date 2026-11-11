@@ -6,20 +6,6 @@ import type { PlanAuditEntry } from "./plan-audit.js";
 // reads and writes).
 export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
-    id: "9cecef5e7daa2045",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "e714d75336a0d4d1",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "2a8739eb65f8cfb7",
     scans: ["notifications: SCAN notifications"],
     site: "src/domain/account-actions.ts#answerPendingFollow < src/domain/account-actions.ts#<anonymous> in answerFollowRequest < src/domain/auth.ts#<anonymous> in guarded",
@@ -316,110 +302,56 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 2",
   },
   {
-    id: "4cf2c47def97fc1c",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actor-update.ts#actorRow < src/domain/actor-update.ts#actorDocument < src/domain/actor-update.ts#actorSnapshot < src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "b56b064387f46a4a",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#<anonymous> in featuredTagsOfActor",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "72ccd75416468a1a",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
-    site: "src/domain/actors.ts#<anonymous> in getCollection",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "9fa16b2cfecbfc09",
-    scans: ["accounts: SCAN a", "follows: SCAN f"],
-    site: "src/domain/actors.ts#<anonymous> in getCollection",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "a628e8cb8ab09421",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/actors.ts#<anonymous> in getCollection",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "3feb11fab2be4530",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#<anonymous> in getLocalKey",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "df48f112717779a7",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#<anonymous> in listLocalKeys",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "8fadf90d25903087",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/actors.ts#<anonymous> in listRewrapKeys",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "ed63e5d8393e7e15",
-    scans: ["statuses: SCAN s USING INDEX statuses_account"],
-    site: "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> in apNodeInfo < src/domain/federation-reads.ts#<anonymous> in federationRead",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "b663d8b514ae0829",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
-    site: "src/domain/actors.ts#followerKeyOf < src/domain/actors.ts#fetchSignerOf < src/domain/actors.ts#<anonymous> in getFetchSigner",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "d4eedb513385d18d",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#localActorOf < src/domain/actors.ts#<anonymous> in getLocalActor",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "16a2f961fff1dfe0",
-    scans: ["statuses: SCAN s"],
-    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> in apNodeInfo < src/domain/federation-reads.ts#<anonymous> in federationRead",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "382565ddce9f80fa",
     scans: ["local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> in apNodeInfo < src/domain/federation-reads.ts#<anonymous> in federationRead",
-    disposition: "pending",
-    issue: "#1468 group 1",
+    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      'NodeInfo counts the available local accounts (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "7a25d6886118f2e4",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#signingKeyOf < src/domain/actors.ts#fetchSignerOf < src/domain/inbox.ts#fetchPreparation < src/domain/inbox.ts#<anonymous> in receiveActivity",
-    disposition: "pending",
-    issue: "#1468 group 1",
+    id: "bd5c3086f501d391",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "NodeInfo's active users walk the local accounts, each one's statuses by statuses_account (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
+  },
+  {
+    id: "a22117d33a2816a7",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "NodeInfo's local posts walk the local accounts, each one's originals by statuses_account_originals (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
+  },
+  {
+    id: "7f892017c7ad80c4",
+    scans: ["local_accounts: SCAN l"],
+    site: "src/domain/actors.ts#<anonymous> in listLocalKeys",
+    disposition: "deliberate",
+    reason:
+      'the health key check reads every local key (listLocalKeys, src/domain/actors.ts), each account by its key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+  },
+  {
+    id: "4477957a24b39341",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+    ],
+    site: "src/domain/actors.ts#<anonymous> in getCollection",
+    disposition: "deliberate",
+    reason:
+      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+  },
+  {
+    id: "9b7f160fcf346f5f",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+    ],
+    site: "src/domain/actors.ts#followerKeyOf < src/domain/actors.ts#fetchSignerOf < src/domain/inbox.ts#fetchPreparation < src/domain/inbox.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "da96c2c02866408c",
@@ -427,20 +359,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/admin-account-presenter.ts#adminAccountStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented < src/domain/reports.ts#<anonymous> in getAdminReport < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "pending",
     issue: "#1468 group 7",
-  },
-  {
-    id: "cd06801d1dce1dec",
-    scans: ["local_accounts: SCAN local_accounts"],
-    site: "src/domain/admin-accounts.ts#<anonymous> in setAccountEmail",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "6f6e9212c7a8f43c",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/admin-accounts.ts#<anonymous> in unsuspendAccount",
-    disposition: "pending",
-    issue: "#1468 group 1",
   },
   {
     id: "004e878168744bca",
@@ -618,6 +536,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "pending",
     issue: "#1468 group 7",
+  },
+  {
+    id: "cd06801d1dce1dec",
+    scans: ["local_accounts: SCAN local_accounts"],
+    site: "src/domain/admin-accounts.ts#<anonymous> in setAccountEmail",
+    disposition: "deliberate",
+    reason:
+      'no index serves the sign-in\'s email match, which the email repair applies to the other local accounts (setAccountEmail, src/domain/admin-accounts.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "71b67c065fd24966",
@@ -1834,13 +1760,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 8",
   },
   {
-    id: "204d208b7d2b3b91",
-    scans: ["outbound_activities: SCAN outbound_activities"],
-    site: "src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/actor-update.ts#recordActorUpdate < src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "0d7193e6184aeba1",
     scans: ["outbound_targets: SCAN c"],
     site: "src/domain/deliveries.ts#expandPending < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost < src/domain/statuses.ts#postNow",
@@ -2089,13 +2008,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (field-links.ts#<anonymous> in recordFieldLink); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "2824cc03e02440f8",
-    scans: ["local_accounts: SCAN l"],
-    site: "src/domain/field-links.ts#linkCandidates < src/domain/field-links.ts#armFieldLinks < src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "6e80489968ad0885",
     scans: ["filter_statuses: SCAN fs"],
     site: "src/domain/filters.ts#ownFilterStatus < src/domain/filters.ts#<anonymous> in getFilterStatus < src/domain/auth.ts#<anonymous> in guarded",
@@ -2106,8 +2018,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "fcdc93860041ecee",
     scans: ["local_accounts: SCAN l USING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/follower-signer.ts#localFollower < src/domain/quotes.ts#quoteArrival < src/domain/remote-statuses.ts#arrivalOf < src/domain/remote-statuses.ts#storeRemoteStatus < src/domain/inbox.ts#create",
-    disposition: "pending",
-    issue: "#1468 group 1",
+    disposition: "deliberate",
+    reason:
+      'localFollower (src/domain/follower-signer.ts) walks the local accounts, each a key lookup of its follow, so the account\'s remote followers are never read: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "03910bd9e7047358",
@@ -2151,13 +2064,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "202c61f362793a9c",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/inbox.ts#deliveredTo < src/domain/inbox.ts#quoteRequest < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "cbfddd7d3c9f4c0f",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/inbox.ts#forwardable < src/domain/inbox.ts#deleteObject < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
@@ -2170,13 +2076,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/inbox.ts#legacyFavourite < src/domain/inbox.ts#undoInteraction < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
     disposition: "pending",
     issue: "#1468 group 5",
-  },
-  {
-    id: "bb73dff71750e00e",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/inbox.ts#localAccount < src/domain/inbox.ts#follow < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
-    disposition: "pending",
-    issue: "#1468 group 1",
   },
   {
     id: "32282320c9eb1b61",
@@ -2237,25 +2136,11 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
   },
   {
-    id: "7fc72a03f44b055c",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/inbox.ts#ownerExists < src/domain/inbox.ts#<anonymous> in inboxOwnerExists",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "aea206e79a827d22",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/inbox.ts#recordForwards < src/domain/inbox.ts#deleteObject < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
     disposition: "pending",
     issue: "#1468 group 5",
-  },
-  {
-    id: "9d5a43cb9081615f",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/inbox.ts#remoteKeyOf < src/domain/inbox.ts#<anonymous> in inboxGate",
-    disposition: "pending",
-    issue: "#1468 group 1",
   },
   {
     id: "17e6cb8ea43c9599",
@@ -2645,13 +2530,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 2",
   },
   {
-    id: "1c6e52b49191e614",
-    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
-    site: "src/domain/local-notes.ts#<anonymous> in getOutbox",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
     id: "27833270a8c036f5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -2683,20 +2561,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/media.ts#<anonymous> in startTransforms < src/domain/auth.ts#<anonymous> in guarded",
     disposition: "write",
     issue: "#1468 group 7",
-  },
-  {
-    id: "1246f45674d92e3d",
-    scans: ["media_attachments: SCAN media_attachments"],
-    site: "src/domain/media.ts#applyProfileImage < src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
-  },
-  {
-    id: "20a111b63d6283a0",
-    scans: ["media_attachments: SCAN media_attachments"],
-    site: "src/domain/media.ts#applyProfileImage < src/domain/account-actions.ts#<anonymous> in updateCredentials < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 1",
   },
   {
     id: "c10d6d4de870645f",
@@ -3372,13 +3236,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#sessionNames < src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "pending",
     issue: "#1468 group 9",
-  },
-  {
-    id: "d677c9d551b09f23",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/snapshot.ts#forgetActorSnapshots < src/domain/suspension.ts#suspendLocal",
-    disposition: "pending",
-    issue: "#1468 group 1",
   },
   {
     id: "a04d6b85351cb8d6",

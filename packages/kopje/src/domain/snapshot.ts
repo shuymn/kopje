@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
   isSnapshotKey,
@@ -83,7 +84,9 @@ export const saveSnapshot = writeOperation<
 export function forgetActorSnapshots(db: Db, accountId: string): void {
   const actor = db.first<{ username: string; domain: string | null }>(
     `SELECT a.username, (SELECT value FROM instance_settings WHERE name = 'domain') AS domain
-		FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ? AND a.domain IS NULL`,
+		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+		WHERE a.id = ? AND a.domain IS NULL`,
     accountId,
   );
   if (actor === undefined) {

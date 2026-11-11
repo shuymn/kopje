@@ -521,7 +521,8 @@ export function enqueueActivity(
     // this Update is not left with the older profile. (No profile changes while the account is suspended, so a
     // suspension's Update is never rewritten.)
     db.run(
-      `UPDATE outbound_activities SET body = json_set(body, '$.activity.object', json(?3))
+      `UPDATE outbound_activities INDEXED BY outbound_activities_object
+			SET body = json_set(body, '$.activity.object', json(?3))
 			WHERE account_id = ?1 AND object_uri = ?2 AND retracts = 0 AND staged IS NOT NULL
 				AND json_extract(body, '$.activity.object.suspended') IS NOT 1`,
       signerId,

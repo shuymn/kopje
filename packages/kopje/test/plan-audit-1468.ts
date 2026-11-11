@@ -5,10 +5,13 @@
 // - outside: the suites run it, but its cost is a walk the plan shows as a search (a prefix or a range), or no
 //   whole-table read under singleton statistics; it keeps or still needs a witness that grows under the same key;
 //   ids, when given, list its other scans;
-// - unobserved: no suite runs it; its sweep adds the test that does.
+// - unobserved: no suite runs it; its sweep adds the test that does;
+// - fixed: its sweep pinned it, and the suites' audit without its entries is the witness: no pending or write entry of
+//   its group is recorded at its functions (scanning by its pattern, when given).
 // Group 0 is no row of the issue: a removed pin the audit does not see, and the witness that does.
 
 export type Row1468 = { group: number; statement: string; sites: readonly string[]; scans?: string } & (
+  | { status: "fixed" }
   | { status: "observed"; ids: readonly string[] }
   | { status: "outside"; why: string; witness: string; ids?: readonly string[] }
   | { status: "unobserved" }
@@ -25,100 +28,74 @@ export const ROWS_1468: readonly Row1468[] = [
       "src/domain/actors.ts#getCollection",
     ],
     scans: "^(accounts|local_accounts): SCAN [al]\\b",
-    status: "observed",
-    ids: [
-      "3feb11fab2be4530",
-      "72ccd75416468a1a",
-      "9fa16b2cfecbfc09",
-      "a628e8cb8ab09421",
-      "b56b064387f46a4a",
-      "d4eedb513385d18d",
-    ],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "signingKeyOf",
     sites: ["src/domain/actors.ts#signingKeyOf"],
-    status: "observed",
-    ids: ["7a25d6886118f2e4"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "followerKeyOf",
     sites: ["src/domain/actors.ts#followerKeyOf"],
-    status: "observed",
-    ids: ["b663d8b514ae0829"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "listLocalKeys; listRewrapKeys",
     sites: ["src/domain/actors.ts#listLocalKeys", "src/domain/actors.ts#listRewrapKeys"],
-    status: "observed",
-    ids: ["8fadf90d25903087", "df48f112717779a7"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "actor update actorRow",
     sites: ["src/domain/actor-update.ts#actorRow"],
-    status: "observed",
-    ids: ["4cf2c47def97fc1c"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "credential update's two current-row reads",
     sites: ["src/domain/account-actions.ts#updateCredentials"],
-    status: "observed",
-    ids: [
-      "1246f45674d92e3d",
-      "204d208b7d2b3b91",
-      "20a111b63d6283a0",
-      "2824cc03e02440f8",
-      "9cecef5e7daa2045",
-      "e714d75336a0d4d1",
-    ],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "forgetActorSnapshots",
     sites: ["src/domain/snapshot.ts#forgetActorSnapshots"],
-    status: "observed",
-    ids: ["d677c9d551b09f23"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "email repair and unsuspend account lookup",
     sites: ["src/domain/admin-accounts.ts#setAccountEmail", "src/domain/admin-accounts.ts#unsuspendAccount"],
-    status: "observed",
-    ids: ["6f6e9212c7a8f43c", "cd06801d1dce1dec"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "outbox owner; featured collection owner",
     sites: ["src/domain/local-notes.ts#getOutbox", "src/domain/local-notes.ts#getFeatured"],
     scans: "^accounts: ",
-    status: "observed",
-    ids: ["1c6e52b49191e614"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "inbox localAccount",
     sites: ["src/domain/inbox.ts#localAccount"],
-    status: "observed",
-    ids: ["bb73dff71750e00e"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "inbox deliveredTo; ownerExists",
     sites: ["src/domain/inbox.ts#deliveredTo", "src/domain/inbox.ts#ownerExists"],
-    status: "observed",
-    ids: ["202c61f362793a9c", "7fc72a03f44b055c"],
+    status: "fixed",
   },
   {
     group: 1,
     statement: "remote key owner",
     sites: ["src/domain/inbox.ts#remoteKeyOf"],
-    status: "observed",
-    ids: ["9d5a43cb9081615f"],
+    status: "fixed",
   },
   {
     group: 2,
@@ -397,9 +374,7 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 5,
     statement: "federation follow collection items",
     sites: ["src/domain/actors.ts#getCollection"],
-    status: "outside",
-    why: "no whole-table read under singleton statistics",
-    witness: "needed: a rows-read witness that grows its tables, with stale statistics",
+    status: "fixed",
   },
   {
     group: 5,

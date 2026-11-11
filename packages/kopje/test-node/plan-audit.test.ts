@@ -291,9 +291,9 @@ describe("plan audit baseline", () => {
     }
   });
 
-  // AC8: every row of #1468 is observed, outside the predicate, or unobserved; an identity a row names is an entry of
-  // the row's group, recorded at one of the row's functions (or, for a fragment, scanning by its pattern), and named by
-  // no other row.
+  // AC8: every row of #1468 is fixed, observed, outside the predicate, or unobserved; a fixed row's group lists no entry
+  // at its functions; an identity a row names is an entry of the row's group, recorded at one of the row's functions
+  // (or, for a fragment, scanning by its pattern), and named by no other row.
   it("maps the rows of #1468 onto the entries", () => {
     const byId = new Map(PLAN_AUDIT_ENTRIES.map((entry) => [entry.id, entry]));
     const at = (frame: string, site: string) => {
@@ -307,6 +307,18 @@ describe("plan audit baseline", () => {
     const named = ROWS_1468.flatMap((row) => ("ids" in row && row.ids !== undefined ? row.ids : []));
     expect(new Set(named).size).toBe(named.length);
     expect(named.length).toBeGreaterThan(0);
+    for (const row of ROWS_1468.filter((r) => r.status === "fixed")) {
+      const left = PLAN_AUDIT_ENTRIES.filter(
+        (entry) =>
+          entry.issue === `#1468 group ${row.group}` &&
+          row.sites.some((site) => at(entry.site.split(" < ")[0]!, site)) &&
+          (row.scans === undefined || entry.scans.some((scan) => new RegExp(row.scans!).test(scan))),
+      );
+      expect(
+        left.map((entry) => entry.id),
+        row.statement,
+      ).toEqual([]);
+    }
     for (const row of ROWS_1468) {
       for (const id of "ids" in row && row.ids !== undefined ? row.ids : []) {
         const entry = byId.get(id);
