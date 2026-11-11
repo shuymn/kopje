@@ -13,7 +13,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "5bacb6c31ae163da",
+    id: "cc155817fcbf06ce",
     scans: [
       "accounts: SCAN a",
       "follows: SCAN f",
@@ -24,7 +24,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "afb201b5fd4c4724",
+    id: "13c5e504f9e79279",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -41,7 +41,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "account_invitations holds at most 10 rows (account_invitations_cap, migration 0081_account_invitations)",
   },
   {
-    id: "6f920eecdaab3bfe",
+    id: "7eb391703ce8fa22",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -51,7 +51,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "9852ce0a47aacdea",
+    id: "a5af17352db6a70a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -61,7 +61,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "2fdcf0c71cb5c08f",
+    id: "ea6a887da85c7c70",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -71,7 +71,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "c90407249ccd4b60",
+    id: "b029457143aed8bb",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -81,7 +81,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "0204202c0d0d5bb3",
+    id: "56aebb6759c321e3",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -91,7 +91,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "656c3d83d8e84209",
+    id: "22bdecc724d7d158",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -101,7 +101,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "68581dcf154a4da4",
+    id: "dd8410f480f7b7ed",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -111,7 +111,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "e742e5365f1f7c16",
+    id: "9abbf272fc2c4152",
     scans: [
       "accounts: SCAN accounts",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -122,7 +122,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "f476890616bfd444",
+    id: "b26d27d770222413",
     scans: [
       "accounts: SCAN accounts",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -133,7 +133,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "81b905ed575d7045",
+    id: "d34a59c61d1bcbd4",
     scans: [
       "accounts: SCAN accounts",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -143,18 +143,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "7af78fac0236e268",
-    scans: [
-      "accounts: SCAN accounts",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
-    ],
-    site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 5",
-  },
-  {
-    id: "8e68aa87f9f9fb04",
+    id: "2b672fdb6a408dfe",
     scans: [
       "accounts: SCAN accounts",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -165,7 +154,18 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "454b4df3332fa1d7",
+    id: "49b207dfd857d4f3",
+    scans: [
+      "accounts: SCAN accounts",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
+    ],
+    site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
+    disposition: "pending",
+    issue: "#1468 group 5",
+  },
+  {
+    id: "6db29f56bfaa3536",
     scans: [
       "accounts: SCAN accounts",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -175,7 +175,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "259dc919124ac84f",
+    id: "f9bbaedc000b72cf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -185,7 +185,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "384aafc5c12d2e7d",
+    id: "47c565e35536791c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -195,7 +195,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "960eec3aea904e82",
+    id: "fa7e2725b145ce48",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -205,7 +205,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "76b310dae934a121",
+    id: "e8466a532378d3c5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -215,7 +215,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "58b52c33b753a7b7",
+    id: "54c36908add8f893",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -225,7 +225,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "161b7f6adc9c42b1",
+    id: "c63040e90bcb4f80",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -242,7 +242,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "1c61974d5dfd059c",
+    id: "b587fcddd5c78f51",
     scans: [
       "follows: SCAN fb LEFT-JOIN",
       "follows: SCAN fo LEFT-JOIN",
@@ -261,7 +261,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "11440a484e95f0ec",
+    id: "082ed6c74802d83a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -271,7 +271,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "a90aba138799ffdb",
+    id: "469e116ea3319fb0",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -315,7 +315,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'the health key check reads every local key (listLocalKeys, src/domain/actors.ts), each account by its key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "9fbd33d9fab3cef1",
+    id: "3efd6ed358e0ef33",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -325,7 +325,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "aace0ebaa92443cb",
+    id: "28e0ed60413b78e7",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -342,7 +342,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "a3768f96ddfdf46c",
+    id: "9abcb9a031358777",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -352,7 +352,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "bad17d50e2bcf952",
+    id: "b86f35db82345603",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -362,7 +362,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "39bd6a2a9640585b",
+    id: "1533e636e41307c7",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -372,7 +372,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "3b74e26c0fe4767c",
+    id: "393b50752273849c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -382,7 +382,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "56e2e13723e9c9e3",
+    id: "817b9a6cd017bb6b",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -392,7 +392,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "6c823e4a46b73df3",
+    id: "a09a1e29dddd6e4c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -402,7 +402,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "95b39979f1f5e9be",
+    id: "b81280eb1ce74fbd",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -412,7 +412,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "a4951448362ad62f",
+    id: "ccc6c31b2f87ab89",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -422,7 +422,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "aa1aafc1c1441e08",
+    id: "d4a6e1b3dbdabace",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -432,7 +432,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "7493cc9cc44041f2",
+    id: "4f06efc7bc82abe9",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -443,7 +443,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "c035216062f08382",
+    id: "df1287285503959e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -453,7 +453,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "c6975ad44fe51104",
+    id: "e1b35f0a17bf2ef8",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -463,7 +463,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "8272838c7a346c71",
+    id: "6551ae12058487b2",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -474,7 +474,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "f3022e74a872cd86",
+    id: "ecda6f6153a2eae8",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l LEFT-JOIN",
@@ -635,7 +635,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "652ce5e0bc8b414a",
+    id: "b670f4c437b5ba01",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -645,7 +645,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "68d97bc99194b596",
+    id: "19921df7124100dd",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -655,7 +655,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "891baf8507be4ece",
+    id: "5326051537b1c2d5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -728,7 +728,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "bd2915f6c5512c64",
+    id: "5ff136c827027843",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -738,7 +738,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "aa6001999d3e15c9",
+    id: "7bb17a047a85657e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -748,7 +748,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "de27647d86b25457",
+    id: "e1f0a8e0e5ce87d7",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -758,7 +758,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "a3759fa27ff44d4b",
+    id: "0892a0e27854f8bb",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -799,7 +799,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "67e6fec3f2d430f1",
+    id: "b53ca1bbf50e913f",
     scans: [
       "accounts: SCAN ra",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -809,7 +809,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "d840138d65dbf629",
+    id: "de861c47832e59e8",
     scans: [
       "accounts: SCAN ra",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -819,7 +819,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
-    id: "846d7c2d4fa97108",
+    id: "e53097fc1b511cae",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -829,7 +829,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "5f4c813db849b0dd",
+    id: "bbbadfaa12d6b438",
     scans: [
       "?: SCAN ps",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -837,7 +837,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
     disposition: "deliberate",
     reason:
-      "ps is ruledSql's recursive CTE over a follower's domain suffixes (src/domain/audience.ts: its two keys, each walked from at most its last 2 * MAX_BLOCK_LABELS labels, JUMP_DOTS, so at most 2 * MAX_BLOCK_LABELS + 1 rows with pz's however many labels the key has; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "ps is ruledSql's recursive CTE over a follower's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_OCTETS (253) bytes, so of at most 127 labels and 126 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "0d56e46d5f99e045",
@@ -847,7 +847,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
-    id: "7871abb164b3d3a4",
+    id: "152feff7c1a30c41",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -857,7 +857,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ca2a493f5bfc80ca",
+    id: "b6d3febb30cbc8ef",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -867,7 +867,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "4503a5655d3bac78",
+    id: "2dc7b233bd90e1b4",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -878,7 +878,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "929594cd58bce09e",
+    id: "eb369b978301666f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -889,7 +889,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "7f058d2e83ba787a",
+    id: "1169ac13f8df2f5f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -900,7 +900,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "c650df7c0641fe5b",
+    id: "46d180a46e50954f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -911,7 +911,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "dbdb292f74e9f6dd",
+    id: "ae72083b1157c2ec",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -922,7 +922,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "3043b048907634bb",
+    id: "6ec1428eca157846",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -933,7 +933,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "011701dee0dedeff",
+    id: "4dcdf37cdabd9e7c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -944,7 +944,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "2f37d3e14ae8deb7",
+    id: "322701cf2c017b59",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "notifications: SCAN n",
@@ -956,7 +956,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "80c95226844fbdd6",
+    id: "67974844422a437c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "notifications: SCAN n",
@@ -968,7 +968,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "16394685840aae9e",
+    id: "05ae7f5c580bd5f5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -978,7 +978,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "55dc4c9843930730",
+    id: "4ab03c0853f6afe9",
     scans: [
       "?: SCAN s",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -988,7 +988,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "41f94d551d6f51ec",
+    id: "132776013a0e14ae",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -998,7 +998,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "587833cc20a26691",
+    id: "d23ee590fd64eac8",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1008,7 +1008,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "baaf22246719f916",
+    id: "6f0ceeff411031d3",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1018,7 +1018,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "c8651f5ed7cd550f",
+    id: "aff22581d5acdbba",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1028,7 +1028,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "cc6228834f9af4a2",
+    id: "ec96f7946a367daf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1038,7 +1038,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "d4de8545a8848cc2",
+    id: "e1a315b3b7aa4f71",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1048,7 +1048,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "002db5fe64f21726",
+    id: "fb7e7582a1eef79e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1058,7 +1058,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "bb14d4fd0336e1ef",
+    id: "62b7acb9a66a1ba1",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "notification_requests: SCAN r",
@@ -1071,7 +1071,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "275ed3059d404622",
+    id: "00e8f978759fdc90",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1081,7 +1081,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "7f473a4df007bfc8",
+    id: "282f29092bbaddb0",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1091,7 +1091,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "98205ae70a4e985c",
+    id: "9ddada58a6c55d3c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1101,7 +1101,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "aff2f6abe4333de3",
+    id: "adb4112144c5b728",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1111,7 +1111,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "c8950064ae700b31",
+    id: "c55cd64b37558ed3",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1121,7 +1121,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ef8a87d9a3ca03fc",
+    id: "dd11fde972edbb22",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1131,7 +1131,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "fed935b5e651b0ef",
+    id: "f8e8e30e08ea9aa4",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1141,7 +1141,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "47a65c7068a7f572",
+    id: "6b6ce29c7f033bde",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1151,7 +1151,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "5ac47cf97c870186",
+    id: "e3e89519f736f822",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1161,7 +1161,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ead7fbca5e4a1630",
+    id: "c3d9bef3da3bc583",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1171,7 +1171,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "55520956924c575e",
+    id: "09bfbc0902f58cbf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1181,7 +1181,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "cd5cbffe908df679",
+    id: "7956e9ca0c55d333",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1191,7 +1191,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "5603e18eaaffd072",
+    id: "0bc2a22b2866b900",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1201,7 +1201,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "67c0a92e9704436b",
+    id: "9784da7078842db5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1211,7 +1211,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "21954825547f0888",
+    id: "48831237395afc16",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1221,7 +1221,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "7141ff9cee596087",
+    id: "2c649c3fe355f125",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1231,7 +1231,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "86195c49b30dd587",
+    id: "66dd5f197b0f2a52",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1241,7 +1241,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "abf42e99e9420094",
+    id: "8ad3cd388285fbed",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1251,7 +1251,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ae7ecee3fb907cf0",
+    id: "ae929ff481756594",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1261,7 +1261,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "eda75be4aef4e52e",
+    id: "bef1614fe58d9890",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1271,7 +1271,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "2d996c926f56a8fa",
+    id: "0d70670e6af7b84c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1281,7 +1281,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "14e51627f5e937b9",
+    id: "1ec67bf4e0ceed91",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1291,7 +1291,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "16a4872701f4d01b",
+    id: "16b5eff8026a9adf",
     scans: [
       "accounts: SCAN pa",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1301,7 +1301,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "508e81a116c7cde9",
+    id: "998dab96530eb9e9",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1311,7 +1311,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "2b186e2b65abdedf",
+    id: "590270f2c715c1c2",
     scans: [
       "accounts: SCAN pa",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1321,7 +1321,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "6bb209237089a1ee",
+    id: "9a9604d7bb9fa583",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1331,7 +1331,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "aebdbc55c60b8a7c",
+    id: "ad72283a08be58f3",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1341,7 +1341,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "699012c742cfb8d8",
+    id: "5d53f3e75f4eaa11",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1351,7 +1351,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "6b453cd613236514",
+    id: "667157d4c24d4b4c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1361,7 +1361,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "73d197ad07d597e3",
+    id: "27b1084dd4e90127",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1371,7 +1371,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "7afbced5b5b679d0",
+    id: "6a7a6878e013a696",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1381,7 +1381,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "107843c35b99b113",
+    id: "1e77da777022a9f2",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1391,7 +1391,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "19403392b70d6cb5",
+    id: "6f9ec6cc9190d781",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1401,7 +1401,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "88c6207cd5e68f0f",
+    id: "9ad88dd9a69144af",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1411,7 +1411,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "d54da19f7c613c37",
+    id: "a9de2fc0ab972d17",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1421,7 +1421,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "e2af00ad79096859",
+    id: "de47cfd3e16f42e0",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1431,7 +1431,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "7a8d49c38696f1c7",
+    id: "7aa0073380ac2e8a",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1446,7 +1446,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "893f5892110680f0",
+    id: "a1bb532e72ad670d",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1456,7 +1456,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "9a260190ac4303dc",
+    id: "28983b0bd7558839",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN s",
@@ -1466,7 +1466,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "7c825b089120b074",
+    id: "7c8e338c5fd8d5ce",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN l",
@@ -1477,7 +1477,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "0af7ce733d183a8c",
+    id: "874f2c0119fe53eb",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1487,7 +1487,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "5e9226a96d033193",
+    id: "a853c98043e158fb",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1497,7 +1497,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ba3bccea0ac9d81d",
+    id: "e5eb795993ec9d89",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1507,7 +1507,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "f88274ed7fe2c1dc",
+    id: "92846fbad232a7c6",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1517,7 +1517,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "1e14202451c403a9",
+    id: "0eda0e993cc2fab8",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1527,7 +1527,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "7a5c3eefea8a1508",
+    id: "efa6afc65e69896b",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1537,7 +1537,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "014e42b4e33803d9",
+    id: "1febc30eec9f8eb1",
     scans: [
       "?: SCAN ps",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1545,7 +1545,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/polls.ts#recordPollUpdate",
     disposition: "deliberate",
     reason:
-      "ps is ruledSql's recursive CTE over a voter's domain suffixes (src/domain/audience.ts: its two keys, each walked from at most its last 2 * MAX_BLOCK_LABELS labels, JUMP_DOTS, so at most 2 * MAX_BLOCK_LABELS + 1 rows with pz's however many labels the key has; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "ps is ruledSql's recursive CTE over a voter's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_OCTETS (253) bytes, so of at most 127 labels and 126 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "4e4d83746a939ce9",
@@ -1772,7 +1772,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "5c30ec7c7fad84d0",
+    id: "25e648ab43fbee57",
     scans: [
       "deliveries: SCAN d",
       "deliveries: SCAN e",
@@ -1820,7 +1820,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 8",
   },
   {
-    id: "cf7b598dd8655f44",
+    id: "e3776ffb98641fcf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1830,7 +1830,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "e5d24506b7867ce0",
+    id: "f58cfc55099dae95",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1848,7 +1848,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in sweepDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "14d8dc7115316feb",
+    id: "fe707d8e1697317e",
     scans: [
       "accounts: SCAN accounts USING INDEX accounts_directory_new",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1858,7 +1858,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "d4b62adeebd20fa3",
+    id: "33a6e4bec362b919",
     scans: [
       "accounts: SCAN accounts USING INDEX accounts_directory_local_active",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1868,7 +1868,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "2c9236480f802742",
+    id: "f4ca8d766c777f10",
     scans: [
       "accounts: SCAN accounts USING INDEX accounts_directory_local_new",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1878,7 +1878,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "ddb4d949df64f072",
+    id: "91df1ad4c1de04f4",
     scans: [
       "accounts: SCAN accounts USING COVERING INDEX accounts_directory_active",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1888,7 +1888,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "3829314b4a02bb95",
+    id: "0a39438a1a3ae91a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1898,7 +1898,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ed0474426d1bd3d3",
+    id: "d690fba819d6ba61",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -1923,7 +1923,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "ced60aa3c1b2427a",
+    id: "6ec35835d2e922ee",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1943,7 +1943,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (field-links.ts#<anonymous> in claimFieldLinks); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "653d26cdedabf409",
+    id: "27731183b5df5534",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1970,7 +1970,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'localFollower (src/domain/follower-signer.ts) walks the local accounts, each a key lookup of its follow, so the account\'s remote followers are never read: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "44a25e6363afcfe3",
+    id: "768b9e59b08a8aaa",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2041,7 +2041,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "8de6f5a26bfaffc6",
+    id: "af0d605cf50bf407",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2169,7 +2169,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "509840d4dd8902cb",
+    id: "e652a45dc414fd2e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2355,7 +2355,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "ae6624ce74f72bb3",
+    id: "d50b1965c9c904f2",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2365,7 +2365,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "522344e9742d9e73",
+    id: "22ac85557eb3bfe2",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2375,7 +2375,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "76465040be702f33",
+    id: "8dfba8265a3894fe",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2393,7 +2393,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (link-cards.ts#<anonymous> in recordCard); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "0f0ea858c91dee2a",
+    id: "561f86baadb996cf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2403,7 +2403,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ef83f71122623d88",
+    id: "447dff3f3fcdc255",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN l USING INDEX sqlite_autoindex_lists_1",
@@ -2470,7 +2470,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "05aef5c4a224f313",
+    id: "ee7e0dd9fb49c00c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2516,7 +2516,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "8cadf019e2099deb",
+    id: "eb628ddc9b78079e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "notification_requests: SCAN r",
@@ -2526,7 +2526,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "ced713a1f4a16ef1",
+    id: "56d2cdf8665b5c6d",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -2569,7 +2569,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "3ebd16bcf1549800",
+    id: "3945e84dd35f5f7c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2593,7 +2593,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "8cb2c95945c27067",
+    id: "f566d4f3ed03be34",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -2612,7 +2612,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "737507d8f675013d",
+    id: "f5c12e4d416d488f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN nq USING COVERING INDEX quotes_accepted",
@@ -2707,7 +2707,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (polls.ts#<anonymous> in pollRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "c74171ccb3218964",
+    id: "b42e1587688691b1",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2725,7 +2725,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (polls.ts#<anonymous> in pollRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "6085bbb1bdfe4e54",
+    id: "ab527fc698d51355",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN l",
@@ -2756,7 +2756,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "955dcedff99c627f",
+    id: "547cb3b99d9c75f5",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2766,7 +2766,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ab99cae41b47051e",
+    id: "0c2ceeced80ac871",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2776,7 +2776,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "f037d98b77cd1a72",
+    id: "a0269002885bf63f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2786,7 +2786,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "aebcd017a07f2c8a",
+    id: "725726d085b3c1a1",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2804,7 +2804,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-collections.ts#<anonymous> in completeCollectionRead); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "2c69031158ca7a22",
+    id: "015eb2b33f6106e2",
     scans: [
       "accounts: SCAN a",
       "collection_syncs: SCAN c",
@@ -2816,7 +2816,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-collections.ts#<anonymous> in completeCollectionRead); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "73b73735adeebf4c",
+    id: "1dcbd1608101995c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2826,7 +2826,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "6461c292ff1a4413",
+    id: "55937d69c20e7edf",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2836,7 +2836,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "e59dd7456a1c47f2",
+    id: "f26e5b248a48e51d",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "remote_media: SCAN r",
@@ -2863,7 +2863,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "4ae3575d906f6d08",
+    id: "5f1357199c137adf",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -2874,7 +2874,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "4acd64a2e1cc40de",
+    id: "948fbf0eefd71fbd",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "remote_media: SCAN r USING INDEX remote_media_expiry",
@@ -2893,7 +2893,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in recordRemoteMediaValidation); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "e9f7a4beb5c0b879",
+    id: "a072f91e277ba909",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "remote_media: SCAN r",
@@ -2905,7 +2905,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "1061fc873cf665ea",
+    id: "f4fc1ba82880fa93",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2929,7 +2929,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 5",
   },
   {
-    id: "1a80df8c07c5ea1c",
+    id: "92b76e723e0ffd4a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2964,7 +2964,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-suspension.ts#<anonymous> in remoteModerationRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "4eee106a1e98ce25",
+    id: "932b3b060b5e6324",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2981,7 +2981,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
-    id: "4d4efeca96626628",
+    id: "3dba639cab2f26fe",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2991,7 +2991,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "edb4b74a9aa79941",
+    id: "0d5f8cc0e3e7c1cd",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3008,7 +3008,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "9bd6184bdb1c7c55",
+    id: "7986aa91ceb63dd8",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "statuses: SCAN statuses USING INDEX statuses_public",
@@ -3056,7 +3056,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "f961ba30826f1bc7",
+    id: "7bf73e253f9d8230",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3066,7 +3066,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "4f5ce6091793bbe1",
+    id: "c69b365c8bc91450",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3076,7 +3076,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "a0979e460a610b78",
+    id: "25913f55a8d5427f",
     scans: [
       "?: SCAN c",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3088,7 +3088,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); the local accounts are OAUTH_ADMIN_HEAP_SQL's bound of oauthAdmin's read (src/domain/admin-authority.ts), and local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "ad6bd66ebdda97e2",
+    id: "0fdb1a2835678e30",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3114,7 +3114,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (inbox.ts#deleteStatusBatch); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "12fd04e53c87bba6",
+    id: "a9d376d49be394a7",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3124,7 +3124,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "55d3cd7196b40976",
+    id: "d2ef0382b23678ae",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3134,7 +3134,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "338670c06f513d43",
+    id: "a6a0c523264dc656",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3192,7 +3192,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "stream_subscriptions holds the registry of open sockets: at most socketsPerInstance (256) sockets' accounts, keysPerAccount (16) keys each (STREAM_LIMITS, src/stream-hub.ts)",
   },
   {
-    id: "0c94928c7d60fd0b",
+    id: "c4313a4b3619de82",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3210,7 +3210,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "6d61e3ed58458e41",
+    id: "6078e5e943e54a04",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3220,7 +3220,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "0ccf3726a6f0a30e",
+    id: "f91a03953dc0ee23",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3283,7 +3283,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 7",
   },
   {
-    id: "704da89f33d8e3dd",
+    id: "9986354c9bb1ce60",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3293,7 +3293,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "52a71904e1e431b8",
+    id: "71d7caa4b475e41b",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3303,7 +3303,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "41a55af54f3ba507",
+    id: "9545cdcf25b35efb",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3313,7 +3313,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "4e03d618e2e56e39",
+    id: "dbef781f4d195783",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3323,7 +3323,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "e6908376601699fc",
+    id: "12b6d0576828dac3",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "trend_links: SCAN t",
@@ -3355,7 +3355,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
   },
   {
-    id: "40e171a95fa607a5",
+    id: "d981dcfe2565a90a",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3369,7 +3369,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "trend rounds read the bounded trend pools (src/domain/trends.ts)",
   },
   {
-    id: "be76fcda27242104",
+    id: "ee014bb3df8d7013",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3383,7 +3383,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (trends.ts#<anonymous> in trendsRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "7dccc985ee930745",
+    id: "2e2e998cc0773853",
     scans: [
       "?: SCAN a",
       "?: SCAN ps",
@@ -3423,7 +3423,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
   },
   {
-    id: "413c0ea679e4aef6",
+    id: "6ea2045c3368234e",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3433,7 +3433,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "4640fa4076cd1837",
+    id: "58e1ee0091976a20",
     scans: [
       "accounts: SCAN a",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3445,7 +3445,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (unlock-accepts.ts#<anonymous> in unlockAcceptStep); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "b3e5b022e37f54a9",
+    id: "5c9f41a477eca456",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3463,7 +3463,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (oauth.ts#<anonymous> in sweepOAuth); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "58109f91bf50896f",
+    id: "2a36415666326ba2",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3474,7 +3474,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "637c3e97d0bd7163",
+    id: "41b5a93b71dd048a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3485,7 +3485,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "a33794473776f4ac",
+    id: "435c08f5be7bce47",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3496,7 +3496,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "b02c641461963849",
+    id: "5793f0a3a40cc1dd",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3507,7 +3507,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "d08944c1457635eb",
+    id: "768b9b83d4b012ad",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3518,7 +3518,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "f83bdbda1b6d6979",
+    id: "9381613ec503767c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "lists: SCAN el",
@@ -3529,7 +3529,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 4",
   },
   {
-    id: "2abb35b565d8f710",
+    id: "08539c0d6f9f4309",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3539,7 +3539,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "37c036050aacabdb",
+    id: "2ab75548e0570372",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3549,7 +3549,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "485da701235c117f",
+    id: "4d1fc49920d0307a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3559,7 +3559,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "b31ff16ccf532d6f",
+    id: "a015e9c56029a8fa",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3569,7 +3569,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "c3ed9c68e75d570f",
+    id: "e62de2751a2730f1",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -3579,7 +3579,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "dce9d3579b8cb439",
+    id: "f83ca65d1c340452",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],

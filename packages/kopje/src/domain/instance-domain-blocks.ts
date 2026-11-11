@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { blockedDomain, hostDomain } from "../platform/domain-name";
+import { blockedDomain, DNS_NAME_OCTETS, hostDomain } from "../platform/domain-name";
 import { fetchableHref } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
 import type { PageQuery } from "./accounts";
@@ -297,7 +297,7 @@ export function ticketFor(db: Db, target: string): PolicyTicket | null {
 }
 
 // A normalized host (hostDomain) at most: a DNS name of 253 bytes, and room for a port.
-const HOP_HOST_LIMIT = 253 + ":65535".length;
+const HOP_HOST_LIMIT = DNS_NAME_OCTETS + ":65535".length;
 
 // The domain policy of one hop of a cron round's web page fetches (federation/web-page.ts admittedHops: link cards,
 // profile link verification), as a write, so the Store refuses it in any maintenance, read-only included, and during a

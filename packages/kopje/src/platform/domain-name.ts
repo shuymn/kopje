@@ -31,9 +31,14 @@ export function normalizeDomain(raw: string): string | null {
 // hyphen at either end, which IDNA without CheckHyphens leaves). null for anything else.
 const LDH_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+// The octets a DNS name has at most (RFC 1035 §2.3.4).
+export const DNS_NAME_OCTETS = 253;
+
 export function serverDomain(raw: string): string | null {
   const domain = normalizeDomain(raw.trim());
-  return domain !== null && domain.length <= 253 && domain.split(".").every((label) => LDH_LABEL.test(label))
+  return domain !== null &&
+    domain.length <= DNS_NAME_OCTETS &&
+    domain.split(".").every((label) => LDH_LABEL.test(label))
     ? domain
     : null;
 }

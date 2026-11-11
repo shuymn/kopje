@@ -592,7 +592,7 @@ describe("account batches with stale statistics (RES-7)", () => {
     const matches = plan.filter((detail) => /^(SEARCH|SCAN) pr\b/.test(detail));
     expect(matches.length).toBeGreaterThan(0);
     for (const detail of matches) {
-      expect(detail).toMatch(/^SEARCH pr USING .*\(domain=\?\)$/);
+      expect(detail).toMatch(/^SEARCH pr USING .*\(domain=\?\)( LEFT-JOIN)?$/);
     }
     expect(rows).toBe(before.plans[0]!.rows);
     // Per requested account, each probe reading at most one row: its accounts row and its local_accounts row (2);

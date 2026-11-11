@@ -7,6 +7,7 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { DNS_NAME_OCTETS } from "../platform/domain-name";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
@@ -235,36 +236,28 @@ function guardedSql(covered: string): string {
 // block on the domain itself or on its nearest parent, the longest match (Mastodon's DomainBlock.rule_for,
 // app/models/domain_block.rb:68), so a nearer block that does not satisfy `rule` exempts its subdomain tree from a
 // parent's that does (a child noop from a parent's suspend; one without reject_media from a parent's). Each key's
-// suffixes are walked from the longest a block can name, the key's last MAX_BLOCK_LABELS labels, and the walk stops at
-// the first one a block names (the nearest), so the rule is that block's; only suffixes of 2 to MAX_BLOCK_LABELS
-// labels are sought, at most two unique seeks each (the walk's and the match's; CROSS JOIN and INDEXED BY keep each a
-// seek by domain for each suffix, whatever the statistics say of the blocks: a rule no partial index serves was
-// otherwise planned as a scan of the blocks). No stored bound limits an account's domain or its actor id's host, so a
-// key of JUMP_DOTS dots or more steps at once to its last MAX_BLOCK_LABELS labels, found from the right (pz:
-// MAX_BLOCK_LABELS steps, each dropping the last label and its dot, rtrim stripping every character the key holds but
-// the dot, so an empty label counts as the walk counts it): a key's walk and pz read at most 2 * MAX_BLOCK_LABELS + 1
-// rows together however many labels it has, and a shallower key walks as it always did. The keys and the walk are CTEs,
-// whose expressions do not add to the depth of the expression that holds this one (SQLite limits it to 100 in
-// workerd).
-// The dots from which a key's walk steps to its last labels at once: below them, a label at a time costs no more.
-const JUMP_DOTS = 2 * MAX_BLOCK_LABELS;
-
+// suffixes are walked from the longest, and the walk stops at the first one a block names (the nearest), so the rule
+// is that block's; only suffixes of 2 to MAX_BLOCK_LABELS labels are sought, at most two unique seeks each (the walk's
+// and the match's; CROSS JOIN and INDEXED BY keep each a seek by domain for each suffix, whatever the statistics say
+// of the blocks: a rule no partial index serves was otherwise planned as a scan of the blocks). No stored bound limits
+// an account's domain or its actor id's host, so a key past DNS_NAME_OCTETS bytes (no server's name: RFC 1035 §2.3.4)
+// is never walked and its rule is taken to satisfy `rule` (a suspend covers it; its media are rejected); a key within
+// them has at most 127 labels, so its walk is at most 126 rows. The keys and the walk are CTEs, whose expressions do
+// not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
 function ruledSql(keys: string, rule: string): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
-  const kept = "rtrim(pz.p, replace(ps.d, '.', ''))";
-  // A deep key's last MAX_BLOCK_LABELS labels: the walk's step from the key itself, past every suffix no block names.
-  const last = `(WITH RECURSIVE pz(p, i) AS (SELECT ps.d, 0
-				UNION ALL SELECT substr(${kept}, 1, length(${kept}) - 1), pz.i + 1 FROM pz WHERE pz.i < ${MAX_BLOCK_LABELS})
-			SELECT substr(ps.d, length(pz.p) + 2) FROM pz WHERE pz.i = ${MAX_BLOCK_LABELS})`;
+  // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
+  // which satisfies the rule alone.
+  const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_OCTETS}`;
   return `EXISTS (WITH RECURSIVE pk(d) AS (${keys}),
-			ps(d, dots) AS (SELECT d, length(d) - length(replace(d, '.', '')) FROM pk
-				UNION ALL SELECT CASE WHEN dots < ${JUMP_DOTS} THEN substr(d, instr(d, '.') + 1) ELSE ${last} END,
-					CASE WHEN dots < ${JUMP_DOTS} THEN dots ELSE ${MAX_BLOCK_LABELS} END - 1 FROM ps WHERE dots > 1
+			ps(d, dots) AS (SELECT CASE WHEN ${named} THEN d END,
+					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
+				UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 					AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
 						WHERE ps.dots ${sought} AND pn.domain = ps.d))
-		SELECT 1 FROM ps CROSS JOIN main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
-			ON pr.domain = ps.d
-		WHERE ps.dots ${sought} AND ${rule})`;
+		SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
+			ON ps.dots ${sought} AND pr.domain = ps.d
+		WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND ${rule}))`;
 }
 
 // Whether an instance domain block covers one of `keys` (ruledSql): the rule of one is a suspend.

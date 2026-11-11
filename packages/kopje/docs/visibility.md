@@ -732,9 +732,10 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
 - **The label bound.** A stored block has at most `MAX_BLOCK_LABELS` (8) labels (the table's CHECK; the create
   operation refuses a deeper one), so a host's rule is among its suffixes of at most 8 labels, and a deeper host is
   still matched by them. `hostCoveredSql` walks a host's suffixes from the longest and stops at the first one a block
-  names: at most two unique seeks per suffix of 2 to 8 labels. No stored bound limits a host's labels, so a host of 16
-  dots or more steps at once to its last 8 labels (found from the right in 8 steps), and a host's walk reads at most
-  17 rows however deep it is (`test/domain-suffix-walk.test.ts`).
+  names: at most two unique seeks per suffix of 2 to 8 labels. No stored bound limits a host's length, so a host past
+  253 bytes (DNS's longest name, RFC 1035 §2.3.4) is never walked and is covered, and a host within them has at most
+  127 labels, so its walk is at most 126 rows (`test/domain-suffix-walk.test.ts`). The check runs where the walk would: the
+  inbox gate and fetch refusals always, availability only while a `suspend` block exists (below).
 - **Availability.** `availableSql` makes a remote account unavailable when a block covers either key `inDomainSql`
   compares (its stored domain or its actor id's host), read live in every statement; no mark is read. While the
   instance has no `suspend` block the rule costs one constant seek per predicate a statement emits, and its `CASE`
