@@ -35,7 +35,11 @@ export default defineConfig({
   test: {
     name: "kopje",
     // Converts a synthetic legacy export on Node for test/cutover-import.test.ts (node:sqlite is not in workerd).
-    globalSetup: [fileURLToPath(new URL("./test-node/cutover-global-setup.ts", import.meta.url))],
+    // The plan audit's run scope (test-node/plan-audit-run.ts).
+    globalSetup: [
+      fileURLToPath(new URL("./test-node/cutover-global-setup.ts", import.meta.url)),
+      fileURLToPath(new URL("./test-node/plan-audit-run.ts", import.meta.url)),
+    ],
     include: [fileURLToPath(new URL("./test/**/*.test.ts", import.meta.url))],
     // The streaming suites run in a project of their own, in one worker (vitest.streaming.config.ts).
     exclude: [fileURLToPath(new URL("./test/streaming/**", import.meta.url))],
