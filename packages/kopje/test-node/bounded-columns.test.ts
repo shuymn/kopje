@@ -337,9 +337,12 @@ type Finding = { path: string; line: number; read: string; key?: string };
 // value it bounds itself (cutSql); none passes a bounded column through. Any other interpolation there is a finding,
 // so a raw column cannot hide behind one (an import alias of a helper included), unless ALLOWED names it.
 const SAFE_INTERPOLATIONS = new Set([
+  // The inbox an activity without `to` goes to: an inbox column, none bounded here (domain/audience.ts).
+  "addressedInboxSql",
   "availableJoinedSql",
   "availableLocalSql",
   "availableSql",
+  "blockedSql",
   "blocksSql",
   // A value cut to a byte cap (domain/trends.ts), around the column's own helper where it has one.
   "byteCut",
@@ -618,6 +621,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL.
   "src/domain/deliveries.ts accounts.uri": { count: 4, reason: IDENTITY },
   "src/domain/featured-tags.ts accounts.uri": { count: 1, reason: IDENTITY },
+  "src/domain/handshake-replays.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/inbox.ts accounts.uri": { count: 5, reason: IDENTITY },
   "src/domain/remote-actors.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },

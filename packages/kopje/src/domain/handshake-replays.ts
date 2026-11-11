@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
-import { availableLocalSql, availableSql, blockedSql, followableBySql } from "./audience";
+import { addressedInboxSql, availableLocalSql, availableSql, blockedSql, followableBySql } from "./audience";
 import { inboxCovered, isDeliverableInbox, recheckAtSql } from "./deliveries";
 import { HANDSHAKE_REPLAYS, nextJob, runJobItem } from "./job-attempts";
 import { readOperation, writeOperation } from "./operation";
@@ -62,7 +62,7 @@ const ELIGIBILITY = `SELECT
 		(SELECT ${availableLocalSql("l")} FROM main.local_accounts l WHERE l.account_id = ?1) IS 1 AS local,
 		${availableSql("?2")} AS remote,
 		CASE ?3 WHEN 'Follow' THEN ${followableBySql("?2", "?1")} ELSE NOT ${blockedSql("?1", "?2")} END AS allowed,
-		COALESCE(NULLIF(r.shared_inbox_url, ''), NULLIF(r.inbox_url, '')) AS inbox
+		${addressedInboxSql("r")} AS inbox
 	FROM main.accounts r INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE r.id = ?2`;
 
 const END = "DELETE FROM handshake_replays WHERE follow_id = CAST(?1 AS INTEGER)";
