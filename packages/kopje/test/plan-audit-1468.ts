@@ -7,8 +7,9 @@
 //   ids, when given, list its other scans;
 // - unobserved: no suite runs it; its sweep adds the test that does;
 // - fixed: its sweep pinned it, and the suites' audit without its entries is the witness: no pending or write entry of
-//   its group is recorded at its functions (scanning by its pattern, when given).
-// Group 0 is no row of the issue: a removed pin the audit does not see, and the witness that does.
+//   any group is first recorded at its functions, whatever it scans.
+// Group 0 is no row of the issue: a removed pin the audit does not see, and the witness that does. A row marked "found
+// by the audit" is a statement of a group's functions the issue does not list, fixed in that group's sweep.
 
 export type Row1468 = { group: number; statement: string; sites: readonly string[]; scans?: string } & (
   | { status: "fixed" }
@@ -95,6 +96,30 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 1,
     statement: "remote key owner",
     sites: ["src/domain/inbox.ts#remoteKeyOf"],
+    status: "fixed",
+  },
+  {
+    group: 1,
+    statement: "NodeInfo usage (found by the audit)",
+    sites: ["src/domain/actors.ts#nodeInfoUsageOf", "src/domain/actors.ts#active"],
+    status: "fixed",
+  },
+  {
+    group: 1,
+    statement: "staged actor Update rewrite in a credential update (found by the audit)",
+    sites: ["src/domain/deliveries.ts#enqueueActivity"],
+    status: "fixed",
+  },
+  {
+    group: 1,
+    statement: "field-link candidates in a credential update (found by the audit)",
+    sites: ["src/domain/field-links.ts#linkCandidates"],
+    status: "fixed",
+  },
+  {
+    group: 1,
+    statement: "profile image release in a credential update (found by the audit)",
+    sites: ["src/domain/media.ts#applyProfileImage"],
     status: "fixed",
   },
   {

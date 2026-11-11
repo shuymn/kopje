@@ -397,16 +397,18 @@ export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Usage for NodeInfo. Active means "posted in the window", the only activity the Store records for local users. Each
-// count walks the local rows (operator-sized, a deployment assumption of the threat model) and each one's statuses by
-// its prefix of statuses_account or statuses_account_originals (RES-7), so it reads the local statuses, never the
-// remote ones.
+// count walks the local rows (operator-sized, a deployment assumption of the threat model) and reads only local
+// statuses (RES-7). An active account is probed newest first through statuses_account and stops at its first status in
+// the window, so its older history is not read; no index orders an account's statuses by published_at, so an account
+// with none in the window is walked to its first status. localPosts walks each account's statuses_account_originals
+// prefix: statuses_count is no substitute, as it counts boosts and leaves direct and limited statuses out.
 export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
   const since = (days: number) => new Date(now - days * DAY_MS).toISOString();
   const active = (days: number) =>
     db.first<{ n: number }>(
-      `SELECT count(DISTINCT s.account_id) AS n
-			FROM local_accounts l CROSS JOIN statuses s INDEXED BY statuses_account ON s.account_id = l.account_id
-			WHERE s.published_at >= ?`,
+      `SELECT count(*) AS n FROM local_accounts l
+			WHERE (SELECT 1 FROM statuses s INDEXED BY statuses_account
+				WHERE s.account_id = l.account_id AND s.published_at >= ? ORDER BY s.id DESC LIMIT 1) IS NOT NULL`,
       since(days),
     )?.n ?? 0;
   return {
