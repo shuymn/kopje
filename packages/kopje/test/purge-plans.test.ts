@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { PURGE_BATCH, PURGED_FOLLOW_ROWS, purgeBatch } from "../src/domain/inbox";
 import { writeOperation } from "../src/domain/operation";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
@@ -357,12 +357,21 @@ describe("a remote account's purge by key, batch by batch (RES-6)", () => {
       "SELECT id, account_id = ?1 AS out FROM follows WHERE account_id = ?1 OR target_account_id = ?1 ORDER BY id",
       v,
     );
-    const batches: { more: boolean; changes: number }[] = [];
+    const batches: { more: boolean; changes: number; follows: number }[] = [];
     let firstLeft: number[] = [];
+    const followCount = async () =>
+      (
+        await sql<{ n: number }>(
+          h.store,
+          "SELECT count(*) AS n FROM follows WHERE account_id = ?1 OR target_account_id = ?1",
+          v,
+        )
+      )[0]!.n;
     for (let more = true; more;) {
       expect(batches.length).toBeLessThan(40);
+      const before = await followCount();
       const { result, rows } = await writtenBy(h.store, (db) => purgeBatch(db, uriOf(0), NOW));
-      batches.push({ more: result, changes: rows });
+      batches.push({ more: result, changes: rows, follows: before - (await followCount()) });
       more = result;
       if (batches.length === 1) {
         firstLeft = (
@@ -379,7 +388,16 @@ describe("a remote account's purge by key, batch by batch (RES-6)", () => {
     for (const { changes } of batches) {
       expect(changes).toBeLessThanOrEqual(PURGE_BATCH);
     }
-    expect(batches.slice(0, -1).map((b) => b.changes)).toEqual(batches.slice(0, -1).map(() => PURGE_BATCH));
+    // Every batch but the last fills its budget, but for what its follows' reservation did not spend: each follow
+    // reserves PURGED_FOLLOW_ROWS (its delete, its hold and its local side's recount), and these, of remote accounts
+    // and holding nothing, write their delete alone. The follow window is the batch's last read of any size, so its
+    // slack is at most one more follow's reservation.
+    for (const b of batches.slice(0, -1)) {
+      expect(PURGE_BATCH - b.changes, JSON.stringify(batches)).toBeLessThanOrEqual(
+        (PURGED_FOLLOW_ROWS - 1) * b.follows + PURGED_FOLLOW_ROWS - 1,
+      );
+    }
+    expect(batches.some((b) => b.follows > 0 && b.more)).toBe(true);
     // Every row it deletes, recounts and finishes, as one statement over each bounded selection would write them:
     // eight of them its four cached files' (each slot deleted, the usage row changed for the stored and the pending
     // ones, and the stored one's object doomed), and one its unattached attachment.
