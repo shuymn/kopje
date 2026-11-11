@@ -687,10 +687,11 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
 - A Mastodon author may revoke a local account's quote while it is still pending there, which sends the stamp's
   `Delete` (`revoke_quote_service.rb:42` in v4.5.11), and their server then accepts the quote's first `QuoteRequest`
   under that same stamp (`quote_request.rb:31-32` accepts a quote in any state). When the `Delete` reaches Kopje first,
-  Kopje records the stamp as retracted and refuses the later `Accept` naming it, so it keeps the quote pending while the
-  quoted server holds it accepted and serves its stamp; a Mastodon quoter applies that `Accept` (`accept.rb:49` checks
-  no retraction). A recorded retraction of a stamp is never undone, so a forged or replayed `Accept` naming it cannot
-  take effect. Accepted, 2026-11-11.
+  Kopje records the stamp as retracted and refuses an `Accept` naming it while the retraction lasts (30 days, ID-7), so
+  it keeps the quote pending while the quoted server holds it accepted and serves its stamp; a Mastodon quoter applies
+  that `Accept` (`accept.rb:49` checks no retraction). No quote held the stamp, so nothing records it as revoked for
+  good: an `Accept` that arrives after the retraction expires applies, as in Mastodon. The refusal keeps a forged or
+  replayed `Accept` naming a retracted stamp from taking effect while the retraction lasts. Accepted, 2026-11-11.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):
