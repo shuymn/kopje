@@ -1392,7 +1392,9 @@ export type FollowList = { page: Page<Account>; more: boolean; shown: boolean };
 // correlated lookup: a join of follows by its rowid becomes a scan of follows under statistics taken while the table
 // was small (RES-7).
 function followEdgeSql(end: "account_id" | "target_account_id"): string {
-  return `(SELECT f.${end} FROM follows f WHERE f.id = CAST(c.value ->> '$.id' AS INTEGER))`;
+  return end === "account_id"
+    ? "(SELECT f.account_id FROM follows f WHERE f.id = CAST(c.value ->> '$.id' AS INTEGER))"
+    : "(SELECT f.target_account_id FROM follows f WHERE f.id = CAST(c.value ->> '$.id' AS INTEGER))";
 }
 
 // listFollows' read, its accounts admitted by `admission`. `members`: 'every' lists an unavailable member, presented
