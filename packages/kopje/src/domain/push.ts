@@ -51,7 +51,8 @@ export type PushPolicy = (typeof POLICIES)[number];
 export type PushData = { alerts: Record<string, boolean>; policy: PushPolicy };
 
 // The WebPushSubscription entity without server_key, which the Worker adds from VAPID_JWK. id is a JSON number, as
-// Mastodon's REST::WebPushSubscriptionSerializer emits it (subscription ids are small integers, so it is exact).
+// Mastodon's REST::WebPushSubscriptionSerializer emits it: exact up to 2^53, and an imported id beyond is presented
+// rounded, as in Mastodon; the Store's own reads of the id stay exact (DATA-6).
 export type StoredSubscription = {
   id: number;
   endpoint: string;
@@ -167,7 +168,8 @@ export function truncateText(text: string, length: number): string {
 }
 
 // The payload fields the Store composes; the Worker adds access_token. notification_id is a JSON number, as
-// Mastodon's Web::NotificationSerializer emits it (notification ids are small integers, so it is exact).
+// Mastodon's Web::NotificationSerializer emits it: exact up to 2^53, and an imported id beyond is presented rounded,
+// as in Mastodon; the Store's own reads of the id stay exact (DATA-6).
 export type PushContent = {
   notification_id: number;
   notification_type: string;
