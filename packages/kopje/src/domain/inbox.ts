@@ -146,8 +146,8 @@ import { streamDelete } from "./streaming";
 //                (QuoteAuthorization): the quoted status's author is the actor, and only the quotes naming that stamp
 //                and quoting the actor's statuses are revoked (quotes.ts revokeStamp; test/quotes.test.ts); a local
 //                quote holding it is forwarded the Delete only when the actor's own proof verifies; of a public or
-//                unlisted status, forwarded through its kept local boosts likewise (recordForwards;
-//                test/forward-delete.test.ts)
+//                unlisted status, forwarded through its kept local boosts and live local quotes likewise
+//                (recordForwards; test/forward-delete.test.ts)
 //   Delete       relayed by another server (its HTTP signer is not the actor, ID-1's one exception): only of what is
 //                neither an actor, a status nor a boost, so of a stamp at most; with the actor's own proof
 //                (RsaSignature2017 or FEP-8b32, federation/author-proof.ts) applied as the actor's revocation, without
@@ -190,10 +190,13 @@ export const PURGE_BATCH = 500;
 // Rows a purge reserves for each follow it deletes: the follow, its held handshake (cascaded) and its local side's
 // recount.
 export const PURGED_FOLLOW_ROWS = 3;
-// A remote author's proven Delete of its public or unlisted original is forwarded by at most this many local
-// boosters (recordForwards; the first by account id), and only when it serializes to at most FORWARD_BODY_MAX UTF-8
-// bytes: the bounds on the owners and the body bytes a forward records, not on its fan-out (RES-4, RES-6).
+// A remote author's proven Delete of its public or unlisted original is forwarded by at most MAX_FORWARD_OWNERS local
+// accounts (recordForwards; the first by account id) through at most MAX_FORWARD_QUOTES quoting statuses in all (the
+// first by status id, a policy cap of four per owner: Mastodon has none), and only when it serializes to at most
+// FORWARD_BODY_MAX UTF-8 bytes: the bounds on the owners, references and body bytes a forward records, not on its
+// fan-out (RES-4, RES-6).
 export const MAX_FORWARD_OWNERS = 16;
+export const MAX_FORWARD_QUOTES = 4 * MAX_FORWARD_OWNERS;
 export const FORWARD_BODY_MAX = 64 * 1024;
 // Job batches one runInboundJobs call does at most.
 export const JOB_BATCHES_PER_RUN = 4;
@@ -238,7 +241,7 @@ export type InboundActivity =
   | { type: "DeleteActor"; id: string }
   // signed: the body carries an author proof the Worker has not verified; proven: the body as received, its proof
   // verified (federation/author-proof.ts), which the Store forwards for a local quote's stamp (quotes.ts revokeStamp)
-  // and through the local boosts of a status (recordForwards).
+  // and through the local boosts and quotes of a status (recordForwards).
   | { type: "Delete"; id: string; object: string; signed?: boolean; proven?: Record<string, unknown> }
   // A Delete another server relayed (its HTTP signer is not the actor). proven: it carries the actor's own proof,
   // verified by the Worker (federation/author-proof.ts); body: then, the body as received.
@@ -1352,7 +1355,13 @@ export function purgeBatch(db: Db, uri: string, now: number, budget = new JobBud
 			LIMIT 1`,
       id,
     );
-    if (status === undefined || !deleteStatusWithin(db, status.id, budget, now)) {
+    // Barrier 2: the forwards of each of its statuses, which that status's delete job recorded, are staged before it
+    // goes (a remote boost of them holds none: one seek of its job).
+    if (
+      status === undefined ||
+      !stageForwards(db, status.id, budget) ||
+      !deleteStatusWithin(db, status.id, budget, now)
+    ) {
       break;
     }
   }
@@ -2152,8 +2161,8 @@ function accountHasRows(db: Db, id: string, filters = true): boolean {
 // The removal needs its retraction: at the per-actor cap nothing changes and the Delete is answered 503, to be
 // delivered again (a Delete of an unknown object at the cap is not recorded, and answered 202).
 //
-// A proven Delete of a public or unlisted original that local accounts boosted is forwarded through each of them
-// (recordForwards, VIS-3, ID-1): the Worker is asked to verify the author proof (need 'proof') before anything is
+// A proven Delete of a public or unlisted original that local accounts boosted or quoted is forwarded through each of
+// them (recordForwards, VIS-3, ID-1): the Worker is asked to verify the author proof (need 'proof') before anything is
 // written, only while a forward could still be recorded (forwardable), and the round after the verification decides
 // everything again.
 const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
@@ -2209,8 +2218,8 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   // the revocation of Kopje's authorization if it holds one): neither the quotes list nor the count of its target
   // shows it (VIS-27), and no stamp is served (VIS-28), while the removal runs.
   retireQuoteOf(db, status.id, now);
-  // The forwards are recorded by the request that created the job only, and the job's batches stage them before any
-  // boost of the status is withdrawn (stageForwards); so this transaction runs no batch once it recorded one.
+  // The forwards are recorded by the request that created the job only, and staged before any of their evidence goes
+  // (stageForwards and its barriers); so this transaction runs no batch once it recorded one.
   if (
     created !== undefined &&
     status.reblog_of_id === null &&
@@ -2224,9 +2233,10 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
 };
 
 // Whether a proven Delete of `status` could still record a forward, so its proof is worth verifying (Mastodon's
-// forwardable?: a distributable status, here with a kept local boost): an original, public or unlisted, not withdrawn
-// (its removal not begun: an unhidden job of an older build is caught by the job's key), with a kept local boost (one
-// seek of statuses_account_reblogs_kept per local account, KEPT_LOCAL_BOOSTS).
+// forwardable?: a distributable status, here with a kept local boost or a live local quote): an original, public or
+// unlisted, not withdrawn (its removal not begun: an unhidden job of an older build is caught by the job's key), with a
+// kept local boost (one seek of statuses_account_reblogs_kept per local account, KEPT_LOCAL_BOOSTS) or a live local
+// quote (one seek of quotes_local_live, LIVE_LOCAL_QUOTES).
 function forwardable(
   db: Db,
   status: { id: string; reblog_of_id: string | null; visibility: Visibility; withdrawn: number },
@@ -2236,7 +2246,8 @@ function forwardable(
     isDistributable(status.visibility) &&
     status.withdrawn === 0 &&
     db.first("SELECT 1 AS x FROM inbound_jobs WHERE kind = 'delete' AND key = ?", status.id) === undefined &&
-    db.first(`${KEPT_LOCAL_BOOSTS} LIMIT 1`, status.id) !== undefined
+    (db.first(`${KEPT_LOCAL_BOOSTS} LIMIT 1`, status.id) !== undefined ||
+      db.first(`${LIVE_LOCAL_QUOTES} LIMIT 1`, status.id) !== undefined)
   );
 }
 
@@ -2250,11 +2261,30 @@ const KEPT_LOCAL_BOOSTS = `SELECT l.account_id AS owner, CAST(r.id AS TEXT) AS i
 	WHERE r.visibility IN ${REACHES_FOLLOWERS_SQL}
 	ORDER BY l.account_id`;
 
+// The local quotes of the original ?1 whose quoting status is not withdrawn (quotes.withdrawn, migration
+// 0091_live_local_quotes), in quoting status order, in any state: one seek of quotes_local_live, which holds no
+// received or withdrawn quote, so a window from it is filled by live local quotes alone (RES-7).
+const LIVE_LOCAL_QUOTES = `SELECT status_id FROM quotes INDEXED BY quotes_local_live
+	WHERE quoted_status_id = ?1 AND local = 1 AND withdrawn = 0 ORDER BY status_id`;
+
+// The first ?2 rows of LIVE_LOCAL_QUOTES, the raw candidates, each with its quoting status's owner and class read by
+// key outside the window: owner NULL for a status found withdrawn or not a local account's; reaches 1 when its
+// visibility reaches its author's followers (REACHES_FOLLOWERS_SQL), else (direct, limited) 0.
+const LIVE_QUOTE_WINDOW = `SELECT w.status_id AS id, CASE WHEN s.withdrawn = 0 THEN l.account_id END AS owner,
+		s.visibility IN ${REACHES_FOLLOWERS_SQL} AS reaches
+	FROM (${LIVE_LOCAL_QUOTES} LIMIT ?2) w
+		LEFT JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = w.status_id
+		LEFT JOIN local_accounts l ON l.account_id = s.account_id
+	ORDER BY w.status_id`;
+
 // The proven Delete `proven` of the remote original `statusId` (public or unlisted before its hide), forwarded through
-// its kept local boosts (VIS-3, ID-1; Mastodon's ActivityPub::Forwarder, with the departures in
-// docs/mastodon-deviations.md): one intent per booster, at most MAX_FORWARD_OWNERS (the first by account id; a
-// suspended booster's too, a retraction), signed by it, immutable (the body as received, byte for byte), its audience
-// the boost alone (Audience.shares), its targets staged by the job (stageForwards). The intents' ids go into the job's
+// its kept local boosts and live local quotes (VIS-3, ID-1; Mastodon's ActivityPub::Forwarder, with the departures in
+// docs/mastodon-deviations.md): one intent per owner, at most MAX_FORWARD_OWNERS (the first by account id among the
+// boosters and the owners of the first MAX_FORWARD_QUOTES quotes; a suspended owner's too, a retraction), signed by it,
+// immutable (the body as received, byte for byte), its audience its references (Audience.shares: its boost and its
+// quoting statuses that reach its followers; receiptShares: its direct and limited ones, their class fixed here, as a
+// quoting status's own deletion rewrites it to direct), its targets staged before their evidence goes
+// (stageForwards). The quote window's overflow is decided on its raw candidates. The intents' ids go into the job's
 // bound (FORWARDS_BOUND). Nothing is recorded for a body over FORWARD_BODY_MAX UTF-8 bytes as serialized, or holding a
 // number JSON cannot carry (1e400 parses to Infinity), which re-serializing would change. Writes at most
 // MAX_FORWARD_OWNERS intents and the bound, outside the batch's budget; returns whether it recorded any.
@@ -2277,18 +2307,39 @@ function recordForwards(db: Db, statusId: string, proven: Record<string, unknown
     statusId,
     MAX_FORWARD_OWNERS + 1,
   );
-  if (boosts.length > MAX_FORWARD_OWNERS) {
-    // DATA-5: the cap, no identity.
-    console.warn({ event: "kopje.inbox.forward_capped", owners: MAX_FORWARD_OWNERS });
+  const window = db.all<{ id: string; owner: string | null; reaches: number | null }>(
+    LIVE_QUOTE_WINDOW,
+    statusId,
+    MAX_FORWARD_QUOTES + 1,
+  );
+  // Each owner's references: its boost and follower-reaching quotes (shares), its direct and limited ones.
+  const owners = new Map<string, { shares: string[]; receiptShares: string[] }>();
+  const of = (owner: string) => owners.get(owner) ?? owners.set(owner, { shares: [], receiptShares: [] }).get(owner)!;
+  for (const boost of boosts) {
+    of(boost.owner).shares.push(boost.id);
+  }
+  for (const quote of window.slice(0, MAX_FORWARD_QUOTES)) {
+    if (quote.owner !== null) {
+      (quote.reaches === 1 ? of(quote.owner).shares : of(quote.owner).receiptShares).push(quote.id);
+    }
+  }
+  const capped = {
+    ...(owners.size > MAX_FORWARD_OWNERS ? { owners: MAX_FORWARD_OWNERS } : {}),
+    ...(window.length > MAX_FORWARD_QUOTES ? { quotes: MAX_FORWARD_QUOTES } : {}),
+  };
+  if (Object.keys(capped).length > 0) {
+    // DATA-5: the caps, no identity.
+    console.warn({ event: "kopje.inbox.forward_capped", ...capped });
   }
   const intents: string[] = [];
-  for (const boost of boosts.slice(0, MAX_FORWARD_OWNERS)) {
+  for (const owner of [...owners.keys()].toSorted().slice(0, MAX_FORWARD_OWNERS)) {
+    const { shares, receiptShares } = owners.get(owner)!;
     const envelope: DeliveryEnvelope = {
       activity: proven,
-      audience: { followers: false, accounts: [], shares: [boost.id] },
+      audience: { followers: false, accounts: [], shares, ...(receiptShares.length > 0 ? { receiptShares } : {}) },
       immutable: true,
     };
-    intents.push(beginRetraction(db, boost.owner, envelope, now, 1, "bounded")!);
+    intents.push(beginRetraction(db, owner, envelope, now, 1, "bounded")!);
   }
   if (intents.length === 0) {
     return false;
@@ -2359,9 +2410,13 @@ const FORWARD_INTENTS = `SELECT CAST(o.id AS TEXT) AS id, o.account_id AS owner,
 	WHERE o.object_uri = ?3 || s.uri AND +o.retracts = 1 AND o.staged IS NOT NULL
 	ORDER BY f.key`;
 
-// Stages the targets of the forwards of the original `originalId` (recordForwards), within the budget: the barrier its
-// boosts' withdrawal passes first (withdrawLocalBoosts), on the delete job and on its author's purge, so each forward
-// reads the boost's receipts and Announce rows before they go. Returns whether every forward is staged.
+// Stages the targets of the forwards of the original `originalId` (recordForwards), within the budget: the barrier
+// every step that removes or suppresses a forward's evidence passes first, so each forward reads its references'
+// receipts and Announce or Create rows before they go: the original's delete job before its local boosts' withdrawal
+// and its removal (deleteStatusBatch, barrier 1), its author's purge before each of its statuses is deleted
+// (purgeBatch, barrier 2), each boost's withdrawal (withdrawLocalBoosts), and a local quoting status's own deletion
+// before its Delete supersedes or stages anything (deleteLocalStatusBatch, barrier 3). Returns whether every forward
+// is staged.
 function stageForwards(db: Db, originalId: string, budget: JobBudget): boolean {
   const ids = forwardIdsOf(db, originalId);
   if (ids.length === 0) {
@@ -2482,6 +2537,10 @@ export function deleteStatusBatch(
     // remote status holds MAX_STATUS_TAGS of them, an imported one any number).
     spend(db, budget, UNTAG_WINDOW_SQL, statusId);
   }
+  // Barrier 1: its forwards are staged before its boosts are withdrawn and before it, and so its quotes' links, go.
+  if (!stageForwards(db, statusId, budget)) {
+    return true;
+  }
   withdrawLocalBoosts(db, { kind: "delete", key: statusId }, "o.id", statusId, budget, now);
   return finishStatusRemoval(db, statusId, budget, now);
 }
@@ -2515,8 +2574,11 @@ function finishStatusRemoval(db: Db, statusId: string, budget: JobBudget, now: n
 //      pins of it by others (an import's);
 //   2. its hashtags, two rows each: a hashtag its author features is counted again (featured-tags.ts recountFeatured),
 //      the status hidden, before its row goes (the status_tags entry of STATUS_CHILDREN then finds none);
-//   3. the earlier activities about it its DELETE did not supersede (past DELETE_SUPERSEDES), those recorded before
-//      its Delete only;
+//   3. the forwards of the remote original it quotes (stageForwards, barrier 3), before anything below supersedes,
+//      stages or deletes their evidence of it: once its Delete has finished staging, a Create of it completed later
+//      records no receipt, and a forward's evidence walk skips the Delete's own targets (VIS-3); then the earlier
+//      activities about it its DELETE did not supersede (past DELETE_SUPERSEDES), those recorded before its Delete
+//      only;
 //   4. its Delete's, or its Undo's, targets (stageRetraction), over as many batches as they need, while what they are
 //      read from stays: its mentions, boosts, quotes, votes and receipts;
 //   5. its local boosts' Undo and their removal (withdrawLocalBoosts);
@@ -2554,6 +2616,15 @@ function deleteLocalStatusBatch(
     ),
   );
   if (db.first("SELECT 1 AS x FROM status_tags WHERE status_id = ? LIMIT 1", id) !== undefined) {
+    return true;
+  }
+  // Barrier 3: the original its quote names, by the primary key. A cleared link means the original's removal passed
+  // barrier 1 or 2 already.
+  const quoted = db.first<{ quoted: string | null }>(
+    "SELECT quoted_status_id AS quoted FROM quotes WHERE status_id = ? AND local = 1",
+    id,
+  )?.quoted;
+  if (quoted !== undefined && quoted !== null && !stageForwards(db, quoted, budget)) {
     return true;
   }
   const intent = stagingRetraction(db, status.author, status.uri);
