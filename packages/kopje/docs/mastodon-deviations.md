@@ -747,12 +747,14 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   account, less the inbox URLs `DeliveryFailureTracker` marks unavailable and the author's own inbox, and reads no
   receipts. So a server may get one POST per local booster or quoter, and the deleting author's server may get it back.
 - A quote in any state forwards, as in Mastodon (`forwarder.rb:30-32` reads every quote), but a direct or limited
-  quoting status forwards to the inboxes that received it alone, never its author's followers, who may not see it;
-  Mastodon sends a direct quote's forward to its quoter's followers.
+  quoting status forwards only to the inboxes it was delivered to (its receipts), never its author's followers, who
+  may not see it, nor an inbox whose delivery of it is still in flight or never succeeded; Mastodon sends a direct
+  quote's forward to its quoter's followers.
 - A quoting status whose removal has begun (withdrawn) forwards nothing, a reported or preserved one included, which
   Mastodon keeps discarded with its quote and forwards through (`remove_status_service.rb:53`, `:162-164`).
-- At most 16 owners forward (the first by account id among the boosters and the owners of the quotes read), through at
-  most 64 quoting statuses in all (the first by status id; a policy cap of four per owner, logged when passed), and
+- At most 16 owners forward (the boosters first by account id, then the owners of the quotes read by account id),
+  through at most 64 quoting statuses across all owners (the first by status id, one owner may hold them all; a policy
+  cap, logged when passed), and
   nothing is forwarded for a body over 65,536 bytes as serialized or holding a number JSON cannot carry; Mastodon has
   no such caps.
 - Only a kept boost that is not direct or limited forwards (a converted direct boost is one Kopje kept from legacy

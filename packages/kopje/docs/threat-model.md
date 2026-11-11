@@ -443,9 +443,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   its booster's followers may not see, forwards nothing) or a local quote of it in any state whose quoting status is
   not withdrawn (`quotes.withdrawn`, migration `0091_live_local_quotes`, a copy its triggers keep: a withdrawn one is
   skipped and counts against no cap), for a body of at most `FORWARD_BODY_MAX` (65,536) UTF-8 bytes as serialized
-  holding no number JSON cannot carry: one immutable intent per owner, at most `MAX_FORWARD_OWNERS` (16, the first by
-  account id among the boosters and the owners of the first `MAX_FORWARD_QUOTES` (64, a policy cap, decided on the raw
-  candidates) quoting statuses by id; a suspended owner's too), signed by it in its own lanes (NET-2), recorded in the
+  holding no number JSON cannot carry: one immutable intent per owner, at most `MAX_FORWARD_OWNERS` (16: the boosters
+  first by account id, then the owners of the first `MAX_FORWARD_QUOTES` quoting statuses by id (64 across all owners,
+  one owner may hold them all; a policy cap, decided on the raw candidates) by account id, so a quote never takes a
+  booster's place; a suspended owner's too), signed by it in its own lanes (NET-2), recorded in the
   `Delete`'s first transaction, whose hide fixes the kept boosts (VIS-1). Its audience is its references:
   `Audience.shares`, the boost and the public, unlisted or private quoting statuses, and `receiptShares`, the direct or
   limited ones, each class fixed then (a quoting status's own deletion rewrites its visibility). The forward is staged
@@ -453,9 +454,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   job before its boosts are withdrawn or it is removed, its author's purge before each of its statuses is deleted, and a
   quoting status's own deletion before its `Delete` supersedes or stages anything (once that `Delete` has finished
   staging, a `Create` completed later records no receipt, and the forward's evidence walk skips the `Delete`'s
-  targets); each boost's withdrawal stages it too. It reaches every reference's receipts and the rows and unexpanded
+  targets); each boost's withdrawal stages it too. It reaches every share's receipts and the rows and unexpanded
   targets of its earlier activities, and, when a share resolves, the owner's followers by shared inbox as its
-  `Announce` or `Create` went, whatever the forwarded `to` says; a direct or limited quote reaches its receivers alone.
+  `Announce` or `Create` went, whatever the forwarded `to` says; a direct or limited quote reaches its receipts alone,
+  the inboxes its `Create` was delivered to, never a row or target of it in any state (one may never have been sent:
+  a delivery that gave up before its POST), so no server that never received such a quote learns of it
+  (`test/forward-delete.test.ts` ("sends nothing to an inbox of a Create that gave up, is in flight or is
+  unexpanded")).
   In each lane the `Announce` or `Create` goes before the forward, and the forward before the boost's `Undo` (an
   `Announce` still unsent may be dropped once the original is gone). A forward has a subject of its own: it neither
   supersedes nor is superseded by another activity, the stamp's forward (VIS-28), a quoting status's `Update` or
@@ -463,8 +468,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   a row only when the row's provenance names exactly one recipient behind that inbox with a personal inbox on the same
   origin; a row serving several recipients, more than 16, or unknown ones (an inbox a reference reached already, or
   whose delivery of it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has the boost or the
-  quote only from the outbox or a fetch is not reached, nor are a quoting status's poll voters or wider reach; a
-  `Delete` the previous build applied before the upgrade forwarded through boosts only. The staging resolves the
+  quote only from the outbox or a fetch is not reached, nor are a quoting status's poll voters or wider reach; an
+  inbox whose `Create` of a direct or limited quote is still in flight when the forward stages is not reached (it may
+  get the quote and later find the original gone); a `Delete` the previous build applied before the upgrade forwarded
+  through boosts only. The staging resolves the
   references one at a time, the shares then the receiptShares, and reads the followers once after them (RES-6).
   _Enforced (main):_ `deleteObject`, `recordForwards`, `stageForwards`, `deleteStatusBatch`, `purgeBatch`,
   `deleteLocalStatusBatch` and `withdrawLocalBoosts` in `src/domain/inbox.ts`, `shareReaches`, `stagedList` and
@@ -2788,7 +2795,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   at most 100 versions (the newest edit replaces the last); an arriving parent links at most 100 replies that came
   before it; a boost at most 200 recipients; profiles show at most 16 fields. A deleted status is removed by a job
   (`inbound_jobs` kind `delete`) in batches of at most 500 rows, measured with `total_changes()`; the `Delete`'s own
-  transaction hides it (its content and audience; at most three rows, apart from the budget) and the batches remove its
+  transaction hides it (its content and audience; at most four rows, `HIDE_ROWS`, apart from the budget) and the batches remove its
   mentions; a job whose status is not hidden yet (one an upgrade carried over) is hidden by its first batch with room.
   `src/domain/remote-statuses.ts`;
   `test/inbox-statuses.test.ts` ("caps the attachments, tags and content one status stores", "deletes a status with
@@ -3267,10 +3274,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   boosts, reply links), so no delete cascades. A proven `Delete` of a remote original records, in its first
   transaction and apart from the batch's budget, at most `MAX_FORWARD_OWNERS` forward intents of at most
   `FORWARD_BODY_MAX` bytes of body each, naming at most `MAX_FORWARD_QUOTES` quoting statuses in all, and the job's
-  `bound` naming them, and runs no batch when it recorded one. The transaction then writes at most 684 rows: 400 of the
-  receive's sweep (`SWEEP_BATCH` of each of four sources) before any handler, and the handler's 284 (the retraction,
-  the deleted object and the job; the streaming capture's 258; the hide's 3, its trigger on the quotes' copy writing
-  none for a remote status; the quote's retirement, 3; the 16 intents and the bound), which a witness holding them all
+  `bound` naming them, and runs no batch when it recorded one. The transaction then writes at most 685 rows: 400 of the
+  receive's sweep (`SWEEP_BATCH` of each of four sources) before any handler, and the handler's 285 (the retraction,
+  the deleted object and the job; the streaming capture's 258; the hide's 4, the status, its card, the account's last
+  status and the copy of withdrawn on the status's own quote row, which an import may mark local; the quote's
+  retirement, 3; the 16 intents and the bound), which a witness holding them all
   at once writes exactly, with the boosters or the 65 raw quote candidates at their cap; the intents' envelopes and the
   bound are within the bytes the witness derives from those caps (not every column of the transaction:
   `test/forward-delete.test.ts` ("records MAX_FORWARD_OWNERS intents within the derived bytes and rows", "records 16
@@ -3391,7 +3399,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   references as it reaches them"), `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when
   the profile is edited before it is staged"), `test/forward-delete.test.ts` ("advances a forward whose
   every share resolves", "regenerates its targets when restarted after a partial emit")). _Gap (accepted):_
-  a source row removed before its cursor reads it is missed unless other evidence names its inbox; a follow made after
+  a source row removed before its cursor reads it is missed unless other evidence names its inbox; a forward's direct
+  or limited quote reaches its receipts alone, so an inbox whose `Create` of it completes after the staging read its
+  receipts is missed; a follow made after
   the staging began is not reached; a delivery row moved in place to a personal inbox
   (`moveToPersonal`) after the rows' walk passed it is missed when its receipt sorts behind the receipts' cursor, or
   when it stays pending or gives up without a receipt; writing out starts only once every source is read, so a large

@@ -1380,10 +1380,11 @@ describe("a staged retraction’s writing out (RES-6)", () => {
 
 describe("a staged forward (RES-6, VIS-3)", () => {
   it("resolves its references as it reaches them and reaches the followers after them, each call within its bounds", async () => {
-    // Its three lists at once: no accounts; 600 shares that resolve to no reference of the signer (an import's), then
-    // its boost 50 times, its uri of 300,000 bytes (an import's), which stays in SQL, with receipts and an earlier
-    // Announce's rows; as many receiptShares, then its direct quoting status 50 times, with receipts of its own; the
-    // signer's followers, reached through the shares alone.
+    // Its three lists at once: an addressed remote account; 600 shares that resolve to no reference of the signer (an
+    // import's), then its boost 50 times, its uri of 300,000 bytes (an import's), which stays in SQL, with receipts and
+    // an earlier Announce's rows; as many receiptShares, then its direct quoting status 50 times, with receipts of its
+    // own and an earlier Create's row, which is no receipt and so no target; the signer's followers, reached through
+    // the shares alone.
     const ORIGINAL = "https://r.example/o/1";
     const BOOSTED = `https://kopje.test/ap/o/${"b".repeat(300_000)}`;
     const QUOTING = "600000000000000001";
@@ -1392,12 +1393,12 @@ describe("a staged forward (RES-6, VIS-3)", () => {
     const receiptShares = [...unresolved, ...Array.from({ length: 50 }, () => QUOTING)];
     const envelope: DeliveryEnvelope = {
       activity: { type: "Delete", id: `${ORIGINAL}#delete`, actor: "https://r.example/users/x", object: ORIGINAL },
-      audience: { followers: false, accounts: [], shares, receiptShares } as DeliveryEnvelope["audience"],
+      audience: { followers: false, accounts: [ACCOUNT(0)], shares, receiptShares } as DeliveryEnvelope["audience"],
     };
     const store = await migratedStore();
     const result = await runInDurableObject(store, (_instance, state) => {
       const real = state.storage.sql;
-      state.storage.transactionSync(() => seed(real, EMPTY));
+      state.storage.transactionSync(() => seed(real, { ...EMPTY, remotes: [{ ...REMOTE }] }));
       // Statistics taken before the growth.
       real.exec("ANALYZE");
       state.storage.transactionSync(() => {
@@ -1447,6 +1448,21 @@ describe("a staged forward (RES-6, VIS-3)", () => {
 						VALUES (?, ?, 'pending', 1, '2026-01-01T00:00:00.000Z')`,
           QUOTING,
           ORIGINAL,
+        );
+        const create = real
+          .exec<{ id: number }>(
+            `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+							VALUES (?, '{"activity":{"type":"Create"},"audience":{"followers":false,"accounts":[]}}',
+								'https://kopje.test/ap/o/quoting', 0, 0)
+							RETURNING id`,
+            SIGNER,
+          )
+          .one().id;
+        real.exec(
+          `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+						VALUES (?, ?, 'https://never.example/inbox', 'x', 'gave_up', 0, 0)`,
+          create,
+          SIGNER,
         );
         for (let i = 0; i < 20; i++) {
           real.exec(
@@ -1512,6 +1528,7 @@ describe("a staged forward (RES-6, VIS-3)", () => {
     }
     expect(reached.has("https://e0.example/inbox") && reached.has("https://d0.example/inbox")).toBe(true);
     expect(reached.has("https://q0.example/inbox") && reached.has("https://q19.example/inbox")).toBe(true);
+    expect(reached.has("https://never.example/inbox")).toBe(false);
     expect(new Set(result.written).size).toBe(result.written.length);
     expect([...result.written].toSorted()).toEqual([...result.oracle].toSorted());
   }, 300_000);

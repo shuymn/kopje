@@ -191,8 +191,9 @@ export const PURGE_BATCH = 500;
 // recount.
 export const PURGED_FOLLOW_ROWS = 3;
 // A remote author's proven Delete of its public or unlisted original is forwarded by at most MAX_FORWARD_OWNERS local
-// accounts (recordForwards; the first by account id) through at most MAX_FORWARD_QUOTES quoting statuses in all (the
-// first by status id, a policy cap of four per owner: Mastodon has none), and only when it serializes to at most
+// accounts (recordForwards; the boosters first, then the quote owners, each by account id) through at most
+// MAX_FORWARD_QUOTES quoting statuses across all owners (the first by status id, one owner may hold them all; a policy
+// cap, four times the owners': Mastodon has none), and only when it serializes to at most
 // FORWARD_BODY_MAX UTF-8 bytes: the bounds on the owners, references and body bytes a forward records, not on its
 // fan-out (RES-4, RES-6).
 export const MAX_FORWARD_OWNERS = 16;
@@ -1767,9 +1768,10 @@ function withdrawLocalBoosts(
     // deliveries settle), and both jobs wait for the intent to finish staging before they delete the receipts and
     // the boost, which takes the marker with it.
     if (cursor !== boost.id && boost.withdrawn === 0) {
-      // The Undo intent and the earlier intents about the boost it supersedes, then the marker and the cursor.
+      // The Undo intent and the earlier intents about the boost it supersedes, then the marker (with the copy on a
+      // quote row of the boost an import marked local, migration 0091_live_local_quotes) and the cursor.
       const withdrawn = budget.progress(() => {
-        if (!withdrawLocalBoost(db, boost.id, now, budget.left() - 2)) {
+        if (!withdrawLocalBoost(db, boost.id, now, budget.left() - 3)) {
           return false;
         }
         db.run("UPDATE statuses SET withdrawn = 1 WHERE id = ?", boost.id);
@@ -2279,8 +2281,9 @@ const LIVE_QUOTE_WINDOW = `SELECT w.status_id AS id, CASE WHEN s.withdrawn = 0 T
 
 // The proven Delete `proven` of the remote original `statusId` (public or unlisted before its hide), forwarded through
 // its kept local boosts and live local quotes (VIS-3, ID-1; Mastodon's ActivityPub::Forwarder, with the departures in
-// docs/mastodon-deviations.md): one intent per owner, at most MAX_FORWARD_OWNERS (the first by account id among the
-// boosters and the owners of the first MAX_FORWARD_QUOTES quotes; a suspended owner's too, a retraction), signed by it,
+// docs/mastodon-deviations.md): one intent per owner, at most MAX_FORWARD_OWNERS (the boosters first by account id,
+// then the owners of the first MAX_FORWARD_QUOTES quotes by account id, so a quote never takes a booster's place; a
+// suspended owner's too, a retraction), signed by it,
 // immutable (the body as received, byte for byte), its audience its references (Audience.shares: its boost and its
 // quoting statuses that reach its followers; receiptShares: its direct and limited ones, their class fixed here, as a
 // quoting status's own deletion rewrites it to direct), its targets staged before their evidence goes
@@ -2314,7 +2317,14 @@ function recordForwards(db: Db, statusId: string, proven: Record<string, unknown
   );
   // Each owner's references: its boost and follower-reaching quotes (shares), its direct and limited ones.
   const owners = new Map<string, { shares: string[]; receiptShares: string[] }>();
-  const of = (owner: string) => owners.get(owner) ?? owners.set(owner, { shares: [], receiptShares: [] }).get(owner)!;
+  const of = (owner: string) => {
+    let references = owners.get(owner);
+    if (references === undefined) {
+      references = { shares: [], receiptShares: [] };
+      owners.set(owner, references);
+    }
+    return references;
+  };
   for (const boost of boosts) {
     of(boost.owner).shares.push(boost.id);
   }
@@ -2331,8 +2341,11 @@ function recordForwards(db: Db, statusId: string, proven: Record<string, unknown
     // DATA-5: the caps, no identity.
     console.warn({ event: "kopje.inbox.forward_capped", ...capped });
   }
+  // The boosters (KEPT_LOCAL_BOOSTS' owner order) take the places first; the quote-only owners fill the rest.
+  const boosters = boosts.map((boost) => boost.owner);
+  const quoters = [...owners.keys()].filter((owner) => !boosters.includes(owner)).toSorted();
   const intents: string[] = [];
-  for (const owner of [...owners.keys()].toSorted().slice(0, MAX_FORWARD_OWNERS)) {
+  for (const owner of [...boosters, ...quoters].slice(0, MAX_FORWARD_OWNERS)) {
     const { shares, receiptShares } = owners.get(owner)!;
     const envelope: DeliveryEnvelope = {
       activity: proven,
@@ -2438,9 +2451,11 @@ function stageForwards(db: Db, originalId: string, budget: JobBudget): boolean {
 
 // The hide of a remote status whose Delete is recorded (VIS-1): it writes the status, the account's last status, which
 // the trigger of migration 0021_directory moves back, and deletes the status's card (link-cards.ts: a direct status
-// holds none), so three rows at most, and nothing once done. It also marks the status withdrawn (its retraction is
+// holds none), and the copy of withdrawn on its own quote row when that row is marked local (migration
+// 0091_live_local_quotes; only an import marks a remote status's quote so), so four rows at most, and nothing once done. It also marks the status withdrawn (its retraction is
 // recorded), which refuses a local unboost of it (statuses.ts unboostableId) and skips its recounts
 // (deleteStatusWithin).
+const HIDE_ROWS = 4;
 function hideRemoteStatus(db: Db, statusId: string): void {
   db.run(
     `UPDATE statuses SET withdrawn = 1, visibility = 'direct', content = '', spoiler_text = '', search_text = NULL,
@@ -2530,7 +2545,7 @@ export function deleteStatusBatch(
   );
   // The Delete's request hid the status already (deleteObject); a job of an older build may not have, which this
   // does with the room. Every later batch passes here again, writing nothing more for the status.
-  if (budget.left() >= 3) {
+  if (budget.left() >= HIDE_ROWS) {
     budget.progress(() => hideRemoteStatus(db, statusId));
     // No longer public, so its hashtags leave the index tag reads walk (status_tags.public), among its first by name
     // as many as the budget has left (UNTAG_WINDOW_SQL), the rest as the next batches delete them from the front (a
@@ -3433,7 +3448,7 @@ function pendingPurge(db: Db, uri: string, now: number): boolean {
 
 // The hide of a remote status whose delete job is pending, outside the batch's savepoint (VIS-1): a job of an older
 // build or an import may name one never hidden, and a hide inside a batch that fails would be rolled back with it, so
-// a job that fails or parks would leave the status shown. Each call writes three rows at most (hideRemoteStatus), and
+// a job that fails or parks would leave the status shown. Each call writes HIDE_ROWS at most (hideRemoteStatus), and
 // none while the status stays as hidden; an Update after its retraction expired rewrites the hidden status's content
 // (withdrawn stays 1), so the next call clears it again: no once-per-job write. runJobBatch charges what it wrote to
 // the batch's PURGE_BATCH. The batch's own hide (deleteStatusBatch) then writes nothing. A local status was hidden by
