@@ -72,6 +72,25 @@ describe("pins", () => {
     expect(await ids(h, `/api/v1/accounts/${alice.id}/statuses?pinned=true`)).toEqual([second.id]);
   });
 
+  // The pins' statement and the condition walk share accountConditionsSql (timelines.ts).
+  it("applies tagged and exclude_replies to pins", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const others = await post(h, bob, { status: "bob's" });
+    const tagged = await post(h, alice, { status: "about #cats" });
+    const untagged = await post(h, alice, { status: "about nothing" });
+    const toBob = await post(h, alice, { status: "@bob yes", in_reply_to_id: others.id });
+    const toSelf = await post(h, alice, { status: "and more", in_reply_to_id: untagged.id });
+    for (const status of [tagged, untagged, toBob, toSelf]) {
+      expect((await act(h, alice, `/api/v1/statuses/${status.id}/pin`)).status).toBe(200);
+    }
+    // By status id, newest first.
+    const pinned = (query: string) => ids(h, `/api/v1/accounts/${alice.id}/statuses?pinned=true&${query}&min_id=0`);
+    expect(await pinned("tagged=cats")).toEqual([tagged.id]);
+    expect(await pinned("exclude_replies=true")).toEqual([toSelf.id, untagged.id, tagged.id]);
+    expect(await pinned("exclude_replies=false")).toEqual([toSelf.id, toBob.id, untagged.id, tagged.id]);
+  });
+
   it("refuses with StatusPinValidator's messages, and a repeat as a duplicate", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;

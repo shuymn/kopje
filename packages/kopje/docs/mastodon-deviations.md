@@ -538,6 +538,18 @@ Request parameters:
 - An empty JSON object counts as sent: `{"fields_attributes":{}}` clears the fields and `{"home":{}}` saves the home
   marker, as in Mastodon; `{"poll":{}}` is still no poll.
 
+Paged status lists with request conditions:
+
+- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged` or `exclude_replies`, `GET
+  /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the profile's Posts, Media and
+  tagged tabs and `/tags/:name` read at most 2,000 index entries a page before applying the conditions: the sum of the
+  streams' limits over the entries the audience rule passes, while statuses hidden by their visibility are walked past
+  at their number (the RES-7 gap in [threat-model.md](threat-model.md)). A page whose budget runs out first holds what it found, possibly nothing, and its `Link`
+  continues from the last entry read: `next` by `max_id` (`prev` by `min_id` for a `min_id` request). Mastodon applies
+  the conditions in SQL and answers a full page, sending `next` only when the page is full
+  (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
+  status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+
 Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote

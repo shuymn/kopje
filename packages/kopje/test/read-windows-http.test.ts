@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { type ApiHarness, bearer } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { accountMatches, seedConditionWorld, tagMatches } from "./condition-walk-helpers";
 import { appToken } from "./read-helpers";
 import { community, post, type User } from "./status-helpers";
 
@@ -158,6 +159,33 @@ describe("routes answer the Link of a page cut at its window", () => {
     expect(newer.pages.flat().toSorted()).toEqual(ids(NEWER_BASE, NEWER));
     expect(newer.empty).toBeGreaterThan(0);
   }, 120_000);
+
+  // Request conditions (walkedWindow, CONDITION_WALK): 5,000 rejected rows lie between the older and the newer matches
+  // (test/condition-walk-helpers.ts), more than a page's walk charges.
+  it("pages account statuses and hashtag timelines with conditions through 5,000 rejected rows, both ways", async () => {
+    const h = await community(["alice", "bea"]);
+    const { alice, bea } = h.users;
+    await seedConditionWorld(h.store, { account: alice.id, local: bea.id, rejected: 5_000, newer: NEWER });
+    const statuses = (body: unknown) => (body as { id: string }[]).map((status) => status.id);
+    const account = accountMatches(30, NEWER);
+    const local = tagMatches(30, NEWER, "local");
+    for (const [path, expected] of [
+      [`/api/v1/accounts/${alice.id}/statuses?only_media=true`, account],
+      [`/api/v1/accounts/${alice.id}/statuses?tagged=rare`, account],
+      [`/api/v1/accounts/${alice.id}/statuses?exclude_replies=true`, account],
+      ["/api/v1/timelines/tag/cats?local=true", local],
+      ["/api/v1/timelines/tag/cats?local=true&any[]=n1", local],
+      ["/api/v1/timelines/tag/cats?local=true&any[]=n1&any[]=n2", local],
+      ["/api/v1/timelines/tag/cats?local=true&any[]=n1&any[]=n2&any[]=n3&any[]=n4", local],
+    ] as const) {
+      const older = await follow(h, bea.token, path, "next", statuses);
+      expect([path, older.pages.flat()]).toEqual([path, expected]);
+      expect([path, older.empty > 0]).toEqual([path, true]);
+      const newer = await follow(h, bea.token, `${path}&min_id=1`, "prev", statuses);
+      expect([path, newer.pages.flatMap((page) => page.toReversed())]).toEqual([path, expected.toReversed()]);
+      expect([path, newer.empty > 0]).toEqual([path, true]);
+    }
+  }, 300_000);
 });
 
 describe("a group keeps the notification its walk found behind its hidden newest ones", () => {
