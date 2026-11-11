@@ -83,6 +83,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Before, a profile page, `GET /api/v1/accounts/:id`, `verify_credentials`, account lists and other answers that
   present accounts could read every account or every local account for each one shown, and the follow lists every
   follow. No migration, no `wrangler.jsonc` change.
+- A local account's `Follow` of a remote account that the instance suspended, or that a `suspend` domain block
+  covers, is now held and sent once the account is available again, so the request no longer stays pending forever
+  (#1422); likewise the `Accept` of a remote account's follow that a short suspension or block dropped, so its server
+  no longer keeps a request that Kopje holds accepted (#1423). A new job family replays each held handshake with its
+  original id about 5 to 10 minutes after the account is available, and nothing more is sent while it is not
+  ([docs/visibility.md](docs/visibility.md), "Held handshakes"). One dropped before this release is not replayed:
+  follow again. The admin's `jobs retry` also recovers a parked replay. Migration `0088_handshake_replays` (an empty
+  table, two empty indexes and a trigger on `follows`; it rewrites no row, and since it creates a table the upgrade
+  checks every reference of the Store: 7,184 ms for this file in one local run of the migration bench, at a load
+  average of about 9); `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version.
 
 ### Instance changes
 

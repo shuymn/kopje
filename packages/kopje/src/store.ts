@@ -46,6 +46,7 @@ import * as federationReads from "./domain/federation-reads";
 import { kvCas, kvDelete, kvGet, kvList, kvSet } from "./domain/fedify-kv";
 import * as fieldLinks from "./domain/field-links";
 import * as filters from "./domain/filters";
+import { HANDSHAKE_REPLAYS_PER_ROUND, handshakeReplaysDue, handshakeReplayStep } from "./domain/handshake-replays";
 import * as inbox from "./domain/inbox";
 import {
   instanceAdminSettings,
@@ -582,6 +583,20 @@ export class Store extends DurableObject<Env> {
   // A round of the local and remote moderation jobs (domain/suspension.ts), in one transaction.
   runModerationJobs(callerBuild: string, input: OperationInput<typeof runModerationJobs>) {
     return this.#kernel.execute(callerBuild, runModerationJobs, input);
+  }
+
+  // A round of the held handshakes (domain/handshake-replays.ts): at most HANDSHAKE_REPLAYS_PER_ROUND steps, each in
+  // its own transaction; pending when a hold is still due after them.
+  async runHandshakeReplays(callerBuild: string, input: OperationInput<typeof handshakeReplayStep>) {
+    let delivers = false;
+    for (let step = 0; step < HANDSHAKE_REPLAYS_PER_ROUND; step++) {
+      const result = await this.#kernel.execute(callerBuild, handshakeReplayStep, input);
+      delivers = delivers || result.delivers;
+      if (result.done) {
+        return { pending: false, delivers };
+      }
+    }
+    return { pending: await this.#kernel.execute(callerBuild, handshakeReplaysDue, input), delivers };
   }
 
   // A round of the unlock acceptance jobs (domain/unlock-accepts.ts): at most UNLOCK_ACCEPTS_PER_ROUND steps, each in

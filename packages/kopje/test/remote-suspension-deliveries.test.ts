@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { enqueueActivity } from "../src/domain/deliveries";
+import { enqueueActivity, HANDSHAKE_RECHECK_MS } from "../src/domain/deliveries";
 import { deliveryRound } from "../src/jobs/deliver";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settle, sql, userToken } from "./api-helpers";
@@ -121,7 +121,7 @@ describe("content to a suspended account is dropped", () => {
 });
 
 describe("a local follow of a suspended account", () => {
-  it("drops the queued Follow, keeps the request pending, and ignores its Accept", async () => {
+  it("drops the queued Follow, keeps the request pending and held, ignores its Accept, and sends it once lifted", async () => {
     const w = await world();
     const r = await remoteAccount(w.h.store, "r", "remote.example");
     await follow(w.h, w.alice, r);
@@ -148,6 +148,18 @@ describe("a local follow of a suspended account", () => {
     // A follow made after the suspension is not found (R21).
     const again = await w.h.request(`/api/v1/accounts/${r}/follow`, bearer(w.bob.token, json({})));
     expect(again.status).toBe(404);
+    // The follow holds its Follow (VIS-30, handshake-replays.ts): once r is unsuspended, a jobs round records it
+    // again with its id.
+    expect(await sql(w.h.store, "SELECT 1 FROM handshake_replays")).toHaveLength(1);
+    expect(await unsuspend(w, r)).toMatchObject({ status: 200 });
+    const later = NOW + HANDSHAKE_RECHECK_MS;
+    expect(await w.h.store.runHandshakeReplays(BUILD, { now: later })).toMatchObject({ delivers: true });
+    const { sent } = await claimAndSettle(w.h.store, {
+      now: later,
+      leaseToken: "replayed",
+      outcome: { kind: "delivered", status: 202 },
+    });
+    expect(sent.map(({ body }) => (JSON.parse(body) as { id: string }).id)).toEqual([followActivity.id]);
   });
 });
 

@@ -1741,6 +1741,13 @@ function byInbox(query: string): string {
 	WHERE pn <= ${PROVENANCE_MAX + 1} OR (hn = 1 AND hr <= ${PROVENANCE_MAX + 1})`;
 }
 
+// The inbox an activity without `to` goes to for the addressed account `a` (deliveries.ts targetsOf over the
+// projection recipientsFor reads below): its shared inbox, else its personal one, an empty one read as none. NULL when
+// it has neither. A held handshake's replay judges this inbox (handshake-replays.ts).
+export function addressedInboxSql(a: string): string {
+  return `COALESCE(NULLIF(${a}.shared_inbox_url, ''), NULLIF(${a}.inbox_url, ''))`;
+}
+
 // R23: whom an activity by `signerId` for `audience` reaches, by its kind (outboundKind). Local accounts are not
 // among them: they read the Store. withdraws: a Reject that ends a follow already accepted. The followers are read
 // through follows_target, each account by id (RES-7).

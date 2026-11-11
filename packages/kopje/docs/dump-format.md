@@ -146,6 +146,12 @@ tokens. A dump taken before 0086 has no such column: it restores into a Store at
 upgrade marks every app that holds a user's code or token. A file built from legacy data writes `0`: legacy clients
 carry no tokens, so they are marked when a user signs in through them again.
 
+A held handshake (VIS-30, migration `0088_handshake_replays`) is a `handshake_replays` row keyed by the follow it holds
+(`follow_id`, a foreign key to `follows` that a follow's delete cascades to), with `check_at`, an INTEGER time in ms
+from 0 to 2^53 − 1 (otherwise `handshake_replays_check_at` fails), and the retry state of a job (above). A hold of no
+follow fails the import's foreign key check. A dump carries holds as they are, so a restored Store replays them at
+their checks; a file built from legacy data writes none.
+
 A remote favourite's Like ids are rows of `favourite_likes` (migration `0052_favourite_likes`): the ids of the
 actor's Likes whose Undo has not arrived, each with the time the Store received it (`received_at`, ms since the
 epoch), at most 4 per favourite, each id once in the file and within 4,096 JSON-escaped UTF-8 bytes. `favourites.uri`

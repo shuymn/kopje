@@ -172,6 +172,9 @@ async function sentTo(t: Setup, prefix: string): Promise<Record<string, unknown>
 
 const idOf = (value: unknown) => (typeof value === "string" ? value : (value as { id: string }).id);
 
+// Ids in SQLite's binary order of their text (ASCII here), as a tie-break by id orders them.
+const byText = (ids: readonly string[]) => ids.toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
 function label(activity: Record<string, unknown>): string {
   return `${String(activity.type)} ${idOf(activity.object)}`;
 }
@@ -965,12 +968,13 @@ describe("revoke (QuotesController#revoke, RevokeQuoteService)", () => {
     expect(await t.post(bob, r2)).toBe(202);
     expect((await revoke(t, mine.id, await statusId(t, note.id))).status).toBe(200);
     const sent = await sentTo(t, `${MASTODON}/inbox`);
+    // The Rejects go oldest first, equal times by the request's id as text (answeredRequests): r1 and r2 were answered
+    // at the same time, and their ids come from a counter the worker's suites share.
     expect(sent.map(label)).toEqual([
       `Accept ${r1.id}`,
       `Accept ${r2.id}`,
       `Delete ${result}`,
-      `Reject ${r1.id}`,
-      `Reject ${r2.id}`,
+      ...byText([r1.id, r2.id]).map((id) => `Reject ${id}`),
     ]);
     expect(mastodonReceiver(r2.id, sent)).toMatchObject({ state: "revoked", approval: result });
   });
@@ -1021,7 +1025,9 @@ describe("revoke (QuotesController#revoke, RevokeQuoteService)", () => {
     const sent = await sentTo(t, MASTODON);
     expect(sent.map(label)).toEqual([
       `Delete ${result}`,
-      ...earlier.filter((a) => a.type === "Accept").map((a) => `Reject ${(a.object as { id: string }).id}`),
+      ...byText(earlier.filter((a) => a.type === "Accept").map((a) => (a.object as { id: string }).id)).map(
+        (id) => `Reject ${id}`,
+      ),
     ]);
     // A receiver that applies the Delete before the Accept of R2 still ends rejected.
     expect(mastodonReceiver(r2.id, [...earlier, ...sent])).toMatchObject({ state: "revoked", approval: result });

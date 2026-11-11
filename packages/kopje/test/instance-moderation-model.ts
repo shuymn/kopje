@@ -11,7 +11,7 @@
 //
 // A change to an R38 rule in docs/visibility.md or docs/threat-model.md changes this file with it.
 
-import { type Intent, Policy } from "./follow-model";
+import { HANDSHAKE_RECHECK_MS, type Intent, Policy } from "./follow-model";
 
 // ---------------------------------------------------------------------------------------------------------------
 // Coverage
@@ -547,9 +547,14 @@ export function ledgerCheck(input: {
   return failures;
 }
 
-// Rule 4's settlement: under the final decisions no obligation is eligible for any job kind.
-export function settlementFailures(snap: Snapshot, fences: ReadonlyMap<string, JobRow>): string[] {
-  const failures: string[] = [];
+// Rule 4's settlement: under the final decisions no obligation is eligible for any job kind, and no held handshake
+// (`replayable`: those a replay would record now) is left owed.
+export function settlementFailures(
+  snap: Snapshot,
+  fences: ReadonlyMap<string, JobRow>,
+  replayable: readonly Hold[] = [],
+): string[] {
+  const failures: string[] = replayable.map((h) => `a replayable hold of ${h.l} ${h.r} ${h.side} left`);
   for (const a of snap.remotes) {
     const covered = accountCovered(snap.blocks, a);
     if (a.source === "domain" && !covered) {
@@ -868,4 +873,63 @@ export class WorldPolicy {
     this.followEnded(l, r);
     return intent;
   }
+
+  // ---- Held handshakes (visibility.md, "Held handshakes"; VIS-30) ----
+
+  // Every hold: L's Follow of R (side lr) or L's Accept of R's follow (side rl), with its time.
+  holds(): Hold[] {
+    const out: Hold[] = [];
+    for (const l of LOCALS) {
+      for (const r of REMOTES) {
+        const pair = this.pair(l, r);
+        if (pair.heldLR !== null) {
+          out.push({ l, r, side: "lr", checkAt: pair.heldLR });
+        }
+        if (pair.heldRL !== null) {
+          out.push({ l, r, side: "rl", checkAt: pair.heldRL });
+        }
+      }
+    }
+    return out;
+  }
+
+  // Whether a replay of the hold records it now: R is available and its inbox's host uncovered (the send-time check's
+  // refusal, read live), and the follow API's rule for a Follow (neither blocks the other), or inbound acceptance's for
+  // an Accept (L does not block R). Every inbox of the model is an https URL.
+  replayable(hold: Hold): boolean {
+    const pair = this.pair(hold.l, hold.r);
+    if (this.refused(hold.r) || pair.blockLR !== null) {
+      return false;
+    }
+    return hold.side === "rl" || pair.blockRL === null;
+  }
+
+  // A round of the held handshakes at `now`: the due holds in (checkAt, follow id) order, up to `cap` steps; each
+  // replayable one is recorded again, the others move to the next check. `pending`: all the steps were used and a hold
+  // is still due.
+  replayRound(
+    now: number,
+    followId: (hold: Hold) => bigint,
+    cap: number,
+  ): { pending: boolean; delivers: boolean; replayed: Hold[]; deferred: Hold[] } {
+    const due = this.holds()
+      .filter((h) => h.checkAt <= now)
+      .toSorted((a, b) => a.checkAt - b.checkAt || (followId(a) < followId(b) ? -1 : 1));
+    const replayed: Hold[] = [];
+    const deferred: Hold[] = [];
+    for (const hold of due.slice(0, cap)) {
+      const pair = this.pair(hold.l, hold.r);
+      if (this.replayable(hold)) {
+        pair.replay(hold.side, now);
+        replayed.push(hold);
+      } else {
+        pair[hold.side === "lr" ? "heldLR" : "heldRL"] = now + HANDSHAKE_RECHECK_MS;
+        deferred.push(hold);
+      }
+    }
+    const pending = due.length >= cap && this.holds().some((h) => h.checkAt <= now);
+    return { pending, delivers: replayed.length > 0, replayed, deferred };
+  }
 }
+
+export type Hold = { l: Local; r: Remote; side: "lr" | "rl"; checkAt: number };

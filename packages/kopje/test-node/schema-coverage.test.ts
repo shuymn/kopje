@@ -62,6 +62,7 @@ const NOT_CARRIED: Record<string, string> = {
     "a remote favourite's outstanding Like ids; legacy keeps none for a remote favourite, so a carried one tracks none",
   fedify_kv: "federation cache",
   follow_recommendation_mutes: "dismissed follow suggestions; legacy Wildebeest has no suggestions",
+  handshake_replays: "Follows and Accepts Kopje's send-time check held; legacy queues are not carried",
   filter_keywords:
     "legacy never wrote filters (its filter_keywords is in UNUSED_LEGACY_TABLES, which stops the conversion)",
   filter_statuses:

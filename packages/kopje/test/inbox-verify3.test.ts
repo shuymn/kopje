@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { recordOutbound } from "../src/domain/activities";
 import { MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
-import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { PURGE_BATCH, PURGED_FOLLOW_ROWS, purgeBatch } from "../src/domain/inbox";
 import { runScheduledJobs } from "../src/jobs/queue";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { mediaKeys } from "../src/platform/media-files";
@@ -321,6 +321,61 @@ describe("RES-6: a purge batch writes at most PURGE_BATCH rows in all", () => {
     expect(start).toBeGreaterThan(PURGE_BATCH);
     expect(previous).toBe(0);
     expect(await count(t.h.store, "SELECT 1 FROM statuses WHERE in_reply_to_id IS NOT NULL")).toBe(0);
+    expect(await accountId(t.h.store, bob.uri)).toBeUndefined();
+  });
+
+  it("reserves three rows a follow: with every follow held and every local side its own, a batch stays within it", async () => {
+    // Each input the follow window reads at its worst: follows past what one batch takes, each of a local account of
+    // its own (a recount row each) and each holding its handshake (handshake_replays, a cascaded row each), and
+    // nothing else of the account left, so the window gets the whole budget.
+    const t = await together();
+    const bob = await mastodonActor(t.web, "bob");
+    await t.post(bob, t.follow(bob));
+    const bobId = (await accountId(t.h.store, bob.uri))!;
+    const n = PURGE_BATCH;
+    await sql(
+      t.h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('5%017d', i), 'https://kopje.test/ap/users/m' || i, 'm' || i, NULL FROM n`,
+      n,
+    );
+    await sql(
+      t.h.store,
+      `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+			SELECT id, username || '@mail.example', x'00', x'00', 'k' FROM accounts WHERE id GLOB '5*'`,
+    );
+    await sql(
+      t.h.store,
+      "INSERT INTO follows (account_id, target_account_id, state, uri) SELECT id, ?, 'pending', uri || '#f' FROM accounts WHERE id GLOB '5*'",
+      bobId,
+    );
+    await sql(t.h.store, "INSERT INTO handshake_replays (follow_id, check_at) SELECT id, 0 FROM follows");
+    await sql(t.h.store, "DELETE FROM notifications");
+    await sql(
+      t.h.store,
+      "INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('purge', ?1, ?1, ?2)",
+      bob.uri,
+      NOW,
+    );
+    const holds = () => count(t.h.store, "SELECT 1 FROM handshake_replays");
+    const all = await holds();
+    expect(all).toBeGreaterThan(PURGE_BATCH / PURGED_FOLLOW_ROWS);
+    const first = await batch(t.h.store, bob.uri);
+    expect(first.remaining).toBe(true);
+    expect(first.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    // The guarded branch: the batch reached the follows, and took as many as the reservation leaves room for.
+    const taken = all - (await holds());
+    expect(taken).toBeGreaterThan(PURGE_BATCH / PURGED_FOLLOW_ROWS - 10);
+    expect(await count(t.h.store, "SELECT 1 FROM follows")).toBe(all - taken);
+    for (let i = 0; i < 10; i++) {
+      const next = await batch(t.h.store, bob.uri);
+      expect(next.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+      if (!next.remaining) {
+        break;
+      }
+    }
+    expect(await holds()).toBe(0);
     expect(await accountId(t.h.store, bob.uri)).toBeUndefined();
   });
 
