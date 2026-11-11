@@ -77,9 +77,9 @@ import { RowBudget } from "./row-budget";
 //   - Signer: an activity is signed by its lane's account, its author, except one recorded as signed by the instance
 //     actor (signedBy 'instance', DATA-7): a forwarded report's Flag (reports.ts), which Mastodon sends from
 //     Account.representative. Its lane is still the reporter's, which owns the intent and orders it with the reporter's
-//     other activities to that server. A remote author's Delete forwarded through local boosts (inbox.ts
-//     recordForwards) is one intent per booster, signed by it in its lanes, so no server learns of another booster's
-//     share (NET-2).
+//     other activities to that server. A remote author's Delete forwarded through local boosts and quotes (inbox.ts
+//     recordForwards) is one intent per owner, signed by it in its lanes, so no server learns of another owner's
+//     reference (NET-2).
 //   - Forwards: an intent whose audience has shares (Audience.shares) has a subject of its own (FORWARD_SUBJECT), so it
 //     neither supersedes nor is superseded by any other activity, whatever names its object's id (VIS-3).
 
@@ -2845,8 +2845,8 @@ function moveToPersonal(
 // personalFallback for a forward's row: it moves in place, as there, only when its provenance (recipient_accounts, at
 // most PROVENANCE_MAX ids, each sought by id: RES-7) names exactly one account behind this shared inbox with a
 // different personal inbox on the same origin, which the activity has no row or unexpanded target for. A row serving
-// several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a boost)
-// does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
+// several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a
+// reference) does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
 // boost's Undo) overtake the copies written behind it.
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
