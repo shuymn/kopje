@@ -106,15 +106,15 @@ export type OutboundEnvelope = Omit<DeliveryEnvelope, "audience"> & { audience: 
 // row it retracts: the receipts go with the row. A local status's Delete and a boost's Undo are recorded in bounded
 // steps instead (deliveries.ts beginRetraction), their receipts kept until the targets are staged.
 // withdraws: a Reject that ends a follow already accepted (see subjectOf in deliveries.ts); audienceOnly and
-// personalInbox: see enqueueActivity.
+// personalInbox: see enqueueActivity, whose answer it returns (whether this call inserted an intent with a target).
 export function recordOutbound(
   db: Db,
   signerId: string,
   envelope: OutboundEnvelope,
   now: number,
   options: OutboundOptions = {},
-): void {
-  enqueueActivity(db, signerId, envelope, now, options);
+): boolean {
+  return enqueueActivity(db, signerId, envelope, now, options);
 }
 
 export function followersUri(actorUri: string): string {
