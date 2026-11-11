@@ -1,4 +1,4 @@
-import { STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { CARD_PUBLIC_LINK_INDEX } from "../platform/stored-bounds";
 import { type Page, type PageQuery, type Present, resolveAccountId } from "./accounts";
@@ -29,6 +29,7 @@ import {
   singleWindow,
   statusCursor,
   streamWindow,
+  walkedWindow,
   type Window,
   windowJson,
   windowPage,
@@ -37,7 +38,10 @@ import {
 // Timelines: newest first, paged by status id (18-digit TEXT, compared as TEXT) or, for
 // bookmarks and favourites, by the edge's INTEGER id. A page reads a candidate window from its cursor (windows.ts,
 // docs/visibility.md "Read bounds") and applies the audience rule to those candidates (statusReads in audience.ts),
-// so its ids are ones the presenter accepts and a range the rule hides costs a window, not its length. The feed
+// so its ids are ones the presenter accepts and a range the rule hides costs a window, not its length. A request's own
+// conditions that no index serves (account statuses' only_media, tagged and exclude_replies; a hashtag timeline's
+// local, remote, only_media, all and none) are tested by key on the candidates a walk examined (walkedWindow,
+// passingIds), so a range they reject costs at most CONDITION_WALK entries a page. The feed
 // condition is the visibility list the partial index statuses_feed declares (REACHES_FOLLOWERS_SQL). A page is one
 // answer within ANSWER_BYTES (RES-3, admittedPage): cut there, it is Page.cut and continues from its last status.
 
@@ -66,6 +70,45 @@ function orderOf(cursor: Cursor): "ASC" | "DESC" {
 
 function rangeParams(cursor: Cursor): [string, string] {
   return [cursor.max ?? ":", cursor.min ?? ""];
+}
+
+// Where a walk (walkedWindow) starts: the cursor's range, as rangeParams binds it.
+function walkStart(cursor: Cursor): { max: string; min: string; ascending: boolean } {
+  const [max, min] = rangeParams(cursor);
+  return { max, min, ascending: cursor.ascending };
+}
+
+// Parameters numbered from ?`from`, each bound as a term uses it, so a term a request leaves out binds nothing.
+function binder(from: number): { values: SqlStorageValue[]; bind: (value: SqlStorageValue) => string } {
+  const values: SqlStorageValue[] = [];
+  return {
+    values,
+    bind: (value) => {
+      values.push(value);
+      return `?${from + values.length - 1}`;
+    },
+  };
+}
+
+// The ids among `candidates` that pass a request's own `conditions` (over the status `s` and, with `author`, its
+// account `pa`; their parameters from ?2), each candidate read by key: the conditions are applied outside the LIMIT of
+// the walk that examined the candidates (walkedWindow), never inside it.
+function passingIds(
+  db: Db,
+  candidates: Window["candidates"],
+  conditions: string,
+  author: boolean,
+  ...params: SqlStorageValue[]
+): ReadonlySet<string> {
+  const rows = db.all<{ id: string }>(
+    `SELECT s.id FROM json_each(?1) c
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = json_extract(c.value, '$.id')
+			${author ? `CROSS JOIN accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} ON pa.id = s.account_id` : ""}
+			WHERE ${conditions}`,
+    JSON.stringify(candidates),
+    ...params,
+  );
+  return new Set(rows.map((row) => row.id));
 }
 
 // How a list read admits its presented statuses, in traversal order (RES-3). An API answer is one JSON array of them,
@@ -494,9 +537,19 @@ export type PublicTimelineInput = {
 // `local` and `remote` together select both, as PublicFeed#local_only? and #remote_only? read them (with Mastodon's
 // feed access settings open to everyone, the only setting Kopje has).
 function publicConditions(local: boolean, remote: boolean, onlyMedia: boolean): string {
-  return `s.visibility = 'public' AND s.reblog_of_id IS NULL
-		${local && !remote ? "AND pa.domain IS NULL" : ""} ${remote && !local ? "AND pa.domain IS NOT NULL" : ""}
-		${onlyMedia ? "AND EXISTS (SELECT 1 FROM media_attachments pm WHERE pm.status_id = s.id AND pm.shown = 1)" : ""}`;
+  return [PUBLIC_ORIGINAL_SQL, ...publicRequestTerms(local, remote, onlyMedia)].join(" AND ");
+}
+
+// The base of publicConditions: a public status that is not a boost.
+const PUBLIC_ORIGINAL_SQL = "s.visibility = 'public' AND s.reblog_of_id IS NULL";
+
+// The request's part of publicConditions, over the status `s` and its account `pa`.
+function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean): string[] {
+  return [
+    ...(local && !remote ? ["pa.domain IS NULL"] : []),
+    ...(remote && !local ? ["pa.domain IS NOT NULL"] : []),
+    ...(onlyMedia ? ["EXISTS (SELECT 1 FROM media_attachments pm WHERE pm.status_id = s.id AND pm.shown = 1)"] : []),
+  ];
 }
 
 // A page reads a window of readWindow(limit) candidates from the cursor (publicConditions and audienceSql, without the
@@ -598,9 +651,11 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
   if (cursor === null) {
     return null;
   }
-  // One name, and no `all` or `none`: ?5 and ?6 are empty, ?7 the time, ?8 the name, ?9 the status.
-  const input = { local, remote: false, onlyMedia: false };
-  const read = statusReads(viewer, { viewer: "?1", now: "?7", only: "?9" });
+  // One name, and no `all` or `none`: ?5 the time, ?6 the name, ?7 the status. The whole composition, the request's
+  // part included, tested on the status by key.
+  const { values, bind } = binder(8);
+  const request = tagRequestSql({ local, remote: false, onlyMedia: false, all: [], none: [] }, bind);
+  const read = statusReads(viewer, { viewer: "?1", now: "?5", only: "?7" });
   return (
     read.select(
       db,
@@ -608,18 +663,18 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
       {
         from: "status_tags t CROSS JOIN",
         join: "ON s.id = t.status_id JOIN accounts pa ON pa.id = s.account_id",
-        where: `t.public = 1 AND t.name = ?8 AND t.status_id = ?9 AND ${tagConditions(input)}`,
+        where: `t.public = 1 AND t.name = ?6 AND t.status_id = ?7 AND ${PUBLIC_ORIGINAL_SQL}
+					${request === null ? "" : `AND ${request}`}`,
         and: rangeSql("t.status_id"),
         tail: `ORDER BY t.status_id ${orderOf(cursor)} LIMIT ?4`,
       },
       viewer.accountId,
       ...rangeParams(cursor),
       cursor.limit,
-      "[]",
-      "[]",
       viewer.now,
       normalizeTag(tag),
       statusId,
+      ...values,
     )[0]?.id ?? null
   );
 }
@@ -632,18 +687,40 @@ function unique(names: string[]): string[] {
   return [...new Set(names.map(normalizeTag))];
 }
 
-// A hashtag timeline's conditions on the status `s` but the rule, with `all` at ?5 and `none` at ?6.
-function tagConditions(input: { local: boolean; remote: boolean; onlyMedia: boolean }): string {
-  return `NOT EXISTS (SELECT 1 FROM json_each(?5) a
-			WHERE NOT EXISTS (SELECT 1 FROM status_tags st WHERE st.status_id = s.id AND st.name = a.value))
-		AND NOT EXISTS (SELECT 1 FROM status_tags st WHERE st.status_id = s.id
-			AND st.name IN (SELECT value FROM json_each(?6)))
-		AND ${publicConditions(input.local, input.remote, input.onlyMedia)}`;
+// A hashtag timeline's request conditions on the status `s` and its account `pa` (all of `all`, none of `none`, and
+// publicRequestTerms), their parameters bound by `bind`; null for none. The timeline's base, PUBLIC_ORIGINAL_SQL, is
+// not among them.
+function tagRequestSql(
+  input: { local: boolean; remote: boolean; onlyMedia: boolean; all: string[]; none: string[] },
+  bind: (value: SqlStorageValue) => string,
+): string | null {
+  const all = unique(input.all);
+  const none = unique(input.none);
+  const terms = [
+    ...(all.length > 0
+      ? [
+          `NOT EXISTS (SELECT 1 FROM json_each(${bind(JSON.stringify(all))}) a
+						WHERE NOT EXISTS (SELECT 1 FROM status_tags st WHERE st.status_id = s.id AND st.name = a.value))`,
+        ]
+      : []),
+    ...(none.length > 0
+      ? [
+          `NOT EXISTS (SELECT 1 FROM status_tags st WHERE st.status_id = s.id
+						AND st.name IN (SELECT value FROM json_each(${bind(JSON.stringify(none))})))`,
+        ]
+      : []),
+    ...publicRequestTerms(input.local, input.remote, input.onlyMedia),
+  ];
+  return terms.length === 0 ? null : terms.join(" AND ");
 }
 
-// A hashtag timeline's candidate window, as homeWindow's, with a stream per name. CROSS JOIN keeps status_tags
-// outermost, and the cursor is a plain range (rangeSql), so each stream starts in the index at the cursor, walks it in
-// order and stops at its cap.
+// A hashtag timeline's candidate window, as homeWindow's, with a stream per name, walked in rounds (walkedWindow) when
+// the request has conditions: a round merges the names' streams at its per-stream LIMIT p (mergedWindow with per p and
+// size names × p, so it is cut exactly when a stream filled), and the conditions are tested on its candidates by key
+// (passingIds). A stream keeps the timeline's base inside its LIMIT, probed by the status's key since
+// status_tags.public can trail the status (homeWindow), and audienceSql. CROSS JOIN and INDEXED BY keep
+// status_tags_public outermost, and the cursor is a plain range (rangeSql), so each stream starts in the index at the
+// cursor, walks it in order and stops at its cap.
 function tagWindow(
   db: Db,
   viewer: ViewerContext,
@@ -652,26 +729,37 @@ function tagWindow(
 ): Window {
   const names = tagNames(input);
   const order = orderOf(cursor);
-  // ?1 the viewer, ?4 the cap, ?5 all, ?6 none, then one parameter per name from ?7.
+  const { values, bind } = binder(2);
+  const request = tagRequestSql(input, bind);
+  // ?1 the viewer, ?2 and ?3 the range, ?4 the per-stream LIMIT, then one parameter per name from ?5.
   const stream = (n: number) => `SELECT id, ${n} AS k, 0 AS o FROM (SELECT t.status_id AS id
-		FROM status_tags t CROSS JOIN statuses s ON s.id = t.status_id JOIN accounts pa ON pa.id = s.account_id
-		WHERE t.public = 1 AND t.name = ?${7 + n} AND ${rangeSql("t.status_id")} AND ${tagConditions(input)}
+		FROM status_tags t INDEXED BY status_tags_public
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = t.status_id
+		WHERE t.public = 1 AND t.name = ?${5 + n} AND ${rangeSql("t.status_id")} AND ${PUBLIC_ORIGINAL_SQL}
 			AND ${audienceSql("s", "?1")}
 		ORDER BY t.status_id ${order} LIMIT ?4)`;
-  return mergedWindow(
-    db,
-    {
-      streams: names.map((_, n) => stream(n)).join(" UNION ALL "),
-      ascending: cursor.ascending,
-      per: streamWindow(cursor.limit),
-      size: readWindow(cursor.limit),
-    },
-    viewer.accountId,
-    ...rangeParams(cursor),
+  const streams = names.map((_, n) => stream(n)).join(" UNION ALL ");
+  return walkedWindow(
+    (range, per) =>
+      mergedWindow(
+        db,
+        {
+          streams,
+          ascending: cursor.ascending,
+          per,
+          size: request === null ? readWindow(cursor.limit) : names.length * per,
+        },
+        viewer.accountId,
+        range.max,
+        range.min,
+        per,
+        ...names,
+      ),
+    request === null ? null : (candidates) => passingIds(db, candidates, request, true, ...values),
+    walkStart(cursor),
     streamWindow(cursor.limit),
-    JSON.stringify(unique(input.all)),
-    JSON.stringify(unique(input.none)),
-    ...names,
+    names.length,
+    Math.min(readWindow(cursor.limit), names.length * streamWindow(cursor.limit)),
   );
 }
 
@@ -792,30 +880,29 @@ export function accountStatusesWithin(
     return { page: { items: [], newest: null, oldest: null }, more: false };
   }
   const order = orderOf(cursor);
-  const tagged = input.tagged === null ? null : normalizeTag(input.tagged);
-  const filters = `${input.onlyMedia ? "AND EXISTS (SELECT 1 FROM media_attachments um WHERE um.status_id = s.id AND um.shown = 1)" : ""}
-		${input.excludeReplies ? `AND ${NOT_A_REPLY_TO_OTHERS}` : ""}
-		${input.excludeReblogs ? "AND s.reblog_of_id IS NULL" : ""}`;
+  const reblogs = input.excludeReblogs ? "AND s.reblog_of_id IS NULL" : "";
   if (input.pinned) {
-    // An account pins at most a few statuses, read through their primary key: no window.
-    const rows = statusReads(viewer, { viewer: "?1", now: "?7" }).select(
+    // An account pins at most a few statuses, read through their primary key: no window. ?1 the viewer, ?2 and ?3
+    // the range, ?4 the limit, ?5 the account, ?6 the time, the request's conditions from ?7.
+    const { values, bind } = binder(7);
+    const request = accountConditionsSql(input, bind);
+    const rows = statusReads(viewer, { viewer: "?1", now: "?6" }).select(
       db,
       "visible",
       {
         from: "status_pins p CROSS JOIN",
         join: "ON s.id = p.status_id",
         where: "p.account_id = ?5 AND s.account_id = ?5",
-        and: `NOT ${blocksSql("?1", "s.account_id")} AND ${originalShownSql("?1", "?7")} ${filters}
-					AND (?6 IS NULL OR EXISTS (SELECT 1 FROM status_tags ut WHERE ut.status_id = s.id AND ut.name = ?6))
-					AND ${rangeSql("s.id")}`,
+        and: `NOT ${blocksSql("?1", "s.account_id")} AND ${originalShownSql("?1", "?6")} ${reblogs}
+					${request === null ? "" : `AND ${request}`} AND ${rangeSql("s.id")}`,
         tail: `ORDER BY ${cursor.ascending ? "" : "p.created_at DESC, "}s.id ${order} LIMIT ?4`,
       },
       viewerId,
       ...rangeParams(cursor),
       cursor.limit,
       accountId,
-      tagged,
       now,
+      ...values,
     );
     // Pinned answers carry no paging links (RES-3): a status-id cursor cannot follow pin order, so a link would
     // repeat or skip pins, and pins are few and fetched in one request. `limit` caps the count, a client's bounds
@@ -825,22 +912,34 @@ export function accountStatusesWithin(
     const { items } = admission(statusStream(db, shared, ids));
     return { page: { items: cursor.ascending ? items.toReversed() : items, newest: null, oldest: null }, more: false };
   }
-  // A readWindow(limit) window through statuses_account with the request's filters and audienceSql, then R2 and
-  // R11 over it (availability and filters of boosted originals). Statuses hidden by their visibility are walked
-  // past and never supply a cursor (docs/visibility.md "Read bounds").
+  // A readWindow(limit) window through statuses_account (statuses_account_originals with exclude_reblogs, whose
+  // predicate is that index's own) with audienceSql, walked in rounds (walkedWindow) when the request has conditions,
+  // which are tested on each round's candidates by key (passingIds); then R2 and R11 over it (availability and filters
+  // of boosted originals). Statuses hidden by their visibility are walked past and never supply a cursor
+  // (docs/visibility.md "Read bounds").
+  const { values, bind } = binder(2);
+  const request = accountConditionsSql(input, bind);
   const size = readWindow(cursor.limit);
-  const window = singleWindow(
-    db,
-    `SELECT s.id FROM statuses s WHERE s.account_id = ?1 AND ${rangeSql("s.id")} ${filters}
-			AND (?5 IS NULL OR EXISTS (SELECT 1 FROM status_tags ut WHERE ut.status_id = s.id AND ut.name = ?5))
-			AND ${audienceSql("s", "?6")}
-		ORDER BY s.id ${order} LIMIT ?4`,
+  const window = walkedWindow(
+    (range, per) =>
+      singleWindow(
+        db,
+        `SELECT s.id FROM statuses s
+					INDEXED BY ${input.excludeReblogs ? "statuses_account_originals" : "statuses_account"}
+				WHERE s.account_id = ?1 AND ${rangeSql("s.id")} ${reblogs} AND ${audienceSql("s", "?5")}
+				ORDER BY s.id ${order} LIMIT ?4`,
+        per,
+        accountId,
+        range.max,
+        range.min,
+        per,
+        viewerId,
+      ),
+    request === null ? null : (candidates) => passingIds(db, candidates, request, false, ...values),
+    walkStart(cursor),
     size,
-    accountId,
-    ...rangeParams(cursor),
+    1,
     size,
-    tagged,
-    viewerId,
   );
   return windowStatusesWithin(
     db,
@@ -852,6 +951,26 @@ export function accountStatusesWithin(
     admission,
     originalShownSql("?1", "?2"),
   );
+}
+
+// An account statuses read's request conditions on the status `s` (only_media, tagged, exclude_replies), their
+// parameters bound by `bind`; null for none. The pins' statement and the walk's (passingIds) share them.
+function accountConditionsSql(
+  input: Pick<AccountStatusesInput, "onlyMedia" | "tagged" | "excludeReplies">,
+  bind: (value: SqlStorageValue) => string,
+): string | null {
+  const terms = [
+    ...(input.onlyMedia
+      ? ["EXISTS (SELECT 1 FROM media_attachments um WHERE um.status_id = s.id AND um.shown = 1)"]
+      : []),
+    ...(input.tagged === null
+      ? []
+      : [
+          `EXISTS (SELECT 1 FROM status_tags ut WHERE ut.status_id = s.id AND ut.name = ${bind(normalizeTag(input.tagged))})`,
+        ]),
+    ...(input.excludeReplies ? [NOT_A_REPLY_TO_OTHERS] : []),
+  ];
+  return terms.length === 0 ? null : terms.join(" AND ");
 }
 
 // R11 for a boost on an account's statuses: the viewer may see its original and does not filter its author
