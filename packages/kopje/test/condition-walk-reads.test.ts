@@ -42,6 +42,8 @@ import { rowsRead, watchedCursor } from "./read-helpers";
 
 const PRESENT = { origin: "https://kopje.test" };
 const PAGE = { limit: 20 };
+// The largest page the API asks for (src/mastodon/timelines.ts, src/mastodon/accounts.ts).
+const PAGE_MAX = { limit: 40 };
 const TOKEN = "condition-walk-token";
 const credential = { tokenHash: TOKEN, scope: "read", now: NOW } as const;
 
@@ -298,13 +300,16 @@ function slope(at1: number, atK: number) {
 }
 
 describe("a page's walk and rule read within a ceiling derived from its statements (C9)", () => {
-  // Inputs at their caps: the budget filled (2,500 and 20,000 rejected rows behind the cursor, every one passing the
-  // audience rule), CONDITION_WALK_ROUNDS rounds charged their overhead, and each rejected entry on its most expensive
-  // path: for account statuses a boost (audienceSql reads its original) in one fixture and a reply with media and the
-  // tag in the other (every probe runs before exclude_replies rejects it); for the hashtag five overlapping names, so
-  // each status is charged five times, every all probe succeeding, media, and rejection by none or by the author's
-  // domain last. The rule is read once at readWindow(limit) such candidates.
-  it("charges each fixture's page at most entry cost × CONDITION_WALK + overhead × rounds + the rule read", async () => {
+  // Inputs at their caps: the API's largest page (40, so round 1 reads readWindow(40) = 120 or streamWindow(40) = 80 a
+  // name), the budget filled (2,500 and 20,000 rejected rows behind the cursor, every one passing the audience rule),
+  // CONDITION_WALK_ROUNDS rounds charged their overhead, and each rejected entry on its most expensive path. Account
+  // statuses: a boost (audienceSql reads its original) for the round, and for the conditions a rejection by each of
+  // only_media, tagged and exclude_replies alone, the costliest kept (the plan tests the reply column first, so a reply
+  // skips both probes and one of the others runs them both, which the test asserts). The hashtag: five overlapping
+  // names (the tag and any's four), so each status is charged five times; all four all names present, so every all
+  // probe succeeds; none of four names, the last of which the row holds; media; and rejection by none or by the
+  // author's domain. The rule is read once at readWindow(40) = 120 such candidates.
+  it("charges a page at most entry cost × CONDITION_WALK + overhead × rounds + the rule read, at limit 40 with every name capped", async () => {
     type Fixture = {
       kinds: { accountKind?: AccountKind; tagKind?: TagKind };
       reader: Pick<Reader, "operation" | "input">;
@@ -318,7 +323,7 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
       {
         name: "account statuses",
         streams: 1,
-        fixtures: (["boost", "reply"] as const).map((accountKind) => ({
+        fixtures: (["boost", "reply", "untagged", "bare"] as const).map((accountKind) => ({
           kinds: { accountKind },
           reader: {
             operation: accountStatuses,
@@ -334,7 +339,13 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
           kinds: { tagKind },
           reader: {
             operation: tagTimeline,
-            input: tagInput({ any: TAG_ANY, all: TAG_ALL, none: ["y"], local: true, onlyMedia: true }),
+            input: tagInput({
+              any: TAG_ANY,
+              all: TAG_ALL,
+              none: ["z1", "z2", "z3", "y"],
+              local: true,
+              onlyMedia: true,
+            }),
           },
         })),
         bare: { operation: tagTimeline, input: tagInput({ any: TAG_ANY }) },
@@ -346,13 +357,14 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
       let conditionEntry = 0;
       let conditionOverhead = 0;
       let rule = 0;
+      const conditionEntries: Record<string, number> = {};
       const pages: { name: string; rows: number[]; totals: number[] }[] = [];
       for (const fixture of endpoint.fixtures) {
         const rows: number[] = [];
         const totals: number[] = [];
         for (const rejected of [2_500, 20_000]) {
           const s = await world(rejected, fixture.kinds, { older: OLDER, newer: 0 });
-          const page = { ...PAGE, maxId: String(endpoint.streams === 1 ? ACCOUNT_NEWER : TAG_NEWER) };
+          const page = { ...PAGE_MAX, maxId: String(endpoint.streams === 1 ? ACCOUNT_NEWER : TAG_NEWER) };
           const run = await recorded(s, fixture.reader.operation, fixture.reader.input(page));
           expect(answerOf(run.output)).toMatchObject({ items: [], cut: true });
           const rounds = run.statements.filter((st) => ROUND.test(st.query));
@@ -377,11 +389,12 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
             const c = slope(await of(1), await of(K));
             conditionEntry = Math.max(conditionEntry, c.entry);
             conditionOverhead = Math.max(conditionOverhead, c.overhead);
+            conditionEntries[JSON.stringify(fixture.kinds)] = c.entry;
             // The rule statement of a read without conditions, run at readWindow(limit) of the rejected rows.
             const bare = await recorded(s, endpoint.bare.operation, endpoint.bare.input(page));
             const ruled = bare.statements.find((st) => RULE.test(st.query))!;
             const window = statusIds(endpoint.streams === 1 ? ACCOUNT_REJECTED : TAG_REJECTED, rejected)
-              .slice(0, readWindow(PAGE.limit))
+              .slice(0, readWindow(PAGE_MAX.limit))
               .map((id) => ({ id, o: 0 }));
             rule = Math.max(rule, await rowsOf(s, ruled.query, ruled.params.with(2, JSON.stringify(window))));
           }
@@ -393,6 +406,15 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
           (roundOverhead + conditionOverhead) * CONDITION_WALK_ROUNDS +
           rule,
       );
+      if (endpoint.streams === 1) {
+        // The reply check runs first: a reply costs less than a rejection that ran the probes.
+        const probed = Math.max(
+          conditionEntries['{"accountKind":"untagged"}']!,
+          conditionEntries['{"accountKind":"bare"}']!,
+        );
+        expect(probed).toBeGreaterThan(conditionEntries['{"accountKind":"reply"}']!);
+        expect(conditionEntry).toBe(probed);
+      }
       for (const page of pages) {
         expect([endpoint.name, page.name, page.rows[1]]).toEqual([endpoint.name, page.name, page.rows[0]]);
         // Presentation and the rest: the same at both sizes.

@@ -1000,9 +1000,10 @@ A paged read whose rule hides rows reads a candidate window (`src/domain/windows
   passed lies past the page in the window, the window was cut, or the page was cut by bytes; a full page alone offers
   nothing, so an exact last page ends the walk. The quotes list, whose window is a page, reads one candidate past it
   for this.
-- A merged read (home, a list, a hashtag timeline's names) reads at most `streamWindow` candidates per stream and
-  merges them up to the highest end of a stream that filled, at most `readWindow`, so no candidate below a stream's end
-  is passed over. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first candidate, so
+- A merged read without request conditions (home, a list, a hashtag timeline's names) reads at most `streamWindow`
+  candidates per stream and merges them up to the highest end of a stream that filled, at most `readWindow`, so no
+  candidate below a stream's end is passed over; with conditions, each round of its walk merges the same way at the
+  round's per-stream `LIMIT`. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first candidate, so
   the narrowed reads of R33 return it exactly when the positioned read does.
 
 The cursor rule: a row hidden from the viewer by its own visibility or audience (private, direct or limited that they

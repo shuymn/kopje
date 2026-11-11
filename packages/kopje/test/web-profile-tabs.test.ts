@@ -15,7 +15,7 @@ import { newestFirstPager } from "../src/web/view/pager";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { C, nextId, pageStatus } from "./budget-helpers";
-import { growConditionWorld } from "./condition-walk-helpers";
+import { growConditionWorld, WALKED_TABLES } from "./condition-walk-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD } from "./helpers";
 import { MAX_BIO } from "./profile-fixtures";
@@ -663,8 +663,6 @@ describe("the newest-first pager", () => {
   });
 });
 
-// The tables a walk's statements and its statements by key read, under the aliases they give them.
-const SCANNED = ["s", "pa", "t", "um", "ut", "st", "statuses", "accounts", "status_tags", "media_attachments"];
 // The walk's statements, the pins', and those over its candidates by key (the conditions' and the rule's); not the
 // account presenter's, which names statuses s in a subquery.
 const WALK =
@@ -714,7 +712,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         });
         expect(run.page.status).toBe("ok");
         for (const statement of run.plans) {
-          expect([name, scansOf(statement.plan, SCANNED)]).toEqual([name, []]);
+          expect([name, scansOf(statement.plan, WALKED_TABLES)]).toEqual([name, []]);
         }
         expect([
           name,

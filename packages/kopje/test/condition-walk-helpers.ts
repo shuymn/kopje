@@ -17,15 +17,19 @@ export const CONDITION_WALK_ROUNDS = 7;
 //     hashtags rare and common, not a reply. A rejected row is, by `accountKind`:
 //       plain: an original reply to PARTNER without media, tagged common: every condition rejects it alone;
 //       boost: a boost of a public original of PARTNER's (each original its own), with one shown attachment and the
-//         hashtag common: audienceSql reads its original, and tagged=rare rejects it after the media probe passed;
+//         hashtag common: audienceSql reads its original, and tagged=rare rejects it;
 //       reply: an original reply to PARTNER with one shown attachment and the hashtags rare and common: only
-//         exclude_replies rejects it, after the media and tag probes passed.
+//         exclude_replies rejects it;
+//       untagged: an original with one shown attachment and the hashtag common: only tagged=rare rejects it;
+//       bare: an original with the hashtags rare and common, without media: only only_media rejects it.
+//     Which probes a rejection runs depends on the order the plan tests the conditions in (the reply check, a
+//     column test, comes first): the last three each reject by one condition, so one of them takes the costliest path.
 //   - the hashtag cats, with the names TAG_ANY and TAG_ALL and x on every row: a match is an original with one shown
 //     attachment, alternately by `local` and REMOTE. A rejected row is, by `tagKind`:
 //       remote: REMOTE's, without media, with the hashtag y: local, only_media, all=[x] (it lacks x) and none=[y]
 //         reject it;
 //       local: `local`'s, otherwise as remote: remote=true rejects it;
-//       none: `local`'s, with media and y: only none=[y] rejects it, after every all probe passed;
+//       none: `local`'s, with media and y: only none (y among four names) rejects it, after every all probe passed;
 //       author: REMOTE's, with media and without y: only local=true rejects it, after every name probe passed.
 export const REMOTE = "700000000000000003";
 export const PARTNER = "700000000000000004";
@@ -42,7 +46,7 @@ export const TAG_NEWER = 700000000000000000n;
 const BOOSTED = 800000000000000000n;
 const MEDIA = 900000000000000000n;
 
-export type AccountKind = "plain" | "boost" | "reply";
+export type AccountKind = "plain" | "boost" | "reply" | "untagged" | "bare";
 export type TagKind = "remote" | "local" | "none" | "author";
 
 export type ConditionWorld = {
@@ -150,11 +154,13 @@ export async function seedConditionWorld(store: StoreStub, w: ConditionWorld): P
     statuses(ACCOUNT_OLDER, older, accountMatch);
     statuses(ACCOUNT_REJECTED, w.rejected, {
       author: w.account,
-      ...(accountKind === "plain"
-        ? { reply: true, tags: ["common"] }
-        : accountKind === "boost"
-          ? { boost: true, withMedia: true, tags: ["common"] }
-          : { reply: true, withMedia: true, tags: ["rare", "common"] }),
+      ...{
+        plain: { reply: true, tags: ["common"] },
+        boost: { boost: true, withMedia: true, tags: ["common"] },
+        reply: { reply: true, withMedia: true, tags: ["rare", "common"] },
+        untagged: { withMedia: true, tags: ["common"] },
+        bare: { tags: ["rare", "common"] },
+      }[accountKind],
     });
     statuses(ACCOUNT_NEWER, newer, accountMatch);
     const names = ["cats", ...TAG_ANY];

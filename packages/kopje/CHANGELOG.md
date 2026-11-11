@@ -13,7 +13,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A page of an account's statuses with `only_media`, `tagged` or `exclude_replies`, or of a hashtag timeline with
   `local`, `remote`, `only_media`, `all` or `none` (the profile's Posts, Media and tagged tabs and the hashtag page
   included), now reads at most 2,000 index entries before applying those conditions, however many statuses they leave
-  out. A page whose budget runs out first may be short or empty, and its `Link` continues from the last entry read, so
+  out: the sum of its streams' limits over the entries the audience rule passes (statuses hidden by their visibility
+  are still walked past at their number, the RES-7 gap in docs/threat-model.md). A page whose budget runs out first may be short or empty, and its `Link` continues from the last entry read, so
   a client following `Link` still reaches every status; one that stops at a short page stops early, where Mastodon
   fills the page (docs/mastodon-deviations.md). Before, such a page read every status the conditions left out until it
   had a page. No migration, no `wrangler.jsonc` change.

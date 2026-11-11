@@ -11,7 +11,7 @@ import { TagPage } from "../src/web/pages/tag";
 import { STRINGS } from "../src/web/strings";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { growConditionWorld } from "./condition-walk-helpers";
+import { growConditionWorld, WALKED_TABLES } from "./condition-walk-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { expectFullPages, shownFeed, tagFrameBytes, viaRoute, walkFeed as walk } from "./profile-page-helpers";
 import { type PlannedStatement, plannedSql, scansOf, staleStatistics } from "./read-helpers";
@@ -414,19 +414,7 @@ describe('the hashtag page’s reads (RES-7, docs/visibility.md "Read bounds")',
       }
       expect(run.page.statuses.map((status) => status.id)).toEqual(below.slice(0, -1).toReversed().slice(0, 20));
       for (const statement of run.plans) {
-        expect(
-          scansOf(statement.plan, [
-            "t",
-            "s",
-            "st",
-            "pa",
-            "pm",
-            "status_tags",
-            "statuses",
-            "accounts",
-            "media_attachments",
-          ]),
-        ).toEqual([]);
+        expect(scansOf(statement.plan, WALKED_TABLES)).toEqual([]);
       }
       expect(
         run.plans.some((statement) =>
