@@ -9,9 +9,10 @@ import { BUILD } from "./helpers";
 import { LOCAL, MASTODON, mastodonActor, type RemoteWeb, serveWebFinger } from "./inbox-helpers";
 import { ALICE, AS, mastodonNote, setup, type Setup } from "./inbox-status-helpers";
 
-// The Store calls of a resolving search (GET /api/v2/search and GET /api/v1/accounts/search with resolve=true): one
-// read before any network work (Store.resolutionGate: the token, the domain and the first request's preparation, or a
-// refusal), then the reads whose timing is the guarantee (store.ts, "How a request talks to the Store").
+// The Store calls of a resolving search (GET /api/v2/search and GET /api/v1/accounts/search with resolve=true): after
+// the host check's domain read that every API request makes (instanceDomain, WEB-6), one read before any network work
+// (Store.resolutionGate: the token, the domain and the first request's preparation, or a refusal), then the reads whose
+// timing is the guarantee (store.ts, "How a request talks to the Store").
 
 const WEBFINGER = `${MASTODON}/.well-known/webfinger?resource=${encodeURIComponent("acct:bob@mastodon.example")}`;
 const INSTANCE_KEY = `${LOCAL}/actor#main-key`;
@@ -84,13 +85,13 @@ describe("Store calls of a resolving search", () => {
     const key = cold ? "a missing instance key" : "a warm instance key";
     const ensure = cold ? ["ensureInstanceActorKey"] : [];
 
-    it(`resolves a status URL in ${3 + ensure.length} calls, with ${key}`, async () => {
+    it(`resolves a status URL in ${4 + ensure.length} calls, with ${key}`, async () => {
       const { t, bob, note } = await world(cold);
       const c = counted(t);
       const response = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
       expect(response.status).toBe(200);
       expect((await response.json<{ statuses: unknown[] }>()).statuses).toHaveLength(1);
-      expect(c.calls()).toEqual(["resolutionGate", ...ensure, "actorRevision", "resolveSearch"]);
+      expect(c.calls()).toEqual(["instanceDomain", "resolutionGate", ...ensure, "actorRevision", "resolveSearch"]);
       expect(gateOf(c.records)).toMatchObject({
         status: "ok",
         value: {
@@ -106,12 +107,13 @@ describe("Store calls of a resolving search", () => {
       ["v2", `/api/v2/search?resolve=true&q=${ADDRESS}`, "search"],
       ["v1", `/api/v1/accounts/search?resolve=true&q=${ADDRESS}`, "searchAccounts"],
     ] as const) {
-      it(`resolves an address on ${endpoint} in ${5 + ensure.length} calls, with ${key}`, async () => {
+      it(`resolves an address on ${endpoint} in ${6 + ensure.length} calls, with ${key}`, async () => {
         const { t, bob } = await world(cold);
         const c = counted(t);
         expect((await c.request(path)).status).toBe(200);
         // The policy read before the declared-domain WebFinger follows an awaited response, so it stays separate.
         expect(c.calls()).toEqual([
+          "instanceDomain",
           "resolutionGate",
           "actorRevision",
           ...ensure,
@@ -140,7 +142,7 @@ describe("Store calls of a resolving search", () => {
       revision: null,
       ticket: { host: "mastodon.example", refused: true },
     });
-    expect(c.calls()).toEqual(["resolutionGate", "actorRevision", "resolveSearch", "searchAccounts"]);
+    expect(c.calls()).toEqual(["instanceDomain", "resolutionGate", "actorRevision", "resolveSearch", "searchAccounts"]);
     expect(t.web.fetched).toEqual([WEBFINGER]);
     expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", bob.uri)).toEqual([{ n: 0 }]);
   });
@@ -179,10 +181,13 @@ describe("a resolving search refused before any network work", () => {
       const url = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
       expect(url.status).toBe(200);
       expect(c.calls()).toEqual([
+        "instanceDomain",
         "resolutionGate",
         "searchAccounts",
+        "instanceDomain",
         "resolutionGate",
         "search",
+        "instanceDomain",
         "resolutionGate",
         "search",
       ]);
@@ -237,7 +242,7 @@ describe("a resolving search refused before any network work", () => {
       expect(response.status).toBe(200);
       const body = await response.json<{ accounts: { acct: string }[]; statuses: unknown[] }>();
       expect([body.accounts.map((a) => a.acct), body.statuses]).toEqual([["erin"], []]);
-      expect(c.calls()).toEqual(["resolutionGate", "actorRevision", "resolveSearch", "search"]);
+      expect(c.calls()).toEqual(["instanceDomain", "resolutionGate", "actorRevision", "resolveSearch", "search"]);
       expect(t.web.fetched).toEqual([note.id, bob.uri]);
     });
 
@@ -272,7 +277,7 @@ describe("a resolving search refused before any network work", () => {
       });
       expect(response.status).toBe(503);
       // The guarded branch ran: the gate passed and the probe was fetched before the failing read.
-      expect(c.calls.filter((name) => name !== "noteActivity")).toEqual(["resolutionGate"]);
+      expect(c.calls.filter((name) => name !== "noteActivity")).toEqual(["instanceDomain", "resolutionGate"]);
       expect(t.web.fetched).toEqual([note.id]);
     });
 
@@ -299,6 +304,7 @@ describe("a resolving search refused before any network work", () => {
       held.release();
       expect((await response).status).toBe(401);
       expect(c.calls.filter((name) => name !== "noteActivity")).toEqual([
+        "instanceDomain",
         "resolutionGate",
         "actorRevision",
         "resolveSearch",
@@ -314,6 +320,7 @@ describe("a resolving search refused before any network work", () => {
     const url = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`, "not-a-token");
     expect(url.status).toBe(401);
     expect(c.records.map((record) => [record.name, record.answer])).toEqual([
+      ["instanceDomain", "kopje.test"],
       ["resolutionGate", { status: "unauthenticated" }],
     ]);
   });
@@ -327,7 +334,14 @@ describe("a resolving search refused before any network work", () => {
     const v2 = await c.request(`/api/v2/search?resolve=true&type=accounts&q=${ADDRESS}`);
     expect((await v2.json<{ accounts: { acct: string }[] }>()).accounts.map((a) => a.acct)).toEqual(["carol"]);
     expect((await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`)).status).toBe(200);
-    expect(c.calls()).toEqual(["searchAccounts", "search", "search"]);
+    expect(c.calls()).toEqual([
+      "instanceDomain",
+      "searchAccounts",
+      "instanceDomain",
+      "search",
+      "instanceDomain",
+      "search",
+    ]);
     expect([t.web.fetched, c.dns]).toEqual([[], []]);
   });
 
@@ -336,7 +350,7 @@ describe("a resolving search refused before any network work", () => {
     const c = counted(t, t.web, { MAINTENANCE: "readonly" });
     const url = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`, "not-a-token");
     expect(url.status).toBe(401);
-    expect(c.calls()).toEqual(["search"]);
+    expect(c.calls()).toEqual(["instanceDomain", "search"]);
   });
 
   it("resolves once writes are admitted again (the guard ran)", async () => {

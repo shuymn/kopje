@@ -11,7 +11,7 @@ const MAINTENANCE = "../maintenance.wrangler.jsonc";
 // The reader wrangler deploys with (as scripts/check-kopje-package.mjs). Its declared types live in a package this one
 // does not depend on, so the part read here is typed locally.
 const readRawConfig = experimental_readRawConfig as unknown as (args: { config: string }) => {
-  rawConfig: { compatibility_flags?: string[]; observability?: unknown };
+  rawConfig: { compatibility_flags?: string[]; observability?: unknown; workers_dev?: boolean };
 };
 
 function read(path: string) {
@@ -37,6 +37,11 @@ describe("shipped Kopje Worker configs", () => {
 
   it.each(SHIPPED)("%s pins the observability block", (path) => {
     expect(read(path).observability).toEqual(EXPECTED_OBSERVABILITY);
+  });
+
+  // WEB-6: an instance answers only on its domain, so the template leaves the workers.dev address off.
+  it("turns the workers.dev address off in the instance template", () => {
+    expect(read("../../../deploy/wrangler.jsonc").workers_dev).toBe(false);
   });
 
   // Never deployed as a Worker, so a block there would do nothing.

@@ -28,7 +28,7 @@ const ALWAYS = [
 ];
 
 async function served(store: StoreStub, build = BUILD) {
-  const { request } = harness(store, { USER_KEK: LEGACY.kek }, build, offline);
+  const { request } = harness(store, { USER_KEK: LEGACY.kek }, build, offline, undefined, DOMAIN);
   const bodies: Record<string, { status: number; type: string | null; body: string }> = {};
   for (const path of ALWAYS) {
     const response = await request(path, AP);
@@ -72,7 +72,7 @@ describe("actor document snapshot", () => {
 
   it("does not keep non-canonical WebFinger queries, misses, or HTML negotiation", async () => {
     const { store } = await healthyInstance();
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline, undefined, DOMAIN);
     const before = await snapshotNames(store);
     await request("/.well-known/webfinger?resource=acct:alice@social.example");
     await request("/.well-known/webfinger?resource=acct:nobody@social.example");
@@ -113,7 +113,7 @@ describe("actor document snapshot", () => {
 
   it("answers 503 when no snapshot was ever kept", async () => {
     const store = freshStore();
-    const { request } = harness(store, {}, "0.0.0-other", offline);
+    const { request } = harness(store, {}, "0.0.0-other", offline, undefined, DOMAIN);
     expect((await request("/ap/users/Alice", AP)).status).toBe(503);
     expect((await request("/nodeinfo/2.1")).status).toBe(503);
   });
@@ -133,7 +133,7 @@ describe("snapshot freshness", () => {
       );
     });
     // Another isolate (a fresh harness) renders and keeps the rotated document.
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline, undefined, DOMAIN);
     expect((await request("/ap/users/Alice", AP)).status).toBe(200);
     const after = await store.rescueSnapshot(BUILD, key);
     expect(after?.body).not.toBe(before?.body);
@@ -177,7 +177,7 @@ describe("snapshots of a suspended actor", () => {
       "snapshot:path:/nodeinfo/2.1",
     ]);
     // While the Store refuses, the actor's documents answer 503 rather than the document from before.
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, "0.0.0-other", offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, "0.0.0-other", offline, undefined, DOMAIN);
     expect((await request("/ap/users/Alice", AP)).status).toBe(503);
     // A save of the document rendered before the suspension, arriving late, is refused.
     expect(
@@ -245,7 +245,7 @@ describe("snapshot caps", () => {
   it("creates no rows for arbitrary handles, resources or query strings", async () => {
     const { store } = await healthyInstance();
     const before = await snapshotNames(store);
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline, undefined, DOMAIN);
     for (let i = 0; i < 20; i++) {
       const junk = `${crypto.randomUUID()}${"x".repeat(i * 50)}`;
       await request(`/ap/users/${junk}`, AP);
@@ -261,7 +261,7 @@ describe("snapshot caps", () => {
   it("creates no rows for other spellings of a canonical path or resource", async () => {
     const { store } = await healthyInstance();
     const before = await snapshotNames(store);
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline, undefined, DOMAIN);
     await request("/ap/users/Ali%63e", AP);
     await request("/ap/users/%41lice", AP);
     await request("/ap/users/Alice/", AP);
@@ -290,7 +290,7 @@ describe("snapshot caps", () => {
       username: "Alice",
       note: "x".repeat(64 * 1024 - 2),
     });
-    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline);
+    const { request } = harness(store, { USER_KEK: LEGACY.kek }, BUILD, offline, undefined, DOMAIN);
     expect((await request("/ap/users/Alice", AP)).status).toBe(200);
     expect(await store.rescueSnapshot(BUILD, "path:/ap/users/Alice")).toBeNull();
 
@@ -360,7 +360,8 @@ describe("snapshot caps", () => {
     await save(store, BUILD, "path:/actor", doc("old-key"), STATIC, 0);
     now = 1;
     await save(store, BUILD, "path:/actor", doc("new-key"), STATIC, 0);
-    expect(await store.rescueSnapshot(BUILD, "path:/actor")).toEqual(doc("new-key"));
+    // No domain is set in this Store, so the kept row records none.
+    expect(await store.rescueSnapshot(BUILD, "path:/actor")).toEqual({ ...doc("new-key"), domain: null });
   });
 
   it("reads only snapshot keys back", async () => {
@@ -380,11 +381,15 @@ describe("rescue snapshot RPC", () => {
     await runInDurableObject(store, async (_instance, state) => {
       state.storage.sql.exec(
         "INSERT INTO kopje_state (name, value) VALUES ('snapshot:path:/actor', ?)",
-        JSON.stringify({ contentType: "application/activity+json", body: "{}" }),
+        JSON.stringify({ contentType: "application/activity+json", body: "{}", domain: "kopje.test" }),
       );
       const diverged = testKernel(state, [{ name: "0000_other", sql: "SELECT 1" }]);
       expect((await diverged.health(BUILD)).schema.status).toBe("diverged");
-      expect(diverged.readSnapshot("path:/actor")).toEqual({ contentType: "application/activity+json", body: "{}" });
+      expect(diverged.readSnapshot("path:/actor")).toEqual({
+        contentType: "application/activity+json",
+        body: "{}",
+        domain: "kopje.test",
+      });
       expect(diverged.readSnapshot("path:/nope")).toBeNull();
       expect(testKernel(state, MIGRATIONS).readSnapshot("path:/actor")).not.toBeNull();
     });

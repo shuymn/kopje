@@ -32,13 +32,15 @@ export const offline: Required<NonNullable<AppDeps["federation"]>> = {
 };
 
 // The real app over a given Store, with env overrides and a simulated queue that enforces the platform limits. A
-// request settles its waitUntil work (snapshot saves) before it returns.
+// request settles its waitUntil work (snapshot saves) before it returns. Requests go to `host`, which is the stored
+// domain once setup has fixed one (WEB-6).
 export function harness(
   store: StoreStub,
   overrides: Record<string, unknown> = {},
   build = BUILD,
   federation: AppDeps["federation"] = offline,
   now: () => number = () => NOW,
+  host = "kopje.test",
 ) {
   const queue = new QueueSim();
   const send = queue.send;
@@ -46,7 +48,7 @@ export function harness(
   const app = createApp({ build: () => build, now, store: () => store, federation });
   const request = async (path: string, init?: RequestInit) => {
     const ctx = createExecutionContext();
-    const response = await app.fetch(new Request(`https://kopje.test${path}`, init), testEnv, ctx);
+    const response = await app.fetch(new Request(`https://${host}${path}`, init), testEnv, ctx);
     await waitOnExecutionContext(ctx);
     return response;
   };

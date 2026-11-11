@@ -15,7 +15,10 @@ same change on the pull request that updates `kopje`, before you merge it (step 
 `compatibility_flags` must hold `global_fetch_strictly_public` as well as `nodejs_compat`, so that every outbound fetch
 uses public routing, a host in the instance's own zone included (NET-1 in the
 [threat model](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/threat-model.md)).
-`kopje-admin health` fails its `runtime` check while the running Worker lacks it.
+`kopje-admin health` fails its `runtime` check while the running Worker lacks it. The template also sets
+`"workers_dev": false`: Kopje answers only on the instance domain (WEB-6), so the Worker's `workers.dev` address only
+redirects or refuses; with it off, the next deploy removes that address. Attach the instance domain before you turn it
+off on an instance that has none yet.
 
 ## How an update arrives
 

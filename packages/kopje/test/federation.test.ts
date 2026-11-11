@@ -18,8 +18,8 @@ import {
 } from "./federation-helpers";
 import { BUILD, migratedStore } from "./helpers";
 
-// Identity goldens: every expected value is a literal. The domain is fixed at /setup ('social.example') and differs
-// from the request host ('kopje.test'), so ids must come from the Store, never from the request.
+// Identity goldens: every expected value is a literal. The domain is fixed at /setup ('social.example'), where the
+// requests go (WEB-6).
 const DOMAIN = "social.example";
 const KEK = LEGACY.kek;
 const ALICE = "111111111111111111";
@@ -39,7 +39,7 @@ async function instance(options: { kek?: string } = {}) {
     return fixtureKeyGen();
   };
   const loader = { fetch: () => Promise.reject(new Error("offline")), checkHost: () => Promise.resolve() };
-  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader });
+  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader }, undefined, DOMAIN);
   const json = async (path: string, init: RequestInit = AP) => {
     const response = await h.request(path, init);
     return {

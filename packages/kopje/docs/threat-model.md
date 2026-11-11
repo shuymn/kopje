@@ -1412,18 +1412,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **WEB-1: the consent decision cannot be forged cross-site.** Both methods of `/oauth/authorize` answer only on the
   instance domain, read from the Store with the Access settings and compared with the request URL's host (no header is
   read; setup and `/admin/config` store the domain as one canonical host, [dump-format.md](dump-format.md)): on any
-  other host the Worker answers on (its workers.dev address, another route, a port) they show a 403 page, with no
-  redirect to the client, before the Access assertion is verified, so the consent page names the instance domain and the
-  instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST` requires a valid Access identity,
-  an `Origin` equal to the instance origin (missing, `null` or foreign answers 403), and `decision=approve`; the Store
-  revalidates client, redirect URI, scopes and account when it writes the code. _Enforced (main):_
+  other host the Worker answers on (its workers.dev address, another route, a port) they give WEB-6's answer (301 for
+  the GET, 421 for the POST, which checks its `Origin` and reads its form first; both answer 503 first while Access is
+  not configured), never a redirect to the client, before the Access assertion is verified, so the consent page names
+  the instance domain and the instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST` requires a valid Access
+  identity, an `Origin` equal to the instance origin (missing, `null` or foreign answers 403), and `decision=approve`;
+  the Store revalidates client, redirect URI, scopes and account when it writes the code. _Enforced (main):_
   `src/app/authorize.tsx`, `authorizeContext` and `issueCode` in `src/domain/oauth.ts`, `normalizeDomain` in `setConfig`
-  (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("shows the consent page on the instance domain only, before
-  verifying Access (WEB-1)", "refuses a decision posted on another host, issuing nothing (WEB-1)", "judges the host by
-  the request URL, never by a Host header (WEB-1)", "shows the consent page when the domain was configured by hand in
-  another spelling (WEB-1)", "refuses a decision posted from another origin, a null origin or none (WEB-1)", "refuses an
-  account suspended between the consent page and approval"), `test/ops-authority.test.ts` ("stores the domain as setup
-  does, lowercase and IDNA to ASCII, and refuses a value that is not a domain").
+  (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("moves the consent page to the instance domain, before
+  verifying Access (WEB-1, WEB-6)", "refuses a decision posted on another host, issuing nothing (WEB-1, WEB-6)", "judges
+  the host by the request URL, never by a Host header (WEB-1)", "shows the consent page when the domain was configured
+  by hand in another spelling (WEB-1)", "refuses a decision posted from another origin, a null origin or none (WEB-1)",
+  "refuses an account suspended between the consent page and approval"), `test/ops-authority.test.ts` ("stores the
+  domain as setup does, lowercase and IDNA to ASCII, and refuses a value that is not a domain").
 - **WEB-2: Kopje's HTML pages cannot be framed, scripted or cached.** The consent and code pages and the messages of
   `/oauth/authorize` send the private pages' headers (`PRIVATE_HEADERS`, the web UI pages' policy below), and render
   every value escaped. The consent page alone has no `form-action` (`CONSENT_HEADERS`), as Mastodon's authorization
@@ -1552,6 +1553,41 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Web UI pages: _Enforced (main):_ `text/html; charset=UTF-8` and `nosniff` on every page and error page; static
   assets get `nosniff` from `public/_headers`;
   `test/web-pages.test.ts`, `test/web-session.test.ts`, `test/error-pages.test.ts`, `test-node/stylesheet.test.ts`.
+- **WEB-6: after setup, nothing is served, accepted or issued on another host.** Once setup has fixed the domain, a
+  request whose URL host is not the stored domain (the Worker's workers.dev address, another route, a port; no header
+  is read) gets no content, sets no cookie, writes nothing and issues no code or token: GET and HEAD get a 301 to the
+  same path and query on `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method
+  421 Misdirected Request. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). The decision is made
+  by the request's first Store read that answers the domain: the setup gate, the inbox gate and the self-gated
+  federation reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1); every
+  other route (the Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. Answered on any host,
+  without the check: `/health`; the admin API (which authenticates itself and which the CLI reaches on its own admin
+  hostname, [cutover-runbook.md](cutover-runbook.md)); media's capability URLs and `/` (a relative redirect to
+  `/about`), which read no Store; a request no route serves (its plain 404, without a Store read); and the static
+  assets, which the platform serves before the Worker. What comes before the host's answer: the env's maintenance and
+  configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's `Rack::Cors` answers before its
+  host authorization); an inbox POST's body, read within `INBOX_BODY_LIMIT` (1 MiB) with its 413 and 415, and in
+  spool mode the spool itself (202). Its replay (`handleQueue` in `src/jobs/queue.ts`) first reads the cutover's
+  handoff receipt, writes the request to the rollback journal while a cutover is rolled back (`CUTOVER_ROLLBACK`, which
+  hands it to the legacy instance without a host check), and requeues it while the env is in maintenance; then the
+  inbox gate's read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host
+  (logged as `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is
+  applied. Also before the host's answer: on `POST /oauth/authorize` the `Origin` check (403) and the form (400), and on
+  both methods the 503 while Access is not configured. A Store refusal's snapshot rescue serves a snapshot only on the
+  domain the snapshot records (written by `saveSnapshot` in the same transaction as the domain it was rendered on); a
+  row kept before snapshots recorded their domain is judged by the stored domain, read through the `config()` rescue
+  RPC (which needs no matching build), never inferred from the row; on another host the rescue gives the answer above, and without a
+  domain (the call fails, none is set) the row is not served (503). The cron, the Queue's other work and the Store
+  have no request host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the
+  middleware in `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
+  `src/federation/inbox.ts`, `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in
+  `src/domain/snapshot.ts`, `siteGate` in `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`;
+  `test/instance-host.test.ts` ("moves a GET or HEAD on another host to the same path and query on the domain",
+  "answers 421 to any other method on another host, writing nothing", "keeps the domain's own spellings: case, the
+  default port, and the Host header", "answers the health check, the admin API, media and paths no route serves on any
+  host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
+  read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
+  only on the domain it records, or a legacy one on the stored domain").
 
 ### Setup (SETUP)
 
@@ -1887,7 +1923,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
   the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker,
   with no gate read) or the Store refuses writes (readonly, an unpublished import, OPS-8). The latter is decided in one
-  read before any DNS check or fetch, in this order: the token (a failing one is answered first), then the Store's
+  read before any DNS check or fetch, the first after the host check's domain read that every API request makes
+  (WEB-6), in this order: the token (a failing one is answered first), then the Store's
   write refusal, which answers the reason and reads nothing more (no signer, no instance key), then the domain and the
   first request's preparation (`resolutionGate` in `src/domain/inbox.ts`, `executeDeciding` in
   `src/platform/store-kernel.ts`, `resolveQuery` in `src/mastodon/search.ts`). A write the Store comes to refuse while
@@ -4368,7 +4405,7 @@ The negative cases each area requires, in tests named with the invariant IDs; a 
 - **Forwarded activity:** ID-1, ID-7, VIS-3, VIS-28, NET-2, RES-6, RES-7, DATA-5, DATA-6.
 - **Fetch of a remote URL:** NET-1, NET-3, NET-4, ID-2, ID-8. Use a sink client, never `fetch` directly.
 - **Rendered field or HTML page:** HTML-1, HTML-2, HTML-3, WEB-2, WEB-5. Run the vector suites.
-- **Web UI, consent or setup:** WEB-1 to WEB-5, AUTH-8, VIS-4, HTML-1 to HTML-3, SETUP-1 to SETUP-4.
+- **Web UI, consent or setup:** WEB-1 to WEB-6, AUTH-8, VIS-4, HTML-1 to HTML-3, SETUP-1 to SETUP-4.
 - **Media:** MEDIA-1 to MEDIA-4, NET-3, VIS-1, RES-1, RES-6.
 - **Web Push:** PUSH-1 to PUSH-3, AUTH-7, DATA-2, NET-3, VIS-10.
 - **Store operation or migration:** AUTH-1, OPS-2, OPS-3, DATA-6. Migrations are append-only after the first release and

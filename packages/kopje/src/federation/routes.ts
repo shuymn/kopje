@@ -7,6 +7,7 @@ import type { EmojiTag } from "../domain/custom-emojis";
 import type { QuoteAuthorization } from "../domain/quotes";
 import type { SnapshotSource } from "../domain/snapshot";
 import { readConfig, userKek } from "../platform/config";
+import { offDomain } from "../platform/instance-host";
 import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import type { KeyGen } from "../security/key-wrap";
 import {
@@ -98,21 +99,28 @@ export function federationHandler(deps: FederationRouteDeps): Handler<Federation
 type Answer = { response: Response; source: SnapshotSource | null };
 
 // null: setup has not fixed the domain (a self-gated route's read answered not_set_up). A Store refusal propagates to
-// app.onError, which answers the always-served routes from their snapshot.
+// app.onError, which answers the always-served routes from their snapshot. A self-gated route decides the host by the
+// domain of its own read (WEB-6, app/app.ts), before rendering anything.
 async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url: URL): Promise<Answer | null> {
   // As mastodon/context.ts storeCall: the answer typed from the RPC, not inferred from the stub's union.
   const read = <F extends (store: StoreStub, build: string) => unknown>(call: F) =>
     callStore(() => Promise.resolve(call(deps.store(c.env), deps.build(c.env))) as Promise<Awaited<ReturnType<F>>>);
+  const away = (domain: string): Answer | null => {
+    const response = offDomain(c.req.raw, domain);
+    return response === null ? null : { response, source: null };
+  };
   const route = routePath(c);
   if (SELF_GATED_ROUTES.has(route) && !spelled(route, url.pathname)) {
     // Hono matched the decoded path ('/.well-known/%6eodeinfo'); Fedify answers the raw one (404), from the domain alone.
     const site = await read((s, b) => s.apSite(b));
-    return site.status === "ok" ? viaFedify(c, deps, site.domain, url) : null;
+    return site.status === "ok" ? (away(site.domain) ?? viaFedify(c, deps, site.domain, url)) : null;
   }
   switch (route) {
     case "/.well-known/nodeinfo": {
       const site = await read((s, b) => s.apSite(b));
-      return site.status === "ok" ? { response: nodeInfoLinks(site.domain), source: { kind: "static" } } : null;
+      return site.status === "ok"
+        ? (away(site.domain) ?? { response: nodeInfoLinks(site.domain), source: { kind: "static" } })
+        : null;
     }
     case "/nodeinfo/2.0":
     case "/nodeinfo/2.1": {
@@ -120,6 +128,10 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       const info = await read((s, b) => s.apNodeInfo(b, { now }));
       if (info.status !== "ok") {
         return null;
+      }
+      const off = away(info.domain);
+      if (off !== null) {
+        return off;
       }
       if (url.pathname === "/nodeinfo/2.0") {
         return {
@@ -134,6 +146,10 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       if (site.status !== "ok") {
         return null;
       }
+      const off = away(site.domain);
+      if (off !== null) {
+        return off;
+      }
       // Its ids and links are built from the request URL (federation.ts, the instance actor's outbox).
       const cursor = url.searchParams.get("cursor");
       const canonical = new URL(url.pathname, url);
@@ -146,7 +162,9 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       const stamp = STAMP.exec(url.pathname)!;
       const input = { username: stamp[1]!, authorizationId: stamp[2]! };
       const answer = await read((s, b) => s.apQuoteAuthorization(b, input));
-      return answer.status === "ok" ? { response: quoteAuthorization(answer.stamp), source: null } : null;
+      return answer.status === "ok"
+        ? (away(answer.domain) ?? { response: quoteAuthorization(answer.stamp), source: null })
+        : null;
     }
     case "/emojis/:id": {
       const id = EMOJI.exec(url.pathname)?.[1];
@@ -154,7 +172,9 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
         id === undefined
           ? { ...(await read((s, b) => s.apSite(b))), emoji: null }
           : await read((s, b) => s.apEmoji(b, { id }));
-      return answer.status === "ok" ? { response: emojiObject(answer.emoji), source: null } : null;
+      return answer.status === "ok"
+        ? (away(answer.domain) ?? { response: emojiObject(answer.emoji), source: null })
+        : null;
     }
     default:
       return LEGACY_OBJECT.test(url.pathname) ? objectOrAlias(c, deps, url) : viaFedify(c, deps, c.get("domain"), url);
