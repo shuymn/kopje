@@ -1,4 +1,4 @@
-import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
+import { LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import { utf8Length } from "../platform/dump-format";
 import { presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
 import {
@@ -23,7 +23,8 @@ import { readWindow, singleWindow, windowJson } from "./windows";
 // The Note as serialized JSON-LD.
 export const getLocalNote = readOperation<{ uri: string }, string | null>((db, { uri }) => {
   const row = db.first<{ id: string }>(
-    `SELECT s.id FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id
+    `SELECT s.id FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
 		WHERE s.uri = ? AND s.reblog_of_id IS NULL AND ${SERVABLE}`,
     uri,
   );
@@ -57,8 +58,9 @@ export const getOutbox = readOperation<{ username: string; before: string | null
     if (owner === undefined) {
       return null;
     }
-    const listed = `FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id
-			LEFT JOIN statuses o ON o.id = s.reblog_of_id
+    const listed = `FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
+			LEFT JOIN statuses o INDEXED BY ${STATUSES_ID_INDEX} ON o.id = s.reblog_of_id
 			WHERE s.account_id = ?1 AND ${SERVABLE}
 				AND (s.reblog_of_id IS NULL OR (o.visibility IN ${DISTRIBUTABLE_SQL} AND ${availableSql("o.account_id")}))`;
     // The count only for the collection itself; a page does not need it.
