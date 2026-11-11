@@ -64,13 +64,13 @@ describe("Store calls of a resolving search", () => {
     const key = cold ? "a missing instance key" : "a warm instance key";
     const ensure = cold ? ["ensureInstanceActorKey"] : [];
 
-    it(`resolves a status URL in ${4 + ensure.length} calls, with ${key}`, async () => {
+    it(`resolves a status URL in ${3 + ensure.length} calls, with ${key}`, async () => {
       const { t, bob, note } = await world(cold);
       const c = counted(t);
       const response = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
       expect(response.status).toBe(200);
       expect((await response.json<{ statuses: unknown[] }>()).statuses).toHaveLength(1);
-      expect(c.calls()).toEqual(["resolutionGate", ...ensure, "actorRevision", "fetchRefused", "resolveSearch"]);
+      expect(c.calls()).toEqual(["resolutionGate", ...ensure, "actorRevision", "resolveSearch"]);
       expect(gateOf(c.records)).toMatchObject({
         status: "ok",
         value: { prefetch: { signer: { username: null }, ticket: { host: "mastodon.example", refused: false } } },
@@ -83,15 +83,15 @@ describe("Store calls of a resolving search", () => {
       ["v2", `/api/v2/search?resolve=true&q=${ADDRESS}`, "search"],
       ["v1", `/api/v1/accounts/search?resolve=true&q=${ADDRESS}`, "searchAccounts"],
     ] as const) {
-      it(`resolves an address on ${endpoint} in ${6 + ensure.length} calls, with ${key}`, async () => {
+      it(`resolves an address on ${endpoint} in ${5 + ensure.length} calls, with ${key}`, async () => {
         const { t, bob } = await world(cold);
         const c = counted(t);
         expect((await c.request(path)).status).toBe(200);
+        // The policy read before the declared-domain WebFinger follows an awaited response, so it stays separate.
         expect(c.calls()).toEqual([
           "resolutionGate",
           "actorRevision",
           ...ensure,
-          "fetchRefused",
           "fetchRefused",
           "resolveSearch",
           search,
@@ -112,8 +112,12 @@ describe("Store calls of a resolving search", () => {
     await blockDomain(t.store, "mastodon.example");
     held.release();
     expect((await response).status).toBe(200);
-    // The guarded branch ran: the policy read after the response answered the block.
-    expect(c.records.filter((record) => record.name === "fetchRefused").map((record) => record.answer)).toEqual([true]);
+    // The guarded branch ran: the revision read after the response carried the block's verdict for the actor's host.
+    expect(c.records.find((record) => record.name === "actorRevision")?.answer).toEqual({
+      revision: null,
+      ticket: { host: "mastodon.example", refused: true },
+    });
+    expect(c.calls()).toEqual(["resolutionGate", "actorRevision", "resolveSearch", "searchAccounts"]);
     expect(t.web.fetched).toEqual([WEBFINGER]);
     expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", bob.uri)).toEqual([{ n: 0 }]);
   });

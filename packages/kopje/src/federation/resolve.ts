@@ -80,7 +80,12 @@ export function createResolver(deps: ResolverDeps): Resolver {
       requestBudget(Date.now()),
       start?.prefetch?.signer,
     );
-    const revisionOf = (uri: string) => callStore(() => store().actorRevision(build, { uri }));
+    // The verdict that comes with the revision serves the actor's fetch, the next request, alone (refusesHost).
+    const revisionOf = async (uri: string) => {
+      const read = await callStore(() => store().actorRevision(build, { uri }));
+      state.ticket = read.ticket;
+      return read.revision;
+    };
     const resolved = await resolveWith({ ...loaders, revisionOf }, query.trim(), domain);
     if (state.storeError !== null) {
       throw state.storeError;

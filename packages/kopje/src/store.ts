@@ -146,7 +146,8 @@ type OperationInput<T> = T extends StoreOperation<infer I, unknown> ? I : never;
 // send (confirmDelivery), a one-time write (ensureInstanceActorKey). A fetch's preparation (domain/inbox.ts
 // fetchPreparation: the signer and the policy verdict for its first request) is produced at the three answers that
 // decide a fetch, inboxGate, a receiveActivity need and resolutionGate, and nowhere else; it is optional, and the
-// Worker reads what is missing (fetchSigner, fetchRefused) as it would without it.
+// Worker reads what is missing (fetchSigner, fetchRefused) as it would without it. A search resolution's actor revision
+// read (actorRevision) carries the verdict for the actor's fetch, its next request, the same way.
 // A federation GET is one read, the setup check included (domain/federation-reads.ts; the routes not yet moved there
 // read the domain in the setup gate first, federation/setup-gate.ts).
 export class Store extends DurableObject<Env> {
@@ -727,7 +728,8 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, inbox.getRemoteKey, input);
   }
 
-  // The revision a search resolution reads before it fetches an actor's document (federation/resolve.ts).
+  // The revision a search resolution reads before it fetches an actor's document, with that fetch's policy verdict
+  // (federation/resolve.ts).
   actorRevision(callerBuild: string, input: OperationInput<typeof inbox.getActorRevision>) {
     return this.#kernel.execute(callerBuild, inbox.getActorRevision, input);
   }

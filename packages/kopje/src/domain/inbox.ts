@@ -384,10 +384,15 @@ function outboundSince(db: Db, before: OutboundMark): boolean {
 // Remote actors and their keys
 // ---------------------------------------------------------------------------------------------------------------
 
-// What a writer read before its fetch (federation/resolve.ts): the actor's revision (actorRevision).
-export const getActorRevision = readOperation<{ uri: string }, DocumentRevision>((db, { uri }) =>
-  actorRevision(db, uri),
-);
+// What a search resolution reads before it fetches an actor's document (federation/resolve.ts): the actor's revision
+// (actorRevision), and the domain policy's verdict for that fetch (ticketFor), which the Worker spends on its next
+// request alone, the actor's, so no response is awaited between this read and the request it judges (VIS-30).
+export type ActorRevisionRead = { revision: DocumentRevision; ticket: PolicyTicket | null };
+
+export const getActorRevision = readOperation<{ uri: string }, ActorRevisionRead>((db, { uri }) => ({
+  revision: actorRevision(db, uri),
+  ticket: ticketFor(db, uri),
+}));
 
 export type StoredRemoteKey = { owner: string; pem: string; fresh: boolean };
 

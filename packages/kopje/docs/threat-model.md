@@ -1134,7 +1134,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
-  resolution's `resolutionGate`) comes with that answer and is spent on that request alone; every other request,
+  resolution's `resolutionGate` and its `actorRevision` before the actor's fetch) comes with that answer and is spent
+  on that request alone; every other request,
   redirect hops included, reads it anew (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts`
   "Store calls on the inbox cold path", `test/search-resolution-store-calls.test.ts`). Its inbound
