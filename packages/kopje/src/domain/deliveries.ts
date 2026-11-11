@@ -72,6 +72,8 @@ import { RowBudget } from "./row-budget";
 //     targets reads them from the receipts, so they are written until it is staged).
 //   - Claims and completions return nextDueAt, the earliest time any work is due, so the Worker can ring for it.
 //   - Send-time check (VIS-30): each target's Provenance is copied onto its row; sendRefused and confirmDelivery below.
+//     A refused row that is its follow's owed Follow or Accept holds that follow (holdHandshake), which
+//     handshake-replays.ts records again once the recipient is available.
 //   - Signer: an activity is signed by its lane's account, its author, except one recorded as signed by the instance
 //     actor (signedBy 'instance', DATA-7): a forwarded report's Flag (reports.ts), which Mastodon sends from
 //     Account.representative. Its lane is still the reporter's, which owns the intent and orders it with the reporter's
@@ -2504,14 +2506,14 @@ export function recheckAtSql(now: string): string {
 // pair's Accept whose remote follow is accepted under the Follow it answers (IS: an edge without a uri, answered by an
 // Accept that names no Follow id). Neither superseded nor a retraction. Each id is compared by its bytes, in SQL. A
 // quote's Accept carries no follow pair, and content no Follow or Accept type, so neither ever matches.
-const OWED_HANDSHAKE = `SELECT f.id FROM main.outbound_activities o
+const OWED_HANDSHAKE = `SELECT f.id FROM main.outbound_activities o NOT INDEXED
 		CROSS JOIN main.accounts t INDEXED BY ${ACCOUNTS_URI_INDEX}
 			ON t.uri = json_extract(o.body, '$.activity.object')
 		CROSS JOIN main.follows f INDEXED BY follows_pair ON f.account_id = o.account_id AND f.target_account_id = t.id
 	WHERE o.id = CAST(?1 AS INTEGER) AND o.superseded = 0 AND o.retracts = 0
 		AND json_extract(o.body, '$.activity.type') = 'Follow'
 		AND f.state = 'pending' AND f.uri = json_extract(o.body, '$.activity.id')
-	UNION ALL SELECT f.id FROM main.outbound_activities o
+	UNION ALL SELECT f.id FROM main.outbound_activities o NOT INDEXED
 		CROSS JOIN main.follows f INDEXED BY follows_pair ON f.account_id = o.follow_pair AND f.target_account_id = o.account_id
 	WHERE o.id = CAST(?1 AS INTEGER) AND o.superseded = 0 AND o.retracts = 0 AND o.follow_pair IS NOT NULL
 		AND json_extract(o.body, '$.activity.type') = 'Accept'

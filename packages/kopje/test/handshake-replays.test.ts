@@ -942,8 +942,26 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
       await follow(w.h, w.alice, target);
       await suspend(w, target);
     }
+    // The hold's statement under statistics older than the follows and accounts: key lookups only.
+    await sql(w.h.store, "ANALYZE");
+    await backlog(w, 2_000);
+    const { plans } = await plannedRun(w.h, /INSERT INTO handshake_replays/, claimDeliveries, {
+      now: NOW,
+      leaseToken: "plan",
+      limit: 1,
+    });
+    expect(plans).toHaveLength(1);
+    expect(
+      scansOf(plans[0]!.plan, ["o", "t", "f", "outbound_activities", "accounts", "follows"]),
+      plans[0]!.plan.join(" | "),
+    ).toEqual([]);
+    // The intent by key in each branch, the target account by its uri and the follow by its pair (each an index entry
+    // and its row): 6, whatever the Store holds.
+    expect(plans[0]!.rows).toBeLessThanOrEqual(6);
+    expect(await holds(w.h.store)).toHaveLength(1);
+    // A full claim of refused Follows: CLAIM_LIMIT more holds, though more rows are due.
     const { rows } = await operationRows(w.h.store, claimDeliveries, { now: NOW, leaseToken: "b3" });
-    expect(await holds(w.h.store)).toHaveLength(CLAIM_LIMIT);
+    expect(await holds(w.h.store)).toHaveLength(1 + CLAIM_LIMIT);
     // Each refused row: its hold, its delete and its intent's (one target, one chunk already expanded).
     expect(rows).toBeLessThanOrEqual(3 * CLAIM_LIMIT);
   });
