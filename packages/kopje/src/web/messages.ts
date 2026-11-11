@@ -308,7 +308,6 @@ export type Messages = {
     invalidRequestTitle: string;
     unregisteredRedirect: string;
     foreignForm: string;
-    otherHost: (domain: string) => string;
     changed: string;
     noAccountTitle: string;
     noAccount: string;

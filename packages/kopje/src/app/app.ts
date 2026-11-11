@@ -27,8 +27,9 @@ import { readBoundedBody } from "../platform/body";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, imagesCodec } from "../platform/images";
+import { decidesHost, hostDecided, offDomain } from "../platform/instance-host";
 import { loggedMethod } from "../platform/log";
-import { defaultStore, type StoreResolver } from "../platform/store-client";
+import { callStore, defaultStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { generateRsaKeyPair } from "../security/key-wrap";
 import { randomToken, type TokenGenerator } from "../security/tokens";
@@ -180,6 +181,17 @@ export function createApp({
     }
   });
 
+  // WEB-6: on the instance domain only, once setup has fixed it. The health check and the admin API (which the CLI
+  // reaches on an admin hostname of its own, docs/cutover-runbook.md) answer on any host; a route whose handler reads
+  // the domain itself decides there (decidesHost), so its request keeps its one Store read.
+  app.use(async (c, next) => {
+    if (c.req.path === "/health" || isAdminPath(c.req.path) || hostDecided(matchedRoutes(c))) {
+      return next();
+    }
+    const domain = await callStore(() => store(c.env).instanceDomain(build(c.env)));
+    return (domain === null ? null : offDomain(c.req.raw, domain)) ?? next();
+  });
+
   app.get("/health", (c) => publicHealth(build(c.env), readConfig(c.env), () => store(c.env), readBackupConfig(c.env)));
 
   const keygen = federation.keygen ?? generateRsaKeyPair;
@@ -201,15 +213,15 @@ export function createApp({
       (isRead(c.req.method) && matchedRoutes(c).some((r) => r.method === "GET" && SELF_GATED_ROUTES.has(r.path))),
   );
   for (const path of FEDERATION_PATHS) {
-    app.use(path, setupGate);
+    app.use(path, decidesHost(setupGate));
   }
 
-  const inbox = inboxHandler({ build, store, now, keygen, loader });
+  const inbox = decidesHost(inboxHandler({ build, store, now, keygen, loader }));
   for (const path of INBOX_ROUTES) {
     app.post(path, inbox);
   }
 
-  const federationGet = federationHandler({ build, now, store, keygen, loader });
+  const federationGet = decidesHost(federationHandler({ build, now, store, keygen, loader }));
   for (const path of FEDERATION_GET_ROUTES) {
     app.get(path, federationGet);
   }
@@ -227,8 +239,9 @@ export function createApp({
       return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
     },
   };
-  app.get(REMOTE_MEDIA_ROUTE, serveRemoteMedia);
-  app.get(MEDIA_ROUTE, serveMedia);
+  // Media reads no Store (web/media.ts): its capability URLs answer on any host.
+  app.get(REMOTE_MEDIA_ROUTE, decidesHost(serveRemoteMedia));
+  app.get(MEDIA_ROUTE, decidesHost(serveMedia));
   const authorize = authorizeRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const setup = setupRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const web = webRoutes(apiDeps);

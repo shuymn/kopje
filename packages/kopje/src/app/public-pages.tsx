@@ -1,4 +1,5 @@
-import { type Context, Hono } from "hono";
+import { type Context, type Handler, Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 
 import type { FollowDirection } from "../domain/web-pages/follows";
 import { pageCursor } from "../domain/web-pages/paging";
@@ -9,7 +10,9 @@ import { notSetUp } from "../federation/setup-gate";
 import { type ApiDeps, present, storeCall } from "../mastodon/context";
 import { embedHtml } from "../mastodon/oembed";
 import { serverDomain } from "../platform/domain-name";
+import { decidesHost, offDomain } from "../platform/instance-host";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
+import type { StoreStub } from "../platform/store-client";
 import { L1Context } from "../web/components/layout";
 import { AboutPage } from "../web/pages/about";
 import { DocumentPage } from "../web/pages/document";
@@ -30,7 +33,8 @@ import { embedHeaders, HANDOFF_HEADERS, l1Headers, PUBLIC_HEADERS } from "./web-
 // The public pages: what the instance shows people who are not using a client, to an anonymous viewer
 // (VIS-4). Each page makes one Store call, a page read that also reads the site facts (domain/web-pages/), and answers
 // 503 before setup has fixed the domain (SETUP-1). These routes read no session and no cookie, so a page is the same
-// with and without one. ActivityPub requests for /@user and /@user/:id forward to the actor and object endpoints, which
+// with and without one. On another host than the domain the page read's own domain decides WEB-6's answer
+// (app/app.ts), before anything is rendered. ActivityPub requests for /@user and /@user/:id forward to the actor and object endpoints, which
 // make their own reads. Every path of a page's shape that no page serves answers the ordinary 404 page, and every
 // hidden case of a page answers the same bytes as a missing one.
 
@@ -69,6 +73,18 @@ function gone(c: PublicContext, site: Site) {
   );
 }
 
+// WEB-6 by a page read's site facts (domain/web-pages/site.ts PageAnswer): on another host than the stored domain, its
+// answer is thrown to app.onError, which sends it as it is. Before setup the read has no site, and the page answers 503.
+function onDomain(c: PublicContext, page: unknown): void {
+  if (typeof page !== "object" || page === null || !("site" in page)) {
+    return;
+  }
+  const away = offDomain(c.req.raw, (page.site as Site).domain);
+  if (away !== null) {
+    throw new HTTPException(away.status === 301 ? 301 : 421, { res: away });
+  }
+}
+
 function withVary(response: Response): Response {
   const copy = new Response(response.body, response);
   copy.headers.append("vary", "Accept");
@@ -77,6 +93,14 @@ function withVary(response: Response): Response {
 
 export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
+  // A page whose first Store call is a page read through pageCall, which decides the host (WEB-6, app/app.ts).
+  const pageGet = <P extends string>(path: P, handler: Handler<{ Bindings: Env }, P>) =>
+    app.get(path, decidesHost(handler));
+  const pageCall = async <F extends (store: StoreStub, build: string) => unknown>(c: PublicContext, call: F) => {
+    const page = await storeCall(c, deps, call);
+    onDomain(c, page);
+    return page;
+  };
 
   // The same request for another path of this app, keeping its headers (Accept, signatures).
   const forward = (c: PublicContext, path: string) =>
@@ -89,8 +113,8 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     () => new Response(null, { status: 302, headers: { location: "/about", "cache-control": "public, max-age=60" } }),
   );
 
-  app.get("/about", async (c) => {
-    const page = await storeCall(c, deps, (s, b) => s.webAbout(b));
+  pageGet("/about", async (c) => {
+    const page = await pageCall(c, (s, b) => s.webAbout(b));
     if (page.status === "not_set_up") {
       return notSetUp(c);
     }
@@ -114,7 +138,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   // The documents the instance endpoints serve (domain/instance.ts), as stored and sanitized at the page's sink; a
   // /:date matches the stored effective date exactly, as GET /api/v1/instance/terms_of_service/:date.
   const documentPage = async (c: PublicContext, name: "privacy_policy" | "terms_of_service", date?: string) => {
-    const page = await storeCall(c, deps, (s, b) => s.webDocument(b, { name }));
+    const page = await pageCall(c, (s, b) => s.webDocument(b, { name }));
     if (page.status === "not_set_up") {
       return notSetUp(c);
     }
@@ -137,9 +161,9 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
       />,
     );
   };
-  app.get("/privacy-policy", (c) => documentPage(c, "privacy_policy"));
-  app.get("/terms-of-service", (c) => documentPage(c, "terms_of_service"));
-  app.get("/terms-of-service/:date", (c) => documentPage(c, "terms_of_service", c.req.param("date")));
+  pageGet("/privacy-policy", (c) => documentPage(c, "privacy_policy"));
+  pageGet("/terms-of-service", (c) => documentPage(c, "terms_of_service"));
+  pageGet("/terms-of-service/:date", (c) => documentPage(c, "terms_of_service", c.req.param("date")));
 
   // A profile tab: HTML only, but for the Posts tab, which serves the actor to an ActivityPub client.
   const profile = async (c: PublicContext, tab: ProfileTab) => {
@@ -148,7 +172,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
       return profileActor(c, handle);
     }
     const cursor = pageCursor(c.req.query("max_id"), c.req.query("min_id"));
-    const page = await storeCall(c, deps, (s, b) => s.webProfilePage(b, { handle, tab, cursor, now: deps.now() }));
+    const page = await pageCall(c, (s, b) => s.webProfilePage(b, { handle, tab, cursor, now: deps.now() }));
     switch (page.status) {
       case "not_set_up":
         return notSetUp(c);
@@ -181,7 +205,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   // The actor document: the account first, case-insensitively (the actor endpoint answers only its stored spelling,
   // and serves a suspended actor redacted).
   const profileActor = async (c: PublicContext, handle: string) => {
-    const gate = await storeCall(c, deps, (s, b) => s.webSite(b));
+    const gate = await pageCall(c, (s, b) => s.webSite(b));
     if (gate.status === "not_set_up") {
       return notSetUp(c);
     }
@@ -197,20 +221,18 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
       : withVary(await forward(c, `/ap/users/${encodeURIComponent(account.username)}`));
   };
 
-  app.get("/:handle{@[^/]+}", (c) => profile(c, { kind: "posts" }));
-  app.get("/:handle{@[^/]+}/with_replies", (c) => profile(c, { kind: "with_replies" }));
-  app.get("/:handle{@[^/]+}/media", (c) => profile(c, { kind: "media" }));
+  pageGet("/:handle{@[^/]+}", (c) => profile(c, { kind: "posts" }));
+  pageGet("/:handle{@[^/]+}/with_replies", (c) => profile(c, { kind: "with_replies" }));
+  pageGet("/:handle{@[^/]+}/media", (c) => profile(c, { kind: "media" }));
   // A featured hashtag's URL (Mastodon's short_account_tag_url): the profile's posts with the hashtag. A remote
   // account's (/@username@domain/tagged/:tag, featured-tags.ts taggedUrl) moves to its profile on its own server.
-  app.get("/:handle{@[^/]+}/tagged/:tag", (c) => profile(c, { kind: "tagged", tag: c.req.param("tag") }));
+  pageGet("/:handle{@[^/]+}/tagged/:tag", (c) => profile(c, { kind: "tagged", tag: c.req.param("tag") }));
 
   // A local account's followers and following: HTML only; the collections stay at /ap/users/:u/….
   const follows = async (c: PublicContext, direction: FollowDirection) => {
     const handle = c.req.param("handle") ?? "";
     const cursor = pageCursor(c.req.query("max_id"), c.req.query("min_id"));
-    const page = await storeCall(c, deps, (s, b) =>
-      s.webFollowsPage(b, { handle, direction, cursor, now: deps.now() }),
-    );
+    const page = await pageCall(c, (s, b) => s.webFollowsPage(b, { handle, direction, cursor, now: deps.now() }));
     switch (page.status) {
       case "not_set_up":
         return notSetUp(c);
@@ -233,15 +255,13 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
       />,
     );
   };
-  app.get("/:handle{@[^/]+}/followers", (c) => follows(c, "followers"));
-  app.get("/:handle{@[^/]+}/following", (c) => follows(c, "following"));
+  pageGet("/:handle{@[^/]+}/followers", (c) => follows(c, "followers"));
+  pageGet("/:handle{@[^/]+}/following", (c) => follows(c, "following"));
 
   // A local account's Featured tab: its featured hashtags and the accounts it endorses. HTML only.
-  app.get("/:handle{@[^/]+}/featured", async (c) => {
+  pageGet("/:handle{@[^/]+}/featured", async (c) => {
     const cursor = pageCursor(c.req.query("max_id"), c.req.query("min_id"));
-    const page = await storeCall(c, deps, (s, b) =>
-      s.webFeaturedPage(b, { handle: c.req.param("handle") ?? "", cursor }),
-    );
+    const page = await pageCall(c, (s, b) => s.webFeaturedPage(b, { handle: c.req.param("handle") ?? "", cursor }));
     switch (page.status) {
       case "not_set_up":
         return notSetUp(c);
@@ -271,7 +291,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     const cursor = pageCursor(c.req.query("max_id"), c.req.query("min_id"));
     const activityPub = kind === "replies" && wantsActivityPub(c.req.header("accept"));
     const tab = activityPub ? null : { kind, cursor };
-    const page = await storeCall(c, deps, (s, b) =>
+    const page = await pageCall(c, (s, b) =>
       s.webStatusPage(b, { handle: c.req.param("handle") ?? "", id: c.req.param("id") ?? "", now: deps.now(), tab }),
     );
     switch (page.status) {
@@ -307,16 +327,16 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
       />,
     );
   };
-  app.get(`/:handle{@[^/]+}/:id{${STATUS_ID}}`, (c) => status(c, "replies"));
-  app.get(`/:handle{@[^/]+}/:id{${STATUS_ID}}/reblogs`, (c) => status(c, "reblogs"));
-  app.get(`/:handle{@[^/]+}/:id{${STATUS_ID}}/favourites`, (c) => status(c, "favourites"));
-  app.get(`/:handle{@[^/]+}/:id{${STATUS_ID}}/quotes`, (c) => status(c, "quotes"));
+  pageGet(`/:handle{@[^/]+}/:id{${STATUS_ID}}`, (c) => status(c, "replies"));
+  pageGet(`/:handle{@[^/]+}/:id{${STATUS_ID}}/reblogs`, (c) => status(c, "reblogs"));
+  pageGet(`/:handle{@[^/]+}/:id{${STATUS_ID}}/favourites`, (c) => status(c, "favourites"));
+  pageGet(`/:handle{@[^/]+}/:id{${STATUS_ID}}/quotes`, (c) => status(c, "quotes"));
 
   // The status page's status for an iframe (VIS-4, the same read): Mastodon's embed_short_account_status_url, which
   // the oEmbed HTML names (mastodon/oembed.ts). Anything the status page would not show is the same 404, which, like
   // every other page, may not be framed.
-  app.get(`/:handle{@[^/]+}/:id{${STATUS_ID}}/embed`, async (c) => {
-    const page = await storeCall(c, deps, (s, b) =>
+  pageGet(`/:handle{@[^/]+}/:id{${STATUS_ID}}/embed`, async (c) => {
+    const page = await pageCall(c, (s, b) =>
       s.webStatusPage(b, { handle: c.req.param("handle"), id: c.req.param("id"), now: deps.now(), tab: null }),
     );
     switch (page.status) {
@@ -337,11 +357,9 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   // A hashtag's local public posts: HTML only, for an ActivityPub client too (Mastodon also serves a
   // collection and RSS here; docs/mastodon-deviations.md). Any spelling of a name serves the page of its normalized
   // name, which the page names as canonical, without a redirect.
-  app.get("/tags/:name", async (c) => {
+  pageGet("/tags/:name", async (c) => {
     const cursor = pageCursor(c.req.query("max_id"), c.req.query("min_id"));
-    const page = await storeCall(c, deps, (s, b) =>
-      s.webTagPage(b, { name: c.req.param("name"), cursor, now: deps.now() }),
-    );
+    const page = await pageCall(c, (s, b) => s.webTagPage(b, { name: c.req.param("name"), cursor, now: deps.now() }));
     switch (page.status) {
       case "not_set_up":
         return notSetUp(c);
@@ -369,7 +387,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   // its refusal, 400, the same bytes whatever was given; otherwise a link to that server's /authorize_interaction.
   // Nothing is fetched, stored or redirected, and no session is read.
   const interact = async (c: PublicContext, id: string | null) => {
-    const page = await storeCall(c, deps, (s, b) =>
+    const page = await pageCall(c, (s, b) =>
       s.webInteractTarget(b, { handle: c.req.param("handle") ?? "", id, now: deps.now() }),
     );
     if (page.status === "not_set_up") {
@@ -404,18 +422,18 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
           HANDOFF_HEADERS,
         );
   };
-  app.get("/:handle{@[^/]+}/interact", (c) => interact(c, null));
+  pageGet("/:handle{@[^/]+}/interact", (c) => interact(c, null));
   // An API id only: the dialog's form names the status by it, and a legacy id has no handoff of its own.
-  app.get("/:handle{@[^/]+}/:id{[0-9]{1,19}}/interact", (c) => interact(c, c.req.param("id")));
+  pageGet("/:handle{@[^/]+}/:id{[0-9]{1,19}}/interact", (c) => interact(c, c.req.param("id")));
 
   // The shapes of the public pages that no route above serves: the ordinary 404 page, never the plain
   // text answer of app.ts.
   const missing = async (c: PublicContext) => {
-    const gate = await storeCall(c, deps, (s, b) => s.webSite(b));
+    const gate = await pageCall(c, (s, b) => s.webSite(b));
     return gate.status === "not_set_up" ? notSetUp(c) : notFound(c, gate.site);
   };
-  app.get("/@*", missing);
-  app.get("/tags/*", missing);
+  pageGet("/@*", missing);
+  pageGet("/tags/*", missing);
 
   return app;
 }
