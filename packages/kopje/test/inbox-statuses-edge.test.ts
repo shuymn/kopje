@@ -644,9 +644,10 @@ describe("NET-4: search resolution fetches nothing without a valid token", () =>
         const { stub, calls, records } = countingStore(t.store);
         const h = harness(stub, {}, BUILD, { keygen: fixtureKeyGen, loader });
         const response = await h.request(path, { headers: { authorization: `Bearer ${value}` } });
-        // The resolution gate ran, answered the failure and prepared nothing; no signer read, no other call.
-        expect([path, calls]).toEqual([path, ["resolutionGate"]]);
-        answers.push([response.status, records[0]!.answer]);
+        // After the host check's domain read (WEB-6), the resolution gate ran, answered the failure and prepared
+        // nothing; no signer read, no other call.
+        expect([path, calls]).toEqual([path, ["instanceDomain", "resolutionGate"]]);
+        answers.push([response.status, records[1]!.answer]);
       }
       expect([path, answers]).toEqual([
         path,

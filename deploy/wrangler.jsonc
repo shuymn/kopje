@@ -20,6 +20,9 @@
   // Keep the variables set in the dashboard (MAINTENANCE, IMAGES_MONTHLY_TRANSFORMS, the backup settings) across
   // deploys. Attach the instance's custom domain in the dashboard, not here.
   "keep_vars": true,
+  // No workers.dev address: once set up, Kopje answers only on the instance domain (a 301 or 421 elsewhere), so the
+  // address would only be one more public hostname.
+  "workers_dev": false,
   // Kopje's own log events are kept. Invocation logs (they record request headers) and traces stay off unless you opt
   // in. What each records, what it costs and how to change it: packages/kopje/docs/observability.md.
   "observability": {

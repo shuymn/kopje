@@ -275,32 +275,34 @@ describe("authorize, consent, token, API call", () => {
   // Hosts the Worker may also answer on: its workers.dev address, another route, the domain with a port.
   const OTHER_HOSTS = ["kopje.example.workers.dev", "other.kopje.test", "kopje.test:8443"] as const;
 
-  it("shows the consent page on the instance domain only, before verifying Access (WEB-1)", async () => {
+  it("moves the consent page to the instance domain, before verifying Access (WEB-1, WEB-6)", async () => {
     const h = await withAlice();
     const app = await registerApp(h);
     for (const host of OTHER_HOSTS) {
       const response = await consentPage(h, app, { host });
-      expect(response.status, host).toBe(403);
-      const html = await response.text();
-      expect(html, host).toContain("Sign in at kopje.test, this server");
-      expect(html, host).not.toContain("@alice@");
+      expect(response.status, host).toBe(301);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.origin, host).toBe("https://kopje.test");
+      expect(location.pathname, host).toBe("/oauth/authorize");
+      expect(location.searchParams.get("client_id"), host).toBe(app.client_id);
+      expect(await response.text(), host).toBe("");
     }
     // Without an assertion too: the host is judged first.
     const unverified = await consentPage(h, app, { host: OTHER_HOSTS[0], assertion: null });
-    expect(await unverified.text()).toContain("Sign in at kopje.test, this server");
+    expect(unverified.status).toBe(301);
     const canonical = await consentPage(h, app);
     expect(canonical.status).toBe(200);
     expect(await canonical.text()).toContain("@alice@kopje.test");
   });
 
-  it("refuses a decision posted on another host, issuing nothing (WEB-1)", async () => {
+  it("refuses a decision posted on another host, issuing nothing (WEB-1, WEB-6)", async () => {
     const h = await withAlice();
     const app = await registerApp(h);
     for (const host of OTHER_HOSTS) {
       // The form's Origin is the other host's own, so the request passes the Origin check and reaches the host's.
       const response = await decide(h, app, "approve", { host });
-      expect(response.status, host).toBe(403);
-      expect(await response.text(), host).toContain("Sign in at kopje.test, this server");
+      expect(response.status, host).toBe(421);
+      expect(response.headers.get("location"), host).toBeNull();
     }
     expect(await sql(h.store, "SELECT 1 FROM oauth_tokens")).toEqual([]);
     expect((await decide(h, app, "approve")).status).toBe(302);
@@ -324,7 +326,7 @@ describe("authorize, consent, token, API call", () => {
       expect(request.headers.get("host")).toBe(host);
       return h.send(request);
     };
-    expect((await at("https://other.kopje.test", "kopje.test")).status).toBe(403);
+    expect((await at("https://other.kopje.test", "kopje.test")).status).toBe(301);
     expect((await at("https://kopje.test", "other.kopje.test")).status).toBe(200);
   });
 
