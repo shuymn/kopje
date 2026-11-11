@@ -144,6 +144,18 @@ export const REMOTE_MODERATION_JOBS: JobTable = {
   integerKey: true,
 };
 
+// The held handshakes (migration 0088_handshake_replays, handshake-replays.ts): a hold runs at its check_at, equal
+// times in follow id order; its key is the follow's id.
+export const HANDSHAKE_REPLAYS: JobTable = {
+  table: "handshake_replays",
+  family: "handshake_replays",
+  key: ["follow_id"],
+  fresh: "check_at, follow_id",
+  order: "check_at, follow_id",
+  rowid: true,
+  integerKey: true,
+};
+
 // The tables retryParkedJobs walks, in this order: a jobs round's (src/jobs/queue.ts STORE_JOB_FAMILIES).
 export const JOB_TABLES: readonly JobTable[] = [
   INBOUND_JOBS,
@@ -154,6 +166,7 @@ export const JOB_TABLES: readonly JobTable[] = [
   NOTIFICATION_DISMISSALS,
   MODERATION_JOBS,
   REMOTE_MODERATION_JOBS,
+  HANDSHAKE_REPLAYS,
 ];
 
 // The predicate `condition` of the table's rows with work left.

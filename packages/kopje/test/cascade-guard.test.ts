@@ -46,6 +46,8 @@ const ACCOUNT_EXEMPT: Record<string, string> = {
     "a local account's only (made at its `direct` subscription, one row); a remote account is the only one purged",
   poll_votes: "deleted a batch at a time by deleteAccountVotes, checked by hasPollVotes in accountHasRows",
   account_trend_reviews: "one row per account, inside the final delete’s reservation (purgeBatch)",
+  handshake_replays:
+    "below follows: one row per follow at most (its primary key), which the purge's follow window reserves with the follow (purgeRelationships, three rows a follow)",
   push_deliveries:
     "below notifications: deleted child-first by the purge's sender and report windows (purgeRelationships), so no notification's delete cascades",
 };
@@ -85,6 +87,8 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "fires only when edited_at changes, which no batched delete or purge does: hiding a status writes its visibility and content (the exact-budget cases below run with `user`, a list and the feeds listening, and with the feeds alone)",
   outbound_activities_staging_ended:
     "one retraction_stagings row per superseded retraction still staging with a staging row: a batch's supersedeEarlier runs below the oldest one still staging (inbox.ts deleteLocalStatusBatch), so it meets none, and beginRetraction counts them (headed) before it supersedes",
+  handshake_replays_generation:
+    "one hold deleted per follow whose uri or state an update changes: no batched delete or purge updates follows; each path that does reserves it with the follow (handshake-replays.ts lists them)",
   statuses_filter_text_stale:
     "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, inbox.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
 };
