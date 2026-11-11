@@ -377,6 +377,9 @@ const SAFE_INTERPOLATIONS = new Set([
   "hostCoveredSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
+  // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).
+  "statusEditedSql",
+  "statusPublishedSql",
   // A counter or time as read, within its range, or NULL (platform/stored-bounds.ts), a number.
   "storedCountSql",
   // Whether a value is no remote field link list or link back: predicates (platform/stored-bounds.ts).
