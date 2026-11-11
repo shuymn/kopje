@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import type { DeliveryOutcome } from "../src/domain/deliveries";
+import { HANDSHAKE_REPLAYS_PER_ROUND } from "../src/domain/handshake-replays";
 import type { InboundActivity } from "../src/domain/inbox";
 import { MODERATION_ROUND_ROWS, REPORT_ROUND } from "../src/domain/moderation-bounds";
 import type { RemoteActorInput } from "../src/domain/remote-actors";
@@ -12,13 +13,14 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, form, json, recountFollows, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { keptReject, net2Answer } from "./follow-exceptions";
-import { type Body, type Inbound, type Intent, Peer } from "./follow-model";
+import { type Body, HANDSHAKE_RECHECK_MS, type Inbound, type Intent, Peer, type Policy } from "./follow-model";
 import { BUILD } from "./helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
 import {
   type Block,
   type Caps,
   type Document,
+  type Hold,
   inboxOf,
   type JobRow,
   ledgerCheck,
@@ -195,8 +197,6 @@ async function setup(seed: Seed) {
     undoReceivedAt: new Map<string, number>(),
     ignoredFollows: new Map<string, number>(),
     ignoredAccepts: new Set<string>(),
-    droppedUnavailable: new Map<string, string>(),
-    severedGens: new Set<string>(),
     lastFollow: null as string | null,
   };
   for (const [i, label] of SEEDS.entries()) {
@@ -430,6 +430,9 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
 				o.superseded, d.inbox_url AS inbox, d.state, d.lease_token AS token
 			FROM deliveries d JOIN outbound_activities o ON o.id = d.activity_id ORDER BY d.id`,
     );
+    const holds = q<{ follow: string; check_at: number; attempts: number }>(
+      "SELECT CAST(follow_id AS TEXT) AS follow, check_at, attempts FROM handshake_replays ORDER BY follow_id",
+    );
     const unexpanded = q<{ n: number }>("SELECT count(*) AS n FROM outbound_targets")[0]!.n;
     const unrowed = q<{ type: string }>(
       `SELECT json_extract(body, '$.activity.type') AS type FROM outbound_activities o
@@ -457,6 +460,7 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
       retracted,
       statuses,
       lanes,
+      holds,
       unexpanded,
       unrowed,
       snap,
@@ -523,6 +527,14 @@ function projection(w: World, s: State) {
     retracted: s.retracted.map((r) => `${r.actor} ${r.target}`),
     statuses: Object.fromEntries(s.statuses.map((row) => [name(row.account), row.n])),
     lanes,
+    // The held handshakes, by the follow they hold (VIS-30).
+    holds: s.holds
+      .map((h) => {
+        const f = s.follows.find((row) => row.id === h.follow);
+        const gen = f === undefined ? h.follow : `${name(f.follower)}>${name(f.target)}`;
+        return { gen, checkAt: h.check_at, attempts: h.attempts };
+      })
+      .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: s.unexpanded,
     unrowed: s.unrowed.filter((type) => type !== "Update"),
   };
@@ -601,6 +613,10 @@ function expected(w: World) {
     retracted: retracted.toSorted(),
     statuses: Object.fromEntries(p.statuses),
     lanes,
+    holds: p
+      .holds()
+      .map((h) => ({ gen: h.side === "lr" ? `${h.l}>${h.r}` : `${h.r}>${h.l}`, checkAt: h.checkAt, attempts: 0 }))
+      .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: 0,
     unrowed: [] as string[],
   };
@@ -692,7 +708,7 @@ type Admin =
   | { k: "suspend"; r: Remote }
   | { k: "unsuspend"; i: number };
 type Flag = "reject_media" | "reject_reports" | "obfuscate";
-type Rounds = { k: "round" } | { k: "moderation" };
+type Rounds = { k: "round" } | { k: "moderation" } | { k: "replay" };
 type LocalAction =
   | { k: "unfollow"; r: Remote }
   | { k: "remove"; r: Remote }
@@ -825,7 +841,6 @@ function adopt(w: World, before: State, now: State): void {
       w.severingRejects.add(`${l} ${r} ${intent.seq}`);
     }
     w.severedByRound.add(`${follower}>${target}`);
-    w.severedGens.add(f.uri ?? f.id);
     tally(w.stats, `severed ${out ? "out" : "in"} ${f.state}`);
   }
   const members = new Set(now.members.map((m) => `${m.follower} ${m.target}`));
@@ -909,6 +924,37 @@ async function moderation(w: World): Promise<boolean> {
   return pending;
 }
 
+// The follow a hold holds, by its id in the Store (the replay's order within equal times).
+function holdFollowId(w: World, hold: Hold): bigint {
+  const [follower, target] =
+    hold.side === "lr" ? [w.ids[hold.l], w.remoteIds[hold.r]] : [w.remoteIds[hold.r], w.ids[hold.l]];
+  const f = w.last!.follows.find((row) => row.follower === follower && row.target === target);
+  if (f === undefined) {
+    throw new Error(`a hold of ${hold.l} ${hold.r} ${hold.side} without its follow\n${context(w)}`);
+  }
+  return BigInt(f.id);
+}
+
+// A round of the held handshakes (Store.runHandshakeReplays) at the clock, which first moves on to the earliest hold's
+// check when one is held: its answer and the policy's agree, and so does the projection after it.
+async function replay(w: World): Promise<boolean> {
+  const held = w.policy.holds();
+  if (held.length > 0) {
+    w.clock = Math.max(w.clock, Math.min(...held.map((h) => h.checkAt)));
+  }
+  log(w, `replay at +${w.clock - NOW}`);
+  const answer = await w.store.runHandshakeReplays(BUILD, { now: w.clock });
+  const predicted = w.policy.replayRound(w.clock, (h) => holdFollowId(w, h), HANDSHAKE_REPLAYS_PER_ROUND);
+  for (const h of predicted.replayed) {
+    tally(w.stats, `replayed: ${h.side === "lr" ? "Follow" : "Accept"}`);
+  }
+  for (const h of predicted.deferred) {
+    tally(w.stats, `replay deferred: ${h.side === "lr" ? "Follow" : "Accept"}`);
+  }
+  await after(w, { actual: answer, predicted: { pending: predicted.pending, delivers: predicted.delivers } });
+  return answer.pending;
+}
+
 async function local(w: World, a: LocalAction): Promise<void> {
   const p = w.policy;
   const now = w.clock;
@@ -958,6 +1004,15 @@ async function nextDue(w: World): Promise<{ local: Local; remote: Remote } | nul
   return { local: labelOf(w, row.account) as Local, remote };
 }
 
+// The holds a claim or confirmation wrote, from the pair's holds before it (`held`: its Follow's, then its Accept's).
+function tallyHeld(w: World, at: "claim" | "confirm", held: (number | null)[], pair: Policy): void {
+  for (const [i, now] of [pair.heldLR, pair.heldRL].entries()) {
+    if (now !== null && now !== held[i]) {
+      tally(w.stats, `held at ${at}: ${i === 0 ? "Follow" : "Accept"}`);
+    }
+  }
+}
+
 async function claim(w: World): Promise<Attempt | null> {
   const due = await nextDue(w);
   if (due === null) {
@@ -969,11 +1024,12 @@ async function claim(w: World): Promise<Attempt | null> {
   const pair = w.policy.pair(due.local, due.remote);
   // The head's inbox, as the last projection (checked against the policy) holds it.
   const inbox = projection(w, w.last!).lanes[`${due.local} ${due.remote}`]?.[0]?.inbox;
+  const held = [pair.heldLR, pair.heldRL];
   const predicted = pair.claim(w.clock, token);
   if (predicted.dropped !== null && !predicted.dropped.superseded) {
     tally(w.stats, `dropped at claim: ${predicted.dropped.type}`);
-    w.droppedUnavailable.set(`${predicted.dropped.type} ${predicted.dropped.ref}`, due.remote);
   }
+  tallyHeld(w, "claim", held, pair);
   await check(w, {
     actual: result.deliveries.map((d) => d.inbox),
     predicted: predicted.leased === null ? [] : [inbox],
@@ -1002,11 +1058,13 @@ async function confirm(w: World, attempt: Attempt): Promise<void> {
     leaseToken: attempt.token,
     now: w.clock,
   });
-  const predicted = w.policy.pair(attempt.local, attempt.remote).confirm(attempt.token, w.clock);
+  const pair = w.policy.pair(attempt.local, attempt.remote);
+  const held = [pair.heldLR, pair.heldRL];
+  const predicted = pair.confirm(attempt.token, w.clock);
   if (predicted.status === "dropped" && !attempt.intent.superseded) {
     tally(w.stats, `dropped at confirm: ${attempt.intent.type}`);
-    w.droppedUnavailable.set(`${attempt.intent.type} ${attempt.intent.ref}`, attempt.remote);
   }
+  tallyHeld(w, "confirm", held, pair);
   attempt.phase = result.status === "send" ? "confirmed" : "done";
   if (result.status === "send") {
     attempt.body = result.body;
@@ -1061,7 +1119,8 @@ async function send(w: World): Promise<boolean> {
 // Settlement
 // ---------------------------------------------------------------------------------------------------------------
 
-// Rounds until no job is left, then deliveries until no row is left; then rule 4's settlement and rule 6.
+// Rounds until no job is left, then deliveries until no row is left, then the held handshakes (replays); then rule
+// 4's settlement and rule 6.
 async function settle(w: World): Promise<void> {
   w.trace.push("-- settle");
   for (let i = 0; ; i++) {
@@ -1075,6 +1134,27 @@ async function settle(w: World): Promise<void> {
   expect(s.jobs, context(w)).toEqual([]);
   expect(settlementFailures(s.snap, w.fences), context(w)).toEqual([]);
   await drainDeliveries(w);
+  for (let i = 0; await replayDue(w); i++) {
+    expect(i, `replays passed ${SETTLE_ROUNDS} rounds\n${context(w)}`).toBeLessThan(SETTLE_ROUNDS);
+    await drainDeliveries(w);
+  }
+  expect(settlementFailures(w.last!.snap, w.fences, replayableHolds(w)), context(w)).toEqual([]);
+}
+
+const replayableHolds = (w: World) => w.policy.holds().filter((h) => w.policy.replayable(h));
+
+// Settlement's replays: when a hold is replayable, the clock moves on to the earliest such hold's check (holds due
+// before it, not replayable, are moved on as it passes) and rounds run while they ask for more. Whether one ran.
+async function replayDue(w: World): Promise<boolean> {
+  const replayable = replayableHolds(w);
+  if (replayable.length === 0) {
+    return false;
+  }
+  w.clock = Math.max(w.clock, Math.min(...replayable.map((h) => h.checkAt)));
+  for (let more = true; more;) {
+    more = await replay(w);
+  }
+  return true;
 }
 
 async function drainDeliveries(w: World): Promise<void> {
@@ -1139,6 +1219,7 @@ const p1Arb: fc.Arbitrary<Action> = fc.oneof(
   ...adminArbs,
   { arbitrary: fc.constant({ k: "round" as const }), weight: 6 },
   { arbitrary: fc.constant({ k: "moderation" as const }), weight: 3 },
+  { arbitrary: fc.constant({ k: "replay" as const }), weight: 1 },
   { arbitrary: fc.record({ k: fc.constant("unfollow" as const), r: remoteArb("R1", "R3", "R4") }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("remove" as const), r: remoteArb("R1", "R2", "R4") }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("report" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 1 },
@@ -1151,6 +1232,8 @@ async function act(w: World, a: Action): Promise<void> {
       return void (await round(w));
     case "moderation":
       return void (await moderation(w));
+    case "replay":
+      return void (await replay(w));
     case "unfollow":
     case "remove":
     case "report":
@@ -1166,7 +1249,7 @@ async function runP1(seed: Seed, actions: readonly Action[], deferred: boolean):
   await check(w);
   await apiReads(w);
   for (const a of actions) {
-    if (deferred && (a.k === "round" || a.k === "moderation")) {
+    if (deferred && (a.k === "round" || a.k === "moderation" || a.k === "replay")) {
       continue;
     }
     await act(w, a);
@@ -1539,6 +1622,7 @@ const p2Arb: fc.Arbitrary<P2Action> = fc.oneof(
   ...adminArbs,
   { arbitrary: fc.constant({ k: "round" as const }), weight: 8 },
   { arbitrary: fc.constant({ k: "moderation" as const }), weight: 4 },
+  { arbitrary: fc.constant({ k: "replay" as const }), weight: 4 },
   { arbitrary: fc.constant({ k: "peerFollow" as const }), weight: 4 },
   { arbitrary: fc.constant({ k: "peerUnfollow" as const }), weight: 2 },
   { arbitrary: fc.constant({ k: "peerRemoveFollower" as const }), weight: 1 },
@@ -1603,9 +1687,12 @@ async function settleP2(w: World): Promise<void> {
       await p2Act(w, { k: "deliver" });
       moved = true;
     }
+    if (!moved && (await replayDue(w))) {
+      moved = true;
+    }
     if (!moved) {
       expect(await moderation(w), context(w)).toBe(false);
-      expect(settlementFailures(w.last!.snap, w.fences), context(w)).toEqual([]);
+      expect(settlementFailures(w.last!.snap, w.fences, replayableHolds(w)), context(w)).toEqual([]);
       return;
     }
   }
@@ -1657,18 +1744,6 @@ function rlException(w: World, mine: { state: string; uri: string } | null): str
   ) {
     return "X1-late-answer";
   }
-  // X5 (#1423, a known defect): g's Accept was dropped for R1's unavailability, g was never severed (R1 was
-  // unsuspended before its job's round), so Kopje holds g accepted while R1's server holds it requested.
-  if (
-    w.droppedUnavailable.has(`Accept ${g}`) &&
-    !w.severedGens.has(g) &&
-    mine?.uri === g &&
-    mine.state === "accepted" &&
-    theirs?.uri === g &&
-    theirs.state === "requested"
-  ) {
-    return "X5";
-  }
   return null;
 }
 
@@ -1683,10 +1758,16 @@ function lrException(w: World, mine: { state: string; uri: string } | null): str
   if (w.ignoredAccepts.has(u) && mine?.uri === u && mine.state === "requested" && theirs?.uri === u) {
     return "X2";
   }
-  // X3 (#1422, a known defect): u's Follow was dropped at send time for R1's unavailability; the local follow stays
-  // pending, and R1's server never heard of it.
-  if (w.droppedUnavailable.has(`Follow ${u}`) && mine?.uri === u && mine.state === "requested" && theirs === null) {
-    return "X3";
+  // Held (VIS-30): u's Follow is held while R1 is still unavailable at quiescence (an individual suspension keeps local
+  // follows of it), so R1's server has not heard of it yet; its replay sends it once R1 is available.
+  if (
+    w.policy.pair("L1", "R1").heldLR !== null &&
+    w.policy.refused("R1") &&
+    mine?.uri === u &&
+    mine.state === "requested" &&
+    theirs === null
+  ) {
+    return "held";
   }
   return null;
 }
@@ -1708,9 +1789,19 @@ function quiescence(w: World): void {
 }
 
 async function runP2(seed: Seed, actions: readonly P2Action[]): Promise<World> {
+  const w = await p2World(seed);
+  for (const a of actions) {
+    await p2Act(w, a);
+  }
+  await settleP2(w);
+  quiescence(w);
+  return w;
+}
+
+// A P2 world before its actions: R1's server holds what the seed holds for R1 and L1.
+async function p2World(seed: Seed): Promise<World> {
   const w = await setup(seed);
   w.peer = new Peer("https://d.example", w.policy.remotes.R1.uri, w.localUris.L1);
-  // R1's server holds what the seed holds for R1 and L1.
   const pair = w.policy.pair("L1", "R1");
   w.peer.rl = pair.rl === null ? null : { state: "accepted", uri: pair.rl.uri! };
   w.peer.lr = pair.lr === null ? null : { state: "accepted", uri: pair.lr.uri };
@@ -1721,11 +1812,6 @@ async function runP2(seed: Seed, actions: readonly P2Action[]): Promise<World> {
   w.lastFollow = pair.lr?.uri ?? null;
   await check(w);
   await apiReads(w);
-  for (const a of actions) {
-    await p2Act(w, a);
-  }
-  await settleP2(w);
-  quiescence(w);
   return w;
 }
 
@@ -2029,20 +2115,25 @@ describe("instance moderation witnesses: federation with R1's server", () => {
     expect(w.stats["exception X2"]).toBe(1);
   }, 60_000);
 
-  // X3 (#1422, a known defect): L1's Follow queued at the suspension is dropped at send time and never sent again.
-  it("X3 (#1422): a Follow dropped at send time leaves L1's follow pending forever", async () => {
+  // #1422 (VIS-30, held handshakes): L1's Follow queued at the suspension is dropped at send time, held, and replayed
+  // with its id once R1 is available; both servers then agree, with no exception.
+  it("#1422: a Follow dropped at send time is held and replayed after the unsuspension", async () => {
     const w = await runP2(peerSeed, [
       { k: "follow", r: "R1" },
       { k: "suspend", r: "R1" },
       { k: "claim" },
+      { k: "replay" },
       { k: "unsuspend", i: 0 },
     ]);
-    expect(w.stats["dropped at claim: Follow"]).toBe(1);
-    expect(w.stats["exception X3"]).toBe(1);
+    expect(w.stats["held at claim: Follow"]).toBe(1);
+    expect(w.stats["replay deferred: Follow"]).toBe(1);
+    expect(w.stats["replayed: Follow"]).toBe(1);
+    expect(Object.keys(w.stats).filter((key) => key.startsWith("exception"))).toEqual([]);
+    expect(projection(w, w.last!).follows.find((f) => f.gen === "L1>R1")).toMatchObject({ state: "accepted" });
   }, 60_000);
 
-  // X5 (#1423, a known defect): R1's Accept dropped during a short suspension, ended before its severing round.
-  it("X5 (#1423): an Accept dropped during a short suspension leaves R1's server with a request", async () => {
+  // #1423: R1's Accept dropped during a short suspension that ends before its severing round is held and replayed.
+  it("#1423: an Accept dropped during a short suspension is held and replayed after it", async () => {
     const w = await runP2(peerSeed, [
       { k: "peerFollow" },
       { k: "deliver" },
@@ -2050,8 +2141,54 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "claim" },
       { k: "unsuspend", i: 0 },
     ]);
-    expect(w.stats["dropped at claim: Accept"]).toBe(1);
-    expect(w.stats["exception X5"]).toBe(1);
+    expect(w.stats["held at claim: Accept"]).toBe(1);
+    expect(w.stats["replayed: Accept"]).toBe(1);
+    expect(Object.keys(w.stats).filter((key) => key.startsWith("exception"))).toEqual([]);
+    expect(w.peer!.rl).toMatchObject({ state: "accepted" });
+  }, 60_000);
+
+  // Held while R1 stays suspended: settlement leaves the hold, which no replay may record, and L1's follow pending.
+  it("a Follow held while R1 stays suspended stays owed at quiescence", async () => {
+    const w = await runP2(peerSeed, [{ k: "follow", r: "R1" }, { k: "suspend", r: "R1" }, { k: "claim" }]);
+    expect(w.stats["exception held"]).toBe(1);
+    expect(w.policy.holds()).toHaveLength(1);
+  }, 60_000);
+
+  // Settlement with mixed deadlines: R4's hold (R4 still suspended) is due before R1's (R1 unsuspended); the clock moves
+  // on to R1's, passing R4's, which is moved on, not replayed.
+  it("settlement replays a later replayable hold past an earlier one that is not", async () => {
+    const w = await p2World(without("R1>L1", "L1>R1", "L1>R4"));
+    await steps(w, [{ k: "follow", r: "R4" }, { k: "follow", r: "R1" }, { k: "suspend", r: "R4" }, { k: "send" }]);
+    w.clock += 60_000;
+    // i 0 names the first individually suspended account in order: R1.
+    await steps(w, [{ k: "suspend", r: "R1" }, { k: "send" }, { k: "unsuspend", i: 0 }]);
+    expect(w.policy.remotes.R1.source).toBeNull();
+    const holds = w.policy.holds().map((h) => [h.r, h.checkAt - NOW]);
+    expect(holds).toEqual([
+      ["R1", 60_000 + HANDSHAKE_RECHECK_MS],
+      ["R4", HANDSHAKE_RECHECK_MS],
+    ]);
+    await settleP2(w);
+    quiescence(w);
+    expect(w.stats["replay deferred: Follow"]).toBeGreaterThanOrEqual(1);
+    expect(w.stats["replayed: Follow"]).toBe(1);
+    expect(w.policy.holds().map((h) => h.r)).toEqual(["R4"]);
+  }, 60_000);
+
+  // A replay refused again during settlement: recorded, then R1 is suspended again before it is claimed; settlement's
+  // claim holds it again, and it stays owed while R1 stays suspended.
+  it("a replay refused again at its claim is held again", async () => {
+    const w = await runP2(peerSeed, [
+      { k: "follow", r: "R1" },
+      { k: "suspend", r: "R1" },
+      { k: "claim" },
+      { k: "unsuspend", i: 0 },
+      { k: "replay" },
+      { k: "suspend", r: "R1" },
+    ]);
+    expect(w.stats["replayed: Follow"]).toBe(1);
+    expect(w.stats["held at claim: Follow"]).toBe(2);
+    expect(w.stats["exception held"]).toBe(1);
   }, 60_000);
 
   // #1424 (visibility.md R38): an individual suspension's job ends R1's accepted follow of L1 and keeps its pending
