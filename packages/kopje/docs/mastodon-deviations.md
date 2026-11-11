@@ -679,6 +679,15 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   statuses posted through it keep showing it. A status or scheduled status whose app is gone all the same (one a dump
   or a legacy import names) shows `application: null`, and such a scheduled status is published; Mastodon drops it.
 
+Pinned statuses (`StatusPin`, the actor's `featured` collection):
+
+- Migration `0089_pin_cap` deleted each account's pins past its limit (5 for a local account, 20 for a remote one; a
+  converted or restored Store could hold more), keeping the newest in pin order, and sent no `Remove`. A remote server
+  that cached a deleted pin of a local account keeps it in that account's featured statuses until it reads the
+  `featured` collection again; Mastodon's `FetchFeaturedCollectionService` then removes the pins the collection no
+  longer lists, at a time Kopje does not choose. Mastodon itself never holds more than `StatusPinValidator::PIN_LIMIT`
+  pins of a local account. Accepted, 2026-11-11.
+
 Removing a favourite or bookmark (`POST /api/v1/statuses/:id/unfavourite` and `/unbookmark`):
 
 - The viewer's favourite or bookmark is removed (a favourite with its `Undo(Like)` and notification) even when they can
