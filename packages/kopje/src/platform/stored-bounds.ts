@@ -424,10 +424,14 @@ const DOCUMENT = boundedText(INSTANCE_DOCUMENT_BYTES);
 const SHOWN = oneOf(DOMAIN_BLOCKS_SHOWN);
 // A document's stamp (the time an admin write changed it): written only by setInstanceSettings. SQLite's strftime
 // writes an hour of 24 back as given, which Date#toISOString never writes.
+// The acceptance rule of a stored time: 24 bytes, an hour below 24, and read back by strftime as itself.
+function isoTimeAcceptedSql(column: string): string {
+  return `length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
+	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column}`;
+}
+
 const STAMP: InstanceSettingBound = {
-  projection: (column) =>
-    `CASE WHEN length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
-	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column} THEN ${column} END`,
+  projection: (column) => `CASE WHEN ${isoTimeAcceptedSql(column)} THEN ${column} END`,
   writer: (value) => (isIsoTime(value) ? value : null),
 };
 
@@ -2870,8 +2874,7 @@ export function storedTime(ms: number): string | null {
 // isoTimeSql written with iif, which SQLite reads as the same CASE: a file declared foreignKeys: 'unchanged' holds no
 // CASE outside a trigger (test/migration-sql.ts). test/migrations.test.ts ("0088_status_times") pins them equal.
 export function isoTimeIifSql(column: string): string {
-  return `iif(length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
-	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column}, ${column}, NULL)`;
+  return `iif(${isoTimeAcceptedSql(column)}, ${column}, NULL)`;
 }
 
 // True when a status row's times are past their stored bound.
@@ -2900,15 +2903,32 @@ function publishedFromSql(): string {
   return `coalesce(${timeFromSql("published_at")}, ${timeFromSql("created_at")}, '1970-01-01T00:00:00.000Z')`;
 }
 
+// stream_status_edited as 0056_announcements made it, as sqlite_schema keeps it (test/migrations.test.ts compares).
+export const STREAM_STATUS_EDITED_SQL = `CREATE TRIGGER stream_status_edited AFTER UPDATE OF edited_at ON statuses
+WHEN NEW.edited_at IS NOT NULL AND NEW.edited_at IS NOT OLD.edited_at
+  AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key IN ('user', 'user:notification'))
+    OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'list:' AND stream_key < 'list;')
+    OR (NEW.visibility = 'public' AND NEW.reblog_of_id IS NULL
+      AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key >= 'public' AND stream_key < 'public;')
+        OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'hashtag:' AND stream_key < 'hashtag;'))))
+  AND coalesce((SELECT max(id) FROM stream_events) - (SELECT min(id) FROM stream_events), 0) < 4096
+BEGIN
+  INSERT INTO stream_events (kind, subject, created_at) VALUES ('edit', NEW.id, NEW.edited_at);
+END`;
+
 // Migration 0088_status_times after its header (test/migrations.test.ts compares them): every row past the bound
 // rewritten in one walk of statuses (an edited_at it cannot read becomes the row's published_at, so the status stays
-// edited), then triggers that refuse a write where statusTimesPastBoundSql holds of the NEW row.
+// edited), with stream_status_edited dropped around it so the rewrite journals no edit (it would fill the journal's
+// span and drop the next real event), then triggers that refuse a write where statusTimesPastBoundSql holds of the NEW
+// row.
 export function statusTimesMigrationSql(): string {
   return `${[
+    "DROP TRIGGER stream_status_edited;",
     `UPDATE statuses SET
   published_at = ${publishedFromSql()},
   edited_at = iif(edited_at IS NOT NULL, coalesce(${timeFromSql("edited_at")}, ${publishedFromSql()}), NULL)
 WHERE ${statusTimesPastBoundSql("statuses")};`,
+    `${STREAM_STATUS_EDITED_SQL};`,
     ...boundTriggers(
       "statuses_times",
       "statuses",

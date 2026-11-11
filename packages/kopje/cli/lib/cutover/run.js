@@ -18,6 +18,7 @@ import {
 import { join } from "node:path";
 
 import { convertLegacy } from "./convert.js";
+import { readDumpText } from "./dump-parse.js";
 import { checkSizes, exportFiles } from "./export-files.js";
 import { IMAGES_FILE, localDomain, ORIGINALS_DIR, readImagesFile, sha256Of } from "./images-export.js";
 import { checkKeks } from "./kek.js";
@@ -341,6 +342,18 @@ export async function convertExport(options) {
 }
 
 /**
+ * A dump's createdAt: for a converted dump, the conversion's base time (convertExport writes it), else null.
+ * @param {string} text
+ * @returns {string | null}
+ */
+function dumpCreatedAt(text) {
+  const { header } = readDumpText(text);
+  const createdAt =
+    typeof header === "object" && header !== null ? /** @type {{ createdAt?: unknown }} */ (header).createdAt : null;
+  return typeof createdAt === "string" ? createdAt : null;
+}
+
+/**
  * Checks a Kopje dump (the converted one, or a dump of the Store after the import) against expectations computed
  * independently from the legacy export.
  * @param {SourceOptions & { dumpPath: string }} options
@@ -360,14 +373,16 @@ export async function verifyConversion(options) {
       texts: files.map((file) => () => readFileSync(file, "utf8")),
       acceptDeletions: options.acceptDeletions,
     });
+    const dump = readFileSync(options.dumpPath, "utf8");
     const { records, overLimit, images, dropped, identities } = expectedFromLegacy(db, {
       originalActorIds,
       source: addressing,
       notificationSequence: source.notificationSequence,
       images: options.imagesDir === undefined ? undefined : imagesFor(options.imagesDir, localDomain(db)),
+      baseTime: dumpCreatedAt(dump),
     });
     db.close();
-    const actual = actualFromDump(readFileSync(options.dumpPath, "utf8"));
+    const actual = actualFromDump(dump);
     const report = /** @type {Record<string, unknown> & { result: string }} */ (
       await compareConversion(records, actual)
     );

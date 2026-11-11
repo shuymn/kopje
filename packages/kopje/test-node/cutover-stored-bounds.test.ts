@@ -387,3 +387,29 @@ describe("converted instance settings at their stored bounds", () => {
     expect(categories.settings).toMatchObject({ extra: 1 });
   });
 });
+
+describe("a converted status time outside years 0 to 9999 (0088_status_times)", () => {
+  it("stores the base time when neither published nor cdate is a time the Store holds, and verifies", async () => {
+    const exportPath = await exportOf(space.dir, { level: 39 });
+    const early = "-000001-06-01T00:00:00.000Z";
+    // r0's first post: published a minute before its cdate.
+    const published = '"published":"2024-03-01T10:39:00.000Z"';
+    expect(await edited(exportPath, (text) => text.replaceAll(published, `"published":"${early}"`))).toBe(1);
+    expect(await edited(exportPath, (text) => text.replaceAll("'2024-03-01 10:40:00.000'", `'${early}'`))).toBe(1);
+    const baseTime = Date.parse("2026-11-01T00:00:00.000Z");
+    const converted = await convert(space.dir, exportPath, { baseTime });
+    expect(converted.ok).toBe(true);
+    const db = await opened(converted.dumpPath);
+    const times = (
+      db.prepare("SELECT published_at AS p FROM statuses WHERE uri LIKE 'https://remote.example/%'").all() as {
+        p: string;
+      }[]
+    ).map((r) => r.p);
+    db.close();
+    expect(times).toContain(new Date(baseTime).toISOString());
+    expect(times.filter((p) => p.startsWith("-"))).toEqual([]);
+    const { ok, categories } = await verify(exportPath, converted.dumpPath);
+    expect(failing(categories)).toEqual([]);
+    expect(ok).toBe(true);
+  });
+});

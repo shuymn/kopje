@@ -346,12 +346,14 @@ export function threadsOf(replies, statuses, conversations = new Map()) {
 /**
  * @param {import('node:sqlite').DatabaseSync} db the bridged legacy database
  * @param {{ originalActorIds: Map<string, string>, source: import('./legacy-load.js').SourceAddressing,
- *   notificationSequence: string | null, images?: import('./images-export.js').ImagesFile | undefined }} options
+ *   notificationSequence: string | null, images?: import('./images-export.js').ImagesFile | undefined,
+ *   baseTime?: string | null }} options baseTime: the conversion's base time (the converted dump's createdAt), the
+ *   publication time of a status with no time the Store holds, as the converter stores it
  * @returns {{ records: Records, overLimit: number, images: { missing: number, unmapped: number },
  *   dropped: Record<string, number>, identities: number }} dropped: rows the conversion must leave out, which need
  *   --accept-deletions; identities: actor ids, remote usernames and status uris the Worker would refuse
  */
-export function expectedFromLegacy(db, { originalActorIds, source, notificationSequence, images }) {
+export function expectedFromLegacy(db, { originalActorIds, source, notificationSequence, images, baseTime = null }) {
   /** @type {Records} */
   const out = {};
   let overLimit = 0;
@@ -623,7 +625,7 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
         : null;
     // Hashtags: the object's Hashtag tags and the ones legacy recorded for it. An edit time equal to the publication
     // time is stored as none, as Kopje stores an incoming status (src/domain/remote-statuses.ts).
-    const published = when(p.published) ?? when(o.cdate);
+    const published = when(p.published) ?? when(o.cdate) ?? baseTime;
     const updated = when(p.updated);
     const hashtags = [
       ...many(p.tag)

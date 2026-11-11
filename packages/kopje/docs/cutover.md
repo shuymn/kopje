@@ -360,7 +360,10 @@ relationship, a recipient removed or added, a widened visibility, a dropped repl
 (DATA-12). Content over the sanitizer's limit fails too unless `--accept-truncation` is given
 (`truncation.overLimit`). A domain block whose value is no domain name and a notification a remote account owns, which
 the conversion drops, fail too unless `--accept-deletions` is given (`dropped`). Run it twice in a cutover: on the
-converted dump before importing, and on a `kopje-admin dump` of the Store after the import.
+converted dump before importing, and on a `kopje-admin dump` of the Store after the import. A status whose
+`published` and `cdate` are both no time the Store holds (unreadable, or outside years 0 to 9999) is stored at the base
+time, which the check reads from the dump's `createdAt`: on a dump of the Store, which carries its own time there, such
+a status shows as changed.
 
 With `--images`, the expected avatars, headers, attachments, old image URLs and `media_files` come from `images.json`
 and the instance origin alone, by code that does not share the converter's mapping: a URL, a token, a served type or a

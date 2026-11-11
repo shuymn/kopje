@@ -16,6 +16,7 @@ import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
+import { JOURNAL_SPAN } from "../src/domain/stream-journal";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
 import { normalizeOnce, normalizeTag } from "../src/domain/tag-name";
 import { parseRemoteStatus } from "../src/federation/remote-status";
@@ -112,6 +113,7 @@ import {
   isoTimeSql,
   statusTimesMigrationSql,
   storedTime,
+  STREAM_STATUS_EDITED_SQL,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -11346,6 +11348,11 @@ describe("0088_status_times", () => {
       ["2026-10-22T23:59:59.9999Z", "2026-10-22T24:00:00Z", ARRIVAL],
       ["2026-10-22T23:59:59.999Z", "2026-10-23T00:00:00.000Z"],
     ],
+    [
+      "a fraction rounded to milliseconds",
+      ["2026-10-22T00:00:00.1239Z", "2026-10-22T00:00:00.1234Z", ARRIVAL],
+      ["2026-10-22T00:00:00.124Z", "2026-10-22T00:00:00.123Z"],
+    ],
     ["a calendar date", ["2026-10-22", null, ARRIVAL], [T, null]],
     ["a Julian day, a NUL, and a number for the arrival", ["2461000.5", `${T}\u0000`, 1_700_000_000], [EPOCH, EPOCH]],
     ["a BLOB of the stored form", [blob(T), null, ARRIVAL], [T, null]],
@@ -11386,6 +11393,50 @@ describe("0088_status_times", () => {
       }
     });
   });
+
+  it("journals no edit for the rows it rewrites, so a later post is journaled, and keeps stream_status_edited", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      author(sql);
+      const edited = () =>
+        sql.exec<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE name = 'stream_status_edited'").one().sql;
+      const before = edited();
+      expect(before).toBe(STREAM_STATUS_EDITED_SQL);
+      // More rows than the journal's span, each edited in another format, then an open user stream and an empty journal.
+      const rows = JOURNAL_SPAN + 1;
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at, edited_at)
+				SELECT printf('2%017d', i), 'https://kopje.test/ap/o/' || i, ?2, 'public', ?3, '2026-10-23 00:00:00' FROM n`,
+        rows,
+        LOCAL,
+        T,
+      );
+      sql.exec("DELETE FROM stream_events");
+      sql.exec("INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)", LOCAL);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT count(*) AS n FROM statuses WHERE edited_at = '2026-10-23T00:00:00.000Z'").one()).toEqual(
+        { n: rows },
+      );
+      expect(sql.exec("SELECT count(*) AS n FROM stream_events").one()).toEqual({ n: 0 });
+      expect(edited()).toBe(before);
+      // A post after the upgrade is journaled, and a real edit still is.
+      const post = idOf(rows + 1);
+      sql.exec(
+        `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+				VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, 'public', ?3)`,
+        post,
+        LOCAL,
+        T,
+      );
+      sql.exec("UPDATE statuses SET edited_at = ? WHERE id = ?", "2026-10-24T00:00:00.000Z", post);
+      expect(sql.exec("SELECT kind, subject FROM stream_events ORDER BY id").toArray()).toEqual([
+        { kind: "status", subject: post },
+        { kind: "edit", subject: post },
+      ]);
+    });
+  }, 120_000);
 
   it("refuses a time past the bound on insert and update, and takes the stored form and a NULL edited_at", async () => {
     await runInDurableObject(freshStore(), async (_instance, state) => {

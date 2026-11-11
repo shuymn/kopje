@@ -8,12 +8,14 @@
 -- A row past the bound (one converted or restored from a dump) is rewritten, and no status is removed:
 --   published_at   the time SQLite reads in it, in the stored form: a value of at most 64 bytes, with no NUL, that
 --                  starts with a calendar date and that strftime reads (a space for the T, no fraction, a fraction
---                  longer than milliseconds, cut to them, a zone offset, which it applies, an hour of 24); else the
---                  row's arrival time (created_at) read the same way, as a remote writer stores a time it cannot read;
---                  else the epoch, which no recent window counts, as reads through isoTimeSql already judged it.
+--                  longer than milliseconds, rounded to them but never past .999, a zone offset, which it applies, an
+--                  hour of 24); else the row's arrival time (created_at) read the same way, as a remote writer stores
+--                  a time it cannot read; else the epoch, which no recent window counts, as reads through isoTimeSql
+--                  already judged it.
 --   edited_at      NULL stays NULL; otherwise the time SQLite reads in it, else the row's new published_at, so an
 --                  edited status stays edited.
--- A rewritten edited_at fires stream_status_edited, which journals an edit for the streams open, within its span.
+-- stream_status_edited is dropped for the rewrite and made again after it as 0056_announcements made it, so the
+-- rewrite journals no edit: one per rewritten row would fill the journal's span and drop the next real event.
 --
 -- Bounds and the predicate: src/platform/stored-bounds.ts (statusTimesPastBoundSql); the statements below are the
 -- output of statusTimesMigrationSql (test/migrations.test.ts compares them); stored form: docs/dump-format.md.
@@ -24,6 +26,8 @@
 -- past the bound, beside the rest) in workerd's local Durable Object SQLite, the Store's foreign key check skipped as
 -- declared: 889 to 1,034 ms for the upgrade of this file through the kernel in four runs at load averages of 7 to
 -- 17, and 9,232 ms in a run whose load rose from 8 to 13, within the budget.
+
+DROP TRIGGER stream_status_edited;
 
 UPDATE statuses SET
   published_at = coalesce(iif(length(CAST(published_at AS BLOB)) <= 64
@@ -52,6 +56,18 @@ WHERE iif(length(CAST(statuses.published_at AS BLOB)) = 24 AND substr(statuses.p
 	AND strftime('%Y-%m-%dT%H:%M:%fZ', statuses.published_at) = statuses.published_at, statuses.published_at, NULL) IS NULL
   OR (statuses.edited_at IS NOT NULL AND iif(length(CAST(statuses.edited_at AS BLOB)) = 24 AND substr(statuses.edited_at, 12, 2) < '24'
 	AND strftime('%Y-%m-%dT%H:%M:%fZ', statuses.edited_at) = statuses.edited_at, statuses.edited_at, NULL) IS NULL);
+
+CREATE TRIGGER stream_status_edited AFTER UPDATE OF edited_at ON statuses
+WHEN NEW.edited_at IS NOT NULL AND NEW.edited_at IS NOT OLD.edited_at
+  AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key IN ('user', 'user:notification'))
+    OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'list:' AND stream_key < 'list;')
+    OR (NEW.visibility = 'public' AND NEW.reblog_of_id IS NULL
+      AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key >= 'public' AND stream_key < 'public;')
+        OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'hashtag:' AND stream_key < 'hashtag;'))))
+  AND coalesce((SELECT max(id) FROM stream_events) - (SELECT min(id) FROM stream_events), 0) < 4096
+BEGIN
+  INSERT INTO stream_events (kind, subject, created_at) VALUES ('edit', NEW.id, NEW.edited_at);
+END;
 
 CREATE TRIGGER statuses_times_insert BEFORE INSERT ON statuses
 WHEN iif(length(CAST(NEW.published_at AS BLOB)) = 24 AND substr(NEW.published_at, 12, 2) < '24'
