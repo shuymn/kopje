@@ -35,6 +35,7 @@ export {
   storedProfileUrl,
   storedStatusUrl,
   storedText,
+  storedTime,
 } from "./platform/stored-bounds";
 export {
   cutJsonString,

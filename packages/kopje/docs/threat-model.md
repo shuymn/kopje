@@ -239,9 +239,9 @@ against their own instance. TLS is assumed between all parties.
   when that start would pass 18 digits; exhaustion aborts the writer's whole transaction. See the migration header and
   `test/migrations.test.ts` (0054). A Follow has generations: a superseded, undone, refused or blocked Follow id is
   recorded as retracted, so no late Undo, Accept, Reject or replay reaches a newer generation, and no Accept or
-  Reject is recorded twice, except that each hold the send-time check consumed lets that generation's Follow or Accept
-  be recorded once more (VIS-30, held handshakes); an answer's id derives from the Follow it answers; a new generation cancels the answers it
-  replaces that are not leased and supersedes a leased one, and an `Undo` those of the generation it undoes (NET-2).
+  Reject is recorded twice, except that a held handshake is recorded once more per hold (VIS-30); an answer's id
+  derives from the Follow it answers; a new generation cancels the answers it replaces that are not leased and
+  supersedes a leased one, and an `Undo` those of the generation it undoes (NET-2).
   A Move is a job keyed by its id that never moves a follow made after it. The Store rounds of one request carry the
   same actor document and revision, and only the first round that finds the revision stores the document (ID-1). An
   actor's deletion is a tombstone (`inbound_jobs`) independent of the retraction cap and TTL, honoured by every upsert
@@ -1138,8 +1138,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
   resolution's `resolutionGate` and its `actorRevision` before the actor's fetch) comes with that answer and is spent
-  on that request alone; every other request,
-  redirect hops included, reads it anew (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  on that request alone; every other request, redirect hops included, reads it anew (`fetchPreparation` in
+  `src/domain/inbox.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts`
   "Store calls on the inbox cold path", `test/search-resolution-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
@@ -1165,13 +1165,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
   retraction's earlier receivers) gets the inbox host rule only; Mastodon's `DeliveryWorker` has no such check, so this
   is stricter than Mastodon, whose reach already leaves deleted accounts out. A dropped row writes no receipt. A
-  dropped `Follow` or `Accept` that its follow's current generation still owes (not superseded, its sender available)
-  holds that follow (`handshake_replays`, one row per follow, ended by the follow's delete and by any change of its
-  `uri` or `state`), and a job family records it again with its original id once, read live, both accounts are
-  available, the selected inbox is deliverable and uncovered, and the follow API's rule (a `Follow`) or inbound
-  acceptance's (an `Accept`) holds; the hold ends only once an intent with a target is recorded (docs/visibility.md,
-  "Held handshakes"). Nothing more is confirmed for sending while the recipient is unavailable. An
-  account that moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields or
+  dropped `Follow` or `Accept` that its follow's current generation still owes holds that follow, at most one hold a
+  follow, and a job family records it again with its original id once, read live, it may be sent; nothing else is
+  confirmed for sending while the recipient is unavailable (docs/visibility.md, "Held handshakes"). An account that
+  moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields or
   emojis, the default images), and an unavailable account shows `moved: null` with its target not read, as
   REST::AccountSerializer does (`test/account-moved.test.ts`). _Enforced (main)._ Implementation, for accounts:
   `src/domain/remote-suspension.ts`, `actOnAccount` and `unsuspendAdminAccount` in `src/domain/admin-accounts.ts`,
@@ -1185,8 +1182,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/policy-writes.test.ts` (provenance and the send-time rule against `sends` in `test/policy-model.ts`),
   `test/migrations.test.ts`. For held handshakes: `holdHandshake` in `src/domain/deliveries.ts`,
   `src/domain/handshake-replays.ts`, migration `0088_handshake_replays`; `test/handshake-replays.test.ts`,
-  `test/remote-suspension-deliveries.test.ts`. For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql` and `availableSql` in
-  `src/domain/audience.ts`, the fetch policy in `src/federation/loader.ts`, the inbound path in
+  `test/remote-suspension-deliveries.test.ts`. For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql`
+  and `availableSql` in `src/domain/audience.ts`, the fetch policy in `src/federation/loader.ts`, the inbound path in
   `src/federation/inbound.ts`, the domain job in `src/domain/remote-suspension.ts`, the admin API in
   `src/domain/admin-domain-blocks.ts`, `mediaRejectedSql` in `src/domain/audience.ts` and `slotEligibleSql` in
   `src/domain/remote-media.ts` for `reject_media`, migration `0046_instance_domain_blocks`;
@@ -1425,11 +1422,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   other host the Worker answers on (its workers.dev address, another route, a port) they give WEB-6's answer (301 for
   the GET, 421 for the POST, which checks its `Origin` and reads its form first; both answer 503 first while Access is
   not configured), never a redirect to the client, before the Access assertion is verified, so the consent page names
-  the instance domain and the instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST` requires a valid Access
-  identity, an `Origin` equal to the instance origin (missing, `null` or foreign answers 403), and `decision=approve`;
-  the Store revalidates client, redirect URI, scopes and account when it writes the code. _Enforced (main):_
-  `src/app/authorize.tsx`, `authorizeContext` and `issueCode` in `src/domain/oauth.ts`, `normalizeDomain` in `setConfig`
-  (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("moves the consent page to the instance domain, before
+  the instance domain and the instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST`
+  requires a valid Access identity, an `Origin` equal to the instance origin (missing, `null` or foreign answers 403),
+  and `decision=approve`; the Store revalidates client, redirect URI, scopes and account when it writes the code.
+  _Enforced (main):_ `src/app/authorize.tsx`, `authorizeContext` and `issueCode` in `src/domain/oauth.ts`,
+  `normalizeDomain` in `setConfig` (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("moves the consent page to the
+  instance domain, before
   verifying Access (WEB-1, WEB-6)", "refuses a decision posted on another host, issuing nothing (WEB-1, WEB-6)", "judges
   the host by the request URL, never by a Host header (WEB-1)", "shows the consent page when the domain was configured
   by hand in another spelling (WEB-1)", "refuses a decision posted from another origin, a null origin or none (WEB-1)",
@@ -1576,18 +1574,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `/about`), which read no Store; a request no route serves (its plain 404, without a Store read); and the static
   assets, which the platform serves before the Worker. What comes before the host's answer: the env's maintenance and
   configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's `Rack::Cors` answers before its
-  host authorization); an inbox POST's body, read within `INBOX_BODY_LIMIT` (1 MiB) with its 413 and 415, and in
-  spool mode the spool itself (202). Its replay (`handleQueue` in `src/jobs/queue.ts`) first reads the cutover's
-  handoff receipt, writes the request to the rollback journal while a cutover is rolled back (`CUTOVER_ROLLBACK`, which
-  hands it to the legacy instance without a host check), and requeues it while the env is in maintenance; then the
-  inbox gate's read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host
-  (logged as `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is
-  applied. Also before the host's answer: on `POST /oauth/authorize` the `Origin` check (403) and the form (400), and on
-  both methods the 503 while Access is not configured. A Store refusal's snapshot rescue serves a snapshot only on the
-  domain the snapshot records (written by `saveSnapshot` in the same transaction as the domain it was rendered on); a
-  row kept before snapshots recorded their domain is judged by the stored domain, read through the `config()` rescue
-  RPC (which needs no matching build), never inferred from the row; on another host the rescue gives the answer above, and without a
-  domain (the call fails, none is set) the row is not served (503). The cron, the Queue's other work and the Store
+  host authorization); `/oauth/authorize`'s own checks (WEB-1); an inbox POST's body, read within `INBOX_BODY_LIMIT`
+  (1 MiB) with its 413 and 415, and in spool mode the spool itself (202). The spool's replay (`handleQueue` in
+  `src/jobs/queue.ts`) hands the request to the legacy instance without a host check while a cutover is rolled back
+  (`CUTOVER_ROLLBACK`, the rollback journal), and requeues it while the env is in maintenance; then the inbox gate's
+  read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host (logged as
+  `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is applied. A
+  Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records (`saveSnapshot` writes it in
+  the same transaction as the domain it was rendered on); a row without a recorded domain is judged by the stored
+  domain, read through the `config()` rescue RPC (which needs no matching build), never inferred from the row; on
+  another host the rescue gives the answer above, and without a domain (the call fails, none is set) the row is not
+  served (503). The cron, the Queue's other work and the Store
   have no request host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the
   middleware in `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
   `src/federation/inbox.ts`, `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in
@@ -1933,17 +1930,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
   with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
-  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker,
-  with no gate read) or the Store refuses writes (readonly, an unpublished import, OPS-8). The latter is decided in one
-  read before any DNS check or fetch, the first after the host check's domain read that every API request makes
-  (WEB-6), in this order: the token (a failing one is answered first), then the Store's
-  write refusal, which answers the reason and reads nothing more (no signer, no instance key), then the domain and the
-  first request's preparation (`resolutionGate` in `src/domain/inbox.ts`, `executeDeciding` in
-  `src/platform/store-kernel.ts`, `resolveQuery` in `src/mastodon/search.ts`). A write the Store comes to refuse while
-  resolving (the final store, or the instance key's creation) also leaves the answer to the plain search, which judges
-  the token again. An account's canonical
-  address is decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and
-  `ResolveAccountService` decide it: the actor's own host
+  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker) or
+  the Store refuses writes (OPS-8). The Store decides the latter before any DNS check or fetch in one read after the
+  host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
+  hands over no signer or key; a write refused while resolving (the final store, or the instance key's creation) also
+  leaves the answer to the plain search (`resolveQuery` in `src/mastodon/search.ts`). An account's canonical address is
+  decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
+  it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
   candidate, which must answer for that subject with the same actor id; otherwise the address is on the host
   (`declaredDomain` in `src/federation/resolve.ts`). Every domain from an address or a subject goes through one strict
@@ -2606,10 +2599,29 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
   its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
   imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
-  `test/filter-text-units.test.ts`). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
-  and `statuses_count` have no stored bound (an INTEGER column, no CHECK or trigger; adding one would rewrite every
-  account), so an imported or converted row may hold any value there. Writers store only integers from 0 to 2^53−1
-  (`MAX_ACCOUNT_COUNT`): local recounts, and a remote account's learned `totalItems` (`totalItemsOf` in
+  `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at` and `edited_at` have
+  no stored bound (TEXT, no CHECK or trigger; adding one would rewrite every status, each row whole), so an imported or
+  converted row may hold any value there. The writers store only the 24-byte ISO form: the remote writers (`remoteTime`
+  in `src/domain/remote-statuses.ts`, a boost in `src/domain/inbox.ts`) and the cutover's converter keep a time
+  through `storedTime` (`src/platform/stored-bounds.ts`, `isoTimeSql`'s acceptance rule), and store the arrival (the
+  converter its base time) for any other. Every read that copies a status's time into an answer, a document or another
+  row takes `statusPublishedSql` and `statusEditedSql`: a value past 64 bytes, judged from the record header without
+  loading it, reads as none; a value in the stored form as itself; else the time SQLite reads in a value with no NUL
+  that starts with a date; else, for the publication, the row's arrival read the same way, else the epoch. An edit
+  time is NULL when none is stored, a readable one is kept, and an unreadable one reads as the publication time. They
+  cover the status columns (`STATUS_COLUMN_MAP`, and with it hydration and the heap estimate), the Note, Create and
+  Update (`statusFacts`), the outbox's Announce, a boost's Undo and withdrawal, a revoked quote's redacted status, the
+  first edit's snapshot (local and remote), the moved-to account's `last_status_at`, featured hashtags'
+  `last_status_at` (local and remote) and hashtag history days. A remote Update's watermark keeps the stored version
+  (`remote_version`, else `edited_at`, else `published_at`, parsed as stored), so the arrival a read falls back on
+  never orders versions (ID-7). Trends read through `isoTimeSql`; a dump, an import and the converter carry the stored
+  value. So a presented `created_at` is 24 bytes and `edited_at` null or 24 bytes (`test/status-times.test.ts`,
+  `test/inbox-statuses-edge.test.ts` ("remote times outside the stored form"), `test/dump-import.test.ts`
+  ("round-trips status times past the stored form unchanged")). _Enforced (main)_ for account counts:
+  `accounts.followers_count`, `following_count` and `statuses_count` have no stored bound (an INTEGER column, no CHECK
+  or trigger; adding one would rewrite every account), so an imported or converted row may hold any value there. Writers
+  store only integers from 0 to 2^53−1 (`MAX_ACCOUNT_COUNT`): local recounts, and a remote account's learned
+  `totalItems` (`totalItemsOf` in
   `src/federation/collections.ts`, then `storedCount` in `completeCollectionRead`, `src/domain/remote-collections.ts`, a
   count it refuses leaving the stored one), written only on a remote row. Every read that presents, ranks or sums a
   count takes `presentedCountSql` (0 for any other value, `src/platform/stored-bounds.ts`): the account and moved-to
@@ -2874,11 +2886,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   next round (a live inbox request still sends its own). A round has eight error boundaries: six Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
   remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs and
-  quote verifications,
-  each its own round of Store calls and fetches. The deliveries the Store calls recorded are rung once, before the
-  Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`), counts as having no work left, and
-  stops no other family (the next resolves a new stub); a Store refusal (maintenance, a retryable or reset error) ends
-  the round and counts nothing, and cron runs the next. A call the platform terminates (a CPU or memory limit) fails
+  quote verifications, each its own round of Store calls and fetches. The deliveries the Store calls recorded are rung
+  once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`), counts as having no
+  work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance, a retryable or
+  reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates (a CPU or
+  memory limit) fails
   its own family only, or ends the round when it surfaces as a retryable or reset error; either way that family's
   first item is selected again. `jobsRound` and `handleQueue` in `src/jobs/queue.ts`; `test/job-families.test.ts`
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
@@ -2915,12 +2927,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "retry-all"), `test/cli.test.ts` ("makes every failing job fresh, a page at a time"). The other job families:
   _Enforced (main):_ each batch or round of a stamp revocation, a domain block cleanup, a notification request job, a
   clear's or group dismissal's removal and a local or remote moderation job, and each step of a held handshake (VIS-30,
-  `handshake_replays`, migration `0088_handshake_replays`, whose step records its handshake or moves its check on),
-  runs in its own savepoint (`runJobItem`
-  in `src/domain/job-attempts.ts`), with the same retry state on its row (migration `0084_family_job_attempts`): one
-  that throws is rolled back alone and recorded, backs off and parks as an inbound job does, and the next item runs.
-  Their batches always move a cursor, a phase or a row on, or end their item, so only a failure counts. An item's
-  retry state writes one row after its batch (its attempt, or the reset of a due retry that runs through): the tokens
+  migration `0088_handshake_replays`), runs in its own savepoint (`runJobItem` in `src/domain/job-attempts.ts`), with
+  the same retry state on its row (migration `0084_family_job_attempts`): one that throws is rolled back alone and
+  recorded, backs off and parks as an inbound job does, and the next item runs. Their batches always move a cursor, a
+  phase or a row on, or end their item, so only a failure counts. An item's retry state writes one row after its batch
+  (its attempt, or the reset of a due retry that runs through): the tokens
   and severing rounds and a revocation call reserve it within their row budgets (RES-6); a cleanup's, a request job's
   or a removal's batch writes it beside the rows it changes. Read as TEXT, bound back with `CAST` and compared in
   SQL (DATA-6), so an imported id past 2^53 neither names another row nor stalls or skips a batch: the integer keys of
@@ -3471,15 +3482,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   empty with its next link moving on by the window. A row hidden by its own visibility or audience is never a
   candidate (`audienceSql`), so it never supplies a cursor or any other id. The streams, the windows and what each
   may skip, and migration `0043_read_window_indexes`: docs/visibility.md "Read bounds"; `test/read-windows.test.ts`
-  checks bounds, continuation and non-disclosure. A request's own conditions that no index serves (account statuses'
-  `only_media`, `tagged` and `exclude_replies`; a hashtag timeline's `local`, `remote`, `only_media`, `all` and `none`)
-  are tested by key on the candidates outside the window's `LIMIT`, in rounds whose summed stream `LIMIT`s are at most
-  `CONDITION_WALK` (2,000 entries within the audience a page, `walkedWindow`), so a range they reject costs at most
-  that, and a walk the budget cuts continues from the last candidate it examined (`test/condition-walk.test.ts`,
-  `test/condition-walk-reads.test.ts`: equal rows behind 5,000 and 20,000 rejected rows, a ceiling derived from the
-  walk's statements, merge frontiers, continuations at every round end, stale statistics). A status page's replies read their window from the partial index
-  `statuses_public_replies` (migration `0082_public_replies`), so a status's private, direct, limited and withdrawn
-  replies are never read and never a cursor, and a page reads the same rows however many there are
+  checks bounds, continuation and non-disclosure. A request's own conditions that no index serves are tested outside
+  the window's `LIMIT`, at most `CONDITION_WALK` (2,000) entries within the audience a page, so a range they reject
+  costs at most that and a walk the budget cuts continues from the last candidate it examined (`walkedWindow`;
+  docs/visibility.md "Read bounds"; `test/condition-walk.test.ts`, `test/condition-walk-reads.test.ts`). A status
+  page's replies read their window from the partial index `statuses_public_replies` (migration `0082_public_replies`),
+  so a status's private, direct, limited and withdrawn replies are never read and never a cursor, and a page reads the
+  same rows however many there are
   (`test/web-thread.test.ts` ("seeks the public replies’ index from the cursor both ways, with stale statistics", "names
   no withdrawn reply, past more of them than a window")). Its Boosts, Favourites and Quotes tabs read the API's windows
   for those lists (`interactorsWithin`, `statusQuotesWithin`), with the same bounds; the boosts' window reads
@@ -3491,7 +3500,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stored only while a local account follows it, so no outside party can grow it at will; accepted); the public
   timeline's request conditions (`local`, `remote`, `only_media`) and its reply predicate are tested inside its `LIMIT`
   on `statuses_public`, so on an instance whose public rows are mostly remote a `local=true` or `only_media` page may
-  walk them all (not yet bounded).
+  walk them all.
   _Enforced (main)_ for search: statuses pass `listableSql` before `LIMIT`, each library source reads at most 2,500 rows through an index ordered by the status id it returns (cursors applied
   inside it), hashtags come from at most 500 entries per library source plus the newest 2,000 public statuses, and an
   account search matches the exact address (always), at most 1,000 username-prefix candidates, the 5,000 newest
@@ -3652,9 +3661,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   walk's tables) and check the access paths to those three: `a` and `l` by key, a follow by its rowid, no scan of any;
   not the status, field and cache tables the presenter also reads. The `a INDEXED BY` of the owned lists' window
   (`windowAccountIds`) and of the follow lists' window join changes no plan, so no witness fails without it. Bounded
-  writes seek
-  their targets too: a write of an INTEGER PRIMARY KEY table runs one statement per row its bounded selection returns
-  (`src/db/by-ids.ts`), a text-keyed target names its key index, and an OR of two columns is two probes, each through
+  writes seek their targets too: a write of an INTEGER PRIMARY KEY table runs one statement per row its bounded
+  selection returns (`src/db/by-ids.ts`), a text-keyed target names its key index, and an OR of two columns is two
+  probes, each through
   its own index. An account's moved-to accounts are read by key from the chunk's ids, a document's `movedTo` is
   resolved through the actor id's index and the move written by the source's key, and a purge clears and checks the
   moves to its account through `accounts_moved_to` (`test/account-moved.test.ts` ("query plans of moves"),
@@ -3721,18 +3730,18 @@ fill, the largest SQLite read) (`test/status-bounds.test.ts`), well under the 32
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 123,265           | 140,480         | 147,990           | 1         | 92    | 1.8%           |
+| Account occurrence, with the account it moved to                 | 123,265           | 140,430         | 147,990           | 1         | 92    | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 11,118            | 8,331           | 11,021            | 1         |       | 0.1%           |
-| Status                                                           | 4,452,233         | 2,697,144       | 2,703,319         | 1,486     | 2,449 | 32.2%          |
-| Quote (the status and its quoted status)                         | 6,826,260         | 5,385,072       | 5,397,422         | 1,919     | 4,882 | 64.3%          |
-| Boost of a quote                                                 | 7,120,881         | 5,794,056       | 5,812,060         | 1,976     | 5,841 | 69.3%          |
-| Conversation: 12 participants presented, its last status a quote | 8,504,016         | 7,070,801       | 7,122,211         | 1,945     | 5,977 | 84.9%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,888,214         | 6,509,336       | 6,547,726         | 1,954     | 5,630 | 78.1%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,206,258         | 5,981,605       | 6,000,465         | 1,934     | 5,197 | 71.5%          |
-| An admin.report notification of that report                      | 2,360,617         | 403,364         | 409,874           | 1,061     | 294   | 4.9%           |
+| Status                                                           | 4,452,203         | 2,697,094       | 2,703,319         | 1,486     | 2,449 | 32.2%          |
+| Quote (the status and its quoted status)                         | 6,826,200         | 5,384,972       | 5,397,422         | 1,919     | 4,882 | 64.3%          |
+| Boost of a quote                                                 | 7,120,791         | 5,793,906       | 5,812,060         | 1,976     | 5,841 | 69.3%          |
+| Conversation: 12 participants presented, its last status a quote | 8,503,596         | 7,070,101       | 7,122,211         | 1,945     | 5,977 | 84.9%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,887,914         | 6,508,836       | 6,547,726         | 1,954     | 5,630 | 78.1%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,206,138         | 5,981,405       | 6,000,465         | 1,934     | 5,197 | 71.5%          |
+| An admin.report notification of that report                      | 2,360,557         | 403,264         | 409,874           | 1,061     | 294   | 4.9%           |
 | A moderation_warning notification, its local account at bounds   | 133,543           | 290,370         | 332,194           | 9         | 223   | 4.0%           |
 | Its notification group                                           | 133,543           | 290,559         | 332,383           | 9         | 230   | 4.0%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,960,290         | 5,525,678       | 5,541,283         | 1,942     | 4,978 | 66.1%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,960,200         | 5,525,528       | 5,541,283         | 1,942     | 4,978 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
@@ -3977,9 +3986,8 @@ heap).
   `USER_KEK` in the legacy format. They are unwrapped per call in the Worker, only to sign and for the health key check,
   are never cached, and never appear in responses or logs. The Store hands them over wrapped only, `inboxGate`, a
   `receiveActivity` need and `resolutionGate` included (their fetch preparation), and the Worker unwraps such a key on
-  the request's first
-  fetch, or never. _Enforced (main):_ `src/security/key-wrap.ts`,
-  `src/security/keyring.ts`; `test/keyring.test.ts`, `test/health-keys.test.ts`.
+  the request's first fetch, or never. _Enforced (main):_ `src/security/key-wrap.ts`, `src/security/keyring.ts`;
+  `test/keyring.test.ts`, `test/health-keys.test.ts`.
 - **DATA-2: VAPID keys are never regenerated implicitly.** `VAPID_JWK` is a secret that Kopje only reads; an invalid
   value, one without its private scalar included, is a misconfiguration, and without one Web Push is unavailable
   rather than keyed anew. _Enforced (main):_ `src/platform/vapid.ts`, `src/platform/config.ts`, `src/mastodon/push.ts`;
@@ -4083,8 +4091,8 @@ heap).
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
   preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
-  actor); `src/federation/collections.ts`, `receiveInbound` in
-  `src/federation/inbound.ts`; `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
+  actor); `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
+  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
@@ -4333,10 +4341,10 @@ heap).
   write admission before any loader is made or anything fetched, so nothing is signed with an imported key, and it is
   held as in maintenance (spooled, or requeued without counting a retry); the gate hands over no signing key while
   writes are refused (`Store.inboxGate`; a search resolution's `Store.resolutionGate` likewise, and nothing is fetched,
-  NET-4); the write's own transaction checks again. The
-  scheduled backup's runner lease is refused in its transaction, so cron makes no S3 call and takes no dump freeze
-  (an operator's rescue dump still works). Reads and sessions pass, so imported data can be read and the owner can sign
-  in for the checks before publication. `publish` (an Access admin, or `IMPORT_TOKEN` while the Store has no
+  NET-4); the write's own transaction checks again. The scheduled backup's runner lease is refused in its
+  transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
+  sessions pass, so imported data can be read and the owner can sign in for the checks before publication. `publish` (an
+  Access admin, or `IMPORT_TOKEN` while the Store has no
   usable admin access, so a restore without Access completes) clears that state and sets the published mark in one
   transaction, which also records the `Update(Person)` of each local profile a cutover conversion changed (the
   `profile_updates` row, at most 100 distinct ids, deleted with it, so a repeated publish records none;
@@ -4492,8 +4500,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | Service tokens are recognized by Access's claim shape (no email, empty `sub`, `common_name`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | The admin application's policy decides which identities reach it                                                                                                                                                                                                                                                                                                                                                                                         | the admin application admits mTLS or Access changes the claims                                                           |
 | A delivery whose completion was lost is POSTed again after its lease (at-least-once); a Mastodon server that processes the repeated `Follow` after the `Undo` sent behind it follows again (each body it receives is its own job), while Kopje has ended the follow                                                                                                                                                                                                                                                                                                                                                                                                                       | Receivers deduplicate by activity id; exactly-once needs the receiver's cooperation, and Mastodon repeats a delivery whose answer it lost the same way                                                                                                                                                                                                                                                                                                   | a receiver is seen to apply a repeat                                                                                     |
 | A `QuoteRequest` of a local account's quote that reaches a Mastodon server more than once (Kopje sends it again when a POST's result was lost, NET-2) is answered there each time from the state at that time: Mastodon accepts a quote in any state under the same stamp (`quote_request.rb:31-32`, `quote.rb:48-56`) and refuses without changing its own copy (`quote_request.rb:55-65`), while Kopje applies an `Accept` only to a pending quote and a `Reject` to a pending or accepted one. So after a revoke or a policy change between the copies, the quoted server may hold the quote accepted, and serve its stamp, while Kopje shows it revoked or rejected (VIS-28)          | Mastodon parity: a Mastodon quoter applies those answers the same way (`accept.rb:49`, `reject.rb:42-47`) and retries the same request (`delivery_worker.rb:11-21`); `test/quote-lifecycle.test.ts` allows exactly this difference (`replayedRequest` in `test/quote-model.ts`, witnesses W10a-c)                                                                                                                                                        | Mastodon answers a request id once, or stops accepting a quote it revoked                                                |
-| A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`). When Kopje receives the `Accept` before the `Delete`, it ends revoked while the quoted server holds the quote accepted (VIS-28)                                                                                                                                                                                                                                                                                                   | Mastodon parity: a Mastodon quoter applies the `Accept`, then `revoke_quote` (`delete.rb:58-67`), and ends the same way; `test/quote-lifecycle.test.ts` allows exactly this difference (`revokedPendingReaccepted` in `test/quote-model.ts`, witness W18)                                                                                                                                                                                                | Mastodon stops accepting a quote it revoked                                                                              |
-| A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`). When Kopje receives the `Delete` before the `Accept`, it records the stamp as retracted and refuses the `Accept` while the retraction lasts (30 days, ID-7), so it holds the quote pending while the quoted server holds it accepted and serves its stamp (VIS-28); no quote held the stamp, so it is not revoked for good, and an `Accept` that arrives after the retraction expires applies                                     | While a stamp's retraction lasts, a forged or replayed `Accept` naming it cannot take effect; a Mastodon quoter would apply the `Accept` (`accept.rb:49`), a departure (docs/mastodon-deviations.md, quote approvals); `test/quote-lifecycle.test.ts` allows exactly this difference (`revokedPendingAcceptRefused` in `test/quote-model.ts`, witness W17)                                                                                               | Mastodon stops accepting a quote it revoked                                                                              |
+| A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`), so it holds the quote accepted and serves its stamp (VIS-28). Kopje ends revoked when the `Accept` arrives first; when the `Delete` does, it refuses the `Accept` while the stamp's retraction lasts (30 days, ID-7), keeping the quote pending, and an `Accept` after that applies                                                                                                                                               | `Accept` first: Mastodon parity, a Mastodon quoter applies the `Accept`, then `revoke_quote` (`delete.rb:58-67`). `Delete` first: a departure (docs/mastodon-deviations.md, quote approvals) that keeps a forged or replayed `Accept` naming a retracted stamp from taking effect. `test/quote-lifecycle.test.ts` allows both (`revokedPendingReaccepted`, `revokedPendingAcceptRefused` in `test/quote-model.ts`; W18, W17)                             | Mastodon stops accepting a quote it revoked                                                                              |
 | Misskey with several silent recipients of one status on one server: only the first copy Misskey processes sets the note's audience, so the other silent recipients there cannot see it. Supported: one silent recipient per Misskey server                                                                                                                                                                                                                                                                                                                                                                                                                                                | Misskey keeps the first `Create` of a note; a combined copy would name the recipients to each other, and recipient-specific object ids would split the status                                                                                                                                                                                                                                                                                            | Misskey honours a later copy, or a peer needs it                                                                         |
 | A retraction staged over several batches (a job's Undo of a local boost, a local status's `Delete`, a forward) misses a follow made after its staging began, and a delivery row moved in place to a personal inbox after the rows' walk passed it whose receipt sorts behind the receipts' cursor or that gets none                                                                                                                                                                                                                                                                                                                                                                       | Each source is read once from its own cursor (RES-6); following later changes of every source would read them again at each call                                                                                                                                                                                                                                                                                                                         | such follows or moves are seen to lose a retraction                                                                      |
 | A boost again after an unboost may reach a server before the earlier boost's `Undo`, whose targets its job writes later: a Mastodon receiver then ignores the new `Announce` (it holds the earlier boost) and removes the earlier boost on the `Undo`, so the new boost is lost there                                                                                                                                                                                                                                                                                                                                                                                                     | Mastodon's own `RemovalWorker` and `DistributionWorker` race the same way; the unreblog asks for the job's round at once, which narrows the window                                                                                                                                                                                                                                                                                                       | a receiver is seen to lose boosts this way in practice                                                                   |

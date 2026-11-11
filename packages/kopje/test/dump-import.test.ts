@@ -603,6 +603,50 @@ describe("dump", () => {
     );
   }, 120_000);
 
+  // statuses.published_at and edited_at have no stored bound (RES-2): reads project them, a dump keeps them as stored.
+  it("round-trips status times past the stored form unchanged", async () => {
+    const source = await seeded(0);
+    const rows: [string, SqlStorageValue, SqlStorageValue][] = [
+      ["990000000000000011", "2026-10-22T00:00:00.000Z", null],
+      ["990000000000000012", "\u0001".repeat(200_000), "2026-10-22 01:00:00+09:00"],
+      ["990000000000000013", "-000001-06-01T00:00:00.000Z", `2026-10-22T00:00:00.000Z\u0000`],
+      ["990000000000000014", new TextEncoder().encode("2026-10-22T00:00:00.000Z").buffer as ArrayBuffer, "soon"],
+    ];
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const local = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .one().id;
+      for (const [id, published, edited] of rows) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, edited_at)
+					VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, 'public', '<p>x</p>', ?3, ?4)`,
+          id,
+          local,
+          published,
+          edited,
+        );
+      }
+    });
+    const stored = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) =>
+        state.storage.sql
+          .exec(
+            `SELECT id, hex(published_at) AS p, typeof(published_at) AS pt, hex(edited_at) AS e, typeof(edited_at) AS et
+						FROM statuses WHERE id IN (${rows.map(() => "?").join(", ")}) ORDER BY id`,
+            ...rows.map(([id]) => id),
+          )
+          .toArray(),
+      );
+    const before = await stored(source);
+    expect(before).toHaveLength(rows.length);
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await stored(restored)).toEqual(before);
+  }, 120_000);
+
   it("round-trips status apps (0064), a dangling one too, and refuses one past its bound on import", async () => {
     const source = await seeded(0);
     const client = "A".repeat(43);

@@ -322,7 +322,7 @@ describe("the hashtag list’s reads (RES-7)", () => {
         trendingTags.run(capturing, input);
         return {
           list: seen.find((p) => p.includes("SELECT hex(name) AS key FROM")) ?? "",
-          history: seen.find((p) => p.includes("SELECT substr(s.published_at")) ?? "",
+          history: seen.find((p) => p.startsWith("SELECT substr(coalesce(")) ?? "",
         };
       });
       return { rows, plans };

@@ -1,7 +1,7 @@
 import { ACCOUNTS_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
-import { STATUS_EMOJIS_BYTES, storedMediaMeta } from "../platform/stored-bounds";
+import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
 import {
   availableSql,
@@ -110,10 +110,11 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-// A remote time as stored: parsed, and never in the future (a future time would pin the status to the top of feeds).
+// A remote time as stored: parsed, and never in the future (a future time would pin the status to the top of feeds);
+// one it cannot store (storedTime: unreadable, or before year 0) is the arrival.
 function remoteTime(value: string | null, now: number): number {
   const parsed = value === null ? NaN : Date.parse(value);
-  return Number.isNaN(parsed) || parsed > now ? now : parsed;
+  return parsed > now || storedTime(parsed) === null ? now : parsed;
 }
 
 // How far ahead of the clock a remote version may be (clock skew between servers).
@@ -611,7 +612,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     return { applied: false, reason: "not-author" };
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
-  const stored = Date.parse(existing.remote_version ?? existing.edited_at ?? existing.published_at);
+  const stored = Date.parse(existing.watermark ?? "");
   // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included.
   if (version < stored) {
     return { applied: false, reason: "stale" };
@@ -635,7 +636,8 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
         ? { applied: true, reason: "policy-updated", statusId: existing.id }
         : { applied: false, reason: "stale", statusId: existing.id };
   }
-  const editedAt = iso(Math.min(version, ctx.now));
+  // A version before year 0 (one past a watermark it cannot read) is stored as the arrival, as remoteTime stores it.
+  const editedAt = storedTime(Math.min(version, ctx.now)) ?? iso(ctx.now);
   const media = input.media.slice(0, MAX_STATUS_MEDIA);
   // MediaAttachmentParser#significantly_changes?: the url, the icon (thumbnail_remote_url) or the description; a
   // blurhash alone records no edit, as in Mastodon, and is written with the media below.

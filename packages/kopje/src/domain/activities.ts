@@ -2,7 +2,7 @@ import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
-import { STATUS_EMOJIS_BYTES, storedBlurhash } from "../platform/stored-bounds";
+import { STATUS_EMOJIS_BYTES, statusEditedSql, statusPublishedSql, storedBlurhash } from "../platform/stored-bounds";
 import {
   addresses,
   addressingOf,
@@ -223,7 +223,8 @@ export function statusFacts(
     actor_uri: string;
     username: string;
   }>(
-    `SELECT s.id, s.uri, s.visibility, s.content, s.spoiler_text, s.sensitive, s.language, s.published_at, s.edited_at,
+    `SELECT s.id, s.uri, s.visibility, s.content, s.spoiler_text, s.sensitive, s.language,
+			${statusPublishedSql("s")} AS published_at, ${statusEditedSql("s")} AS edited_at,
 			s.in_reply_to_uri, s.in_reply_to_id, s.quote_policy, s.emojis, a.uri AS actor_uri, a.username
 		FROM statuses s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`,
     statusId,

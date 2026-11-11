@@ -6,6 +6,7 @@ import { iso } from "../platform/iso-time";
 import {
   isoTimeSql,
   STATUS_EMOJIS_BYTES,
+  statusPublishedSql,
   storedBlurhash,
   storedMediaDescription,
   storedText,
@@ -864,7 +865,7 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   return (
     db.first<OwnStatus>(
       `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text, spoiler_text, sensitive,
-				language, published_at
+				language, ${statusPublishedSql("statuses")} AS published_at
 			FROM statuses WHERE id = ? AND account_id = ? AND withdrawn = 0`,
       resolved,
       accountId,
@@ -1890,7 +1891,8 @@ export function withdrawLocalBoost(db: Db, boostId: string, now: number, maxRows
     published_at: string;
     original: string;
   }>(
-    `SELECT r.account_id, r.uri, r.visibility, r.published_at, r.reblog_of_id AS original FROM statuses r
+    `SELECT r.account_id, r.uri, r.visibility, ${statusPublishedSql("r")} AS published_at, r.reblog_of_id AS original
+		FROM statuses r
 		JOIN local_accounts l ON l.account_id = r.account_id WHERE r.id = ? AND r.reblog_of_id IS NOT NULL`,
     boostId,
   );
@@ -1942,7 +1944,8 @@ const REBLOG_NOTIFICATION_SQL = `SELECT CAST(id AS TEXT) AS id FROM notification
 //     then deletes the receipts a batch at a time and the boost.
 function removeReblog(db: Db, accountId: string, reblogId: string, originalId: string, now: number): void {
   const row = db.first<{ uri: string; visibility: Visibility; published_at: string }>(
-    `SELECT uri, visibility, published_at FROM statuses INDEXED BY ${STATUSES_ID_INDEX} WHERE id = ? AND withdrawn = 0`,
+    `SELECT uri, visibility, ${statusPublishedSql("statuses")} AS published_at FROM statuses INDEXED BY ${STATUSES_ID_INDEX}
+		WHERE id = ? AND withdrawn = 0`,
     reblogId,
   );
   const target = db.first<Target>(
@@ -2271,7 +2274,8 @@ export type RedactedStatus = Omit<Status, "quote_approval" | "quote"> & {
 
 function redactedStatus(db: Db, quotingId: string, state: QuoteState, present: Present): RedactedStatus | null {
   const row = db.first<{ id: string; uri: string; account_id: string; visibility: Visibility; published_at: string }>(
-    `SELECT id, ${statusUriSql("uri")} AS uri, account_id, visibility, published_at FROM statuses WHERE id = ?`,
+    `SELECT id, ${statusUriSql("uri")} AS uri, account_id, visibility, ${statusPublishedSql("statuses")} AS published_at
+		FROM statuses WHERE id = ?`,
     quotingId,
   );
   const account = row === undefined ? undefined : presentAccountById(db, row.account_id, present);

@@ -44,6 +44,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A status's `created_at` is now always a 24-byte ISO time (`YYYY-MM-DDTHH:MM:SS.sssZ`, years 0000 to 9999), and its
+  `edited_at` is null or such a time, in the API, the public pages and its ActivityPub Note, Create, Update, Announce
+  and Undo; a new edit-history entry's time is one too, and a moved account's and a featured hashtag's
+  `last_status_at` and hashtag history days are its 10-character date. A converted or imported status may hold any
+  text in its stored times; it is now read as the time it names in another format (a space for the `T`, a zone offset,
+  a longer fraction), else as the status's arrival time, and an unreadable edit time as the publication time. Before,
+  such a value was copied unchanged, and a page whose first status held an oversized one could fail. The stored values
+  are not rewritten, dumps carry them as stored, and a remote `Update` is still ordered by the stored version. A
+  remote status, edit or boost dated before year 0 is now stored at its arrival, as one with an unreadable date is.
+  The cutover's conversion stores the base time for a status whose `published` and `cdate` are both outside years
+  0000 to 9999; `verify-conversion` reads it from a converted dump, and for a dump of the Store it now requires
+  `--base-time` (the manifest's `baseTime`), stopping with `base-time-required` without it. No migration, no
+  `wrangler.jsonc` change.
+
 - A status posted or edited through a host other than the instance domain (such as the Worker's `workers.dev` address)
   now links its mentions and hashtags on the instance's origin, as a scheduled post already did. Before, the stored
   content, its edit history and the `Create` or `Update` sent to other servers linked to the host the request reached,

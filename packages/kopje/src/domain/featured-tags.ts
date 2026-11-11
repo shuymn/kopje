@@ -5,7 +5,7 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { byteCut, presentedCountSql } from "../platform/stored-bounds";
+import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
 import { resolveAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
@@ -69,12 +69,12 @@ const LAST_STATUS_BYTES = 40;
 // CHECK admits a TEXT or REAL of any size under INTEGER affinity): the count by presentedCountSql (an integer from 0 to
 // MAX_ACCOUNT_COUNT, else 0), the time by byteCut to LAST_STATUS_BYTES of its raw bytes (an import may hold any size,
 // or malformed UTF-8; presentFeatured cuts the decoded date). A remote account's counted at read time over its
-// window. A list reads the names as listedTagNameSql keys (LISTED_FEATURED_COLUMNS) and leaves out a row either fails
+// window, its time the date of statusPublishedSql. A list reads the names as listedTagNameSql keys (LISTED_FEATURED_COLUMNS) and leaves out a row either fails
 // (an import's).
 const COUNT_COLUMNS = `CASE WHEN a.domain IS NULL THEN ${presentedCountSql("f.statuses_count")}
 		ELSE (SELECT count(*) ${REMOTE_COUNTED}) END AS statuses_count,
 	CASE WHEN a.domain IS NULL THEN ${byteCut("f.last_status_at", LAST_STATUS_BYTES)}
-		ELSE (SELECT ${byteCut("s.published_at", LAST_STATUS_BYTES)} ${REMOTE_COUNTED} ORDER BY s.id DESC LIMIT 1) END AS last_status_at,
+		ELSE (SELECT substr(${statusPublishedSql("s")}, 1, 10) ${REMOTE_COUNTED} ORDER BY s.id DESC LIMIT 1) END AS last_status_at,
 	${usernameSql("a.username")} AS username, a.domain`;
 const FEATURED_COLUMNS = `f.id, f.name, f.display_name, ${COUNT_COLUMNS}`;
 const LISTED_FEATURED_COLUMNS = `f.id, ${listedTagNameSql("f.name")} AS name, ${listedTagNameSql("f.display_name")} AS display_name,
@@ -196,7 +196,7 @@ export function featurableName(display: string): boolean {
 // (`account`) public and unlisted originals with the hashtag, the newest by id as Mastodon's default order picks it.
 // A walk of the account's own statuses.
 function localCountedSql(account: string, name: string): string {
-  return `SELECT c.n, (SELECT published_at FROM statuses WHERE id = c.last_id) AS last
+  return `SELECT c.n, (SELECT ${statusPublishedSql("p")} FROM statuses p WHERE p.id = c.last_id) AS last
 	FROM (SELECT count(*) AS n, max(s.id) AS last_id FROM statuses s
 		WHERE s.account_id = ${account} AND s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL}
 			AND EXISTS (SELECT 1 FROM status_tags t WHERE t.status_id = s.id AND t.name = ${name})) c`;
@@ -389,7 +389,7 @@ export type FeaturedOfStatus = { accountId: string; publishedAt: string; id: str
 
 export function featuredOfStatus(db: Db, statusId: string): FeaturedOfStatus | null {
   const status = db.first<{ account_id: string; published_at: string; counted: number }>(
-    `SELECT s.account_id, s.published_at, s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL} AS counted
+    `SELECT s.account_id, ${statusPublishedSql("s")} AS published_at, s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL} AS counted
 		FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id WHERE s.id = ?`,
     statusId,
   );
@@ -446,7 +446,7 @@ function decrement(db: Db, status: FeaturedOfStatus): void {
 			last_status_at = CASE
 				WHEN statuses_count <= 1 THEN NULL
 				WHEN last_status_at > ?3 THEN last_status_at
-				ELSE (SELECT s.published_at FROM statuses s
+				ELSE (SELECT ${statusPublishedSql("s")} FROM statuses s
 					WHERE s.account_id = ?1 AND s.id <> ?4 AND s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL}
 						AND EXISTS (SELECT 1 FROM status_tags t WHERE t.status_id = s.id AND t.name = featured_tags.name)
 					ORDER BY s.id DESC LIMIT 1)

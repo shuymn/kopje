@@ -602,19 +602,25 @@ describe("the composite budget at its boundaries", () => {
 });
 
 describe("imported values in a page’s links (docs/engineering.md, stored values)", () => {
-  it("leaves out a time that does not parse, so a stub stays within the budget", async () => {
+  it("shows a post whose stored time is no time at its arrival, within the budget", async () => {
     const h = await community(["bob"]);
     const { bob } = h.users;
     const id = await seedStatus(h.store, { accountId: bob.id, visibility: "public" });
     // A converted row's published_at, which no stored bound holds: 1,500,000 control characters, each six bytes as
-    // JSON, so the post alone passes the answer budget and comes as a stub.
+    // JSON, which as stored would pass the answer budget alone. It reads as the status's arrival (statusPublishedSql).
     await sql(h.store, "UPDATE statuses SET published_at = ? WHERE id = ?", "\u0001".repeat(1_500_000), id);
+    const arrival = (
+      await sql<{ arrival: string }>(h.store, "SELECT created_at AS arrival FROM statuses WHERE id = ?", id)
+    )[0]!.arrival;
     const page = await h.store.webProfilePage(BUILD, postsTab("bob", null, NOW));
-    expect(page.status === "ok" && [page.statuses, page.stub]).toEqual([
-      [],
-      { id, url: `https://kopje.test/@bob/${id}`, acct: "bob", created_at: null },
+    expect(page.status === "ok" && [page.statuses.map((s) => [s.id, s.created_at]), page.stub]).toEqual([
+      [[id, arrival]],
+      null,
     ]);
     expect(jsonBytes(page)).toBeLessThanOrEqual(ANSWER_BYTES);
+    const response = await h.request("/@bob");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`/@bob/${id}`);
   });
 
   it("links no parent whose author’s domain passes the link bound", async () => {

@@ -25,6 +25,8 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   isoTimeSql,
+  statusEditedSql,
+  statusPublishedSql,
   storedCountSql,
 } from "../platform/stored-bounds";
 import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
@@ -65,8 +67,8 @@ export const STATUS_COLUMN_MAP = {
   source_text: "s.source_text",
   sensitive: "s.sensitive",
   language: "s.language",
-  published_at: "s.published_at",
-  edited_at: "s.edited_at",
+  published_at: statusPublishedSql("s"),
+  edited_at: statusEditedSql("s"),
   replies_count: "s.replies_count",
   reblogs_count: "s.reblogs_count",
   favourites_count: "s.favourites_count",

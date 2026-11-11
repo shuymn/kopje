@@ -1,5 +1,5 @@
 import { utf8Length } from "../platform/dump-format";
-import { presentedCountSql } from "../platform/stored-bounds";
+import { presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
 import {
   PIN_LIMIT,
   statusFacts,
@@ -91,7 +91,7 @@ export const getOutbox = readOperation<{ username: string; before: string | null
             original_author_id: string | null;
             original_author_uri: string | null;
           }>(
-            `SELECT s.id, s.uri, s.visibility, s.published_at, o.id AS original_id, o.uri AS original_uri,
+            `SELECT s.id, s.uri, s.visibility, ${statusPublishedSql("s")} AS published_at, o.id AS original_id, o.uri AS original_uri,
 							o.account_id AS original_author_id, (SELECT uri FROM accounts WHERE id = o.account_id) AS original_author_uri
 						${listed} AND s.id IN (SELECT json_extract(value, '$.id') FROM json_each(?2)) ORDER BY s.id DESC`,
             owner.id,
