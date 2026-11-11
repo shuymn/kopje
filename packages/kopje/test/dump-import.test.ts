@@ -601,6 +601,47 @@ describe("dump", () => {
     expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
       /status_pins: more pins than the account may keep/,
     );
+    // The same rows with the pins (and their statuses) before local_accounts (an import applies statements in the order
+    // received, and its trailer is recomputed to match): the account is local by its domain (accounts.domain IS NULL),
+    // which its row holds before any pin, so the pin past the local limit is refused all the same.
+    // Each piece is one statement (or the header or trailer line): a statement starts a line with INSERT or UPDATE,
+    // and a value spanning lines (a local account's key) never does.
+    const pieces = past.text.split(/\n(?=INSERT INTO |UPDATE )/);
+    const ours = (piece: string, table: string) =>
+      piece.startsWith(`INSERT INTO "${table}"`) && piece.includes("'99000000000000002");
+    const pinRows = pieces.filter((piece) => piece.startsWith('INSERT INTO "status_pins"'));
+    const statuses = pieces.filter((piece) => ours(piece, "statuses"));
+    const others = pieces.filter((piece) => !pinRows.includes(piece) && !statuses.includes(piece));
+    const firstLocal = others.findIndex((piece) => piece.startsWith('INSERT INTO "local_accounts"'));
+    expect([pinRows.length, statuses.length, firstLocal > 0]).toEqual([PIN_LIMIT + 1, PIN_LIMIT + 1, true]);
+    const reordered = [...others.slice(0, firstLocal), ...statuses, ...pinRows, ...others.slice(firstLocal)].join("\n");
+    const { body, trailer } = splitDump(reordered) as { body: string; trailer: DumpTrailer };
+    const bytes = new TextEncoder().encode(body);
+    const fixed = {
+      ...trailer,
+      body: { ...trailer.body, bytes: bytes.byteLength, sha256: new Sha256().update(bytes).hex() },
+    };
+    const late = await migratedStore();
+    await copyConfig(source, late);
+    const id = await beginImport(late, reordered);
+    let failed: unknown;
+    for (const [i, chunk] of (await importChunks(reordered, 1 << 20)).entries()) {
+      const result = await late.importChunk(BUILD, ACCESS, id, i + 1, chunk);
+      if (!result.ok) {
+        failed = result;
+        break;
+      }
+    }
+    if (failed === undefined) {
+      // Every chunk applied: the import would complete with the pins past the limit.
+      expect(await late.importFinish(BUILD, ACCESS, id, fixed)).toMatchObject({ ok: true });
+      failed = await late.importVerify(BUILD, ACCESS, id);
+    }
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "chunk-failed",
+      message: expect.stringMatching(/status_pins: more pins than the account may keep/),
+    });
   }, 120_000);
 
   // statuses.published_at and edited_at have no stored bound (RES-2): reads project them, a dump keeps them as stored.

@@ -31,9 +31,12 @@ type ActionInput = { id: string; now: number; present: Present };
 // write past it. An account's pins are read in pin order, newest first (p.created_at DESC, s.id DESC), through the
 // primary key: at most MAX_REMOTE_PINS rows.
 
-// The pin limit of the account whose id is the SQL `account`: a local account's, else a remote one's.
+// The pin limit of the account whose id is the SQL `account`: a local account's, else a remote one's. An account is
+// local by its own row (accounts.domain IS NULL, 0000_initial, as its trigger local_accounts_local_insert judges it),
+// which a pin's foreign key requires before the pin, so no order of an import's rows lets a local account's pins be
+// judged by the remote limit; no account row reads as local, the lower limit.
 export function pinCapSql(account: string): string {
-  return `iif(EXISTS (SELECT 1 FROM local_accounts l WHERE l.account_id = ${account}), ${PIN_LIMIT}, ${MAX_REMOTE_PINS})`;
+  return `iif((SELECT a.domain FROM accounts a WHERE a.id = ${account}) IS NULL, ${PIN_LIMIT}, ${MAX_REMOTE_PINS})`;
 }
 
 // Whether the account `account` keeps its pin limit of pins other than the status `status`: a new pin of it would

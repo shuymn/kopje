@@ -78,9 +78,10 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // characters and a 2,210-byte profile URL, and 1,000 media rows with a 2,210-byte URL and a description of 12,000
 // characters; for 0049_instance_bounds one row past its bound of each covered instance setting (a 2,000 code point
 // title and description, a 300-byte contact address, 70,000 bytes of rules, three 60,000-byte documents, a malformed
-// date, switch and two stamps); for 0089_pin_cap (from 0025_remote_collections on) 100,000 remote accounts each
-// pinning 22 statuses (two past MAX_REMOTE_PINS) and each local account pinning 10,000 (all but five past PIN_LIMIT):
-// every pin is one its trim sorts. It grows every table a phase A migration reads (accounts, follows, statuses with their
+// date, switch and two stamps); for 0089_pin_cap (from 0025_remote_collections on) each local account pinning 120,000
+// statuses, all but five past PIN_LIMIT, so its trim sorts 2,400,000 pins and deletes 2,399,900 (the slower of the two
+// distributions of that total measured; the other, 100,000 remote accounts pinning 22 each, is pinningRemotes). It
+// grows every table a phase A migration reads (accounts, follows, statuses with their
 // mentions and tags, notifications, reports, quotes), what 0043_read_window_indexes indexes (favourites, boosts), what
 // 0045_remote_suspension indexes (accounts, outbound activities), what 0048_stored_bounds rewrites (accounts, statuses,
 // media attachments, earlier versions), what 0049_instance_bounds rewrites and indexes (instance settings, instance
@@ -154,9 +155,10 @@ const SHAPE = {
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
-  // Pins while 0089_pin_cap is pending (not scaled): of each local account, and of each of the remote ones.
-  localPins: 10_000,
-  pinningRemotes: 100_000,
+  // Pins while 0089_pin_cap is pending (not scaled): of each local account, and of each of pinningRemotes remote
+  // accounts (none: the measured worst case concentrates the pins in the local accounts).
+  localPins: 120_000,
+  pinningRemotes: 0,
   remotePins: 22,
 };
 
@@ -801,6 +803,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
+    // Each local account pins distinct statuses: at most as many as there are (a scaled run holds fewer).
+    const localPins = Math.min(SHAPE.localPins, statuses);
     const pinsPending =
       pending("0089_pin_cap") && at > MIGRATIONS.findIndex((m) => m.name === "0025_remote_collections");
     if (pinsPending) {
@@ -826,7 +830,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
 					strftime('%Y-%m-%dT%H:%M:%fZ', '2026-10-01', '-' || i || ' seconds')
 				FROM n`,
         SHAPE.local,
-        SHAPE.localPins,
+        localPins,
         statuses,
       );
     }
@@ -836,7 +840,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       pinsPending
         ? count(
             `(SELECT account_id FROM status_pins GROUP BY account_id
-							HAVING count(*) > iif(EXISTS (SELECT 1 FROM local_accounts l WHERE l.account_id = status_pins.account_id), 5, 20))`,
+							HAVING count(*) > iif((SELECT a.domain FROM accounts a WHERE a.id = status_pins.account_id) IS NULL, 5, 20))`,
           )
         : 0;
     // The rows under the jamo spelling of 가, which 0087_tag_key_fixed_points renames.

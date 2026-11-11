@@ -121,7 +121,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Store schema: adds two migrations (0088, 0089), applied on the first request after the deploy; a rollback to an
   earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the
   representative store defined in `test/bench/migration-cost.ts`, with 2,400,000 pins all past their accounts' limits,
-  the two took 10,161 ms together in one local run, at a load average of about 9.
+  the two took 11,827 and 12,034 ms together in two local runs with the pins in 20 local accounts (2,399,900 deleted),
+  at load averages of about 9 to 14, and about 10,160 ms with them spread over 100,000 remote accounts.
 - `wrangler.jsonc`: the template sets `"workers_dev": false`, so a deploy removes the Worker's `workers.dev` address,
   where Kopje now only redirects or refuses. Add the same line to the instance's file; attach the instance domain
   first if it has none yet ([docs/upgrade.md](docs/upgrade.md)).

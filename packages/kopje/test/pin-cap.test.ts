@@ -55,8 +55,9 @@ async function pinnedReads(owner: "local" | "remote", pins: number, limit: numbe
   return [...api.plans, ...profile];
 }
 
-// The rows one pinned read examines: three for the read, and four for each pin (its row, its status by key, and the
-// status's audience checks), measured at each limit below with every pin filled.
+// The rows one anonymous pinned read without conditions examines: three for the read, and four for each pin (its row,
+// its status by key, and the status's audience checks), measured at each limit below with every pin filled. A signed-in
+// viewer, conditions or a boost's original add lookups by key for each pin, never more pins.
 const readCeiling = (pins: number) => 3 + 4 * pins;
 
 describe("the pinned read (RES-4)", () => {

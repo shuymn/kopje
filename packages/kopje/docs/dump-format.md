@@ -305,9 +305,11 @@ it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-
 reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
 which then upgrades. A file built from legacy data writes NULL.
 
-Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account and 20 per remote
-one, whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more
-pins than the account may keep`. A dump taken before 0089 restores into a Store at its own migrations, whose upgrade
+Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account (`accounts.domain`
+NULL, which its row holds before any of its pins, whatever order a file puts other rows in) and 20 per remote one,
+whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more
+pins than the account may keep`, refused as `chunk-failed` (HTTP 500 from the admin API, as a chunk that breaks any
+constraint is). A dump taken before 0089 restores into a Store at its own migrations, whose upgrade
 keeps each account's newest pins in pin order (`created_at` descending, then `status_id` descending) and deletes the
 rest.
 
