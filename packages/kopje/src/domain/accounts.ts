@@ -20,6 +20,7 @@ import {
   ACCOUNT_COLUMN_MAP,
   FIELD_NAME_LIMIT,
   FIELD_VALUE_RAW_LIMIT,
+  LOCAL_ROW_JOIN,
   MOVED_ACCOUNT_COLUMNS,
   MOVED_CREATED_AT_LIMIT,
   MOVED_DISPLAY_NAME_LIMIT,
@@ -256,9 +257,9 @@ function relatedOf(db: Db, rows: readonly AccountRow[]): Related {
 
 export { DISPLAY_NAME_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT };
 
-export const ACCOUNT_FROM = "accounts a LEFT JOIN local_accounts l ON l.account_id = a.id";
-// ACCOUNT_FROM for a membership of ids: each account sought by its key (RES-7).
-const ACCOUNT_FROM_BY_ID = `accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} LEFT JOIN local_accounts l ON l.account_id = a.id`;
+// The accounts `a` a statement names by id (a.id = ? or a membership of ids), each sought by its key with its local row
+// (RES-7).
+export const ACCOUNT_FROM = `accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ${LOCAL_ROW_JOIN}`;
 
 // An answer of many accounts (a list's members and endorsements with limit=0, familiar followers) is within
 // ANSWER_BYTES, the JSON around the accounts reserved first (only its first account, bounded by RES-2, may stand
@@ -349,7 +350,7 @@ export function* partialAccountsOf(
 						a.url, a.avatar_url, a.avatar_static_url, a.locked,
 						${availableJoinedSql("a", "l")} AS available
 					FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
-					LEFT JOIN local_accounts l ON l.account_id = a.id`,
+					${LOCAL_ROW_JOIN}`,
           JSON.stringify([...new Set(slice)]),
         )
         .map((row) => [row.id, row]),
@@ -746,7 +747,7 @@ export function resolveAccountId(db: Db, id: string): string | null {
 // Presented accounts by id, read in one query: for getAccounts' MAX_ACCOUNTS_BY_ID only.
 function presentAccountsById(db: Db, ids: readonly string[], present: Present): Map<string, Account> {
   const rows = db.all<AccountRow>(
-    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM_BY_ID} WHERE a.id IN (SELECT value FROM json_each(?1))`,
+    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id IN (SELECT value FROM json_each(?1))`,
     JSON.stringify([...new Set(ids)]),
   );
   const related = relatedOf(db, rows);
@@ -795,14 +796,14 @@ function addressRow(
     ? db.first(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
 				FROM accounts a INDEXED BY accounts_local_username
-				LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+				${LOCAL_ROW_JOIN}
 				WHERE a.domain IS NULL AND lower(a.username) = lower(?) LIMIT 1`,
         username,
       )
     : db.first(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
 				FROM accounts a INDEXED BY accounts_domain_username
-				LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+				${LOCAL_ROW_JOIN}
 				WHERE a.domain = ? AND lower(a.username) = lower(?) LIMIT 1`,
         domain,
         username,
@@ -960,7 +961,7 @@ function relationshipsOf(
   availableOnly = false,
 ): Relationship[] {
   const available = availableOnly
-    ? `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+    ? `${LOCAL_ROW_JOIN}
 		WHERE ${availableJoinedSql("a", "l")}`
     : "";
   const rows = db.all<RelationshipRow>(
@@ -1318,8 +1319,8 @@ export function windowAccountIds(db: Db, window: Window, rule: string): { id: st
   return window.candidates.length === 0
     ? []
     : db.all<{ id: string }>(
-        `SELECT a.id FROM json_each(?1) c CROSS JOIN accounts a ON a.id = json_extract(c.value, '$.id')
-					LEFT JOIN local_accounts l ON l.account_id = a.id
+        `SELECT a.id FROM json_each(?1) c
+					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = json_extract(c.value, '$.id') ${LOCAL_ROW_JOIN}
 				WHERE ${rule}`,
         windowJson(window),
       );
@@ -1335,7 +1336,7 @@ function accountRowsOf(db: Db, ids: readonly string[]): AccountRow[] {
     db
       .all<AccountRow>(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
-					LEFT JOIN local_accounts l ON l.account_id = a.id`,
+					${LOCAL_ROW_JOIN}`,
         JSON.stringify(ids),
       )
       .map((row) => [row.id, row]),
@@ -1387,6 +1388,13 @@ export const listFollows = optionalUserReadOperation<ListFollowsInput, Page<Acco
 // cut by bytes), and whether the list is shown at all (followListsShownSql).
 export type FollowList = { page: Page<Account>; more: boolean; shown: boolean };
 
+// The account at the `end` of the follow a window candidate `c` names (its id, read as TEXT), by the follow's rowid in a
+// correlated lookup: a join of follows by its rowid becomes a scan of follows under statistics taken while the table
+// was small (RES-7).
+function followEdgeSql(end: "account_id" | "target_account_id"): string {
+  return `(SELECT f.${end} FROM follows f WHERE f.id = CAST(c.value ->> '$.id' AS INTEGER))`;
+}
+
 // listFollows' read, its accounts admitted by `admission`. `members`: 'every' lists an unavailable member, presented
 // redacted, as Mastodon's API does; 'available' leaves it out (the public pages, VIS-4), by availableSql over the
 // window's candidates, outside the window's LIMIT, so its follow still moves the continuation past it.
@@ -1405,7 +1413,9 @@ export function listFollowsWithin(
     return { page: { items: [], newest: null, oldest: null }, more: false, shown: false };
   }
   const [anchor, other] =
-    direction === "followers" ? ["target_account_id", "account_id"] : ["account_id", "target_account_id"];
+    direction === "followers"
+      ? (["target_account_id", "account_id"] as const)
+      : (["account_id", "target_account_id"] as const);
   const ascending = page.minId !== undefined;
   const size = readWindow(page.limit);
   const window = singleWindow(
@@ -1426,9 +1436,8 @@ export function listFollowsWithin(
     window.candidates.length === 0
       ? []
       : db.all<{ cursor: string; id: string }>(
-          `SELECT CAST(f.id AS TEXT) AS cursor, a.id
-					FROM json_each(?4) c CROSS JOIN follows f ON f.id = CAST(json_extract(c.value, '$.id') AS INTEGER)
-						JOIN accounts a ON a.id = f.${other}
+          `SELECT c.value ->> '$.id' AS cursor, a.id
+					FROM json_each(?4) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = ${followEdgeSql(other)}
 					WHERE ${followListedSql("a.id", "?1", "?2", "?3")} ${available}`,
           id,
           viewerId,
@@ -1464,9 +1473,9 @@ export const listFollowRequests = userReadOperation<{ page: PageQuery; present: 
       window.candidates.length === 0
         ? []
         : db.all<{ cursor: string; id: string }>(
-            `SELECT CAST(f.id AS TEXT) AS cursor, a.id
-						FROM json_each(?1) c CROSS JOIN follows f ON f.id = CAST(json_extract(c.value, '$.id') AS INTEGER)
-							JOIN accounts a ON a.id = f.account_id LEFT JOIN local_accounts l ON l.account_id = a.id
+            `SELECT c.value ->> '$.id' AS cursor, a.id
+						FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = ${followEdgeSql("account_id")}
+							${LOCAL_ROW_JOIN}
 						WHERE ${availableJoinedSql("a", "l")}`,
             windowJson(window),
           );

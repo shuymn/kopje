@@ -1,4 +1,5 @@
 import { type ColumnMap, fixedColumns } from "../db/columns";
+import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
@@ -127,6 +128,10 @@ export const ACCOUNT_COLUMN_MAP = {
   emoji_cache: emojiCacheSql("a.emojis", "a.domain"),
   moved_to_account_id: "a.moved_to_account_id",
 } as const satisfies ColumnMap;
+
+// The local_accounts row `l` of the account `a` that ACCOUNT_COLUMN_MAP and availableJoinedSql read, sought by its key
+// whatever the Store's statistics say (RES-7).
+export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`;
 
 // The date of the account `a`'s newest status its followers reach.
 function lastStatusAtSql(a: string): string {

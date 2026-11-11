@@ -3553,11 +3553,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   seeks; `coveredSql` uses `CROSS JOIN` to keep instance-block matches as domain seeks even with stale statistics.
   _Enforced (main)_ for reads from bounded inputs: the presenter's status graph, R, its authors, polls, votes, media
   and filter rules, the visibility rule's account lookups, status and account search candidates, relationship and
-  account batches, mention resolution, media attachment, inbound addressing and lane promotion drive key seeks from
-  their inputs (`CROSS JOIN`, `INDEXED BY` on the inner side), so statistics older than the Store's growth, even taken
-  with one account and one poll, cannot turn them into scans. Each witness plans the production statement on a Store
-  grown after `ANALYZE` and checks the seek and flat rows read (`test/status-rows.test.ts`,
-  `test/filters.test.ts`, `test/search-edge.test.ts`, `test/account-relations.test.ts`, `test/statuses.test.ts`,
+  account batches, the presented accounts and their local rows (by id, by ids and by a profile page's username), the
+  account lists' windows (a follow by its rowid in a correlated lookup), mention resolution, media attachment, inbound
+  addressing and lane promotion drive key seeks from their inputs (`CROSS JOIN`, `INDEXED BY` on the inner side), so
+  statistics older than the Store's growth, even taken with one account and one poll, cannot turn them into scans.
+  Each witness plans the production statement on a Store grown after `ANALYZE` and checks the seek and flat rows read
+  (`test/status-rows.test.ts`, `test/filters.test.ts`, `test/search-edge.test.ts`, `test/account-relations.test.ts`,
+  `test/account-presenter-reads.test.ts`, `test/web-profile-tabs.test.ts`, `test/statuses.test.ts`,
   `test/inbox-statuses.test.ts`, `test/deliveries.test.ts`). So do context and conversation reads, remote featured-tag
   counts, tag history, login, outbound reach (the status, its parent, quoters and followers), the send-time check, the
   personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery (`test/context-work.test.ts`,

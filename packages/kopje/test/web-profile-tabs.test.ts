@@ -27,7 +27,14 @@ import {
   walkFeed as walk,
   walkProfile,
 } from "./profile-page-helpers";
-import { type PlannedStatement, plannedSql, scansOf, staleStatistics } from "./read-helpers";
+import {
+  localAccounts,
+  type PlannedStatement,
+  plannedSql,
+  remoteAccounts,
+  scansOf,
+  staleStatistics,
+} from "./read-helpers";
 import { community, remoteAccount, seedStatus, type SeedStatus } from "./status-helpers";
 import { accessibleName, attr, one, parseHtml, query, text } from "./web-dom";
 import { render } from "./web-fixtures";
@@ -663,9 +670,10 @@ describe("the newest-first pager", () => {
 });
 
 describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', () => {
-  // Each tab's statements on statuses with statistics taken before the Store grew: the account's window seeks
-  // statuses_account (or its originals' index) from the cursor, never scanning statuses, and a page below a fixed
-  // cursor reads the same rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it.
+  // Each tab's statements on statuses and accounts with statistics taken before the Store grew: the account's window
+  // seeks statuses_account (or its originals' index) from the cursor, never scanning statuses, the page's account is
+  // found by its username and presented by its key with its local row, and a page below a fixed cursor reads the same
+  // rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it and 600 more accounts beside it.
   it("seek from the cursor through the account’s index, with stale statistics", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -689,13 +697,18 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
       }
     };
     await newer(20);
+    const seeks = [
+      "SEARCH a USING INDEX accounts_local_username (<expr>=?)",
+      "SEARCH a USING INDEX sqlite_autoindex_accounts_1 (id=?)",
+      "SEARCH l USING INDEX sqlite_autoindex_local_accounts_1 (account_id=?) LEFT-JOIN",
+    ];
     const capture = async () => {
       const rows: Record<string, number> = {};
       for (const name of Object.keys(TABS) as TabName[]) {
         const run = await runInDurableObject(h.store, (_instance, state) => {
           const plans: PlannedStatement[] = [];
           const page = profilePageWithin(
-            new Db(plannedSql(state.storage.sql, /FROM (?:main\.)?statuses s\b|status_pins/, plans)),
+            new Db(plannedSql(state.storage.sql, /FROM (?:main\.)?statuses s\b|status_pins|\baccounts a\b/, plans)),
             { handle: "alice", tab: TABS[name].tab, cursor, now: NOW },
             SITE,
             ANSWER_BYTES,
@@ -704,19 +717,26 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         });
         expect(run.page.status).toBe("ok");
         for (const statement of run.plans) {
-          expect([name, scansOf(statement.plan, ["s", "statuses"])]).toEqual([name, []]);
+          // A bare SCAN l is OAUTH_ADMIN_HEAP_SQL's count over every local account (admin-authority.ts), which runs only
+          // with admin_email set; a local row joined to its account is SCAN l LEFT-JOIN.
+          const scans = scansOf(statement.plan, ["s", "statuses", "a", "l"]).filter((detail) => detail !== "SCAN l");
+          expect([name, scans]).toEqual([name, []]);
         }
-        expect([
-          name,
-          run.plans.some((statement) =>
-            statement.plan.some((d) => /USING (?:COVERING )?INDEX statuses_account/.test(d)),
-          ),
-        ]).toEqual([name, true]);
+        const details = run.plans.flatMap((statement) => statement.plan);
+        expect([name, details.some((d) => /USING (?:COVERING )?INDEX statuses_account/.test(d))]).toEqual([name, true]);
+        expect([name, seeks.filter((seek) => !details.includes(seek))]).toEqual([name, []]);
         rows[name] = run.plans.reduce((sum, statement) => sum + statement.rows, 0);
       }
       return rows;
     };
-    const { before, after } = await staleStatistics(h, { capture, grow: () => newer(2000) });
+    const { before, after } = await staleStatistics(h, {
+      capture,
+      grow: async () => {
+        await newer(2000);
+        await remoteAccounts(h, 10, 30);
+        await localAccounts(h, 300);
+      },
+    });
     for (const name of Object.keys(TABS)) {
       expect([name, after[name]]).toEqual([name, before[name]]);
     }
