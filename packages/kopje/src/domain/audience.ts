@@ -7,7 +7,7 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { DNS_NAME_OCTETS } from "../platform/domain-name";
+import { DNS_NAME_UTF8_BYTES } from "../platform/domain-name";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
@@ -240,15 +240,16 @@ function guardedSql(covered: string): string {
 // is that block's; only suffixes of 2 to MAX_BLOCK_LABELS labels are sought, at most two unique seeks each (the walk's
 // and the match's; CROSS JOIN and INDEXED BY keep each a seek by domain for each suffix, whatever the statistics say
 // of the blocks: a rule no partial index serves was otherwise planned as a scan of the blocks). No stored bound limits
-// an account's domain or its actor id's host, so a key past DNS_NAME_OCTETS bytes (no server's name: RFC 1035 §2.3.4)
-// is never walked and its rule is taken to satisfy `rule` (a suspend covers it; its media are rejected); a key within
-// them has at most 127 labels, so its walk is at most 126 rows. The keys and the walk are CTEs, whose expressions do
+// an account's domain or its actor id's host, so a key past DNS_NAME_UTF8_BYTES (1,012) bytes, which no server's name
+// has in either form (platform/domain-name.ts: RFC 1035 §2.3.4), is never walked and its rule is taken to satisfy
+// `rule` (a suspend covers it; its media are rejected); a key within them has at most a dot per byte, so its walk is at
+// most DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do
 // not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
 function ruledSql(keys: string, rule: string): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
   // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
   // which satisfies the rule alone.
-  const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_OCTETS}`;
+  const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
   return `EXISTS (WITH RECURSIVE pk(d) AS (${keys}),
 			ps(d, dots) AS (SELECT CASE WHEN ${named} THEN d END,
 					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
