@@ -847,7 +847,7 @@ describe('the Featured tab’s reads (RES-7, docs/visibility.md "Read bounds")',
           new Db(
             plannedSql(
               state.storage.sql,
-              /account_pins p\b|featured_tags f\b|json_each\(\?1\) c CROSS JOIN accounts a ON/,
+              /account_pins p\b|featured_tags f\b|CROSS JOIN accounts a INDEXED BY \w+ ON a\.id = json_extract/,
               plans,
             ),
           ),
