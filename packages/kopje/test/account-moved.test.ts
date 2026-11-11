@@ -21,6 +21,7 @@ import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
+import { withoutStatusTimeBounds } from "./helpers";
 import { actorDefaults } from "./inbox-helpers";
 import {
   observedSql,
@@ -311,6 +312,7 @@ describe("the nested account at its caps (RES-2)", () => {
 				created_at = CAST(${malformed} AS TEXT) WHERE id = ?`,
       target,
     );
+    await withoutStatusTimeBounds(h.store);
     await sql(
       h.store,
       `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)

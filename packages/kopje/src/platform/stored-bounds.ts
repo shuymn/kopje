@@ -2867,10 +2867,17 @@ export function storedTime(ms: number): string | null {
   return isIsoTime(text) ? text : null;
 }
 
+// isoTimeSql written with iif, which SQLite reads as the same CASE: a file declared foreignKeys: 'unchanged' holds no
+// CASE outside a trigger (test/migration-sql.ts). test/migrations.test.ts ("0088_status_times") pins them equal.
+export function isoTimeIifSql(column: string): string {
+  return `iif(length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
+	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column}, ${column}, NULL)`;
+}
+
 // True when a status row's times are past their stored bound.
 export function statusTimesPastBoundSql(row: string): string {
-  return `${isoTimeSql(`${row}.published_at`)} IS NULL
-  OR (${row}.edited_at IS NOT NULL AND ${isoTimeSql(`${row}.edited_at`)} IS NULL)`;
+  return `${isoTimeIifSql(`${row}.published_at`)} IS NULL
+  OR (${row}.edited_at IS NOT NULL AND ${isoTimeIifSql(`${row}.edited_at`)} IS NULL)`;
 }
 
 // The longest stored time 0088 reads in a format of SQLite's (a fraction of nanoseconds and a zone offset take 35), in
@@ -2881,10 +2888,10 @@ const TIME_FORMAT_BYTES = 64;
 // read only when it starts with a calendar date (strftime reads a bare number as a Julian day). strftime applies a zone
 // offset; its '+0 seconds' carries an hour of 24 into the next day.
 function timeFromSql(column: string): string {
-  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES}
+  return `iif(length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES}
 	AND instr(CAST(${column} AS BLOB), x'00') = 0
-	AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
-	THEN ${isoTimeSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)} END`;
+	AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*',
+	${isoTimeIifSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)}, NULL)`;
 }
 
 // What 0088 stores for a published_at past the bound: the time it names, else the row's arrival (created_at), as a
@@ -2900,7 +2907,7 @@ export function statusTimesMigrationSql(): string {
   return `${[
     `UPDATE statuses SET
   published_at = ${publishedFromSql()},
-  edited_at = CASE WHEN edited_at IS NOT NULL THEN coalesce(${timeFromSql("edited_at")}, ${publishedFromSql()}) END
+  edited_at = iif(edited_at IS NOT NULL, coalesce(${timeFromSql("edited_at")}, ${publishedFromSql()}), NULL)
 WHERE ${statusTimesPastBoundSql("statuses")};`,
     ...boundTriggers(
       "statuses_times",

@@ -24,7 +24,7 @@ import { ProfilePage } from "../src/web/pages/profile";
 import { bearer, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { bigStatus, C, pageStatus } from "./budget-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, withoutStatusTimeBounds } from "./helpers";
 import { MAX_BIO } from "./profile-fixtures";
 import { profileFrameBytes, walkProfile } from "./profile-page-helpers";
 import { community, post, remoteAccount, seedStatus } from "./status-helpers";
@@ -606,8 +606,9 @@ describe("imported values in a page’s links (docs/engineering.md, stored value
     const h = await community(["bob"]);
     const { bob } = h.users;
     const id = await seedStatus(h.store, { accountId: bob.id, visibility: "public" });
-    // A converted row's published_at, which no stored bound holds: 1,500,000 control characters, each six bytes as
-    // JSON, so the post alone passes the answer budget and comes as a stub.
+    // A published_at past the bound 0088_status_times holds it to, which the stub's own bound covers as well: 1,500,000
+    // control characters, each six bytes as JSON, so the post alone passes the answer budget and comes as a stub.
+    await withoutStatusTimeBounds(h.store);
     await sql(h.store, "UPDATE statuses SET published_at = ? WHERE id = ?", "\u0001".repeat(1_500_000), id);
     const page = await h.store.webProfilePage(BUILD, postsTab("bob", null, NOW));
     expect(page.status === "ok" && [page.statuses, page.stub]).toEqual([

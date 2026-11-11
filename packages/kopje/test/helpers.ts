@@ -137,6 +137,15 @@ export async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
   );
 }
 
+// Drops the triggers of 0088_status_times, for a fixture that stores a status time past its stored bound to show that
+// a read keeps its own bound on the column as well.
+export async function withoutStatusTimeBounds(store: StoreStub): Promise<void> {
+  await runInDurableObject(store, (_instance, state) => {
+    state.storage.sql.exec("DROP TRIGGER IF EXISTS statuses_times_insert");
+    state.storage.sql.exec("DROP TRIGGER IF EXISTS statuses_times_update");
+  });
+}
+
 export function tableNames(sql: SqlStorage): string[] {
   return sql
     .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

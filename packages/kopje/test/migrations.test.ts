@@ -108,6 +108,7 @@ import {
   LOCAL_USERNAME_BYTES,
   MAX_ACCOUNT_INVITATIONS,
   storedInvitationEmail,
+  isoTimeIifSql,
   isoTimeSql,
   statusTimesMigrationSql,
   storedTime,
@@ -11456,6 +11457,37 @@ describe("0088_status_times", () => {
         fc.property(fc.integer({ min: -8.64e15, max: 8.64e15 }), (ms) => {
           const written = storedTime(ms);
           expect(written === null ? accepted(new Date(ms).toISOString()) : accepted(written)).toBe(written !== null);
+        }),
+        { numRuns: 500 },
+      );
+    });
+  }, 60_000);
+
+  it("isoTimeIifSql reads every value as isoTimeSql does", async () => {
+    await runInDurableObject(freshStore(), (_instance, state) => {
+      const sql = state.storage.sql;
+      const same = (value: SqlStorageValue) =>
+        sql.exec<{ v: number }>(`SELECT (${isoTimeSql("?1")}) IS ${isoTimeIifSql("?1")} AS v`, value).one().v === 1;
+      const fixed: [string, SqlStorageValue][] = [
+        ["the form", T],
+        ["one byte past", `${T}Z`],
+        ["an hour of 24", "2026-10-22T24:00:00.000Z"],
+        ["a NUL", `${T.slice(0, 23)}\u0000`],
+        ["a BLOB", blob(T)],
+        ["an integer", 1],
+        ["a real", 0.5],
+        ["NULL", null],
+      ];
+      for (const [name, value] of fixed) {
+        expect(same(value), name).toBe(true);
+      }
+      const digits = (n: number) => fc.stringMatching(new RegExp(`^[0-9]{${n}}$`));
+      const shaped = fc
+        .tuple(digits(4), digits(2), digits(2), digits(2), digits(2), digits(2), digits(3))
+        .map(([y, mo, d, h, mi, s, ms]) => `${y}-${mo}-${d}T${h}:${mi}:${s}.${ms}Z`);
+      fc.assert(
+        fc.property(fc.oneof(shaped, fc.string({ unit: "binary", maxLength: 30 })), (value) => {
+          expect(same(value)).toBe(true);
         }),
         { numRuns: 500 },
       );

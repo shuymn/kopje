@@ -923,7 +923,7 @@ describe("RES-6: tracked Like ids in bounded deletions", () => {
       t.store,
       `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i <= 100)
 			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
-			SELECT printf('7%017d', i), 'https://misskey.example/notes/c' || i, ?1, 'public', '2026-01-01T00:00:00Z' FROM n`,
+			SELECT printf('7%017d', i), 'https://misskey.example/notes/c' || i, ?1, 'public', '2026-01-01T00:00:00.000Z' FROM n`,
       bobId,
     );
     await sql(

@@ -735,7 +735,7 @@ describe("admin.report: a remote reporter's purge, child-first and whole-batch b
       t.store,
       `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5)
 			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
-			SELECT CAST(900000000000000000 + i AS TEXT), ?2 || '/statuses/' || i, ?1, 'public', 'x' FROM n`,
+			SELECT CAST(900000000000000000 + i AS TEXT), ?2 || '/statuses/' || i, ?1, 'public', '2026-01-01T00:00:00.000Z' FROM n`,
       id,
       bob.uri,
     );

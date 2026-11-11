@@ -458,20 +458,20 @@ async function cappedWorld(): Promise<{ store: StoreStub; envelope: DeliveryEnve
       n(
         600,
         `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
-				SELECT printf('7%017d', i), 'https://f.example/b/' || i, printf('6%017d', 600 + i), ?1, 'public', '2026-01-01' FROM n`,
+				SELECT printf('7%017d', i), 'https://f.example/b/' || i, printf('6%017d', 600 + i), ?1, 'public', '2026-01-01T00:00:00.000Z' FROM n`,
         STATUS,
       );
       n(
         600,
         `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at, withdrawn)
-				SELECT printf('7%017d', 1000 + i), 'https://f.example/bb/' || i, printf('6%017d', 1201), ?1, 'public', '2026-01-01',
+				SELECT printf('7%017d', 1000 + i), 'https://f.example/bb/' || i, printf('6%017d', 1201), ?1, 'public', '2026-01-01T00:00:00.000Z',
 					i > 1 FROM n`,
         STATUS,
       );
       n(
         600,
         `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
-				SELECT printf('8%017d', i), 'https://f.example/q/' || i, printf('6%017d', 1201 + i), 'public', '2026-01-01' FROM n`,
+				SELECT printf('8%017d', i), 'https://f.example/q/' || i, printf('6%017d', 1201 + i), 'public', '2026-01-01T00:00:00.000Z' FROM n`,
       );
       n(
         600,
@@ -1399,7 +1399,7 @@ describe("a staged forward (RES-6, VIS-3)", () => {
         followers(real, 30);
         real.exec(
           `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at, withdrawn)
-					VALUES (?, ?, ?, ?, 'public', '2026-01-01', 1)`,
+					VALUES (?, ?, ?, ?, 'public', '2026-01-01T00:00:00.000Z', 1)`,
           BOOST(1),
           BOOSTED,
           SIGNER,

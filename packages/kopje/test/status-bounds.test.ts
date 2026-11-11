@@ -128,7 +128,7 @@ import {
   statusAtCap,
   statusShortNames,
 } from "./emoji-fixtures";
-import { BUILD } from "./helpers";
+import { BUILD, withoutStatusTimeBounds } from "./helpers";
 import { ALICE, setup, type Setup } from "./inbox-status-helpers";
 import { localSnapshotAtCap } from "./local-emoji-helpers";
 import { ESCAPED_STATIC_WITNESS, fullestFields, MAX_BIO, MOVED_ROW_SQLITE_MAX } from "./profile-fixtures";
@@ -339,6 +339,8 @@ async function movedTarget(t: Setup, fill: Fill): Promise<string> {
     counted.repeat(MOVED_CREATED_AT_LIMIT),
     MAX_ACCOUNT_COUNT,
   );
+  // last_status_at at its read cut, past 0088_status_times' bound.
+  await withoutStatusTimeBounds(t.store);
   await sql(
     t.store,
     "INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES (?, ?, ?, 'public', ?)",
