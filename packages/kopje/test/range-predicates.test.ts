@@ -98,8 +98,9 @@ const READS: Read[] = [
     items: pageItems,
     item: target,
     cursor: integerCursor,
-    // The candidate window of the requests (windows.ts); the presented accounts are read by key after it.
-    statement: /FROM follows f\s+WHERE/,
+    // The candidate window of the requests (windows.ts); the presented accounts, and each request's follower
+    // (followEdgeSql's lookup by rowid), are read by key after it.
+    statement: /FROM follows f\s+WHERE f\.target_account_id/,
     access: "SEARCH f USING COVERING INDEX follows_target (target_account_id=? AND state=? AND rowid>? AND rowid<?)",
   },
   {
