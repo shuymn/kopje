@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
@@ -69,7 +70,8 @@ function actorRow(db: Db, accountId: string): ActorRow | undefined {
 			a.discoverable, a.indexable, l.also_known_as, ${presentedLocalFieldsSql("l.fields")} AS fields,
 			l.attribution_domains, l.pubkey, a.created_at,
 			l.suspended_at, a.emojis
-		FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?`,
+		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
   );
 }

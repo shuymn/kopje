@@ -1,9 +1,11 @@
 import { type ByIds, writeEach } from "../db/by-ids";
 import {
+  ACCOUNTS_ID_INDEX,
   ACCOUNTS_URI_INDEX,
   FEATURED_TAGS_ACCOUNT_INDEX,
   FEATURED_TAGS_ID_INDEX,
   FILTER_STATUSES_ID_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
   MEDIA_ID_INDEX,
   QUOTES_STATUS_INDEX,
   STATUSES_ID_INDEX,
@@ -419,7 +421,7 @@ function remoteKeyOf(db: Db, keyId: string): GateKey | null {
   const row = db.first<{ owner: string; pem: string; fetched_at: number | null }>(
     `SELECT a.uri AS owner, k.pem,
 			CASE WHEN typeof(k.fetched_at) IN ('integer', 'real') THEN k.fetched_at END AS fetched_at
-		FROM remote_keys k JOIN accounts a ON a.id = k.account_id
+		FROM remote_keys k CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = k.account_id
 		WHERE k.key_id = ? AND a.domain IS NOT NULL`,
     keyId,
   );
@@ -533,7 +535,9 @@ function localAccount(db: Db, uri: string | null): LocalRow | undefined {
   }
   return db.first<LocalRow>(
     `SELECT a.id, a.uri, a.locked, NOT ${availableLocalSql("l")} AS suspended
-		FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.domain IS NULL AND a.uri = ?`,
+		FROM accounts a INDEXED BY ${ACCOUNTS_URI_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+		WHERE a.domain IS NULL AND a.uri = ?`,
     uri,
   );
 }
@@ -2678,7 +2682,8 @@ function deliveredTo(db: Db, recipient: string | null | undefined): string | nul
   }
   return (
     db.first<{ id: string }>(
-      `SELECT a.id FROM accounts a JOIN local_accounts l ON l.account_id = a.id
+      `SELECT a.id FROM accounts a INDEXED BY accounts_local_username
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 			WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1 AND ${availableLocalSql("l")}`,
       recipient,
     )?.id ?? null
@@ -3555,7 +3560,8 @@ export const runInboundJobs = writeOperation<{ now: number }, { pending: boolean
 function ownerExists(db: Db, username: string): boolean {
   return (
     db.first(
-      `SELECT 1 AS x FROM accounts a JOIN local_accounts l ON l.account_id = a.id
+      `SELECT 1 AS x FROM accounts a INDEXED BY accounts_local_username
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 			WHERE a.domain IS NULL AND lower(a.username) = lower(?1) AND a.username = ?1`,
       username,
     ) !== undefined

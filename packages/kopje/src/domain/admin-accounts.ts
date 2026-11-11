@@ -1,4 +1,4 @@
-import { ACCOUNTS_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { loginEmailMatchSql, sqliteLower } from "../platform/login-email";
 import type { ImportAuthority } from "../platform/store-admin";
@@ -54,7 +54,9 @@ export const setAccountEmail = writeOperation<
     return { ok: false, code: "wrong-authority", message: refused ?? "only an Access admin sets an account email" };
   }
   const account = db.first<{ id: string; username: string }>(
-    "SELECT a.id, a.username FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE lower(a.username) = lower(?) AND a.domain IS NULL",
+    `SELECT a.id, a.username FROM accounts a INDEXED BY accounts_local_username
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+		WHERE lower(a.username) = lower(?) AND a.domain IS NULL`,
     username.replace(/^@/, ""),
   );
   if (account === undefined) {
@@ -98,7 +100,9 @@ export const unsuspendAccount = writeOperation<
   }
   const name = username.replace(/^@/, "");
   const account = db.first<{ id: string; username: string }>(
-    "SELECT a.id, a.username FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE lower(a.username) = lower(?) AND a.domain IS NULL",
+    `SELECT a.id, a.username FROM accounts a INDEXED BY accounts_local_username
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+		WHERE lower(a.username) = lower(?) AND a.domain IS NULL`,
     name,
   );
   if (account === undefined) {
