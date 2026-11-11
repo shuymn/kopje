@@ -64,10 +64,11 @@ function party(db: Db, id: string): Party | undefined {
 // RejectFollowService do: a local follower's follow of a remote target is undone there, and a remote follower of a
 // local target is sent a Reject (one that withdraws the follow if it had been accepted, deliveries.ts). The local
 // sides' counts lose the removed edge if it was accepted (a remote account's counts are its server's). Returns
-// whether an activity was recorded. severing (R38): a remote follower's request (pending) is deleted without a Reject,
-// as Mastodon's SuspendAccountService leaves a suspended account's requests unanswered; an accepted follow's Reject
-// goes to the follower's current inbox alone (audienceOnly), as Mastodon's reject_remote_follows! sends it, never to
-// the earlier receivers of the Accepts it withdraws, so recording it costs a constant.
+// whether an activity was recorded. severing (R38): a remote follower's request (pending; only a domain mode severs
+// one) is deleted without a Reject, as Mastodon's DeleteAccountService purges a covered account's requests; an
+// accepted follow's Reject goes to the follower's current personal inbox alone (audienceOnly, personalInbox), as
+// Mastodon's reject_remote_follows! sends it to inbox_url, never to the earlier receivers of the Accepts it withdraws,
+// so recording it costs a constant.
 function endFollow(db: Db, follower: Party, target: Party, now: number, severing = false): boolean {
   const edge = db.first<{ id: string; uri: string | null; state: string }>(
     `DELETE FROM follows WHERE account_id = ? AND target_account_id = ?
@@ -125,7 +126,7 @@ function endFollow(db: Db, follower: Party, target: Party, now: number, severing
         edgeId: edge.id,
       }),
       now,
-      { withdraws: edge.state === "accepted", audienceOnly: severing },
+      { withdraws: edge.state === "accepted", audienceOnly: severing, personalInbox: severing },
     );
     return true;
   }

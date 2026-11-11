@@ -19,7 +19,7 @@ import {
   type Visibility,
 } from "./audience";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
-import { type DeliveryEnvelope, enqueueActivity, type ReachOf } from "./deliveries";
+import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
 import { readOperation } from "./operation";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import type { NoteQuote } from "./quotes";
@@ -105,13 +105,14 @@ export type OutboundEnvelope = Omit<DeliveryEnvelope, "audience"> & { audience: 
 // still receive it, so a follower who left since still gets the Tombstone. Record a retraction before deleting the
 // row it retracts: the receipts go with the row. A local status's Delete and a boost's Undo are recorded in bounded
 // steps instead (deliveries.ts beginRetraction), their receipts kept until the targets are staged.
-// withdraws: a Reject that ends a follow already accepted (see subjectOf in deliveries.ts).
+// withdraws: a Reject that ends a follow already accepted (see subjectOf in deliveries.ts); audienceOnly and
+// personalInbox: see enqueueActivity.
 export function recordOutbound(
   db: Db,
   signerId: string,
   envelope: OutboundEnvelope,
   now: number,
-  options: { withdraws?: boolean; audienceOnly?: boolean } = {},
+  options: OutboundOptions = {},
 ): void {
   enqueueActivity(db, signerId, envelope, now, options);
 }

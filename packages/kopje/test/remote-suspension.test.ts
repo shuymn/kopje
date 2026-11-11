@@ -195,20 +195,53 @@ describe("the account job and its generation", () => {
     expect(await sql(w.h.store, "SELECT count(*) AS n FROM follows WHERE account_id = ?", r)).toEqual([{ n: 3 }]);
   });
 
-  it("deletes a pending request of the account without a Reject, and leaves a follow above its bound", async () => {
+  // #1424: Mastodon v4.5.11's SuspendAccountService#reject_remote_follows! removes accepted follows only, so a
+  // FollowRequest survives the suspension and is answered after it. The job walks the request beside an accepted
+  // follow it ends (the guarded branch: without `|| follow.state === "accepted"` in remote-suspension.ts sever, the
+  // request is deleted and its id recorded as retracted).
+  it("keeps a pending request of the account, unanswerable while suspended and answerable after", async () => {
     const w = await world();
     const r = await remoteAccount(w.h.store, "r");
     await sql(w.h.store, "UPDATE accounts SET locked = 1 WHERE id = ?", w.bob.id);
     const uri = await uriOf(w.h.store, r);
-    expect(await receive(w.h.store, uri, { type: "Follow", object: await uriOf(w.h.store, w.bob.id) })).toMatchObject({
-      applied: true,
-    });
-    expect(await sql(w.h.store, "SELECT state FROM follows WHERE account_id = ?", r)).toEqual([{ state: "pending" }]);
+    for (const target of [w.bob.id, w.alice.id]) {
+      expect(await receive(w.h.store, uri, { type: "Follow", object: await uriOf(w.h.store, target) })).toMatchObject({
+        applied: true,
+      });
+    }
+    const edges = () =>
+      sql<{ target: string; state: string; uri: string }>(
+        w.h.store,
+        "SELECT target_account_id AS target, state, uri FROM follows WHERE account_id = ? ORDER BY target_account_id",
+        r,
+      );
+    const request = (await edges()).find((f) => f.state === "pending");
+    const accepted = (await edges()).find((f) => f.state === "accepted");
+    expect(request).toMatchObject({ target: w.bob.id });
+    expect(accepted).toMatchObject({ target: w.alice.id });
     expect(await act(w, r, { type: "suspend" })).toMatchObject({ status: 200 });
     await settle(w.h.store);
-    expect(await sql(w.h.store, "SELECT * FROM follows WHERE account_id = ?", r)).toEqual([]);
-    expect(await rejects(w.h.store)).toEqual([]);
-    expect(await sql(w.h.store, "SELECT * FROM notifications WHERE type = 'follow_request'")).toEqual([]);
+    expect(await jobs(w.h.store)).toEqual([]);
+    expect(await edges()).toEqual([request]);
+    expect(await rejects(w.h.store)).toEqual([{ signer: w.alice.id, follower: uri, retracts: 1 }]);
+    expect(await sql(w.h.store, "SELECT target_uri AS target FROM inbound_retractions")).toEqual([
+      { target: accepted!.uri },
+    ]);
+    expect(
+      await sql(w.h.store, "SELECT account_id AS account FROM notifications WHERE type = 'follow_request'"),
+    ).toEqual([{ account: w.bob.id }]);
+    const listed = async () =>
+      (await (await w.h.request("/api/v1/follow_requests", bearer(w.bob.token))).json<{ id: string }[]>()).map(
+        (account) => account.id,
+      );
+    const authorize = () =>
+      w.h.request(`/api/v1/follow_requests/${r}/authorize`, bearer(w.bob.token, { method: "POST" }));
+    expect(await listed()).toEqual([]);
+    expect((await authorize()).status).toBe(404);
+    expect(await unsuspend(w, r)).toMatchObject({ status: 200 });
+    expect(await listed()).toEqual([r]);
+    expect((await authorize()).status).toBe(200);
+    expect(await edges()).toEqual([{ ...request, state: "accepted" }]);
   });
 
   it("ends when a purge removed the account, and walks more follows than one round reads", async () => {
@@ -533,7 +566,7 @@ describe("the severing round's budget and its preparatory steps", () => {
     expect(await rejectInboxes(w.h.store)).toEqual([{ inbox: `https://h${GENERATIONS - 1}.example/inbox`, n: 1 }]);
   }, 180_000);
 
-  it("rejects once at the current inbox though an earlier Accept waits for 65,000 inboxes", async () => {
+  it("rejects once at the current personal inbox though an earlier Accept waits for 65,000 inboxes", async () => {
     const w = await world();
     const { r, uri } = await followed(w, 2);
     // The earlier Accept about the pair id waits with targets not yet expanded at RECEIVERS distinct inboxes (as many
@@ -555,11 +588,14 @@ describe("the severing round's budget and its preparatory steps", () => {
     );
     expect(await act(w, r, { type: "suspend" })).toMatchObject({ status: 200 });
     await severedOnce(w, r, uri, await rounds(w.h.store));
-    const [current] = await sql<{ inbox: string }>(
+    // #1425: the personal inbox, as Mastodon's reject_remote_follows! sends it (inbox_url), though a shared one is known.
+    const [current] = await sql<{ inbox: string; shared: string | null }>(
       w.h.store,
-      "SELECT coalesce(shared_inbox_url, inbox_url) AS inbox FROM accounts WHERE id = ?",
+      "SELECT inbox_url AS inbox, shared_inbox_url AS shared FROM accounts WHERE id = ?",
       r,
     );
+    expect(current!.shared).not.toBeNull();
+    expect(current!.shared).not.toBe(current!.inbox);
     expect(await rejectInboxes(w.h.store)).toEqual([{ inbox: current!.inbox, n: 1 }]);
   }, 180_000);
 });

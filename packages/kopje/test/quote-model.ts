@@ -6,11 +6,11 @@
 //   policies, the quotes with their states, authorizations and stamps, the requests answered, the revocations and
 //   retractions, the quote notifications and silent mentions, and Kopje's outstanding intents for R in their lane.
 //   A rule the code follows that the docs do not state yet cites the doc-gap issue as G1-G8; a suspected defect is
-//   never policy, only a narrow known-defect exception (knownDefect1447).
+//   never policy.
 // - QuotePeer: R's server, Mastodon v4.5.11, written from its source (each rule cites the file and line it models),
 //   applying the bytes Kopje confirmed, each with the inbox it reached, and sending back what Mastodon would.
-// - The quiescence relation (live-accepted, stamps) and the exception predicates of the accepted risks X1 and X2 and of
-//   #1447, each a pure function of the run's event log, so that a trace with one causal event deleted can be checked.
+// - The quiescence relation (live-accepted, stamps) and the exception predicates of the accepted risks X1, X2 and X3,
+//   each a pure function of the run's event log, so that a trace with one causal event deleted can be checked.
 //
 // A change to a quote rule in docs/visibility.md or docs/threat-model.md changes this file with it.
 
@@ -1508,7 +1508,7 @@ export function replayedRequest(
   return false;
 }
 
-// The chain X2 and #1447 share: R's server revoked q while it was pending there, its Delete(s) linked to that revoke,
+// The chain X2 and X3 share: R's server revoked q while it was pending there, its Delete(s) linked to that revoke,
 // then processed exactly one copy of ρ, after the revoke, and answered Accept(s).
 function revokedPendingThenAccepted(log: readonly Logged[], q: { uri: string; request: string }) {
   const revoke = log.find(
@@ -1552,10 +1552,10 @@ export function revokedPendingReaccepted(
   );
 }
 
-// Known defect #1447: the chain of X2 with the opposite arrival order. Kopje received Delete(s) first (recorded as a
-// retraction), then refused Accept(s); at quiescence R's server is live-accepted with s while Kopje holds q pending.
-// Removed with its witness W17 when #1447 is decided.
-export function knownDefect1447(
+// X3, accepted risk (docs/threat-model.md, docs/mastodon-deviations.md): `revoked-pending-accept-refused(q, s)`. The
+// chain of X2 with the opposite arrival order: Kopje received Delete(s) first (recorded as a retraction, VIS-28), then
+// refused Accept(s); at quiescence R's server is live-accepted with s while Kopje holds q pending.
+export function revokedPendingAcceptRefused(
   log: readonly Logged[],
   q: { uri: string; request: string },
   kopje: { state: QuoteState | null },
