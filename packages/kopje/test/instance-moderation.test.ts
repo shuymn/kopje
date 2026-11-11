@@ -1219,7 +1219,6 @@ const p1Arb: fc.Arbitrary<Action> = fc.oneof(
   ...adminArbs,
   { arbitrary: fc.constant({ k: "round" as const }), weight: 6 },
   { arbitrary: fc.constant({ k: "moderation" as const }), weight: 3 },
-  { arbitrary: fc.constant({ k: "replay" as const }), weight: 1 },
   { arbitrary: fc.record({ k: fc.constant("unfollow" as const), r: remoteArb("R1", "R3", "R4") }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("remove" as const), r: remoteArb("R1", "R2", "R4") }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("report" as const), r: remoteArb("R1", "R2", "R3", "R4") }), weight: 1 },
@@ -1817,15 +1816,56 @@ async function p2World(seed: Seed): Promise<World> {
 
 const P2_CASES = 30;
 
+// A handshake cycle (VIS-30's held handshakes): L1's Follow of R1 or its Accept of R1's Follow, refused for R1's
+// suspension at its claim or at its confirmation, and R1 unsuspended. A minority of P2 runs start with one, so the
+// replays are reached; the actions after it are arbitrary. Its seed holds no follow between L1 and R1, so the cycle
+// records a handshake.
+type Cycle = { direction: "Follow" | "Accept"; at: "claim" | "confirm" };
+
+const cycleArb: fc.Arbitrary<Cycle> = fc.record({
+  direction: fc.constantFrom("Follow" as const, "Accept" as const),
+  at: fc.constantFrom("claim" as const, "confirm" as const),
+});
+
+function cycleActions(cycle: Cycle): P2Action[] {
+  const record: P2Action[] =
+    cycle.direction === "Follow" ? [{ k: "follow", r: "R1" }] : [{ k: "peerFollow" }, { k: "deliver" }];
+  const refused: P2Action[] =
+    cycle.at === "claim"
+      ? [{ k: "suspend", r: "R1" }, { k: "claim" }]
+      : [{ k: "claim" }, { k: "suspend", r: "R1" }, { k: "confirm", i: 0 }];
+  return [...record, ...refused, { k: "unsuspend", i: 0 }];
+}
+
+const cycleSeed = (seed: Seed): Seed => ({
+  ...seed,
+  follows: seed.follows.map((on, i) => on && SEEDS[i] !== "L1>R1" && SEEDS[i] !== "R1>L1"),
+});
+
 describe("instance moderation P2: federation while decisions are in force, against the policy and a peer", () => {
   it("agrees with the policy after every step and with R1's Mastodon server once settled", async () => {
     await fc.assert(
-      fc.asyncProperty(seedArb, fc.array(p2Arb, { minLength: 12, maxLength: 20 }), async (seed, actions) => {
-        merge("P2", (await runP2(seed, actions)).stats);
-      }),
+      fc.asyncProperty(
+        seedArb,
+        fc.oneof({ arbitrary: fc.constant(null), weight: 3 }, { arbitrary: cycleArb, weight: 1 }),
+        fc.array(p2Arb, { minLength: 12, maxLength: 20 }),
+        async (seed, cycle, actions) => {
+          const w =
+            cycle === null
+              ? await runP2(seed, actions)
+              : await runP2(cycleSeed(seed), [...cycleActions(cycle), ...actions]);
+          if (cycle !== null) {
+            tally(w.stats, `cycle ${cycle.direction} at ${cycle.at}`);
+          }
+          merge("P2", w.stats);
+        },
+      ),
       runs(P2_CASES, SEED),
     );
     console.log("instance moderation P2 coverage", JSON.stringify(STATS.P2, null, 1));
+    // The campaign reaches the replays: a seed set whose runs record none checks nothing of them.
+    const replayed = (STATS.P2?.["replayed: Follow"] ?? 0) + (STATS.P2?.["replayed: Accept"] ?? 0);
+    expect(replayed, JSON.stringify(STATS.P2)).toBeGreaterThan(0);
   }, 600_000);
 });
 
