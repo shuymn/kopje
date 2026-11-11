@@ -4076,7 +4076,9 @@ heap).
   a request, throws and rolls back (`requireExactIncrement`); `test/integer-ids.test.ts`,
   `test/streaming/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
   _Gap_: the trigger `conversation_statuses_removed` increments a streaming mark in SQL without that check, so at
-  2^63 - 1 it stores a REAL; the stream reads such a mark as 2^63 - 1.
+  2^63 - 1 it stores a REAL; the stream reads such a mark as 2^63 - 1. _Gap_: the push entity's `id` and a push
+  payload's `notification_id` are JSON numbers, as Mastodon serialises them (`StoredSubscription` and `PushContent` in
+  `src/domain/push.ts`), so an id past 2^53 is shown rounded there; the Store's own reads of these ids stay exact.
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
   without a specific recipient are signed by the instance actor; fetches for a personal inbox by the recipient's key;
   fetches on a remote account's behalf (a sync of its featured, featuredTags, following, followers and outbox
