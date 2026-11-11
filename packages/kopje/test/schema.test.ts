@@ -47,7 +47,7 @@ describe("schema 0000", () => {
 			`);
         const values: Record<string, string> = {
           accounts: "(id, uri, username, domain) VALUES (?, 'https://x.test/b', 'b', 'x.test')",
-          statuses: `(id, uri, account_id, visibility, published_at) VALUES (?, 'https://x.test/s', '${LOCAL}', 'public', '2026-10-12T00:00:00.000Z')`,
+          statuses: `(id, uri, account_id, visibility, published_at) VALUES (?, 'https://x.test/s', '${LOCAL}', 'public', 'now')`,
           media_attachments: `(id, account_id, type, url) VALUES (?, '${LOCAL}', 'image', 'https://x.test/m')`,
           lists: `(id, account_id, title) VALUES (?, '${LOCAL}', 'l')`,
         };
@@ -76,7 +76,7 @@ describe("schema 0000", () => {
 				INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
 					VALUES ('${LOCAL}', 'me@local.test', x'00', x'00', 'pem');
 				INSERT INTO accounts (id, uri, username, domain) VALUES ('${REMOTE}', 'https://remote.test/users/them', 'them', 'remote.test');
-				INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES ('${STATUS}', 'https://remote.test/notes/1', '${REMOTE}', 'public', '2026-10-12T00:00:00.000Z');
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES ('${STATUS}', 'https://remote.test/notes/1', '${REMOTE}', 'public', 'now');
 			`);
       const target =
         table === "favourites" || table === "bookmarks" ? STATUS : table === "domain_blocks" ? "remote.test" : REMOTE;
@@ -118,13 +118,13 @@ describe("schema 0000", () => {
       sql.exec(`
 				INSERT INTO accounts (id, uri, username) VALUES ('${LOCAL}', 'https://local.test/ap/users/me', 'me');
 				INSERT INTO accounts (id, uri, username, domain) VALUES ('${REMOTE}', 'https://remote.test/users/them', 'them', 'remote.test');
-				INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES ('${STATUS}', 'https://local.test/ap/o/1', '${LOCAL}', 'public', '2026-10-12T00:00:00.000Z');
-				INSERT INTO statuses (id, uri, account_id, visibility, published_at, raw) VALUES ('${REPLY}', 'https://remote.test/notes/1', '${REMOTE}', 'public', '2026-10-12T00:00:00.000Z', '{}');
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES ('${STATUS}', 'https://local.test/ap/o/1', '${LOCAL}', 'public', 'now');
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at, raw) VALUES ('${REPLY}', 'https://remote.test/notes/1', '${REMOTE}', 'public', 'now', '{}');
 			`);
       const refused = /local statuses cannot hold raw/;
       expect(() =>
         sql.exec(
-          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, raw) VALUES ('${BOOST}', 'https://local.test/ap/o/2', '${LOCAL}', 'public', '2026-10-12T00:00:00.000Z', '{}')`,
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, raw) VALUES ('${BOOST}', 'https://local.test/ap/o/2', '${LOCAL}', 'public', 'now', '{}')`,
         ),
       ).toThrow(refused);
       expect(() => sql.exec("UPDATE statuses SET raw = '{}' WHERE id = ?", STATUS)).toThrow(refused);

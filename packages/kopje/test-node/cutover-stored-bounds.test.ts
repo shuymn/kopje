@@ -388,7 +388,7 @@ describe("converted instance settings at their stored bounds", () => {
   });
 });
 
-describe("a converted status time outside years 0 to 9999 (0088_status_times)", () => {
+describe("a converted status time outside years 0 to 9999 (RES-2)", () => {
   it("stores the base time when neither published nor cdate is a time the Store holds, and verifies", async () => {
     const exportPath = await exportOf(space.dir, { level: 39 });
     const early = "-000001-06-01T00:00:00.000Z";

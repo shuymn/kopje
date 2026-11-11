@@ -21,14 +21,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
-- A status's `published_at` and `edited_at` are now held to the stored time form (`YYYY-MM-DDTHH:MM:SS.sssZ`, years
-  0000 to 9999) for every row, converted and imported ones included, so a status's `created_at` and `edited_at` are
-  always 24 bytes. Before, such a row could hold any text there, which the API copied unchanged, and a page whose first
-  status held an oversized one answered an error. Migration `0088_status_times` rewrites a time in another format to
-  the time it names, and one it cannot read to the status's arrival time (its edit time to the new publication time);
-  no status is removed. A dump whose times are past the form now fails to import with `statuses: a time past its
-  stored bound` (a dump taken before 0088 is rewritten by the upgrade). A remote status or boost dated before year 0 is
-  stored at its arrival, as one with an unreadable date is. Adds a migration, no `wrangler.jsonc` change.
+- A status's `created_at` and `edited_at` are now always 24-byte ISO times (`YYYY-MM-DDTHH:MM:SS.sssZ`, years 0000 to
+  9999), in the API, the public pages, its ActivityPub Note, Create, Update, Announce and Undo, its edit history, a
+  moved account's and a featured hashtag's `last_status_at`, and hashtag history. A converted or imported status may
+  hold any text in its stored times; it is now read as the time it names in another format (a space for the `T`, a zone
+  offset, a longer fraction), else as the status's arrival time, and an unreadable edit time as the publication time.
+  Before, such a value was copied unchanged, and a page whose first status held an oversized one could fail. The
+  stored values are not rewritten, and dumps carry them as stored. A remote status, edit or boost dated before year 0
+  is now stored at its arrival, as one with an unreadable date is, and the cutover's conversion stores the base time for
+  a status whose `published` and `cdate` are both outside years 0 to 9999, which `verify-conversion` expects from the
+  dump's `createdAt`. No migration, no `wrangler.jsonc` change.
 
 - A status posted or edited through a host other than the instance domain (such as the Worker's `workers.dev` address)
   now links its mentions and hashtags on the instance's origin, as a scheduled post already did. Before, the stored

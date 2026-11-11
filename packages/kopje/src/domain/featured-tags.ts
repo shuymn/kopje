@@ -5,7 +5,7 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { byteCut, presentedCountSql } from "../platform/stored-bounds";
+import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
 import { resolveAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
@@ -196,7 +196,7 @@ export function featurableName(display: string): boolean {
 // (`account`) public and unlisted originals with the hashtag, the newest by id as Mastodon's default order picks it.
 // A walk of the account's own statuses.
 function localCountedSql(account: string, name: string): string {
-  return `SELECT c.n, (SELECT published_at FROM statuses WHERE id = c.last_id) AS last
+  return `SELECT c.n, (SELECT ${statusPublishedSql("p")} FROM statuses p WHERE p.id = c.last_id) AS last
 	FROM (SELECT count(*) AS n, max(s.id) AS last_id FROM statuses s
 		WHERE s.account_id = ${account} AND s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL}
 			AND EXISTS (SELECT 1 FROM status_tags t WHERE t.status_id = s.id AND t.name = ${name})) c`;
@@ -389,7 +389,7 @@ export type FeaturedOfStatus = { accountId: string; publishedAt: string; id: str
 
 export function featuredOfStatus(db: Db, statusId: string): FeaturedOfStatus | null {
   const status = db.first<{ account_id: string; published_at: string; counted: number }>(
-    `SELECT s.account_id, s.published_at, s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL} AS counted
+    `SELECT s.account_id, ${statusPublishedSql("s")} AS published_at, s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL} AS counted
 		FROM statuses s JOIN local_accounts l ON l.account_id = s.account_id WHERE s.id = ?`,
     statusId,
   );
@@ -446,7 +446,7 @@ function decrement(db: Db, status: FeaturedOfStatus): void {
 			last_status_at = CASE
 				WHEN statuses_count <= 1 THEN NULL
 				WHEN last_status_at > ?3 THEN last_status_at
-				ELSE (SELECT s.published_at FROM statuses s
+				ELSE (SELECT ${statusPublishedSql("s")} FROM statuses s
 					WHERE s.account_id = ?1 AND s.id <> ?4 AND s.reblog_of_id IS NULL AND s.visibility IN ${DISTRIBUTABLE_SQL}
 						AND EXISTS (SELECT 1 FROM status_tags t WHERE t.status_id = s.id AND t.name = featured_tags.name)
 					ORDER BY s.id DESC LIMIT 1)

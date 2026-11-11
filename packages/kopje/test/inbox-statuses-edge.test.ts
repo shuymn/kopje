@@ -166,7 +166,7 @@ describe("ID-7: versions of a status first seen late", () => {
   });
 });
 
-describe("RES-2: remote times the Store cannot hold (0088_status_times)", () => {
+describe("RES-2: remote times outside the stored form", () => {
   it("stores a Note, its edit and a boost dated before year 0 at their arrival", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

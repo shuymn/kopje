@@ -2856,10 +2856,13 @@ END;`,
   ].join("\n\n")}\n`;
 }
 
-// ---- Status times: migration 0088_status_times
-
-// statuses.published_at, and edited_at where it is not NULL, hold a stored time (isoTimeSql). The writers store
-// storedTime's output, a time they cannot store being replaced as each says.
+// ---- Status times (statuses.published_at, edited_at)
+//
+// TEXT with no CHECK or trigger (0000_initial): a converted or imported row may hold any value there, and adding a
+// bound would rewrite every status (each row whole, so the cost grows with its content). The bound is kept at both ends
+// instead, as for account counts: the writers store storedTime's output only (a time they cannot store replaced as each
+// says), and every read that copies a status's time into an answer, a document or another row takes
+// statusPublishedSql and statusEditedSql, so no stored value past the form leaves SQLite.
 
 // The stored form of the time `ms` (ms since the epoch), or null when it is no time or its year is outside 0 to 9999.
 export function storedTime(ms: number): string | null {
@@ -2871,72 +2874,34 @@ export function storedTime(ms: number): string | null {
   return isIsoTime(text) ? text : null;
 }
 
-// isoTimeSql written with iif, which SQLite reads as the same CASE: a file declared foreignKeys: 'unchanged' holds no
-// CASE outside a trigger (test/migration-sql.ts). test/migrations.test.ts ("0088_status_times") pins them equal.
-export function isoTimeIifSql(column: string): string {
-  return `iif(${isoTimeAcceptedSql(column)}, ${column}, NULL)`;
-}
-
-// True when a status row's times are past their stored bound.
-export function statusTimesPastBoundSql(row: string): string {
-  return `${isoTimeIifSql(`${row}.published_at`)} IS NULL
-  OR (${row}.edited_at IS NOT NULL AND ${isoTimeIifSql(`${row}.edited_at`)} IS NULL)`;
-}
-
-// The longest stored time 0088 reads in a format of SQLite's (a fraction of nanoseconds and a zone offset take 35), in
-// UTF-8 bytes.
+// The longest stored time read in a format of SQLite's (a fraction of nanoseconds and a zone offset take 35), in UTF-8
+// bytes.
 const TIME_FORMAT_BYTES = 64;
 
-// `column` read as a time by SQLite, in the stored form, else NULL: judged by its bytes, then NUL, then the form, and
-// read only when it starts with a calendar date (strftime reads a bare number as a Julian day). strftime applies a zone
-// offset; its '+0 seconds' carries an hour of 24 into the next day.
-function timeFromSql(column: string): string {
-  return `iif(length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES}
-	AND instr(CAST(${column} AS BLOB), x'00') = 0
-	AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*',
-	${isoTimeIifSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)}, NULL)`;
+// `column` in the stored form: as stored when it is in it, else the time SQLite reads in it, else NULL. A value is read
+// only when it is at most TIME_FORMAT_BYTES, holds no NUL and starts with a calendar date (strftime reads a bare
+// number as a Julian day), judged in that order; strftime applies a zone offset, rounds a longer fraction to
+// milliseconds (never past .999), and its '+0 seconds' carries an hour of 24 into the next day.
+function storedTimeOfSql(column: string): string {
+  return `CASE WHEN ${isoTimeAcceptedSql(column)} THEN ${column}
+	WHEN length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES} AND instr(CAST(${column} AS BLOB), x'00') = 0
+		AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+	THEN ${isoTimeSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)} END`;
 }
 
-// What 0088 stores for a published_at past the bound: the time it names, else the row's arrival (created_at), as a
-// remote writer stores a time it cannot read, else the epoch, which no window counts as recent.
-function publishedFromSql(): string {
-  return `coalesce(${timeFromSql("published_at")}, ${timeFromSql("created_at")}, '1970-01-01T00:00:00.000Z')`;
+// A status's publication time as read (`s`, the statuses row's alias): its published_at in the stored form, else its
+// arrival (created_at), as a remote writer stores a time it cannot read, else the epoch, which no window counts as
+// recent. Never NULL.
+export function statusPublishedSql(s: string): string {
+  return `coalesce(${storedTimeOfSql(`${s}.published_at`)}, ${storedTimeOfSql(`${s}.created_at`)},
+	'1970-01-01T00:00:00.000Z')`;
 }
 
-// stream_status_edited as 0056_announcements made it, as sqlite_schema keeps it (test/migrations.test.ts compares).
-export const STREAM_STATUS_EDITED_SQL = `CREATE TRIGGER stream_status_edited AFTER UPDATE OF edited_at ON statuses
-WHEN NEW.edited_at IS NOT NULL AND NEW.edited_at IS NOT OLD.edited_at
-  AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key IN ('user', 'user:notification'))
-    OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'list:' AND stream_key < 'list;')
-    OR (NEW.visibility = 'public' AND NEW.reblog_of_id IS NULL
-      AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key >= 'public' AND stream_key < 'public;')
-        OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'hashtag:' AND stream_key < 'hashtag;'))))
-  AND coalesce((SELECT max(id) FROM stream_events) - (SELECT min(id) FROM stream_events), 0) < 4096
-BEGIN
-  INSERT INTO stream_events (kind, subject, created_at) VALUES ('edit', NEW.id, NEW.edited_at);
-END`;
-
-// Migration 0088_status_times after its header (test/migrations.test.ts compares them): every row past the bound
-// rewritten in one walk of statuses (an edited_at it cannot read becomes the row's published_at, so the status stays
-// edited), with stream_status_edited dropped around it so the rewrite journals no edit (it would fill the journal's
-// span and drop the next real event), then triggers that refuse a write where statusTimesPastBoundSql holds of the NEW
-// row.
-export function statusTimesMigrationSql(): string {
-  return `${[
-    "DROP TRIGGER stream_status_edited;",
-    `UPDATE statuses SET
-  published_at = ${publishedFromSql()},
-  edited_at = iif(edited_at IS NOT NULL, coalesce(${timeFromSql("edited_at")}, ${publishedFromSql()}), NULL)
-WHERE ${statusTimesPastBoundSql("statuses")};`,
-    `${STREAM_STATUS_EDITED_SQL};`,
-    ...boundTriggers(
-      "statuses_times",
-      "statuses",
-      "published_at, edited_at",
-      statusTimesPastBoundSql("NEW"),
-      "statuses: a time past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
+// A status's edit time as read: NULL when it was never edited; else its edited_at in the stored form, else its
+// publication time as read, so an edited status stays edited.
+export function statusEditedSql(s: string): string {
+  return `CASE WHEN ${s}.edited_at IS NULL THEN NULL
+	ELSE coalesce(${storedTimeOfSql(`${s}.edited_at`)}, ${statusPublishedSql(s)}) END`;
 }
 
 // ---- Account counts (accounts.followers_count, following_count, statuses_count)

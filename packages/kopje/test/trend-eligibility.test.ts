@@ -6,7 +6,7 @@ import { readOperation } from "../src/domain/operation";
 import { TREND_LANGUAGES, TREND_LANGUAGES_JSON } from "../src/domain/trend-languages";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
-import { migratedStore, withoutStatusTimeBounds } from "./helpers";
+import { migratedStore } from "./helpers";
 import { AT, author, HOUR, trendStatus, trendStatuses } from "./trend-helpers";
 
 // R41 (Trends::Statuses#eligible?): which statuses may trend, judged by trendableStatusSql alone (allowance and scores
@@ -67,8 +67,6 @@ describe("trend eligibility (R41)", () => {
 			VALUES ('blocked.example', 'suspend', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
     );
     const t = AT - HOUR;
-    // Seqs 12 and 13 hold times past the bound 0088_status_times holds published_at to, which eligibility judges too.
-    await withoutStatusTimeBounds(store);
     const ok = await trendStatus(store, { author: a, published: t, seq: 0 });
     const local = await author(store, "l");
     const localOk = await trendStatus(store, { author: local, published: t, seq: 99 });

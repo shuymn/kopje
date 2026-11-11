@@ -299,14 +299,6 @@ it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-
 reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
 which then upgrades. A file built from legacy data writes NULL.
 
-Status times (migration `0088_status_times`): `statuses.published_at`, and `edited_at` unless it is NULL, are TEXT of
-the form `YYYY-MM-DDTHH:MM:SS.sssZ`, a year of 0000 to 9999 and an hour of 00 to 23, as SQLite's `strftime` writes the
-time back (24 bytes); anything else fails with `statuses: a time past its stored bound`. A dump taken before 0088
-restores into a Store at its own migrations, whose upgrade rewrites a time past the bound to the time SQLite reads in
-it (a space for the `T`, no or a longer fraction, a zone offset), else `published_at` to the row's `created_at` read
-the same way, else the epoch, and `edited_at` to the new `published_at`; no row is removed. A file built from legacy
-data writes the converter's times, which are in the form.
-
 Status cards (migration `0067_status_cards`): a `status_cards` row names its status (`status_id`, 18 ASCII digits, a
 `statuses` row it goes with) and is pending (`due_at` set, `fetched_at` NULL) or attached (`fetched_at` set, `due_at`
 NULL, a non-empty `title`; CHECKs `status_card_pending_or_attached` and `status_card_attached_title`). `url` is

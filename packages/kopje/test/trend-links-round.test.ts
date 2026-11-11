@@ -38,7 +38,7 @@ import {
   TREND_TAG_NAME_BYTES,
 } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
-import { BUILD, migratedStore, testKernel, withoutStatusTimeBounds } from "./helpers";
+import { BUILD, migratedStore, testKernel } from "./helpers";
 import { observedSql } from "./read-helpers";
 import {
   AT,
@@ -574,8 +574,6 @@ describe("imported timestamps", () => {
       await boostsOf(store, id, 100, TODAY + 2 * HOUR + i * 1000, 600_000_000_000_000_000n);
     }
     expect(originals.length * 100).toBeGreaterThan(TREND_LINK_BOOSTS);
-    // Past the bound 0088_status_times holds published_at to, which the walk does not rely on.
-    await withoutStatusTimeBounds(store);
     await sql(
       store,
       `UPDATE statuses SET published_at = '2026-10-20T00:00:00.000Z' || printf('%.*c', 65536, 'x')

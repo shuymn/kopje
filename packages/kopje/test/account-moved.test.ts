@@ -9,7 +9,6 @@ import {
   MOVED_CREATED_AT_LIMIT,
   MOVED_DISPLAY_NAME_LIMIT,
   MOVED_EMOJIS_BYTES,
-  MOVED_LAST_STATUS_AT_LIMIT,
   MOVED_URL_LIMIT,
 } from "../src/domain/account-columns";
 import { type Account, presentAccountsWithin, USERNAME_LIMIT } from "../src/domain/accounts";
@@ -21,7 +20,6 @@ import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
-import { withoutStatusTimeBounds } from "./helpers";
 import { actorDefaults } from "./inbox-helpers";
 import {
   observedSql,
@@ -312,7 +310,6 @@ describe("the nested account at its caps (RES-2)", () => {
 				created_at = CAST(${malformed} AS TEXT) WHERE id = ?`,
       target,
     );
-    await withoutStatusTimeBounds(h.store);
     await sql(
       h.store,
       `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
@@ -340,17 +337,18 @@ describe("the nested account at its caps (RES-2)", () => {
     for (const [column, units] of Object.entries(read[0]!)) {
       expect(units, column).toBeLessThanOrEqual(MOVED_ACCOUNT_CAPS[column as keyof typeof MOVED_ACCOUNT_CAPS]);
     }
-    // Cut at the byte caps, past the decoded limits, which the presenter applies.
+    // Cut at the byte caps, past the decoded limits, which the presenter applies; the status time is read as a stored
+    // time (statusPublishedSql), here its arrival, of which the date is shown.
     expect(read[0]).toMatchObject({
       display_name: MOVED_ACCOUNT_CAPS.display_name,
       created_at: MOVED_ACCOUNT_CAPS.created_at,
-      last_status_at: MOVED_ACCOUNT_CAPS.last_status_at,
+      last_status_at: 10,
     });
     const nested = (await shown(source)).moved!;
     expect(points(nested.display_name)).toBe(MOVED_DISPLAY_NAME_LIMIT);
     expect(points(nested.username)).toBe(USERNAME_LIMIT);
     expect(points(nested.created_at)).toBe(MOVED_CREATED_AT_LIMIT);
-    expect(points(nested.last_status_at!)).toBe(MOVED_LAST_STATUS_AT_LIMIT);
+    expect(nested.last_status_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 

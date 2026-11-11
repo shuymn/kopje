@@ -2557,15 +2557,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
   its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
   imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
-  `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at`, and `edited_at`
-  unless NULL, hold the 24-byte ISO form (`isoTimeSql`), so a presented `created_at` or `edited_at` is 24 bytes; the
-  triggers `statuses_times_insert` and `statuses_times_update` of migration `0088_status_times` refuse any other value,
-  imports included (`statusTimesPastBoundSql` in `src/platform/stored-bounds.ts`), and the migration rewrote each
-  existing value past it to the time SQLite reads in it, else the row's arrival or the epoch, removing no status. The
-  remote writers (`remoteTime` in `src/domain/remote-statuses.ts`, a boost in `src/domain/inbox.ts`) and the cutover's
-  converter keep a time through `storedTime`, which shares the acceptance rule, and store the arrival (the converter
-  its fallback) for any other, so a write is never refused for it (`test/migrations.test.ts` ("0088_status_times"),
-  `test/inbox-statuses-edge.test.ts` ("remote times the Store cannot hold")). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
+  `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at` and
+  `edited_at` have no stored bound (TEXT, no CHECK or trigger; adding one would rewrite every status, each row whole), so
+  an imported or converted row may hold any value there. The writers store only the 24-byte ISO form: the remote writers
+  (`remoteTime` in `src/domain/remote-statuses.ts`, a boost in `src/domain/inbox.ts`) and the cutover's converter keep
+  a time through `storedTime` (`src/platform/stored-bounds.ts`), which shares `isoTimeSql`'s acceptance rule, and
+  store the arrival (the converter its base time) for any other. Every read that copies a status's time into an answer,
+  a document or another row takes `statusPublishedSql` and `statusEditedSql`: the stored form, else the time SQLite
+  reads in a value of at most 64 bytes with no NUL that starts with a date, else the row's arrival read the same way,
+  else the epoch; an edit time NULL when none is stored, else the publication time as read. They cover the status
+  columns (`STATUS_COLUMN_MAP`, and with it hydration and the heap estimate), the Note, Create and Update
+  (`statusFacts`), the outbox's Announce, a boost's Undo and withdrawal, a revoked quote's redacted status, the first
+  edit's snapshot (local and remote) and a remote Update's version fallback, the moved-to account's `last_status_at`,
+  featured hashtags' `last_status_at` and hashtag history days. Trends read through `isoTimeSql`; a dump, an import and
+  the converter carry the stored value. So a presented `created_at` or `edited_at` is 24 bytes
+  (`test/status-times.test.ts`, `test/inbox-statuses-edge.test.ts` ("remote times outside the stored form"),
+  `test/dump-import.test.ts` ("round-trips status times past the stored form unchanged")). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
   and `statuses_count` have no stored bound (an INTEGER column, no CHECK or trigger; adding one would rewrite every
   account), so an imported or converted row may hold any value there. Writers store only integers from 0 to 2^53−1
   (`MAX_ACCOUNT_COUNT`): local recounts, and a remote account's learned `totalItems` (`totalItemsOf` in
@@ -3639,18 +3646,18 @@ fill, the largest SQLite read) (`test/status-bounds.test.ts`), well under the 32
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 123,265           | 140,480         | 147,990           | 1         | 92    | 1.8%           |
+| Account occurrence, with the account it moved to                 | 123,265           | 140,430         | 147,990           | 1         | 92    | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 11,118            | 8,331           | 11,021            | 1         |       | 0.1%           |
-| Status                                                           | 4,452,233         | 2,697,144       | 2,703,319         | 1,486     | 2,449 | 32.2%          |
-| Quote (the status and its quoted status)                         | 6,826,260         | 5,385,072       | 5,397,422         | 1,919     | 4,882 | 64.3%          |
-| Boost of a quote                                                 | 7,120,881         | 5,794,056       | 5,812,060         | 1,976     | 5,841 | 69.3%          |
-| Conversation: 12 participants presented, its last status a quote | 8,504,016         | 7,070,801       | 7,122,211         | 1,945     | 5,977 | 84.9%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,888,214         | 6,509,336       | 6,547,726         | 1,954     | 5,630 | 78.1%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,206,258         | 5,981,605       | 6,000,465         | 1,934     | 5,197 | 71.5%          |
-| An admin.report notification of that report                      | 2,360,617         | 403,364         | 409,874           | 1,061     | 294   | 4.9%           |
+| Status                                                           | 4,452,203         | 2,697,094       | 2,703,319         | 1,486     | 2,449 | 32.2%          |
+| Quote (the status and its quoted status)                         | 6,826,200         | 5,384,972       | 5,397,422         | 1,919     | 4,882 | 64.3%          |
+| Boost of a quote                                                 | 7,120,791         | 5,793,906       | 5,812,060         | 1,976     | 5,841 | 69.3%          |
+| Conversation: 12 participants presented, its last status a quote | 8,503,596         | 7,070,101       | 7,122,211         | 1,945     | 5,977 | 84.9%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,887,914         | 6,508,836       | 6,547,726         | 1,954     | 5,630 | 78.1%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,206,138         | 5,981,405       | 6,000,465         | 1,934     | 5,197 | 71.5%          |
+| An admin.report notification of that report                      | 2,360,557         | 403,264         | 409,874           | 1,061     | 294   | 4.9%           |
 | A moderation_warning notification, its local account at bounds   | 133,543           | 290,370         | 332,194           | 9         | 223   | 4.0%           |
 | Its notification group                                           | 133,543           | 290,559         | 332,383           | 9         | 230   | 4.0%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,960,290         | 5,525,678       | 5,541,283         | 1,942     | 4,978 | 66.1%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,960,200         | 5,525,528       | 5,541,283         | 1,942     | 4,978 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |

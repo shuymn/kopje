@@ -38,7 +38,6 @@ describe("migration lint", () => {
       "0084_family_job_attempts",
       "0086_authorized_apps",
       "0087_tag_key_fixed_points",
-      "0088_status_times",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

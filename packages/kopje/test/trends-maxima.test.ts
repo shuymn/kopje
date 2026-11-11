@@ -31,7 +31,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
-import { BUILD, migratedStore, withoutStatusTimeBounds } from "./helpers";
+import { BUILD, migratedStore } from "./helpers";
 import { ACCESS, accessAdminStore } from "./ops-helpers";
 import { explainPlan, plannedRun, rowsRead } from "./read-helpers";
 import { AT, authors, DAY, linkCopies, reviewLink, setTrendSetting, storedLink, trendStatuses } from "./trend-helpers";
@@ -150,8 +150,6 @@ describe("trends maxima (RES-3)", () => {
   // characters, an odd published_at, a url of STATUS_URL_LIMIT control characters and content of control characters.
   it("presents 40 imported admin rows with oversized parents within the maximum, through the Store", async () => {
     const store = await accessAdminStore();
-    // The odd published_at is past the bound 0088_status_times holds it to, which the admin read bounds too.
-    await withoutStatusTimeBounds(store);
     await runInDurableObject(store, (_instance, state) => {
       const s = state.storage.sql;
       for (let i = 0; i < 40; i++) {
@@ -324,7 +322,7 @@ describe("the hashtag list’s reads (RES-7)", () => {
         trendingTags.run(capturing, input);
         return {
           list: seen.find((p) => p.includes("SELECT hex(name) AS key FROM")) ?? "",
-          history: seen.find((p) => p.includes("SELECT substr(s.published_at")) ?? "",
+          history: seen.find((p) => p.startsWith("SELECT substr(coalesce(")) ?? "",
         };
       });
       return { rows, plans };

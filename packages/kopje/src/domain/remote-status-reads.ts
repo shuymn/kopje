@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate } from "./link-cards";
@@ -87,8 +88,8 @@ export type StoredStatus = {
 
 export function statusByUri(db: Db, uri: string): StoredStatus | undefined {
   return db.first<StoredStatus>(
-    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language, published_at, edited_at,
-			remote_version
+    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language,
+			${statusPublishedSql("statuses")} AS published_at, ${statusEditedSql("statuses")} AS edited_at, remote_version
 		FROM statuses WHERE uri = ?`,
     uri,
   );

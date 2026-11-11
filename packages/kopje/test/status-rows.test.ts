@@ -445,8 +445,6 @@ describe("the hydrate queries (RES-3)", () => {
         "T".repeat(64 * 1024),
         ACCOUNT_EMOJIS_FULL,
       );
-      // Past 0088_status_times' bound, which the read keeps its own cut on (helpers.ts withoutStatusTimeBounds).
-      sql.exec("DROP TRIGGER statuses_times_insert");
       sql.exec(
         `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
 				VALUES (?, ?, ?, 'public', '', CAST(? AS TEXT))`,
