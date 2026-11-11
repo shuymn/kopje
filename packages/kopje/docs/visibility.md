@@ -492,10 +492,10 @@ after an unsuspension it is listed and answered again. The `Reject` goes to the 
 alone, as Mastodon's `reject_remote_follows!` sends it (`inbox_url`), never to its shared inbox and not to the earlier
 receivers of the `Accept`s it withdraws: a Follow's answer matters to the follower's server only. Before it is
 recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
-accounts' follows of it are kept; their `Follow` is held and sent once the account is available again ("Held
-handshakes", below), and any other content to it is dropped at send time (VIS-30). Each
-round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps
-before the follow ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
+accounts' follows of it are kept; a pending one's `Follow` is held and sent once the account is available again
+("Held handshakes", below), and any other content to it is dropped at send time (VIS-30). Each round writes at most
+`MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
+ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
 the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
 under ID-7's rules for a pair id and the retraction cap.
 
@@ -513,8 +513,7 @@ account keeps `suspended_at` with `suspension_source = 'domain'`, so it stays un
 `suspended: true`, and the same transaction resets its job to mode `domain` with a fresh follow bound. In that mode
 each round requires the domain mark and live coverage, and the job severs both ways, its requests included, as the
 domain job severs a covered account (below). Suspending it again sets mode `account` back, which keeps local follows
-of it and its requests; a stale mode
-ends the job at its next round. An account held only by a domain mark answers 403: lowering the block lifts it.
+of it and its requests; a stale mode ends the job at its next round. An account held only by a domain mark answers 403: lowering the block lifts it.
 
 Inbound, the gate runs in every round after the deleted-actor check and before the actor upsert: a verified document
 of an individually suspended actor updates only its inbox and shared inbox, so the job's `Reject` reaches a current
@@ -663,8 +662,8 @@ the cleanup in `blocks.ts`); until the cleanup reaches a follower there, it is s
 `audienceTargets` turns the recipients into targets: followers and accounts named in `to` or `cc` by shared inbox,
 a silent recipient of an addressed activity by a copy of its own at its personal inbox (VIS-2), and the recipient of
 an activity without `to` by shared inbox, else personal inbox (R38's severing `Reject` by personal inbox alone, its
-`personalInbox` option). No other SQL turns follows into inboxes or reads an
-account's shared inbox (the architecture test below).
+`personalInbox` option). No other SQL turns follows into inboxes or reads an account's shared inbox (the architecture
+test below).
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted is forwarded through
 each of them (VIS-3 in [threat-model.md](threat-model.md)): its audience names only the booster's boost
@@ -749,10 +748,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     evaluated for each remote one. A covered account that is not individually suspended is marked if it is not yet,
     and severed both ways up to the bound, marked or not: its follows of local accounts (an accepted one with a
     withdrawing `Reject` to its personal inbox, a request deleted without one, as Mastodon's `DeleteAccountService`
-    purges `FollowRequest`s) and local accounts' follows and requests of it (each with
-    its `Undo`), through `severFollow` with the account job's preparation. Before a local follower's follow ends,
-    the preparation removes the account from that follower's lists, writing at most the round's room (about 259
-    rows) a round, so the follow's final delete writes no list row. Its reads are not bounded the same way: each
+    purges `FollowRequest`s) and local accounts' follows and requests of it (each with its `Undo`), through
+    `severFollow` with the account job's preparation. Before a local follower's follow ends, the preparation removes
+    the account from that follower's lists, writing at most the round's room (about 259 rows) a round, so the follow's final delete writes no list row. Its reads are not bounded the same way: each
     preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all of the follower's
     lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always removed in
     one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round,
@@ -843,10 +841,10 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   reason other than its sender (the sender rule) holds its follow, due `HANDSHAKE_RECHECK_MS` (5 minutes) later, when
   its intent is neither superseded nor a retraction and is that follow's owed handshake: a `Follow` whose local
   account's follow of the account its object names is pending under that `Follow`'s id, or a follow pair's `Accept`
-  whose remote follow is accepted under the `Follow` it answers (an edge without a `Follow` id, by an `Accept` that names
-  none). Ids are compared by their bytes. Nothing else is held: content, a `Block`, a quote's `Accept`, a superseded
-  answer, a `Reject` of a request (#1463), or a row whose sender was refused. A claim holds at most `CLAIM_LIMIT`
-  follows.
+  whose remote follow is accepted under the `Follow` it answers (an edge without a `Follow` id, by an `Accept` that
+  names none). Ids are compared by their bytes. Nothing else is held: content, a `Block`, a quote's `Accept`, a
+  superseded answer, a `Reject` of a request (#1463), or a row whose sender was refused. A claim holds at most
+  `CLAIM_LIMIT` follows.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time, a due retry
   first, else the fresh holds by `check_at` and follow id, and reads the follow as it is now: a local account's pending
   follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account its `Accept`;
@@ -1042,8 +1040,8 @@ A paged read whose rule hides rows reads a candidate window (`src/domain/windows
 - A merged read without request conditions (home, a list, a hashtag timeline's names) reads at most `streamWindow`
   candidates per stream and merges them up to the highest end of a stream that filled, at most `readWindow`, so no
   candidate below a stream's end is passed over; with conditions, each round of its walk merges the same way at the
-  round's per-stream `LIMIT`. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first candidate, so
-  the narrowed reads of R33 return it exactly when the positioned read does.
+  round's per-stream `LIMIT`. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first
+  candidate, so the narrowed reads of R33 return it exactly when the positioned read does.
 
 The cursor rule: a row hidden from the viewer by its own visibility or audience (private, direct or limited that they
 may not see, a boost of such an original, a status of an author on whose blocked domain a remote viewer lives) is
@@ -1056,8 +1054,8 @@ suspended), by the viewer's own blocks, mutes and domain blocks, by a follow's o
 the viewer owns (their notifications, bookmarks, favourites, notification requests, list members, endorsements), by the
 rule over what the row names: the viewer already knows their own relations and rows, and Mastodon paginates before
 filtering there. A candidate may also be left out by the request's own conditions (a post without media, a reply, a
-remote post on a local hashtag timeline), a status the viewer may see without them. Where a read cannot keep rows hidden by visibility out with an index, it walks past them: such rows
-cost their number, never a cursor. A public page's newer link from an empty page past its list's oldest is not an
+remote post on a local hashtag timeline), a status the viewer may see without them. Where a read cannot keep rows
+hidden by visibility out with an index, it walks past them: such rows cost their number, never a cursor. A public page's newer link from an empty page past its list's oldest is not an
 item's id but a boundary, `max_id` − 1 of that page's own request (`src/web/view/pager.ts`): it may equal a hidden
 status's id and discloses nothing, as it is derived from the request alone. A status page's replies list oldest first,
 and their earlier link from an empty page past their newest is the same kind of boundary, `min_id` + 1.
@@ -1092,7 +1090,7 @@ limit, 40); statuses page by 20 and at most 40, accounts and notifications by 40
 | outbox                               | `readWindow` of 21 (63), public and unlisted only                                                             | availability of a boosted original                                       |
 | quotes list (statuses.ts)            | `limit` + 1 accepted quotes; for anyone but the quoted author, within the audience (stricter than Mastodon)   | R8, or R2 for the quoted author                                          |
 
-The public timeline still tests its `local`, `remote` and `only_media` conditions, and its reply predicate, inside its
+The public timeline tests its `local`, `remote` and `only_media` conditions, and its reply predicate, inside its
 window on `statuses_public`, so a range they reject costs its length (the RES-7 gap in the threat model).
 
 Showing one group by its key (`GET /api/v2/notifications/:group_key`) is the one read with no cursor to resume from:
