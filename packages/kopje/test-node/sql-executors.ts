@@ -9,7 +9,9 @@ import { parse, type Source, walk } from "./source-scan.js";
 // call (`db.all`, `first`, `run`, `iterate`) or of another executor's call, it passes one of its own parameters, a
 // member of one, a template literal interpolating either, or a local constant initialized from any of these. An
 // executor is called by its name in its own file or under an imported name, or, for a method of an object or a class,
-// as a member of that name.
+// as a member of that name. Only these direct forms are recognized: an alias of a local constant, an import renamed
+// with `as`, a Db reached under a name other than `db`, or an executor outside src/domain and src/db is not, and a fixed
+// row's residual recorded through one would pass. Write an executor in one of the recognized forms.
 
 const DB_METHODS = new Set(["all", "first", "run", "iterate"]);
 const FUNCTION_TYPES = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
