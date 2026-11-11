@@ -407,6 +407,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "quotePolicySql",
   // A quoted status's id.
   "quotedStatusIdSql",
+  // A list of visibilities, as DISTRIBUTABLE_SQL (domain/audience.ts).
+  "REACHES_FOLLOWERS_SQL",
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",

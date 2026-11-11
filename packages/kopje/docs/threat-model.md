@@ -3387,9 +3387,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   once, within each call’s maxRows", "reads, returns and writes within their derived bounds in each call", "reaches a
   row that completes during the rows’ walk", "rolls a failing call back whole in its job batch", "is bounded by the
   per-column maxima its reads and budgets admit", "counts a nested seek before the next row", "steps over at most the
-  allowance of chunks past its first", "keeps its intent while every chunk it has written is delivered"),
-  `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when the profile is edited before it
-  is staged", "resolves its references as it reaches them"), `test/forward-delete.test.ts` ("advances a forward whose
+  allowance of chunks past its first", "keeps its intent while every chunk it has written is delivered", "resolves its
+  references as it reaches them"), `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when
+  the profile is edited before it is staged"), `test/forward-delete.test.ts` ("advances a forward whose
   every share resolves", "regenerates its targets when restarted after a partial emit")). _Gap (accepted):_
   a source row removed before its cursor reads it is missed unless other evidence names its inbox; a follow made after
   the staging began is not reached; a delivery row moved in place to a personal inbox
