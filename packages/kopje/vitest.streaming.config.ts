@@ -26,6 +26,7 @@ export default defineConfig({
   test: {
     name: "kopje-streaming",
     include: [fileURLToPath(new URL("./test/streaming/**/*.test.ts", import.meta.url))],
+    globalSetup: [fileURLToPath(new URL("./test-node/plan-audit-run.ts", import.meta.url))],
     setupFiles: [fileURLToPath(new URL("./test/sql-depth-setup.ts", import.meta.url))],
     isolate: false,
     maxWorkers: 1,
