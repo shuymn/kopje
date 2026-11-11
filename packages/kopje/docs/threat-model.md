@@ -3397,7 +3397,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   empty with its next link moving on by the window. A row hidden by its own visibility or audience is never a
   candidate (`audienceSql`), so it never supplies a cursor or any other id. The streams, the windows and what each
   may skip, and migration `0043_read_window_indexes`: docs/visibility.md "Read bounds"; `test/read-windows.test.ts`
-  checks bounds, continuation and non-disclosure. A status page's replies read their window from the partial index
+  checks bounds, continuation and non-disclosure. A request's own conditions that no index serves (account statuses'
+  `only_media`, `tagged` and `exclude_replies`; a hashtag timeline's `local`, `remote`, `only_media`, `all` and `none`)
+  are tested by key on the candidates outside the window's `LIMIT`, in rounds whose summed stream `LIMIT`s are at most
+  `CONDITION_WALK` (2,000 entries within the audience a page, `walkedWindow`), so a range they reject costs at most
+  that, and a walk the budget cuts continues from the last candidate it examined (`test/condition-walk.test.ts`,
+  `test/condition-walk-reads.test.ts`: equal rows behind 5,000 and 20,000 rejected rows, a ceiling derived from the
+  walk's statements, merge frontiers, continuations at every round end, stale statistics). A status page's replies read their window from the partial index
   `statuses_public_replies` (migration `0082_public_replies`), so a status's private, direct, limited and withdrawn
   replies are never read and never a cursor, and a page reads the same rows however many there are
   (`test/web-thread.test.ts` ("seeks the public replies’ index from the cursor both ways, with stale statistics", "names
@@ -3408,7 +3414,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stale statistics", "name no withdrawn boost as a cursor where it would end a full window")). _Gap:_ the number of
   streams is the viewer's follows (their own choice); rows hidden by visibility are walked past, not windowed (account
   statuses read by a non-follower of an account that posts mostly to followers: a remote account's private statuses are
-  stored only while a local account follows it, so no outside party can grow it at will; accepted).
+  stored only while a local account follows it, so no outside party can grow it at will; accepted); the public
+  timeline's request conditions (`local`, `remote`, `only_media`) and its reply predicate are tested inside its `LIMIT`
+  on `statuses_public`, so on an instance whose public rows are mostly remote a `local=true` or `only_media` page may
+  walk them all (not yet bounded).
   _Enforced (main)_ for search: statuses pass `listableSql` before `LIMIT`, each library source reads at most 2,500 rows through an index ordered by the status id it returns (cursors applied
   inside it), hashtags come from at most 500 entries per library source plus the newest 2,000 public statuses, and an
   account search matches the exact address (always), at most 1,000 username-prefix candidates, the 5,000 newest

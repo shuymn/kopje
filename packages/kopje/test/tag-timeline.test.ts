@@ -2,15 +2,25 @@ import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { Db } from "../src/db/sql";
 import { type Page, type PageQuery } from "../src/domain/accounts";
 import { listableSql } from "../src/domain/audience";
+import { contextOf } from "../src/domain/auth";
 import type { Status } from "../src/domain/status-presenter";
 import { normalizeTag } from "../src/domain/tag-name";
-import { tagTimeline, type TagTimelineInput } from "../src/domain/timelines";
+import { tagStatus, tagTimeline, type TagTimelineInput } from "../src/domain/timelines";
 import { NOW } from "./app-helpers";
+import {
+  growConditionWorld,
+  seedConditionWorld,
+  staleWalk,
+  TAG_NEWER,
+  TAG_OLDER,
+  WALKED_TABLES,
+} from "./condition-walk-helpers";
 import { migratedStore } from "./helpers";
 import { accountId, statusId, worldArb, writeWorld } from "./policy-world";
-import { rowsRead } from "./read-helpers";
+import { type PlannedStatement, plannedSql, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 
 // The hashtag timeline reads each name in status id order from the index of public hashtags and stops at a page
 // (RES-7), and shows what the query it replaced showed: the same statuses, in the same order, page by page.
@@ -232,4 +242,116 @@ describe("hashtag timeline", () => {
     );
     expect(grown).toEqual([]);
   }, 60_000);
+
+  // The walk under request conditions (walkedWindow): its streams on status_tags_public, its condition statement over
+  // the candidates by key, and the rule's, with statistics taken on a small world (test/condition-walk-helpers.ts).
+  it.each<[string, Partial<Query>]>([
+    ["local", { local: true }],
+    ["remote and media", { remote: true, onlyMedia: true }],
+    ["all and none of five names", { any: ["n1", "n2", "n3", "n4"], all: ["x"], none: ["y"] }],
+  ])(
+    "seeks status_tags_public and scans no table with stale statistics (%s)",
+    async (_name, q) => {
+      const store = await walkWorld();
+      const witness = await staleWalk(
+        { store },
+        { account: WALK_ACCOUNT, tag: "cats" },
+        /USING COVERING INDEX status_tags_public /,
+        tagTimeline,
+        {
+          credential: null,
+          now: NOW,
+          page: { limit: 20, maxId: String(TAG_NEWER) },
+          present: PRESENT,
+          tag: "cats",
+          any: [],
+          all: [],
+          none: [],
+          local: false,
+          remote: false,
+          onlyMedia: false,
+          ...q,
+        },
+      );
+      expect(witness.scans).toEqual([]);
+      expect(witness.indexed).toEqual([true, true]);
+      expect(witness.after).toBe(witness.before);
+    },
+    120_000,
+  );
+
+  // R33's narrowed read (tagStatus) of a local timeline: the status's own row by key, its author by key.
+  // The statistics are taken on the accounts alone, before any status: two local accounts among 300 remote ones on 300
+  // domains, so a domain looks selective, and unpinned the author's join reads the local accounts by domain.
+  it("reads the narrowed status and its author by key with stale statistics", async () => {
+    const store = await walkWorld(false);
+    await runInDurableObject(store, (_instance, state) =>
+      state.storage.sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 299)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT CAST(800000000000000000 + i AS TEXT), 'https://d' || i || '.example/u', 'u', 'd' || i || '.example' FROM n`,
+      ),
+    );
+    const local = String(TAG_OLDER);
+    const capture = async () => {
+      const run = await runInDurableObject(store, (_instance, state) => {
+        const plans: PlannedStatement[] = [];
+        const shown = tagStatus(
+          new Db(plannedSql(state.storage.sql, /status_tags t CROSS JOIN/, plans)),
+          contextOf(WALK_LOCAL, NOW),
+          "cats",
+          true,
+          local,
+        );
+        return { shown, plans };
+      });
+      expect(run.shown).toBe(local);
+      expect(run.plans).toHaveLength(1);
+      // The author by its key, not the instance's local accounts through accounts_domain_username.
+      expect(run.plans[0]!.plan.filter((detail) => detail.startsWith("SEARCH pa USING INDEX accounts_domain"))).toEqual(
+        [],
+      );
+      expect(scansOf(run.plans[0]!.plan, WALKED_TABLES)).toEqual([]);
+      return run.plans[0]!.rows;
+    };
+    const { before, after } = await staleStatistics(
+      { store },
+      {
+        settle: () => seedWalk(store),
+        capture,
+        grow: () => growConditionWorld(store, WALK_ACCOUNT, "cats"),
+      },
+    );
+    expect(after).toBe(before);
+  }, 120_000);
 });
+
+// A world of test/condition-walk-helpers.ts, its local author WALK_LOCAL and its account WALK_ACCOUNT; with `seed`
+// false, the two accounts alone (seedWalk adds the rest).
+async function walkWorld(seed = true) {
+  const store = await migratedStore();
+  await runInDurableObject(store, (_instance, state) => {
+    for (const [id, name] of [
+      [WALK_LOCAL, "alice"],
+      [WALK_ACCOUNT, "bea"],
+    ] as const) {
+      state.storage.sql.exec(
+        "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
+        id,
+        `https://kopje.test/ap/users/${name}`,
+        name,
+      );
+    }
+  });
+  if (seed) {
+    await seedWalk(store);
+  }
+  return store;
+}
+
+async function seedWalk(store: Awaited<ReturnType<typeof migratedStore>>) {
+  await seedConditionWorld(store, { account: WALK_ACCOUNT, local: WALK_LOCAL, rejected: 3, newer: 0 });
+}
+
+const WALK_LOCAL = "700000000000000001";
+const WALK_ACCOUNT = "700000000000000002";
