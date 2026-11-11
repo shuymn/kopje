@@ -3327,7 +3327,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   boost's `Undo`, a local status's `Delete`, a forward: `stageRetraction` in `src/domain/deliveries.ts`, migration
   `0085_retraction_staging`). A retraction still staging is found through `outbound_activities_staging`, a partial index
   of those alone, and is never deleted while it stages, though every row it has written is settled: its one delete
-  (`dropSettledActivity`, the inventory `test-node/staged-intents.test.ts`) requires `staged IS NULL`. Each call
+  (`dropSettledActivity`, the inventory `test-node/staged-intents.test.ts`) requires `staged IS NULL`. The one other
+  path that deletes a staged intent is an import's reset (`kopje-admin import-reset`, which deletes every row of each
+  dumped table), and that is safe because the reset replaces the whole Store: its staging rows go with it, and no domain
+  operation runs until it ends, so no trigger refuses the delete. Each call
   admits every read before it runs, under one rule: a seek, a statement's first row (or its finding none) and each
   further row a page yields count one each, and none runs once `STAGING_READ`
   (500) have, so a read that consuming a row makes is counted before the next row is pulled. It returns at most
@@ -4081,10 +4084,12 @@ heap).
   (`src/domain/remote-collections.ts`) and account invitation rowids. A requested INTEGER key past 2^63 - 1 names no
   row (`isIntegerKey` in `src/domain/ids.ts`), and an increment past it, of a credential epoch by a suspension, of a
   conversation streaming mark by a conversation write, of a poll's generation by its reset or of a collection sync's by
-  a request, throws and rolls back (`requireExactIncrement`); `test/integer-ids.test.ts`,
-  `test/streaming/integer-ids.test.ts` and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
-  _Gap_: the trigger `conversation_statuses_removed` increments a streaming mark in SQL without that check, so at
-  2^63 - 1 it stores a REAL; the stream reads such a mark as 2^63 - 1. _Gap_: the push entity's `id` and a push
+  a request, throws and rolls back (`requireExactIncrement`); the trigger `conversation_statuses_removed`, which moves
+  the mark in SQL when a conversation's last status goes, refuses the same increment with the same message and rolls
+  the delete back (migration `0090_exact_conversation_seq`; before it, the mark and the conversation's `stream_seq`
+  took a REAL); `test/integer-ids.test.ts`, `test/streaming/integer-ids.test.ts`, `test/migrations.test.ts`
+  ("0090_exact_conversation_seq") and `test/inbox-reactions.test.ts` ("DATA-6: favourite and Like ids past 2^53").
+  _Gap_: the push entity's `id` and a push
   payload's `notification_id` are JSON numbers, as Mastodon serialises them (`StoredSubscription` and `PushContent` in
   `src/domain/push.ts`), so an id past 2^53 is shown rounded there; the Store's own reads of these ids stay exact.
 - **DATA-7: the instance key signs only recipient-neutral fetches and the instance actor's own activities.** Fetches
