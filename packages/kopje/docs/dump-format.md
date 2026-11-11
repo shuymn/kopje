@@ -305,6 +305,12 @@ it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-
 reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
 which then upgrades. A file built from legacy data writes NULL.
 
+Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account and 20 per remote
+one, whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more
+pins than the account may keep`. A dump taken before 0089 restores into a Store at its own migrations, whose upgrade
+keeps each account's newest pins in pin order (`created_at` descending, then `status_id` descending) and deletes the
+rest.
+
 Status cards (migration `0067_status_cards`): a `status_cards` row names its status (`status_id`, 18 ASCII digits, a
 `statuses` row it goes with) and is pending (`due_at` set, `fetched_at` NULL) or attached (`fetched_at` set, `due_at`
 NULL, a non-empty `title`; CHECKs `status_card_pending_or_attached` and `status_card_attached_title`). `url` is

@@ -86,6 +86,7 @@ import m0085 from "../../migrations/0085_retraction_staging.sql";
 import m0086 from "../../migrations/0086_authorized_apps.sql";
 import m0087 from "../../migrations/0087_tag_key_fixed_points.sql";
 import m0088 from "../../migrations/0088_handshake_replays.sql";
+import m0089 from "../../migrations/0089_pin_cap.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -180,4 +181,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0086_authorized_apps", sql: m0086, foreignKeys: "unchanged" },
   { name: "0087_tag_key_fixed_points", sql: m0087, foreignKeys: "unchanged" },
   { name: "0088_handshake_replays", sql: m0088 },
+  { name: "0089_pin_cap", sql: m0089, foreignKeys: "unchanged" },
 ];

@@ -364,9 +364,10 @@ have been able to view the status at capture (R3): an author who blocks the view
 
 Pins and conversation mutes (`src/domain/status-actions.ts`, Mastodon's `StatusPin` and `ConversationMute`, migration
 `0018_status_pins_and_conversation_mutes`) act on a status the viewer may see by itself (R3; anything else is not
-found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`); pins
-are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads the account's pins through their primary key
-and applies the account statuses rule (R11), newest pin first; the actor's `featured` collection serves them as the
+found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`; the
+stored bound of migration `0089_pin_cap` holds five for a local account and 20 for a remote one, imports included);
+pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads the account's pins through their primary
+key (at most its limit of them) and applies the account statuses rule (R11), newest pin first; the actor's `featured` collection serves them as the
 object endpoint serves statuses (R4), the uri alone of a private one, as Mastodon's `CollectionsController` does; and
 pinning or unpinning records an `Add` or `Remove` for the followers (R23, kind `other`), after an `Update` of the
 actor before the account's first one, pin or featured hashtag (`announceFeatured` in `actor-update.ts`). A conversation mute is its

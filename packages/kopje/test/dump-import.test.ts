@@ -2,6 +2,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
+import { PIN_LIMIT } from "../src/domain/activities";
 import { accountFeaturedTags } from "../src/domain/featured-tags";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
 import { followedTags } from "../src/domain/tags";
@@ -40,6 +41,7 @@ import {
   tableSnapshot,
   TEAM_DOMAIN,
 } from "./ops-helpers";
+import { withoutTriggers } from "./pin-cap-helpers";
 import { blurhashOf, columnsSql, movedCountSql, seedBounded, storedSql, TABLES } from "./stored-bounds-fixtures";
 
 const TOKEN = { kind: "import-token" } as const;
@@ -545,6 +547,59 @@ describe("dump", () => {
     await copyConfig(source, target);
     expect(String(await rejectionOf(importViaRpc(target, dump)))).toMatch(
       /accounts: static image past its stored bound/,
+    );
+  }, 120_000);
+
+  // RES-2, RES-4: a local account keeps at most PIN_LIMIT pins (0089_pin_cap), so a dump holding more fails to import,
+  // as a value past any stored bound does; one at the limit round-trips.
+  it("round-trips an account's pins at its limit, and refuses one past it on import (0089)", async () => {
+    const source = await seeded(0);
+    const local = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const account = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .one().id;
+      for (let i = 0; i <= PIN_LIMIT; i++) {
+        const id = `99000000000000002${i}`;
+        // Every other one direct, which no reader shows: it counts toward the limit all the same.
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, ?3, '<p>x</p>', '2026-10-22T00:00:00.000Z')`,
+          id,
+          account,
+          i % 2 === 0 ? "public" : "direct",
+        );
+        if (i < PIN_LIMIT) {
+          sql.exec("INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", account, id);
+        }
+      }
+      return account;
+    });
+    const pins = (store: StoreStub) =>
+      runInDurableObject(
+        store,
+        (_instance, state) =>
+          state.storage.sql.exec("SELECT count(*) AS n FROM status_pins WHERE account_id = ?", local).one().n,
+      );
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await pins(restored)).toBe(PIN_LIMIT);
+    // The same dump with one more pin, as a Store before 0089 could hold it.
+    await withoutTriggers(source);
+    await runInDurableObject(source, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)",
+        local,
+        `99000000000000002${PIN_LIMIT}`,
+      );
+    });
+    const past = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
+      /status_pins: more pins than the account may keep/,
     );
   }, 120_000);
 

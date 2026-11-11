@@ -854,7 +854,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/policy-endpoints.test.ts`, `test/policy-bounds.test.ts`, `test/migrations.test.ts`.
 - **VIS-22: a pin shows only what its status shows, and a conversation mute is its owner's alone.** A pin
   (`StatusPin`) is of the pinner's own status, never a boost or a direct or limited one, at most five per account
-  (`StatusPinValidator`). Pins are public, as Mastodon's: `GET /api/v1/accounts/:id/statuses?pinned=true` lists them
+  (`StatusPinValidator`), a remote account's at most `MAX_REMOTE_PINS` (20) as learned from its collection; storage
+  holds the same limits for imported rows (RES-4). Pins are public, as Mastodon's: `GET /api/v1/accounts/:id/statuses?pinned=true` lists them
   through the account statuses rule (R11, VIS-1), so a viewer sees only the pins it may see; the actor's `featured`
   collection serves the Note of a public or unlisted pin, as the object endpoint does (VIS-4), and only the uri of any
   other; `Add` and `Remove` carry the uri alone to the pinner's followers (R23). A conversation mute
@@ -2762,7 +2763,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/remote-statuses.ts`;
   `test/inbox-statuses.test.ts` ("caps the attachments, tags and content one status stores", "deletes a status with
   many children in bounded batches"), `test/inbox-statuses-edge.test.ts` ("RES-4: bounds at their limits", "writes at
-  most … rows per batch, hiding included"). _Enforced (main)_ for status cards: one `status_cards` row per status
+  most … rows per batch, hiding included"). _Enforced (main)_ for pins (RES-2): `status_pins` holds at most an
+  account's pin limit, `PIN_LIMIT` (5) for a local account and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in
+  `src/domain/status-actions.ts`), imported rows included: the triggers `status_pins_cap_insert` and
+  `status_pins_cap_update` of migration `0089_pin_cap` refuse a new pin of an account at its limit, inserted or moved
+  (a pin that exists passes, so an upsert does), each reading at most 21 rows by primary key, and the migration deleted
+  each account's pins past it, the oldest in pin order (`created_at`, then `status_id`) first, cascading nothing. The
+  writers keep below it (`pin` counts in its transaction, the remote writers keep a slot below `MAX_REMOTE_PINS`), so
+  they are never refused. The pinned read (`GET /api/v1/accounts/:id/statuses?pinned=true` and the profile's first
+  page) reads an account's pins through the primary key, at most 3 + 4 × 20 rows with every pin examined, with no index
+  in pin order (`test/pin-cap.test.ts`, `test/migrations.test.ts` ("0089_pin_cap"), `test/dump-import.test.ts`
+  ("round-trips an account's pins at its limit")). _Enforced (main)_ for status cards: one `status_cards` row per status
   (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
   delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an open hold kept until it ends),
   and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
