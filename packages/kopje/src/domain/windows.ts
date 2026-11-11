@@ -13,9 +13,19 @@ export function streamWindow(limit: number): number {
   return Math.max(2 * limit, 40);
 }
 
+// The budget of a page's walk under request conditions (walkedWindow): the sum of its rounds' stream LIMITs (each
+// round, streams × per-stream LIMIT), counting entries within the audience before the request's conditions, not
+// distinct statuses. GROUP_WALK's figure, a separate constant so the two can change apart.
+export const CONDITION_WALK = 2_000;
+
 // A window: its candidates in cursor order, each with `o`, the bits of the streams it came from (a merged read's rule
-// may differ by stream), and whether it ended before the cursor's range did.
-export type Window = { readonly candidates: readonly { id: string; o: number }[]; readonly cut: boolean };
+// may differ by stream), and whether it ended before the cursor's range did. `end`: the last candidate a walk examined,
+// when it read past the candidates it keeps (walkedWindow).
+export type Window = {
+  readonly candidates: readonly { id: string; o: number }[];
+  readonly cut: boolean;
+  readonly end?: string;
+};
 
 // The window of streams merged (home's, a list's, a hashtag timeline's). `streams` selects (id, k, o) rows: each
 // stream k's candidates from the cursor in cursor order, at most `per` each, and o a bit of the stream's kind (a power
@@ -62,9 +72,63 @@ export function windowJson(window: Window): string {
   return JSON.stringify(window.candidates);
 }
 
+// The window of a read whose request conditions no index serves (docs/visibility.md "Read bounds"): rounds of raw
+// candidates from the cursor, each `round(range, per)` with a per-stream LIMIT `per` over `streams` streams, of which
+// it keeps those `passing` accepts (a set of ids, read by key), in cursor order. Round 1's per-stream LIMIT is `first`,
+// each later one min(max(first, ⌊spent / streams⌋), ⌊(CONDITION_WALK − spent) / streams⌋), with `spent` the LIMITs
+// charged so far. It ends with the first `size` kept (no `end`: a next page examines again what lies past the last
+// kept; cut unless the round was exhausted and kept exactly `size`), at a round that was not cut, at a cut round when no
+// round so far rejected a candidate (its window, as the read without conditions takes it), or cut at `end`, the last
+// candidate examined, once the budget left cannot pay one more entry per stream. Without conditions (`passing` null)
+// it is round 1 itself.
+export function walkedWindow(
+  round: (range: { max: string; min: string }, per: number) => Window,
+  passing: ((candidates: Window["candidates"]) => ReadonlySet<string>) | null,
+  start: { max: string; min: string; ascending: boolean },
+  first: number,
+  streams: number,
+  size: number,
+): Window {
+  let range = { max: start.max, min: start.min };
+  let per = Math.min(first, Math.floor(CONDITION_WALK / streams));
+  let spent = 0;
+  let rejected = false;
+  const kept: Window["candidates"][number][] = [];
+  for (;;) {
+    const window = round(range, int(per));
+    if (passing === null) {
+      return window;
+    }
+    spent += streams * per;
+    const passed = window.candidates.length === 0 ? new Set<string>() : passing(window.candidates);
+    kept.push(...window.candidates.filter(({ id }) => passed.has(id)));
+    if (kept.length >= size) {
+      // Cut when the round was, or when it kept more than `size`: an exhausted round that kept exactly `size` holds
+      // the whole of the cursor's range, as a single window of it would.
+      return { candidates: kept.slice(0, size), cut: window.cut || kept.length > size };
+    }
+    rejected ||= passed.size < window.candidates.length;
+    // Nothing rejected yet: this round is the single window a read without conditions takes, so its page and links
+    // are that read's (AC5), ending where its merge ended.
+    if (!window.cut || !rejected) {
+      return { candidates: kept, cut: window.cut };
+    }
+    // A cut window holds the candidate it ended at (mergedWindow, windowOf).
+    const last = window.candidates.at(-1)?.id;
+    if (last === undefined) {
+      throw new Error("a cut round has no candidates");
+    }
+    per = Math.min(Math.max(first, Math.floor(spent / streams)), Math.floor((CONDITION_WALK - spent) / streams));
+    if (per < 1) {
+      return { candidates: kept, cut: true, end: last };
+    }
+    range = start.ascending ? { ...range, min: last } : { ...range, max: last };
+  }
+}
+
 // The page of a window: of the rows the rule passed (`passed`, keyed by candidate), the first `limit` in cursor order,
-// newest first. Its far end is the last of them when the page is full, else the window's last candidate when the
-// window was cut, so a next page starts below what this one read; its near end is the first of them, or the window's
+// newest first. Its far end is the last of them when the page is full, else, when the window was cut, its `end` or its
+// last candidate, so a next page starts below what this one read; its near end is the first of them, or the window's
 // first candidate when none passed. `cut`: the next link is offered whatever the page holds. `more`: a row may lie past
 // the far end: a row the rule passed lies past the page in the window, or the window was cut. An uncut window holds
 // every candidate of the cursor's range, so without either no row a page would show lies past it.
@@ -86,7 +150,7 @@ export function windowPage<R>(
     full && last !== undefined
       ? key(last)
       : window.cut
-        ? (window.candidates.at(-1)?.id ?? null)
+        ? (window.end ?? window.candidates.at(-1)?.id ?? null)
         : last === undefined
           ? null
           : key(last);

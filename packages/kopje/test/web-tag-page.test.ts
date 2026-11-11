@@ -11,6 +11,7 @@ import { TagPage } from "../src/web/pages/tag";
 import { STRINGS } from "../src/web/strings";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { growConditionWorld, WALKED_TABLES } from "./condition-walk-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { expectFullPages, shownFeed, tagFrameBytes, viaRoute, walkFeed as walk } from "./profile-page-helpers";
 import { type PlannedStatement, plannedSql, scansOf, staleStatistics } from "./read-helpers";
@@ -365,9 +366,12 @@ describe("the hashtag page within a page budget", () => {
 });
 
 describe('the hashtag page’s reads (RES-7, docs/visibility.md "Read bounds")', () => {
-  // The page's statements on status_tags and statuses with statistics taken before the Store grew: the hashtag's
-  // stream seeks status_tags_public from the cursor, never scanning either table, and a page below a fixed cursor reads
-  // the same rows with 20 or 2,000 newer posts (local and remote, public and private, all with the hashtag) above it.
+  // The page's statements on status_tags and statuses, and those over the candidates by key (the conditions' and the
+  // rule's), with statistics taken before the Store grew: the hashtag's stream seeks status_tags_public from the
+  // cursor, no statement scans statuses, accounts, status_tags or media_attachments, and a page below a fixed cursor
+  // reads the same rows with 20 or 2,000 newer posts (local and remote, public and private, all with the hashtag)
+  // above it, and the growth of growConditionWorld (remote posts the local timeline rejects, unrelated accounts, media
+  // and other hashtags).
   it("seeks from the cursor through the public hashtags’ index, with stale statistics", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -392,7 +396,13 @@ describe('the hashtag page’s reads (RES-7, docs/visibility.md "Read bounds")',
       const run = await runInDurableObject(h.store, (_instance, state) => {
         const plans: PlannedStatement[] = [];
         const page = tagPageWithin(
-          new Db(plannedSql(state.storage.sql, /status_tags|FROM (?:main\.)?statuses s\b/, plans)),
+          new Db(
+            plannedSql(
+              state.storage.sql,
+              /status_tags|FROM (?:main\.)?statuses s\b|FROM json_each\(\?\d\) c\s+CROSS JOIN (?:main\.)?statuses s\b/,
+              plans,
+            ),
+          ),
           { name: "cats", cursor, now: NOW },
           SITE,
           ANSWER_BYTES,
@@ -404,7 +414,7 @@ describe('the hashtag page’s reads (RES-7, docs/visibility.md "Read bounds")',
       }
       expect(run.page.statuses.map((status) => status.id)).toEqual(below.slice(0, -1).toReversed().slice(0, 20));
       for (const statement of run.plans) {
-        expect(scansOf(statement.plan, ["t", "s", "st", "status_tags", "statuses"])).toEqual([]);
+        expect(scansOf(statement.plan, WALKED_TABLES)).toEqual([]);
       }
       expect(
         run.plans.some((statement) =>
@@ -413,7 +423,13 @@ describe('the hashtag page’s reads (RES-7, docs/visibility.md "Read bounds")',
       ).toBe(true);
       return run.plans.reduce((sum, statement) => sum + statement.rows, 0);
     };
-    const { before, after } = await staleStatistics(h, { capture, grow: () => newer(2000) });
+    const { before, after } = await staleStatistics(h, {
+      capture,
+      grow: async () => {
+        await newer(2000);
+        await growConditionWorld(h.store, alice.id, "cats");
+      },
+    });
     expect(after).toBe(before);
   }, 120_000);
 });
