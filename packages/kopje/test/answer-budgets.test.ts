@@ -233,10 +233,11 @@ describe("status pages are answers within ANSWER_BYTES (RES-3)", () => {
   }, 600_000);
 
   it("answer pinned statuses without paging links, and walk quotes once each", async () => {
-    const h = await community(["alice", "bob"]);
-    const { alice, bob } = h.users;
+    const h = await community(["alice"]);
+    const { alice } = h.users;
     // Ten of bob's big statuses, pinned in an order unlike their ids': newest pin first is P. X, unpinned, lies
-    // between the newest two by id.
+    // between the newest two by id. bob is remote, whose limit (MAX_REMOTE_PINS, 0089_pin_cap) holds ten pins.
+    const bob = { id: await remoteAccount(h.store, "bob") };
     const posts: string[] = [];
     let X = "";
     for (let i = 0; i < 10; i++) {

@@ -78,7 +78,10 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // characters and a 2,210-byte profile URL, and 1,000 media rows with a 2,210-byte URL and a description of 12,000
 // characters; for 0049_instance_bounds one row past its bound of each covered instance setting (a 2,000 code point
 // title and description, a 300-byte contact address, 70,000 bytes of rules, three 60,000-byte documents, a malformed
-// date, switch and two stamps). It grows every table a phase A migration reads (accounts, follows, statuses with their
+// date, switch and two stamps); for 0089_pin_cap (from 0025_remote_collections on) each local account pinning 120,000
+// statuses, all but five past PIN_LIMIT, so its trim sorts 2,400,000 pins and deletes 2,399,900 (the slower of the two
+// distributions of that total measured; the other, 100,000 remote accounts pinning 22 each, is pinningRemotes). It
+// grows every table a phase A migration reads (accounts, follows, statuses with their
 // mentions and tags, notifications, reports, quotes), what 0043_read_window_indexes indexes (favourites, boosts), what
 // 0045_remote_suspension indexes (accounts, outbound activities), what 0048_stored_bounds rewrites (accounts, statuses,
 // media attachments, earlier versions), what 0049_instance_bounds rewrites and indexes (instance settings, instance
@@ -99,7 +102,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // reads no row (a column of statuses and three triggers); 0080_inbound_job_attempts adds two checked columns to
 // inbound_jobs and indexes it; 0082_public_replies indexes the statuses' public and unlisted replies (1,000,000 of
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
-// 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them. A migration that
+// 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
+// the pins of every account holding more than five and deletes the excess. A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -151,6 +155,11 @@ const SHAPE = {
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
+  // Pins while 0089_pin_cap is pending (not scaled): of each local account, and of each of pinningRemotes remote
+  // accounts (none: the measured worst case concentrates the pins in the local accounts).
+  localPins: 120_000,
+  pinningRemotes: 0,
+  remotePins: 22,
 };
 
 it("applies the migration to the benchmark store within the budget", async () => {
@@ -794,7 +803,46 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
+    // Each local account pins distinct statuses: at most as many as there are (a scaled run holds fewer).
+    const localPins = Math.min(SHAPE.localPins, statuses);
+    const pinsPending =
+      pending("0089_pin_cap") && at > MIGRATIONS.findIndex((m) => m.name === "0025_remote_collections");
+    if (pinsPending) {
+      const remotePins = Math.min(SHAPE.pinningRemotes, accounts - SHAPE.local) * SHAPE.remotePins;
+      for (let start = 0; start < remotePins; start += batch) {
+        run(
+          `WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 - 1)
+					INSERT INTO status_pins (account_id, status_id, created_at)
+					SELECT CAST(100000000000000000 + ?3 + i / ?4 AS TEXT), CAST(500000000000000000 + i % ?5 AS TEXT),
+						strftime('%Y-%m-%dT%H:%M:%fZ', '2026-10-01', '-' || (i % ?4) || ' seconds')
+					FROM n`,
+          start,
+          Math.min(start + batch, remotePins),
+          SHAPE.local,
+          SHAPE.remotePins,
+          statuses,
+        );
+      }
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 * ?2 - 1)
+				INSERT INTO status_pins (account_id, status_id, created_at)
+				SELECT CAST(100000000000000000 + i / ?2 AS TEXT), CAST(500000000000000000 + i % ?3 AS TEXT),
+					strftime('%Y-%m-%dT%H:%M:%fZ', '2026-10-01', '-' || i || ' seconds')
+				FROM n`,
+        SHAPE.local,
+        localPins,
+        statuses,
+      );
+    }
     const count = (table: string) => sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n;
+    // The pins past a local account's limit, which 0089_pin_cap deletes.
+    const excessPins = () =>
+      pinsPending
+        ? count(
+            `(SELECT account_id FROM status_pins GROUP BY account_id
+							HAVING count(*) > iif((SELECT a.domain FROM accounts a WHERE a.id = status_pins.account_id) IS NULL, 5, 20))`,
+          )
+        : 0;
     // The rows under the jamo spelling of 가, which 0087_tag_key_fixed_points renames.
     const jamoKeys = () => count("status_tags INDEXED BY status_tags_name WHERE name = char(0x1100, 0x1161)");
     const seeded = {
@@ -832,6 +880,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
       ],
       journal: fullJournal ? count("stream_events") : 0,
       jamoKeys: jamoKeys(),
+      pins: pinsPending ? count("status_pins") : 0,
+      excessPins: excessPins(),
     };
     expect(sql.exec("SELECT count(*) AS n FROM kopje_migrations").one().n).toBe(at);
 
@@ -852,8 +902,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
     );
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
+    const pinsLeft = pinsPending ? [count("status_pins"), excessPins()] : [0, 0];
     if (foreignKeyCheck !== "skipped") {
-      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft } };
+      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft } };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
     // the retry on a fresh kernel, which finds nothing pending and verifies the whole Store.
@@ -871,7 +922,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
       expect.objectContaining({ event: "kopje.store.upgrade.start", foreignKeyCheck: "store" }),
     );
     await state.storage.deleteAlarm();
-    return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft } };
+    return {
+      seeded,
+      measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft, pinsLeft },
+    };
   });
   expect(seeded).toMatchObject({ accounts, local: SHAPE.local, statuses, notifications, reports, inboundJobs });
   if (at > MIGRATIONS.findIndex((migration) => migration.name === "0067_status_cards")) {
@@ -892,6 +946,14 @@ it("applies the migration to the benchmark store within the budget", async () =>
   // The hashtag keys were there to repair, and the repair ran.
   if (hasTagKeys && applied.includes("0087_tag_key_fixed_points") && skewedRows > 0) {
     expect([seeded.jamoKeys > 0, measured.jamoLeft]).toEqual([true, 0]);
+  }
+  // The excess pins were there to trim, and the trim kept each account's limit.
+  if (seeded.pins > 0) {
+    const pinningRemotes = Math.min(SHAPE.pinningRemotes, accounts - SHAPE.local);
+    expect([seeded.excessPins, measured.pinsLeft]).toEqual([
+      SHAPE.local + pinningRemotes,
+      [SHAPE.local * 5 + pinningRemotes * 20, 0],
+    ]);
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));

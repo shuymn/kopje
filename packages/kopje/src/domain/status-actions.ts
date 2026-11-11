@@ -6,6 +6,7 @@ import { announceFeatured } from "./actor-update";
 import { requiresMention, type Visibility } from "./audience";
 import { userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
+import { MAX_REMOTE_PINS } from "./remote-collections";
 import type { Status } from "./status-presenter";
 import { type Acted, presented, viewable } from "./statuses";
 
@@ -21,6 +22,58 @@ import { type Acted, presented, viewable } from "./statuses";
 // audience.ts reads it.
 
 type ActionInput = { id: string; now: number; present: Present };
+
+// ---- The stored bound of pins: migration 0089_pin_cap (RES-2, RES-4)
+//
+// status_pins holds at most an account's pin limit of rows per account, imports included: PIN_LIMIT for a local
+// account (StatusPinValidator, which pin checks in its transaction), MAX_REMOTE_PINS for a remote one (the writers of
+// remote-collections.ts keep a slot below it). Its writers never pass it, so its trigger only refuses an import or a
+// write past it. An account's pins are read in pin order, newest first (p.created_at DESC, s.id DESC), through the
+// primary key: at most MAX_REMOTE_PINS rows.
+
+// The pin limit of the account whose id is the SQL `account`: a local account's, else a remote one's. An account is
+// local by its own row (accounts.domain IS NULL, 0000_initial, as its trigger local_accounts_local_insert judges it),
+// which a pin's foreign key requires before the pin, so no order of an import's rows lets a local account's pins be
+// judged by the remote limit; no account row reads as local, the lower limit.
+function pinCapSql(account: string): string {
+  return `iif((SELECT a.domain FROM accounts a WHERE a.id = ${account}) IS NULL, ${PIN_LIMIT}, ${MAX_REMOTE_PINS})`;
+}
+
+// Whether the account `account` keeps its pin limit of pins other than the status `status`: a new pin of it would
+// pass the limit. Reads at most MAX_REMOTE_PINS + 1 rows through the primary key.
+function pinsFullSql(account: string, status: string): string {
+  return `NOT EXISTS (SELECT 1 FROM status_pins WHERE account_id = ${account} AND status_id = ${status})
+  AND (SELECT count(*) FROM (SELECT 1 FROM status_pins WHERE account_id = ${account} LIMIT ${MAX_REMOTE_PINS}))
+    >= ${pinCapSql(account)}`;
+}
+
+const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
+
+// Migration 0089_pin_cap after its header (test/migrations.test.ts compares them): each account's pins past its limit
+// deleted, the oldest in pin order first (the presenter's order, newest first by created_at then status id, kept), then
+// triggers that refuse a pin past the limit, inserted or moved to another account. The trim sorts only the pins of
+// accounts holding more than PIN_LIMIT.
+export function pinCapMigrationSql(): string {
+  return `${[
+    `DELETE FROM status_pins WHERE (account_id, status_id) IN (
+  SELECT c.account_id, c.status_id FROM (
+    SELECT p.account_id, p.status_id,
+      row_number() OVER (PARTITION BY p.account_id ORDER BY p.created_at DESC, p.status_id DESC) AS n
+    FROM status_pins p
+    WHERE p.account_id IN (SELECT account_id FROM status_pins GROUP BY account_id HAVING count(*) > ${PIN_LIMIT})
+  ) c WHERE c.n > ${pinCapSql("c.account_id")});`,
+    `CREATE TRIGGER status_pins_cap_insert BEFORE INSERT ON status_pins
+WHEN ${pinsFullSql("NEW.account_id", "NEW.status_id")}
+BEGIN
+  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
+END;`,
+    `CREATE TRIGGER status_pins_cap_update BEFORE UPDATE OF account_id ON status_pins
+WHEN NEW.account_id IS NOT OLD.account_id AND ${pinsFullSql("NEW.account_id", "NEW.status_id")}
+BEGIN
+  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
+END;`,
+  ].join("\n\n")}\n`;
+}
 
 // StatusPinValidator's messages (statuses.pin_errors in Mastodon's config/locales/en.yml), in its order.
 export const PIN_ERRORS = {

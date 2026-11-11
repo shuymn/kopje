@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { STATUSES_ID_INDEX } from "../src/db/indexes";
 import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
+import { PIN_LIMIT } from "../src/domain/activities";
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { instanceInfo } from "../src/domain/instance";
@@ -20,8 +21,10 @@ import {
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
+import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { pinCapMigrationSql } from "../src/domain/status-actions";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
@@ -11424,6 +11427,131 @@ describe("0088_handshake_replays", () => {
       expect(() => sql.exec("INSERT INTO handshake_replays (follow_id, check_at) VALUES (8, 0)")).toThrow(
         /FOREIGN KEY constraint failed/,
       );
+    });
+  });
+});
+
+describe("0089_pin_cap", () => {
+  const NAME = "0089_pin_cap";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /status_pins: more pins than the account may keep/;
+  // Local accounts L (past the limit), S (below it) and T (none); remote accounts R (past its limit) and O.
+  const [L, S, T, R, O] = [1, 2, 3, 4, 5].map((i) => `10000000000000000${i}`) as [
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  const status = (n: number) => `2${String(n).padStart(17, "0")}`;
+  const day = (d: number) => `2026-10-${String(d).padStart(2, "0")}T00:00:00.000Z`;
+
+  it("holds pinCapMigrationSql's output after its header, declared foreignKeys: 'unchanged', at both limits", () => {
+    expect(NAMES[at - 1]).toBe("0088_handshake_replays");
+    expectGenerated(at, pinCapMigrationSql());
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The trigger's limits are the writers' constants (0089's header states them).
+    expect([PIN_LIMIT, MAX_REMOTE_PINS]).toEqual([5, 20]);
+    expect(MIGRATIONS[at]?.sql).toContain(`, ${PIN_LIMIT}, ${MAX_REMOTE_PINS})`);
+    expect(MIGRATIONS[at]?.sql).toContain(`LIMIT ${MAX_REMOTE_PINS}))`);
+  });
+
+  it("trims each account's pins past its limit, oldest in pin order first, then refuses a pin past it", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [id, local] of [
+        [L, true],
+        [S, true],
+        [T, true],
+        [R, false],
+        [O, false],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/' || ?1, 'u' || ?1, ?2)",
+          id,
+          local ? null : "x.test",
+        );
+        if (local) {
+          sql.exec(
+            "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?1 || '@x.test', x'00', x'00', 'k')",
+            id,
+          );
+        }
+      }
+      let n = 0;
+      const statusOf = (author: string, visibility = "public") => {
+        const id = status(++n);
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+					VALUES (?1, 'https://x.test/s/' || ?1, ?2, ?3, '2026-10-01T00:00:00.000Z')`,
+          id,
+          author,
+          visibility,
+        );
+        return id;
+      };
+      const pinOf = (account: string, created: string, author = account, visibility = "public") => {
+        const id = statusOf(author, visibility);
+        sql.exec("INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?)", account, id, created);
+        return id;
+      };
+      // L: eight pins, one of a direct status and one of another account's (the trim counts every row), two at the
+      // same time (the later status id is the newer pin), and one of an imported time that sorts after every date.
+      const l = [
+        pinOf(L, day(1)),
+        pinOf(L, day(2)),
+        pinOf(L, day(3), L, "direct"),
+        pinOf(L, day(4)),
+        pinOf(L, day(5), O),
+        pinOf(L, day(6)),
+        pinOf(L, day(6)),
+        pinOf(L, "imported"),
+      ];
+      const s = [pinOf(S, day(1)), pinOf(S, day(2)), pinOf(S, day(3))];
+      const r = Array.from({ length: MAX_REMOTE_PINS + 5 }, (_, i) => pinOf(R, day(i + 1)));
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const pins = (account: string) =>
+        sql
+          .exec<{ id: string }>(
+            "SELECT status_id AS id FROM status_pins WHERE account_id = ? ORDER BY created_at DESC, status_id DESC",
+            account,
+          )
+          .toArray()
+          .map((row) => row.id);
+      expect(pins(L)).toEqual([l[7], l[6], l[5], l[4], l[3]]);
+      expect(pins(S)).toEqual(s.toReversed());
+      expect(pins(R)).toEqual(r.slice(5).toReversed());
+      expect(pins(T)).toEqual([]);
+
+      const insert = (account: string, id: string, tail = "") =>
+        sql.exec(
+          `INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ${tail}`,
+          account,
+          id,
+          day(20),
+        );
+      // At the local limit: a new pin is refused; a pin that exists passes an insert that ignores or updates it.
+      expect(() => insert(L, statusOf(L))).toThrow(REFUSED);
+      insert(L, l[7]!, "ON CONFLICT DO NOTHING");
+      insert(L, l[7]!, "ON CONFLICT DO UPDATE SET created_at = excluded.created_at");
+      // At the remote limit, alike.
+      expect(() => insert(R, statusOf(R))).toThrow(REFUSED);
+      insert(R, r[5]!, "ON CONFLICT DO UPDATE SET created_at = excluded.created_at");
+      // Below the limit, pins are added up to it.
+      insert(S, statusOf(S));
+      insert(S, statusOf(S));
+      expect(() => insert(S, statusOf(S))).toThrow(REFUSED);
+      // A pin moved to an account at its limit is refused; to one below it, and a change of its time, pass.
+      expect(() => sql.exec("UPDATE status_pins SET account_id = ? WHERE status_id = ?", L, s[0])).toThrow(REFUSED);
+      sql.exec("UPDATE status_pins SET account_id = ? WHERE status_id = ?", T, s[0]);
+      sql.exec("UPDATE status_pins SET created_at = ? WHERE account_id = ?", day(21), L);
+      expect([pins(L).length, pins(S).length, pins(T).length, pins(R).length]).toEqual([
+        PIN_LIMIT,
+        PIN_LIMIT - 1,
+        1,
+        MAX_REMOTE_PINS,
+      ]);
     });
   });
 });
