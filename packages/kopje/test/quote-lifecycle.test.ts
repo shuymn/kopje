@@ -17,7 +17,6 @@ import {
   type Body,
   type Event,
   type Intent,
-  knownDefect1447,
   type LocalPolicy,
   localStored,
   type Logged,
@@ -29,6 +28,7 @@ import {
   QuotePeer,
   QuotePolicy,
   replayedRequest,
+  revokedPendingAcceptRefused,
   revokedPendingReaccepted,
   type Side,
   type StoredPolicy,
@@ -41,8 +41,8 @@ import { remoteAccount } from "./status-helpers";
 // rounds run through the Store and the API; after every step the Store's projection, the API's reads and each answer
 // must equal the policy's (test/quote-model.ts), and once everything has settled Kopje and the peer, a Mastodon v4.5.11
 // model fed the bytes Kopje confirmed, must agree on which quotes are live and accepted, and on their stamps, except
-// where an accepted risk (X1, X2) or the known defect #1447 names the events that differ. A second property sends what
-// Mastodon would not, from R and two other actors, checked against the policy alone.
+// where an accepted risk (X1, X2, X3) names the events that differ. A second property sends what Mastodon would not,
+// from R and two other actors, checked against the policy alone.
 
 const R_ORIGIN = "https://remote.example";
 const R = `${R_ORIGIN}/users/r`;
@@ -1120,7 +1120,7 @@ async function settle(w: World): Promise<void> {
 // Quiescence: Kopje against the peer
 // ---------------------------------------------------------------------------------------------------------------
 
-type Excepted = "replayed-request" | "revoked-pending-reaccepted" | "known-defect-1447" | null;
+type Excepted = "replayed-request" | "revoked-pending-reaccepted" | "revoked-pending-accept-refused" | null;
 
 // Live-accepted at Kopje: accepted, with the quoting and the quoted statuses both there and not withdrawn.
 function kopjeSide(w: World, label: string): Side & { state: string | null } {
@@ -1172,10 +1172,8 @@ export function exceptionOf(
   if (revokedPendingReaccepted(logged, q, state, peer)) {
     return "revoked-pending-reaccepted";
   }
-  // Known defect #1447: an Accept after R's server revoked our pending quote leaves Kopje pending while R's server
-  // holds it accepted (witness W17). Removed when #1447 is decided.
-  if (knownDefect1447(logged, q, state, peer)) {
-    return "known-defect-1447";
+  if (revokedPendingAcceptRefused(logged, q, state, peer)) {
+    return "revoked-pending-accept-refused";
   }
   return null;
 }
@@ -2096,7 +2094,7 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     expect(await stateOf(w, "LQ2")).toBe("pending");
   });
 
-  // #1447 and X2: R revokes our pending quote, then accepts its only request under the same stamp.
+  // X2 and X3: R revokes our pending quote, then accepts its only request under the same stamp.
   async function revokedPending(w: World) {
     await lPost(w, 0);
     await sendUntil(w, "QuoteRequest");
@@ -2105,7 +2103,7 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     expect(w.peer.revoke(uriOf(w, "LQ1")!)).toBe(true);
   }
 
-  it("W17 (known defect #1447): R's Delete of the stamp first, then its Accept: Kopje pending, R accepted", async () => {
+  it("W17 (X3): R's Delete of the stamp first, then its Accept: Kopje pending, R accepted", async () => {
     const w = await setup(BASE);
     await revokedPending(w);
     await deliverAll(w);
@@ -2115,10 +2113,10 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     await deliverAll(w);
     expect(w.stats["Accept quote-unchanged"]).toBe(1);
     await finish(w);
-    expect(w.stats["exception known-defect-1447"]).toBe(1);
+    expect(w.stats["exception revoked-pending-accept-refused"]).toBe(1);
     const k = { state: w.policy.quotes.get("LQ1")!.state };
     const theirs = peerSide(w, "LQ1");
-    negatives(w, (log) => knownDefect1447(log, lq(w), k, theirs), [
+    negatives(w, (log) => revokedPendingAcceptRefused(log, lq(w), k, theirs), [
       (e) => e.k === "peerRevoke",
       (e) => e.k === "kopje" && e.type === "StampDelete",
       (e) => e.k === "peerAnswer" && e.answer === "Accept",
@@ -2141,7 +2139,7 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     const theirs = peerSide(w, "LQ1");
     const holds = (log: readonly Logged[]) => revokedPendingReaccepted(log, lq(w), k, theirs);
     expect(holds(w.log)).toBe(true);
-    // Without the pending revoke; with two copies (X1's case); with the Delete applied first (#1447's order).
+    // Without the pending revoke; with two copies (X1's case); with the Delete applied first (X3's order).
     expect(holds(w.log.filter((e) => e.k !== "peerRevoke"))).toBe(false);
     const copy = w.log.find((e) => e.k === "peerCopy")!;
     expect(holds([...w.log, { ...copy, n: copy.n + 0.5 }].toSorted((a, b) => a.n - b.n))).toBe(false);
