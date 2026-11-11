@@ -71,6 +71,13 @@ const BASE = 600_000_000_000_000_000;
 async function followedOn(w: World, n: number, domain = D, base = BASE): Promise<void> {
   await seedFollows(w.h.store, w.alice.id, n, { direction: "following", domain, base });
   await sql(w.h.store, "UPDATE accounts SET inbox_url = uri || '/inbox' WHERE domain = ?", domain);
+  // Every follow holding its handshake (one at most), which its severing's delete cascades to (SEVER_ROWS).
+  await sql(
+    w.h.store,
+    `INSERT OR IGNORE INTO handshake_replays (follow_id, check_at)
+		SELECT f.id, 0 FROM follows f JOIN accounts a ON a.id = f.target_account_id WHERE a.domain = ?`,
+    domain,
+  );
 }
 
 const count = async (store: StoreStub, query: string, ...params: SqlStorageValue[]) =>

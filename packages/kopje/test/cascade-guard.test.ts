@@ -88,7 +88,7 @@ const WRITING_TRIGGERS: Record<string, string> = {
   outbound_activities_staging_ended:
     "one retraction_stagings row per superseded retraction still staging with a staging row: a batch's supersedeEarlier runs below the oldest one still staging (inbox.ts deleteLocalStatusBatch), so it meets none, and beginRetraction counts them (headed) before it supersedes",
   handshake_replays_generation:
-    "one hold deleted per follow whose uri or state an update changes: no batched delete or purge updates follows; each path that does reserves it with the follow (handshake-replays.ts lists them)",
+    "one hold deleted per follow whose uri or state an update changes: no batched delete or purge updates a follow; the paths that do (a request's authorization, a Follow's renewal, an Accept, a Move's new follow) each change one follow outside any row budget",
   statuses_filter_text_stale:
     "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, inbox.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
 };
