@@ -170,9 +170,11 @@ Cutover from a legacy Wildebeest instance (offline; docs/cutover.md)
       --accept-missing-images   carry on although images missing from <dir> leave references out (counted)
                                 The legacy KEK candidates are read from userKEK and USER_KEY in the environment
   verify-conversion <export> <dump file> [--accept-deletions] [--accept-truncation]
-                    [--images <dir> [--accept-missing-images]]
+                    [--images <dir> [--accept-missing-images]] [--base-time <time>]
                                 check a converted dump, or a dump of the Store after the import, against the legacy
                                 export (expectations computed independently). Exits 1 on FAIL
+      --base-time <time>        the conversion's base time (its manifest's baseTime); required for a dump of the
+                                Store, which does not record it
   images-export <export> --images-account <hash> --out <dir> [--account-id <id>]
                                 download the legacy instance's images from Cloudflare Images (the account hash of its
                                 imagedelivery.net URLs) to <dir>/originals with <dir>/images.json, resumable: a rerun
@@ -349,14 +351,22 @@ async function cutover(command, rest, flags, { env, print, info }) {
   }
   const [exportPath, dumpPath] = rest;
   if (exportPath === undefined || dumpPath === undefined || rest.length > 2) {
-    throw new UsageError("verify-conversion <export> <dump file> [--accept-deletions]");
+    throw new UsageError("verify-conversion <export> <dump file> [--base-time <time>] [--accept-deletions]");
+  }
+  let baseTime;
+  if (flags["base-time"] !== undefined) {
+    try {
+      baseTime = parseBaseTime(flags["base-time"]);
+    } catch (error) {
+      throw new UsageError(error instanceof Error ? error.message : String(error));
+    }
   }
   const { ok, report } = await verifyConversion({
     exportPath,
     dumpPath,
     acceptDeletions,
     acceptTruncation,
-    baseTime: 0,
+    baseTime,
     env,
     imagesDir,
     acceptMissingImages,

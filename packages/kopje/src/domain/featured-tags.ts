@@ -69,12 +69,12 @@ const LAST_STATUS_BYTES = 40;
 // CHECK admits a TEXT or REAL of any size under INTEGER affinity): the count by presentedCountSql (an integer from 0 to
 // MAX_ACCOUNT_COUNT, else 0), the time by byteCut to LAST_STATUS_BYTES of its raw bytes (an import may hold any size,
 // or malformed UTF-8; presentFeatured cuts the decoded date). A remote account's counted at read time over its
-// window. A list reads the names as listedTagNameSql keys (LISTED_FEATURED_COLUMNS) and leaves out a row either fails
+// window, its time the date of statusPublishedSql. A list reads the names as listedTagNameSql keys (LISTED_FEATURED_COLUMNS) and leaves out a row either fails
 // (an import's).
 const COUNT_COLUMNS = `CASE WHEN a.domain IS NULL THEN ${presentedCountSql("f.statuses_count")}
 		ELSE (SELECT count(*) ${REMOTE_COUNTED}) END AS statuses_count,
 	CASE WHEN a.domain IS NULL THEN ${byteCut("f.last_status_at", LAST_STATUS_BYTES)}
-		ELSE (SELECT ${byteCut("s.published_at", LAST_STATUS_BYTES)} ${REMOTE_COUNTED} ORDER BY s.id DESC LIMIT 1) END AS last_status_at,
+		ELSE (SELECT substr(${statusPublishedSql("s")}, 1, 10) ${REMOTE_COUNTED} ORDER BY s.id DESC LIMIT 1) END AS last_status_at,
 	${usernameSql("a.username")} AS username, a.domain`;
 const FEATURED_COLUMNS = `f.id, f.name, f.display_name, ${COUNT_COLUMNS}`;
 const LISTED_FEATURED_COLUMNS = `f.id, ${listedTagNameSql("f.name")} AS name, ${listedTagNameSql("f.display_name")} AS display_name,

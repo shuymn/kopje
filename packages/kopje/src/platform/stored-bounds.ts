@@ -2878,14 +2878,16 @@ export function storedTime(ms: number): string | null {
 // bytes.
 const TIME_FORMAT_BYTES = 64;
 
-// `column` in the stored form: as stored when it is in it, else the time SQLite reads in it, else NULL. A value is read
-// only when it is at most TIME_FORMAT_BYTES, holds no NUL and starts with a calendar date (strftime reads a bare
-// number as a Julian day), judged in that order; strftime applies a zone offset, rounds a longer fraction to
-// milliseconds (never past .999), and its '+0 seconds' carries an hour of 24 into the next day.
+// `column` (a column, not an expression) in the stored form: as stored when it is in it, else the time SQLite reads in
+// it, else NULL. A value is read only when it is at most TIME_FORMAT_BYTES, holds no NUL and starts with a calendar
+// date (strftime reads a bare number as a Julian day), judged in that order; strftime applies a zone offset, rounds a
+// longer fraction to milliseconds (never past .999), and its '+0 seconds' carries an hour of 24 into the next day. The
+// bytes are judged first by octet_length, which SQLite answers from the record header for a column without loading the
+// value (test/status-times.test.ts reads the bytecode), so a long imported value costs no more than a short one.
 function storedTimeOfSql(column: string): string {
-  return `CASE WHEN ${isoTimeAcceptedSql(column)} THEN ${column}
-	WHEN length(CAST(${column} AS BLOB)) <= ${TIME_FORMAT_BYTES} AND instr(CAST(${column} AS BLOB), x'00') = 0
-		AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+  return `CASE WHEN octet_length(${column}) > ${TIME_FORMAT_BYTES} THEN NULL
+	WHEN ${isoTimeAcceptedSql(column)} THEN ${column}
+	WHEN instr(CAST(${column} AS BLOB), x'00') = 0 AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
 	THEN ${isoTimeSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)} END`;
 }
 
@@ -2897,10 +2899,10 @@ export function statusPublishedSql(s: string): string {
 	'1970-01-01T00:00:00.000Z')`;
 }
 
-// A status's edit time as read: NULL when it was never edited; else its edited_at in the stored form, else its
-// publication time as read, so an edited status stays edited.
+// A status's edit time as read: NULL when it was never edited (octet_length is NULL only for NULL, and reads no value);
+// else its edited_at in the stored form, else its publication time as read, so an edited status stays edited.
 export function statusEditedSql(s: string): string {
-  return `CASE WHEN ${s}.edited_at IS NULL THEN NULL
+  return `CASE WHEN octet_length(${s}.edited_at) IS NULL THEN NULL
 	ELSE coalesce(${storedTimeOfSql(`${s}.edited_at`)}, ${statusPublishedSql(s)}) END`;
 }
 

@@ -24,7 +24,17 @@ import {
   statusUrlSql,
 } from "../src/platform/stored-bounds.js";
 import { byText } from "../test/sort.js";
-import { convert, exportOf, failing, opened, rewriteExport, tampered, verify, workspace } from "./cutover-helpers.js";
+import {
+  convert,
+  exportOf,
+  failing,
+  opened,
+  redumped,
+  rewriteExport,
+  tampered,
+  verify,
+  workspace,
+} from "./cutover-helpers.js";
 
 // RES-2: a converted row holds what the Worker would store (src/platform/stored-bounds.ts). Values at each stored
 // bound and one past it, with U+0000 and characters outside the BMP, are converted to their writers' output, each
@@ -389,7 +399,7 @@ describe("converted instance settings at their stored bounds", () => {
 });
 
 describe("a converted status time outside years 0 to 9999 (RES-2)", () => {
-  it("stores the base time when neither published nor cdate is a time the Store holds, and verifies", async () => {
+  it("stores the base time when neither published nor cdate is in the writers' form, and verifies", async () => {
     const exportPath = await exportOf(space.dir, { level: 39 });
     const early = "-000001-06-01T00:00:00.000Z";
     // r0's first post: published a minute before its cdate.
@@ -411,5 +421,19 @@ describe("a converted status time outside years 0 to 9999 (RES-2)", () => {
     const { ok, categories } = await verify(exportPath, converted.dumpPath);
     expect(failing(categories)).toEqual([]);
     expect(ok).toBe(true);
+    // A dump of the Store after the import holds the same rows under its own time: it verifies with the conversion's
+    // base time given, and refuses to guess one without it.
+    const restored = await redumped(space.dir, converted.dumpPath, "2026-11-02T00:00:00.000Z");
+    const again = await verify(exportPath, restored, { baseTime });
+    expect(failing(again.categories)).toEqual([]);
+    expect(again.ok).toBe(true);
+    const unknown = await verify(exportPath, restored);
+    expect([unknown.ok, (unknown.report as { stop?: { code: string } }).stop?.code]).toEqual([
+      false,
+      "base-time-required",
+    ]);
+    // A time other than the conversion's shows the status as changed.
+    const wrong = await verify(exportPath, restored, { baseTime: Date.parse("2026-11-02T00:00:00.000Z") });
+    expect(failing(wrong.categories)).toEqual(["statuses"]);
   });
 });

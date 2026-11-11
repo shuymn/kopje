@@ -186,6 +186,27 @@ describe("RES-2: remote times outside the stored form", () => {
       { published_at: arrival },
     ]);
   });
+
+  // ID-7: the Update watermark reads the stored versions as stored, not the times a read presents (which fall back on
+  // the arrival): a stored time before year 0 is older than any version, as it always was.
+  it("applies an Update over a stored time outside the form, which presents as its later arrival", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const note = mastodonNote(bob);
+    await t.post(bob, create(bob, note));
+    await sql(
+      t.store,
+      `UPDATE statuses SET published_at = '-000001-06-01T00:00:00.000Z', edited_at = NULL, remote_version = NULL,
+				created_at = '2026-10-21T00:00:00.000Z' WHERE uri = ?`,
+      note.id,
+    );
+    expect(await t.post(bob, update(bob, { ...note, content: "<p>edited</p>" }, "2025-10-01T00:00:00.000Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({
+      content: "<p>edited</p>",
+      edited_at: "2025-10-01T00:00:00.000Z",
+    });
+  });
 });
 
 describe("ID-7: retractions at the per-actor cap", () => {

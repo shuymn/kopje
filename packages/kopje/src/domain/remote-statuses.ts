@@ -612,7 +612,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     return { applied: false, reason: "not-author" };
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
-  const stored = Date.parse(existing.remote_version ?? existing.edited_at ?? existing.published_at);
+  const stored = Date.parse(existing.watermark ?? "");
   // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included.
   if (version < stored) {
     return { applied: false, reason: "stale" };

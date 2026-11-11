@@ -35,7 +35,12 @@ const MANIFEST_FILE = "manifest.json";
 const ORIGINALS_OUT = "originals";
 
 // What a stop code means, for the manifest. Messages are fixed text; details are counts, levels and digests.
+// The header's source of a dump convertExport writes, whose createdAt is the conversion's base time.
+const CONVERT_BUILD = "kopje-admin convert";
+
 const MESSAGES = /** @type {Record<string, string>} */ ({
+  "base-time-required":
+    "the dump is not one convert wrote; pass the conversion's --base-time (its manifest's baseTime) to check it",
   "deletions-not-accepted": "bridging removes rows; review source.deletions and pass --accept-deletions to continue",
   "conversion-refused": "the conversion found rows it cannot carry over; see the reasons",
   "unsupported-level": "the export is at a migration level the converter does not support",
@@ -320,7 +325,7 @@ export async function convertExport(options) {
         catalog,
         migrations,
         createdAt: new Date(baseTime).toISOString(),
-        source: { build: "kopje-admin convert", version },
+        source: { build: CONVERT_BUILD, version },
       });
     });
     kopje.close();
@@ -342,21 +347,30 @@ export async function convertExport(options) {
 }
 
 /**
- * A dump's createdAt: for a converted dump, the conversion's base time (convertExport writes it), else null.
- * @param {string} text
- * @returns {string | null}
+ * The conversion's base time, as ISO: `baseTime` when given, else a converted dump's createdAt. A dump of the Store
+ * records the time it was taken there, so it needs `baseTime`.
+ * @param {string} text the dump
+ * @param {number | undefined} baseTime
+ * @returns {string}
  */
-function dumpCreatedAt(text) {
+function conversionBaseTime(text, baseTime) {
+  if (baseTime !== undefined) {
+    return new Date(baseTime).toISOString();
+  }
   const { header } = readDumpText(text);
-  const createdAt =
-    typeof header === "object" && header !== null ? /** @type {{ createdAt?: unknown }} */ (header).createdAt : null;
-  return typeof createdAt === "string" ? createdAt : null;
+  const { createdAt, source } = /** @type {{ createdAt?: unknown, source?: { build?: unknown } }} */ (
+    typeof header === "object" && header !== null ? header : {}
+  );
+  if (source?.build !== CONVERT_BUILD || typeof createdAt !== "string") {
+    throw new ExportError("base-time-required");
+  }
+  return createdAt;
 }
 
 /**
  * Checks a Kopje dump (the converted one, or a dump of the Store after the import) against expectations computed
- * independently from the legacy export.
- * @param {SourceOptions & { dumpPath: string }} options
+ * independently from the legacy export. baseTime: the conversion's --base-time, required for a dump of the Store.
+ * @param {Omit<SourceOptions, "baseTime"> & { dumpPath: string, baseTime?: number | undefined }} options
  * @returns {Promise<{ ok: boolean, report: Record<string, unknown> }>}
  */
 export async function verifyConversion(options) {
@@ -379,7 +393,7 @@ export async function verifyConversion(options) {
       source: addressing,
       notificationSequence: source.notificationSequence,
       images: options.imagesDir === undefined ? undefined : imagesFor(options.imagesDir, localDomain(db)),
-      baseTime: dumpCreatedAt(dump),
+      baseTime: conversionBaseTime(dump, options.baseTime),
     });
     db.close();
     const actual = actualFromDump(dump);

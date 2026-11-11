@@ -106,7 +106,7 @@ function when(value) {
     return null;
   }
   const spaced = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/.exec(value);
-  // As the Store holds a time (RES-2): none outside years 0 to 9999.
+  // In the writers' form (storedTime, RES-2): none outside years 0 to 9999.
   return storedTime(Date.parse(spaced === null ? value : `${spaced[1]}T${spaced[2]}${spaced[3] ?? "Z"}`));
 }
 
@@ -348,7 +348,7 @@ export function threadsOf(replies, statuses, conversations = new Map()) {
  * @param {{ originalActorIds: Map<string, string>, source: import('./legacy-load.js').SourceAddressing,
  *   notificationSequence: string | null, images?: import('./images-export.js').ImagesFile | undefined,
  *   baseTime?: string | null }} options baseTime: the conversion's base time (the converted dump's createdAt), the
- *   publication time of a status with no time the Store holds, as the converter stores it
+ *   publication time of a status with no time in the writers' form, as the converter stores it
  * @returns {{ records: Records, overLimit: number, images: { missing: number, unmapped: number },
  *   dropped: Record<string, number>, identities: number }} dropped: rows the conversion must leave out, which need
  *   --accept-deletions; identities: actor ids, remote usernames and status uris the Worker would refuse

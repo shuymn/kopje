@@ -97,11 +97,11 @@ kopje-admin images-export <export> --images-account <hash> --out <images dir> [-
 kopje-admin convert <export> --out <dir> --base-time <time> [--accept-deletions] [--accept-truncation]
                     [--catalog <file>] [--domain <host>] [--images <images dir> [--accept-missing-images]]
 kopje-admin verify-conversion <export> <dump file> [--accept-deletions] [--accept-truncation]
-                    [--images <images dir> [--accept-missing-images]]
+                    [--images <images dir> [--accept-missing-images]] [--base-time <time>]
 ```
 
 - `--base-time` (ISO 8601 UTC) fixes the time ids are assigned against, so the same export gives the same dump. It is
-  recorded in the manifest.
+  recorded in the manifest, and `verify-conversion` of a dump of the Store takes the same value.
 - `--catalog` takes the target's `kopje-admin catalog` output. Without it the converter uses the catalog of its own
   schema; `import` refuses a dump whose catalog differs from the target's either way.
 - `--accept-truncation` accepts HTML longer than the sanitizer's limit (50,000 UTF-16 units), a bio longer than
@@ -360,10 +360,11 @@ relationship, a recipient removed or added, a widened visibility, a dropped repl
 (DATA-12). Content over the sanitizer's limit fails too unless `--accept-truncation` is given
 (`truncation.overLimit`). A domain block whose value is no domain name and a notification a remote account owns, which
 the conversion drops, fail too unless `--accept-deletions` is given (`dropped`). Run it twice in a cutover: on the
-converted dump before importing, and on a `kopje-admin dump` of the Store after the import. A status whose
-`published` and `cdate` are both no time the Store holds (unreadable, or outside years 0 to 9999) is stored at the base
-time, which the check reads from the dump's `createdAt`: on a dump of the Store, which carries its own time there, such
-a status shows as changed.
+converted dump before importing, and on a `kopje-admin dump` of the Store after the import. The check needs the
+conversion's base time, at which a status whose `published` and `cdate` are both outside the writers' form (unreadable,
+or outside years 0 to 9999) is stored: it reads it from a converted dump's `createdAt`, and a dump of the Store, which
+records its own time there, needs `--base-time` with the manifest's `baseTime` (without it the check stops with
+`base-time-required`).
 
 With `--images`, the expected avatars, headers, attachments, old image URLs and `media_files` come from `images.json`
 and the instance origin alone, by code that does not share the converter's mapping: a URL, a token, a served type or a

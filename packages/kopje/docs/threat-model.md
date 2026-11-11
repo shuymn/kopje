@@ -2600,14 +2600,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`remoteTime` in `src/domain/remote-statuses.ts`, a boost in `src/domain/inbox.ts`) and the cutover's converter keep
   a time through `storedTime` (`src/platform/stored-bounds.ts`), which shares `isoTimeSql`'s acceptance rule, and
   store the arrival (the converter its base time) for any other. Every read that copies a status's time into an answer,
-  a document or another row takes `statusPublishedSql` and `statusEditedSql`: the stored form, else the time SQLite
-  reads in a value of at most 64 bytes with no NUL that starts with a date, else the row's arrival read the same way,
-  else the epoch; an edit time NULL when none is stored, else the publication time as read. They cover the status
-  columns (`STATUS_COLUMN_MAP`, and with it hydration and the heap estimate), the Note, Create and Update
-  (`statusFacts`), the outbox's Announce, a boost's Undo and withdrawal, a revoked quote's redacted status, the first
-  edit's snapshot (local and remote) and a remote Update's version fallback, the moved-to account's `last_status_at`,
-  featured hashtags' `last_status_at` and hashtag history days. Trends read through `isoTimeSql`; a dump, an import and
-  the converter carry the stored value. So a presented `created_at` or `edited_at` is 24 bytes
+  a document or another row takes `statusPublishedSql` and `statusEditedSql`: a value past 64 bytes, judged from the
+  record header without loading it (`octet_length`), reads as none; a value in the stored form as itself; else the time
+  SQLite reads in a value with no NUL that starts with a date; else, for the publication, the row's arrival read the
+  same way, else the epoch. An edit time is NULL when none is stored, a readable one is kept, and an unreadable one
+  reads as the publication time. They cover the status columns (`STATUS_COLUMN_MAP`, and with it hydration and the heap
+  estimate), the Note, Create and Update (`statusFacts`), the outbox's Announce, a boost's Undo and withdrawal, a
+  revoked quote's redacted status, the first edit's snapshot (local and remote), the moved-to account's
+  `last_status_at`, featured hashtags' `last_status_at` (local and remote) and hashtag history days. A remote Update's
+  watermark keeps the stored version (`remote_version`, else `edited_at`, else `published_at`, parsed as stored), so the
+  arrival a read falls back on never orders versions (ID-7). Trends read through `isoTimeSql`; a dump, an import and
+  the converter carry the stored value. So a presented `created_at` is 24 bytes and `edited_at` null or 24 bytes
   (`test/status-times.test.ts`, `test/inbox-statuses-edge.test.ts` ("remote times outside the stored form"),
   `test/dump-import.test.ts` ("round-trips status times past the stored form unchanged")). _Enforced (main)_ for account counts: `accounts.followers_count`, `following_count`
   and `statuses_count` have no stored bound (an INTEGER column, no CHECK or trigger; adding one would rewrite every

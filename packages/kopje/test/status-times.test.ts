@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { getOutbox } from "../src/domain/local-notes";
 import { isoTimeSql, statusEditedSql, statusPublishedSql } from "../src/platform/stored-bounds";
 import { bearer, json, sql } from "./api-helpers";
-import { freshStore } from "./helpers";
+import { freshStore, migratedStore } from "./helpers";
 import { act, community, getJson, outbound, post, remoteAccount, remoteFollows, type Status } from "./status-helpers";
 
 // statuses.published_at and edited_at have no stored bound (docs/threat-model.md RES-2, "status times"): a converted
@@ -112,6 +112,28 @@ describe("status times as read (RES-2)", () => {
       );
     });
   }, 60_000);
+
+  // SQLite's OP_Column with OPFLAG_BYTELENARG (0xc0 in p5) answers octet_length from the record header without loading
+  // the value; a read without it loads the whole value, however long. Each column a projection reads is judged so
+  // first, so a value past TIME_FORMAT_BYTES is never loaded.
+  it("judges each time's bytes from the record header before it loads the value", async () => {
+    await runInDurableObject(await migratedStore(), (_instance, state) => {
+      const sqlStorage = state.storage.sql;
+      const columns = sqlStorage.exec("SELECT * FROM statuses LIMIT 0").columnNames;
+      const program = sqlStorage
+        .exec<{ addr: number; opcode: string; p2: number; p5: number }>(
+          `EXPLAIN SELECT ${statusPublishedSql("s")} AS p, ${statusEditedSql("s")} AS e FROM statuses s WHERE s.id = ?`,
+          "1",
+        )
+        .toArray();
+      const BYTELENARG = 0xc0;
+      for (const column of ["published_at", "edited_at", "created_at"]) {
+        const reads = program.filter((op) => op.opcode === "Column" && op.p2 === columns.indexOf(column));
+        expect(reads.length, column).toBeGreaterThan(1);
+        expect(reads[0]!.p5 & BYTELENARG, column).toBe(BYTELENARG);
+      }
+    });
+  });
 });
 
 describe("a status whose stored times are past the form (RES-2, RES-3)", () => {
@@ -147,7 +169,7 @@ describe("a status whose stored times are past the form (RES-2, RES-3)", () => {
     expect(new Set(items.map((item) => item.type))).toEqual(new Set(["Announce", "Create"]));
     expect(items).toHaveLength(2);
     for (const item of items) {
-      expect(item.published, String(item.type)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/);
+      expect(item.published, String(item.type)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
       if (item.type === "Create") {
         expect((item.object as { published: string }).published).toBe(arrival);
       }
