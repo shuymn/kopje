@@ -1125,10 +1125,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   nothing but retractions (a forwarded `Delete` of a remote original it boosted among them, VIS-3), and its inbound
   activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
   `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its follows of local accounts are
-  severed in bounded, generation-bound rounds (R38), each accepted one with a withdrawing `Reject` to the follower's
-  current inbox alone, as Mastodon sends it (a retraction, never refused, but not sent to the earlier receivers of what
-  it withdraws); local follows of it are kept.
+  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
+  accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
+  current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
+  sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
+  unanswerable while it is unavailable, as Mastodon keeps `FollowRequest`s; local follows of it are kept.
   An instance domain block of severity `suspend` (R38) covers a host by its longest matching block (a child `noop`
   exempts its subdomains), with at most `MAX_BLOCK_LABELS` (8) labels per stored block; a covered account (by its stored
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
@@ -1629,7 +1630,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/health-runtime.test.ts` ("runtime check in healthReport").
 - **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
   shared inbox; an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient
-  through its object) goes to the recipient's shared inbox when it has one, and moves to its distinct personal inbox on
+  through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
+  personal inbox, as Mastodon's `reject_remote_follows!` sends it), and moves to its distinct personal inbox on
   the same origin (same lane, within the row's attempts) if the shared inbox answers 404, 405 or 410; targets pass
   NET-3; a non-public activity is never sent to a redirect target. Claims serialize each lane; the POST timeout (30 s)
   is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
