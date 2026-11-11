@@ -50,8 +50,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   no longer keeps a request that Kopje holds accepted (#1423). A new job family replays each held handshake with its
   original id about 5 to 10 minutes after the account is available, and nothing more is sent while it is not
   ([docs/visibility.md](docs/visibility.md), "Held handshakes"). One dropped before this release is not replayed:
-  follow again. The admin's `jobs retry` also recovers a parked replay. Migration `0088_handshake_replays`;
-  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version.
+  follow again. The admin's `jobs retry` also recovers a parked replay. Migration `0088_handshake_replays` (an empty
+  table, two empty indexes and a trigger on `follows`; it rewrites no row, and since it creates a table the upgrade
+  checks every reference of the Store: 7,184 ms for this file in one local run of the migration bench, at a load
+  average of about 9); `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version.
 
 ## [0.2.1] - 2026-11-03
 
