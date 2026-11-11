@@ -8,7 +8,15 @@ import { Db } from "../src/db/sql";
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { instanceInfo } from "../src/domain/instance";
-import { INBOUND_JOBS, JOB_TABLES, jobAttemptColumnsSql, jobAttemptIndexesSql } from "../src/domain/job-attempts";
+import {
+  HANDSHAKE_REPLAYS,
+  INBOUND_JOBS,
+  JOB_TABLES,
+  jobAttemptColumnsSql,
+  jobAttemptIndexesSql,
+  MAX_JOB_ATTEMPTS,
+  SAFE_MS,
+} from "../src/domain/job-attempts";
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
@@ -10133,8 +10141,8 @@ describe("0081_account_invitations", () => {
 describe("0084_family_job_attempts", () => {
   const NAME = "0084_family_job_attempts";
   const at = NAMES.indexOf(NAME);
-  // Every job table but inbound_jobs (0080), in JOB_TABLES order.
-  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS);
+  // Every job table but inbound_jobs (0080) and handshake_replays (0088), in JOB_TABLES order.
+  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS);
 
   it("holds jobAttemptColumnsSql's and jobAttemptIndexesSql's output for each other job table, declared foreignKeys: 'unchanged'", () => {
     expect(NAMES[at - 1]).toBe("0083_kept_boosts");
@@ -11297,4 +11305,125 @@ describe("0087_tag_key_fixed_points under stale statistics", () => {
     expect((small - base) / 990).toBeLessThanOrEqual(200);
     expect((large - small) / 1000).toBeLessThanOrEqual((1.1 * (small - base)) / 990);
   }, 300_000);
+});
+
+describe("0088_handshake_replays", () => {
+  const NAME = "0088_handshake_replays";
+  const at = NAMES.indexOf(NAME);
+  const SAFE = String(SAFE_MS);
+  // A local follower and a remote target, and their follow 7.
+  const seed = (sql: SqlStorage) => {
+    sql.exec(
+      `INSERT INTO accounts (id, uri, username, domain) VALUES
+				('100000000000000001', 'https://kopje.test/ap/users/alice', 'alice', NULL),
+				('100000000000000002', 'https://r.example/users/r', 'r', 'r.example')`,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES ('100000000000000001', 'a@example.com', X'00', X'00', 'k')",
+    );
+    sql.exec(
+      `INSERT INTO follows (id, account_id, target_account_id, state, uri)
+				VALUES (7, '100000000000000001', '100000000000000002', 'pending', 'https://kopje.test/f/7')`,
+    );
+  };
+
+  it("holds the retry columns and indexes of a job table as job-attempts.ts writes them, checking every reference", () => {
+    expect(NAMES[at - 1]).toBe("0087_tag_key_fixed_points");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    // The generator's column definitions, as a CREATE TABLE holds them, and its indexes.
+    const columns = jobAttemptColumnsSql("handshake_replays")
+      .split(";\n")
+      .filter((s) => s.trim() !== "")
+      .map((s) => s.replace("ALTER TABLE handshake_replays ADD COLUMN ", ""));
+    expect(columns).toHaveLength(2);
+    for (const column of columns) {
+      expect(sql).toContain(column);
+    }
+    expect(sql).toContain(jobAttemptIndexesSql(HANDSHAKE_REPLAYS));
+    expect(sql).toContain(`check_at BETWEEN 0 AND ${SAFE}`);
+    expect(JOB_TABLES.at(-1)).toBe(HANDSHAKE_REPLAYS);
+  });
+
+  it.each([
+    ["SAFE_MS + 1", `${SAFE_MS + 1}`],
+    ["a negative time", "-1"],
+    // Text that reads as an integer is stored as one, by the column's affinity.
+    ["text", "'soon'"],
+    ["a real", "1.5"],
+    ["a blob", "X'01'"],
+    ["NULL", "NULL"],
+  ])("refuses a check_at of %s, after admitting 0 and SAFE_MS", async (_name, value) => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      const sql = state.storage.sql;
+      seed(sql);
+      sql.exec("INSERT INTO handshake_replays (follow_id, check_at) VALUES (7, 0)");
+      sql.exec(`UPDATE handshake_replays SET check_at = ${SAFE}`);
+      expect(() => sql.exec(`UPDATE handshake_replays SET check_at = ${value}`)).toThrow(/constraint failed/);
+      expect(sql.exec("SELECT CAST(check_at AS TEXT) AS c FROM handshake_replays").one().c).toBe(SAFE);
+    });
+  });
+
+  it("admits the three retry states at their ends, and refuses every other pair", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      const sql = state.storage.sql;
+      seed(sql);
+      sql.exec("INSERT INTO handshake_replays (follow_id, check_at) VALUES (7, 0)");
+      const last = MAX_JOB_ATTEMPTS;
+      for (const [attempts, due] of [
+        ["1", "0"],
+        [`${last - 1}`, SAFE],
+        [`${last}`, "NULL"],
+        ["0", "NULL"],
+      ]) {
+        sql.exec(`UPDATE handshake_replays SET attempts = ${attempts}, due_at = ${due}`);
+      }
+      for (const [attempts, due] of [
+        ["0", "0"],
+        ["1", "NULL"],
+        ["1", `${SAFE_MS + 1}`],
+        ["1", "-1"],
+        [`${last}`, "0"],
+        [`${last + 1}`, "NULL"],
+        ["-1", "NULL"],
+      ]) {
+        expect(() => sql.exec(`UPDATE handshake_replays SET attempts = ${attempts}, due_at = ${due}`)).toThrow(
+          /constraint failed/,
+        );
+      }
+    });
+  });
+
+  it("ends a hold with its follow, and when its uri or state changes, and with no other write", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      const sql = state.storage.sql;
+      seed(sql);
+      const held = () => sql.exec("SELECT count(*) AS n FROM handshake_replays").one().n;
+      const hold = () => sql.exec("INSERT OR REPLACE INTO handshake_replays (follow_id, check_at) VALUES (7, 0)");
+      hold();
+      // The same values, and another column: the hold stays.
+      sql.exec("UPDATE follows SET uri = uri, state = state, show_reblogs = 0 WHERE id = 7");
+      expect(held()).toBe(1);
+      sql.exec("UPDATE follows SET uri = 'https://kopje.test/f/7b' WHERE id = 7");
+      expect(held()).toBe(0);
+      hold();
+      sql.exec("UPDATE follows SET uri = NULL WHERE id = 7");
+      expect(held()).toBe(0);
+      hold();
+      sql.exec("UPDATE follows SET state = 'accepted' WHERE id = 7");
+      expect(held()).toBe(0);
+      hold();
+      sql.exec("DELETE FROM follows WHERE id = 7");
+      expect(held()).toBe(0);
+      expect(() => sql.exec("INSERT INTO handshake_replays (follow_id, check_at) VALUES (8, 0)")).toThrow(
+        /FOREIGN KEY constraint failed/,
+      );
+    });
+  });
 });

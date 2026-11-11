@@ -628,6 +628,63 @@ describe("dump", () => {
     expect(String(await rejectionOf(importViaRpc(target, dump)))).toMatch(/oauth_client_authorized/);
   }, 120_000);
 
+  it("round-trips held handshakes (0088) at SAFE_MS, and refuses one past its bound or of no follow on import", async () => {
+    const source = await seeded(0);
+    // A local follower's pending follow of a remote account, its hold at the bound, and a converted-row edge (no uri)
+    // held as well, parked.
+    const SAFE = "9007199254740991";
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const local = sql.exec<{ id: string }>("SELECT account_id AS id FROM local_accounts LIMIT 1").one().id;
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain) VALUES
+					('880000000000000011', 'https://remote.test/users/h', 'h', 'remote.test'),
+					('880000000000000012', 'https://remote.test/users/i', 'i', 'remote.test')`,
+      );
+      sql.exec(
+        `INSERT INTO follows (id, account_id, target_account_id, state, uri) VALUES
+					(880000000000000013, ?1, '880000000000000011', 'pending', 'https://kopje.test/f/h'),
+					(880000000000000014, '880000000000000012', ?1, 'accepted', NULL)`,
+        local,
+      );
+      sql.exec(
+        `INSERT INTO handshake_replays (follow_id, check_at, attempts, due_at) VALUES
+					(880000000000000013, ${SAFE}, 0, NULL), (880000000000000014, 0, 6, NULL)`,
+      );
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, foreignKeyViolations: 0 });
+    const holds =
+      "SELECT CAST(follow_id AS TEXT) AS f, CAST(check_at AS TEXT) AS c, attempts, due_at FROM handshake_replays ORDER BY follow_id";
+    const read = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) => state.storage.sql.exec(holds).toArray());
+    expect(await read(restored)).toEqual([
+      { f: "880000000000000013", c: SAFE, attempts: 0, due_at: null },
+      { f: "880000000000000014", c: "0", attempts: 6, due_at: null },
+    ]);
+    expect(await read(restored)).toEqual(await read(source));
+    const line = text.split("\n").find((row) => row.includes("handshake_replays") && row.includes(SAFE))!;
+    expect(line).toBeDefined();
+    // Past the bound: the CHECK names the column.
+    const past = await migratedStore();
+    await copyConfig(source, past);
+    expect(
+      String(await rejectionOf(importViaRpc(past, text.replace(line, line.replace(SAFE, "9007199254740992"))))),
+    ).toMatch(/handshake_replays_check_at/);
+    // A hold of no follow: the foreign key check fails the import.
+    const orphan = await migratedStore();
+    await copyConfig(source, orphan);
+    const dangling = text.replace(line, line.replace("880000000000000013", "880000000000000099"));
+    expect(dangling).not.toBe(text);
+    const outcome = await importViaRpc(orphan, dangling).then(
+      ({ report }) => report,
+      (error: unknown) => String(error),
+    );
+    expect(JSON.stringify(outcome)).toMatch(/foreign_key_check reported 1 violation|FOREIGN KEY/);
+  }, 120_000);
+
   it("restores followed and featured hashtags past the list bound as they are, which the lists leave out", async () => {
     const source = await seeded(0);
     const long = "a".repeat(300);

@@ -35,7 +35,8 @@ import { RowBudget } from "./row-budget";
 //       - follows: ends the account's accepted follows of local accounts up to the follow bound (severing, below).
 //         Its requests are kept, as SuspendAccountService#reject_remote_follows! keeps FollowRequests: unanswerable
 //         and unlisted while it is unavailable (answerPendingFollow, listFollowRequests), answerable again after an
-//         unsuspension. Local accounts' follows of it are kept, and an unsuspension restores nothing that was severed.
+//         unsuspension. Local accounts' follows of it are kept (a Follow the send-time check drops meanwhile is held,
+//         handshake-replays.ts), and an unsuspension restores nothing that was severed.
 //   - mode 'domain', set by the conversion: an unsuspension of an account a suspend block still covers keeps it
 //     suspended, as a domain mark (suspension_source 'domain'), and redirects the job with a fresh follow bound; each
 //     round requires the mark and live coverage. It severs both ways (out, then in), as the domain job severs a covered
@@ -75,7 +76,7 @@ import { RowBudget } from "./row-budget";
 // The arithmetic: room() keeps SEVER_ROWS and the round's retry state's row (job-attempts.ts JOB_BOOKKEEPING_ROWS); a
 // preparatory step or a mark writes at most room() rows, and the final step is taken only while room() >= 0, so a
 // round writes at most MODERATION_ROUND_ROWS - SEVER_ROWS - JOB_BOOKKEEPING_ROWS + SEVER_ROWS rows, and its retry
-// state's row one more. Progress: a round starts with room() = MODERATION_ROUND_ROWS - SEVER_ROWS - 1 (258) > 0, so its
+// state's row one more. Progress: a round starts with room() = MODERATION_ROUND_ROWS - SEVER_ROWS - 1 (257) > 0, so its
 // first covered account is marked, or its first follow has a preparatory row written or is ended; otherwise the cursor
 // moves past what it read.
 
@@ -87,11 +88,12 @@ export const SEVER_ROUND = 100;
 // intent and its one chunk (one target: the remote account's current personal inbox; no earlier receivers), the earlier
 // activities left to supersede (none), and the job's update; 1 for the follow delete's triggers, which for a local
 // follower remove its pin of the account (account_pins_follow_ended) and, its list memberships of the account already
-// deleted in preparatory steps, no list row (list_members_follow_ended); and 3 × EXPANSION_STEP for the expansion
+// deleted in preparatory steps, no list row (list_members_follow_ended); 1 for the follow's held handshake, which its
+// delete cascades to (migration 0088_handshake_replays, one at most); and 3 × EXPANSION_STEP for the expansion
 // that recording the activity runs (deliveries.ts enqueueActivity), which may expand any activity's pending targets:
 // up to EXPANSION_STEP deliveries, each from a chunk of its own at worst, whose cursor update and delete are two more
 // rows.
-export const SEVER_ROWS = 40 + 1 + 3 * EXPANSION_STEP;
+export const SEVER_ROWS = 40 + 1 + 1 + 3 * EXPANSION_STEP;
 // Suspended accounts a clearing round reads at most: each clear is one row, so a round writes CLEAR_ROUND + 1.
 export const CLEAR_ROUND = 500;
 // Accounts a marking round walks at most, by id (the predicate is evaluated for each remote one among them), and

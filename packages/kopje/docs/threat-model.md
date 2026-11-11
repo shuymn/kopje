@@ -239,7 +239,8 @@ against their own instance. TLS is assumed between all parties.
   when that start would pass 18 digits; exhaustion aborts the writer's whole transaction. See the migration header and
   `test/migrations.test.ts` (0054). A Follow has generations: a superseded, undone, refused or blocked Follow id is
   recorded as retracted, so no late Undo, Accept, Reject or replay reaches a newer generation, and no Accept or
-  Reject is recorded twice; an answer's id derives from the Follow it answers; a new generation cancels the answers it
+  Reject is recorded twice, except that each hold the send-time check consumed lets that generation's Follow or Accept
+  be recorded once more (VIS-30, held handshakes); an answer's id derives from the Follow it answers; a new generation cancels the answers it
   replaces that are not leased and supersedes a leased one, and an `Undo` those of the generation it undoes (NET-2).
   A Move is a job keyed by its id that never moves a follow made after it. The Store rounds of one request carry the
   same actor document and revision, and only the first round that finds the revision stores the document (ID-1). An
@@ -1162,7 +1163,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Accepted residuals: a shared inbox serving an available recipient besides unavailable ones is sent (content expansion
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
   retraction's earlier receivers) gets the inbox host rule only; Mastodon's `DeliveryWorker` has no such check, so this
-  is stricter than Mastodon, whose reach already leaves deleted accounts out. A dropped row writes no receipt. An
+  is stricter than Mastodon, whose reach already leaves deleted accounts out. A dropped row writes no receipt. A
+  dropped `Follow` or `Accept` that its follow's current generation still owes (not superseded, its sender available)
+  holds that follow (`handshake_replays`, one row per follow, ended by the follow's delete and by any change of its
+  `uri` or `state`), and a job family records it again with its original id once, read live, both accounts are
+  available, the selected inbox is deliverable and uncovered, and the follow API's rule (a `Follow`) or inbound
+  acceptance's (an `Accept`) holds; the hold ends only once an intent with a target is recorded (docs/visibility.md,
+  "Held handshakes"). Nothing more is confirmed for sending while the recipient is unavailable. An
   account that moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields or
   emojis, the default images), and an unavailable account shows `moved: null` with its target not read, as
   REST::AccountSerializer does (`test/account-moved.test.ts`). _Enforced (main)._ Implementation, for accounts:
@@ -1175,7 +1182,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `claimDeliveries` and `confirmDelivery` in `src/domain/deliveries.ts`, `recipientsFor` in `src/domain/audience.ts`,
   `deliveryRound` in `src/jobs/deliver.ts`, migration `0044_delivery_provenance`; `test/delivery-send-check.test.ts`,
   `test/policy-writes.test.ts` (provenance and the send-time rule against `sends` in `test/policy-model.ts`),
-  `test/migrations.test.ts`. For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql` and `availableSql` in
+  `test/migrations.test.ts`. For held handshakes: `holdHandshake` in `src/domain/deliveries.ts`,
+  `src/domain/handshake-replays.ts`, migration `0088_handshake_replays`; `test/handshake-replays.test.ts`,
+  `test/remote-suspension-deliveries.test.ts`. For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql` and `availableSql` in
   `src/domain/audience.ts`, the fetch policy in `src/federation/loader.ts`, the inbound path in
   `src/federation/inbound.ts`, the domain job in `src/domain/remote-suspension.ts`, the admin API in
   `src/domain/admin-domain-blocks.ts`, `mediaRejectedSql` in `src/domain/audience.ts` and `slotEligibleSql` in
@@ -1712,7 +1721,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   same holds for an `Accept` that a block's withdrawing `Reject` superseded. Only a POST whose confirmation was granted
   before the `Follow` or the `Undo` committed still goes (see the accepted risks); `kopje.delivery.stale_follow_answer`
   records each answer caught and each such one delivered (`sent_in_flight`), by type and step only (DATA-5). A `Follow`
-  the target refuses because it blocks the follower records its `Reject` and cancels nothing. `cancelFollowAnswers` and
+  the target refuses because it blocks the follower records its `Reject` and cancels nothing. A replayed `Accept`
+  (VIS-30, held handshakes) is the pair's current answer, cancelled and superseded as any other
+  (`test/handshake-replays.test.ts` ("a replayed Accept is the pair's answer")). `cancelFollowAnswers` and
   `STALE_ANSWER` in `src/domain/deliveries.ts`, `replacedAnswer` and `cancelUndoneAnswers` in `src/domain/inbox.ts`;
   `test/follow-answers.test.ts` (each renewal path; "a Follow keeps the Reject of a generation Kopje no longer holds";
   "a renewal cancels every answer of the pair that is not leased, claimed before or not"; "a superseded answer under
@@ -2849,9 +2860,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has seven error boundaries: five Store calls (the
+  next round (a live inbox request still sends its own). A round has eight error boundaries: six Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
-  remote moderation jobs in one, the unlock acceptances), then the Worker's collection syncs and quote verifications,
+  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs and
+  quote verifications,
   each its own round of Store calls and fetches. The deliveries the Store calls recorded are rung once, before the
   Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`), counts as having no work left, and
   stops no other family (the next resolves a new stub); a Store refusal (maintenance, a retryable or reset error) ends
@@ -2891,7 +2903,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   maintenance", "rolls a failing first batch back after its writes, and commits the Delete’s retraction and hide",
   "retry-all"), `test/cli.test.ts` ("makes every failing job fresh, a page at a time"). The other job families:
   _Enforced (main):_ each batch or round of a stamp revocation, a domain block cleanup, a notification request job, a
-  clear's or group dismissal's removal and a local or remote moderation job runs in its own savepoint (`runJobItem`
+  clear's or group dismissal's removal and a local or remote moderation job, and each step of a held handshake (VIS-30,
+  `handshake_replays`, migration `0088_handshake_replays`, whose step records its handshake or moves its check on),
+  runs in its own savepoint (`runJobItem`
   in `src/domain/job-attempts.ts`), with the same retry state on its row (migration `0084_family_job_attempts`): one
   that throws is rolled back alone and recorded, backs off and parks as an inbound job does, and the next item runs.
   Their batches always move a cursor, a phase or a row on, or end their item, so only a failure counts. An item's
@@ -2986,7 +3000,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   accepting in the request; each job round authorizes at most 20 requests, each in its own transaction through the
   single authorize path (its delivery admission and recount included), and every step advances or clears the cursor,
   also when its authorization throws (RES-5) (`src/domain/unlock-accepts.ts`; `test/unlock-accepts.test.ts`: 250
-  requests in rounds of at most 20). Profile link verification: _Enforced (main):_ a save only arms a check
+  requests in rounds of at most 20). Held handshakes (VIS-30): _Enforced (main):_ a follow holds one at most (the
+  table's key), which goes with the follow; a claim writes at most `CLAIM_LIMIT` holds; a round runs at most
+  `HANDSHAKE_REPLAYS_PER_ROUND` (20) steps, each its own transaction, which takes one hold by two index probes at most
+  (a due retry, then the first fresh hold, in integer follow id order with no sort), reads its follow and accounts by
+  key, records at most one handshake and writes two more rows at most (the hold's delete or move, and its retry
+  state's); a hold not replayable is read and moved at most once per `HANDSHAKE_RECHECK_MS`. A follow's delete, and
+  a change of its `uri` or `state`, writes one more row (its hold): the severing rounds reserve it in `SEVER_ROWS` and
+  a purge batch in `PURGED_FOLLOW_ROWS` (three rows a follow); the paths without a row budget stay bounded per follow,
+  an inbound `Block` at two such rows, a user's domain block cleanup at 13 rows per ended follow of its 500-follow
+  windows (a local follower's list rows and the activities its `Undo` or `Reject` supersedes besides), and a `Move`
+  batch at 17 rows per moved follower besides the recounts
+  (`src/domain/handshake-replays.ts`; `test/handshake-replays.test.ts` ("bounds", "the cascaded hold in bulk paths
+  without a row budget")). Profile link verification: _Enforced (main):_ a save only arms a check
   (`local_accounts.links_due_at`); the cron runs one round per tick, which claims one account (at most one claim per
   account per 5 minutes, the claim's hold, which a save during it waits out) and reads at most 64 due rows to find it
   (no index: local accounts are operator-sized). Its at most 4 values share one budget of 60 subrequests (each value's
@@ -4479,6 +4505,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | A `Reject` that ends or refuses a generation Kopje no longer holds is kept when a later `Follow` of the pair arrives (NET-2). If the follower followed again, without an `Undo` of that generation (Mastodon's `RefollowWorker` sends none) or with one its new `Follow` arrived before, and the `Reject`'s delivery was confirmed before any such `Undo` committed, a server matching a `Reject` by account pair (Mastodon 4.5's `reject.rb`) ends the new request or follow while Kopje holds it                                                                                                                                                                                        | Mastodon parity: Mastodon sends its removal or block `Reject` as a job nothing cancels (`remove_from_followers_service.rb`, `unfollow_service.rb`) and takes the new request (`follow.rb`), so two Mastodon servers diverge alike. Cancelling it instead strands the ended generation at the follower's server when the late `Follow` is older. An `Undo` committed before confirmation cancels it. Recovery: the follower follows again                 | a server offers answer correlation, or such a disagreement is seen                                                       |
 | A remote account's `Follow` that arrives while the instance has suspended it, or while a `suspend` block covers it, is ignored with no answer, as in Mastodon. Its server keeps the request pending after the suspension or block ends. An answer to an earlier follow that its server processes late can apply to that pending request by the account pair, so the server may instead hold the follow accepted while Kopje holds none (VIS-30)                                                                                                                                                                                                                                           | Mastodon parity: Mastodon v4.5.11 applies no `Follow` or `Accept` from a suspended actor and answers none (`process_collection_service.rb`); an answer to an unavailable account would be refused at send time anyway (VIS-30). Recovery: the remote account follows again                                                                                                                                                                               | a server is seen keeping such requests, or Kopje answers them at unsuspension                                            |
 | An `Accept` of a local account's follow that arrives while the followed remote account is suspended or covered is ignored, so the local follow stays pending after the suspension or block ends while the remote server holds it accepted, as in Mastodon (VIS-30)                                                                                                                                                                                                                                                                                                                                                                                                                        | Mastodon parity (`process_collection_service.rb`): an unavailable actor's activity applies only where it removes state. Recovery: the local account follows again                                                                                                                                                                                                                                                                                        | such a disagreement is seen in practice                                                                                  |
+| A held `Follow` or `Accept` (VIS-30) goes out only after its next check once its recipient is available again: about 5 to 10 minutes with an unloaded queue, longer under backlog, maintenance or backoff (an estimate, not a bound). One dropped before migration `0088_handshake_replays` was not held and is not sent; nor is a refused `Reject` of a request (#1463), so the follower's server keeps that request pending                                                                                                                                                                                                                                                             | Mastodon's `DeliveryWorker` sends during the suspension; Kopje sends nothing to an unavailable recipient and owes only a follow's handshake, rebuilt from the follow. Recovery for the older drops: the local account follows again, or the remote one does                                                                                                                                                                                              | a hold is seen waiting long after its recipient is available, or #1463 is fixed                                          |
 | Clients, and browsers viewing a public page or the embed, load from the hosts that name them, which see the viewer's address (a page sends them no referrer): a custom emoji image not yet cached, that the cache refuses (by type, size, host or a policy), or past a snapshot's first 16 entries (edit history included); a remote attachment's file or icon not yet cached, that the cache refuses (Ogg, HEIF, QuickTime, a size past its cap, a host or a policy), that arrived before the retention or was stored longer, and every attachment of the edit history; posters; avatars and headers not yet cached or that the cache refuses; a page's video and audio only once played | The remote URL is the fallback Mastodon's media proxy replaces; the cache takes attachments within `MEDIA_CACHE_RETENTION_DAYS` (NET-3, MEDIA-7); the Store's memory bound (RES-3) holds the emoji cache read with each row to 16 entries; the URLs are http(s) and bounded (HTML-3, RES-2); a page's players ask for nothing before play (`preload="none"`, no autoplay, WEB-2)                                                                         | more cached emoji entries fit the memory bound, the edit history shows cached files, or a remote URL must never be shown |
 | An emoji snapshot goes stale until its object is delivered again: an emoji the author's server changes or removes keeps its old URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Each object keeps what it tagged; a global (shortcode, domain) registry, as Mastodon keeps, is not stored                                                                                                                                                                                                                                                                                                                                                | emoji are kept in a registry                                                                                             |
 | An uncached emoji's `static_url` is the same as `url`, and so is a cached one's when no still could be remuxed within 256 KiB, so such an animated emoji stays animated where a client asked for still images                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Mastodon serves a still image it generates; stills are remuxed, never decoded (MEDIA-6)                                                                                                                                                                                                                                                                                                                                                                  | clients need stills of every emoji                                                                                       |

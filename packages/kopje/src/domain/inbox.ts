@@ -186,6 +186,9 @@ export const MOVE_BATCH = 100;
 const MOVE_MAX_CARRIED = 100;
 // Rows one batch of a deleted actor's purge, or of a deleted status's removal, writes at most (RES-6).
 export const PURGE_BATCH = 500;
+// Rows a purge reserves for each follow it deletes: the follow, its held handshake (cascaded) and its local side's
+// recount.
+export const PURGED_FOLLOW_ROWS = 3;
 // A remote author's proven Delete of its public or unlisted original is forwarded by at most this many local
 // boosters (recordForwards; the first by account id), and only when it serializes to at most FORWARD_BODY_MAX UTF-8
 // bytes: the bounds on the owners and the body bytes a forward records, not on its fan-out (RES-4, RES-6).
@@ -1484,8 +1487,8 @@ const FAVOURITE_WINDOW = "SELECT id, status_id FROM favourites WHERE account_id 
 function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
   // The account's list memberships and endorsements go before its follows: a follow's delete also deletes the followed
   // account's rows in the follower's lists and its endorsement (migrations 0007_list_members and
-  // 0014_account_notes_and_pins), and with them gone it deletes none, so a follow stays two rows. Until they are all
-  // gone, the budget is spent and no follow is read.
+  // 0014_account_notes_and_pins), and with them gone it deletes none, so a follow stays within PURGED_FOLLOW_ROWS.
+  // Until they are all gone, the budget is spent and no follow is read.
   spend(
     db,
     budget,
@@ -1529,7 +1532,8 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
       id,
     );
   }
-  // A follow's delete and its local side's recount: two rows each at most.
+  // A follow's delete, the held handshake it cascades to (migration 0088_handshake_replays, one at most) and its local
+  // side's recount: PURGED_FOLLOW_ROWS each at most.
   // Its follows of either side, each side through its own index (an OR of the two lets statistics older than the
   // Store's growth scan the follows: RES-7), the first of both in the order of their ids as text.
   const follows = db.all<{ id: string; other: string }>(
@@ -1540,7 +1544,7 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
 				WHERE target_account_id = ?1 ORDER BY 1 LIMIT ?2))
 		ORDER BY id LIMIT ?2`,
     id,
-    Math.floor(budget.left() / 2),
+    Math.floor(budget.left() / PURGED_FOLLOW_ROWS),
   );
   budget.progress(() => {
     for (const follow of follows) {
