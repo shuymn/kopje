@@ -11555,3 +11555,108 @@ describe("0089_pin_cap", () => {
     });
   });
 });
+
+describe("0090_exact_conversation_seq", () => {
+  const NAME = "0090_exact_conversation_seq";
+  const at = NAMES.indexOf(NAME);
+  const SQL = MIGRATIONS[at]?.sql ?? "";
+  const MAX = "9223372036854775807";
+  const EXHAUSTED = /the owner's conversation stream sequence is exhausted/;
+  const OWNER = "100000000000000001";
+  const trigger = (sql: string) => /CREATE TRIGGER conversation_statuses_removed[\s\S]*?\nEND;/.exec(sql)?.[0] ?? "";
+  // The refusal 0090 adds, the first statement of the trigger's body.
+  const refusal = /\n {2}SELECT RAISE\(ABORT, [^\n]*\n(?: {4}[^\n]*\n)+?(?= {2}UPDATE)/;
+
+  it("makes 0032's trigger again with the refusal first, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0089_pin_cap");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    const before = trigger(MIGRATIONS[NAMES.indexOf("0032_streaming_lists")]?.sql ?? "");
+    const after = trigger(SQL);
+    expect(after).toMatch(refusal);
+    expect(after.replace(refusal, "\n")).toBe(before);
+  });
+
+  // A conversation of OWNER holding two statuses, the newer its last, and OWNER's mark at `seq`: the newer status's
+  // delete (a status delete cascades to its conversation_statuses row) moves the mark on.
+  async function removeLast(migrations: number, seq: string, markType: "INTEGER" | "REAL" = "INTEGER") {
+    return runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, migrations)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/a', 'a', NULL)",
+        OWNER,
+      );
+      const [older, newer] = ["200000000000000001", "200000000000000002"];
+      for (const id of [older, newer]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+					VALUES (?1, 'https://kopje.test/ap/o/' || ?1, ?2, 'direct', '2026-10-22T00:00:00.000Z')`,
+          id,
+          OWNER,
+        );
+      }
+      const conversation = sql
+        .exec<{ id: number }>(
+          `INSERT INTO conversations (account_id, thread, participants, last_status_id, stream_seq)
+					VALUES (?1, 't', '[]', ?2, CAST(?3 AS INTEGER)) RETURNING id`,
+          OWNER,
+          newer,
+          seq,
+        )
+        .one().id;
+      for (const id of [older, newer]) {
+        sql.exec("INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (?, ?)", conversation, id);
+      }
+      sql.exec(
+        `INSERT INTO stream_conversation_marks (account_id, seq) VALUES (?, CAST(? AS ${markType}))`,
+        OWNER,
+        seq,
+      );
+      let error: string | null = null;
+      try {
+        state.storage.transactionSync(() => sql.exec("DELETE FROM statuses WHERE id = ?", newer));
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : "not an Error";
+      }
+      const read = (query: string) => sql.exec<Record<string, SqlStorageValue>>(query, OWNER).one();
+      return {
+        error,
+        mark: read(
+          "SELECT CAST(seq AS TEXT) AS seq, typeof(seq) AS type FROM stream_conversation_marks WHERE account_id = ?",
+        ),
+        conversation: read(
+          `SELECT CAST(stream_seq AS TEXT) AS seq, typeof(stream_seq) AS type, last_status_id AS last
+						FROM conversations WHERE account_id = ?`,
+        ),
+      };
+    });
+  }
+
+  it("refuses the increment at the largest INTEGER, as requireExactIncrement does, and moves the mark below it", async () => {
+    // At 2^63 - 1 the delete is refused and rolls back: the mark, the conversation and the status stay as they were.
+    const exhausted = await removeLast(at + 1, MAX);
+    expect(exhausted.error).toMatch(EXHAUSTED);
+    expect([exhausted.mark, exhausted.conversation]).toEqual([
+      { seq: MAX, type: "integer" },
+      { seq: MAX, type: "integer", last: "200000000000000002" },
+    ]);
+    // One below it, the mark and the conversation take 2^63 - 1, an INTEGER, and the older status is the last.
+    const below = await removeLast(at + 1, "9223372036854775806");
+    expect(below.error).toBeNull();
+    expect([below.mark, below.conversation]).toEqual([
+      { seq: MAX, type: "integer" },
+      { seq: MAX, type: "integer", last: "200000000000000001" },
+    ]);
+    // A mark stored as a REAL (the column's INTEGER affinity keeps one only when no INTEGER holds its value) has no
+    // next INTEGER either: the delete is refused.
+    const real = await removeLast(at + 1, "1e19", "REAL");
+    expect(real.error).toMatch(EXHAUSTED);
+    expect([real.mark, real.conversation]).toEqual([
+      { seq: "1.0e+19", type: "real" },
+      { seq: "1", type: "integer", last: "200000000000000002" },
+    ]);
+    // Before 0090 the same delete stored a REAL in both (DATA-6).
+    const before = await removeLast(at, MAX);
+    expect([before.error, before.mark.type, before.conversation.type]).toEqual([null, "real", "real"]);
+  });
+});
