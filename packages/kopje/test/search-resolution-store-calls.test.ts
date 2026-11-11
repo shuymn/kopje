@@ -255,6 +255,27 @@ describe("a resolving search refused before any network work", () => {
       });
     }
 
+    // Only a write refusal falls back: a Store that fails a read while resolving fails the request (503), the plain
+    // search not hiding it, though its own call would succeed.
+    it("answers 503 when a read fails transiently while resolving, on a v2 URL query", async () => {
+      const { t, note } = await heldWorld();
+      const c = countingStore(t.store);
+      const failing = new Proxy(c.stub, {
+        get: (target, name) =>
+          name === "actorRevision"
+            ? () => Promise.reject(Object.assign(new Error("Durable Object is overloaded"), { overloaded: true }))
+            : (Reflect.get(target, name) as unknown),
+      });
+      const h = harness(failing, {}, BUILD, { keygen: fixtureKeyGen, loader: t.web.loader });
+      const response = await h.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`, {
+        headers: { authorization: `Bearer ${t.tokens.alice}` },
+      });
+      expect(response.status).toBe(503);
+      // The guarded branch ran: the gate passed and the probe was fetched before the failing read.
+      expect(c.calls.filter((name) => name !== "noteActivity")).toEqual(["resolutionGate"]);
+      expect(t.web.fetched).toEqual([note.id]);
+    });
+
     it("refuses a token that expired in that window, on a v2 URL query (AUTH-1)", async () => {
       const clock = { now: NOW };
       const { t, bob, note } = await heldWorld();

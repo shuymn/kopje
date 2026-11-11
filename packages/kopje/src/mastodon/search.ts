@@ -2,7 +2,7 @@ import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { readConfig } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
-import { StoreUnavailableError } from "../platform/store-errors";
+import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
 import {
   type ApiHandler,
   authorized,
@@ -106,13 +106,27 @@ export const search: ApiHandler = async (c, deps) => {
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
 
+// The reasons a Store refuses a write while it still serves reads (store-kernel.ts refusalOf under a hold or an
+// upgrade, store-flags.ts flagRefusal): readonly maintenance, a dump's freeze, an unpublished import, a held or
+// upgrading Store. The plain search can still answer then.
+const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
+  "maintenance",
+  "dump-in-progress",
+  "unpublished",
+  "upgrade-in-progress",
+  "upgrade-failed",
+  "bookmark-failed",
+  "verify-failed",
+]);
+
 // Fetches and stores the query's target; null: nothing was resolved for a reason that is not the query's, and the
 // caller answers as a plain search (resolve=false), whose own Store call judges the token again at its time. That is so
 // while the env's MAINTENANCE is not off (KEK rotation runs readonly with no Store flag), with no Store call; while the
 // Store refuses writes (readonly, an unpublished import), which the resolution gate answers after the token and before
 // any signer read, so nothing is fetched for a request that cannot store it (engineering.md, "a writing path checks
 // the Store's flags and the maintenance mode"); and when the Store comes to refuse a write while resolving (the instance
-// key's creation, or the final store).
+// key's creation, or the final store), for a reason in WRITE_REFUSALS. Any other failure (a transient or overloaded
+// Store, a read refused) is the request's error, as without the fallback.
 export async function resolveQuery(
   c: Parameters<ApiHandler>[0],
   deps: Parameters<ApiHandler>[1],
@@ -151,7 +165,7 @@ export async function resolveQuery(
     }
     return found;
   } catch (error) {
-    if (error instanceof StoreUnavailableError) {
+    if (error instanceof StoreUnavailableError && WRITE_REFUSALS.has(error.reason)) {
       return null;
     }
     throw error;
