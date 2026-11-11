@@ -3,6 +3,11 @@
 // reads a whole table or index fails the suite unless an entry of test/plan-audit-entries.ts lists that statement and
 // that scan. This module is the audit's pure part (identity, provenance, scope resolution, classification, the
 // decision), shared by the suites' setup (test/sql-depth-setup.ts) and its own tests (test-node/plan-audit.test.ts).
+//
+// Known limits, accepted while no production code has the form: provenance is the first source frame below Db, so a
+// bound Db method that src hands to a test-authored savepoint runner would count as the test's; the tokenizer reads
+// `$` as part of a name (so a comment right after one, as in `x$--`, stays in the identity) and only ASCII whitespace
+// as a separator, so such spellings of one statement would be two identities.
 
 // What is known of a listed scan:
 // - pending: a request's read to fix, `issue` naming its tracking issue and group;
@@ -176,7 +181,7 @@ const ENDS_FROM = new Set(
 const QUERY_START = new Set(["SELECT", "VALUES", "WITH"]);
 
 // What a name in a plan can stand for: a base table, the result of a CTE or subquery, or a table-valued function.
-type Target = { table: string } | "derived" | "function";
+type Target = { table: string } | { derived: string } | "function";
 
 // A query scope: the top-level statement, a CTE's body or a subquery, with the names its FROM items bind (a compound
 // select's members share their scope). `name` is the CTE's name or the derived table's alias, as a plan names it.
@@ -252,7 +257,7 @@ export function queryScopes(sql: string, schema: PlanSchema): QueryScope {
       if (startsQuery(n)) {
         if (alias !== undefined) {
           named.set(n, alias);
-          bind(alias, "derived");
+          bind(alias, { derived: alias });
         }
       } else {
         tableLists.add(n);
@@ -280,7 +285,7 @@ export function queryScopes(sql: string, schema: PlanSchema): QueryScope {
       target = ["function"];
       k = match(k) + 1;
     } else if (ctes.has(name)) {
-      target = schema.tables.has(name) ? ["derived", { table: name }] : ["derived"];
+      target = schema.tables.has(name) ? [{ derived: name }, { table: name }] : [{ derived: name }];
     } else {
       target = [{ table: name }];
     }
@@ -334,17 +339,25 @@ function descendants(scope: QueryScope): QueryScope[] {
 }
 
 // What `name` stands for in `scopes`: in their own bindings first, then in the scopes nested in them (a subquery or CTE
-// the planner flattened into them names its tables there). A base table when every binding found agrees on it; null
-// when each is a CTE's or subquery's result or a table-valued function; `?` otherwise (unbound, or bound to different
-// things).
-function resolveName(name: string, scopes: readonly QueryScope[]): string | null {
+// the planner flattened into them names its tables there). A CTE or derived table the plan neither materializes nor
+// runs as a co-routine (`materialized`, by the name the plan gives it) was flattened, so a line naming it reads what
+// its body binds under that name; a base table, or `?` when the body binds none. A base table when every binding found
+// agrees on it; null when each is a CTE's or subquery's result or a table-valued function; `?` otherwise (unbound, or
+// bound to different things).
+function resolveName(name: string, scopes: readonly QueryScope[], materialized: ReadonlySet<string>): string | null {
   const own = scopes.flatMap((scope) => scope.bindings.get(name) ?? []);
   const nested = scopes.flatMap(descendants).flatMap((scope) => scope.bindings.get(name) ?? []);
-  const targets = own.length > 0 ? own : nested;
-  if (targets.length > 0 && targets.every((t) => t === "derived" || t === "function")) {
+  const targets = (own.length > 0 ? own : nested).flatMap((t): Target[] => {
+    if (typeof t !== "object" || !("derived" in t) || materialized.has(t.derived)) {
+      return [t];
+    }
+    const inner = nested.filter((n) => typeof n === "object" && "table" in n);
+    return inner.length > 0 ? inner : [{ table: "?" }];
+  });
+  if (targets.length > 0 && targets.every((t) => t === "function" || "derived" in t)) {
     return null;
   }
-  const tables = new Set(targets.map((t) => (typeof t === "object" ? t.table : "?")));
+  const tables = new Set(targets.map((t) => (typeof t === "object" && "table" in t ? t.table : "?")));
   return tables.size === 1 && !tables.has("?") ? [...tables][0]! : "?";
 }
 
@@ -436,6 +449,9 @@ export function planSignatures(sql: string, plan: readonly PlanRow[], schema: Pl
   let root: QueryScope | undefined;
   const byId = new Map(plan.map((row) => [row.id, row]));
   const children = childrenOf(plan);
+  const materialized = new Set(
+    plan.flatMap((row) => NAMED_CONTAINER.exec(row.detail)?.[1]?.toLowerCase() ?? []).filter((n) => !n.startsWith("(")),
+  );
   const signatures: string[] = [];
   for (const row of plan) {
     const { detail } = row;
@@ -455,7 +471,7 @@ export function planSignatures(sql: string, plan: readonly PlanRow[], schema: Pl
         continue;
       }
       root ??= queryScopes(sql, schema);
-      const resolved = resolveName(name, lineScopes(row, byId, children, root));
+      const resolved = resolveName(name, lineScopes(row, byId, children, root), materialized);
       if (resolved === null) {
         continue;
       }
@@ -532,11 +548,17 @@ export function violationsOf(statement: AuditedStatement): string[] {
 }
 
 // The audit's decision on the statements a suite executed: a failure for each statement with a violation (in any
-// sample of its parameters) that no entry for its identity lists, or a refusal to plan it; for each listed scan that
-// no longer appears (remove it, or the whole entry); and for an identity listed twice. Entries of statements the suite
-// did not execute are not judged.
-export function auditFailures(audited: readonly AuditedStatement[], entries: readonly PlanAuditEntry[]): string[] {
+// sample of its parameters) that no entry for its identity lists, or a refusal to plan it, and for an identity listed
+// twice; and, as advice only, each listed scan the suite's samples did not show. A plan can depend on a parameter (a
+// partial index's condition), and another suite may pass the value that scans, so an absent scan is no proof that it
+// is fixed: a sweep removes its entries and shows the audit passes without them. Entries of statements the suite did
+// not execute are not judged.
+export function auditDecision(
+  audited: readonly AuditedStatement[],
+  entries: readonly PlanAuditEntry[],
+): { failures: string[]; unseen: string[] } {
   const failures: string[] = [];
+  const unseen: string[] = [];
   const byId = new Map<string, PlanAuditEntry>();
   for (const entry of entries) {
     if (byId.has(entry.id)) {
@@ -550,18 +572,6 @@ export function auditFailures(audited: readonly AuditedStatement[], entries: rea
     const listed = new Set(entry?.scans ?? []);
     const unlisted = found.filter((scan) => !listed.has(scan));
     const gone = [...listed].filter((scan) => !found.includes(scan));
-    const context = [
-      `  sites: ${statement.sites.join(", ")}`,
-      `  sql: ${normalizeSql(statement.sql)}`,
-      ...statement.samples.map((sample, n) =>
-        [
-          `  sample ${n + 1}, parameter types [${sample.params.map(typeOf).join(", ")}]:`,
-          sample.error === undefined
-            ? `  plan (singleton statistics):\n${planTree(sample.plan)}`
-            : `  EXPLAIN QUERY PLAN refused it: ${sample.error}`,
-        ].join("\n"),
-      ),
-    ];
     if (unlisted.length > 0) {
       const site = (statement.sites[0] ?? "").replaceAll(/:\d+ /g, "#");
       const paste = { id: statement.id, scans: found, site, disposition: "pending", issue: "#1468" };
@@ -570,22 +580,24 @@ export function auditFailures(audited: readonly AuditedStatement[], entries: rea
           unlisted.includes(UNPLANNABLE)
             ? `plan audit: ${statement.id} cannot be planned on the audit Store, and no entry lists it`
             : `plan audit: ${statement.id} reads a whole table or index, and no entry lists it`,
-          ...context,
+          `  sites: ${statement.sites.join(", ")}`,
+          `  sql: ${normalizeSql(statement.sql)}`,
+          ...statement.samples.map((sample, n) =>
+            [
+              `  sample ${n + 1}, parameter types [${sample.params.map(typeOf).join(", ")}]:`,
+              sample.error === undefined
+                ? `  plan (singleton statistics):\n${planTree(sample.plan)}`
+                : `  EXPLAIN QUERY PLAN refused it: ${sample.error}`,
+            ].join("\n"),
+          ),
           `  offending lines:\n${unlisted.map((scan) => `    ${scan}`).join("\n")}`,
           `  paste-ready entry: ${JSON.stringify(paste)}`,
         ].join("\n"),
       );
     }
     if (entry !== undefined && gone.length > 0) {
-      failures.push(
-        [
-          gone.length === listed.size
-            ? `plan audit: ${statement.id} no longer reads what its entry lists: remove this entry`
-            : `plan audit: ${statement.id} no longer reads ${gone.join("; ")}: remove these scans from its entry`,
-          ...context,
-        ].join("\n"),
-      );
+      unseen.push(`plan audit: ${statement.id} did not read here: ${gone.join("; ")}`);
     }
   }
-  return failures;
+  return { failures, unseen };
 }

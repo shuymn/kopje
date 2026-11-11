@@ -17,6 +17,9 @@ const PINNED = `SELECT a.id, l.pubkey FROM accounts a INDEXED BY accounts_local_
 	CROSS JOIN local_accounts l INDEXED BY sqlite_autoindex_local_accounts_1 ON l.account_id = a.id
 	WHERE a.domain IS NULL AND lower(a.username) = lower(?)`;
 
+// The audit's failures (auditPlans): its advice on listed scans a suite did not show never fails it.
+const failuresOf = async (recorded: ReadonlyMap<string, Recorded>) => (await auditPlans(recorded)).failures;
+
 const details = (sql: SqlStorage, query: string, ...params: SqlStorageValue[]) =>
   queryPlan(sql, query, params).map((row) => row.detail);
 
@@ -143,7 +146,7 @@ describe("plan audit", () => {
     expect(seen.production).toBe(true);
     const pin = "CROSS JOIN remote_media cm INDEXED BY remote_media_owner ON";
     expect(pinned).toContain(pin);
-    const audit = (sql: string) => auditPlans(new Map<string, Recorded>([[sql, seen]]));
+    const audit = (sql: string) => failuresOf(new Map<string, Recorded>([[sql, seen]]));
     expect(await audit(pinned)).toEqual([]);
     for (const unpinned of [
       pinned.replace(pin, "JOIN remote_media cm ON"),
@@ -172,8 +175,8 @@ describe("plan audit", () => {
       ["SEARCH accounts USING COVERING INDEX accounts_directory_active (last_status_id>?)"],
       ["SCAN accounts", "USE TEMP B-TREE FOR ORDER BY"],
     ]);
-    expect(await auditPlans(recorded(query, [1, "0"]))).toEqual([]);
-    const failures = await auditPlans(recorded(query, [1, "0"], [0, "0"]));
+    expect(await failuresOf(recorded(query, [1, "0"]))).toEqual([]);
+    const failures = await failuresOf(recorded(query, [1, "0"], [0, "0"]));
     expect(failures).toEqual([expect.stringMatching(/offending lines:\n {4}accounts: SCAN accounts/)]);
   });
 
@@ -186,9 +189,9 @@ describe("plan audit", () => {
       `SELECT id FROM accounts WHERE id = ? AND "like"(?, username)`,
       "SELECT id FROM accounts WHERE id = ? AND glob(?, username)",
     ]) {
-      expect(await auditPlans(recorded(query, ["1", "a%"])), query).toEqual([expect.stringContaining(refused)]);
+      expect(await failuresOf(recorded(query, ["1", "a%"])), query).toEqual([expect.stringContaining(refused)]);
     }
     const literal = "SELECT id FROM accounts WHERE id = ? AND username LIKE 'a%' LIMIT ?";
-    expect(await auditPlans(recorded(literal, ["1", 1]))).toEqual([]);
+    expect(await failuresOf(recorded(literal, ["1", 1]))).toEqual([]);
   });
 });

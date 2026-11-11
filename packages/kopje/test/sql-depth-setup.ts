@@ -5,7 +5,7 @@ import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
 import {
   type AuditedStatement,
-  auditFailures,
+  auditDecision,
   bindsPattern,
   callerFrames,
   type PlannedSample,
@@ -31,8 +31,8 @@ declare module "vitest" {
   }
 }
 
-// A statement as the suite ran it: up to MAX_SAMPLES distinct samples of its parameters (the first runs that differ,
-// in any caller), whether the domain code ran it (callerFrames, in any of its runs), whether its depth is measured, and
+// A statement as the suite ran it: up to MAX_SAMPLES distinct samples of its parameters (the first runs of the domain
+// code that differ; a test's own bindings take no slot), whether the domain code ran it (callerFrames, in any of its runs), whether its depth is measured, and
 // up to MAX_SITES of the call chains it ran from. The depth is measured for what the domain code ran and for what a
 // test ran through all or run; a test's own iterate reads tables of its own (test/status-rows.test.ts).
 export type Recorded = { samples: SqlStorageValue[][]; production: boolean; measured: boolean; sites: string[] };
@@ -69,20 +69,23 @@ const looks = new Map<string, number>();
 
 function record(query: string, params: SqlStorageValue[], call?: Error): void {
   const seen = statements.get(query);
-  if (seen !== undefined && seen.samples.length < MAX_SAMPLES) {
-    const key = sampleKey(params);
-    if (!seen.samples.some((sample) => sampleKey(sample) === key)) {
-      seen.samples.push(params);
-    }
-  }
-  if (seen?.production === true && (seen.sites.length >= MAX_SITES || (looks.get(query) ?? 0) >= LOOKS)) {
+  const key = seen === undefined || seen.samples.length >= MAX_SAMPLES ? undefined : sampleKey(params);
+  const newSample = seen === undefined || (key !== undefined && !seen.samples.some((s) => sampleKey(s) === key));
+  const newSite = !(seen?.production === true && (seen.sites.length >= MAX_SITES || (looks.get(query) ?? 0) >= LOOKS));
+  if (!newSample && !newSite) {
     return;
   }
   const { frames, production } = callerFrames((call ?? capture()).stack ?? "");
   const measured = production || call === undefined;
   const site = frames.slice(0, SITE_FRAMES).join(" < ");
   if (seen === undefined) {
-    statements.set(query, { samples: [params], production, measured, sites: [site] });
+    statements.set(query, { samples: production ? [params] : [], production, measured, sites: [site] });
+    return;
+  }
+  if (production && newSample) {
+    seen.samples.push(params);
+  }
+  if (!newSite) {
     return;
   }
   seen.measured ||= measured;
@@ -175,8 +178,11 @@ async function planOnAuditStore(
   }
 }
 
-// The plan audit's failures for the statements of `recorded` the domain code ran.
-export async function auditPlans(recorded: ReadonlyMap<string, Recorded>): Promise<string[]> {
+// The plan audit's failures for the statements of `recorded` the domain code ran, and its advice on listed scans the
+// suite did not show (auditDecision).
+export async function auditPlans(
+  recorded: ReadonlyMap<string, Recorded>,
+): Promise<{ failures: string[]; unseen: string[] }> {
   const cache = await planCache();
   const failures: string[] = [];
   const production = [...recorded].filter(([, seen]) => seen.production);
@@ -212,7 +218,8 @@ export async function auditPlans(recorded: ReadonlyMap<string, Recorded>): Promi
     sites: seen.sites,
     samples: seen.samples.map((params) => cache.plans.get(keyOf(sql, params))!),
   }));
-  return [...failures, ...auditFailures(audited, PLAN_AUDIT_ENTRIES)];
+  const decision = auditDecision(audited, PLAN_AUDIT_ENTRIES);
+  return { failures: [...failures, ...decision.failures], unseen: decision.unseen };
 }
 
 // The first suite of a worker migrates the audit Store and plans every statement it ran; on a loaded machine that
@@ -221,7 +228,10 @@ const AUDIT_TIMEOUT_MS = 120_000;
 
 afterAll(async () => {
   expect(await measure([...statements].filter(([, seen]) => seen.measured).map(([sql]) => sql))).toEqual([]);
-  const failures = await auditPlans(statements);
+  const { failures, unseen } = await auditPlans(statements);
+  if (unseen.length > 0) {
+    console.log(unseen.join("\n"));
+  }
   if (failures.length > 0) {
     throw new Error(failures.join("\n\n"));
   }

@@ -4,7 +4,7 @@ import { ROWS_1468 } from "../test/plan-audit-1468.js";
 import { PLAN_AUDIT_ENTRIES } from "../test/plan-audit-entries.js";
 import {
   type AuditedStatement,
-  auditFailures,
+  auditDecision,
   bindsPattern,
   callerFrames,
   normalizeSql,
@@ -77,6 +77,7 @@ describe("plan audit classifier", () => {
         sql,
         "MATERIALIZE c",
         "SCAN x",
+        "CO-ROUTINE d",
         "SCAN d",
         "SCAN (subquery-2)",
         "SCAN j VIRTUAL TABLE INDEX 1:",
@@ -140,6 +141,28 @@ describe("plan audit classifier", () => {
     expect(planSignatures(both, twoSubqueries("SEARCH ps USING INTEGER PRIMARY KEY (rowid=?)"), SCHEMA)).toEqual([]);
     // A lone line naming `ps` fits both subqueries: it may be either, so it fails closed.
     expect(planSignatures(both, twoSubqueries("SCAN ps"), SCHEMA)).toEqual(["?: SCAN ps"]);
+    // A CTE or derived table the plan does not materialize was flattened: a line naming its alias reads what its body
+    // binds under that name.
+    for (const flattened of [
+      "WITH x AS (SELECT username FROM accounts a) SELECT * FROM x a",
+      "WITH x AS NOT MATERIALIZED (SELECT username FROM accounts a) SELECT * FROM x a",
+      "SELECT * FROM (SELECT username FROM accounts a) a",
+    ]) {
+      expect(planSignatures(flattened, tree([0, "SCAN a"]), SCHEMA), flattened).toEqual(["accounts: SCAN a"]);
+    }
+    // Flattened, but its body binds nothing under the name: unresolved.
+    expect(
+      planSignatures("WITH x AS (SELECT username FROM accounts b) SELECT * FROM x a", tree([0, "SCAN a"]), SCHEMA),
+    ).toEqual(["?: SCAN a"]);
+    // Materialized, the line reads the CTE's result.
+    const materialized = "WITH x AS MATERIALIZED (SELECT username FROM accounts a) SELECT * FROM x a";
+    expect(
+      planSignatures(
+        materialized,
+        tree([0, "MATERIALIZE x"], [1, "SEARCH a USING INDEX sqlite_autoindex_accounts_1 (id=?)"], [0, "SCAN a"]),
+        SCHEMA,
+      ),
+    ).toEqual([]);
     // One alias, two tables in different scopes: the line's scope decides.
     const twice = `SELECT 1 FROM accounts a WHERE EXISTS (SELECT 1 FROM statuses a WHERE a.id = ?)`;
     expect(planSignatures(twice, tree([0, "SCAN a"]), SCHEMA)).toEqual(["accounts: SCAN a"]);
@@ -308,6 +331,8 @@ describe("plan audit baseline", () => {
 });
 
 describe("plan audit decision", () => {
+  const failuresOf = (audited: AuditedStatement[], entries: PlanAuditEntry[]) =>
+    auditDecision(audited, entries).failures;
   const sample = (violations: string[], error?: string) => ({
     params: ["x", 1, null],
     plan: rows("SCAN a"),
@@ -330,7 +355,7 @@ describe("plan audit decision", () => {
   });
 
   it("fails a scan no entry lists, with a paste-ready entry", () => {
-    const [failure, ...rest] = auditFailures([statement("aa", ["accounts: SCAN a"])], []);
+    const [failure, ...rest] = failuresOf([statement("aa", ["accounts: SCAN a"])], []);
     expect(rest).toEqual([]);
     expect(failure).toContain("aa reads a whole table or index, and no entry lists it");
     expect(failure).toContain("sample 1, parameter types [string, number, null]:");
@@ -341,40 +366,47 @@ describe("plan audit decision", () => {
 
   it("judges a statement by the union of its samples' violations", () => {
     const sampled: AuditedStatement = { ...statement("aa", []), samples: [sample([]), sample(["accounts: SCAN a"])] };
-    expect(auditFailures([sampled], [])).toEqual([expect.stringContaining("    accounts: SCAN a")]);
-    expect(auditFailures([sampled], [entry("aa", ["accounts: SCAN a"])])).toEqual([]);
+    expect(failuresOf([sampled], [])).toEqual([expect.stringContaining("    accounts: SCAN a")]);
+    expect(failuresOf([sampled], [entry("aa", ["accounts: SCAN a"])])).toEqual([]);
   });
 
   it("passes a listed scan, and fails a new scan of a listed statement", () => {
     const listed = entry("aa", ["accounts: SCAN a"]);
-    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual([]);
-    const failures = auditFailures([statement("aa", ["accounts: SCAN a", "follows: SCAN f"])], [listed]);
+    expect(failuresOf([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual([]);
+    const failures = failuresOf([statement("aa", ["accounts: SCAN a", "follows: SCAN f"])], [listed]);
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(/offending lines:\n {4}follows: SCAN f$/m);
     // An entry lists one identity: another statement's same scan is not covered.
-    expect(auditFailures([statement("bb", ["accounts: SCAN a"])], [listed])).toHaveLength(1);
+    expect(failuresOf([statement("bb", ["accounts: SCAN a"])], [listed])).toHaveLength(1);
   });
 
-  it("fails an entry whose executed statement no longer scans", () => {
+  // A plan can depend on a parameter another suite passes, so an absent scan is advice, never a failure.
+  it("advises on a listed scan the suite's samples did not show, without failing", () => {
     const listed = entry("aa", ["accounts: SCAN a", "follows: SCAN f"]);
-    expect(auditFailures([statement("aa", [])], [listed])).toEqual([
-      expect.stringContaining("aa no longer reads what its entry lists: remove this entry"),
-    ]);
-    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual([
-      expect.stringContaining("aa no longer reads follows: SCAN f: remove these scans from its entry"),
-    ]);
+    expect(auditDecision([statement("aa", [])], [listed])).toEqual({
+      failures: [],
+      unseen: ["plan audit: aa did not read here: accounts: SCAN a; follows: SCAN f"],
+    });
+    expect(auditDecision([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual({
+      failures: [],
+      unseen: ["plan audit: aa did not read here: follows: SCAN f"],
+    });
+    // A new scan of a listed statement still fails, with the advice beside it.
+    const decision = auditDecision([statement("aa", ["quotes: SCAN q"])], [listed]);
+    expect(decision.failures).toEqual([expect.stringMatching(/offending lines:\n {4}quotes: SCAN q$/m)]);
+    expect(decision.unseen).toHaveLength(1);
   });
 
   it("does not judge an entry whose statement the run did not execute", () => {
-    expect(auditFailures([statement("aa", [])], [entry("zz", ["accounts: SCAN a"])])).toEqual([]);
+    expect(failuresOf([statement("aa", [])], [entry("zz", ["accounts: SCAN a"])])).toEqual([]);
   });
 
   it("fails a statement it cannot plan unless listed as unplannable, and an identity listed twice", () => {
-    expect(auditFailures([statement("aa", [], "no such table")], [])).toEqual([
+    expect(failuresOf([statement("aa", [], "no such table")], [])).toEqual([
       expect.stringContaining("EXPLAIN QUERY PLAN refused it: no such table"),
     ]);
     const unplannable = entry("aa", ["unplannable"], { disposition: "deliberate", reason: "r" });
-    expect(auditFailures([statement("aa", [], "no such table")], [unplannable])).toEqual([]);
-    expect(auditFailures([], [unplannable, unplannable])).toEqual([expect.stringContaining("aa is listed twice")]);
+    expect(failuresOf([statement("aa", [], "no such table")], [unplannable])).toEqual([]);
+    expect(failuresOf([], [unplannable, unplannable])).toEqual([expect.stringContaining("aa is listed twice")]);
   });
 });

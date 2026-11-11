@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { localActorOf } from "../src/domain/actors";
 import { stagedList } from "../src/domain/audience";
 import { migratedStore } from "./helpers";
 import { measure, statements } from "./sql-depth-setup";
@@ -36,6 +37,7 @@ describe("expression depth guard", () => {
     expect(result).toEqual({ before: false, rows: [{ id: "sql-depth iterate" }], staged: [] });
     const own = statements.get("SELECT 'sql-depth iterate' AS id")!;
     expect(own.production).toBe(false);
+    expect(own.samples).toEqual([]);
     expect(own.sites).toEqual([expect.stringMatching(/^test\/sql-depth\.test\.ts:\d+ /)]);
     const [, staged] = [...statements].find(
       ([sql]) => sql.includes("FROM json_each(") && sql.includes("LIMIT ?4 OFFSET ?3"),
@@ -44,16 +46,24 @@ describe("expression depth guard", () => {
     expect(staged.sites[0]).toMatch(/^src\/domain\/audience\.ts:\d+ stagedList/);
   });
 
-  it("keeps the first distinct samples of a statement's parameters", async () => {
+  it("keeps the first distinct samples of the domain code's parameters", async () => {
     const store = await migratedStore();
-    const query = "SELECT ? AS sampled";
-    await runInDurableObject(store, (_instance, state) => {
+    const owner = (sql: string) => sql.includes("lower(a.username) = lower(?)") && sql.includes("l.also_known_as");
+    const ran = await runInDurableObject(store, (_instance, state) => {
       const db = new Db(state.storage.sql);
-      for (const value of [1, 1, "1", 2, 3, 4]) {
-        db.all(query, value);
+      localActorOf(db, "a");
+      // A test running the domain code's text, before the slots fill, takes none of them.
+      const query = [...statements.keys()].find(owner)!;
+      db.all(query, "test-only");
+      for (const username of ["a", "b", "c", "d", "e"]) {
+        localActorOf(db, username);
       }
+      return query;
     });
-    expect(statements.get(query)!.samples).toEqual([[1], ["1"], [2]]);
+    const seen = statements.get(ran)!;
+    expect(seen.production).toBe(true);
+    expect(seen.samples).toHaveLength(3);
+    expect(seen.samples).not.toContainEqual(["test-only"]);
   });
 
   it("reports a statement the Store would refuse, with its depth", async () => {

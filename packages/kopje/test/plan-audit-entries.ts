@@ -2222,15 +2222,19 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "79bfd658ce83ddaf",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundMark < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "bounded",
-    reason: "sqlite_sequence holds one row per AUTOINCREMENT table of the schema",
+    disposition: "pending",
+    issue: "#1468 group 9",
+    reason:
+      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
   },
   {
     id: "8b7c5c8e7643177f",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundSince < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "bounded",
-    reason: "sqlite_sequence holds one row per AUTOINCREMENT table of the schema",
+    disposition: "pending",
+    issue: "#1468 group 9",
+    reason:
+      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
   },
   {
     id: "7fc72a03f44b055c",
