@@ -1,7 +1,10 @@
 import { runInDurableObject } from "cloudflare:test";
 
 import type { StoreStub } from "../src/platform/store-client";
+import type { StoreOperation } from "../src/platform/store-kernel";
+import type { ApiHarness } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 
 // The most rounds a condition walk (walkedWindow, src/domain/windows.ts) runs for a page, over limits 1 to 40 and 1 to
 // 5 streams: derived by test/condition-walk.test.ts (a limit of 1 on one stream: 40, 40, 80, 160, 320, 640, 720).
@@ -184,4 +187,111 @@ export function tagMatches(older: number, newer: number, by: "all" | "local" | "
 
 export function accountMatches(older: number, newer: number): string[] {
   return [...statusIds(ACCOUNT_NEWER, newer), ...statusIds(ACCOUNT_OLDER, older)];
+}
+
+// The growth of a stale-statistics witness (RES-7), with ids above every other status: GROWTH of each kind of row the
+// conditions reject, `account`'s public replies to another account without media and with the hashtag dogs, and other
+// accounts' public posts with the hashtag `tag` (remote ones, which a local timeline rejects); 100 unrelated local and
+// 100 remote accounts; other accounts' media posts; and public rows of other names, after `tag` (a walk down to the
+// end of a name reads the entry just past it).
+export const GROWTH = 2_100;
+const GROWN_ACCOUNT = 960000000000000000n;
+const GROWN_STATUS = 970000000000000000n;
+const GROWN_MEDIA = 980000000000000000n;
+
+export async function growConditionWorld(store: StoreStub, account: string, tag: string): Promise<void> {
+  await runInDurableObject(store, (_instance, state) => {
+    const sql = state.storage.sql;
+    const at = new Date(NOW).toISOString();
+    const n = (count: number) =>
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ${count} - 1)`;
+    sql.exec(
+      `${n(200)} INSERT INTO accounts (id, uri, username, domain)
+			SELECT CAST(?1 + i AS TEXT), 'https://' || iif(i % 2 = 0, 'grown.example', 'kopje.test') || '/users/g' || i, 'g' || i,
+				iif(i % 2 = 0, 'grown.example', NULL)
+			FROM n`,
+      String(GROWN_ACCOUNT),
+    );
+    // ?1 the first id, ?2 the author (NULL: the grown accounts in turn), ?3 a reply's partner, ?4 the time.
+    const statuses = (first: bigint, author: string | null, partner: string | null) =>
+      sql.exec(
+        `${n(GROWTH)} INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, in_reply_to_uri,
+					in_reply_to_account_id)
+				SELECT CAST(?1 + i AS TEXT), 'https://grown.example/objects/' || (?1 + i),
+					coalesce(?2, CAST(?5 + (i % 100) * 2 AS TEXT)), 'public', '<p>g</p>', ?4,
+					CASE WHEN ?3 IS NOT NULL THEN 'https://grown.example/objects/parent' END, ?3
+				FROM n`,
+        String(first),
+        author,
+        partner,
+        at,
+        String(GROWN_ACCOUNT),
+      );
+    const tags = (first: bigint, name: string) =>
+      sql.exec(
+        `${n(GROWTH)} INSERT INTO status_tags (status_id, name, public) SELECT CAST(?1 + i AS TEXT), ?2, 1 FROM n`,
+        String(first),
+        name,
+      );
+    const replies = GROWN_STATUS;
+    const remote = GROWN_STATUS + 10_000n;
+    const media = GROWN_STATUS + 20_000n;
+    statuses(replies, account, String(GROWN_ACCOUNT));
+    tags(replies, "dogs");
+    statuses(remote, null, null);
+    tags(remote, tag);
+    tags(remote, "parrots");
+    statuses(media, null, null);
+    sql.exec(
+      `${n(GROWTH)} INSERT INTO media_attachments (id, account_id, status_id, type, url)
+			SELECT CAST(?1 + i AS TEXT), s.account_id, s.id, 'image', 'u' FROM n CROSS JOIN statuses s ON s.id = CAST(?2 + i AS TEXT)`,
+      String(GROWN_MEDIA),
+      String(media),
+    );
+  });
+}
+
+// The tables a condition walk's statements read, under the aliases they give them: none may be scanned (RES-7).
+export const WALKED_TABLES = [
+  "s",
+  "pa",
+  "t",
+  "um",
+  "ut",
+  "st",
+  "pm",
+  "statuses",
+  "accounts",
+  "status_tags",
+  "media_attachments",
+];
+// A walk's round statements, its condition statements, and the rule's over its candidates.
+export const WALK_STATEMENTS =
+  /INDEXED BY (?:statuses_account(?:_originals)?|status_tags_public)\b|FROM json_each\(\?\d\) c\s+CROSS JOIN (?:main\.)?statuses s\b/;
+
+// The stale-statistics witness of a read with request conditions (RES-7): the plans and rows of its walk's statements
+// on a small world ANALYZEd before growConditionWorld grows it. The caller asserts that no statement scans a walked
+// table, that a round seeks `index`, and that the page below the fixed cursor reads the same rows before and after.
+export async function staleWalk(
+  h: Pick<ApiHarness, "store">,
+  grow: { account: string; tag: string },
+  index: RegExp,
+  operation: StoreOperation<never, unknown>,
+  input: unknown,
+): Promise<{ before: number; after: number; scans: string[]; indexed: boolean[] }> {
+  const scans: string[] = [];
+  const indexed: boolean[] = [];
+  const capture = async () => {
+    const { plans } = await plannedRun(h, WALK_STATEMENTS, operation, input as never);
+    for (const statement of plans) {
+      scans.push(...scansOf(statement.plan, WALKED_TABLES));
+    }
+    indexed.push(plans.some((statement) => statement.plan.some((detail) => index.test(detail))));
+    return plans.reduce((sum, statement) => sum + statement.rows, 0);
+  };
+  const { before, after } = await staleStatistics(h, {
+    capture,
+    grow: () => growConditionWorld(h.store, grow.account, grow.tag),
+  });
+  return { before, after, scans, indexed };
 }

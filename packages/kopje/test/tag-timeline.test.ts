@@ -8,6 +8,7 @@ import type { Status } from "../src/domain/status-presenter";
 import { normalizeTag } from "../src/domain/tag-name";
 import { tagTimeline, type TagTimelineInput } from "../src/domain/timelines";
 import { NOW } from "./app-helpers";
+import { seedConditionWorld, staleWalk, TAG_NEWER } from "./condition-walk-helpers";
 import { migratedStore } from "./helpers";
 import { accountId, statusId, worldArb, writeWorld } from "./policy-world";
 import { rowsRead } from "./read-helpers";
@@ -232,4 +233,58 @@ describe("hashtag timeline", () => {
     );
     expect(grown).toEqual([]);
   }, 60_000);
+
+  // The walk under request conditions (walkedWindow): its streams on status_tags_public, its condition statement over
+  // the candidates by key, and the rule's, with statistics taken on a small world (test/condition-walk-helpers.ts).
+  it.each<[string, Partial<Query>]>([
+    ["local", { local: true }],
+    ["remote and media", { remote: true, onlyMedia: true }],
+    ["all and none of five names", { any: ["n1", "n2", "n3", "n4"], all: ["x"], none: ["y"] }],
+  ])(
+    "seeks status_tags_public and scans no table with stale statistics (%s)",
+    async (_name, q) => {
+      const store = await migratedStore();
+      await runInDurableObject(store, (_instance, state) => {
+        for (const [id, name] of [
+          [WALK_LOCAL, "alice"],
+          [WALK_ACCOUNT, "bea"],
+        ] as const) {
+          state.storage.sql.exec(
+            "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
+            id,
+            `https://kopje.test/ap/users/${name}`,
+            name,
+          );
+        }
+      });
+      await seedConditionWorld(store, { account: WALK_ACCOUNT, local: WALK_LOCAL, rejected: 3, newer: 0 });
+      const witness = await staleWalk(
+        { store },
+        { account: WALK_ACCOUNT, tag: "cats" },
+        /USING COVERING INDEX status_tags_public /,
+        tagTimeline,
+        {
+          credential: null,
+          now: NOW,
+          page: { limit: 20, maxId: String(TAG_NEWER) },
+          present: PRESENT,
+          tag: "cats",
+          any: [],
+          all: [],
+          none: [],
+          local: false,
+          remote: false,
+          onlyMedia: false,
+          ...q,
+        },
+      );
+      expect(witness.scans).toEqual([]);
+      expect(witness.indexed).toEqual([true, true]);
+      expect(witness.after).toBe(witness.before);
+    },
+    120_000,
+  );
 });
+
+const WALK_LOCAL = "700000000000000001";
+const WALK_ACCOUNT = "700000000000000002";

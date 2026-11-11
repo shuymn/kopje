@@ -21,6 +21,7 @@ import {
   CONDITION_WALK_ROUNDS,
   REMOTE,
   seedConditionWorld,
+  staleWalk,
   statusIds,
   TAG_ALL,
   TAG_ANY,
@@ -671,4 +672,25 @@ describe("a read without request conditions runs one round (AC6, C7)", () => {
       expect(answerOf(run.output).items.length).toBe(PAGE.limit);
     }
   }, 120_000);
+});
+
+describe("account statuses with conditions seek their pinned indexes with stale statistics (AC7, C8)", () => {
+  it.each([false, true])(
+    "exclude_reblogs %s: scans no table and reads the same rows after growth",
+    async (off) => {
+      const s = await world(3, {}, { older: OLDER, newer: 0 });
+      const page = { ...PAGE, maxId: String(ACCOUNT_NEWER) };
+      const witness = await staleWalk(
+        { store: s },
+        { account: ALICE, tag: "cats" },
+        off ? /USING INDEX statuses_account_originals / : /USING INDEX statuses_account /,
+        accountStatuses,
+        accountInput({ onlyMedia: true, tagged: "rare", excludeReplies: true, excludeReblogs: off })(page),
+      );
+      expect(witness.scans).toEqual([]);
+      expect(witness.indexed).toEqual([true, true]);
+      expect(witness.after).toBe(witness.before);
+    },
+    120_000,
+  );
 });
