@@ -8,6 +8,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- Once `/setup` has fixed the domain, Kopje answers only on it, as Mastodon does with `config.hosts` (threat model
+  WEB-6). A request to another host the Worker is reachable on (its `workers.dev` address, another route, a port) gets
+  a 301 to the same path and query on the instance domain for GET and HEAD, and 421 Misdirected Request for any other
+  method, so the Mastodon API, OAuth, the web UI, the public pages, federation and the inbox no longer answer there.
+  Clients and servers that used another host must use the instance domain. `/health`, the admin API (`kopje-admin`
+  with its own admin hostname) and media URLs still answer on any host, and nothing changes before setup.
+  `/oauth/authorize` on another host now redirects (GET) or answers 421 (POST) instead of its 403 page, and `/login`
+  redirects with 301 instead of 302. A Mastodon API request makes one more Store read, of the domain; federation, the
+  public pages, the web UI and OAuth read it in their own first read. No migration; `wrangler.jsonc`: see Instance
+  changes.
+
 ### Fixed
 
 - A status posted or edited through a host other than the instance domain (such as the Worker's `workers.dev` address)
@@ -36,6 +49,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A remote quote of a local status that was detached when the quoted status was deleted now stays deleted when an
   `Update` of the quoting status naming it arrives later. Before, that `Update` turned it pending with no quoted status.
   A quote already revived this way stays pending. No migration, no `wrangler.jsonc` change.
+
+### Instance changes
+
+- Store schema: unchanged from 0.2.1.
+- `wrangler.jsonc`: the template sets `"workers_dev": false`, so a deploy removes the Worker's `workers.dev` address,
+  where Kopje now only redirects or refuses. Add the same line to the instance's file; attach the instance domain
+  first if it has none yet ([docs/upgrade.md](docs/upgrade.md)).
 
 ## [0.2.1] - 2026-11-03
 

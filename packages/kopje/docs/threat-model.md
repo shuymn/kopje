@@ -1410,18 +1410,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **WEB-1: the consent decision cannot be forged cross-site.** Both methods of `/oauth/authorize` answer only on the
   instance domain, read from the Store with the Access settings and compared with the request URL's host (no header is
   read; setup and `/admin/config` store the domain as one canonical host, [dump-format.md](dump-format.md)): on any
-  other host the Worker answers on (its workers.dev address, another route, a port) they show a 403 page, with no
-  redirect to the client, before the Access assertion is verified, so the consent page names the instance domain and the
-  instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST` requires a valid Access identity,
-  an `Origin` equal to the instance origin (missing, `null` or foreign answers 403), and `decision=approve`; the Store
-  revalidates client, redirect URI, scopes and account when it writes the code. _Enforced (main):_
+  other host the Worker answers on (its workers.dev address, another route, a port) they give WEB-6's answer, never a
+  redirect to the client, before the Access assertion is verified, so the consent page names the instance domain and
+  the instance origin is the request's. `GET /oauth/authorize` issues nothing. The `POST` requires a valid Access
+  identity, an `Origin` equal to the instance origin (missing, `null` or foreign answers 403), and `decision=approve`;
+  the Store revalidates client, redirect URI, scopes and account when it writes the code. _Enforced (main):_
   `src/app/authorize.tsx`, `authorizeContext` and `issueCode` in `src/domain/oauth.ts`, `normalizeDomain` in `setConfig`
-  (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("shows the consent page on the instance domain only, before
-  verifying Access (WEB-1)", "refuses a decision posted on another host, issuing nothing (WEB-1)", "judges the host by
-  the request URL, never by a Host header (WEB-1)", "shows the consent page when the domain was configured by hand in
-  another spelling (WEB-1)", "refuses a decision posted from another origin, a null origin or none (WEB-1)", "refuses an
-  account suspended between the consent page and approval"), `test/ops-authority.test.ts` ("stores the domain as setup
-  does, lowercase and IDNA to ASCII, and refuses a value that is not a domain").
+  (`src/platform/store-admin.ts`); `test/oauth.test.ts` ("moves the consent page to the instance domain, before
+  verifying Access (WEB-1, WEB-6)", "refuses a decision posted on another host, issuing nothing (WEB-1, WEB-6)", "judges
+  the host by the request URL, never by a Host header (WEB-1)", "shows the consent page when the domain was configured
+  by hand in another spelling (WEB-1)", "refuses a decision posted from another origin, a null origin or none (WEB-1)",
+  "refuses an account suspended between the consent page and approval"), `test/ops-authority.test.ts` ("stores the
+  domain as setup does, lowercase and IDNA to ASCII, and refuses a value that is not a domain").
 - **WEB-2: Kopje's HTML pages cannot be framed, scripted or cached.** The consent and code pages and the messages of
   `/oauth/authorize` send the private pages' headers (`PRIVATE_HEADERS`, the web UI pages' policy below), and render
   every value escaped. The consent page alone has no `form-action` (`CONSENT_HEADERS`), as Mastodon's authorization
@@ -1550,6 +1550,25 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Web UI pages: _Enforced (main):_ `text/html; charset=UTF-8` and `nosniff` on every page and error page; static
   assets get `nosniff` from `public/_headers`;
   `test/web-pages.test.ts`, `test/web-session.test.ts`, `test/error-pages.test.ts`, `test-node/stylesheet.test.ts`.
+- **WEB-6: Kopje answers only on the instance domain.** Once setup has fixed the domain, a request whose URL host is
+  not the stored domain (the Worker's workers.dev address, another route, a port; no header is read) is answered
+  without reaching its route, as Mastodon's `config.hosts` does: GET and HEAD with a 301 to the same path and query on
+  `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method with 421 Misdirected
+  Request. So no token, cookie, form or inbox delivery is accepted on another host, and no API answer is built on its
+  origin. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). `/health`, the admin API (which the
+  CLI reaches on its own admin hostname, [cutover-runbook.md](cutover-runbook.md)), media's capability URLs (no Store
+  read) and a request no route serves (its plain 404, without a Store read) answer on any host; the static assets are
+  served by the platform before the Worker; a queued inbox replay, the cron and the Store have no request host. The
+  decision is made by the request's first Store read that answers the domain: the setup gate, the inbox gate and the
+  self-gated federation reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1);
+  every other route (the Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. _Enforced (main):_
+  `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the middleware in `src/app/app.ts`,
+  `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in `src/federation/inbox.ts`, `siteGate`
+  in `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`; `test/instance-host.test.ts` ("moves a GET
+  or HEAD on another host to the same path and query on the domain", "answers 421 to any other method on another host,
+  writing nothing", "keeps the domain's own spellings: case, the default port, and the Host header", "answers the
+  health check, the admin API, media and paths no route serves on any host", "changes nothing before setup has fixed
+  the domain", "reads the domain once more only where the route does not read it").
 
 ### Setup (SETUP)
 
@@ -4329,7 +4348,7 @@ The negative cases each area requires, in tests named with the invariant IDs; a 
 - **Forwarded activity:** ID-1, ID-7, VIS-3, VIS-28, NET-2, RES-6, RES-7, DATA-5, DATA-6.
 - **Fetch of a remote URL:** NET-1, NET-3, NET-4, ID-2, ID-8. Use a sink client, never `fetch` directly.
 - **Rendered field or HTML page:** HTML-1, HTML-2, HTML-3, WEB-2, WEB-5. Run the vector suites.
-- **Web UI, consent or setup:** WEB-1 to WEB-5, AUTH-8, VIS-4, HTML-1 to HTML-3, SETUP-1 to SETUP-4.
+- **Web UI, consent or setup:** WEB-1 to WEB-6, AUTH-8, VIS-4, HTML-1 to HTML-3, SETUP-1 to SETUP-4.
 - **Media:** MEDIA-1 to MEDIA-4, NET-3, VIS-1, RES-1, RES-6.
 - **Web Push:** PUSH-1 to PUSH-3, AUTH-7, DATA-2, NET-3, VIS-10.
 - **Store operation or migration:** AUTH-1, OPS-2, OPS-3, DATA-6. Migrations are append-only after the first release and

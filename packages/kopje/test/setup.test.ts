@@ -582,7 +582,9 @@ describe("/setup step 7: bootstrap", () => {
   for (const name of CONFIG_KEYS) {
     it(`SETUP-3: refuses when ${name} is configured already (an import or /admin/config)`, async () => {
       const { h, browser, input } = await readyForBootstrap();
-      await sql(h.store, "INSERT INTO instance_settings (name, value) VALUES (?, ?)", name, "x");
+      // A domain is the host the wizard is on, so the request reaches /setup (WEB-6).
+      const value = name === "domain" ? "kopje.test" : "x";
+      await sql(h.store, "INSERT INTO instance_settings (name, value) VALUES (?, ?)", name, value);
       // The Store refuses, whatever the Worker let through.
       expect(await h.store.bootstrapInstance(BUILD, input)).toBe("complete");
       expect(

@@ -329,6 +329,13 @@ Annual reports (`/api/v1/annual_reports`):
   admin can still generate a report by hand from a console, which its owner then reads and marks read; Kopje has no
   such path.
 
+Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
+
+- On a host other than the instance domain, Mastodon's host authorization answers 403 to every path but `/health`.
+  Kopje moves a GET or HEAD to the same path and query on the domain (301) and answers any other method 421
+  Misdirected Request, and answers `/health`, the admin API and media URLs on any host. Like Mastodon, it answers only
+  on the domain from setup on; before setup every host is answered as before.
+
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public

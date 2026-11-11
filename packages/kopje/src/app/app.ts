@@ -2,6 +2,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { matchedRoutes, routePath } from "hono/route";
+import { METHOD_NAME_ALL } from "hono/router";
 
 import { ringDoorbell } from "../federation/delivery";
 import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/inbox";
@@ -183,9 +184,16 @@ export function createApp({
 
   // WEB-6: on the instance domain only, once setup has fixed it. The health check and the admin API (which the CLI
   // reaches on an admin hostname of its own, docs/cutover-runbook.md) answer on any host; a route whose handler reads
-  // the domain itself decides there (decidesHost), so its request keeps its one Store read.
+  // the domain itself decides there (decidesHost), so its request keeps its one Store read; and a request no route
+  // serves (only middleware matched) keeps its 404 without a Store read.
   app.use(async (c, next) => {
-    if (c.req.path === "/health" || isAdminPath(c.req.path) || hostDecided(matchedRoutes(c))) {
+    const routes = matchedRoutes(c);
+    if (
+      c.req.path === "/health" ||
+      isAdminPath(c.req.path) ||
+      hostDecided(routes) ||
+      routes.every((route) => route.method === METHOD_NAME_ALL)
+    ) {
       return next();
     }
     const domain = await callStore(() => store(c.env).instanceDomain(build(c.env)));
@@ -204,7 +212,8 @@ export function createApp({
   );
 
   // The inbox POSTs read the domain in their own gate (federation/inbox.ts processInbox), and the self-gated
-  // federation GETs in their one read (federation/routes.ts SELF_GATED_ROUTES).
+  // federation GETs in their one read (federation/routes.ts SELF_GATED_ROUTES); each decides the host there (WEB-6),
+  // and the gate decides it for every other request under FEDERATION_PATHS, which hold all these routes.
   const setupGate = requireSetup(
     build,
     store,
@@ -216,12 +225,12 @@ export function createApp({
     app.use(path, decidesHost(setupGate));
   }
 
-  const inbox = decidesHost(inboxHandler({ build, store, now, keygen, loader }));
+  const inbox = inboxHandler({ build, store, now, keygen, loader });
   for (const path of INBOX_ROUTES) {
     app.post(path, inbox);
   }
 
-  const federationGet = decidesHost(federationHandler({ build, now, store, keygen, loader }));
+  const federationGet = federationHandler({ build, now, store, keygen, loader });
   for (const path of FEDERATION_GET_ROUTES) {
     app.get(path, federationGet);
   }
