@@ -76,9 +76,10 @@ export function windowJson(window: Window): string {
 // candidates from the cursor, each `round(range, per)` with a per-stream LIMIT `per` over `streams` streams, of which
 // it keeps those `passing` accepts (a set of ids, read by key), in cursor order. Round 1's per-stream LIMIT is `first`,
 // each later one min(max(first, ⌊spent / streams⌋), ⌊(CONDITION_WALK − spent) / streams⌋), with `spent` the LIMITs
-// charged so far. It ends with the first `size` kept (cut, no `end`: a next page examines again what lies past the
-// last kept), at a round that was not cut, or cut at `end`, the last candidate examined, once the budget left cannot
-// pay one more entry per stream. Without conditions (`passing` null) it is round 1 itself.
+// charged so far. It ends with the first `size` kept (no `end`: a next page examines again what lies past the last
+// kept; cut unless the round was exhausted and kept exactly `size`), at a round that was not cut, or cut at `end`, the
+// last candidate examined, once the budget left cannot pay one more entry per stream. Without conditions (`passing`
+// null) it is round 1 itself.
 export function walkedWindow(
   round: (range: { max: string; min: string }, per: number) => Window,
   passing: ((candidates: Window["candidates"]) => ReadonlySet<string>) | null,
@@ -100,7 +101,9 @@ export function walkedWindow(
     const passed = window.candidates.length === 0 ? new Set<string>() : passing(window.candidates);
     kept.push(...window.candidates.filter(({ id }) => passed.has(id)));
     if (kept.length >= size) {
-      return { candidates: kept.slice(0, size), cut: true };
+      // Cut when the round was, or when it kept more than `size`: an exhausted round that kept exactly `size` holds
+      // the whole of the cursor's range, as a single window of it would.
+      return { candidates: kept.slice(0, size), cut: window.cut || kept.length > size };
     }
     if (!window.cut) {
       return { candidates: kept, cut: false };

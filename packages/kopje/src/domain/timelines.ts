@@ -653,9 +653,7 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
     return null;
   }
   // One name, and no `all` or `none`: ?5 the time, ?6 the name, ?7 the status. The whole composition, the request's
-  // part included, tested on the status by key.
-  const { values, bind } = binder(8);
-  const request = tagRequestSql({ local, remote: false, onlyMedia: false, all: [], none: [] }, bind);
+  // part included, tested on the status by key; the author by its key too (RES-7).
   const read = statusReads(viewer, { viewer: "?1", now: "?5", only: "?7" });
   return (
     read.select(
@@ -663,9 +661,8 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
       "listable",
       {
         from: "status_tags t CROSS JOIN",
-        join: "ON s.id = t.status_id JOIN accounts pa ON pa.id = s.account_id",
-        where: `t.public = 1 AND t.name = ?6 AND t.status_id = ?7 AND ${PUBLIC_ORIGINAL_SQL}
-					${request === null ? "" : `AND ${request}`}`,
+        join: `ON s.id = t.status_id CROSS JOIN accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} ON pa.id = s.account_id`,
+        where: `t.public = 1 AND t.name = ?6 AND t.status_id = ?7 AND ${publicConditions(local, false, false)}`,
         and: rangeSql("t.status_id"),
         tail: `ORDER BY t.status_id ${orderOf(cursor)} LIMIT ?4`,
       },
@@ -675,7 +672,6 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
       viewer.now,
       normalizeTag(tag),
       statusId,
-      ...values,
     )[0]?.id ?? null
   );
 }

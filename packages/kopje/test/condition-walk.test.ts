@@ -104,6 +104,28 @@ describe("a condition walk's rounds stay within CONDITION_WALK (C1)", () => {
   });
 });
 
+describe("collecting the window's size keeps whether its round was cut (C4)", () => {
+  // One round of `count` candidates, cut or exhausted, every one passing, for a window of 3.
+  const once = (count: number, cut: boolean) =>
+    walkedWindow(
+      () => ({ candidates: [9, 8, 7, 6].slice(0, count).map((n) => ({ id: id(n), o: 0 })), cut }),
+      (candidates) => new Set(candidates.map(({ id }) => id)),
+      start(false),
+      40,
+      1,
+      3,
+    );
+
+  it("is not cut when an exhausted round kept exactly the size", () => {
+    expect(once(3, false)).toEqual({ candidates: [9, 8, 7].map((n) => ({ id: id(n), o: 0 })), cut: false });
+  });
+
+  it("is cut when an exhausted round kept more than the size, or a cut round kept exactly the size", () => {
+    expect(once(4, false).cut).toBe(true);
+    expect(once(3, true).cut).toBe(true);
+  });
+});
+
 describe("collecting the window's size sets no end (C5)", () => {
   it("returns the first `size` passing rows, cut, with no end, so a next page examines what lies after them", () => {
     const { round } = rawRange(10_000, false);

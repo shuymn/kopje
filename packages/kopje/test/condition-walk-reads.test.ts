@@ -50,6 +50,8 @@ const BEA = "700000000000000002";
 const VIEWER = "700000000000000005";
 // A remote author of private originals, for the disclosure cases.
 const PRIVATE_AUTHOR = "700000000000000006";
+// A suspended local account: its statuses are candidates the list rule hides by availability.
+const GONE = "700000000000000007";
 
 const OLDER = 30;
 const NEWER = 5;
@@ -424,6 +426,13 @@ async function rowsWorld(rows: readonly Row[]): Promise<StoreStub> {
       "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://far.example/users/p', 'p', 'far.example')",
       PRIVATE_AUTHOR,
     );
+    sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/ap/users/gone', 'gone')", GONE);
+    sql.exec(
+      `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey, suspended_at)
+			VALUES (?, 'gone@example.com', X'00', X'00', 'test', ?)`,
+      GONE,
+      at,
+    );
     for (const row of rows) {
       const id = rowId(row.offset);
       const author = row.author ?? BEA;
@@ -496,6 +505,66 @@ const matchesOf = (rows: readonly Row[], ascending: boolean) =>
     .map((row) => row.offset)
     .toSorted((a, b) => (ascending ? a - b : b - a))
     .map(rowId);
+
+describe("a walk that rejects nothing answers as the read without conditions (AC5, C4)", () => {
+  // Two names, limit 20 (a window of 60, 40 a name), every status local (local=true rejects none) and by a suspended
+  // account, so the rule hides them all and the page is empty: only the window's cut decides its links.
+  //   - exhausted, exactly 60: 30 a name, no stream fills, the union is the window;
+  //   - exhausted, 62: 31 a name, the union passes the window;
+  //   - truncated, exactly 60: walking down, the first name fills its 40 below the second's 20, with more of it below.
+  //     Only downward: walking up, the first name fills at 40 below the second's rows, so round 1's window holds 40
+  //     and the walk goes on to collect 60, where the read without conditions stops at its 40.
+  const both = [PAGE, { ...PAGE, minId: "1" }];
+  const cases: [string, Row[], PageQuery[]][] = [
+    [
+      "exhausted, exactly the window",
+      Array.from({ length: 60 }, (_, i) => ({ offset: 100 + i, author: GONE, names: [i % 2 === 0 ? "m0" : "m1"] })),
+      both,
+    ],
+    [
+      "exhausted, past the window",
+      Array.from({ length: 62 }, (_, i) => ({ offset: 100 + i, author: GONE, names: [i % 2 === 0 ? "m0" : "m1"] })),
+      both,
+    ],
+    [
+      "truncated, exactly the window",
+      [
+        ...Array.from({ length: 40 }, (_, i) => ({ offset: 1_000 + i, author: GONE, names: ["m0"] })),
+        ...Array.from({ length: 20 }, (_, i) => ({ offset: 1_100 + i, author: GONE, names: ["m1"] })),
+        ...Array.from({ length: 5 }, (_, i) => ({ offset: 100 + i, author: GONE, names: ["m0"] })),
+      ],
+      [PAGE],
+    ],
+  ];
+
+  it.each(cases)(
+    "%s: the same page, cut and cursors",
+    async (_name, rows, pages) => {
+      const s = await rowsWorld(rows);
+      for (const page of pages) {
+        const answer = async (local: boolean) =>
+          read(s, tagTimeline, {
+            ...tagInput({ local, any: ["m1"] }, null)(page),
+            tag: "m0",
+          });
+        const bare = await answer(false);
+        expect(bare.items).toEqual([]);
+        expect(await answer(true)).toEqual(bare);
+      }
+    },
+    120_000,
+  );
+
+  it("leaves the exhausted exact window uncut, with no cursor", async () => {
+    const s = await rowsWorld(cases[0]![1]);
+    const page = await read(s, tagTimeline, {
+      ...tagInput({ local: true, any: ["m1"] }, null)(PAGE),
+      tag: "m0",
+    });
+    expect(page).toMatchObject({ items: [], newest: null, oldest: null });
+    expect(page.cut ?? false).toBe(false);
+  }, 120_000);
+});
 
 describe("a merged walk loses no match at a round's merge frontier (AC10, C6)", () => {
   // Round 1's LIMIT is 40 a name (limit 20). The first name's stream fills at its 40th row, the frontier; the match
