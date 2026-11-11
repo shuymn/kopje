@@ -81,9 +81,11 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   (`ANALYZE` taken before the data grew), and a regression witness crosses the real cap. A query joining a large table
   pins its join order (`CROSS JOIN`, `INDEXED BY`) wherever stale statistics could choose a scan (RES-7). The Workers
   suites audit every statement the domain code runs in them (`test/sql-depth-setup.ts`, `test/plan-audit.ts`): planned
-  under singleton statistics, a plan that reads a whole table or index (a scan, an automatic index, a Bloom filter, a
-  skip-scan) fails its suite unless `test/plan-audit-entries.ts` lists that scan of that statement. The audit sees no
-  prefix or range walk that EQP shows as a search; those keep a witness that grows under the same key.
+  under singleton statistics with up to three samples of its parameters, a plan that reads a whole table or index (a
+  scan, an automatic index, a Bloom filter, a skip-scan) fails its suite unless `test/plan-audit-entries.ts` lists that
+  scan of that statement. The audit sees no prefix or range walk that EQP shows as a search, nor a plan only a value
+  the suites never pass would choose (a partial index's condition); those keep a witness that grows under the same
+  key. The domain SQL binds no LIKE or GLOB pattern.
 - **A cap counts raw candidates before any residual predicate**: an inner stage reads the candidates by the walk's
   index and the predicate is applied outside it (paged reads: [visibility.md](visibility.md), "Read bounds"). Where
   passing the cap must be detected (a refusal or a cut past it), the inner stage reads cap + 1.

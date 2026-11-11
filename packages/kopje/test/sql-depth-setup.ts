@@ -3,7 +3,17 @@ import { afterAll, expect, inject } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
-import { type AuditedStatement, auditFailures, bindsPattern, planSignatures, statementId } from "./plan-audit";
+import {
+  type AuditedStatement,
+  auditFailures,
+  bindsPattern,
+  callerFrames,
+  type PlannedSample,
+  type PlanSchema,
+  planSignatures,
+  sampleKey,
+  statementId,
+} from "./plan-audit";
 import { PLAN_AUDIT_ENTRIES } from "./plan-audit-entries";
 import { auditStore, type PlannedOrRefused } from "./plan-audit-store";
 
@@ -21,11 +31,11 @@ declare module "vitest" {
   }
 }
 
-// A statement as the suite ran it: the parameters of its first run (of the domain code's first, once it ran it),
-// whether the domain code ran it (the caller of Db is under src/ in any of its runs), whether its depth is measured,
-// and up to MAX_SITES of the call chains it ran from. The depth is measured for what the domain code ran and for what
-// a test ran through all or run; a test's own iterate reads tables of its own (test/status-rows.test.ts).
-export type Recorded = { params: SqlStorageValue[]; production: boolean; measured: boolean; sites: string[] };
+// A statement as the suite ran it: up to MAX_SAMPLES distinct samples of its parameters (the first runs that differ,
+// in any caller), whether the domain code ran it (callerFrames, in any of its runs), whether its depth is measured, and
+// up to MAX_SITES of the call chains it ran from. The depth is measured for what the domain code ran and for what a
+// test ran through all or run; a test's own iterate reads tables of its own (test/status-rows.test.ts).
+export type Recorded = { samples: SqlStorageValue[][]; production: boolean; measured: boolean; sites: string[] };
 
 export const statements = new Map<string, Recorded>();
 
@@ -33,34 +43,13 @@ export const statements = new Map<string, Recorded>();
 export type DeepStatement = { depth: number; sql: string };
 
 const MAX_SITES = 3;
+// A bound value changes a plan through a partial index's condition (test/plan-audit.test.ts); values the suites never
+// pass are not planned.
+const MAX_SAMPLES = 3;
 // Frames kept from the caller of Db on: enough to name the builder of a statement a shared reader runs (SQL composed
 // in timelines.ts, run by audience.ts).
 const SITE_FRAMES = 5;
 const STACK_FRAMES = SITE_FRAMES + 8;
-
-// Where the operations dispatch: a chain of callers ends there.
-const DISPATCH = new Set(["src/domain/operation.ts", "src/platform/store-kernel.ts"]);
-
-// The callers of a call into Db, innermost first, each as `file:line function` with the file relative to the package:
-// the frames under src/ up to the operations' dispatch, or the one frame that called Db when no domain code did.
-function callerFrames(stack: string): string[] {
-  const frames: string[] = [];
-  for (const line of stack.split("\n").slice(1)) {
-    const frame = /^\s*at (?:(.*?) \()?(.*?):(\d+):\d+\)?$/.exec(line);
-    const file = frame?.[2]?.replace(/^.*\/packages\/kopje\//, "") ?? line.trim();
-    if (file === "test/sql-depth-setup.ts" || file === "src/db/sql.ts") {
-      continue;
-    }
-    if (DISPATCH.has(file) || (frames.length > 0 && !file.startsWith("src/"))) {
-      break;
-    }
-    frames.push(`${file}:${frame?.[3] ?? "?"} ${frame?.[1] ?? "<anonymous>"}`);
-    if (!file.startsWith("src/")) {
-      break;
-    }
-  }
-  return frames;
-}
 
 // An error whose stack holds the STACK_FRAMES innermost frames of its caller.
 function capture(): Error {
@@ -80,22 +69,26 @@ const looks = new Map<string, number>();
 
 function record(query: string, params: SqlStorageValue[], call?: Error): void {
   const seen = statements.get(query);
+  if (seen !== undefined && seen.samples.length < MAX_SAMPLES) {
+    const key = sampleKey(params);
+    if (!seen.samples.some((sample) => sampleKey(sample) === key)) {
+      seen.samples.push(params);
+    }
+  }
   if (seen?.production === true && (seen.sites.length >= MAX_SITES || (looks.get(query) ?? 0) >= LOOKS)) {
     return;
   }
-  const frames = callerFrames((call ?? capture()).stack ?? "");
-  const production = frames[0]?.startsWith("src/") ?? false;
+  const { frames, production } = callerFrames((call ?? capture()).stack ?? "");
   const measured = production || call === undefined;
   const site = frames.slice(0, SITE_FRAMES).join(" < ");
   if (seen === undefined) {
-    statements.set(query, { params, production, measured, sites: [site] });
+    statements.set(query, { samples: [params], production, measured, sites: [site] });
     return;
   }
   seen.measured ||= measured;
   if (production && !seen.production) {
     // The domain code's chain first: the one a failure names.
     seen.production = true;
-    seen.params = params;
     seen.sites = [site, ...seen.sites.filter((s) => s !== site)].slice(0, MAX_SITES);
   } else if (seen.sites.length < MAX_SITES && !seen.sites.includes(site)) {
     seen.sites.push(site);
@@ -140,14 +133,14 @@ export async function measure(sql: string[]): Promise<DeepStatement[]> {
   return response.json();
 }
 
-// Each identity's plan and violations, kept for the worker's later suites: a plan depends on the schema and the
-// statistics only (no STAT4, test/plan-audit.test.ts; no bound LIKE or GLOB pattern, bindsPattern), so it is the same in
-// every suite of a run. The cache, and the audit Store it plans on, are scoped to the run and to the migrations.
+// Each identity's plan and violations for each sample of its parameters, kept for the worker's later suites: a plan
+// depends on the schema, the statistics and the bound values only (no STAT4, test/plan-audit.test.ts), so it is the
+// same in every suite of a run. The cache, and the audit Store it plans on, are scoped to the run and to the migrations.
 type PlanCache = {
   scope: string;
-  store?: ReturnType<typeof auditStore>;
+  store: ReturnType<typeof auditStore> | undefined;
   ids: Map<string, string>;
-  plans: Map<string, PlannedOrRefused & { violations: string[] }>;
+  plans: Map<string, PlannedSample>;
 };
 const PLAN_CACHE = Symbol.for("kopje.plan-audit.cache");
 
@@ -155,9 +148,31 @@ async function planCache(): Promise<PlanCache> {
   const scope = `${inject("planAuditRun")} ${await statementId(MIGRATIONS.map((m) => `${m.name}\n${m.sql}`).join("\n"))}`;
   const holder = globalThis as { [PLAN_CACHE]?: PlanCache };
   if (holder[PLAN_CACHE]?.scope !== scope) {
-    holder[PLAN_CACHE] = { scope, ids: new Map(), plans: new Map() };
+    holder[PLAN_CACHE] = { scope, store: undefined, ids: new Map(), plans: new Map() };
   }
   return holder[PLAN_CACHE];
+}
+
+// `queries` planned on the worker's audit Store, made again once if making it failed or the pool restarted it (the pool
+// restarts a Durable Object whose module graph a later suite reloaded, and its error asks for a retry).
+async function planOnAuditStore(
+  cache: PlanCache,
+  queries: { sql: string; params: SqlStorageValue[] }[],
+): Promise<{ schema: PlanSchema; planned: PlannedOrRefused[] }> {
+  for (let attempt = 0; ; attempt++) {
+    const pending = (cache.store ??= auditStore());
+    try {
+      const store = await pending;
+      return { schema: store.schema, planned: await store.plan(queries) };
+    } catch (error) {
+      if (cache.store === pending) {
+        cache.store = undefined;
+      }
+      if (attempt > 0) {
+        throw error;
+      }
+    }
+  }
 }
 
 // The plan audit's failures for the statements of `recorded` the domain code ran.
@@ -173,36 +188,30 @@ export async function auditPlans(recorded: ReadonlyMap<string, Recorded>): Promi
       failures.push(`plan audit: a LIKE or GLOB pattern takes a parameter (${seen.sites[0]})\n  sql: ${sql}`);
     }
   }
+  const keyOf = (sql: string, params: readonly unknown[]) => `${cache.ids.get(sql)!} ${sampleKey(params)}`;
   const unplanned = new Map<string, { sql: string; params: SqlStorageValue[] }>();
   for (const [sql, seen] of production) {
-    const id = cache.ids.get(sql)!;
-    if (!cache.plans.has(id) && !unplanned.has(id)) {
-      unplanned.set(id, { sql, params: seen.params });
+    for (const params of seen.samples) {
+      const key = keyOf(sql, params);
+      if (!cache.plans.has(key)) {
+        unplanned.set(key, { sql, params });
+      }
     }
   }
   if (unplanned.size > 0) {
-    let store = await (cache.store ??= auditStore());
-    let planned: PlannedOrRefused[];
-    try {
-      planned = await store.plan([...unplanned.values()]);
-    } catch (error) {
-      // The pool restarts a Durable Object whose module graph a later suite reloaded; the worker's audit Store is then
-      // gone, and a new one is made, as the error asks.
-      if (!String(error).includes("invalidating this Durable Object")) {
-        throw error;
-      }
-      store = await (cache.store = auditStore());
-      planned = await store.plan([...unplanned.values()]);
-    }
-    [...unplanned].forEach(([id, { sql }], n) => {
-      const result = planned[n]!;
-      cache.plans.set(id, { ...result, violations: planSignatures(sql, result.plan, store.schema) });
+    const { schema, planned } = await planOnAuditStore(cache, [...unplanned.values()]);
+    [...unplanned].forEach(([key, { sql, params }], n) => {
+      const { plan, error } = planned[n]!;
+      const violations = error === undefined ? planSignatures(sql, plan, schema) : [];
+      cache.plans.set(key, { params, plan, violations, ...(error === undefined ? {} : { error }) });
     });
   }
-  const audited: AuditedStatement[] = production.map(([sql, seen]) => {
-    const id = cache.ids.get(sql)!;
-    return { id, sql, params: seen.params, sites: seen.sites, ...cache.plans.get(id)! };
-  });
+  const audited: AuditedStatement[] = production.map(([sql, seen]) => ({
+    id: cache.ids.get(sql)!,
+    sql,
+    sites: seen.sites,
+    samples: seen.samples.map((params) => cache.plans.get(keyOf(sql, params))!),
+  }));
   return [...failures, ...auditFailures(audited, PLAN_AUDIT_ENTRIES)];
 }
 

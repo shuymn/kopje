@@ -102,7 +102,7 @@ describe("plan audit", () => {
     const recorded = [...statements].filter(([, seen]) => seen.production);
     expect(recorded.length).toBeGreaterThan(50);
     const queries = [
-      ...recorded.map(([sql, seen]) => ({ sql, params: seen.params })),
+      ...recorded.map(([sql, seen]) => ({ sql, params: seen.samples[0]! })),
       { sql: UNPINNED, params: ["alice"] },
     ];
     const tested = await runInDurableObject(h.store, (_instance, state) => {
@@ -154,5 +154,41 @@ describe("plan audit", () => {
       expect(failures[0]).toMatch(/reads a whole table or index, and no entry lists it/);
       expect(failures[0]).toMatch(/ {4}remote_media: SCAN cm/);
     }
+  });
+
+  const recorded = (sql: string, ...samples: SqlStorageValue[][]) =>
+    new Map<string, Recorded>([[sql, { samples, production: true, measured: true, sites: ["src/domain/x.ts:1 r"] }]]);
+
+  // A bound value decides whether a partial index serves a statement (accounts_directory_active is the discoverable
+  // accounts'), so each sample of its parameters is planned and their violations united.
+  it("plans each sample of a statement's parameters", async () => {
+    const query = `SELECT id FROM accounts WHERE discoverable = ? AND last_status_id > ? ORDER BY last_status_id LIMIT 1`;
+    const store = await migratedStore();
+    const plans = await runInDurableObject(store, (_instance, state) => {
+      singletonStatistics(state.storage.sql);
+      return [details(state.storage.sql, query, 1, "0"), details(state.storage.sql, query, 0, "0")];
+    });
+    expect(plans).toEqual([
+      ["SEARCH accounts USING COVERING INDEX accounts_directory_active (last_status_id>?)"],
+      ["SCAN accounts", "USE TEMP B-TREE FOR ORDER BY"],
+    ]);
+    expect(await auditPlans(recorded(query, [1, "0"]))).toEqual([]);
+    const failures = await auditPlans(recorded(query, [1, "0"], [0, "0"]));
+    expect(failures).toEqual([expect.stringMatching(/offending lines:\n {4}accounts: SCAN accounts/)]);
+  });
+
+  // The audit plans the samples the suites gave, so a LIKE or GLOB pattern, whose bound value can change a plan, is
+  // never a parameter of the domain code's SQL.
+  it("refuses a LIKE or GLOB pattern the domain code binds", async () => {
+    const refused = "plan audit: a LIKE or GLOB pattern takes a parameter";
+    for (const query of [
+      "SELECT id FROM accounts WHERE id = ? AND username LIKE ?",
+      `SELECT id FROM accounts WHERE id = ? AND "like"(?, username)`,
+      "SELECT id FROM accounts WHERE id = ? AND glob(?, username)",
+    ]) {
+      expect(await auditPlans(recorded(query, ["1", "a%"])), query).toEqual([expect.stringContaining(refused)]);
+    }
+    const literal = "SELECT id FROM accounts WHERE id = ? AND username LIKE 'a%' LIMIT ?";
+    expect(await auditPlans(recorded(literal, ["1", 1]))).toEqual([]);
   });
 });

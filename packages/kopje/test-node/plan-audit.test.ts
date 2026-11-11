@@ -6,15 +6,18 @@ import {
   type AuditedStatement,
   auditFailures,
   bindsPattern,
+  callerFrames,
   normalizeSql,
+  type PlanAuditEntry,
   type PlanRow,
   type PlanSchema,
   planSignatures,
+  sampleKey,
   statementId,
 } from "../test/plan-audit.js";
 
-// The pure part of the plan audit (test/plan-audit.ts): identity, classification and the decision. Its claims on
-// workerd's planner are test/plan-audit.test.ts.
+// The pure part of the plan audit (test/plan-audit.ts): identity, provenance, classification and the decision. Its
+// claims on workerd's planner are test/plan-audit.test.ts.
 
 const SCHEMA: PlanSchema = {
   tables: new Set(["accounts", "local_accounts", "statuses", "follows"]),
@@ -27,6 +30,14 @@ const SCHEMA: PlanSchema = {
 
 const rows = (...details: string[]): PlanRow[] => details.map((detail, n) => ({ id: n + 1, parent: 0, detail }));
 const signatures = (sql: string, ...details: string[]) => planSignatures(sql, rows(...details), SCHEMA);
+// A plan as a tree: each line `[depth, detail]`.
+const tree = (...lines: [number, string][]): PlanRow[] => {
+  const parents: number[] = [0];
+  return lines.map(([depth, detail], n) => {
+    parents[depth + 1] = n + 1;
+    return { id: n + 1, parent: parents[depth]!, detail };
+  });
+};
 
 describe("plan audit classifier", () => {
   it("counts a scan of a base table, through an index or not, as a violation", () => {
@@ -44,13 +55,13 @@ describe("plan audit classifier", () => {
 
   it("counts automatic indexes, Bloom filters and skip-scans as violations, at any depth", () => {
     const sql = "SELECT 1 FROM statuses s WHERE EXISTS (SELECT 1 FROM follows f WHERE f.target_id = s.account_id)";
-    const plan: PlanRow[] = [
-      { id: 1, parent: 0, detail: "SEARCH s USING INDEX statuses_account (account_id=?)" },
-      { id: 2, parent: 0, detail: "CORRELATED SCALAR SUBQUERY 1" },
-      { id: 3, parent: 2, detail: "SEARCH f USING AUTOMATIC COVERING INDEX (target_id=?)" },
-      { id: 4, parent: 0, detail: "BLOOM FILTER ON f (target_id=?)" },
-      { id: 5, parent: 0, detail: "SEARCH s USING INDEX statuses_account (ANY(account_id) AND id>?)" },
-    ];
+    const plan = tree(
+      [0, "SEARCH s USING INDEX statuses_account (account_id=?)"],
+      [0, "CORRELATED SCALAR SUBQUERY 1"],
+      [1, "SEARCH f USING AUTOMATIC COVERING INDEX (target_id=?)"],
+      [0, "BLOOM FILTER ON f (target_id=?)"],
+      [0, "SEARCH s USING INDEX statuses_account (ANY(account_id) AND id>?)"],
+    );
     expect(planSignatures(sql, plan, SCHEMA)).toEqual([
       "follows: BLOOM FILTER ON f (target_id=?)",
       "follows: SEARCH f USING AUTOMATIC COVERING INDEX (target_id=?)",
@@ -75,19 +86,83 @@ describe("plan audit classifier", () => {
       ),
     ).toEqual([]);
     // The CTE's own scan is checked on its own line.
-    expect(signatures(sql, "SCAN accounts")).toEqual(["accounts: SCAN accounts"]);
+    expect(planSignatures(sql, tree([0, "MATERIALIZE c"], [1, "SCAN accounts"]), SCHEMA)).toEqual([
+      "accounts: SCAN accounts",
+    ]);
   });
 
-  it("resolves a name within the statement's scopes, and fails closed on one it cannot resolve", () => {
-    // `a` is a CTE in one scope and a table in another: a scan of `a` may be either, so it is a violation.
-    const shadowed = `WITH x AS (SELECT id FROM accounts a WHERE a.id = ?) SELECT 1 FROM x a`;
-    expect(signatures(shadowed, "SCAN a")).toEqual(["?: SCAN a"]);
-    // Two tables under one alias in different scopes.
+  it("resolves a name in the query scope of its plan line", () => {
+    // The outer scan reads the CTE's result; the CTE's body reads accounts.
+    const cte = "WITH x AS MATERIALIZED (SELECT username FROM accounts a WHERE a.id = '1') SELECT * FROM x a";
+    expect(planSignatures(cte, tree([0, "MATERIALIZE x"], [1, "SCAN a"], [0, "SCAN a"]), SCHEMA)).toEqual([
+      "accounts: SCAN a",
+    ]);
+    expect(
+      planSignatures(
+        cte,
+        tree([0, "MATERIALIZE x"], [1, "SEARCH a USING INDEX sqlite_autoindex_accounts_1 (id=?)"], [0, "SCAN a"]),
+        SCHEMA,
+      ),
+    ).toEqual([]);
+    // A recursive CTE named as an outer table's alias (audience.ts availableSql): its steps scan the CTE itself.
+    const recursive = `SELECT 1 FROM accounts ps WHERE ps.id = ?1 AND (SELECT count(*) FROM (WITH RECURSIVE ps(d) AS
+			(SELECT ?2 UNION ALL SELECT substr(d, 2) FROM ps WHERE d <> '') SELECT d FROM ps)) > 0`;
+    const plan = tree(
+      [0, "SCAN ps"],
+      [0, "CORRELATED SCALAR SUBQUERY 3"],
+      [1, "CO-ROUTINE ps"],
+      [2, "SETUP"],
+      [3, "SCAN CONSTANT ROW"],
+      [2, "RECURSIVE STEP"],
+      [3, "SCAN ps"],
+      [1, "SCAN ps"],
+    );
+    expect(planSignatures(recursive, plan, SCHEMA)).toEqual(["accounts: SCAN ps"]);
+    // The same name for an account in one subquery and for the CTE in another: an expression subquery is the unnamed
+    // scope that knows every name its own lines use.
+    const both = `SELECT 1 FROM statuses s WHERE (SELECT 1 FROM accounts ps WHERE ps.id = s.account_id)
+			AND (WITH RECURSIVE ps(d) AS (SELECT ?1 UNION ALL SELECT substr(d, 2) FROM ps WHERE d <> '')
+				SELECT 1 FROM ps JOIN follows pr ON pr.id = ps.d)`;
+    const twoSubqueries = (first: string) =>
+      tree(
+        [0, "SEARCH s USING INDEX statuses_account (account_id=?)"],
+        [0, "CORRELATED SCALAR SUBQUERY 1"],
+        [1, first],
+        [0, "CORRELATED SCALAR SUBQUERY 4"],
+        [1, "CO-ROUTINE ps"],
+        [2, "SETUP"],
+        [3, "SCAN CONSTANT ROW"],
+        [2, "RECURSIVE STEP"],
+        [3, "SCAN ps"],
+        [1, "SCAN ps"],
+        [1, "SEARCH pr USING INTEGER PRIMARY KEY (rowid=?)"],
+      );
+    expect(planSignatures(both, twoSubqueries("SEARCH ps USING INTEGER PRIMARY KEY (rowid=?)"), SCHEMA)).toEqual([]);
+    // A lone line naming `ps` fits both subqueries: it may be either, so it fails closed.
+    expect(planSignatures(both, twoSubqueries("SCAN ps"), SCHEMA)).toEqual(["?: SCAN ps"]);
+    // One alias, two tables in different scopes: the line's scope decides.
     const twice = `SELECT 1 FROM accounts a WHERE EXISTS (SELECT 1 FROM statuses a WHERE a.id = ?)`;
-    expect(signatures(twice, "SCAN a")).toEqual(["?: SCAN a"]);
-    // A name the statement does not bind.
+    expect(planSignatures(twice, tree([0, "SCAN a"]), SCHEMA)).toEqual(["accounts: SCAN a"]);
+    expect(planSignatures(twice, tree([0, "CORRELATED SCALAR SUBQUERY 1"], [1, "SCAN a"]), SCHEMA)).toEqual([
+      "statuses: SCAN a",
+    ]);
+  });
+
+  it("fails closed on a name it cannot resolve", () => {
     expect(signatures("SELECT 1 FROM accounts", "SCAN q")).toEqual(["?: SCAN q"]);
-    // A table in a parenthesized FROM item, a comma join, and the targets of writes.
+    // Two subqueries bind `a` to different tables, and the line could be in either.
+    const two = `SELECT (SELECT 1 FROM accounts a WHERE a.id = ?), (SELECT 1 FROM statuses a WHERE a.id = ?)`;
+    expect(planSignatures(two, tree([0, "SCALAR SUBQUERY 1"], [1, "SCAN a"]), SCHEMA)).toEqual(["?: SCAN a"]);
+    // A join list in parentheses under one alias.
+    const joined = "SELECT 1 FROM (accounts a JOIN statuses s ON s.account_id = a.id) j";
+    expect(signatures(joined, "SCAN j")).toEqual(["?: SCAN j"]);
+  });
+
+  it("reads tables in parenthesized FROM items, comma joins and the targets of writes", () => {
+    expect(signatures("SELECT a.username FROM (accounts) AS a", "SCAN a")).toEqual(["accounts: SCAN a"]);
+    expect(signatures("SELECT 1 FROM (accounts a JOIN statuses s ON s.account_id = a.id)", "SCAN s", "SCAN a")).toEqual(
+      ["accounts: SCAN a", "statuses: SCAN s"],
+    );
     expect(signatures("SELECT 1 FROM (SELECT id FROM statuses t) d, follows f", "SCAN t", "SCAN f")).toEqual([
       "follows: SCAN f",
       "statuses: SCAN t",
@@ -105,10 +180,46 @@ describe("plan audit classifier", () => {
     expect(bindsPattern("SELECT 1 FROM accounts WHERE username GLOB ?1 || '*'")).toBe(true);
     expect(bindsPattern("SELECT 1 FROM accounts WHERE username NOT LIKE ('%' || ? || '%') ESCAPE '\\'")).toBe(true);
     expect(bindsPattern("SELECT like(?, username) FROM accounts")).toBe(true);
+    expect(bindsPattern('SELECT "like"(?, username) FROM accounts')).toBe(true);
+    expect(bindsPattern("SELECT 1 FROM accounts WHERE glob(?, username)")).toBe(true);
     expect(bindsPattern("SELECT 1 FROM accounts WHERE username LIKE 'a%' AND id = ?")).toBe(false);
+    expect(bindsPattern("SELECT 1 FROM accounts WHERE username LIKE 'a%' LIMIT ?")).toBe(false);
+    expect(bindsPattern("SELECT 1 FROM accounts WHERE username LIKE 'a%' ORDER BY id LIMIT ?")).toBe(false);
     expect(bindsPattern("SELECT 1 FROM accounts WHERE x GLOB '*[^0-9]*' OR id = ?")).toBe(false);
     expect(bindsPattern("SELECT like('a%', ?) FROM accounts")).toBe(false);
     expect(bindsPattern("SELECT 'LIKE ?' FROM accounts WHERE id = ?")).toBe(false);
+  });
+});
+
+describe("plan audit provenance", () => {
+  const at = (frame: string) => `    at ${frame}`;
+  const stack = (...frames: string[]) => ["Error", ...frames.map(at)].join("\n");
+  const ROOT = "/w/packages/kopje";
+
+  it("names the domain code that called Db, through native frames, up to the dispatch", () => {
+    const traced = callerFrames(
+      stack(
+        `capture (${ROOT}/test/sql-depth-setup.ts:70:17)`,
+        `Db.all (${ROOT}/test/sql-depth-setup.ts:120:5)`,
+        `Db.first (${ROOT}/src/db/sql.ts:39:17)`,
+        "Array.from (<anonymous>)",
+        `reader (${ROOT}/src/domain/x.ts:10:3)`,
+        `${ROOT}/src/domain/x.ts:20:5`,
+        `Object.run (${ROOT}/src/domain/operation.ts:10:5)`,
+        `${ROOT}/test/a.test.ts:5:1`,
+      ),
+    );
+    expect(traced).toEqual({
+      frames: ["src/domain/x.ts:10 reader", "src/domain/x.ts:20 <anonymous>"],
+      production: true,
+    });
+  });
+
+  it("tells a test's own statement from the domain code's", () => {
+    const traced = callerFrames(
+      stack(`Db.all (${ROOT}/test/sql-depth-setup.ts:120:5)`, `${ROOT}/test/a.test.ts:5:1`, `${ROOT}/src/x.ts:1:1`),
+    );
+    expect(traced).toEqual({ frames: ["test/a.test.ts:5 <anonymous>"], production: false });
   });
 });
 
@@ -135,86 +246,135 @@ describe("plan audit identity", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(normalizeSql("SELECT 'a  -- b'  ,  \"x  y\"")).toBe("SELECT 'a  -- b' , \"x  y\"");
   });
+
+  it("tells parameter samples apart by type and bytes", () => {
+    const keys = [[1], ["1"], [null], [new Uint8Array([1]).buffer], [new Uint8Array([2]).buffer]].map(sampleKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(sampleKey([new Uint8Array([1]).buffer])).toBe(sampleKey([new Uint8Array([1]).buffer]));
+  });
 });
 
 describe("plan audit baseline", () => {
-  it("lists each identity once, and links each to #1468", () => {
+  it("lists each identity once, with what is known of it", () => {
     const ids = PLAN_AUDIT_ENTRIES.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const entry of PLAN_AUDIT_ENTRIES) {
-      expect(entry.issue ?? entry.reason).toMatch(/^#1468 group [1-9]$/);
       expect(entry.scans.length).toBeGreaterThan(0);
+      if (entry.disposition === "pending" || entry.disposition === "write") {
+        expect(entry.issue, entry.id).toMatch(/^#1468 group [1-9]$/);
+      } else {
+        expect(entry.reason, entry.id).toMatch(/\S/);
+      }
     }
   });
 
   // AC8: every row of #1468 is observed, outside the predicate, or unobserved; an identity a row names is an entry of
-  // the row's group, named by no other row.
+  // the row's group, recorded at one of the row's functions (or, for a fragment, scanning by its pattern), and named by
+  // no other row.
   it("maps the rows of #1468 onto the entries", () => {
-    const groups = new Map(PLAN_AUDIT_ENTRIES.map((entry) => [entry.id, entry.issue]));
+    const byId = new Map(PLAN_AUDIT_ENTRIES.map((entry) => [entry.id, entry]));
+    const at = (frame: string, site: string) => {
+      const [path, name] = site.split("#") as [string, string];
+      if (!frame.startsWith(`${path}#`)) {
+        return false;
+      }
+      const [head, enclosing] = frame.slice(path.length + 1).split(" in ");
+      return head === name || head!.endsWith(`.${name}`) || enclosing === name;
+    };
     const named = ROWS_1468.flatMap((row) => ("ids" in row && row.ids !== undefined ? row.ids : []));
     expect(new Set(named).size).toBe(named.length);
+    expect(named.length).toBeGreaterThan(0);
     for (const row of ROWS_1468) {
       for (const id of "ids" in row && row.ids !== undefined ? row.ids : []) {
-        expect(groups.get(id), `${row.statement}: ${id}`).toBe(`#1468 group ${row.group}`);
+        const entry = byId.get(id);
+        const where = `${row.statement}: ${id}`;
+        expect(entry?.issue, where).toBe(`#1468 group ${row.group}`);
+        const frames = entry!.site.split(" < ");
+        if (row.sites.length > 0) {
+          expect(
+            frames.some((frame) => row.sites.some((site) => at(frame, site))),
+            where,
+          ).toBe(true);
+        }
+        if (row.scans !== undefined) {
+          expect(
+            entry!.scans.some((scan) => new RegExp(row.scans!).test(scan)),
+            where,
+          ).toBe(true);
+        }
       }
     }
-    const grouped = PLAN_AUDIT_ENTRIES.filter((entry) => entry.issue !== "#1468 group 9").map((entry) => entry.id);
-    expect(grouped.toSorted()).toEqual(named.toSorted());
   });
 });
 
 describe("plan audit decision", () => {
-  const statement = (id: string, violations: string[], error?: string): AuditedStatement => ({
-    id,
-    sql: "SELECT 1",
+  const sample = (violations: string[], error?: string) => ({
     params: ["x", 1, null],
-    sites: ["src/domain/x.ts:1 reader"],
     plan: rows("SCAN a"),
     violations,
     ...(error === undefined ? {} : { error }),
+  });
+  const statement = (id: string, violations: string[], error?: string): AuditedStatement => ({
+    id,
+    sql: "SELECT 1",
+    sites: ["src/domain/x.ts:1 reader"],
+    samples: [sample(violations, error)],
+  });
+  const entry = (id: string, scans: string[], extra: Partial<PlanAuditEntry> = {}): PlanAuditEntry => ({
+    id,
+    scans,
+    site: "x",
+    disposition: "pending",
+    issue: "#1468 group 9",
+    ...extra,
   });
 
   it("fails a scan no entry lists, with a paste-ready entry", () => {
     const [failure, ...rest] = auditFailures([statement("aa", ["accounts: SCAN a"])], []);
     expect(rest).toEqual([]);
     expect(failure).toContain("aa reads a whole table or index, and no entry lists it");
-    expect(failure).toContain("parameter types: [string, number, null]");
+    expect(failure).toContain("sample 1, parameter types [string, number, null]:");
     expect(failure).toContain(
-      'paste-ready entry: {"id":"aa","scans":["accounts: SCAN a"],"site":"src/domain/x.ts#reader","issue":"#1468"}',
+      'paste-ready entry: {"id":"aa","scans":["accounts: SCAN a"],"site":"src/domain/x.ts#reader","disposition":"pending","issue":"#1468"}',
     );
   });
 
+  it("judges a statement by the union of its samples' violations", () => {
+    const sampled: AuditedStatement = { ...statement("aa", []), samples: [sample([]), sample(["accounts: SCAN a"])] };
+    expect(auditFailures([sampled], [])).toEqual([expect.stringContaining("    accounts: SCAN a")]);
+    expect(auditFailures([sampled], [entry("aa", ["accounts: SCAN a"])])).toEqual([]);
+  });
+
   it("passes a listed scan, and fails a new scan of a listed statement", () => {
-    const entry = { id: "aa", scans: ["accounts: SCAN a"], site: "x", issue: "#1468" };
-    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [entry])).toEqual([]);
-    const failures = auditFailures([statement("aa", ["accounts: SCAN a", "follows: SCAN f"])], [entry]);
+    const listed = entry("aa", ["accounts: SCAN a"]);
+    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual([]);
+    const failures = auditFailures([statement("aa", ["accounts: SCAN a", "follows: SCAN f"])], [listed]);
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(/offending lines:\n {4}follows: SCAN f$/m);
     // An entry lists one identity: another statement's same scan is not covered.
-    expect(auditFailures([statement("bb", ["accounts: SCAN a"])], [entry])).toHaveLength(1);
+    expect(auditFailures([statement("bb", ["accounts: SCAN a"])], [listed])).toHaveLength(1);
   });
 
   it("fails an entry whose executed statement no longer scans", () => {
-    const entry = { id: "aa", scans: ["accounts: SCAN a", "follows: SCAN f"], site: "x", issue: "#1468" };
-    expect(auditFailures([statement("aa", [])], [entry])).toEqual([
+    const listed = entry("aa", ["accounts: SCAN a", "follows: SCAN f"]);
+    expect(auditFailures([statement("aa", [])], [listed])).toEqual([
       expect.stringContaining("aa no longer reads what its entry lists: remove this entry"),
     ]);
-    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [entry])).toEqual([
+    expect(auditFailures([statement("aa", ["accounts: SCAN a"])], [listed])).toEqual([
       expect.stringContaining("aa no longer reads follows: SCAN f: remove these scans from its entry"),
     ]);
   });
 
   it("does not judge an entry whose statement the run did not execute", () => {
-    const entry = { id: "zz", scans: ["accounts: SCAN a"], site: "x", issue: "#1468" };
-    expect(auditFailures([statement("aa", [])], [entry])).toEqual([]);
+    expect(auditFailures([statement("aa", [])], [entry("zz", ["accounts: SCAN a"])])).toEqual([]);
   });
 
   it("fails a statement it cannot plan unless listed as unplannable, and an identity listed twice", () => {
     expect(auditFailures([statement("aa", [], "no such table")], [])).toEqual([
       expect.stringContaining("EXPLAIN QUERY PLAN refused it: no such table"),
     ]);
-    const entry = { id: "aa", scans: ["unplannable"], site: "x", reason: "r" };
-    expect(auditFailures([statement("aa", [], "no such table")], [entry])).toEqual([]);
-    expect(auditFailures([], [entry, entry])).toEqual([expect.stringContaining("aa is listed twice")]);
+    const unplannable = entry("aa", ["unplannable"], { disposition: "deliberate", reason: "r" });
+    expect(auditFailures([statement("aa", [], "no such table")], [unplannable])).toEqual([]);
+    expect(auditFailures([], [unplannable, unplannable])).toEqual([expect.stringContaining("aa is listed twice")]);
   });
 });

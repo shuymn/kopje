@@ -44,6 +44,18 @@ describe("expression depth guard", () => {
     expect(staged.sites[0]).toMatch(/^src\/domain\/audience\.ts:\d+ stagedList/);
   });
 
+  it("keeps the first distinct samples of a statement's parameters", async () => {
+    const store = await migratedStore();
+    const query = "SELECT ? AS sampled";
+    await runInDurableObject(store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      for (const value of [1, 1, "1", 2, 3, 4]) {
+        db.all(query, value);
+      }
+    });
+    expect(statements.get(query)!.samples).toEqual([[1], ["1"], [2]]);
+  });
+
   it("reports a statement the Store would refuse, with its depth", async () => {
     expect(await measure([nested(10), nested(101)])).toEqual([{ depth: 101, sql: nested(101) }]);
   });
