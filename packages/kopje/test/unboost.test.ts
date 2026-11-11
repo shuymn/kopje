@@ -220,8 +220,9 @@ describe("an unboost at every bound at once (RES-6)", () => {
 
       const result = await unboosted(t, how, how === "unreblog" ? original.id : b.id);
       expect([result.answer, result.jobsPending]).toEqual(["ok", true]);
-      // Exactly the derived maxima less the three no unboost writes: the capture of a boost has no tombstone, and the
-      // Announce in flight, the first of those superseded, keeps its row and has no staging.
+      // Exactly the derived maxima less the three rows this fixture does not write: the capture of a boost has no
+      // tombstone (every boost), and the Announce in flight, the first of those superseded, keeps its row and has no
+      // staging (this fixture's).
       expect(result.wrote).toBe(BOOST_REQUEST_ROWS - 3);
       console.info({ event: "unboost.request", how, wrote: result.wrote, bound: BOOST_REQUEST_ROWS });
       if (how === "unreblog") {
