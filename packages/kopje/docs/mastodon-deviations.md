@@ -408,6 +408,10 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
 - With `resolve=true`, an `acct:user@domain` query is resolved as `user@domain` is; Mastodon's `MENTION_RE` gate
   (`account_search_service.rb`, `username_complete?`) does not take the `acct:` form.
+- `resolve=true` is ignored while the instance does not accept writes (the env's `MAINTENANCE=readonly`, the Store's
+  readonly maintenance, an unpublished import): nothing is fetched, and the search answers from local data as without
+  it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
+  remote server would see a fetch for nothing.
 
 Hashtags (the `Tag` entity):
 
@@ -684,6 +688,18 @@ Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Del
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.
+
+Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
+`docs/threat-model.md`):
+
+- A Mastodon author may revoke a local account's quote while it is still pending there, which sends the stamp's
+  `Delete` (`revoke_quote_service.rb:42` in v4.5.11), and their server then accepts the quote's first `QuoteRequest`
+  under that same stamp (`quote_request.rb:31-32` accepts a quote in any state). When the `Delete` reaches Kopje first,
+  Kopje records the stamp as retracted and refuses an `Accept` naming it while the retraction lasts (30 days, ID-7), so
+  it keeps the quote pending while the quoted server holds it accepted and serves its stamp; a Mastodon quoter applies
+  that `Accept` (`accept.rb:49` checks no retraction). No quote held the stamp, so nothing records it as revoked for
+  good: an `Accept` that arrives after the retraction expires applies, as in Mastodon. The refusal keeps a forged or
+  replayed `Accept` naming a retracted stamp from taking effect while the retraction lasts. Accepted, 2026-11-11.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):

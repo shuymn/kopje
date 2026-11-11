@@ -144,9 +144,10 @@ type OperationInput<T> = T extends StoreOperation<infer I, unknown> ? I : never;
 // read. A call stays separate only when its timing is the guarantee: a policy read after an awaited remote response
 // (fetchRefused before a redirect hop or a later request, webHopRefused), a confirmation under lease right before a
 // send (confirmDelivery), a one-time write (ensureInstanceActorKey). A fetch's preparation (domain/inbox.ts
-// fetchPreparation: the signer and the policy verdict for its first request) is produced at the two answers that decide
-// a fetch, inboxGate and a receiveActivity need, and nowhere else; it is optional, and the Worker reads what is
-// missing (fetchSigner, fetchRefused) as it would without it.
+// fetchPreparation: the signer and the policy verdict for its first request) is produced at the three answers that
+// decide a fetch, inboxGate, a receiveActivity need and resolutionGate, and nowhere else; it is optional, and the
+// Worker reads what is missing (fetchSigner, fetchRefused) as it would without it. A search resolution's actor revision
+// read (actorRevision) carries the verdict for the actor's fetch, its next request, the same way.
 // A federation GET is one read, the setup check included (domain/federation-reads.ts; the routes not yet moved there
 // read the domain in the setup gate first, federation/setup-gate.ts).
 export class Store extends DurableObject<Env> {
@@ -741,7 +742,8 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, inbox.getRemoteKey, input);
   }
 
-  // The revision a search resolution reads before it fetches an actor's document (federation/resolve.ts).
+  // The revision a search resolution reads before it fetches an actor's document, with that fetch's policy verdict
+  // (federation/resolve.ts).
   actorRevision(callerBuild: string, input: OperationInput<typeof inbox.getActorRevision>) {
     return this.#kernel.execute(callerBuild, inbox.getActorRevision, input);
   }
@@ -2003,6 +2005,13 @@ export class Store extends DurableObject<Env> {
   // Search with resolve=true: stores what the Worker fetched, as inbound activities are stored.
   resolveSearch(callerBuild: string, input: OperationInput<typeof resolveSearch>) {
     return this.#kernel.execute(callerBuild, resolveSearch, input);
+  }
+
+  // Search with resolve=true, before any network work (inbox.ts resolutionGate): the credential, then whether writes
+  // are refused (the maintenance reason, decided in the same transaction, after which nothing is read: no key leaves the
+  // Store and nothing is fetched, OPS-8), then the domain and the first request's preparation.
+  resolutionGate(callerBuild: string, input: Omit<OperationInput<typeof inbox.resolutionGate>, "refused">) {
+    return this.#kernel.executeDeciding(callerBuild, inbox.resolutionGate, input, "write");
   }
 
   // /authorize_interaction: the look-up stores what the Worker fetched as search resolution does and shows

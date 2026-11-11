@@ -1,5 +1,6 @@
 import { ACCOUNTS_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { parseAddress } from "../platform/domain-name";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
 import {
@@ -785,6 +786,36 @@ export type Resolved =
 // http(s) URL, or an address (parseAddress in platform/domain-name.ts: user@domain, @user@domain or acct:user@domain).
 export function isUrlQuery(query: string): boolean {
   return /^https?:\/\//i.test(query);
+}
+
+// The WebFinger request (RFC 7033) for acct:<username>@<host>.
+export function webfingerUrl(username: string, host: string): string {
+  return `https://${host}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${username}@${host}`)}`;
+}
+
+// What a search resolution of the trimmed `query` fetches (federation/resolve.ts resolveWith), read one way for the
+// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; null when nothing is
+// fetched: an address on the instance `domain`, a URL on its host (both answered from stored data), or a query that is
+// neither.
+export type ResolutionTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+
+export function resolutionTarget(query: string, domain: string): ResolutionTarget | null {
+  const address = parseAddress(query);
+  if (address !== null) {
+    return address.domain === domain ? null : { kind: "address", ...address };
+  }
+  let url: URL;
+  try {
+    url = new URL(query);
+  } catch {
+    return null;
+  }
+  return url.host === domain ? null : { kind: "url", href: url.href };
+}
+
+// The first request a resolution of `target` makes.
+export function firstRequestOf(target: ResolutionTarget): string {
+  return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
 export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };

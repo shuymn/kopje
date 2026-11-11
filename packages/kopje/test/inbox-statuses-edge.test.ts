@@ -10,8 +10,8 @@ import { MAX_STATUS_EDITS } from "../src/domain/statuses";
 import { handleQueue } from "../src/jobs/queue";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
-import { sql } from "./api-helpers";
-import { harness, inboxDeps, NOW } from "./app-helpers";
+import { seedAccount, sql } from "./api-helpers";
+import { countingStore, harness, inboxDeps, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { LOCAL, MASTODON, mastodonActor, MISSKEY_CONTEXT, misskeyActor, signedInit } from "./inbox-helpers";
@@ -586,10 +586,33 @@ describe("the Store asks for documents at most three times per activity", () => 
 });
 
 describe("NET-4: search resolution fetches nothing without a valid token", () => {
-  it("answers an invalid, revoked, wrong-scope or app token without fetching, on either search", async () => {
+  it("answers an invalid, revoked, expired, suspended, wrong-scope or app token from the gate alone", async () => {
     const t = await setup();
+    await seedInstanceKey(t.store);
     const revoked = t.tokens.dave;
     await sql(t.store, "DELETE FROM oauth_tokens WHERE account_id = ?", DAVE);
+    const expired = "token-expired";
+    await sql(
+      t.store,
+      "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes, expires_at) VALUES (?, 'access', 'test', ?, 'read', ?)",
+      await sha256Hex(expired),
+      ALICE,
+      new Date(NOW - 1000).toISOString(),
+    );
+    const suspended = "token-suspended";
+    const carol = await seedAccount(t.store, { username: "carol" });
+    await sql(
+      t.store,
+      "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes) VALUES (?, 'access', 'test', ?, 'read')",
+      await sha256Hex(suspended),
+      carol,
+    );
+    await sql(
+      t.store,
+      "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?",
+      new Date(NOW).toISOString(),
+      carol,
+    );
     const writeOnly = "token-write-only";
     await sql(
       t.store,
@@ -607,15 +630,37 @@ describe("NET-4: search resolution fetches nothing without a valid token", () =>
       `/api/v2/search?resolve=true&q=${encodeURIComponent(`${MASTODON}/users/bob`)}`,
       `/api/v1/accounts/search?resolve=true&q=${encodeURIComponent("bob@mastodon.example")}`,
     ];
+    const dns: string[] = [];
+    const loader = {
+      fetch: t.web.fetch,
+      checkHost: (url: URL) => {
+        dns.push(url.hostname);
+        return Promise.resolve();
+      },
+    };
     for (const path of searches) {
-      const statusesOf = [];
-      for (const value of ["not-a-token", revoked, writeOnly, appOnly]) {
-        const response = await t.request(path, { headers: { authorization: `Bearer ${value}` } });
-        statusesOf.push(response.status);
+      const answers = [];
+      for (const value of ["not-a-token", revoked, expired, suspended, writeOnly, appOnly]) {
+        const { stub, calls, records } = countingStore(t.store);
+        const h = harness(stub, {}, BUILD, { keygen: fixtureKeyGen, loader });
+        const response = await h.request(path, { headers: { authorization: `Bearer ${value}` } });
+        // The resolution gate ran, answered the failure and prepared nothing; no signer read, no other call.
+        expect([path, calls]).toEqual([path, ["resolutionGate"]]);
+        answers.push([response.status, records[0]!.answer]);
       }
-      expect([path, statusesOf]).toEqual([path, [401, 401, 403, 422]]);
+      expect([path, answers]).toEqual([
+        path,
+        [
+          [401, { status: "unauthenticated" }],
+          [401, { status: "unauthenticated" }],
+          [401, { status: "unauthenticated" }],
+          [403, { status: "suspended" }],
+          [403, { status: "insufficient_scope" }],
+          [422, { status: "user_required" }],
+        ],
+      ]);
     }
-    expect(t.web.fetched).toEqual([]);
+    expect([t.web.fetched, dns]).toEqual([[], []]);
   });
 });
 

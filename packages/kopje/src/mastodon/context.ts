@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import type { Present } from "../domain/accounts";
 import type { StoredKey } from "../domain/actors";
 import type { AuthFailure, Authorized, Credential, UserCredential } from "../domain/auth";
+import type { ResolutionStart } from "../domain/inbox";
 import type { Resolved } from "../domain/remote-statuses";
 import { webPushKeys } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -23,8 +24,9 @@ export type ApiDeps = {
   randomToken: TokenGenerator;
   // Re-encodes uploaded images (the Images binding in production).
   images: (env: Env) => ImageCodec;
-  // Fetches a URL or user@domain for search with resolve=true (federation/resolve.ts); none: answered locally.
-  resolve?: (env: Env, query: string) => Promise<Resolved>;
+  // Fetches a URL or user@domain for search with resolve=true (federation/resolve.ts), from what the resolution gate
+  // answered; none: answered locally.
+  resolve?: (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
   // Asks the Queue for a round of the Store's jobs (a resolved status's quote to verify); cron runs one regardless.
   requestJobs?: (env: Env) => Promise<unknown>;
   // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, federation/ld-sign.ts);
