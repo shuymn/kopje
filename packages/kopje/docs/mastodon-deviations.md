@@ -418,6 +418,10 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
 - With `resolve=true`, an `acct:user@domain` query is resolved as `user@domain` is; Mastodon's `MENTION_RE` gate
   (`account_search_service.rb`, `username_complete?`) does not take the `acct:` form.
+- `resolve=true` is ignored while the instance does not accept writes (the env's `MAINTENANCE=readonly`, the Store's
+  readonly maintenance, an unpublished import): nothing is fetched, and the search answers from local data as without
+  it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
+  remote server would see a fetch for nothing.
 
 Hashtags (the `Tag` entity):
 

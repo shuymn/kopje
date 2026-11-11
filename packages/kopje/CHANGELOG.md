@@ -23,6 +23,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   foreign `Origin` and 400 for a malformed form, then 421. `/login` redirects with 301 instead of 302. A Mastodon API
   request makes one more Store read, of the domain; federation, the public pages, the web UI and OAuth read it in their
   own first read. No migration; `wrangler.jsonc`: see Instance changes.
+- `GET /api/v2/search` and `GET /api/v1/accounts/search` with `resolve=true` no longer contact other servers while
+  the instance does not accept writes: the env's `MAINTENANCE` is `readonly`, the Store is in readonly maintenance, or
+  an import is not yet published. The search then answers as without `resolve=true`, from local data. Before,
+  `/api/v2/search` fetched the query's target in all three cases and stored it under the env's `MAINTENANCE=readonly`,
+  and `/api/v1/accounts/search` fetched it in the last two. When the Store comes to refuse writes while a search is
+  resolving, the answer is now the plain search too, so a URL query finds local matches instead of nothing, and a
+  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch.
+  No migration, no `wrangler.jsonc` change.
 
 ### Fixed
 

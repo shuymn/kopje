@@ -180,7 +180,7 @@ export class StoreKernel {
   // readonly table for a held or upgrading Store. Otherwise throws a maintenance error that the Worker maps to spool
   // or 503. The state is checked inside the same transaction that runs the operation.
   async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: I): Promise<O> {
-    return (await this.#run(callerBuild, operation, input, null)).output;
+    return (await this.#run(callerBuild, operation, () => input, null)).output;
   }
 
   // Runs an operation as execute does, and reports from the same transaction whether one of kind `probe` would be
@@ -192,13 +192,25 @@ export class StoreKernel {
     input: I,
     probe: OperationKind,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
-    return this.#run(callerBuild, operation, input, probe);
+    return this.#run(callerBuild, operation, () => input, probe);
+  }
+
+  // Runs an operation as execute does, with the reason an operation of kind `probe` would be refused now (or null) in
+  // its input as `refused`, decided in the same transaction before the operation reads anything, so that it can leave
+  // unread what a refused request must not be handed (a signing key, OPS-8). Advisory as executeProbing's answer.
+  async executeDeciding<I, O>(
+    callerBuild: string,
+    operation: StoreOperation<I & { refused: MaintenanceReason | null }, O>,
+    input: I,
+    probe: OperationKind,
+  ): Promise<O> {
+    return (await this.#run(callerBuild, operation, (refused) => ({ ...input, refused }), probe)).output;
   }
 
   async #run<I, O>(
     callerBuild: string,
     operation: StoreOperation<I, O>,
-    input: I,
+    inputOf: (refused: MaintenanceReason | null) => I,
     probe: OperationKind | null,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
     if (callerBuild !== this.build) {
@@ -212,7 +224,7 @@ export class StoreKernel {
       const now = this.#now();
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
-      return { output: operation.run(this.#sql, input, this.#transaction), refused };
+      return { output: operation.run(this.#sql, inputOf(refused), this.#transaction), refused };
     });
     if (operation.kind !== "read") {
       this.#afterCommit(operation);
