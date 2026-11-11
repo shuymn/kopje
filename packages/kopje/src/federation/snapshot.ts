@@ -2,7 +2,7 @@ import type { SnapshotSource } from "../domain/snapshot";
 import { errorFields } from "../platform/error-message";
 import { offDomain } from "../platform/instance-host";
 import { callStore, type StoreStub } from "../platform/store-client";
-import { isSnapshotKey, sha256, type Snapshot, snapshotKind } from "../platform/store-kernel";
+import { isSnapshotKey, type RescuedSnapshot, sha256, type Snapshot, snapshotKind } from "../platform/store-kernel";
 
 // Snapshots of the always-served GETs (maintenance mode): actor documents, WebFinger and NodeInfo. A
 // healthy response is saved under the key of its request; while the Store refuses (version mismatch, pending or
@@ -77,16 +77,30 @@ export function createSnapshotSaver(now: () => number): SnapshotSaver {
 
 // The rescue answer of an always-served GET, or null when there is none. Only keys of the two snapshot shapes reach
 // the Store, and only stored (size-capped) bodies come back. WEB-6: a snapshot is served only on the domain it was
-// rendered on; on another host the answer is the live path's (301 or 421), and a snapshot that records no domain is
-// not served.
+// rendered on; on another host the answer is the live path's (301 or 421). A row kept before snapshots recorded their
+// domain is judged by the stored domain instead, read through config(), a rescue RPC that needs no matching build:
+// without that domain (a failed call, none set) it is not served.
 export async function rescueFromSnapshot(request: Request, store: StoreStub, build: string): Promise<Response | null> {
-  const rendered: { domain: string | null } = { domain: null };
+  const kept: { snapshot: RescuedSnapshot | null } = { snapshot: null };
   const answer = await answerFromSnapshot(request, async (key) => {
-    const kept = await store.rescueSnapshot(build, key);
-    rendered.domain = kept?.domain ?? null;
-    return kept;
+    kept.snapshot = await store.rescueSnapshot(build, key);
+    return kept.snapshot;
   });
-  return answer === null || rendered.domain === null ? null : (offDomain(request, rendered.domain) ?? answer);
+  if (answer === null || kept.snapshot === null) {
+    return null;
+  }
+  const domain = kept.snapshot.domain ?? (await storedDomain(store, build));
+  return domain === null ? null : (offDomain(request, domain) ?? answer);
+}
+
+// The instance domain as the Store's configuration holds it, or null when it has none or cannot answer.
+async function storedDomain(store: StoreStub, build: string): Promise<string | null> {
+  try {
+    const domain: unknown = (await callStore(() => store.config(build))).values.domain;
+    return typeof domain === "string" ? domain : null;
+  } catch {
+    return null;
+  }
 }
 
 // The answer of an always-served GET from the snapshot `find` returns for its key, or null. Shared by the rescue path

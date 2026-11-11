@@ -1566,13 +1566,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   assets, which the platform serves before the Worker. What comes before the host's answer: the env's maintenance and
   configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's `Rack::Cors` answers before its
   host authorization); an inbox POST's body, read within `INBOX_BODY_LIMIT` (1 MiB) with its 413 and 415, and in
-  spool mode the spool itself (202), whose replay drops the request for its host before anything is applied; and on
-  `POST /oauth/authorize` the `Origin` check (403) and the form (400), and on both methods the 503 while Access is not
-  configured. A Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records (written by
-  `saveSnapshot` in the same transaction as the domain it was rendered on); on another host it gives the answer above,
-  and a snapshot that records no domain is not served. The cron, the Queue's other work and the Store have no request
-  host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the middleware in
-  `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
+  spool mode the spool itself (202). Its replay (`handleQueue` in `src/jobs/queue.ts`) first reads the cutover's
+  handoff receipt, writes the request to the rollback journal while a cutover is rolled back (`CUTOVER_ROLLBACK`, which
+  hands it to the legacy instance without a host check), and requeues it while the env is in maintenance; then the
+  inbox gate's read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host
+  (logged as `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is
+  applied. Also before the host's answer: on `POST /oauth/authorize` the `Origin` check (403) and the form (400), and on
+  both methods the 503 while Access is not configured. A Store refusal's snapshot rescue serves a snapshot only on the
+  domain the snapshot records (written by `saveSnapshot` in the same transaction as the domain it was rendered on); a
+  row kept before snapshots recorded their domain is judged by the stored domain, read through the `config()` rescue
+  RPC (which needs no matching build), never inferred from the row; on another host the rescue gives the answer above, and without a
+  domain (the call fails, none is set) the row is not served (503). The cron, the Queue's other work and the Store
+  have no request host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the
+  middleware in `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
   `src/federation/inbox.ts`, `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in
   `src/domain/snapshot.ts`, `siteGate` in `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`;
   `test/instance-host.test.ts` ("moves a GET or HEAD on another host to the same path and query on the domain",
@@ -1580,7 +1586,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   default port, and the Host header", "answers the health check, the admin API, media and paths no route serves on any
   host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
   read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
-  only on the domain it records").
+  only on the domain it records, or a legacy one on the stored domain").
 
 ### Setup (SETUP)
 

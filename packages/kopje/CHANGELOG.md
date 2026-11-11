@@ -18,7 +18,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   with its own admin hostname), media URLs and `/` (a redirect to `/about`) still answer on any host, and nothing
   changes before setup. An inbox delivery spooled during maintenance on another host is dropped when it is replayed,
   and while the Store refuses, a kept federation document is served only on the domain it was rendered on: a document
-  kept before this release is not served until a request on the domain keeps it again. `GET /oauth/authorize` on
+  kept before this release, which records no domain, is served only on the domain the Store's configuration holds. `GET /oauth/authorize` on
   another host now redirects instead of its 403 page; `POST /oauth/authorize` there still answers 403 for a missing or
   foreign `Origin` and 400 for a malformed form, then 421. `/login` redirects with 301 instead of 302. A Mastodon API
   request makes one more Store read, of the domain; federation, the public pages, the web UI and OAuth read it in their

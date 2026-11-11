@@ -6,6 +6,7 @@ import { countingStore, harness, inboxDeps } from "./app-helpers";
 import { fixtureKeyGen, seedLocalAccount } from "./federation-helpers";
 import { BUILD, completeSetup, migratedStore } from "./helpers";
 import { mastodonActor, RemoteWeb, signedInit } from "./inbox-helpers";
+import { storeWith } from "./setup-helpers";
 
 // WEB-6: once setup has fixed the domain, every route answers only on it. GET and HEAD on another host move to the
 // same path and query on the domain (301); any other method is 421. The health check, the admin API, media and the
@@ -287,7 +288,7 @@ describe("answering only on the instance domain (WEB-6)", () => {
     expect(domain.follows).toHaveLength(1);
   });
 
-  it("serves a rescued snapshot only on the domain it records", async () => {
+  it("serves a rescued snapshot only on the domain it records, or a legacy one on the stored domain", async () => {
     const store = await migratedStore();
     await completeSetup(store);
     await seedLocalAccount(store, "kopje.test", { id: "111111111111111111", username: "alice" });
@@ -309,12 +310,27 @@ describe("answering only on the instance domain (WEB-6)", () => {
         expect(await response.text(), `${method} ${host}`).toBe("");
       }
     }
-    // A snapshot kept before the domain was recorded is not served on any host.
+    // A snapshot kept before snapshots recorded their domain is judged by the stored domain, read through config().
     await sql(
       store,
       "UPDATE kopje_state SET value = json_remove(value, '$.domain') WHERE name = 'snapshot:path:/nodeinfo/2.0'",
     );
     expect((await store.rescueSnapshot(BUILD, "path:/nodeinfo/2.0"))?.domain).toBeNull();
+    const legacy = await rescued("kopje.test");
+    expect(legacy.status).toBe(200);
+    expect(await legacy.text()).toBe(kept?.body);
+    for (const host of OTHER_HOSTS) {
+      const response = await rescued(host);
+      expect(response.status, host).toBe(301);
+      expect(response.headers.get("location"), host).toBe("https://kopje.test/nodeinfo/2.0");
+    }
+    // Without that domain it is not served: config() fails, or no domain is set.
+    const failing = storeWith(store, { config: () => Promise.reject(new Error("config unavailable")) });
+    for (const host of ["kopje.test", OTHER_HOSTS[0]]) {
+      const response = await harness(failing, {}, "0.0.0-other", undefined, undefined, host).request("/nodeinfo/2.0");
+      expect(response.status, host).toBe(503);
+    }
+    await sql(store, "DELETE FROM instance_settings WHERE name = 'domain'");
     expect((await rescued("kopje.test")).status).toBe(503);
     expect((await rescued(OTHER_HOSTS[0])).status).toBe(503);
   });
