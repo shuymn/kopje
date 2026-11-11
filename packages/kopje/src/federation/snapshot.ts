@@ -84,7 +84,7 @@ export async function rescueFromSnapshot(request: Request, store: StoreStub, bui
   const answer = await answerFromSnapshot(request, async (key) => {
     const kept = await store.rescueSnapshot(build, key);
     rendered.domain = kept?.domain ?? null;
-    return rendered.domain === null ? null : kept;
+    return kept;
   });
   return answer === null || rendered.domain === null ? null : (offDomain(request, rendered.domain) ?? answer);
 }
