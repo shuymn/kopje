@@ -66,9 +66,12 @@ describe("key check in healthReport", () => {
     const store = await migratedStore();
     await setDomain(store, DOMAIN);
     const loader = { fetch: () => Promise.reject(new Error("offline")), checkHost: () => Promise.resolve() };
-    await harness(store, { USER_KEK: LEGACY.kek }, BUILD, { keygen: fixtureKeyGen, loader }).request("/actor", {
-      headers: { accept: "application/activity+json" },
-    });
+    await harness(store, { USER_KEK: LEGACY.kek }, BUILD, { keygen: fixtureKeyGen, loader }, undefined, DOMAIN).request(
+      "/actor",
+      {
+        headers: { accept: "application/activity+json" },
+      },
+    );
     expect((await report(store, LEGACY.kek)).checks.keys).toMatchObject({ ok: true, count: 1 });
     expect((await report(store, "wrong")).checks.keys).toMatchObject({
       ok: false,

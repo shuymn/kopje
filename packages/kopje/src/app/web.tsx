@@ -14,6 +14,7 @@ import { type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/c
 import { discardProfileUploads, type ProfileUpload, sweepSoon } from "../mastodon/media";
 import { Params, readParams } from "../mastodon/params";
 import { PROFILE_IMAGE_LIMIT } from "../platform/images";
+import { decidesHost, offDomain } from "../platform/instance-host";
 import type { Scope } from "../security/scopes";
 import { pkceChallenge, sha256Hex } from "../security/tokens";
 import type { Chrome } from "../web/components/layout";
@@ -66,8 +67,8 @@ function message(
 }
 
 // A redirect to a local path (never a URL from the request).
-function redirect(path: string, status: 302 | 303 = 303): Response {
-  return new Response(null, { status, headers: { location: path, "cache-control": "no-store" } });
+function redirect(path: string): Response {
+  return new Response(null, { status: 303, headers: { location: path, "cache-control": "no-store" } });
 }
 
 function cookieOptions(maxAge: number) {
@@ -103,18 +104,25 @@ function afterSignIn(returnTo: string, interaction: string | null): string {
   return target === null ? path : `${INTERACTION_PATH}?uri=${encodeURIComponent(target)}`;
 }
 
-// The gate of these pages: the site facts in one Store call, as requireSetup reads the domain (503 before setup), so
-// their header and footer are those of the public pages.
+// The gate of these pages: the site facts in one Store call, as requireSetup reads the domain (503 before setup, and
+// on another host the answer of WEB-6, so the cookies belong to the instance's own host), so their header and footer
+// are those of the public pages.
 export function siteGate(deps: ApiDeps) {
-  return createMiddleware<WebEnv>(async (c, next) => {
-    const gate = await storeCall(c, deps, (s, b) => s.webSite(b));
-    if (gate.status === "not_set_up") {
-      return notSetUp(c);
-    }
-    c.set("domain", gate.site.domain);
-    c.set("site", gate.site);
-    return next();
-  });
+  return decidesHost(
+    createMiddleware<WebEnv>(async (c, next) => {
+      const gate = await storeCall(c, deps, (s, b) => s.webSite(b));
+      if (gate.status === "not_set_up") {
+        return notSetUp(c);
+      }
+      const away = offDomain(c.req.raw, gate.site.domain);
+      if (away !== null) {
+        return away;
+      }
+      c.set("domain", gate.site.domain);
+      c.set("site", gate.site);
+      return next();
+    }),
+  );
 }
 
 export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
@@ -127,10 +135,6 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
     const domain = c.get("domain");
     const target = returnPath(c.req.query("return"));
     const interaction = target === INTERACTION_PATH ? interactionTarget(c.req.query("interaction")) : null;
-    // The cookies belong to the instance's own host.
-    if (new URL(c.req.url).host !== domain) {
-      return redirect(`https://${domain}${loginPath(target, interaction)}`, 302);
-    }
     // RES-6: sign-ins are limited per client IP, the key an anonymous caller controls; nothing here can hold a slot
     // another browser needs.
     const ip = c.req.header("cf-connecting-ip") ?? "unknown";

@@ -590,9 +590,16 @@ describe("an import stays readonly until it is published (OPS-8)", () => {
     expect(r.kopje.retries).toBe(0);
     expect(r.kopje.pending).toMatchObject([{ attempts: 1, body: { kind: "spool" } }]);
 
-    // The live inbox spools it too, with nothing fetched.
+    // The live inbox, on the instance domain (r.h.request goes to the admin hostname, WEB-6), spools it too, with
+    // nothing fetched.
     const path = "/ap/users/alice/inbox";
-    const live = await r.h.request(path, await signedInit(r.carol, path, follow(r.carol.uri, 2)));
+    const ctx = createExecutionContext();
+    const live = await r.h.app.fetch(
+      new Request(`${ORIGIN}${path}`, await signedInit(r.carol, path, follow(r.carol.uri, 2))),
+      r.h.env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
     expect(live.status).toBe(202);
     expect(r.web.fetched).toEqual([]);
     expect(r.kopje.pending).toHaveLength(2);

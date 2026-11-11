@@ -2007,9 +2007,10 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, resolveSearch, input);
   }
 
-  // Search with resolve=true, before any network work (inbox.ts resolutionGate): the credential, then whether writes
-  // are refused (the maintenance reason, decided in the same transaction, after which nothing is read: no key leaves the
-  // Store and nothing is fetched, OPS-8), then the domain and the first request's preparation.
+  // Search with resolve=true, before any network work and as the first read after the host check's domain read
+  // (app.ts, WEB-6; inbox.ts resolutionGate): the credential, then whether writes are refused (the maintenance reason,
+  // decided in the same transaction, after which nothing is read: no key leaves the Store and nothing is fetched,
+  // OPS-8), then the domain and the first request's preparation.
   resolutionGate(callerBuild: string, input: Omit<OperationInput<typeof inbox.resolutionGate>, "refused">) {
     return this.#kernel.executeDeciding(callerBuild, inbox.resolutionGate, input, "write");
   }

@@ -5,6 +5,7 @@ import { type ApiDeps, storeCall } from "../mastodon/context";
 import { maintenanceError } from "../mastodon/errors";
 import { Params, readParams } from "../mastodon/params";
 import { readConfig, userKek } from "../platform/config";
+import { decidesHost, offDomain } from "../platform/instance-host";
 import { railsBlank } from "../platform/rails-blank";
 import { verifyAccessJwt } from "../security/access-jwt";
 import { generateWrappedKey, type KeyGen } from "../security/key-wrap";
@@ -17,7 +18,7 @@ import { STRINGS } from "../web/strings";
 import { CONSENT_HEADERS, PRIVATE_HEADERS } from "./web-headers";
 
 // GET /oauth/authorize shows the consent page; POST /oauth/authorize records the decision. This is the only route
-// behind Cloudflare Access: both methods answer only on the instance domain (WEB-1), verify the Access assertion
+// behind Cloudflare Access: both methods answer only on the instance domain (WEB-1, WEB-6), verify the Access assertion
 // against the team domain and AUD in instance_settings, then resolve its email to a local account. The decision POST
 // must also come from this origin.
 // An identity without an account but with an invitation sees the consent page with the invited username, and its
@@ -145,9 +146,9 @@ type Checked =
   | { response: Response | Promise<Response> };
 
 // The host, then Access, then the client: another host the Worker answers on (a workers.dev address, another route)
-// is refused before the assertion is verified, so the page and its decision only ever name the instance domain, and
-// nothing about registered clients is disclosed to a caller Access did not admit. The host is the request URL's,
-// which the platform routes by; the Host header is not read.
+// gets WEB-6's answer before the assertion is verified, so the page and its decision only ever name the instance
+// domain, and nothing about registered clients is disclosed to a caller Access did not admit. The host is the request
+// URL's, which the platform routes by; the Host header is not read.
 async function check(
   c: Context<AuthorizeEnv>,
   deps: AuthorizeDeps,
@@ -160,8 +161,9 @@ async function check(
   if (context.domain === null || context.access === null) {
     return { response: message(c, 503, M.notSetUpTitle, M.notSetUp) };
   }
-  if (new URL(c.req.url).host !== context.domain) {
-    return { response: message(c, 403, M.invalidRequestTitle, M.otherHost(context.domain)) };
+  const away = offDomain(c.req.raw, context.domain);
+  if (away !== null) {
+    return { response: away };
   }
   const identity = await verifyAccessJwt(c.req.header(ACCESS_HEADER), context.access, deps);
   if (!identity.ok) {
@@ -273,97 +275,105 @@ function redirectTo(uri: string, params: Record<string, string | undefined>): Re
 
 export function authorizeRoutes(deps: AuthorizeDeps): Hono<AuthorizeEnv> {
   const app = new Hono<AuthorizeEnv>();
-  app.get("/oauth/authorize", async (c) => {
-    const checked = await check(c, deps, new Params([...new URL(c.req.url).searchParams]));
-    if ("response" in checked) {
-      return checked.response;
-    }
-    const { request, email, firstParty, domain } = checked;
-    const state = await storeCall(c, deps, (s, b) => s.signInState(b, { email }));
-    if (state.status === "suspended" || state.status === "no_account" || state.status === "ambiguous") {
-      return accountRefused(c, request, state.status);
-    }
-    const username = state.username;
-    const fields: ConsentFields = {
-      client_id: request.client.id,
-      redirect_uri: request.redirectUri,
-      scope: request.scopes.join(" "),
-      state: request.state,
-      code_challenge: request.codeChallenge ?? undefined,
-      code_challenge_method: request.codeChallenge === null ? undefined : "S256",
-    };
-    return page(
-      c,
-      200,
-      <ConsentPage
-        appName={request.client.name}
-        website={request.client.website}
-        username={username}
-        domain={domain}
-        scopes={request.scopes}
-        fields={fields}
-        firstParty={firstParty}
-      />,
-      CONSENT_HEADERS,
-    );
-  });
-
-  app.post("/oauth/authorize", async (c) => {
-    // The decision form is only ever posted by the consent page of this origin.
-    if (c.req.header("origin") !== new URL(c.req.url).origin) {
-      return message(c, 403, M.invalidRequestTitle, M.foreignForm);
-    }
-    const form = await readParams(c.req.raw);
-    if (!form.ok) {
-      return message(c, 400, STRINGS.errors.invalidFormTitle, STRINGS.errors.invalidForm);
-    }
-    const params = form.params;
-    const checked = await check(c, deps, params, { response_type: "code" });
-    if ("response" in checked) {
-      return checked.response;
-    }
-    const { request, email } = checked;
-    const oob = request.redirectUri === OOB_REDIRECT_URI;
-    if (params.get("decision") !== "approve") {
-      return oob
-        ? message(c, 403, M.deniedTitle, M.denied)
-        : redirectTo(request.redirectUri, { error: "access_denied", state: request.state });
-    }
-    const code = deps.randomToken();
-    const codeHash = await sha256Hex(code);
-    const issue = () =>
-      storeCall(c, deps, (s, b) =>
-        s.issueCode(b, {
-          email,
-          clientId: request.client.id,
-          redirectUri: request.redirectUri,
-          scopes: request.scopes,
-          codeChallenge: request.codeChallenge,
-          codeHash,
-          now: deps.now(),
-        }),
-      );
-    let result: { status: IssueCodeResult["status"] } = await issue();
-    if (result.status === "no_account") {
-      const created = await createInvited(c, deps, email);
-      if (created === "unavailable") {
-        return maintenanceError();
+  // Both handlers decide the host in check(), from the request's first Store read (WEB-6, app/app.ts).
+  app.get(
+    "/oauth/authorize",
+    decidesHost(async (c) => {
+      const checked = await check(c, deps, new Params([...new URL(c.req.url).searchParams]));
+      if ("response" in checked) {
+        return checked.response;
       }
-      result = created.status === "ok" ? await issue() : created;
-    }
-    switch (result.status) {
-      case "ok":
+      const { request, email, firstParty, domain } = checked;
+      const state = await storeCall(c, deps, (s, b) => s.signInState(b, { email }));
+      if (state.status === "suspended" || state.status === "no_account" || state.status === "ambiguous") {
+        return accountRefused(c, request, state.status);
+      }
+      const username = state.username;
+      const fields: ConsentFields = {
+        client_id: request.client.id,
+        redirect_uri: request.redirectUri,
+        scope: request.scopes.join(" "),
+        state: request.state,
+        code_challenge: request.codeChallenge ?? undefined,
+        code_challenge_method: request.codeChallenge === null ? undefined : "S256",
+      };
+      return page(
+        c,
+        200,
+        <ConsentPage
+          appName={request.client.name}
+          website={request.client.website}
+          username={username}
+          domain={domain}
+          scopes={request.scopes}
+          fields={fields}
+          firstParty={firstParty}
+        />,
+        CONSENT_HEADERS,
+      );
+    }),
+  );
+
+  // The Origin and the form come before the host (no body is read for a cross-site post, WEB-1).
+  app.post(
+    "/oauth/authorize",
+    decidesHost(async (c) => {
+      // The decision form is only ever posted by the consent page of this origin.
+      if (c.req.header("origin") !== new URL(c.req.url).origin) {
+        return message(c, 403, M.invalidRequestTitle, M.foreignForm);
+      }
+      const form = await readParams(c.req.raw);
+      if (!form.ok) {
+        return message(c, 400, STRINGS.errors.invalidFormTitle, STRINGS.errors.invalidForm);
+      }
+      const params = form.params;
+      const checked = await check(c, deps, params, { response_type: "code" });
+      if ("response" in checked) {
+        return checked.response;
+      }
+      const { request, email } = checked;
+      const oob = request.redirectUri === OOB_REDIRECT_URI;
+      if (params.get("decision") !== "approve") {
         return oob
-          ? page(c, 200, <CodePage code={code} />)
-          : redirectTo(request.redirectUri, { code, state: request.state });
-      case "no_account":
-      case "suspended":
-      case "ambiguous":
-        return accountRefused(c, request, result.status);
-      // The client or its redirect URIs changed after the check: the callback is no longer verified.
-      case "invalid_request":
-        return message(c, 400, M.invalidRequestTitle, M.changed);
-    }
-  });
+          ? message(c, 403, M.deniedTitle, M.denied)
+          : redirectTo(request.redirectUri, { error: "access_denied", state: request.state });
+      }
+      const code = deps.randomToken();
+      const codeHash = await sha256Hex(code);
+      const issue = () =>
+        storeCall(c, deps, (s, b) =>
+          s.issueCode(b, {
+            email,
+            clientId: request.client.id,
+            redirectUri: request.redirectUri,
+            scopes: request.scopes,
+            codeChallenge: request.codeChallenge,
+            codeHash,
+            now: deps.now(),
+          }),
+        );
+      let result: { status: IssueCodeResult["status"] } = await issue();
+      if (result.status === "no_account") {
+        const created = await createInvited(c, deps, email);
+        if (created === "unavailable") {
+          return maintenanceError();
+        }
+        result = created.status === "ok" ? await issue() : created;
+      }
+      switch (result.status) {
+        case "ok":
+          return oob
+            ? page(c, 200, <CodePage code={code} />)
+            : redirectTo(request.redirectUri, { code, state: request.state });
+        case "no_account":
+        case "suspended":
+        case "ambiguous":
+          return accountRefused(c, request, result.status);
+        // The client or its redirect URIs changed after the check: the callback is no longer verified.
+        case "invalid_request":
+          return message(c, 400, M.invalidRequestTitle, M.changed);
+      }
+    }),
+  );
   return app;
 }
