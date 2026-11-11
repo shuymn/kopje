@@ -220,7 +220,9 @@ describe("an unboost at every bound at once (RES-6)", () => {
 
       const result = await unboosted(t, how, how === "unreblog" ? original.id : b.id);
       expect([result.answer, result.jobsPending]).toEqual(["ok", true]);
-      expect(result.wrote).toBeLessThanOrEqual(BOOST_REQUEST_ROWS);
+      // Exactly the derived maxima less the three no unboost writes: the capture of a boost has no tombstone, and the
+      // Announce in flight, the first of those superseded, keeps its row and has no staging.
+      expect(result.wrote).toBe(BOOST_REQUEST_ROWS - 3);
       console.info({ event: "unboost.request", how, wrote: result.wrote, bound: BOOST_REQUEST_ROWS });
       if (how === "unreblog") {
         expect(result.status).toMatchObject({ id: original.id, reblogged: false, reblogs_count: 1 });

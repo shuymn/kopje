@@ -2160,6 +2160,76 @@ describe("the hide of an older build's job within its batch (RES-6)", () => {
   });
 });
 
+describe("a boost's withdrawal within its batch (RES-6)", () => {
+  // alice's boost holds a quote row an import marked local, so its marker's write copies withdrawn onto it: the marker,
+  // the copy and the cursor follow the Undo's rows. The original's mentions leave the withdrawal exactly the Undo's
+  // rows (its superseded intents, two each, and itself) and two more, one too few for those three.
+  it("records the Undo only with room for the marker, its quote row's copy and the cursor", async () => {
+    const w = await world();
+    const o = await original(w);
+    const b = await boost(w, o.id);
+    // Its Announce delivered and settled, so each intent the Undo supersedes is one without rows: updated and dropped,
+    // the two rows beginRetraction counts for it.
+    await deliver(w);
+    await sql(
+      w.t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, state, local, updated_at)
+				VALUES (?, 'https://elsewhere.example/s/1', 'pending', 1, '2026-10-11T12:00:00.000Z')`,
+      b.id,
+    );
+    await sql(
+      w.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10)
+				INSERT INTO outbound_activities (account_id, body, object_uri, created_at)
+				SELECT ?, json_object('activity', json_object('type', 'Update', 'id', 'u' || i), 'audience',
+					json_object('followers', json('true'), 'accounts', json('[]'))), ?, 0 FROM n`,
+      ALICE,
+      b.uri,
+    );
+    const [{ n }] = (await sql<{ n: number }>(
+      w.t.store,
+      "SELECT count(*) AS n FROM outbound_activities WHERE account_id = ? AND object_uri = ? AND superseded = 0",
+      ALICE,
+      b.uri,
+    )) as [{ n: number }];
+    const undoRows = 2 * n + 1;
+    // An older build's job, its status hidden already (so the batch's hide writes nothing), and its mentions.
+    await sql(
+      w.t.store,
+      "UPDATE statuses SET withdrawn = 1, visibility = 'direct', content = '', spoiler_text = '', search_text = NULL WHERE id = ?",
+      o.id,
+    );
+    await sql(
+      w.t.store,
+      "INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('delete', ?, ?, 0)",
+      o.id,
+      w.bob.uri,
+    );
+    const mentioned = await remoteAccountsAt(w.t.store, "6", "m", PURGE_BATCH - (undoRows + 2));
+    await sql(
+      w.t.store,
+      "INSERT INTO status_mentions (status_id, account_id) SELECT ?, value FROM json_each(?)",
+      o.id,
+      JSON.stringify(mentioned),
+    );
+    const first = await batch(w.t.store, o.id);
+    expect(first.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    console.info({ event: "forward.boost-withdrawal", wrote: first.wrote, n });
+    // The withdrawal waited: no Undo yet; the next batch records it, the copy written with its marker.
+    expect(await sql(w.t.store, "SELECT withdrawn FROM statuses WHERE id = ?", b.id)).toEqual([{ withdrawn: 0 }]);
+    const second = await batch(w.t.store, o.id);
+    expect(second.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    expect(
+      await sql(
+        w.t.store,
+        "SELECT 1 AS x FROM outbound_activities WHERE object_uri = ? AND json_extract(body, '$.activity.type') = 'Undo'",
+        b.uri,
+      ),
+    ).toEqual([{ x: 1 }]);
+    await batches(w.t.store, o.id);
+  });
+});
+
 describe("the quotes' forward and the proof (P5)", () => {
   it("asks for the proof once for a quote-only original, records once, and nothing more when delivered again", async () => {
     const w = await world();
@@ -2361,17 +2431,16 @@ const QUOTE_ENVELOPE_OVERHEAD =
 const REFERENCE_BYTES = utf8(`"${"9".repeat(19)}",`);
 
 describe("the first transaction at its bounds with quotes (P7, T9b)", () => {
-  // The inputs at their cap together: 65 live quotes (MAX_FORWARD_QUOTES + 1 raw candidates), the first 64 by 16
-  // owners (MAX_FORWARD_OWNERS), four each, public and direct in turn (both lists), the 65th by a 17th owner; a body of
-  // exactly FORWARD_BODY_MAX bytes; a job's bound of MAX_FORWARD_OWNERS ids (FORWARDS_BOUND_BYTES); and the rest of
-  // the first transaction at its most (saturated: the 4 x SWEEP_BATCH sweep, the largest streaming capture).
-  it("records 16 intents of 64 references within the derived bytes and rows, logging the quote cap once", async () => {
+  // The inputs at their cap together: 17 local boosters (MAX_FORWARD_OWNERS + 1 candidates), each also quoting: 65 live
+  // quotes (MAX_FORWARD_QUOTES + 1 raw candidates), the first 64 by the first 16 owners, four each, public and direct
+  // in turn (both lists), the 65th by the 17th; a body of exactly FORWARD_BODY_MAX bytes; intent keys of 20 characters
+  // (a restored store's, sign and 19 digits), so the job's bound holds MAX_FORWARD_OWNERS ids at their longest
+  // (FORWARDS_BOUND_BYTES); and the rest of the first transaction at its most (saturated: the 4 x SWEEP_BATCH sweep,
+  // the largest streaming capture, the original's own quote row marked local).
+  it("records 16 intents of 64 references within the derived bytes and rows, logging both caps once", async () => {
     const w = await world();
     const o = await original(w);
-    const owners = Array.from({ length: MAX_FORWARD_OWNERS + 1 }, (_, i) => `4${String(i + 1).padStart(17, "0")}`);
-    for (const [i, owner] of owners.entries()) {
-      await seedLocalAccount(w.t.store, "kopje.test", { id: owner, username: `q${i + 1}`, key: LEGACY_EMPTY_KEK });
-    }
+    const owners = await localBoosters(w, o.id, MAX_FORWARD_OWNERS + 1);
     for (let i = 0; i <= MAX_FORWARD_QUOTES; i++) {
       await localQuote(w, o, {
         owner: owners[Math.floor(i / 4)]!,
@@ -2379,13 +2448,20 @@ describe("the first transaction at its bounds with quotes (P7, T9b)", () => {
       });
     }
     await saturated(w, o);
+    await sql(w.t.store, "DELETE FROM outbound_activities");
+    await sql(
+      w.t.store,
+      `INSERT INTO outbound_activities (id, account_id, body, object_uri, created_at)
+				VALUES (-9223372036854775000, ?, '{"activity":{},"audience":{"followers":false,"accounts":[]}}', 'restored', 0)`,
+      DAVE,
+    );
     const body = paddedTo(await ldSigned(deletion(w.bob, o.uri), w.bob), FORWARD_BODY_MAX);
     const warn = vi.spyOn(console, "warn");
     try {
       const { result, rows } = await provenReceive(w, body, o.uri);
       expect(result).toMatchObject({ applied: true, reason: "status-deleted" });
       expect(warn.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.forward_capped")).toEqual(
-        [[{ event: "kopje.inbox.forward_capped", quotes: MAX_FORWARD_QUOTES }]],
+        [[{ event: "kopje.inbox.forward_capped", owners: MAX_FORWARD_OWNERS, quotes: MAX_FORWARD_QUOTES }]],
       );
       const recorded = await forwards(w.t.store, o.uri);
       // forwards() orders by the TEXT spelling of the ids, which crosses a power of ten here.
@@ -2394,8 +2470,10 @@ describe("the first transaction at its bounds with quotes (P7, T9b)", () => {
         const { shares, receiptShares } = (JSON.parse(f.body) as DeliveryEnvelope).audience;
         return [...shares!, ...(receiptShares ?? [])];
       });
-      expect(references).toHaveLength(MAX_FORWARD_QUOTES);
+      // Each owner's boost and the first 64 quotes.
+      expect(references).toHaveLength(MAX_FORWARD_OWNERS + MAX_FORWARD_QUOTES);
       const bound = (await jobBound(w.t.store, o.id))!;
+      expect((JSON.parse(bound) as { forwards: string[] }).forwards.every((id) => id.length === 20)).toBe(true);
       const bytes = recorded.reduce((n, f) => n + utf8(f.body), 0) + utf8(bound);
       expect(bytes).toBeLessThanOrEqual(
         MAX_FORWARD_OWNERS * (FORWARD_BODY_MAX + QUOTE_ENVELOPE_OVERHEAD) +

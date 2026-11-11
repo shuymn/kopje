@@ -3279,8 +3279,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the deleted object and the job; the streaming capture's 258; the hide's 4, the status, its card, the account's last
   status and the copy of withdrawn on the status's own quote row, which an import may mark local; the quote's
   retirement, 3; the 16 intents and the bound), which a witness holding them all
-  at once writes exactly, with the boosters or the 65 raw quote candidates at their cap; the intents' envelopes and the
-  bound are within the bytes the witness derives from those caps (not every column of the transaction:
+  at once writes exactly, with the 17 boost candidates and the 65 raw quote candidates at their caps together and
+  intent keys of 20 characters; the intents' envelopes and the bound are within the bytes the witness derives from
+  those caps (1,052,398; it writes 1,052,302; not every column of the transaction:
   `test/forward-delete.test.ts` ("records MAX_FORWARD_OWNERS intents within the derived bytes and rows", "records 16
   intents of 64 references within the derived bytes and rows")). The constants bound the owners, the references and
   the body bytes, not the fan-out, which is each owner's followers and its references' receivers, staged within
