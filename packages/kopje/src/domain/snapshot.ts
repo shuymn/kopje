@@ -6,7 +6,7 @@ import {
   type Snapshot,
   SNAPSHOT_STATE_PREFIX,
 } from "../platform/store-kernel";
-import { localActorOf, nodeInfoUsageOf, readInstanceKey } from "./actors";
+import { instanceDomainOf, localActorOf, nodeInfoUsageOf, readInstanceKey } from "./actors";
 import { writeOperation } from "./operation";
 
 // What a snapshot body was rendered from, as the Worker read it from the Store: the local actor (actor documents and
@@ -46,7 +46,8 @@ function currentSource(db: Db, source: SnapshotSource): string | null {
 //
 // A malformed key or an oversized body is not stored (false); an oversized body of a current source also replaces the
 // kept snapshot of its key with an empty one, so the rescue path answers 503 instead of an outdated document while
-// the render time stays.
+// the render time stays. A kept body records the domain of this transaction, the one it was rendered on, by which the
+// rescue path judges the request's host (WEB-6).
 export const saveSnapshot = writeOperation<
   { key: string; source: SnapshotSource; renderedAt: number } & Snapshot,
   boolean
@@ -62,7 +63,9 @@ export const saveSnapshot = writeOperation<
   if (kept !== undefined && ((JSON.parse(kept.value) as Partial<StoredSnapshot>).renderedAt ?? 0) > renderedAt) {
     return false;
   }
-  const stored: StoredSnapshot = isStorableSnapshot(key, body) ? { contentType, body, renderedAt } : { renderedAt };
+  const stored: StoredSnapshot = isStorableSnapshot(key, body)
+    ? { contentType, body, renderedAt, domain: instanceDomainOf(db) }
+    : { renderedAt };
   db.run(
     `INSERT INTO kopje_state (name, value) VALUES (?, ?)
 			ON CONFLICT (name) DO UPDATE SET value = excluded.value WHERE value <> excluded.value`,

@@ -3,7 +3,7 @@ import type { Handler } from "hono";
 import type { InboxGate, InboxGateInput } from "../domain/inbox";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
-import { misdirected } from "../platform/instance-host";
+import { misdirected, offDomain } from "../platform/instance-host";
 import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
 import type { KeyGen } from "../security/key-wrap";
@@ -99,10 +99,11 @@ export async function processInbox(
   });
   // Before any loader or fetch: a Store that refuses writes (an unpublished import, maintenance) holds the request as
   // in maintenance, so nothing is signed with a local key for it (OPS-8). receiveActivity is admitted again in its own
-  // transaction. The precedence differs by mode: live, another host than the domain (421, WEB-6: the endpoint decides
-  // the host here, app/app.ts), an unknown inbox (404, ID-5) and setup (503) come before the refusal, which spools;
-  // replay holds the request (requeues) while writes are refused or the domain is unset, and only then drops one for an
-  // unknown inbox.
+  // transaction. A request to another host than the domain is refused here (WEB-6: the endpoint decides the host, and
+  // a spooled request keeps the URL it was sent to). The precedence differs by mode: live, another host (421), an
+  // unknown inbox (404, ID-5) and setup (503) come before the refusal, which spools; replay holds the request (requeues)
+  // while writes are refused or the domain is unset, and only then drops one for another host or an unknown inbox.
+  const otherHost = gate.domain !== null && offDomain(request, gate.domain) !== null;
   if (mode === "replay") {
     if (gate.refused !== null) {
       throw new StoreUnavailableError(gate.refused);
@@ -110,11 +111,15 @@ export async function processInbox(
     if (gate.domain === null) {
       throw new StoreUnavailableError("maintenance");
     }
+    if (otherHost) {
+      console.log({ event: "kopje.inbox.refused", status: 421, reason: "other-host" });
+      return { status: 421, reason: "other-host" };
+    }
     if (gate.ownerExists === false) {
       return { status: 404, reason: "unknown-inbox" };
     }
   } else {
-    if (gate.domain !== null && new URL(request.url).host !== gate.domain) {
+    if (otherHost) {
       return { status: 421, reason: "other-host" };
     }
     if (gate.ownerExists === false) {

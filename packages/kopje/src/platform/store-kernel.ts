@@ -118,8 +118,13 @@ export type Snapshot = { contentType: string; body: string };
 
 export const SNAPSHOT_STATE_PREFIX = "snapshot:";
 
-// The row: the snapshot and the time it was rendered, or only the time once an oversized replacement emptied it.
-export type StoredSnapshot = (Snapshot & { renderedAt: number }) | { renderedAt: number };
+// The row: the snapshot, the time it was rendered and the instance domain it was rendered on (null before setup), or
+// only the time once an oversized replacement emptied it. A row saved before the domain was recorded has none.
+export type StoredSnapshot = (Snapshot & { renderedAt: number; domain: string | null }) | { renderedAt: number };
+
+// What the rescue path gets: the snapshot and the domain it was rendered on, null when the row records none (WEB-6:
+// the rescue then serves nothing).
+export type RescuedSnapshot = Snapshot & { domain: string | null };
 
 // Caps that keep the snapshots bounded whatever a request asks for: keys have one of two shapes and a bounded length,
 // and a body over the size cap is never stored (the rescue path then answers 503, as without a snapshot).
@@ -287,16 +292,20 @@ export class StoreKernel {
   // Rescue RPC: the last good document saved under this key (domain/snapshot.ts), or null. It reads kopje_state
   // directly, which exists whatever the schema state, so it works for any caller build and while the Store refuses
   // domain operations.
-  readSnapshot(key: string): Snapshot | null {
+  readSnapshot(key: string): RescuedSnapshot | null {
     if (!isSnapshotKey(key)) {
       return null;
     }
     try {
       const value = this.#readState(`${SNAPSHOT_STATE_PREFIX}${key}`);
-      const stored = value === null ? null : (JSON.parse(value) as Partial<Snapshot>);
+      const stored = value === null ? null : (JSON.parse(value) as Partial<Snapshot> & { domain?: unknown });
       return stored?.contentType === undefined || stored.body === undefined
         ? null
-        : { contentType: stored.contentType, body: stored.body };
+        : {
+            contentType: stored.contentType,
+            body: stored.body,
+            domain: typeof stored.domain === "string" ? stored.domain : null,
+          };
     } catch (error) {
       // The key's kind, not the key: it is derived from the request (DATA-5).
       this.#log({ event: "kopje.store.snapshot.unreadable", kind: snapshotKind(key), ...errorFields(error) }, "error");

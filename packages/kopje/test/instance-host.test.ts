@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { handleQueue } from "../src/jobs/queue";
 import { type ApiHarness, bearer, form, json, sql, userToken, withAlice } from "./api-helpers";
-import { countingStore, harness } from "./app-helpers";
-import { migratedStore } from "./helpers";
+import { countingStore, harness, inboxDeps } from "./app-helpers";
+import { fixtureKeyGen, seedLocalAccount } from "./federation-helpers";
+import { BUILD, completeSetup, migratedStore } from "./helpers";
+import { mastodonActor, RemoteWeb, signedInit } from "./inbox-helpers";
 
 // WEB-6: once setup has fixed the domain, every route answers only on it. GET and HEAD on another host move to the
-// same path and query on the domain (301); any other method is 421. The health check, the admin API and media answer
-// on any host, and before setup nothing changes.
+// same path and query on the domain (301); any other method is 421. The health check, the admin API, media and the
+// root answer on any host, and before setup nothing changes. A spooled inbox delivery and a snapshot rescue judge the
+// host too.
 
 // Hosts the Worker may also answer on: its workers.dev address, another route, the domain with a port.
 const OTHER_HOSTS = ["kopje.example.workers.dev", "other.kopje.test", "kopje.test:8443"] as const;
@@ -37,7 +41,6 @@ const READS = [
   "/settings",
   "/authorize_interaction?uri=https%3A%2F%2Fremote.example%2F%40bob",
   "/setup",
-  "/",
 ];
 
 // Writes of every layer, each with what reaches its route on the instance domain.
@@ -227,5 +230,92 @@ describe("answering only on the instance domain (WEB-6)", () => {
     expect(await calls("/about")).toEqual(["webAbout"]);
     // Without a session: the gate's read, then the sign-in.
     expect(await calls("/settings")).toEqual(["webSite"]);
+    // No Store read at all: the root's redirect, and a CORS preflight, which the CORS middleware answers first.
+    expect(await calls("/")).toEqual([]);
+    const preflight = { origin: "https://client.test", "access-control-request-method": "POST" };
+    expect(await calls("/api/v1/statuses", { method: "OPTIONS", headers: preflight })).toEqual([]);
+  });
+
+  it("drops a spooled inbox request to another host at replay, applying nothing", async () => {
+    const web = new RemoteWeb();
+    const bob = await mastodonActor(web, "bob");
+    const follow = {
+      "@context": "https://www.w3.org/ns/activitystreams",
+      id: `${bob.uri}#f`,
+      type: "Follow",
+      actor: bob.uri,
+      object: "https://kopje.test/ap/users/alice",
+    };
+    const federation = { keygen: fixtureKeyGen, loader: web.loader };
+    const replay = async (host: string) => {
+      const store = await migratedStore();
+      await completeSetup(store);
+      await seedLocalAccount(store, "kopje.test", { id: "111111111111111111", username: "alice" });
+      // The env in maintenance spools the delivery as it came, whatever its host.
+      const h = harness(store, { MAINTENANCE: "readonly" }, BUILD, federation, undefined, host);
+      expect((await h.request("/inbox", await signedInit(bob, "/inbox", follow))).status).toBe(202);
+      expect(h.queue.pending).toHaveLength(1);
+      const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await h.queue.deliver((batch) =>
+          handleQueue(
+            batch,
+            { ...h.env, MAINTENANCE: "off" } as Env,
+            inboxDeps(() => store, web.loader),
+          ),
+        );
+        const refused = logs.mock.calls.filter(
+          ([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused",
+        );
+        return {
+          pending: h.queue.pending.length,
+          retries: h.queue.retries,
+          refused,
+          actors: await sql(store, "SELECT 1 FROM accounts WHERE domain IS NOT NULL"),
+          follows: await sql(store, "SELECT 1 FROM follows"),
+        };
+      } finally {
+        logs.mockRestore();
+      }
+    };
+    const away = await replay(OTHER_HOSTS[0]);
+    expect(away).toMatchObject({ pending: 0, retries: 0, actors: [], follows: [] });
+    expect(away.refused).toEqual([[{ event: "kopje.inbox.refused", status: 421, reason: "other-host" }]]);
+    // The branch ran: the same delivery spooled on the domain is applied.
+    const domain = await replay("kopje.test");
+    expect(domain).toMatchObject({ retries: 0, refused: [] });
+    expect(domain.follows).toHaveLength(1);
+  });
+
+  it("serves a rescued snapshot only on the domain it records", async () => {
+    const store = await migratedStore();
+    await completeSetup(store);
+    await seedLocalAccount(store, "kopje.test", { id: "111111111111111111", username: "alice" });
+    // A healthy request keeps the document, with the domain it was rendered on.
+    expect((await harness(store).request("/nodeinfo/2.0")).status).toBe(200);
+    const kept = await store.rescueSnapshot(BUILD, "path:/nodeinfo/2.0");
+    expect(kept?.domain).toBe("kopje.test");
+    // The Store refuses a Worker of another build, and the rescue answers.
+    const rescued = (host: string, init: RequestInit = {}) =>
+      harness(store, {}, "0.0.0-other", undefined, undefined, host).request("/nodeinfo/2.0", init);
+    const onDomain = await rescued("kopje.test");
+    expect(onDomain.status).toBe(200);
+    expect(await onDomain.text()).toBe(kept?.body);
+    for (const host of OTHER_HOSTS) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await rescued(host, { method });
+        expect(response.status, `${method} ${host}`).toBe(301);
+        expect(response.headers.get("location"), `${method} ${host}`).toBe("https://kopje.test/nodeinfo/2.0");
+        expect(await response.text(), `${method} ${host}`).toBe("");
+      }
+    }
+    // A snapshot kept before the domain was recorded is not served on any host.
+    await sql(
+      store,
+      "UPDATE kopje_state SET value = json_remove(value, '$.domain') WHERE name = 'snapshot:path:/nodeinfo/2.0'",
+    );
+    expect((await store.rescueSnapshot(BUILD, "path:/nodeinfo/2.0"))?.domain).toBeNull();
+    expect((await rescued("kopje.test")).status).toBe(503);
+    expect((await rescued(OTHER_HOSTS[0])).status).toBe(503);
   });
 });

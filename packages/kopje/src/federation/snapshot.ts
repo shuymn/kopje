@@ -1,5 +1,6 @@
 import type { SnapshotSource } from "../domain/snapshot";
 import { errorFields } from "../platform/error-message";
+import { offDomain } from "../platform/instance-host";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { isSnapshotKey, sha256, type Snapshot, snapshotKind } from "../platform/store-kernel";
 
@@ -75,9 +76,17 @@ export function createSnapshotSaver(now: () => number): SnapshotSaver {
 }
 
 // The rescue answer of an always-served GET, or null when there is none. Only keys of the two snapshot shapes reach
-// the Store, and only stored (size-capped) bodies come back.
-export function rescueFromSnapshot(request: Request, store: StoreStub, build: string): Promise<Response | null> {
-  return answerFromSnapshot(request, (key) => store.rescueSnapshot(build, key));
+// the Store, and only stored (size-capped) bodies come back. WEB-6: a snapshot is served only on the domain it was
+// rendered on; on another host the answer is the live path's (301 or 421), and a snapshot that records no domain is
+// not served.
+export async function rescueFromSnapshot(request: Request, store: StoreStub, build: string): Promise<Response | null> {
+  const rendered: { domain: string | null } = { domain: null };
+  const answer = await answerFromSnapshot(request, async (key) => {
+    const kept = await store.rescueSnapshot(build, key);
+    rendered.domain = kept?.domain ?? null;
+    return rendered.domain === null ? null : kept;
+  });
+  return answer === null || rendered.domain === null ? null : (offDomain(request, rendered.domain) ?? answer);
 }
 
 // The answer of an always-served GET from the snapshot `find` returns for its key, or null. Shared by the rescue path

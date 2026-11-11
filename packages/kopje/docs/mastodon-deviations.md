@@ -331,10 +331,13 @@ Annual reports (`/api/v1/annual_reports`):
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
-- On a host other than the instance domain, Mastodon's host authorization answers 403 to every path but `/health`.
-  Kopje moves a GET or HEAD to the same path and query on the domain (301) and answers any other method 421
-  Misdirected Request, and answers `/health`, the admin API and media URLs on any host. Like Mastodon, it answers only
-  on the domain from setup on; before setup every host is answered as before.
+- Mastodon allows `LOCAL_DOMAIN`, `WEB_DOMAIN` and `ALTERNATE_DOMAINS` as hosts and exempts exactly `/health`; on any
+  other host Rails' `HostAuthorization` (Rails 8.0.4.1) answers 403, with an empty body in production. It judges the
+  `Host` header and the last `X-Forwarded-Host`, case-insensitively and with any port. A CORS preflight is answered
+  by `Rack::Cors` before it, and the streaming server is not covered. Kopje judges the request URL's host, which is
+  the domain only (no alternate domains), from setup on: a GET or HEAD on another host moves to the same path and
+  query on the domain (301), any other method answers 421 Misdirected Request, and a port other than 443 is another
+  host. Besides `/health`, it answers the admin API, media URLs and `/` on any host, and streaming is covered.
 
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 

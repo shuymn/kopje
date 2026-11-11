@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import type { FollowDirection } from "../domain/web-pages/follows";
 import { pageCursor } from "../domain/web-pages/paging";
 import type { ProfileTab } from "../domain/web-pages/profile";
-import { localUsername, type Site } from "../domain/web-pages/site";
+import { localUsername, type PageAnswer, type Site } from "../domain/web-pages/site";
 import type { StatusTabKind } from "../domain/web-pages/status";
 import { notSetUp } from "../federation/setup-gate";
 import { type ApiDeps, present, storeCall } from "../mastodon/context";
@@ -73,13 +73,13 @@ function gone(c: PublicContext, site: Site) {
   );
 }
 
-// WEB-6 by a page read's site facts (domain/web-pages/site.ts PageAnswer): on another host than the stored domain, its
-// answer is thrown to app.onError, which sends it as it is. Before setup the read has no site, and the page answers 503.
-function onDomain(c: PublicContext, page: unknown): void {
-  if (typeof page !== "object" || page === null || !("site" in page)) {
+// WEB-6 by a page read's site facts: on another host than the stored domain, its answer is thrown to app.onError, which
+// sends it as it is. Before setup the read has no site, and the page answers 503.
+function onDomain(c: PublicContext, page: PageAnswer<object>): void {
+  if (!("site" in page)) {
     return;
   }
-  const away = offDomain(c.req.raw, (page.site as Site).domain);
+  const away = offDomain(c.req.raw, page.site.domain);
   if (away !== null) {
     throw new HTTPException(away.status === 301 ? 301 : 421, { res: away });
   }
@@ -96,7 +96,10 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   // A page whose first Store call is a page read through pageCall, which decides the host (WEB-6, app/app.ts).
   const pageGet = <P extends string>(path: P, handler: Handler<{ Bindings: Env }, P>) =>
     app.get(path, decidesHost(handler));
-  const pageCall = async <F extends (store: StoreStub, build: string) => unknown>(c: PublicContext, call: F) => {
+  const pageCall = async <F extends (store: StoreStub, build: string) => Promise<PageAnswer<object>>>(
+    c: PublicContext,
+    call: F,
+  ) => {
     const page = await storeCall(c, deps, call);
     onDomain(c, page);
     return page;
@@ -107,10 +110,13 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     deps.dispatch(new Request(new URL(path, c.req.url), c.req.raw), c.env, c.executionCtx);
 
   // No page of its own yet: the about page, which oEmbed's provider_url (/) then opens. 302, so a home page can
-  // replace it.
+  // replace it. It reads no Store and answers on any host: its relative redirect lands on /about, which decides the
+  // host (WEB-6).
   app.get(
     "/",
-    () => new Response(null, { status: 302, headers: { location: "/about", "cache-control": "public, max-age=60" } }),
+    decidesHost(
+      () => new Response(null, { status: 302, headers: { location: "/about", "cache-control": "public, max-age=60" } }),
+    ),
   );
 
   pageGet("/about", async (c) => {

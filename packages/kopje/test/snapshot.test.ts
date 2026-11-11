@@ -360,7 +360,8 @@ describe("snapshot caps", () => {
     await save(store, BUILD, "path:/actor", doc("old-key"), STATIC, 0);
     now = 1;
     await save(store, BUILD, "path:/actor", doc("new-key"), STATIC, 0);
-    expect(await store.rescueSnapshot(BUILD, "path:/actor")).toEqual(doc("new-key"));
+    // No domain is set in this Store, so the kept row records none.
+    expect(await store.rescueSnapshot(BUILD, "path:/actor")).toEqual({ ...doc("new-key"), domain: null });
   });
 
   it("reads only snapshot keys back", async () => {
@@ -380,11 +381,15 @@ describe("rescue snapshot RPC", () => {
     await runInDurableObject(store, async (_instance, state) => {
       state.storage.sql.exec(
         "INSERT INTO kopje_state (name, value) VALUES ('snapshot:path:/actor', ?)",
-        JSON.stringify({ contentType: "application/activity+json", body: "{}" }),
+        JSON.stringify({ contentType: "application/activity+json", body: "{}", domain: "kopje.test" }),
       );
       const diverged = testKernel(state, [{ name: "0000_other", sql: "SELECT 1" }]);
       expect((await diverged.health(BUILD)).schema.status).toBe("diverged");
-      expect(diverged.readSnapshot("path:/actor")).toEqual({ contentType: "application/activity+json", body: "{}" });
+      expect(diverged.readSnapshot("path:/actor")).toEqual({
+        contentType: "application/activity+json",
+        body: "{}",
+        domain: "kopje.test",
+      });
       expect(diverged.readSnapshot("path:/nope")).toBeNull();
       expect(testKernel(state, MIGRATIONS).readSnapshot("path:/actor")).not.toBeNull();
     });
