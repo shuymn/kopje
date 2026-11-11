@@ -864,6 +864,37 @@ describe('windows never take a row hidden by its visibility as a candidate (docs
     const reads: [string, StoreOperation<never, unknown>, (page: PageQuery) => unknown][] = [
       ["account statuses", accountStatuses, (page) => ({ ...statusesOf(credential), page })],
       ["account statuses (anonymous)", accountStatuses, (page) => ({ ...statusesOf(null), page })],
+      // Request conditions that reject every candidate: walks cut by CONDITION_WALK, continuing from their end.
+      ...[credential, null].flatMap(
+        (viewer): [string, StoreOperation<never, unknown>, (page: PageQuery) => unknown][] =>
+          ([{ onlyMedia: true }, { excludeReplies: true, excludeReblogs: true }, { tagged: "dogs" }] as const).map(
+            (conditions) => [
+              `account statuses ${JSON.stringify(conditions)}${viewer === null ? " (anonymous)" : ""}`,
+              accountStatuses,
+              (page) => ({ ...statusesOf(viewer), ...conditions, page }),
+            ],
+          ),
+      ),
+      ...[{ local: true }, { onlyMedia: true }, { none: ["cats"] }].map(
+        (conditions): [string, StoreOperation<never, unknown>, (page: PageQuery) => unknown] => [
+          `hashtag ${JSON.stringify(conditions)}`,
+          tagTimeline,
+          (page) => ({
+            credential,
+            now: NOW,
+            page,
+            tag: "cats",
+            any: [],
+            all: [],
+            none: [],
+            local: false,
+            remote: false,
+            onlyMedia: false,
+            present: PRESENT,
+            ...conditions,
+          }),
+        ],
+      ),
       [
         "public",
         publicTimeline,

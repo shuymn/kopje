@@ -15,6 +15,7 @@ import { newestFirstPager } from "../src/web/view/pager";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { C, nextId, pageStatus } from "./budget-helpers";
+import { growConditionWorld, WALKED_TABLES } from "./condition-walk-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD } from "./helpers";
 import { MAX_BIO } from "./profile-fixtures";
@@ -669,11 +670,19 @@ describe("the newest-first pager", () => {
   });
 });
 
+// The walk's statements, the pins', those over its candidates by key (the conditions' and the rule's), and the
+// account's (the page's account by username, the presenter's by id).
+const WALK =
+  /FROM (?:main\.)?statuses s\b|status_pins|FROM json_each\(\?\d\) c\s+CROSS JOIN (?:main\.)?statuses s\b|\baccounts a\b/;
+
 describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', () => {
-  // Each tab's statements on statuses and accounts with statistics taken before the Store grew: the account's window
-  // seeks statuses_account (or its originals' index) from the cursor, never scanning statuses, the page's account is
-  // found by its username and presented by its key with its local row, and a page below a fixed cursor reads the same
-  // rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it and 600 more accounts beside it.
+  // Each tab's statements on statuses and accounts, and those over the candidates by key (the conditions' and the
+  // rule's), with statistics taken before the Store grew: the account's walk seeks statuses_account (or its originals'
+  // index) from the cursor, no statement scans statuses, accounts or their local rows, status_tags or
+  // media_attachments, the page's account is found by its username and presented by its key with its local row, and a
+  // page below a fixed cursor reads the same rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it,
+  // the growth of growConditionWorld (rows each condition rejects, unrelated accounts, media and hashtags) and 600 more
+  // accounts, half of them local.
   it("seek from the cursor through the account’s index, with stale statistics", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -708,7 +717,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         const run = await runInDurableObject(h.store, (_instance, state) => {
           const plans: PlannedStatement[] = [];
           const page = profilePageWithin(
-            new Db(plannedSql(state.storage.sql, /FROM (?:main\.)?statuses s\b|status_pins|\baccounts a\b/, plans)),
+            new Db(plannedSql(state.storage.sql, WALK, plans)),
             { handle: "alice", tab: TABS[name].tab, cursor, now: NOW },
             SITE,
             ANSWER_BYTES,
@@ -719,7 +728,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         for (const statement of run.plans) {
           // A bare SCAN l is OAUTH_ADMIN_HEAP_SQL's count over every local account (admin-authority.ts), which runs only
           // with admin_email set; a local row joined to its account is SCAN l LEFT-JOIN.
-          const scans = scansOf(statement.plan, ["s", "statuses", "a", "l"]).filter((detail) => detail !== "SCAN l");
+          const scans = scansOf(statement.plan, [...WALKED_TABLES, "a", "l"]).filter((detail) => detail !== "SCAN l");
           expect([name, scans]).toEqual([name, []]);
         }
         const details = run.plans.flatMap((statement) => statement.plan);
@@ -733,6 +742,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
       capture,
       grow: async () => {
         await newer(2000);
+        await growConditionWorld(h.store, alice.id, "cats");
         await remoteAccounts(h, 10, 30);
         await localAccounts(h, 300);
       },

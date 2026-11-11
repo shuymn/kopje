@@ -84,12 +84,12 @@ export async function remoteAccounts(
   );
 }
 
-// `count` local accounts g0, g1, … with ids from `base`, each with its local_accounts row.
+// `count` local accounts local0, local1, … with ids from `base`, each with its local_accounts row.
 export async function localAccounts(h: Pick<ApiHarness, "store">, count: number, base = 600000000000000000n) {
   await sql(
     h.store,
     `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
-		INSERT INTO accounts (id, uri, username) SELECT CAST(?2 + i AS TEXT), 'https://kopje.test/ap/users/g' || i, 'g' || i
+		INSERT INTO accounts (id, uri, username) SELECT CAST(?2 + i AS TEXT), 'https://kopje.test/ap/users/local' || i, 'local' || i
 		FROM n`,
     count,
     String(base),
@@ -98,7 +98,7 @@ export async function localAccounts(h: Pick<ApiHarness, "store">, count: number,
     h.store,
     `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
 		INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
-		SELECT CAST(?2 + i AS TEXT), 'g' || i || '@example.com', X'00', X'00', 'test' FROM n`,
+		SELECT CAST(?2 + i AS TEXT), 'local' || i || '@example.com', X'00', X'00', 'test' FROM n`,
     count,
     String(base),
   );

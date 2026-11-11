@@ -988,8 +988,16 @@ Node (`test-node/sql-depth.ts`), so a statement nearing the limit fails the suit
 
 A paged read whose rule hides rows reads a candidate window (`src/domain/windows.ts`; RES-7 in the threat model):
 
-- From its cursor, in cursor order, it reads at most a fixed number of candidates through an index, with its request's
-  own conditions (types, hashtags, media, the follow relation of the stream) but without the rule.
+- From its cursor, in cursor order, it reads at most a fixed number of candidates through an index, with the conditions
+  its index or stream serves (types, a hashtag's name, the follow relation of the stream) but without the rule.
+- A request's own conditions that no index serves (account statuses' `only_media`, `tagged` and `exclude_replies`; a
+  hashtag timeline's `local`, `remote`, `only_media`, `all` and `none`) are tested by key on the candidates, outside the
+  window's `LIMIT`, in rounds (`walkedWindow`) whose summed stream `LIMIT`s are at most `CONDITION_WALK` (2,000
+  entries within the audience a page, a status counted once per stream that reads it). Each round continues from the
+  last candidate of the one before. A walk whose first round rejects nothing answers as the read without conditions,
+  ending where that read's window ends; one that collects its window's candidates, or reaches the end of its range,
+  answers as a single window would; one the budget cuts first continues from the last candidate it examined, which the
+  audience passed, and its page may be short or empty.
 - It applies the rule to those candidates alone, each by its key, and returns the first that pass, at most a page.
 - The page may be short or empty. When the window ended before the cursor's range did, the page's far end is the
   window's last candidate (or the last item of a full page), and the next link is offered whatever the page holds
@@ -999,9 +1007,10 @@ A paged read whose rule hides rows reads a candidate window (`src/domain/windows
   passed lies past the page in the window, the window was cut, or the page was cut by bytes; a full page alone offers
   nothing, so an exact last page ends the walk. The quotes list, whose window is a page, reads one candidate past it
   for this.
-- A merged read (home, a list, a hashtag timeline's names) reads at most `streamWindow` candidates per stream and
-  merges them up to the highest end of a stream that filled, at most `readWindow`, so no candidate below a stream's end
-  is passed over. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first candidate, so
+- A merged read without request conditions (home, a list, a hashtag timeline's names) reads at most `streamWindow`
+  candidates per stream and merges them up to the highest end of a stream that filled, at most `readWindow`, so no
+  candidate below a stream's end is passed over; with conditions, each round of its walk merges the same way at the
+  round's per-stream `LIMIT`. A read positioned at a status (`max_id` just above it, `limit` 1) has it as its first candidate, so
   the narrowed reads of R33 return it exactly when the positioned read does.
 
 The cursor rule: a row hidden from the viewer by its own visibility or audience (private, direct or limited that they
@@ -1014,7 +1023,8 @@ hides it: the author knows its id. A candidate may be hidden only by availabilit
 suspended), by the viewer's own blocks, mutes and domain blocks, by a follow's options or the home filter, or, for rows
 the viewer owns (their notifications, bookmarks, favourites, notification requests, list members, endorsements), by the
 rule over what the row names: the viewer already knows their own relations and rows, and Mastodon paginates before
-filtering there. Where a read cannot keep rows hidden by visibility out with an index, it walks past them: such rows
+filtering there. A candidate may also be left out by the request's own conditions (a post without media, a reply, a
+remote post on a local hashtag timeline), a status the viewer may see without them. Where a read cannot keep rows hidden by visibility out with an index, it walks past them: such rows
 cost their number, never a cursor. A public page's newer link from an empty page past its list's oldest is not an
 item's id but a boundary, `max_id` − 1 of that page's own request (`src/web/view/pager.ts`): it may equal a hidden
 status's id and discloses nothing, as it is derived from the request alone. A status page's replies list oldest first,
@@ -1028,9 +1038,9 @@ limit, 40); statuses page by 20 and at most 40, accounts and notifications by 40
 | home                                 | `streamWindow` per followed account, mention stream, own and followed hashtag; merged `readWindow`            | availability of a boosted original, filters, follow options, home filter |
 | list timeline                        | `streamWindow` per active member; merged `readWindow`                                                         | as home                                                                  |
 | public timeline                      | `readWindow`, on `statuses_public`                                                                            | availability, the viewer's filters, a blocking author                    |
-| hashtag timeline                     | `streamWindow` per name (at most five); merged `readWindow`                                                   | as the public timeline                                                   |
+| hashtag timeline                     | `streamWindow` per name (at most five), on `status_tags_public`; merged `readWindow`; with conditions, walked | as the public timeline                                                   |
 | link timeline                        | `readWindow` of the link's public copies, on `status_cards_public_link`                                       | availability, discoverable and moved authors, the viewer's filters       |
-| account statuses                     | `readWindow`, on `statuses_account`, within the audience                                                      | availability or filters of a boosted original                            |
+| account statuses                     | `readWindow`, on `statuses_account`, within the audience; with conditions, walked                             | availability or filters of a boosted original                            |
 | bookmarks, favourites                | `readWindow` of the viewer's edges                                                                            | the rule over the status the viewer saved                                |
 | notifications (v1)                   | `readWindow` of the viewer's notifications                                                                    | R15                                                                      |
 | grouped notifications, unread counts | at most `GROUP_WALK` (2,000) per page or count; a group's count, samples and oldest among `GROUP_COUNT` (400) | R15                                                                      |
@@ -1040,15 +1050,18 @@ limit, 40); statuses page by 20 and at most 40, accounts and notifications by 40
 | followers, following                 | `readWindow` of the account's accepted follows                                                                | the viewer's blocks and mutes                                            |
 | `favourited_by`, `reblogged_by`      | `readWindow` of the status's favourites, or of its public boosts not withdrawn (`statuses_reblogged_by`)      | availability, the viewer's filters                                       |
 | list members, endorsements           | `readWindow` (1,000 answered without a page, within 8 MiB of accounts (RES-3): 3,000)                         | availability                                                             |
-| profile web page tabs                | `readWindow` of 20 (60), public and unlisted only (accountStatuses); pins by their key                        | availability of a boosted original                                       |
+| profile web page tabs                | `readWindow` of 20 (60), public and unlisted only (accountStatuses), walked for Posts, Media and a hashtag    | availability of a boosted original                                       |
 | follow list web pages                | `readWindow` of 40 (120) of the account's accepted follows                                                    | availability                                                             |
 | Featured tab's endorsements          | `readWindow` of 40 (120) of the account's endorsements; its 10 hashtags by key                                | availability                                                             |
 | status web page's replies            | `readWindow` of 20 (60) of its public and unlisted replies not withdrawn, on `statuses_public_replies`        | availability                                                             |
 | status web page's boosts, favourites | `readWindow` of 40 (120), as `favourited_by` and `reblogged_by` (`interactorsWithin`)                         | availability                                                             |
 | status web page's quotes             | 20 accepted quotes and one more within the anonymous audience, as the quotes list (`statusQuotesWithin`)      | R8                                                                       |
-| hashtag web page                     | `streamWindow` of 20 (40) of the hashtag's public rows, local authors only (tagTimeline)                      | as the public timeline                                                   |
+| hashtag web page                     | `streamWindow` of 20 (40) of the hashtag's public rows, walked for local authors (tagTimeline)                | as the public timeline                                                   |
 | outbox                               | `readWindow` of 21 (63), public and unlisted only                                                             | availability of a boosted original                                       |
 | quotes list (statuses.ts)            | `limit` + 1 accepted quotes; for anyone but the quoted author, within the audience (stricter than Mastodon)   | R8, or R2 for the quoted author                                          |
+
+The public timeline still tests its `local`, `remote` and `only_media` conditions, and its reply predicate, inside its
+window on `statuses_public`, so a range they reject costs its length (the RES-7 gap in the threat model).
 
 Showing one group by its key (`GET /api/v2/notifications/:group_key`) is the one read with no cursor to resume from:
 it walks at most `GROUP_DISCOVERY` (20,000) of that group's own notifications, through `notifications_group`, to find
@@ -1073,7 +1086,9 @@ no index can seek; `test-node/range-predicates.test.ts` checks every statement i
 
 `test/read-windows.test.ts` checks that every windowed read stays bounded in front of hidden ranges of each kind,
 that paging by `max_id` and by `min_id` reaches every visible row on both sides once, in order, and that no response
-field names a status, blocking follower or interactor the viewer may not see.
+field names a status, blocking follower or interactor the viewer may not see. `test/condition-walk-reads.test.ts`
+checks the walks under request conditions: equal rows in front of 5,000 or 20,000 rejected rows, the ceiling derived
+from their statements, no match lost at a merge frontier, and continuations that pass the audience at every round end.
 
 ## The oracle and the bounds harness
 
