@@ -329,6 +329,16 @@ Annual reports (`/api/v1/annual_reports`):
   admin can still generate a report by hand from a console, which its owner then reads and marks read; Kopje has no
   such path.
 
+Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
+
+- Mastodon allows `LOCAL_DOMAIN`, `WEB_DOMAIN` and `ALTERNATE_DOMAINS` as hosts and exempts exactly `/health`; on any
+  other host Rails' `HostAuthorization` (Rails 8.0.4.1) answers 403, with an empty body in production. It judges the
+  `Host` header and the last `X-Forwarded-Host`, case-insensitively and with any port. A CORS preflight is answered
+  by `Rack::Cors` before it, and the streaming server is not covered. Kopje judges the request URL's host, which is
+  the domain only (no alternate domains), from setup on: a GET or HEAD on another host moves to the same path and
+  query on the domain (301), any other method answers 421 Misdirected Request, and a port other than 443 is another
+  host. Besides `/health`, it answers the admin API, media URLs and `/` on any host, and streaming is covered.
+
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public

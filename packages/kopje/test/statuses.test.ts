@@ -7,7 +7,7 @@ import { getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
 import type { StoreStub } from "../src/platform/store-client";
 import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, type App, bearer, form, json, login, settle, sql } from "./api-helpers";
+import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import {
@@ -894,11 +894,14 @@ describe("outbound intents", () => {
   });
 
   // Content and activities are stored and federated, so their links are on the author's origin whatever host the
-  // request reached (ID-5); only the API answer is built on the request's (issue 1401).
+  // request reached (ID-5); only the API answer is built on the request's. The API answers only on the stored domain
+  // (WEB-6), so the domain is changed by hand here (/admin/config) to put the request on another origin than the
+  // author's.
   it("stores and federates links on the author's origin when the request reaches another host (ID-5)", async () => {
     const h = await community(["alice", "bob"]);
     const { alice } = h.users;
     await remoteFollows(h.store, await remoteAccount(h.store, "fan", "fans.example"), alice.id);
+    await setSetting(h.store, "domain", "other.workers.dev");
     const other = (path: string, init: RequestInit) => h.send(new Request(`https://other.workers.dev${path}`, init));
     const posted = await other(
       "/api/v1/statuses",
@@ -915,7 +918,7 @@ describe("outbound intents", () => {
     expect((await other("/api/v1/tags/birds/feature", bearer(alice.token, json({})))).status).toBe(200);
     expect((await other("/api/v1/tags/birds/unfeature", bearer(alice.token, json({})))).status).toBe(200);
     expect((await other("/api/v1/featured_tags", bearer(alice.token, json({ name: "fish" })))).status).toBe(200);
-    const [fish] = (await getJson<{ id: string }[]>(h, "/api/v1/featured_tags", alice.token)).body;
+    const [fish] = await (await other("/api/v1/featured_tags", bearer(alice.token))).json<{ id: string }[]>();
     const removed = await other(`/api/v1/featured_tags/${fish?.id ?? ""}`, bearer(alice.token, { method: "DELETE" }));
     expect(removed.status).toBe(200);
 

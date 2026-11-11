@@ -10,6 +10,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Once `/setup` has fixed the domain, Kopje answers only on it, as Mastodon does with `config.hosts` (threat model
+  WEB-6). A request to another host the Worker is reachable on (its `workers.dev` address, another route, a port) gets
+  a 301 to the same path and query on the instance domain for GET and HEAD, and 421 Misdirected Request for any other
+  method, so the Mastodon API, OAuth, the web UI, the public pages, federation and the inbox no longer answer there.
+  Clients and servers that used another host must use the instance domain. `/health`, the admin API (`kopje-admin`
+  with its own admin hostname), media URLs and `/` (a redirect to `/about`) still answer on any host, and nothing
+  changes before setup. An inbox delivery spooled during maintenance on another host is dropped when it is replayed,
+  and while the Store refuses, a kept federation document is served only on the domain it was rendered on: a document
+  kept before this release, which records no domain, is served only on the domain the Store's configuration holds. `GET /oauth/authorize` on
+  another host now redirects instead of its 403 page; `POST /oauth/authorize` there still answers 403 for a missing or
+  foreign `Origin` and 400 for a malformed form, then 421. `/login` redirects with 301 instead of 302. A Mastodon API
+  request makes one more Store read, of the domain; federation, the public pages, the web UI and OAuth read it in their
+  own first read. No migration; `wrangler.jsonc`: see Instance changes.
 - A page of an account's statuses with `only_media`, `tagged` or `exclude_replies`, or of a hashtag timeline with
   `local`, `remote`, `only_media`, `all` or `none` (the profile's Posts, Media and tagged tabs and the hashtag page
   included), now reads at most 2,000 index entries before applying those conditions, however many statuses they leave
@@ -25,7 +38,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `/api/v2/search` fetched the query's target in all three cases and stored it under the env's `MAINTENANCE=readonly`,
   and `/api/v1/accounts/search` fetched it in the last two. When the Store comes to refuse writes while a search is
   resolving, the answer is now the plain search too, so a URL query finds local matches instead of nothing, and a
-  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch.
+  token that expired meanwhile is refused. A resolving search also asks the Store fewer times before its first fetch:
+  one read, its gate, after the domain read every API request makes (see Changed).
   No migration, no `wrangler.jsonc` change.
 
 ### Fixed
@@ -64,6 +78,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The `Reject` that a remote account's suspension sends for each of its follows of a local account now goes to the
   follower's personal inbox, as Mastodon sends it, instead of its shared inbox. No migration, no `wrangler.jsonc`
   change.
+
+### Instance changes
+
+- Store schema: unchanged from 0.2.1.
+- `wrangler.jsonc`: the template sets `"workers_dev": false`, so a deploy removes the Worker's `workers.dev` address,
+  where Kopje now only redirects or refuses. Add the same line to the instance's file; attach the instance domain
+  first if it has none yet ([docs/upgrade.md](docs/upgrade.md)).
 
 ## [0.2.1] - 2026-11-03
 

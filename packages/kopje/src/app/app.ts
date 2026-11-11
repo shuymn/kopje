@@ -2,6 +2,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { matchedRoutes, routePath } from "hono/route";
+import { METHOD_NAME_ALL } from "hono/router";
 
 import { ringDoorbell } from "../federation/delivery";
 import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/inbox";
@@ -27,8 +28,9 @@ import { readBoundedBody } from "../platform/body";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, imagesCodec } from "../platform/images";
+import { decidesHost, hostDecided, offDomain } from "../platform/instance-host";
 import { loggedMethod } from "../platform/log";
-import { defaultStore, type StoreResolver } from "../platform/store-client";
+import { callStore, defaultStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { generateRsaKeyPair } from "../security/key-wrap";
 import { randomToken, type TokenGenerator } from "../security/tokens";
@@ -180,6 +182,24 @@ export function createApp({
     }
   });
 
+  // WEB-6: on the instance domain only, once setup has fixed it. The health check and the admin API (which the CLI
+  // reaches on an admin hostname of its own, docs/cutover-runbook.md) answer on any host; a route whose handler reads
+  // the domain itself decides there (decidesHost), so its request keeps its one Store read; and a request no route
+  // serves (only middleware matched) keeps its 404 without a Store read.
+  app.use(async (c, next) => {
+    const routes = matchedRoutes(c);
+    if (
+      c.req.path === "/health" ||
+      isAdminPath(c.req.path) ||
+      hostDecided(routes) ||
+      routes.every((route) => route.method === METHOD_NAME_ALL)
+    ) {
+      return next();
+    }
+    const domain = await callStore(() => store(c.env).instanceDomain(build(c.env)));
+    return (domain === null ? null : offDomain(c.req.raw, domain)) ?? next();
+  });
+
   app.get("/health", (c) => publicHealth(build(c.env), readConfig(c.env), () => store(c.env), readBackupConfig(c.env)));
 
   const keygen = federation.keygen ?? generateRsaKeyPair;
@@ -192,7 +212,8 @@ export function createApp({
   );
 
   // The inbox POSTs read the domain in their own gate (federation/inbox.ts processInbox), and the self-gated
-  // federation GETs in their one read (federation/routes.ts SELF_GATED_ROUTES).
+  // federation GETs in their one read (federation/routes.ts SELF_GATED_ROUTES); each decides the host there (WEB-6),
+  // and the gate decides it for every other request under FEDERATION_PATHS, which hold all these routes.
   const setupGate = requireSetup(
     build,
     store,
@@ -201,7 +222,7 @@ export function createApp({
       (isRead(c.req.method) && matchedRoutes(c).some((r) => r.method === "GET" && SELF_GATED_ROUTES.has(r.path))),
   );
   for (const path of FEDERATION_PATHS) {
-    app.use(path, setupGate);
+    app.use(path, decidesHost(setupGate));
   }
 
   const inbox = inboxHandler({ build, store, now, keygen, loader });
@@ -227,8 +248,9 @@ export function createApp({
       return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
     },
   };
-  app.get(REMOTE_MEDIA_ROUTE, serveRemoteMedia);
-  app.get(MEDIA_ROUTE, serveMedia);
+  // Media reads no Store (web/media.ts): its capability URLs answer on any host.
+  app.get(REMOTE_MEDIA_ROUTE, decidesHost(serveRemoteMedia));
+  app.get(MEDIA_ROUTE, decidesHost(serveMedia));
   const authorize = authorizeRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const setup = setupRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const web = webRoutes(apiDeps);
@@ -290,11 +312,14 @@ export function createApp({
     if (error instanceof HTTPException) {
       return error.res === undefined ? mastodonError(error.status, error.message || "Error") : error.getResponse();
     }
-    // The route template, not the URL: a path or query can carry a token or content (DATA-5).
+    // The route template, not the URL: a path or query can carry a token or content (DATA-5). A middleware that failed
+    // before the route (WEB-6's domain read) logs the template of the route it stood before.
+    const routes = matchedRoutes(c);
+    const route = routes.slice(c.req.routeIndex).find((r) => r.method !== METHOD_NAME_ALL)?.path ?? routePath(c);
     console.error({
       event: "kopje.error",
       method: loggedMethod(c.req.method),
-      route: routePath(c),
+      route,
       status: 500,
       ...errorFields(error),
     });
