@@ -15,6 +15,7 @@ import { newestFirstPager } from "../src/web/view/pager";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { C, nextId, pageStatus } from "./budget-helpers";
+import { growConditionWorld, WALKED_TABLES } from "./condition-walk-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD } from "./helpers";
 import { MAX_BIO } from "./profile-fixtures";
@@ -662,10 +663,17 @@ describe("the newest-first pager", () => {
   });
 });
 
+// The walk's statements, the pins', and those over its candidates by key (the conditions' and the rule's); not the
+// account presenter's, which names statuses s in a subquery.
+const WALK =
+  /^(?!\s*SELECT a\.id\b)[\s\S]*(?:FROM (?:main\.)?statuses s\b|status_pins|FROM json_each\(\?\d\) c\s+CROSS JOIN (?:main\.)?statuses s\b)/;
+
 describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', () => {
-  // Each tab's statements on statuses with statistics taken before the Store grew: the account's window seeks
-  // statuses_account (or its originals' index) from the cursor, never scanning statuses, and a page below a fixed
-  // cursor reads the same rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it.
+  // Each tab's statements on statuses, and those over the candidates by key (the conditions' and the rule's), with
+  // statistics taken before the Store grew: the account's walk seeks statuses_account (or its originals' index) from
+  // the cursor, no statement scans statuses, accounts, status_tags or media_attachments, and a page below a fixed
+  // cursor reads the same rows with 20 or 2,000 newer posts (of every kind the tabs filter) above it, and the growth of
+  // growConditionWorld (rows each condition rejects, unrelated accounts, media and hashtags).
   it("seek from the cursor through the account’s index, with stale statistics", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -695,7 +703,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         const run = await runInDurableObject(h.store, (_instance, state) => {
           const plans: PlannedStatement[] = [];
           const page = profilePageWithin(
-            new Db(plannedSql(state.storage.sql, /FROM (?:main\.)?statuses s\b|status_pins/, plans)),
+            new Db(plannedSql(state.storage.sql, WALK, plans)),
             { handle: "alice", tab: TABS[name].tab, cursor, now: NOW },
             SITE,
             ANSWER_BYTES,
@@ -704,7 +712,7 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
         });
         expect(run.page.status).toBe("ok");
         for (const statement of run.plans) {
-          expect([name, scansOf(statement.plan, ["s", "statuses"])]).toEqual([name, []]);
+          expect([name, scansOf(statement.plan, WALKED_TABLES)]).toEqual([name, []]);
         }
         expect([
           name,
@@ -716,7 +724,13 @@ describe('the profile tabs’ reads (RES-7, docs/visibility.md "Read bounds")', 
       }
       return rows;
     };
-    const { before, after } = await staleStatistics(h, { capture, grow: () => newer(2000) });
+    const { before, after } = await staleStatistics(h, {
+      capture,
+      grow: async () => {
+        await newer(2000);
+        await growConditionWorld(h.store, alice.id, "cats");
+      },
+    });
     for (const name of Object.keys(TABS)) {
       expect([name, after[name]]).toEqual([name, before[name]]);
     }
