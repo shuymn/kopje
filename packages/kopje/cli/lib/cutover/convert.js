@@ -47,6 +47,7 @@ import {
   storedStatusUrl,
   withinIdentityBound,
   storedText,
+  storedTime,
 } from "./kopje-runtime.js";
 import { digestOf } from "./sql-script.js";
 import { fit, FULL_EDGE, SMALL_EDGE } from "./upload-rules.js";
@@ -97,7 +98,8 @@ const LEGACY_SETTINGS = /** @type {Record<string, string>} */ ({
 /** @typedef {Record<string, import('node:sqlite').SQLOutputValue>} Row a row as node:sqlite reads it */
 
 /**
- * 'YYYY-MM-DD HH:MM:SS[.fff]' (UTC, legacy cdate) or ISO 8601 to 'YYYY-MM-DDTHH:MM:SS.sssZ'; null when unparsable.
+ * 'YYYY-MM-DD HH:MM:SS[.fff]' (UTC, legacy cdate) or ISO 8601 to 'YYYY-MM-DDTHH:MM:SS.sssZ' (storedTime); null when
+ * unparsable or outside years 0 to 9999.
  * @param {unknown} value
  * @returns {string | null}
  */
@@ -106,8 +108,7 @@ function isoTime(value) {
     return null;
   }
   const text = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
-  const ms = Date.parse(text);
-  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+  return storedTime(Date.parse(text));
 }
 
 /** @param {unknown} value */

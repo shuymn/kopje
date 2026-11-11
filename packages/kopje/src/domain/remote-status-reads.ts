@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate } from "./link-cards";
@@ -80,15 +81,20 @@ export type StoredStatus = {
   spoiler_text: string;
   sensitive: number;
   language: string | null;
+  // As read (statusPublishedSql, statusEditedSql): what an edit's snapshot copies.
   published_at: string;
   edited_at: string | null;
-  remote_version: string | null;
+  // The last accepted version as stored: remote_version, else edited_at, else published_at, read as text (a number as
+  // its text, a BLOB as none), which the Update watermark parses as it always has.
+  watermark: string | null;
 };
 
 export function statusByUri(db: Db, uri: string): StoredStatus | undefined {
   return db.first<StoredStatus>(
-    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language, published_at, edited_at,
-			remote_version
+    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language,
+			${statusPublishedSql("statuses")} AS published_at, ${statusEditedSql("statuses")} AS edited_at,
+			CASE WHEN typeof(coalesce(remote_version, edited_at, published_at)) <> 'blob'
+				THEN CAST(coalesce(remote_version, edited_at, published_at) AS TEXT) END AS watermark
 		FROM statuses WHERE uri = ?`,
     uri,
   );

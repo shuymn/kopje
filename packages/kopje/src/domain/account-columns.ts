@@ -16,6 +16,7 @@ import {
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_VERIFIED_SHOWN,
   STATIC_URL_LIMIT,
+  statusPublishedSql,
 } from "../platform/stored-bounds";
 import { availableJoinedSql, REACHES_FOLLOWERS_SQL } from "./audience";
 import { REMOTE_FIELD_SOURCE_BYTES } from "./field-verification";
@@ -135,7 +136,7 @@ export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACC
 
 // The date of the account `a`'s newest status its followers reach.
 function lastStatusAtSql(a: string): string {
-  return `(SELECT substr(s.published_at, 1, 10) FROM statuses s
+  return `(SELECT substr(${statusPublishedSql("s")}, 1, 10) FROM statuses s
 		WHERE s.account_id = ${a}.id AND s.visibility IN ${REACHES_FOLLOWERS_SQL} ORDER BY s.id DESC LIMIT 1)`;
 }
 

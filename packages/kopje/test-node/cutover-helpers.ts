@@ -100,6 +100,7 @@ export async function verify(
     acceptTruncation?: boolean;
     imagesDir?: string;
     acceptMissingImages?: boolean;
+    baseTime?: number;
   } = {},
 ) {
   const { ok, report } = await verifyConversion({
@@ -107,7 +108,7 @@ export async function verify(
     dumpPath,
     acceptDeletions: options.acceptDeletions ?? false,
     acceptTruncation: options.acceptTruncation ?? false,
-    baseTime: 0,
+    baseTime: options.baseTime,
     env: {},
     imagesDir: options.imagesDir,
     acceptMissingImages: options.acceptMissingImages ?? false,
@@ -128,7 +129,24 @@ export async function opened(dumpPath: string) {
   return db;
 }
 
-// Applies SQL to a converted dump and writes it again as a self-consistent dump (as a converter bug would produce).
+// A converted dump's rows written again as a dump of the Store would hold them after the import: the Store's source
+// and the time of the dump, not the conversion's base time.
+export async function redumped(dir: string, dumpPath: string, createdAt: string): Promise<string> {
+  const db = await opened(dumpPath);
+  const path = join(dir, `redumped-${Math.random().toString(36).slice(2)}.dump`);
+  writeDump(db, {
+    path,
+    catalog: readCatalog(db),
+    migrations: migrationRecords(),
+    createdAt,
+    source: { build: "store", version: "test" },
+  });
+  db.close();
+  return path;
+}
+
+// Applies SQL to a converted dump and writes it again as a self-consistent dump (as a converter bug would produce),
+// with the converter's header.
 export async function tampered(dir: string, dumpPath: string, sql: string): Promise<string> {
   const db = await opened(dumpPath);
   db.exec("PRAGMA foreign_keys = OFF");
@@ -139,7 +157,7 @@ export async function tampered(dir: string, dumpPath: string, sql: string): Prom
     catalog: readCatalog(db),
     migrations: migrationRecords(),
     createdAt: new Date(BASE_TIME).toISOString(),
-    source: { build: "test", version: "test" },
+    source: { build: "kopje-admin convert", version: "test" },
   });
   db.close();
   return path;

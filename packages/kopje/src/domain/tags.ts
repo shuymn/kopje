@@ -1,6 +1,7 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { fromHex } from "../platform/dump-literals";
+import { statusPublishedSql } from "../platform/stored-bounds";
 import type { Page, PageQuery, Present } from "./accounts";
 import { visibleSql } from "./audience";
 import { optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
@@ -77,10 +78,11 @@ const TOO_MANY_FOLLOWED = "You have reached the maximum number of followed hasht
 // Seven days of uses and distinct authors, today (UTC) first, as Mastodon's TagSerializer#history: an anonymous public
 // aggregate (VIS-12). It counts public originals (Mastodon's Trends::Tags registers public statuses only) of available
 // authors (visibleSql with no viewer), so it is the same for every viewer, whatever they block or mute, and reveals
-// nothing a status's audience hides. Days come from published_at. The work is a range of the (name, status_id) index
-// of public hashtags (status_tags_public) cut by status id (RES-7): ids carry the publication time of statuses Kopje
-// created or received (domain/ids.ts), and the receipt time of ids a cutover kept, so the range holds the tag's public
-// statuses the instance received in the last seven days. The range drives, each status sought by id.
+// nothing a status's audience hides. Days come from the publication time as read (statusPublishedSql). The work is a
+// range of the (name, status_id) index of public hashtags (status_tags_public) cut by status id (RES-7): ids carry the
+// publication time of statuses Kopje created or received (domain/ids.ts), and the receipt time of ids a cutover kept,
+// so the range holds the tag's public statuses the instance received in the last seven days. The range drives, each
+// status sought by id.
 // `rows` 'full' (one hashtag: GET /api/v1/tags/:id and the writes on it) applies the rule to the whole range, so the
 // work follows the instance's receive volume. A number (a list, MD-5) takes the newest that many entries of the range
 // raw, before the rule: a boost or an unavailable author's public entry takes a slot, so a list may undercount. The
@@ -105,7 +107,7 @@ export function tagHistory(db: Db, tag: TagKey, now: number, rows: HistoryRows):
 					ORDER BY t.status_id DESC LIMIT ?3) c
 				CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = c.status_id WHERE ${rule}`;
   const days = db.all<{ day: string; uses: number; accounts: number }>(
-    `SELECT substr(s.published_at, 1, 10) AS day, count(*) AS uses, count(DISTINCT s.account_id) AS accounts
+    `SELECT substr(${statusPublishedSql("s")}, 1, 10) AS day, count(*) AS uses, count(DISTINCT s.account_id) AS accounts
 		FROM ${from} GROUP BY day`,
     ...(rows === "full" ? [tag.key, since] : [tag.key, since, rows]),
   );

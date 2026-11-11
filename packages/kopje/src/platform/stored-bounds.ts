@@ -424,10 +424,14 @@ const DOCUMENT = boundedText(INSTANCE_DOCUMENT_BYTES);
 const SHOWN = oneOf(DOMAIN_BLOCKS_SHOWN);
 // A document's stamp (the time an admin write changed it): written only by setInstanceSettings. SQLite's strftime
 // writes an hour of 24 back as given, which Date#toISOString never writes.
+// The acceptance rule of a stored time: 24 bytes, an hour below 24, and read back by strftime as itself.
+function isoTimeAcceptedSql(column: string): string {
+  return `length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
+	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column}`;
+}
+
 const STAMP: InstanceSettingBound = {
-  projection: (column) =>
-    `CASE WHEN length(CAST(${column} AS BLOB)) = 24 AND substr(${column}, 12, 2) < '24'
-	AND strftime('${ISO_TIME_FORMAT}', ${column}) = ${column} THEN ${column} END`,
+  projection: (column) => `CASE WHEN ${isoTimeAcceptedSql(column)} THEN ${column} END`,
   writer: (value) => (isIsoTime(value) ? value : null),
 };
 
@@ -2850,6 +2854,56 @@ BEGIN
   SELECT RAISE(ABORT, 'account_invitations: an invitation is added or removed, never changed');
 END;`,
   ].join("\n\n")}\n`;
+}
+
+// ---- Status times (statuses.published_at, edited_at)
+//
+// TEXT with no CHECK or trigger (0000_initial): a converted or imported row may hold any value there, and adding a
+// bound would rewrite every status (each row whole, so the cost grows with its content). The bound is kept at both ends
+// instead, as for account counts: the writers store storedTime's output only (a time they cannot store replaced as each
+// says), and every read that copies a status's time into an answer, a document or another row takes
+// statusPublishedSql and statusEditedSql, so no stored value past the form leaves SQLite.
+
+// The stored form of the time `ms` (ms since the epoch), or null when it is no time or its year is outside 0 to 9999.
+export function storedTime(ms: number): string | null {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const text = date.toISOString();
+  return isIsoTime(text) ? text : null;
+}
+
+// The longest stored time read in a format of SQLite's (a fraction of nanoseconds and a zone offset take 35), in UTF-8
+// bytes.
+const TIME_FORMAT_BYTES = 64;
+
+// `column` (a column, not an expression) in the stored form: as stored when it is in it, else the time SQLite reads in
+// it, else NULL. A value is read only when it is at most TIME_FORMAT_BYTES, holds no NUL and starts with a calendar
+// date (strftime reads a bare number as a Julian day), judged in that order; strftime applies a zone offset, rounds a
+// longer fraction to milliseconds (never past .999), and its '+0 seconds' carries an hour of 24 into the next day. The
+// bytes are judged first by octet_length, which SQLite answers from the record header for a column without loading the
+// value (test/status-times.test.ts reads the bytecode), so a long imported value costs no more than a short one.
+function storedTimeOfSql(column: string): string {
+  return `CASE WHEN octet_length(${column}) > ${TIME_FORMAT_BYTES} THEN NULL
+	WHEN ${isoTimeAcceptedSql(column)} THEN ${column}
+	WHEN instr(CAST(${column} AS BLOB), x'00') = 0 AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+	THEN ${isoTimeSql(`strftime('${ISO_TIME_FORMAT}', ${column}, '+0 seconds')`)} END`;
+}
+
+// A status's publication time as read (`s`, the statuses row's alias): its published_at in the stored form, else its
+// arrival (created_at), as a remote writer stores a time it cannot read, else the epoch, which no window counts as
+// recent. Never NULL.
+export function statusPublishedSql(s: string): string {
+  return `coalesce(${storedTimeOfSql(`${s}.published_at`)}, ${storedTimeOfSql(`${s}.created_at`)},
+	'1970-01-01T00:00:00.000Z')`;
+}
+
+// A status's edit time as read: NULL when it was never edited (octet_length is NULL only for NULL, and reads no value);
+// else its edited_at in the stored form, else its publication time as read, so an edited status stays edited.
+export function statusEditedSql(s: string): string {
+  return `CASE WHEN octet_length(${s}.edited_at) IS NULL THEN NULL
+	ELSE coalesce(${storedTimeOfSql(`${s}.edited_at`)}, ${statusPublishedSql(s)}) END`;
 }
 
 // ---- Account counts (accounts.followers_count, following_count, statuses_count)

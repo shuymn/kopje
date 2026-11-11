@@ -18,6 +18,7 @@ import {
   REMOTE_MEDIA_ACCOUNT_INDEX,
   REMOTE_MEDIA_OWNER_INDEX,
   statusMediaWindowSql,
+  storedTime,
 } from "../platform/stored-bounds";
 import { followActivity, followAnswerActivity, followUri, recordOutbound, undoFollowActivity } from "./activities";
 import { type FetchSigner, fetchSignerOf, instanceDomainOf } from "./actors";
@@ -2873,8 +2874,9 @@ const announce: Handler<"Announce"> = (db, actor, activity, input) => {
   if (original.local !== 1) {
     promoteQuote(db, originalId, quoteArrival(db, original.account_id, null), now);
   }
+  // A time it cannot store (none, unreadable, ahead of the clock or outside years 0 to 9999) is the arrival.
   const published = Date.parse(activity.published ?? "");
-  const publishedAt = new Date(Number.isNaN(published) || published > now ? now : published).toISOString();
+  const publishedAt = (published > now ? null : storedTime(published)) ?? new Date(now).toISOString();
   const boostId = insertWithFreshId(
     "statuses",
     () => remoteId(publishedAt, now),
