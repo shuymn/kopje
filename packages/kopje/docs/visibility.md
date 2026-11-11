@@ -994,7 +994,8 @@ A paged read whose rule hides rows reads a candidate window (`src/domain/windows
   hashtag timeline's `local`, `remote`, `only_media`, `all` and `none`) are tested by key on the candidates, outside the
   window's `LIMIT`, in rounds (`walkedWindow`) whose summed stream `LIMIT`s are at most `CONDITION_WALK` (2,000
   entries within the audience a page, a status counted once per stream that reads it). Each round continues from the
-  last candidate of the one before. A walk that collects its window's candidates, or reaches the end of its range,
+  last candidate of the one before. A walk whose first round rejects nothing answers as the read without conditions,
+  ending where that read's window ends; one that collects its window's candidates, or reaches the end of its range,
   answers as a single window would; one the budget cuts first continues from the last candidate it examined, which the
   audience passed, and its page may be short or empty.
 - It applies the rule to those candidates alone, each by its key, and returns the first that pass, at most a page.

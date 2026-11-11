@@ -124,6 +124,23 @@ describe("collecting the window's size keeps whether its round was cut (C4)", ()
     expect(once(4, false).cut).toBe(true);
     expect(once(3, true).cut).toBe(true);
   });
+
+  it("stops at a cut round short of the size when nothing was rejected, as the read without conditions does", () => {
+    const { round, rounds } = rawRange(1_000, false);
+    const window = walkedWindow(
+      (range, per) => {
+        const read = round(range, per);
+        return { ...read, candidates: read.candidates.slice(0, 2) };
+      },
+      (candidates) => new Set(candidates.map(({ id }) => id)),
+      start(false),
+      40,
+      1,
+      3,
+    );
+    expect(rounds).toHaveLength(1);
+    expect(window).toEqual({ candidates: [1_000, 999].map((n) => ({ id: id(n), o: 0 })), cut: true });
+  });
 });
 
 describe("collecting the window's size sets no end (C5)", () => {

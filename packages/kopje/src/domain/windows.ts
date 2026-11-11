@@ -77,9 +77,10 @@ export function windowJson(window: Window): string {
 // it keeps those `passing` accepts (a set of ids, read by key), in cursor order. Round 1's per-stream LIMIT is `first`,
 // each later one min(max(first, ⌊spent / streams⌋), ⌊(CONDITION_WALK − spent) / streams⌋), with `spent` the LIMITs
 // charged so far. It ends with the first `size` kept (no `end`: a next page examines again what lies past the last
-// kept; cut unless the round was exhausted and kept exactly `size`), at a round that was not cut, or cut at `end`, the
-// last candidate examined, once the budget left cannot pay one more entry per stream. Without conditions (`passing`
-// null) it is round 1 itself.
+// kept; cut unless the round was exhausted and kept exactly `size`), at a round that was not cut, at a cut round when no
+// round so far rejected a candidate (its window, as the read without conditions takes it), or cut at `end`, the last
+// candidate examined, once the budget left cannot pay one more entry per stream. Without conditions (`passing` null)
+// it is round 1 itself.
 export function walkedWindow(
   round: (range: { max: string; min: string }, per: number) => Window,
   passing: ((candidates: Window["candidates"]) => ReadonlySet<string>) | null,
@@ -91,6 +92,7 @@ export function walkedWindow(
   let range = { max: start.max, min: start.min };
   let per = Math.min(first, Math.floor(CONDITION_WALK / streams));
   let spent = 0;
+  let rejected = false;
   const kept: Window["candidates"][number][] = [];
   for (;;) {
     const window = round(range, int(per));
@@ -105,8 +107,11 @@ export function walkedWindow(
       // the whole of the cursor's range, as a single window of it would.
       return { candidates: kept.slice(0, size), cut: window.cut || kept.length > size };
     }
-    if (!window.cut) {
-      return { candidates: kept, cut: false };
+    rejected ||= passed.size < window.candidates.length;
+    // Nothing rejected yet: this round is the single window a read without conditions takes, so its page and links
+    // are that read's (AC5), ending where its merge ended.
+    if (!window.cut || !rejected) {
+      return { candidates: kept, cut: window.cut };
     }
     // A cut window holds the candidate it ended at (mergedWindow, windowOf).
     const last = window.candidates.at(-1)?.id;

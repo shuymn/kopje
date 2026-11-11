@@ -26,9 +26,11 @@ import {
   TAG_ALL,
   TAG_ANY,
   TAG_NEWER,
+  TAG_NONE,
   TAG_OLDER,
   TAG_REJECTED,
   type TagKind,
+  type TagRejection,
   tagMatches,
 } from "./condition-walk-helpers";
 import { migratedStore } from "./helpers";
@@ -44,6 +46,9 @@ const PRESENT = { origin: "https://kopje.test" };
 const PAGE = { limit: 20 };
 // The largest page the API asks for (src/mastodon/timelines.ts, src/mastodon/accounts.ts).
 const PAGE_MAX = { limit: 40 };
+// The hashtag rejection whose condition statement costs the most, as the ceiling test asserts: a remote author, as
+// the plan tests the author's domain after every all probe, every none probe and the media probe.
+const COSTLIEST_TAG_REJECTION = "remote";
 const TOKEN = "condition-walk-token";
 const credential = { tokenHash: TOKEN, scope: "read", now: NOW } as const;
 
@@ -143,7 +148,7 @@ type Reader = {
   operation: StoreOperation<never, unknown>;
   input: (page: PageQuery) => unknown;
   // The rejected rows the reader's world holds, and the matches it lists, newest first.
-  tagKind: TagKind;
+  tagKind: "remote" | "local";
   expected: string[];
   // The section's bases: the cursor just below its newer matches, and its newest older match.
   newer: bigint;
@@ -160,7 +165,12 @@ const accountReader = (name: string, c: Conditions): Reader => ({
   topOlder: String(ACCOUNT_OLDER + BigInt(OLDER - 1)),
 });
 
-const tagReader = (name: string, c: TagConditions, tagKind: TagKind, by: "all" | "local" | "remote"): Reader => ({
+const tagReader = (
+  name: string,
+  c: TagConditions,
+  tagKind: "remote" | "local",
+  by: "all" | "local" | "remote",
+): Reader => ({
   name,
   operation: tagTimeline,
   input: tagInput(c),
@@ -306,48 +316,57 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
   // statuses: a boost (audienceSql reads its original) for the round, and for the conditions a rejection by each of
   // only_media, tagged and exclude_replies alone, the costliest kept (the plan tests the reply column first, so a reply
   // skips both probes and one of the others runs them both, which the test asserts). The hashtag: five overlapping
-  // names (the tag and any's four), so each status is charged five times; all four all names present, so every all
-  // probe succeeds; none of four names, the last of which the row holds; media; and rejection by none or by the
-  // author's domain. The rule is read once at readWindow(40) = 120 such candidates.
+  // names (the tag and any's four), so each status is charged five times, under four all names, four none names,
+  // local=true and only_media, and a rejection at each point: each all name missing, each none name held (whichever
+  // the plan probes last), no media, a remote author; the costliest, named below, is asserted to cost at least each
+  // other and to be the one the ceiling uses. The rule is read once at readWindow(40) = 120 such candidates.
   it("charges a page at most entry cost × CONDITION_WALK + overhead × rounds + the rule read, at limit 40 with every name capped", async () => {
     type Fixture = {
+      name: string;
       kinds: { accountKind?: AccountKind; tagKind?: TagKind };
       reader: Pick<Reader, "operation" | "input">;
     };
+    const capped = {
+      operation: tagTimeline,
+      input: tagInput({ any: TAG_ANY, all: TAG_ALL, none: TAG_NONE, local: true, onlyMedia: true }),
+    };
+    const rejections: [string, TagRejection][] = [
+      ...TAG_ALL.map((name): [string, TagRejection] => [`missing ${name}`, { missing: name }]),
+      ...TAG_NONE.map((name): [string, TagRejection] => [`holding ${name}`, { holds: name }]),
+      ["no media", { media: false }],
+      ["remote", { remote: true }],
+    ];
     const endpoints: {
       name: string;
       streams: number;
       fixtures: Fixture[];
+      // The fixture whose condition statement costs the most, and the ones that must cost less.
+      costliest: string;
+      cheaper: string[];
       bare: Pick<Reader, "operation" | "input">;
     }[] = [
       {
         name: "account statuses",
         streams: 1,
         fixtures: (["boost", "reply", "untagged", "bare"] as const).map((accountKind) => ({
+          name: accountKind,
           kinds: { accountKind },
           reader: {
             operation: accountStatuses,
             input: accountInput({ onlyMedia: true, tagged: "rare", excludeReplies: true }),
           },
         })),
+        costliest: "untagged",
+        // The reply check runs first: a reply skips the probes a rejection by tagged runs.
+        cheaper: ["reply"],
         bare: { operation: accountStatuses, input: accountInput({}) },
       },
       {
         name: "hashtag",
         streams: 1 + TAG_ANY.length,
-        fixtures: (["none", "author"] as const).map((tagKind) => ({
-          kinds: { tagKind },
-          reader: {
-            operation: tagTimeline,
-            input: tagInput({
-              any: TAG_ANY,
-              all: TAG_ALL,
-              none: ["z1", "z2", "z3", "y"],
-              local: true,
-              onlyMedia: true,
-            }),
-          },
-        })),
+        fixtures: rejections.map(([name, tagKind]) => ({ name, kinds: { tagKind }, reader: capped })),
+        costliest: COSTLIEST_TAG_REJECTION,
+        cheaper: [],
         bare: { operation: tagTimeline, input: tagInput({ any: TAG_ANY }) },
       },
     ];
@@ -389,7 +408,7 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
             const c = slope(await of(1), await of(K));
             conditionEntry = Math.max(conditionEntry, c.entry);
             conditionOverhead = Math.max(conditionOverhead, c.overhead);
-            conditionEntries[JSON.stringify(fixture.kinds)] = c.entry;
+            conditionEntries[fixture.name] = c.entry;
             // The rule statement of a read without conditions, run at readWindow(limit) of the rejected rows.
             const bare = await recorded(s, endpoint.bare.operation, endpoint.bare.input(page));
             const ruled = bare.statements.find((st) => RULE.test(st.query))!;
@@ -399,21 +418,20 @@ describe("a page's walk and rule read within a ceiling derived from its statemen
             rule = Math.max(rule, await rowsOf(s, ruled.query, ruled.params.with(2, JSON.stringify(window))));
           }
         }
-        pages.push({ name: JSON.stringify(fixture.kinds), rows, totals });
+        pages.push({ name: fixture.name, rows, totals });
       }
       const ceiling = Math.ceil(
         (roundEntry + conditionEntry) * CONDITION_WALK +
           (roundOverhead + conditionOverhead) * CONDITION_WALK_ROUNDS +
           rule,
       );
-      if (endpoint.streams === 1) {
-        // The reply check runs first: a reply costs less than a rejection that ran the probes.
-        const probed = Math.max(
-          conditionEntries['{"accountKind":"untagged"}']!,
-          conditionEntries['{"accountKind":"bare"}']!,
-        );
-        expect(probed).toBeGreaterThan(conditionEntries['{"accountKind":"reply"}']!);
-        expect(conditionEntry).toBe(probed);
+      const costliest = conditionEntries[endpoint.costliest]!;
+      expect([endpoint.name, conditionEntry]).toEqual([endpoint.name, costliest]);
+      for (const [name, entry] of Object.entries(conditionEntries)) {
+        expect([endpoint.name, name, entry <= costliest]).toEqual([endpoint.name, name, true]);
+      }
+      for (const name of endpoint.cheaper) {
+        expect([endpoint.name, name, conditionEntries[name]! < costliest]).toEqual([endpoint.name, name, true]);
       }
       for (const page of pages) {
         expect([endpoint.name, page.name, page.rows[1]]).toEqual([endpoint.name, page.name, page.rows[0]]);
@@ -529,56 +547,56 @@ const matchesOf = (rows: readonly Row[], ascending: boolean) =>
     .map(rowId);
 
 describe("a walk that rejects nothing answers as the read without conditions (AC5, C4)", () => {
-  // Two names, limit 20 (a window of 60, 40 a name), every status local (local=true rejects none) and by a suspended
-  // account, so the rule hides them all and the page is empty: only the window's cut decides its links.
+  // Two names, limit 20 (a window of 60, 40 a name), every status local (local=true rejects none), by a suspended
+  // account (the rule hides them all, so only the window's cut decides the links) or by an available one (the page
+  // shows them), each walked down and up:
   //   - exhausted, exactly 60: 30 a name, no stream fills, the union is the window;
   //   - exhausted, 62: 31 a name, the union passes the window;
-  //   - truncated, exactly 60: walking down, the first name fills its 40 below the second's 20, with more of it below.
-  //     Only downward: walking up, the first name fills at 40 below the second's rows, so round 1's window holds 40
-  //     and the walk goes on to collect 60, where the read without conditions stops at its 40.
-  const both = [PAGE, { ...PAGE, minId: "1" }];
-  const cases: [string, Row[], PageQuery[]][] = [
+  //   - truncated, exactly 60 walking down: the first name fills its 40 below the second's 20, with more of it below;
+  //     walking up, it fills its 40 (the 5 low rows and 35 more) below the second's rows, so the window ends there.
+  const cases: [string, (author: string) => Row[]][] = [
     [
       "exhausted, exactly the window",
-      Array.from({ length: 60 }, (_, i) => ({ offset: 100 + i, author: GONE, names: [i % 2 === 0 ? "m0" : "m1"] })),
-      both,
+      (author) =>
+        Array.from({ length: 60 }, (_, i) => ({ offset: 100 + i, author, names: [i % 2 === 0 ? "m0" : "m1"] })),
     ],
     [
       "exhausted, past the window",
-      Array.from({ length: 62 }, (_, i) => ({ offset: 100 + i, author: GONE, names: [i % 2 === 0 ? "m0" : "m1"] })),
-      both,
+      (author) =>
+        Array.from({ length: 62 }, (_, i) => ({ offset: 100 + i, author, names: [i % 2 === 0 ? "m0" : "m1"] })),
     ],
     [
       "truncated, exactly the window",
-      [
-        ...Array.from({ length: 40 }, (_, i) => ({ offset: 1_000 + i, author: GONE, names: ["m0"] })),
-        ...Array.from({ length: 20 }, (_, i) => ({ offset: 1_100 + i, author: GONE, names: ["m1"] })),
-        ...Array.from({ length: 5 }, (_, i) => ({ offset: 100 + i, author: GONE, names: ["m0"] })),
+      (author) => [
+        ...Array.from({ length: 40 }, (_, i) => ({ offset: 1_000 + i, author, names: ["m0"] })),
+        ...Array.from({ length: 20 }, (_, i) => ({ offset: 1_100 + i, author, names: ["m1"] })),
+        ...Array.from({ length: 5 }, (_, i) => ({ offset: 100 + i, author, names: ["m0"] })),
       ],
-      [PAGE],
     ],
   ];
 
   it.each(cases)(
-    "%s: the same page, cut and cursors",
-    async (_name, rows, pages) => {
-      const s = await rowsWorld(rows);
-      for (const page of pages) {
-        const answer = async (local: boolean) =>
-          read(s, tagTimeline, {
-            ...tagInput({ local, any: ["m1"] }, null)(page),
-            tag: "m0",
-          });
-        const bare = await answer(false);
-        expect(bare.items).toEqual([]);
-        expect(await answer(true)).toEqual(bare);
+    "%s: the same page, cut and cursors, both ways",
+    async (_name, rows) => {
+      for (const author of [GONE, BEA]) {
+        const s = await rowsWorld(rows(author));
+        for (const page of [PAGE, { ...PAGE, minId: "1" }]) {
+          const answer = async (local: boolean) =>
+            read(s, tagTimeline, {
+              ...tagInput({ local, any: ["m1"] }, null)(page),
+              tag: "m0",
+            });
+          const bare = await answer(false);
+          expect(bare.items.length === 0).toBe(author === GONE);
+          expect([author, page, await answer(true)]).toEqual([author, page, bare]);
+        }
       }
     },
     120_000,
   );
 
   it("leaves the exhausted exact window uncut, with no cursor", async () => {
-    const s = await rowsWorld(cases[0]![1]);
+    const s = await rowsWorld(cases[0]![1](GONE));
     const page = await read(s, tagTimeline, {
       ...tagInput({ local: true, any: ["m1"] }, null)(PAGE),
       tag: "m0",

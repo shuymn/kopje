@@ -29,8 +29,8 @@ export const CONDITION_WALK_ROUNDS = 7;
 //       remote: REMOTE's, without media, with the hashtag y: local, only_media, all=[x] (it lacks x) and none=[y]
 //         reject it;
 //       local: `local`'s, otherwise as remote: remote=true rejects it;
-//       none: `local`'s, with media and y: only none (y among four names) rejects it, after every all probe passed;
-//       author: REMOTE's, with media and without y: only local=true rejects it, after every name probe passed.
+//       a TagRejection: `local`'s, with media, x and every all name, rejected by one condition of the capped query
+//         (local=true, only_media, all=TAG_ALL, none=TAG_NONE) alone.
 export const REMOTE = "700000000000000003";
 export const PARTNER = "700000000000000004";
 export const TAG_ANY = ["n1", "n2", "n3", "n4"];
@@ -47,7 +47,12 @@ const BOOSTED = 800000000000000000n;
 const MEDIA = 900000000000000000n;
 
 export type AccountKind = "plain" | "boost" | "reply" | "untagged" | "bare";
-export type TagKind = "remote" | "local" | "none" | "author";
+export type TagKind = "remote" | "local" | TagRejection;
+// A rejected row that passes every condition of the capped query but one: it lacks the all name `missing`, holds the
+// none name `holds`, has no media, or is REMOTE's.
+export type TagRejection = { missing?: string; holds?: string; media?: false; remote?: true };
+// The four none names of the capped hashtag query.
+export const TAG_NONE = ["z1", "z2", "z3", "y"];
 
 export type ConditionWorld = {
   account: string;
@@ -173,9 +178,16 @@ export async function seedConditionWorld(store: StoreStub, w: ConditionWorld): P
         ? { author: REMOTE, tags: [...names, ...TAG_ALL, "y"] }
         : tagKind === "local"
           ? { author: w.local, tags: [...names, ...TAG_ALL, "y"] }
-          : tagKind === "none"
-            ? { author: w.local, withMedia: true, tags: [...names, ...TAG_ALL, "x", "y"] }
-            : { author: REMOTE, withMedia: true, tags: [...names, ...TAG_ALL, "x"] },
+          : {
+              author: tagKind.remote === true ? REMOTE : w.local,
+              withMedia: tagKind.media !== false,
+              tags: [
+                ...names,
+                ...TAG_ALL.filter((name) => name !== tagKind.missing),
+                "x",
+                ...(tagKind.holds === undefined ? [] : [tagKind.holds]),
+              ],
+            },
     );
     statuses(TAG_NEWER, newer, tagMatch);
   });
