@@ -312,11 +312,14 @@ export function createApp({
     if (error instanceof HTTPException) {
       return error.res === undefined ? mastodonError(error.status, error.message || "Error") : error.getResponse();
     }
-    // The route template, not the URL: a path or query can carry a token or content (DATA-5).
+    // The route template, not the URL: a path or query can carry a token or content (DATA-5). A middleware that failed
+    // before the route (WEB-6's domain read) logs the template of the route it stood before.
+    const routes = matchedRoutes(c);
+    const route = routes.slice(c.req.routeIndex).find((r) => r.method !== METHOD_NAME_ALL)?.path ?? routePath(c);
     console.error({
       event: "kopje.error",
       method: loggedMethod(c.req.method),
-      route: routePath(c),
+      route,
       status: 500,
       ...errorFields(error),
     });
