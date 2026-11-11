@@ -336,6 +336,7 @@ function targetsOf(
   withdraws: boolean,
   reachOf: readonly ReachOf[],
   earlierReceivers = true,
+  personalInbox = false,
 ): { targets: Target[]; voters: Set<string> } {
   // Neutral copies by inbox; personal copies by recipient, kept apart so one never replaces the other.
   const neutral = new Map<string, Behind>();
@@ -370,7 +371,7 @@ function targetsOf(
     for (const account of recipients.accounts) {
       const personal = place(account.uri);
       add(
-        personal ? account.inbox_url : (account.shared_inbox_url ?? account.inbox_url),
+        personal || personalInbox ? account.inbox_url : (account.shared_inbox_url ?? account.inbox_url),
         personal ? account.uri : null,
         account,
       );
@@ -456,15 +457,18 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // of a status they hold (Create#create_status) and an Update of one they do not, so one of the pair applies either way,
 // and the delivered Create's receipt makes later edits an Update alone.
 // options.withdraws: a Reject that ends an accepted follow, a retraction (outboundKind). options.audienceOnly: a
-// retraction sent to its audience alone, not to the earlier receivers of what it withdraws (R38's severing Reject,
-// blocks.ts endFollow: a Follow's Reject matters to the follower's server only, at its current inbox, as Mastodon's
-// RejectFollowService sends it).
+// retraction sent to its audience alone, not to the earlier receivers of what it withdraws. options.personalInbox: a
+// neutral copy to each addressed account at its personal inbox, never its shared one. R38's severing Reject takes both
+// (blocks.ts endFollow): a Follow's Reject matters to the follower's server only, at its current personal inbox, as
+// Mastodon's reject_remote_follows! sends it to inbox_url.
+export type OutboundOptions = { withdraws?: boolean; audienceOnly?: boolean; personalInbox?: boolean };
+
 export function enqueueActivity(
   db: Db,
   signerId: string,
   envelope: DeliveryEnvelope,
   now: number,
-  options: { withdraws?: boolean; audienceOnly?: boolean } = {},
+  options: OutboundOptions = {},
 ): void {
   const found = targetsOf(
     db,
@@ -474,6 +478,7 @@ export function enqueueActivity(
     options.withdraws === true,
     envelope.reachOf ?? [],
     options.audienceOnly !== true,
+    options.personalInbox === true,
   );
   const { voters } = found;
   let targets = found.targets;

@@ -52,6 +52,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A remote quote of a local status that was detached when the quoted status was deleted now stays deleted when an
   `Update` of the quoting status naming it arrives later. Before, that `Update` turned it pending with no quoted status.
   A quote already revived this way stays pending. No migration, no `wrangler.jsonc` change.
+- Suspending a remote account through the admin API now keeps its pending follow requests to local accounts, as
+  Mastodon does: they stay out of the follow request list and cannot be answered while it is suspended, and can be
+  answered again after it is unsuspended. Before, the suspension deleted them, so the remote server kept a request that
+  could never be answered. A request deleted by an earlier suspension is not restored. An instance domain block still
+  deletes the requests of the accounts it covers, as Mastodon does. No migration, no `wrangler.jsonc` change.
+- The `Reject` that a remote account's suspension sends for each of its follows of a local account now goes to the
+  follower's personal inbox, as Mastodon sends it, instead of its shared inbox. No migration, no `wrangler.jsonc`
+  change.
 
 ### Instance changes
 
