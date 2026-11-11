@@ -3573,7 +3573,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   counts, tag history, login, outbound reach (the status, its parent, quoters and followers), the send-time check, the
   personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery (`test/context-work.test.ts`,
   `test/conversations.test.ts`, `test/featured-tags.test.ts`, `test/tags.test.ts`, `test/oauth.test.ts`,
-  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). Bounded writes seek
+  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The presented
+  accounts' witnesses grow accounts, local_accounts and follows (the profile tabs' also statuses and the condition
+  walk's tables) and check the access paths to those three: `a` and `l` by key, a follow by its rowid, no scan of any;
+  not the status, field and cache tables the presenter also reads. The `a INDEXED BY` of the owned lists' window
+  (`windowAccountIds`) and of the follow lists' window join changes no plan, so no witness fails without it. Bounded
+  writes seek
   their targets too: a write of an INTEGER PRIMARY KEY table runs one statement per row its bounded selection returns
   (`src/db/by-ids.ts`), a text-keyed target names its key index, and an OR of two columns is two probes, each through
   its own index. An account's moved-to accounts are read by key from the chunk's ids, a document's `movedTo` is

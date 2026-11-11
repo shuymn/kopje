@@ -27,7 +27,12 @@ import { community, remoteAccount } from "./status-helpers";
 
 // The account presenter's statements and their siblings that read accounts `a`, with their local rows `l`, by key
 // (accounts.ts ACCOUNT_FROM, LOCAL_ROW_JOIN), and the follow lists' window joins (followEdgeSql), with statistics taken
-// on a Store of two accounts and one follow, then 600 accounts (half of them local) and 300 follows added (RES-7).
+// on a Store of two accounts and one follow (RES-7). What grows is accounts, local_accounts and follows only (300
+// remote accounts, 300 local ones with their local rows, 300 follows among them): the witness covers the access paths
+// to those tables (no scan of `a`, `l` or `f`, a key seek of `a` and `l`, a rowid seek of `f`), not the status, field
+// and cache tables the captured statements also read. Two pins change no plan here and no revert of them fails: the
+// `a INDEXED BY` of windowAccountIds and of the follow lists' window join, where the planner already seeks `a` as the
+// inner side of the CROSS JOIN; they keep the shape of their siblings.
 
 const present = { origin: "https://kopje.test" };
 
@@ -132,31 +137,16 @@ describe("account presentation with stale statistics (RES-7)", () => {
         name,
         details.some((d) => /^SEARCH a USING (COVERING )?INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/.test(d)),
       ]).toEqual([name, true]);
+      // Every read presents accounts with their local rows, so each seeks one by its key.
+      expect([
+        name,
+        details.some((d) =>
+          /^SEARCH l USING (COVERING )?INDEX sqlite_autoindex_local_accounts_1 \(account_id=\?\)/.test(d),
+        ),
+      ]).toEqual([name, true]);
       expect([name, read.plans.map((statement) => statement.rows)]).toEqual([
         name,
         before[name]!.plans.map((statement) => statement.rows),
-      ]);
-    }
-    // The reads that use the joined local row seek it by its key (a statement whose filter reads no column of it, as
-    // the endorsements' window, drops the join).
-    for (const name of [
-      "getAccount",
-      "credentialAccount",
-      "getAccounts",
-      "accountsOf",
-      "partialAccountsOf",
-      "endorsements",
-      "followers",
-      "following",
-      "followRequests",
-    ]) {
-      expect([name, after[name]!.plans.flatMap((statement) => statement.plan)]).toEqual([
-        name,
-        expect.arrayContaining([
-          expect.stringMatching(
-            /^SEARCH l USING (COVERING )?INDEX sqlite_autoindex_local_accounts_1 \(account_id=\?\)/,
-          ),
-        ]),
       ]);
     }
     // The follow lists' window joins seek each follow by its rowid.

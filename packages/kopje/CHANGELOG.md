@@ -64,10 +64,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The `Reject` that a remote account's suspension sends for each of its follows of a local account now goes to the
   follower's personal inbox, as Mastodon sends it, instead of its shared inbox. No migration, no `wrangler.jsonc`
   change.
-- Presenting accounts reads each account, its local row and, for the follow lists and follow requests, each follow by
-  key when the Store's statistics are older than its growth. Before, a profile page, `GET /api/v1/accounts/:id`,
-  `verify_credentials`, account lists and other answers that present accounts could read every account or every
-  local account for each one shown, and the follow lists every follow. No migration, no `wrangler.jsonc` change.
+- Presenting accounts reads each account and its local row by key, and the follow lists and follow requests each
+  follow by key, when the Store's statistics are older than the growth of its accounts, local accounts or follows.
+  Before, a profile page, `GET /api/v1/accounts/:id`, `verify_credentials`, account lists and other answers that
+  present accounts could read every account or every local account for each one shown, and the follow lists every
+  follow. No migration, no `wrangler.jsonc` change.
 
 ## [0.2.1] - 2026-11-03
 
