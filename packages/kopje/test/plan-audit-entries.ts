@@ -3300,7 +3300,8 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     scans: ["stream_events: SCAN e"],
     site: "src/domain/streaming.ts#<anonymous> in streamEvents",
     disposition: "bounded",
-    reason: "the journal spans at most 4,096 ids: its triggers record nothing past that (migration 0026_streaming)",
+    reason:
+      "stream_events holds at most 4,097 rows: its triggers insert only while max(id) - min(id) < 4,096, so its ids span at most 4,096 (migration 0026_streaming)",
   },
   {
     id: "6c20d93b9d43e0dc",

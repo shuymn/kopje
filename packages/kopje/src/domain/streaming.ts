@@ -252,8 +252,8 @@ export const streamEvents = readOperation<
   { position: StreamPosition; ceiling: string; events: StreamEvent[]; head: string; tail: string }
 >((db, { limit }) => {
   const { position, ceiling } = readCursor(db);
-  // The journal spans at most 4,096 ids (migration 0026_streaming); a notification's recipient is read by its key, in
-  // a correlated lookup the plan cannot turn into a walk of the notifications (RES-7).
+  // The journal's ids span at most 4,096, so it holds at most 4,097 rows (migration 0026_streaming); a notification's
+  // recipient is read by its key, in a correlated lookup the plan cannot turn into a walk of the notifications (RES-7).
   const rows = db.all<{ id: string; kind: string; subject: string; recipient: string | null }>(
     `SELECT CAST(e.id AS TEXT) AS id, e.kind, e.subject,
 			CASE WHEN e.kind = 'notification'

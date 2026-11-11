@@ -15,6 +15,8 @@ import {
   sampleKey,
   statementId,
 } from "../test/plan-audit.js";
+import { sources } from "./source-scan.js";
+import { sqlExecutors } from "./sql-executors.js";
 
 // The pure part of the plan audit (test/plan-audit.ts): identity, provenance, classification and the decision. Its
 // claims on workerd's planner are test/plan-audit.test.ts.
@@ -288,9 +290,27 @@ function at(frame: string, site: string): boolean {
   return head === name || head!.endsWith(`.${name}`) || enclosing === name;
 }
 
-// The pending and write entries of any group first recorded at a fixed row's functions, whatever they scan, that no
-// other row names by id (a function may hold another row's statement, as getOutbox holds group 2's outbox hydration):
-// a fixed row's statements are all pinned, so any such entry is a residual its sweep left.
+// The shared executors of the domain code (test-node/sql-executors.ts), as `path#name`.
+const EXECUTORS = sqlExecutors([...sources("src/domain"), ...sources("src/db")]);
+
+// Whether the frame `frame` is a shared executor's (a method's name without its object).
+function executor(frame: string): boolean {
+  const [path, rest] = frame.split("#") as [string, string];
+  const head = rest.split(" in ")[0]!;
+  return EXECUTORS.has(`${path}#${head.slice(head.lastIndexOf(".") + 1)}`);
+}
+
+// The frames of an entry's site that may hold its statement: the first, and while that is a shared executor's, the
+// next, up to the first that is not.
+function readerFrames(site: string): string[] {
+  const frames = site.split(" < ");
+  const end = frames.findIndex((frame) => !executor(frame));
+  return frames.slice(0, end === -1 ? frames.length : end + 1);
+}
+
+// The pending and write entries of any group recorded at a fixed row's functions (readerFrames), whatever they scan,
+// that no other row names by id (a function may hold another row's statement, as getOutbox holds group 2's outbox
+// hydration): a fixed row's statements are all pinned, so any such entry is a residual its sweep left.
 function residuals(entries: readonly PlanAuditEntry[]): string[] {
   const fixed = ROWS_1468.filter((row) => row.status === "fixed").flatMap((row) => row.sites);
   const named = new Set(ROWS_1468.flatMap((row) => ("ids" in row && row.ids !== undefined ? row.ids : [])));
@@ -299,7 +319,7 @@ function residuals(entries: readonly PlanAuditEntry[]): string[] {
       (entry) =>
         (entry.disposition === "pending" || entry.disposition === "write") &&
         !named.has(entry.id) &&
-        fixed.some((site) => at(entry.site.split(" < ")[0]!, site)),
+        readerFrames(entry.site).some((frame) => fixed.some((site) => at(frame, site))),
     )
     .map((entry) => entry.id);
 }
@@ -351,6 +371,37 @@ describe("plan audit baseline", () => {
 });
 
 describe("plan audit residuals", () => {
+  // The derivation finds the executors that run what their callers wrote, through each other, and not the readers
+  // that write their own statements and hand them on.
+  it("derives the shared executors from the source", () => {
+    for (const shared of ["audience.ts#run", "audience.ts#select", "audience.ts#union", "windows.ts#singleWindow"]) {
+      expect(EXECUTORS, shared).toContain(`src/domain/${shared}`);
+    }
+    for (const reader of [
+      "web-pages/status.ts#pageStatus",
+      "statuses.ts#interactorsWithin",
+      "actors.ts#localActorOf",
+    ]) {
+      expect(EXECUTORS, reader).not.toContain(`src/domain/${reader}`);
+    }
+  });
+
+  // The status page's read by its URI as group 2's sweep found it: its first frames are statusReads' executors
+  // (audience.ts `run` and `select`), and its reader, pageStatus, a fixed row's function, comes after them.
+  it("fails the status page by its URI put back, recorded through statusReads", () => {
+    const entry: PlanAuditEntry = {
+      id: "d21f97ba649047ca",
+      scans: [
+        "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+        "statuses: SCAN s",
+      ],
+      site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/web-pages/status.ts#pageStatus < src/domain/web-pages/status.ts#targetStatus < src/domain/web-pages/status.ts#<anonymous> in embeddedStatus",
+      disposition: "pending",
+      issue: "#1468 group 2",
+    };
+    expect(residuals([...PLAN_AUDIT_ENTRIES, entry])).toEqual([entry.id]);
+  });
+
   // Statements of #1468's sweeps put back as they stood before them, each a residual of a fixed row whatever its group
   // or its scans.
   it.each([
@@ -362,6 +413,13 @@ describe("plan audit residuals", () => {
     ["the journal's recipients", "src/domain/streaming.ts#<anonymous> in streamEvents", "notifications: SCAN n", 2],
     ["a delete's tombstone", "src/domain/streaming.ts#tombstoneFeeds", "stream_delete_tombstones: SCAN t", 2],
     ["the outbox's hydration", "src/domain/local-notes.ts#<anonymous> in getOutbox", "statuses: SCAN o LEFT-JOIN", 2],
+    // Through a shared executor (windows.ts singleWindow) to the reader that wrote the statement.
+    [
+      "the interactors' window",
+      "src/domain/windows.ts#singleWindow < src/domain/statuses.ts#interactorsWithin < src/domain/statuses.ts#<anonymous>",
+      "favourites: SCAN favourites",
+      2,
+    ],
     ["the follow walk of a collection page", "src/domain/actors.ts#<anonymous> in getCollection", "follows: SCAN f", 5],
     [
       "NodeInfo's active users",
