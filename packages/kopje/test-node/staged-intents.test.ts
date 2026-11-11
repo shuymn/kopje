@@ -9,7 +9,9 @@ import { guardFixtures, inventoryDiff, ownerOf, parse, sources, type Source } fr
 // calls (test/retraction-staging.test.ts, "keeps its intent while every chunk it has written is delivered") and a
 // moderation staging's replaceWaiting (test/admin-suspension.test.ts, "sends the restoration to a non-follower even
 // when the profile is edited before it is staged"). This inventory fails on any other delete, which then needs a
-// witness of its own.
+// witness of its own. An import's reset deletes every row of each dumped table by name (deleteRows in
+// src/platform/store-admin.ts, which names no table here), staged intents included: it replaces the whole Store, so
+// no trigger refuses a staged delete (docs/threat-model.md RES-6) and this inventory stays the guard.
 const SOURCES = sources("src");
 
 const EXPECTED = { "src/domain/deliveries.ts dropSettledActivity": 1 };

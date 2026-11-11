@@ -115,6 +115,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   from then on; a dump holding more now fails to import with `status_pins: more pins than the account may keep` (a
   dump taken before 0089 is trimmed by the upgrade instead). `wrangler.jsonc`: unchanged. This adds a Store migration,
   so the release is at least a minor version.
+- Removing the last status of a direct-message conversation of an account whose streaming sequence is already at the
+  largest INTEGER (only a restored Store can hold one) is now refused and rolled back, as that account's other
+  conversation writes already are (#1452, DATA-6). Before, it stored the next value as a floating-point number in the
+  conversation and the streaming mark, which the `direct` stream then compared inexactly. Migration
+  `0090_exact_conversation_seq` (the trigger made again; it reads no row, 2 ms in one local run of the migration
+  bench). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version.
 
 ### Instance changes
 
