@@ -8,6 +8,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Added
+
+- A remote author's proven `Delete` of a public or unlisted status that local accounts quoted is now forwarded through
+  each local quote, in any state, as Mastodon does for quotes and as Kopje already did for boosts (#1255, VIS-3): one
+  intent per local account, signed by it, carrying its boost and quoting statuses. A public, unlisted or private
+  quoting status reaches its author's followers and the inboxes that received it; a direct or limited one reaches only
+  the inboxes that received it. A quoting status already being deleted forwards nothing, and at most 64 quoting
+  statuses and 16 accounts forward per `Delete` (`kopje.inbox.forward_capped` gains a `quotes` field when the quote
+  cap is passed). A `Delete` an earlier build applied before the upgrade forwarded through boosts only. Migration
+  `0091_live_local_quotes` copies each local quoting status's `withdrawn` onto its quote, kept by triggers, and indexes
+  the live local quotes (one pass over the quotes; a median of 581 ms in local runs of the migration bench, 567 ms with
+  `0090` in one upgrade). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a
+  minor version, and rolling back past it needs a point-in-time restore.
+
 ### Fixed
 
 - Removing the last status of a direct-message conversation of an account whose streaming sequence is already at the

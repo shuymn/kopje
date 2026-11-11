@@ -159,8 +159,8 @@ against their own instance. TLS is assumed between all parties.
   missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a valid proof on
   another activity type and on the `Delete` of a status), `test/inbox.test.ts` ("records no retraction for input that
   fails ID-1"). Kopje's own stamp `Delete`s carry such a proof (VIS-28), so a server relaying one can be believed.
-  A remote author's own `Delete` of a status that local accounts boosted is forwarded (VIS-3) only once that proof
-  verifies the same way; a proof that is present but does not verify, or none, forwards nothing, and the `Delete`
+  A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that
+  proof verifies the same way; a proof that is present but does not verify, or none, forwards nothing, and the `Delete`
   applies as its actor's (`test/forward-delete.test.ts` ("an invalid proof deletes and forwards nothing", "an FEP-8b32
   proof forwards too")).
   See `src/federation/ld-sign.ts`, `test/quote-requests.test.ts` and the fedify-usage lint rule
@@ -338,7 +338,8 @@ against their own instance. TLS is assumed between all parties.
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
   proof is asked for, fences it, and two deliveries held at their proofs record one set (`test/forward-delete.test.ts`
-  ("mid-job ask for no proof", "two proven requests held at their proof record one set")).
+  ("mid-job ask for no proof", "two proven requests held at their proof record one set", "asks for the proof once for a
+  quote-only original")).
 - **ID-8: only ActivityStreams media types become objects.** A fetched document is used as an actor, key or object only
   if served as `application/activity+json` or `application/ld+json` with the ActivityStreams profile, as Mastodon
   requires, and only if its root is a JSON object (JSON-LD would fetch a string root through the context loader). Other
@@ -439,26 +440,40 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the boost only from the outbox.
   A remote author's `Delete` of its own public or unlisted original, its author proof verified (ID-1), is forwarded
   as received by each local account holding a kept boost of it that is not direct or limited (a converted one, which
-  its booster's followers may not see, forwards nothing), at most `MAX_FORWARD_OWNERS` (16, the first by account
-  id; a suspended booster's too), for a body of at most `FORWARD_BODY_MAX` (65,536) UTF-8 bytes as serialized holding
-  no number JSON cannot carry: one immutable intent per booster, signed by it in its own lanes (NET-2), recorded in the
-  `Delete`'s first transaction, whose hide fixes the kept boosts (VIS-1), its audience the boost (`Audience.shares`).
-  The status's job, or its author's purge, stages it before any boost of the status is withdrawn: the booster's
-  followers by shared inbox as its `Announce` went, and the boost's receipts and the rows and unexpanded targets of its
-  earlier activities, whatever the forwarded `to` says. In each lane the `Announce` goes before the forward, and the
-  forward before the boost's `Undo` (an `Announce` still unsent may be dropped once the original is gone). A forward has
-  a subject of its own: it neither supersedes nor is superseded by another activity, the stamp's forward (VIS-28) or a
-  withdrawing `Reject` of a `Follow` with the same id included. Its shared-inbox fallback (NET-2) moves a row only when
-  the row's provenance names exactly one recipient behind that inbox with a personal inbox on the same origin; a row
-  serving several recipients, more than 16, or unknown ones (an inbox the boost reached already, or whose delivery of
-  it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has the boost only from the outbox or a
-  fetch is not reached, nor is a quote's server (only boosts forward). The staging resolves the shares one at a time and
-  reads the followers once after them (RES-6). _Enforced (main):_ `deleteObject`, `recordForwards`, `stageForwards` and
-  `withdrawLocalBoosts` in `src/domain/inbox.ts`, `shareReaches`, `stagedList` and `stagedBoost` in
-  `src/domain/audience.ts`, `targetsOf`, `stageRetraction` and `forwardFallback` in `src/domain/deliveries.ts`;
-  `test/forward-delete.test.ts` ("one intent by the booster", "stages every forward before its boost is withdrawn",
-  "moves a row in place only for one recipient", "both forwards deliver in full", "forwards nothing through a converted
-  limited boost").
+  its booster's followers may not see, forwards nothing) or a local quote of it in any state whose quoting status is
+  not withdrawn (`quotes.withdrawn`, migration `0091_live_local_quotes`, a copy its triggers keep: a withdrawn one is
+  skipped and counts against no cap), for a body of at most `FORWARD_BODY_MAX` (65,536) UTF-8 bytes as serialized
+  holding no number JSON cannot carry: one immutable intent per owner, at most `MAX_FORWARD_OWNERS` (16, the first by
+  account id among the boosters and the owners of the first `MAX_FORWARD_QUOTES` (64, a policy cap, decided on the raw
+  candidates) quoting statuses by id; a suspended owner's too), signed by it in its own lanes (NET-2), recorded in the
+  `Delete`'s first transaction, whose hide fixes the kept boosts (VIS-1). Its audience is its references:
+  `Audience.shares`, the boost and the public, unlisted or private quoting statuses, and `receiptShares`, the direct or
+  limited ones, each class fixed then (a quoting status's own deletion rewrites its visibility). The forward is staged
+  before any of its evidence goes, by three barriers that each stop their batch while it is unstaged: the original's
+  job before its boosts are withdrawn or it is removed, its author's purge before each of its statuses is deleted, and a
+  quoting status's own deletion before its `Delete` supersedes or stages anything (once that `Delete` has finished
+  staging, a `Create` completed later records no receipt, and the forward's evidence walk skips the `Delete`'s
+  targets); each boost's withdrawal stages it too. It reaches every reference's receipts and the rows and unexpanded
+  targets of its earlier activities, and, when a share resolves, the owner's followers by shared inbox as its
+  `Announce` or `Create` went, whatever the forwarded `to` says; a direct or limited quote reaches its receivers alone.
+  In each lane the `Announce` or `Create` goes before the forward, and the forward before the boost's `Undo` (an
+  `Announce` still unsent may be dropped once the original is gone). A forward has a subject of its own: it neither
+  supersedes nor is superseded by another activity, the stamp's forward (VIS-28), a quoting status's `Update` or
+  `Delete` and a withdrawing `Reject` of a `Follow` with the same id included. Its shared-inbox fallback (NET-2) moves
+  a row only when the row's provenance names exactly one recipient behind that inbox with a personal inbox on the same
+  origin; a row serving several recipients, more than 16, or unknown ones (an inbox a reference reached already, or
+  whose delivery of it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has the boost or the
+  quote only from the outbox or a fetch is not reached, nor are a quoting status's poll voters or wider reach; a
+  `Delete` the previous build applied before the upgrade forwarded through boosts only. The staging resolves the
+  references one at a time, the shares then the receiptShares, and reads the followers once after them (RES-6).
+  _Enforced (main):_ `deleteObject`, `recordForwards`, `stageForwards`, `deleteStatusBatch`, `purgeBatch`,
+  `deleteLocalStatusBatch` and `withdrawLocalBoosts` in `src/domain/inbox.ts`, `shareReaches`, `stagedList` and
+  `stagedShare` in `src/domain/audience.ts`, `targetsOf`, `stageRetraction` and `forwardFallback` in
+  `src/domain/deliveries.ts`; `test/forward-delete.test.ts` ("one intent by the booster", "stages every forward before
+  its boost is withdrawn", "moves a row in place only for one recipient", "both forwards deliver in full", "forwards
+  nothing through a converted limited boost", "forwards through a local quote in every state", "a direct quote's
+  forward reaches its receipts and no follower inbox", "skips a withdrawn quoting status", "the barriers before a
+  quote's evidence goes"), `test/migrations.test.ts` ("0091_live_local_quotes").
   A profile change (API or settings page, images and fields included) records an `Update` of the actor to Public for
   the followers, only when the published document changed; it replaces the earlier actor Updates still waiting, and
   is never turned into a Create. A suspended actor sends none. Publication of a cutover records the same Update for
@@ -1025,7 +1040,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   local quote takes it, until the `Delete` records it for good in `quote_revocations`; a `Delete` proven by
   the author's own signature is also forwarded unedited, once, to every inbox that received the quoting status, signed
   by its local author, as a retraction (FEP-044f "Handling a revocation"), an intent apart from the forward of a status
-  whose uri the stamp's id equals (VIS-3): neither supersedes the other. No verification round ever decides a local
+  whose uri the stamp's id equals, and from a forward of the quoted status's own `Delete` through the quote (VIS-3):
+  neither supersedes the other. No verification round ever decides a local
   quote. _Enforced (main):_ `recordLocalQuote`, `acceptOurQuote`, `rejectOurQuote` and `revokeStamp` in
   `src/domain/quotes.ts`, `preparePost` in `src/domain/statuses.ts`, migration `0039_quotes_local`;
   `test/quote-authoring.test.ts`, `test/quote-lifecycle.test.ts`. A change to a quote rule here changes
@@ -1124,7 +1140,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/trends.test.ts`, `test/trend-links.test.ts`).
 - **VIS-30: an instance-suspended account is shown to nobody and gets no new content.** An account the instance
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
-  nothing but retractions (a forwarded `Delete` of a remote original it boosted among them, VIS-3), and its inbound
+  nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,
+  `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
   activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
   `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
   ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
@@ -1681,7 +1698,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
   a later claim. A lane is `(actor, inbox origin)`: everything an actor sends one server, to shared and personal inboxes
   alike, arrives in order, so a later `Update` or `Delete` cannot overtake the `Create`. A forwarded `Delete` (VIS-3) is
-  one intent per local booster, signed by it in its own lanes, never by one booster for another's audience; its
+  one intent per local booster or quoter, signed by it in its own lanes, never by one owner for another's audience,
+  behind the `Create` of its quoting statuses in each lane; its
   shared-inbox fallback moves a row in place, keeping its place in the lane, for a single recipient behind the inbox
   only. The whole path from claim to POST (key loading, DNS, signing, the POST) runs under one absolute deadline, the
   earlier of 30 s and 10 s before the lease ends; the clock is checked against it after the key is loaded and right
@@ -3248,14 +3266,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deleted only after its children (edits, media, mentions, tags, favourites, bookmarks, notifications, receipts,
   boosts, reply links), so no delete cascades. A proven `Delete` of a remote original records, in its first
   transaction and apart from the batch's budget, at most `MAX_FORWARD_OWNERS` forward intents of at most
-  `FORWARD_BODY_MAX` bytes of body each and the job's `bound` naming them, and runs no batch when it recorded one. The
-  transaction then writes at most 684 rows: 400 of the receive's sweep (`SWEEP_BATCH` of each of four sources) before
-  any handler, and the handler's 284 (the retraction, the deleted object and the job; the streaming capture's 258; the
-  hide's 3; the quote's retirement, 3; the 16 intents and the bound), which a witness holding them all at once writes
-  exactly; the intents' envelopes and the bound are at most 1,050,686 bytes (not every column of the transaction:
-  `test/forward-delete.test.ts` ("records MAX_FORWARD_OWNERS intents within the derived bytes and rows")). The
-  constants bound the owners and the body bytes, not the fan-out, which is each booster's followers and its boost's
-  receivers, staged within `PURGE_BATCH` as a boost's `Undo` is. The job's `bound` is read within 512
+  `FORWARD_BODY_MAX` bytes of body each, naming at most `MAX_FORWARD_QUOTES` quoting statuses in all, and the job's
+  `bound` naming them, and runs no batch when it recorded one. The transaction then writes at most 684 rows: 400 of the
+  receive's sweep (`SWEEP_BATCH` of each of four sources) before any handler, and the handler's 284 (the retraction,
+  the deleted object and the job; the streaming capture's 258; the hide's 3, its trigger on the quotes' copy writing
+  none for a remote status; the quote's retirement, 3; the 16 intents and the bound), which a witness holding them all
+  at once writes exactly, with the boosters or the 65 raw quote candidates at their cap; the intents' envelopes and the
+  bound are within the bytes the witness derives from those caps (not every column of the transaction:
+  `test/forward-delete.test.ts` ("records MAX_FORWARD_OWNERS intents within the derived bytes and rows", "records 16
+  intents of 64 references within the derived bytes and rows")). The constants bound the owners, the references and
+  the body bytes, not the fan-out, which is each owner's followers and its references' receivers, staged within
+  `PURGE_BATCH` as a boost's `Undo` is. The job's `bound` is read within 512
   bytes and used only as a list of at most 16 distinct canonical signed 64-bit integer ids as TEXT (a restored store's
   keys may be zero or negative); any other (an imported one) is logged and forwards nothing, and the boosts are
   withdrawn as without forwards. The intents it names stay staging for good, never given up or released: its ids are
@@ -3269,14 +3290,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of [visibility.md](visibility.md)). Neither job recounts an original whose removal has begun (`removalBegunSql`), so
   the recounts read none of its boosts and favourites while its boosts go one by one (each recount would read them
   all). A job round that stages target chunks of an intent recorded earlier rings the delivery doorbell (`delivers`)
-  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 472 rows
+  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 473 rows
   (`REQUEST_ROWS`: the streaming capture, `DELETE_SUPERSEDES` earlier activities superseded with the end of the staging
   of each one still staging, which only an import holds (`outbound_activities_staging_ended`), the intent, the hide, its
-  card, trend row, review, pin and poll, its own quote, `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA` media, two counts
+  card, trend row, review, pin and poll, its own quote with the copy of its withdrawn (migration
+  `0091_live_local_quotes`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA` media, two counts
   and the job), and stores a `Delete` envelope within its derived JSON-escaped byte bound; its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
-  pins, its hashtags with its author's featured hashtags counted again, the earlier activities left to supersede, the
-  `Delete`'s staging, its local boosts, the media its answer did not show (with the job's `bound`), then the children
+  pins, its hashtags with its author's featured hashtags counted again, the forwards of the remote original it quotes
+  (staged first, VIS-3), the earlier activities left to supersede, the `Delete`'s staging, its local boosts, the media its answer did not show (with the job's `bound`), then the children
   and the status (`test/local-delete.test.ts`, every input at its bound at once). The staging's bounds below apply
   to that `Delete` too, and the recount of a featured hashtag and of a local booster's `statuses_count` read their
   account's statuses, as posting does. A favourite's tracked
@@ -3344,14 +3366,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Worker only as an id's canonical form, 18 ASCII digits by its bytes, else as none), and the chunks of
   earlier intents, at most `STAGING_BYTES` of them a call beyond the first; since SQLite reaches a position in an
   array by stepping over the elements before it, a call steps over at most the elements of those chunks and of the two
-  lists, two stored bytes an element at least, counted apart from the table rows it reads. The sources are read from
+  lists, two stored bytes an element at least (a forward's three), counted apart from the table rows it reads. The sources are read from
   cursors kept on the staging's row, each in its own index order: the audience's accounts, the status's mentions, its
   parent's author, boosters and quoters, the poll's voters (its current generation compared in SQL), the followers up
   to the highest follow id when the staging began, then the earlier activities' targets not yet expanded, their
   delivery rows and the receipts, in that order, since evidence only moves from a target to a row to a receipt; whether
   an earlier activity retracts is read by its key before its rows or targets are, and a retraction's are not read. A
-  forward's shares are resolved as the staging reaches each, one element of one page a call and its boost's seek, the
-  boost's uri kept in SQL. An account is reached at its shared inbox, whatever its uri, for an activity that addresses
+  forward's references are resolved as the staging reaches each, its shares then its receiptShares, one element of one
+  page a call of the list the reference is in and the reference's seek (a boost, or a status with a local quote row by
+  its key), its uri kept in SQL; only a share that resolves has the followers read. An account is reached at its shared inbox, whatever its uri, for an activity that addresses
   no one. What they reach is merged into the staged set (`retraction_reach`), one row per target with the accounts
   behind it (staged retractions carry account provenance only: the send-time check exempts a retraction), and written
   out once every source is read, a chunk per row in key order, a page of at most `EMIT_BYTES` (512 KiB) of its keys'
@@ -3366,7 +3389,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   per-column maxima its reads and budgets admit", "counts a nested seek before the next row", "steps over at most the
   allowance of chunks past its first", "keeps its intent while every chunk it has written is delivered"),
   `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when the profile is edited before it
-  is staged"), `test/forward-delete.test.ts` ("advances a forward whose every share resolves")). _Gap (accepted):_
+  is staged", "resolves its references as it reaches them"), `test/forward-delete.test.ts` ("advances a forward whose
+  every share resolves", "regenerates its targets when restarted after a partial emit")). _Gap (accepted):_
   a source row removed before its cursor reads it is missed unless other evidence names its inbox; a follow made after
   the staging began is not reached; a delivery row moved in place to a personal inbox
   (`moveToPersonal`) after the rows' walk passed it is missed when its receipt sorts behind the receipts' cursor, or
@@ -3688,9 +3712,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the one kept row (`test/instance-activity.test.ts` ("reads each window by key within 614 rows at the worst case, with
   stale statistics")).
   A forward's reads are pinned (`test/forward-delete.test.ts` ("plans no scan of a large table")): the kept
-  local boosts of the original by `statuses_account_reblogs_kept` from each local account, the job's intents by key
-  from its `bound`, a share's boost by key, and the oldest retraction still staging of a pair by
-  `outbound_activities_object`.
+  local boosts of the original by `statuses_account_reblogs_kept` from each local account, its live local quotes from
+  one window of `quotes_local_live` (`MAX_FORWARD_QUOTES` + 1 raw candidates, no received or withdrawn quote among them,
+  each candidate's status and owner by key outside the window), the job's intents by key from its `bound`, a
+  reference by key, a quoting status's own quote row by key at its deletion's barrier, and the oldest retraction still
+  staging of a pair by `outbound_activities_object`; 10,000 received and 10,000 withdrawn local quotes of the original
+  add no read.
 
 #### Maxima of presented units (RES-3)
 
@@ -4042,8 +4069,8 @@ heap).
   and spool handlers, the snapshot saver and the Store kernel and admin; `test/log-redaction.test.ts`;
   the log-events lint rule (`packages/kopje/lint/log-events.js`, a syntactic check of every log call's shape and
   fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`). A forward that is not recorded logs
-  `kopje.inbox.forward_skipped` with its reason and size, and one past its owners' cap `kopje.inbox.forward_capped`
-  with the cap, and a job bound that is no list of forwards `kopje.inbox.forward_bound_invalid` with its size (the
+  `kopje.inbox.forward_skipped` with its reason and size, and one past its owners' or quotes' cap
+  `kopje.inbox.forward_capped` with the caps it passed, and a job bound that is no list of forwards `kopje.inbox.forward_bound_invalid` with its size (the
   intents it names are left staging, as RES-6 says), never
   the body or an identity. A job's failed or stalled batch logs `kopje.jobs.item.failed` and its parking
   `kopje.jobs.item.parked` with the family, the outcome, the count and the error's class only, never the job's key (an
@@ -4070,8 +4097,9 @@ heap).
   `test/accounts.test.ts` ("edge ids beyond 2^53", "keeps 18-digit ids exact"). _Enforced (main)_
   for status cursors: `statusCursor` in `src/domain/windows.ts` (_Gap: untested_). _Enforced (main)_ for
   forwards: their intent ids are TEXT in the job's `bound` (`{"forwards": [...]}`) and sought with
-  `CAST(? AS INTEGER)`, beside an intent with the largest id there is (`recordForwards` in `src/domain/inbox.ts`;
-  `test/forward-delete.test.ts` ("plans no scan of a large table")). _Enforced (main)_ for the Store's other INTEGER
+  `CAST(? AS INTEGER)`, beside an intent with the largest id there is, and their references are 18-digit TEXT status
+  ids (`recordForwards` in `src/domain/inbox.ts`; `test/forward-delete.test.ts` ("plans no scan of a large table",
+  "keeps the ids as TEXT from the envelope through both readers")). _Enforced (main)_ for the Store's other INTEGER
   ids, fences and epochs: the moderation log's ids and the report fence (`logAction` in `src/domain/moderation-log.ts`,
   `actionBound` and `resolveSuspensionReports` in `src/domain/reports.ts`), credential epochs (`src/domain/suspension.ts`,
   `consumeCode` in `src/domain/oauth.ts`), push subscription ids (the tokens round, `completePush` in
