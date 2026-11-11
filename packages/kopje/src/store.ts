@@ -114,6 +114,7 @@ import {
 import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
+import type { MaintenanceReason } from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
 import { StoreKernel, type StoreOperation } from "./platform/store-kernel";
 import { StreamHub } from "./stream-hub";
@@ -143,9 +144,9 @@ type OperationInput<T> = T extends StoreOperation<infer I, unknown> ? I : never;
 // read. A call stays separate only when its timing is the guarantee: a policy read after an awaited remote response
 // (fetchRefused before a redirect hop or a later request, webHopRefused), a confirmation under lease right before a
 // send (confirmDelivery), a one-time write (ensureInstanceActorKey). A fetch's preparation (domain/inbox.ts
-// fetchPreparation: the signer and the policy verdict for its first request) is produced at the two answers that decide
-// a fetch, inboxGate and a receiveActivity need, and nowhere else; it is optional, and the Worker reads what is
-// missing (fetchSigner, fetchRefused) as it would without it.
+// fetchPreparation: the signer and the policy verdict for its first request) is produced at the three answers that
+// decide a fetch, inboxGate, a receiveActivity need and resolutionGate, and nowhere else; it is optional, and the
+// Worker reads what is missing (fetchSigner, fetchRefused) as it would without it.
 // A federation GET is one read, the setup check included (domain/federation-reads.ts; the routes not yet moved there
 // read the domain in the setup gate first, federation/setup-gate.ts).
 export class Store extends DurableObject<Env> {
@@ -1988,6 +1989,17 @@ export class Store extends DurableObject<Env> {
   // Search with resolve=true: stores what the Worker fetched, as inbound activities are stored.
   resolveSearch(callerBuild: string, input: OperationInput<typeof resolveSearch>) {
     return this.#kernel.execute(callerBuild, resolveSearch, input);
+  }
+
+  // Search with resolve=true, before any network work (inbox.ts resolutionGate): the credential, the domain and the
+  // first request's preparation, or refused (the maintenance reason) while writes are refused, with nothing prepared, so
+  // no key leaves the Store and nothing is fetched (OPS-8). A failing credential is answered first.
+  async resolutionGate(
+    callerBuild: string,
+    input: OperationInput<typeof inbox.resolutionGate>,
+  ): Promise<inbox.ResolutionGate | { status: "refused"; reason: MaintenanceReason }> {
+    const { output, refused } = await this.#kernel.executeProbing(callerBuild, inbox.resolutionGate, input, "write");
+    return output.status !== "ok" || refused === null ? output : { status: "refused", reason: refused };
   }
 
   // /authorize_interaction: the look-up stores what the Worker fetched as search resolution does and shows

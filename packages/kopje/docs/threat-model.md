@@ -1133,11 +1133,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   exempts its subdomains), with at most `MAX_BLOCK_LABELS` (8) labels per stored block; a covered account (by its stored
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
-  the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need) comes with
-  that answer and is spent on that request alone; every other request, redirect hops included, reads it anew
-  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in `src/federation/federation.ts`;
-  `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts` "Store calls on the inbox cold
-  path"). Its inbound
+  the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
+  resolution's `resolutionGate`) comes with that answer and is spent on that request alone; every other request,
+  redirect hops included, reads it anew (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts`
+  "Store calls on the inbox cold path", `test/search-resolution-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -1881,7 +1881,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. An account's canonical
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
+  the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` or the Store refuses writes
+  (readonly, an unpublished import, OPS-8): the token, the domain, the refusal and the first request's preparation come
+  in one read before any signer read, DNS check or fetch (`resolutionGate` in `src/domain/inbox.ts`, `resolveQuery` in
+  `src/mastodon/search.ts`). An account's canonical
   address is decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and
   `ResolveAccountService` decide it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
@@ -1906,7 +1910,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/federation/federation.ts`, `src/federation/resolve.ts`; `test/inbox-statuses.test.ts` ("signed by the instance
   actor (NET-4)", "resolves a status URL as the instance actor", "answers 401 without a token and fetches nothing",
   "account search with resolve=true (NET-4, VIS-1)"), `test/inbox-statuses-edge.test.ts` ("NET-4: search resolution
-  fetches nothing without a valid token").
+  fetches nothing without a valid token"), `test/search-resolution-store-calls.test.ts` ("a resolving search refused
+  before any network work").
 - **NET-5: snapshots come only from authoritative local data.** A rescue snapshot holds only a canonical actor,
   WebFinger or NodeInfo document rendered on the fixed domain from Store columns, and is kept only if its source still
   matches the Store when saved. Request hosts, arbitrary queries and remote documents never create or change one.
@@ -3873,8 +3878,9 @@ heap).
 
 - **DATA-1: private keys stay wrapped outside cryptographic use.** Actor and instance keys are stored wrapped with
   `USER_KEK` in the legacy format. They are unwrapped per call in the Worker, only to sign and for the health key check,
-  are never cached, and never appear in responses or logs. The Store hands them over wrapped only, `inboxGate` and a
-  `receiveActivity` need included (their fetch preparation), and the Worker unwraps such a key on the request's first
+  are never cached, and never appear in responses or logs. The Store hands them over wrapped only, `inboxGate`, a
+  `receiveActivity` need and `resolutionGate` included (their fetch preparation), and the Worker unwraps such a key on
+  the request's first
   fetch, or never. _Enforced (main):_ `src/security/key-wrap.ts`,
   `src/security/keyring.ts`; `test/keyring.test.ts`, `test/health-keys.test.ts`.
 - **DATA-2: VAPID keys are never regenerated implicitly.** `VAPID_JWK` is a secret that Kopje only reads; an invalid
@@ -3977,7 +3983,8 @@ heap).
   account's, and its key is chosen only while it is available and still follows the remote account, which is checked
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
-  preparation of `inboxGate` and of a `receiveActivity` need; `src/federation/collections.ts`, `receiveInbound` in
+  preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
+  actor); `src/federation/collections.ts`, `receiveInbound` in
   `src/federation/inbound.ts`; `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
@@ -4226,7 +4233,8 @@ heap).
   HTTP writes get 503 (no federation side effects). An inbound request, live or replayed, is checked against the Store's
   write admission before any loader is made or anything fetched, so nothing is signed with an imported key, and it is
   held as in maintenance (spooled, or requeued without counting a retry); the gate hands over no signing key while
-  writes are refused (`Store.inboxGate`); the write's own transaction checks again. The
+  writes are refused (`Store.inboxGate`; a search resolution's `Store.resolutionGate` likewise, and nothing is fetched,
+  NET-4); the write's own transaction checks again. The
   scheduled backup's runner lease is refused in its transaction, so cron makes no S3 call and takes no dump freeze
   (an operator's rescue dump still works). Reads and sessions pass, so imported data can be read and the owner can sign
   in for the checks before publication. `publish` (an Access admin, or `IMPORT_TOKEN` while the Store has no

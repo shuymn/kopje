@@ -1,5 +1,6 @@
 import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
+import { readConfig } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
 import { StoreUnavailableError } from "../platform/store-errors";
 import {
@@ -22,7 +23,8 @@ import { offsetParam, type Params, parseBoolean } from "./params";
 // (federation/resolve.ts, signed by the instance actor) and stored by the Store with inbound validation. A URL query
 // answers with what it resolved to alone, if the viewer may see it; an address query answers the account search with
 // the resolved account first, which the Store's search puts there (resolvedAccountId), so the answer budget (RES-3)
-// covers it. Unauthenticated requests are refused before anything is fetched (401, the route's scope). The final
+// covers it. Unauthenticated requests are refused before anything is fetched (401, the route's scope), and a request
+// the Store could not store for (resolveQuery) is answered as without resolve=true, fetching nothing. The final
 // search takes a fresh credential, so a token that expired while resolving is refused. GET /api/v1/accounts/search
 // resolves addresses only, through the same resolveQuery (mastodon/accounts.ts).
 
@@ -72,7 +74,7 @@ export const search: ApiHandler = async (c, deps) => {
   let resolved: Found | null = null;
   if (resolving && (isUrlQuery(query) || parseAddress(query) !== null)) {
     resolved = await resolveQuery(c, deps, query);
-    if (isUrlQuery(query)) {
+    if (resolved !== null && isUrlQuery(query)) {
       return c.json({
         accounts: types.includes("accounts") ? resolved.accounts : [],
         statuses: types.includes("statuses") ? resolved.statuses : [],
@@ -104,19 +106,31 @@ export const search: ApiHandler = async (c, deps) => {
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
 
-// Fetches and stores the query's target. Nothing is fetched until the token has passed. A Store in maintenance cannot
-// store it: the search then answers from local data as it is.
+// Fetches and stores the query's target; null: resolution is refused before any network work, and the caller answers
+// as a plain search (resolve=false). Refused while the env's MAINTENANCE is not off (KEK rotation runs readonly with no
+// Store flag), with no Store call, and while the Store refuses writes (readonly, an unpublished import), answered by the
+// resolution gate, which also checks the token, so nothing is fetched or signed for a request that cannot store it
+// (engineering.md, "a writing path checks the Store's flags and the maintenance mode"). A Store that enters maintenance
+// while resolving cannot store it: the search then answers from local data as it is.
 export async function resolveQuery(
   c: Parameters<ApiHandler>[0],
   deps: Parameters<ApiHandler>[1],
   query: string,
-): Promise<Found> {
-  authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
+): Promise<Found | null> {
+  const config = readConfig(c.env);
+  if (!config.ok || config.config.MAINTENANCE !== "off") {
+    return null;
+  }
+  const gate = await storeCall(c, deps, (s, b) => s.resolutionGate(b, { credential: userCredential(c, deps), query }));
+  if (gate.status === "refused") {
+    return null;
+  }
+  const start = authorized(gate);
   const none: Found = { accounts: [], statuses: [] };
   if (deps.resolve === undefined) {
     return none;
   }
-  const resolved = await deps.resolve(c.env, query);
+  const resolved = await deps.resolve(c.env, query, start);
   try {
     const found = authorized(
       await storeCall(c, deps, (s, b) =>

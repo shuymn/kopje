@@ -1,5 +1,6 @@
 import { ACCOUNTS_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { parseAddress } from "../platform/domain-name";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
 import {
@@ -785,6 +786,28 @@ export type Resolved =
 // http(s) URL, or an address (parseAddress in platform/domain-name.ts: user@domain, @user@domain or acct:user@domain).
 export function isUrlQuery(query: string): boolean {
   return /^https?:\/\//i.test(query);
+}
+
+// The WebFinger request (RFC 7033) for acct:<username>@<host>.
+export function webfingerUrl(username: string, host: string): string {
+  return `https://${host}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${username}@${host}`)}`;
+}
+
+// The first request a search resolution of the trimmed `query` makes (federation/resolve.ts resolveWith): an address's
+// WebFinger, or the URL itself; null when it makes none: an address on the instance `domain`, a URL on its host (both
+// answered from stored data), or a query that is neither.
+export function resolutionFirstRequest(query: string, domain: string): string | null {
+  const address = parseAddress(query);
+  if (address !== null) {
+    return address.domain === domain ? null : webfingerUrl(address.username, address.domain);
+  }
+  let url: URL;
+  try {
+    url = new URL(query);
+  } catch {
+    return null;
+  }
+  return url.host === domain ? null : url.href;
 }
 
 export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };
