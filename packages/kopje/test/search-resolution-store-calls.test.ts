@@ -171,6 +171,17 @@ describe("a resolving search refused before any network work", () => {
     });
   }
 
+  it("answers an invalid token 401 under the Store readonly: the gate judges the token first", async () => {
+    const { t, note } = await refusedWorld();
+    await t.store.setMaintenance(BUILD, true);
+    const c = counted(t);
+    const url = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`, "not-a-token");
+    expect(url.status).toBe(401);
+    expect(c.records.map((record) => [record.name, record.answer])).toEqual([
+      ["resolutionGate", { status: "unauthenticated" }],
+    ]);
+  });
+
   // MAINTENANCE=full answers every API request 503 before its handler (app.ts, the maintenance gate).
   it("answers the plain search under the env's MAINTENANCE=readonly, with no gate read", async () => {
     const { t, note } = await refusedWorld();
