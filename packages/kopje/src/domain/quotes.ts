@@ -1,4 +1,10 @@
-import { ACCOUNTS_ID_INDEX, QUOTES_STATUS_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import {
+  ACCOUNTS_ID_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
+  QUOTES_STATUS_INDEX,
+  STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
+} from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import {
@@ -230,7 +236,8 @@ export function recordQuote(
 			verify_after, attempts, hops, fetch_as, generation, updated_at)
 		SELECT ?1, ?2, t.id, t.account_id, CASE WHEN ?3 THEN 'deleted' ELSE 'pending' END, ?4, ?5, ?6, 0, ?7, ?8,
 			${NEW_GENERATION}, ?9
-		FROM (SELECT NULL) LEFT JOIN statuses t ON NOT ?3 AND t.uri = ?2 AND t.reblog_of_id IS NULL
+		FROM (SELECT NULL) LEFT JOIN statuses t INDEXED BY ${STATUSES_URI_INDEX}
+			ON NOT ?3 AND t.uri = ?2 AND t.reblog_of_id IS NULL
 			AND t.withdrawn = 0 AND t.id <> ?1
 		WHERE true
 		ON CONFLICT (status_id) DO UPDATE SET quoted_uri = excluded.quoted_uri, quoted_status_id = excluded.quoted_status_id,
@@ -297,10 +304,11 @@ export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, no
 // (completeQuote finds the target by its uri), and if the round dies, the next claim after the lease does.
 export function linkQuotes(db: Db, status: { id: string; uri: string }, now: number): void {
   db.run(
-    `UPDATE quotes SET quoted_status_id = ?1, quoted_account_id = (SELECT account_id FROM statuses WHERE id = ?1),
+    `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX}
+		SET quoted_status_id = ?1, quoted_account_id = (SELECT account_id FROM statuses WHERE id = ?1),
 			need_author = NULL, generation = ${NEW_GENERATION}, verify_after = CASE WHEN hops > 0 THEN ?3 ELSE verify_after END,
 			attempts = CASE WHEN hops > 0 THEN 0 ELSE attempts END, updated_at = ?4
-		WHERE status_id IN (SELECT status_id FROM quotes
+		WHERE status_id IN (SELECT status_id FROM quotes INDEXED BY quotes_unresolved
 			WHERE quoted_uri = ?2 AND quoted_status_id IS NULL AND state = 'pending' AND status_id <> ?1 AND NOT ${LEASED}
 			LIMIT ?5)`,
     status.id,
@@ -484,7 +492,8 @@ export const quoteWork = readOperation<{ statusId: string; now: number }, QuoteW
     row.fetch_as === null
       ? undefined
       : db.first<{ username: string }>(
-          `SELECT a.username FROM local_accounts l JOIN accounts a ON a.id = l.account_id
+          `SELECT a.username FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
 					WHERE l.account_id = ?1 AND ${availableLocalSql("l")}
 						AND (EXISTS (SELECT 1 FROM status_mentions m WHERE m.status_id = ?2 AND m.account_id = ?1)
 							OR EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?3 AND f.state = 'accepted'))`,
@@ -984,7 +993,8 @@ const MAX_RECHECKED = 100;
 // whether such a quote exists.
 export function recheckStamp(db: Db, actor: { id: string }, approvalUri: string, now: number): boolean {
   const accepted = db.first<{ status_id: string; verify_after: number | null; leased: number }>(
-    `SELECT q.status_id, q.verify_after, ${LEASED} AS leased FROM quotes q JOIN statuses s ON s.id = q.status_id
+    `SELECT q.status_id, q.verify_after, ${LEASED} AS leased
+		FROM quotes q INDEXED BY quotes_approval CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.approval_uri = ?1 AND q.quoted_account_id = ?2 AND q.state = 'accepted' AND s.account_id <> ?2
 			AND q.local = 0 LIMIT 1`,
     approvalUri,
@@ -1004,7 +1014,8 @@ export function recheckStamp(db: Db, actor: { id: string }, approvalUri: string,
     );
   }
   const marked = db.run(
-    `UPDATE quotes SET recheck = 1 WHERE status_id IN (SELECT status_id FROM quotes INDEXED BY quotes_leased
+    `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX} SET recheck = 1
+		WHERE status_id IN (SELECT status_id FROM quotes INDEXED BY quotes_leased
 			WHERE approval_uri = ?1 AND state = 'pending' AND ${LEASED} LIMIT ?4)`,
     approvalUri,
     actor.id,
@@ -1034,7 +1045,7 @@ export function acceptedQuoteWindow(
   return db
     .all<{ status_id: string }>(
       `SELECT q.status_id FROM quotes q INDEXED BY quotes_accepted
-			${audience === undefined ? "" : `CROSS JOIN statuses s ON s.id = q.status_id`}
+			${audience === undefined ? "" : `CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id`}
 			WHERE q.quoted_status_id = ?1 AND q.state = 'accepted' AND q.status_id < ?2 AND q.status_id > ?3
 				${audience === undefined ? "" : `AND ${audienceSql("s", "?5")}`}
 			ORDER BY q.status_id ${range.ascending ? "ASC" : "DESC"} LIMIT ?4`,
@@ -1118,7 +1129,9 @@ export function answerQuoteRequest(
   }
   const quoted = db.first<QuotedTarget>(
     `SELECT t.id, t.uri, t.account_id, a.uri AS author_uri, a.username, ${mayQuoteSql("t", "?2")} AS allowed
-		FROM statuses t JOIN accounts a ON a.id = t.account_id JOIN local_accounts l ON l.account_id = a.id
+		FROM statuses t INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+			ON a.id = t.account_id
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 		WHERE t.uri = ?1 AND t.reblog_of_id IS NULL AND t.withdrawn = 0 AND t.visibility IN ${DISTRIBUTABLE_SQL}
 			AND ${availableLocalSql("l")}`,
     request.object,
@@ -1177,7 +1190,8 @@ export function answerQuoteRequest(
     }
   }
   const row = db.first<{ state: QuoteState; authorization_id: string | null }>(
-    `SELECT q.state, q.authorization_id FROM quotes q JOIN statuses s ON s.id = q.status_id
+    `SELECT q.state, q.authorization_id FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
+		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.status_id = ?1 AND q.quoted_status_id = ?2 AND s.account_id = ?3 AND s.reblog_of_id IS NULL
 			AND NOT EXISTS (SELECT 1 FROM inbound_jobs j WHERE j.kind = 'delete' AND j.key = ?1 AND j.done_at IS NULL)`,
     quoting.id,
@@ -1274,12 +1288,16 @@ export function quoteAuthorizationOf(
 ): QuoteAuthorization | null {
   const row = db.first<{ author_uri: string; interacting: string; target: string }>(
     `SELECT a.uri AS author_uri, s.uri AS interacting, t.uri AS target
-		FROM quotes q JOIN statuses s ON s.id = q.status_id JOIN statuses t ON t.id = q.quoted_status_id
-			JOIN accounts a ON a.id = t.account_id JOIN local_accounts l ON l.account_id = a.id
+		FROM quotes q INDEXED BY quotes_authorization
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
+			CROSS JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = q.quoted_status_id
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = t.account_id
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 		WHERE q.authorization_id = ?1 AND q.state = 'accepted' AND a.domain IS NULL AND a.username = ?2
 			AND ${availableLocalSql("l")} AND t.reblog_of_id IS NULL AND t.visibility IN ${DISTRIBUTABLE_SQL}
 			AND NOT EXISTS (SELECT 1 FROM quote_revocations r WHERE r.authorization = ?1)
-			AND NOT EXISTS (SELECT 1 FROM accounts qa JOIN inbound_jobs j ON j.kind = 'purge' AND j.key = qa.uri
+			AND NOT EXISTS (SELECT 1 FROM accounts qa INDEXED BY ${ACCOUNTS_ID_INDEX} CROSS JOIN inbound_jobs j
+				ON j.kind = 'purge' AND j.key = qa.uri
 				WHERE qa.id = s.account_id)`,
     authorizationId,
     username,
@@ -1312,7 +1330,9 @@ export function revocableQuote(db: Db, quotedId: string, quotingId: string): Rev
   }>(
     `SELECT q.state, q.authorization_id, s.uri AS quoting_uri, s.account_id AS quoting_author_id,
 			a.uri AS quoting_author_uri
-		FROM quotes q JOIN statuses s ON s.id = q.status_id JOIN accounts a ON a.id = s.account_id
+		FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX} CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			ON s.id = q.status_id
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
 		WHERE q.status_id = ? AND q.quoted_status_id = ?`,
     quotingId,
     quotedId,
@@ -1444,7 +1464,8 @@ export function noteQuote(db: Db, statusId: string): NoteQuote | null {
   }>(
     `SELECT q.quoted_uri, t.id IS NOT NULL AS present, q.state, q.authorization_id, q.approval_uri,
 			a.uri AS author_uri
-		FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX} LEFT JOIN accounts a ON a.id = q.quoted_account_id
+		FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX} LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+			ON a.id = q.quoted_account_id
 			LEFT JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = q.quoted_status_id AND t.withdrawn = 0
 		WHERE q.status_id = ? AND q.local = 1`,
     statusId,
@@ -1490,7 +1511,9 @@ function answeredQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef): Answ
     ref.id === null || !ref.id.endsWith("#quote-request")
       ? undefined
       : db.first<AnsweredQuote>(
-          `SELECT q.status_id, s.account_id AS author_id FROM statuses s JOIN quotes q ON q.status_id = s.id
+          `SELECT q.status_id, s.account_id AS author_id
+					FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
+						ON q.status_id = s.id
 					WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND q.activity_uri = ?2 AND q.quoted_account_id = ?3`,
           ref.id.slice(0, -"#quote-request".length),
           ref.id,
@@ -1500,8 +1523,10 @@ function answeredQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef): Answ
     return byId;
   }
   return db.first<AnsweredQuote>(
-    `SELECT q.status_id, s.account_id AS author_id FROM statuses s JOIN quotes q ON q.status_id = s.id
-			JOIN statuses t ON t.id = q.quoted_status_id
+    `SELECT q.status_id, s.account_id AS author_id
+		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
+			ON q.status_id = s.id
+			CROSS JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = q.quoted_status_id
 		WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND t.uri = ?2 AND t.account_id = ?3`,
     ref.instrument,
     ref.object,
@@ -1616,7 +1641,7 @@ function revokeLocalStamp(
 ): boolean {
   const row = db.first<{ status_id: string; state: QuoteState; author_id: string }>(
     `SELECT q.status_id, q.state, s.account_id AS author_id FROM quotes q INDEXED BY quotes_local_stamp
-			JOIN statuses s ON s.id = q.status_id
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.approval_uri = ?1 AND q.quoted_account_id = ?2 AND q.local = 1`,
     approvalUri,
     actor.id,
@@ -1666,7 +1691,8 @@ export const MAX_QUOTED_UPDATES = 100;
 // quotes of the status.
 export function quotedUpdates(db: Db, quotedId: string): { status_id: string; account_id: string }[] {
   return db.all<{ status_id: string; account_id: string }>(
-    `SELECT q.status_id, s.account_id FROM quotes q INDEXED BY quotes_local_accepted JOIN statuses s ON s.id = q.status_id
+    `SELECT q.status_id, s.account_id FROM quotes q INDEXED BY quotes_local_accepted
+		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.quoted_status_id = ? AND q.local = 1 AND q.state = 'accepted'
 		ORDER BY q.status_id DESC LIMIT ?`,
     quotedId,

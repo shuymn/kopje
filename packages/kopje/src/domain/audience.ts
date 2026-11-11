@@ -1791,11 +1791,13 @@ export function recipientsFor(
       ? []
       : db.all<ReachedInbox>(
           byInbox(`SELECT DISTINCT ${RECIPIENT_COLUMNS}, COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url) AS inbox
-					FROM main.statuses ps JOIN main.polls pp ON pp.status_id = ps.id AND pp.removed = 0
-						JOIN main.poll_votes pv ON pv.poll_id = pp.status_id AND pv.generation = pp.generation
-						JOIN main.accounts a ON a.id = pv.account_id
-					WHERE ps.id = ?1 AND ps.account_id = ?2
-						AND ${kind === "retraction" ? "1" : `ps.visibility IN ${DISTRIBUTABLE_SQL}`}
+					FROM main.statuses vs INDEXED BY ${STATUSES_ID_INDEX}
+						CROSS JOIN main.polls pp INDEXED BY ${POLLS_STATUS_INDEX} ON pp.status_id = vs.id AND pp.removed = 0
+						CROSS JOIN main.poll_votes pv INDEXED BY ${POLL_VOTES_KEY_INDEX}
+							ON pv.poll_id = pp.status_id AND pv.generation = pp.generation
+						CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = pv.account_id
+					WHERE vs.id = ?1 AND vs.account_id = ?2
+						AND ${kind === "retraction" ? "1" : `vs.visibility IN ${DISTRIBUTABLE_SQL}`}
 						AND a.domain IS NOT NULL AND NOT ${leavesOutSql(kind, "addressed", "?2", "a.id")}`),
           audience.pollVoters,
           signerId,
