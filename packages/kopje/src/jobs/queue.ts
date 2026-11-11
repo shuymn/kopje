@@ -150,6 +150,7 @@ export const STORE_JOB_FAMILIES: readonly {
   { family: "domain_block_cleanups", run: (store, build, input) => store.runDomainBlockCleanups(build, input) },
   { family: "notification_requests", run: (store, build, input) => store.runNotificationRequestJobs(build, input) },
   { family: "moderation", run: (store, build, input) => store.runModerationJobs(build, input) },
+  { family: "handshake_replays", run: (store, build, input) => store.runHandshakeReplays(build, input) },
   { family: "unlock_accepts", run: (store, build, input) => store.runUnlockAccepts(build, input) },
 ];
 
@@ -187,10 +188,10 @@ async function runFamilies(families: Families, env: Env, deps: InboxDeps): Promi
   return { pending, delivers, refused: false };
 }
 
-// A round of every job family: the five Store calls (the inbound jobs, domain block cleanups, notification request
-// jobs, moderation jobs and unlock acceptances), then the Worker's syncs of remote accounts' collections
-// (federation/collections.ts) and verifications of received quotes (federation/quotes.ts), seven error boundaries in
-// all. Their work and progress are durable in the Store, so the round is only nudged: one family's failure is logged
+// A round of every job family: the six Store calls (the inbound jobs, domain block cleanups, notification request
+// jobs, moderation jobs, held handshakes and unlock acceptances), then the Worker's syncs of remote accounts'
+// collections (federation/collections.ts) and verifications of received quotes (federation/quotes.ts), eight error
+// boundaries in all. Their work and progress are durable in the Store, so the round is only nudged: one family's failure is logged
 // and stops no other; the Store refusing (maintenance, a retryable or reset error) ends the round with nothing counted
 // (cron resumes it). The deliveries the Store calls recorded are rung before the network work, and one jobs message
 // asks for the next round while any family has work left (RES-5).

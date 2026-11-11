@@ -22,7 +22,7 @@ import { remoteAccount } from "./status-helpers";
 // family's failure stops no other, a Store that refuses (maintenance) ends the round with nothing counted, and a Queue
 // batch runs one round however many nudges it holds (RES-5).
 
-// The seven families: the Store call that runs each (two pairs share a call, and so its transaction), the rows that
+// The eight families: the Store call that runs each (two pairs share a call, and so its transaction), the rows that
 // show its state, the work it still has, and a test trigger on a table only it writes in a round.
 const FAMILIES = {
   inbound: {
@@ -61,6 +61,12 @@ const FAMILIES = {
     work: "SELECT 1 FROM remote_moderation_jobs",
     fail: ["BEFORE UPDATE ON remote_moderation_jobs", "BEFORE DELETE ON remote_moderation_jobs"],
   },
+  handshake_replays: {
+    call: "handshake_replays",
+    state: "SELECT follow_id, check_at, attempts FROM handshake_replays ORDER BY follow_id",
+    work: "SELECT 1 FROM handshake_replays",
+    fail: ["BEFORE DELETE ON handshake_replays", "BEFORE UPDATE ON handshake_replays"],
+  },
   unlock_accepts: {
     call: "unlock_accepts",
     state: `SELECT f.id, f.state, CAST(l.accept_requests_after AS TEXT) AS after FROM follows f
@@ -76,6 +82,7 @@ const NAMES = Object.keys(FAMILIES) as Family[];
 // The Store calls of the families, sorted.
 const STORE_CALLS = [
   "runDomainBlockCleanups",
+  "runHandshakeReplays",
   "runInboundJobs",
   "runModerationJobs",
   "runNotificationRequestJobs",
@@ -165,6 +172,18 @@ async function seeded() {
   const remotes = [await remoteAccount(store, "s1", "s.example"), await remoteAccount(store, "s2", "s.example")];
   for (const id of [w.carol.id, w.dan.id, ...remotes]) {
     expect(await act(w, id, { type: "suspend" })).toMatchObject({ status: 200 });
+  }
+  // Held handshakes: alice's two pending follows of available accounts, each Follow held and due; a step records it.
+  for (const name of ["h1", "h2"]) {
+    const target = await remoteAccount(store, name, "h.example");
+    const [edge] = await sql<{ id: number }>(
+      store,
+      "INSERT INTO follows (account_id, target_account_id, state, uri) VALUES (?, ?, 'pending', ?) RETURNING id",
+      w.alice.id,
+      target,
+      `https://kopje.test/ap/users/alice#follows/${name}`,
+    );
+    await sql(store, "INSERT INTO handshake_replays (follow_id, check_at) VALUES (?, ?)", edge!.id, NOW);
   }
   // Unlock: bob, locked, has two pending requests, then unlocks.
   await sql(store, "UPDATE accounts SET locked = 1 WHERE id = ?", w.bob.id);
@@ -290,6 +309,11 @@ const FIRST_ITEMS: Record<Family, { table: string; key: readonly string[]; first
     table: "remote_moderation_jobs",
     key: ["id"],
     first: "SELECT id FROM remote_moderation_jobs ORDER BY id LIMIT 1",
+  },
+  handshake_replays: {
+    table: "handshake_replays",
+    key: ["follow_id"],
+    first: "SELECT follow_id FROM handshake_replays ORDER BY check_at, follow_id LIMIT 1",
   },
   unlock_accepts: null,
 };

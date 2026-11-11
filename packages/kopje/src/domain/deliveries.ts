@@ -2444,6 +2444,12 @@ function hostOf(inbox: string): string | null {
   }
 }
 
+// The send-time check's host rule: an instance domain block covers the inbox's host (one without a host is not).
+export function inboxCovered(db: Db, inbox: string): boolean {
+  const host = hostOf(inbox);
+  return host !== null && hostCovered(db, host);
+}
+
 // VIS-30's send-time check, at the claim and again at confirmation (the rules: docs/visibility.md, "The send-time
 // check"). The exemption reads the persisted retracts flag, never the activity's kind worked out again. The accounts
 // rule joins accounts, because availableSql reads a missing id as available and a purged recipient must count as gone,
@@ -2459,8 +2465,7 @@ function sendRefused(db: Db, row: DueRow): boolean {
   if (row.refused_sender === 1) {
     return true;
   }
-  const host = hostOf(row.inbox_url);
-  if (host !== null && hostCovered(db, host)) {
+  if (inboxCovered(db, row.inbox_url)) {
     return true;
   }
   if (

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DOMAIN_BLOCK_BATCHES_PER_RUN, DOMAIN_BLOCK_WINDOW, runDomainBlockCleanups } from "../src/domain/blocks";
+import { handshakeReplayStep } from "../src/domain/handshake-replays";
 import { runInboundJobs } from "../src/domain/inbox";
 import {
   DOMAIN_BLOCK_CLEANUPS,
+  HANDSHAKE_REPLAYS,
   type JobTable,
   JOB_RETRY_DELAYS_MS,
   JOB_TABLES,
@@ -409,6 +411,40 @@ const FAMILIES: Record<string, Family> = {
       notifications: await count(store, "SELECT 1 FROM notifications WHERE account_id = ? AND group_key = ?", ...key),
     }),
   },
+  handshake_replays: {
+    t: HANDSHAKE_REPLAYS,
+    run: (store, now) => store.runHandshakeReplays(BUILD, { now }),
+    // Alice's pending follows of available accounts, each Follow held and due: a step records it and ends the hold.
+    seed: async (w, n) => {
+      const keys: Key[] = [];
+      for (let i = 0; i < n; i++) {
+        const target = await remoteAccount(w.store, `h${i}`, "h.example");
+        // Ids no log could hold by chance.
+        const [edge] = await sql<{ id: string }>(
+          w.store,
+          `INSERT INTO follows (id, account_id, target_account_id, state, uri)
+					VALUES (CAST(? AS INTEGER), ?, ?, 'pending', ?) RETURNING CAST(id AS TEXT) AS id`,
+          `8800000000000001${String(i).padStart(2, "0")}`,
+          w.users.alice.id,
+          target,
+          `https://kopje.test/ap/users/alice#follows/h${i}`,
+        );
+        await sql(w.store, "INSERT INTO handshake_replays (follow_id, check_at) VALUES (?, ?)", edge!.id, NOW - n + i);
+        keys.push([edge!.id]);
+      }
+      return keys;
+    },
+    finished: gone(HANDSHAKE_REPLAYS),
+    state: async (store, key) => ({
+      row: await rowState(HANDSHAKE_REPLAYS)(store, key),
+      follows: await count(
+        store,
+        `SELECT 1 FROM outbound_activities WHERE json_extract(body, '$.activity.id') =
+					(SELECT uri FROM follows WHERE id = ?)`,
+        ...key,
+      ),
+    }),
+  },
 };
 
 const NAMES = Object.keys(FAMILIES);
@@ -707,8 +743,8 @@ describe("retry-all over every job table (RES-5)", () => {
     expect(Object.values(await counts())).toEqual(tables.map(() => PER));
     expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: RETRY_JOBS_LIMIT, more: true });
     // The first tables in order, up to the limit: 6 whole tables and 10 rows of the seventh.
-    expect(Object.values(await counts())).toEqual([0, 0, 0, 0, 0, 0, PER - (RETRY_JOBS_LIMIT - 6 * PER), PER]);
-    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 8 * PER - RETRY_JOBS_LIMIT, more: false });
+    expect(Object.values(await counts())).toEqual([0, 0, 0, 0, 0, 0, PER - (RETRY_JOBS_LIMIT - 6 * PER), PER, PER]);
+    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 9 * PER - RETRY_JOBS_LIMIT, more: false });
     expect(Object.values(await counts())).toEqual(tables.map(() => 0));
     expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 0, more: false });
     // Nothing but the retry state changed.
@@ -766,6 +802,23 @@ describe("the seeks under stale statistics (RES-7)", () => {
       `${N} INSERT INTO remote_moderation_jobs (kind, subject, mode, follow_bound, phase, attempts, due_at)
 			SELECT 'account', 'p' || i, 'account', 0, 'follows', ${PARKED}, ${DUE} FROM n WHERE ?2 = ?2`,
     ],
+    handshake_replays: [
+      `${N} INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('7%017d', i), 'https://q.example/u/' || i, 'q' || i, 'q.example' FROM n WHERE ?2 = ?2 AND ?3 = ?3`,
+      `${N} INSERT INTO follows (id, account_id, target_account_id, state, uri)
+			SELECT 700000 + i, ?2, printf('7%017d', i), 'pending', 'https://kopje.test/f/' || i FROM n WHERE ?3 = ?3`,
+      `${N} INSERT INTO handshake_replays (follow_id, check_at, attempts, due_at)
+			SELECT 700000 + i, 0, ${PARKED}, ${DUE} FROM n WHERE ?2 = ?2`,
+    ],
+  };
+  // A round of held handshakes as Store.runHandshakeReplays runs its steps, in one transaction here.
+  const handshakeRound: StoreOperation<{ now: number }, unknown> = {
+    kind: "write",
+    run: (sql, input, savepoint) => {
+      for (let i = 0; i < 4; i++) {
+        handshakeReplayStep.run(sql, input, savepoint);
+      }
+    },
   };
   const OPERATIONS: Record<string, StoreOperation<{ now: number }, unknown>> = {
     revocations: runInboundJobs,
@@ -775,6 +828,7 @@ describe("the seeks under stale statistics (RES-7)", () => {
     notification_dismissals: runNotificationRequestJobs,
     local_moderation: runModerationJobs,
     remote_moderation: runModerationJobs,
+    handshake_replays: handshakeRound,
   };
   const PER_STATE = 5000;
 
