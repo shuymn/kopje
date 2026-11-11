@@ -28,8 +28,9 @@ import { readOperation, writeOperation } from "./operation";
 //   An ineligible hold is moved to the next check (HANDSHAKE_RECHECK_MS) and kept.
 // - The handshake is recorded (recordOutbound); the hold ends only when that call inserted an intent with a target,
 //   and is otherwise moved to the next check as an ineligible one.
-// Rows a step writes: the recording's, and two at most (the hold's delete or move, and its retry state's reset or
-// attempt).
+// Rows a step writes, two at most besides the recording's: a replay, the recording and the hold's delete (a failed
+// hold's reset then matches no row); a deferral, the hold's move and its reset; a failure, what the rolled-back item
+// wrote (counted all the same, row-budget.ts) and the attempt.
 
 // Steps a round runs at most, each in its own transaction.
 export const HANDSHAKE_REPLAYS_PER_ROUND = 20;

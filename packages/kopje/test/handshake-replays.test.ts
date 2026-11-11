@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { followActivity, recordOutbound } from "../src/domain/activities";
+import { DOMAIN_BLOCK_BATCHES_PER_RUN, DOMAIN_BLOCK_WINDOW, runDomainBlockCleanups } from "../src/domain/blocks";
 import {
   CLAIM_LIMIT,
   claimDeliveries,
@@ -11,6 +12,7 @@ import {
   TARGET_CHUNK_BYTES,
 } from "../src/domain/deliveries";
 import { handshakeReplayStep } from "../src/domain/handshake-replays";
+import { MOVE_BATCH, runInboundJobs } from "../src/domain/inbox";
 import type { StoreStub } from "../src/platform/store-client";
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { sha256Hex } from "../src/security/tokens";
@@ -904,8 +906,8 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
     await suspend(w, r);
     expect(await drain(w.h.store)).toEqual([]);
     await lift(w, r);
-    // Every input at its worst: the hold failed before (its reset is written), and more targets wait unexpanded than
-    // two expansion steps take.
+    // Every input at its worst: the hold failed before, and more targets wait unexpanded than two expansion steps take.
+    // A replay deletes the hold, so its reset then matches no row: the recording and one more.
     await sql(w.h.store, "UPDATE handshake_replays SET attempts = 1, due_at = ? WHERE follow_id = ?", NOW, id);
     await backlog(w, 350);
     await post(w.h, w.alice, { status: "to many servers" });
@@ -932,7 +934,25 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
     expect(step.result).toEqual({ done: false, delivers: true });
     expect(await holds(w.h.store)).toEqual([]);
     expect(await intents(w.h.store, "Follow")).toEqual(expect.arrayContaining([{ id: uri, pair: null }]));
-    expect(step.rows).toBeLessThanOrEqual(recording.rows + 2);
+    expect(step.rows).toBeLessThanOrEqual(recording.rows + 1);
+    // The two rows past it: a failed hold that is deferred writes its move and its reset, and records nothing.
+    await suspend(w, s);
+    await sql(
+      w.h.store,
+      "INSERT INTO follows (account_id, target_account_id, state, uri) VALUES (?, ?, 'pending', ?)",
+      w.alice.id,
+      s,
+      `${aliceUri}#follows/deferred`,
+    );
+    await sql(
+      w.h.store,
+      `INSERT INTO handshake_replays (follow_id, check_at, attempts, due_at)
+			SELECT id, ?1, 1, ?1 FROM follows WHERE target_account_id = ?2`,
+      NOW,
+      s,
+    );
+    const deferred = await operationRows(w.h.store, handshakeReplayStep, { now: NOW });
+    expect(deferred).toEqual({ result: { done: false, delivers: false }, rows: 2 });
   }, 60_000);
 
   it("writes CLAIM_LIMIT holds at most in a claim (B3)", async () => {
@@ -965,4 +985,139 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
     // Each refused row: its hold, its delete and its intent's (one target, one chunk already expanded).
     expect(rows).toBeLessThanOrEqual(3 * CLAIM_LIMIT);
   });
+});
+
+// B4: every path that deletes a follow or changes its uri or state also deletes its hold (the cascade, the trigger),
+// one row a follow. The row-budgeted ones reserve it (SEVER_ROWS, PURGED_FOLLOW_ROWS: their own bounds tests seed a
+// hold on every follow); these are the bulk paths without a row budget, each with a hold on every follow it ends, its
+// rows measured against the ceiling derived from what it writes per follow.
+describe("the cascaded hold in bulk paths without a row budget (B4)", () => {
+  // `n` remote accounts on `domain` (ids from `base`), each with its personal and shared inbox.
+  const remotes = (store: StoreStub, n: number, domain: string, base: string) =>
+    sql(
+      store,
+      `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+			SELECT printf('%s%016d', ?3, i), 'https://' || ?2 || '/users/u' || i, 'u' || i, ?2,
+				'https://' || ?2 || '/users/u' || i || '/inbox', 'https://' || ?2 || '/inbox' FROM k`,
+      n,
+      domain,
+      base,
+    );
+
+  it("an inbound Block ends both follows of the pair, and both holds go with them", async () => {
+    const w = await world();
+    const { r, aliceUri } = await rFollowsAlice(w, G1);
+    await follow(w.h, w.alice, r);
+    await sql(w.h.store, "UPDATE follows SET state = 'accepted'");
+    await sql(w.h.store, "INSERT INTO handshake_replays (follow_id, check_at) SELECT id, ? FROM follows", LATER);
+    expect(await holds(w.h.store)).toHaveLength(2);
+    expect(
+      await receive(w.h.store, await uriOf(w.h.store, r), {
+        id: "https://remote.example/blocks/1",
+        type: "Block",
+        object: aliceUri,
+      }),
+    ).toMatchObject({ applied: true });
+    // Each follow's delete cascades to its hold: two rows besides the request's, a constant.
+    expect(await sql(w.h.store, "SELECT 1 FROM follows")).toEqual([]);
+    expect(await holds(w.h.store)).toEqual([]);
+  });
+
+  it("a user's domain block cleanup stays within its derived ceiling with every follow of its call held", async () => {
+    const w = await world();
+    const store = w.h.store;
+    // Every input of a call at its worst: DOMAIN_BLOCK_BATCHES_PER_RUN windows of DOMAIN_BLOCK_WINDOW follows, each
+    // one the user's and of the domain (each ended), each a remote follower's accepted follow (the costlier side:
+    // its Reject, its retraction, its notification and both counts) holding its Accept, with a pin trigger's row
+    // counted too. Not at a cap here, and unbounded in a batch as before: the earlier activities about a follow its
+    // Reject supersedes, a local follower's list rows and another activity's expansion backlog (none).
+    const n = DOMAIN_BLOCK_WINDOW * DOMAIN_BLOCK_BATCHES_PER_RUN;
+    await remotes(store, n, "d.example", "40");
+    await sql(
+      store,
+      `INSERT INTO follows (account_id, target_account_id, state, uri)
+				SELECT id, ?, 'accepted', uri || '#follow' FROM accounts WHERE domain = 'd.example'`,
+      w.alice.id,
+    );
+    await sql(
+      store,
+      `INSERT INTO notifications (account_id, type, from_account_id, created_at)
+				SELECT ?, 'follow', id, '' FROM accounts WHERE domain = 'd.example'`,
+      w.alice.id,
+    );
+    await sql(store, "INSERT INTO handshake_replays (follow_id, check_at) SELECT id, ? FROM follows", LATER);
+    const [block] = await sql<{ id: string }>(
+      store,
+      "INSERT INTO domain_blocks (account_id, domain, created_at) VALUES (?, 'd.example', '') RETURNING CAST(id AS TEXT) AS id",
+      w.alice.id,
+    );
+    await sql(
+      store,
+      `INSERT INTO domain_block_cleanups (domain_block_id, bound, cursor, created_at)
+				SELECT CAST(? AS INTEGER), max(id), 0, 0 FROM follows`,
+      block!.id,
+    );
+    const { rows } = await operationRows(store, runDomainBlockCleanups, { now: NOW });
+    // The guarded branch: the call ended every follow, and every hold went with its follow.
+    expect(await sql(store, "SELECT 1 FROM follows")).toEqual([]);
+    expect(await holds(store)).toEqual([]);
+    // A follow: its delete, its hold, its two notifications, the two counts, the retraction, the Reject's intent and
+    // chunk, its delivery and its chunk's cursor update and delete, a pin: 13. A batch: its cleanup row, and its retry
+    // state's.
+    const ceiling = DOMAIN_BLOCK_BATCHES_PER_RUN * (DOMAIN_BLOCK_WINDOW * 13 + 2);
+    console.info({ event: "b4.domain-cleanup", rows, ceiling });
+    expect(rows).toBeLessThanOrEqual(ceiling);
+    expect(rows).toBeGreaterThan(n * 2);
+  }, 120_000);
+
+  it("a Move batch stays within its derived ceiling with every moved follow held", async () => {
+    const w = await world();
+    const store = w.h.store;
+    // MOVE_BATCH local followers of the source, each its accepted follow holding its Follow (imported), the target
+    // remote (so each follower gets a new Follow), no lists.
+    await remotes(store, 1, "m.example", "50");
+    await remotes(store, 1, "n.example", "51");
+    const source = "500000000000000001";
+    const target = "510000000000000001";
+    await sql(
+      store,
+      `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain) SELECT printf('6%017d', i),
+				'https://kopje.test/ap/users/m' || i, 'm' || i, NULL FROM k`,
+      MOVE_BATCH,
+    );
+    await sql(
+      store,
+      `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+			SELECT id, username || '@example.com', X'00', X'00', 'k' FROM accounts WHERE id GLOB '6*'`,
+    );
+    await sql(
+      store,
+      `INSERT INTO follows (account_id, target_account_id, state, uri)
+			SELECT id, ?, 'accepted', uri || '#follows/old' FROM accounts WHERE id GLOB '6*'`,
+      source,
+    );
+    await sql(store, "INSERT INTO handshake_replays (follow_id, check_at) SELECT id, ? FROM follows", LATER);
+    await sql(
+      store,
+      `INSERT INTO inbound_jobs (kind, key, actor_uri, target_account_id, bound, cursor, created_at)
+			SELECT 'move', 'https://m.example/moves/1', 'https://m.example/users/u1', ?, max(id), '0', ? FROM follows`,
+      target,
+      NOW,
+    );
+    const { rows } = await operationRows(store, runInboundJobs, { now: NOW });
+    // The guarded branch: every follower moved, and every hold went with its old follow.
+    expect(await sql(store, "SELECT 1 FROM follows WHERE target_account_id = ?", source)).toEqual([]);
+    expect(await sql(store, "SELECT 1 FROM follows WHERE target_account_id = ?", target)).toHaveLength(MOVE_BATCH);
+    expect(await holds(store)).toEqual([]);
+    // A follower: the old follow's delete, its hold, its two notifications, its pin, the Undo's intent, chunk,
+    // delivery and its chunk's cursor update and delete; the new follow, its uri, the Follow's intent, chunk, delivery
+    // and its chunk's two rows: 17. The batch: each changed account's recount (the followers and the target), and the
+    // job's cursor and end.
+    const ceiling = MOVE_BATCH * 17 + (MOVE_BATCH + 1) + 2;
+    console.info({ event: "b4.move", rows, ceiling });
+    expect(rows).toBeLessThanOrEqual(ceiling);
+    expect(rows).toBeGreaterThan(MOVE_BATCH * 2);
+  }, 60_000);
 });

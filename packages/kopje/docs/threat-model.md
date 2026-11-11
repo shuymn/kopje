@@ -2958,8 +2958,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `HANDSHAKE_REPLAYS_PER_ROUND` (20) steps, each its own transaction, which takes one hold by two index probes at most
   (a due retry, then the first fresh hold, in integer follow id order with no sort), reads its follow and accounts by
   key, records at most one handshake and writes two more rows at most (the hold's delete or move, and its retry
-  state's); a hold not replayable is read and moved at most once per `HANDSHAKE_RECHECK_MS`
-  (`src/domain/handshake-replays.ts`; `test/handshake-replays.test.ts` ("bounds")). Profile link verification: _Enforced (main):_ a save only arms a check
+  state's); a hold not replayable is read and moved at most once per `HANDSHAKE_RECHECK_MS`. A follow's delete, and
+  a change of its `uri` or `state`, writes one more row (its hold): the severing rounds reserve it in `SEVER_ROWS` and
+  a purge batch in `PURGED_FOLLOW_ROWS` (three rows a follow); the paths without a row budget stay bounded per follow,
+  an inbound `Block` at two such rows, a user's domain block cleanup at 13 rows per ended follow of its 500-follow
+  windows (a local follower's list rows and the activities its `Undo` or `Reject` supersedes besides), and a `Move`
+  batch at 17 rows per moved follower besides the recounts
+  (`src/domain/handshake-replays.ts`; `test/handshake-replays.test.ts` ("bounds", "the cascaded hold in bulk paths
+  without a row budget")). Profile link verification: _Enforced (main):_ a save only arms a check
   (`local_accounts.links_due_at`); the cron runs one round per tick, which claims one account (at most one claim per
   account per 5 minutes, the claim's hold, which a save during it waits out) and reads at most 64 due rows to find it
   (no index: local accounts are operator-sized). Its at most 4 values share one budget of 60 subrequests (each value's

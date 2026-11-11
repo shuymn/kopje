@@ -1478,8 +1478,8 @@ const FAVOURITE_WINDOW = "SELECT id, status_id FROM favourites WHERE account_id 
 function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
   // The account's list memberships and endorsements go before its follows: a follow's delete also deletes the followed
   // account's rows in the follower's lists and its endorsement (migrations 0007_list_members and
-  // 0014_account_notes_and_pins), and with them gone it deletes none, so a follow stays two rows. Until they are all
-  // gone, the budget is spent and no follow is read.
+  // 0014_account_notes_and_pins), and with them gone it deletes none, so a follow stays within PURGED_FOLLOW_ROWS.
+  // Until they are all gone, the budget is spent and no follow is read.
   spend(
     db,
     budget,
