@@ -1464,13 +1464,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "483bcfadf028a776",
-    scans: ["conversations: SCAN conversations"],
-    site: "src/domain/conversations.ts#leaveConversationsWith < src/domain/blocks.ts#<anonymous> in block < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "write",
-    issue: "#1468 group 9",
-  },
-  {
     id: "1191adb04d0f75f6",
     scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
     site: "src/domain/deliveries.ts#<anonymous> in claimDeliveries",
@@ -1753,13 +1746,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (field-links.ts#<anonymous> in recordFieldLink); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "6e80489968ad0885",
-    scans: ["filter_statuses: SCAN fs"],
-    site: "src/domain/filters.ts#ownFilterStatus < src/domain/filters.ts#<anonymous> in getFilterStatus < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
-  },
-  {
     id: "fcdc93860041ecee",
     scans: ["local_accounts: SCAN l USING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/follower-signer.ts#localFollower < src/domain/quotes.ts#quoteArrival < src/domain/remote-statuses.ts#arrivalOf < src/domain/remote-statuses.ts#storeRemoteStatus < src/domain/inbox.ts#create",
@@ -1915,11 +1901,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
-    id: "782bd4dc8403b718",
-    scans: ["accounts: SCAN accounts", "local_accounts: SCAN l"],
+    id: "87ac6fd3852e69b1",
+    scans: ["local_accounts: SCAN l"],
     site: "src/domain/instance.ts#<anonymous> in instanceInfo",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the users and active counts are of every available local account, in the one scan of local_accounts they need (INSTANCE_COUNTS_SQL, src/domain/instance.ts; test/activity.test.ts asserts it)",
   },
   {
     id: "4b49e35df6db769a",
@@ -2190,21 +2177,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "28567507fc2af2e0",
+    id: "a48b9a5046bb5c5f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "lists: SCAN l USING INDEX sqlite_autoindex_lists_1",
     ],
     site: "src/domain/lists.ts#<anonymous> in accountLists < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
-  },
-  {
-    id: "c062eb1780f68065",
-    scans: ["lists: SCAN lists USING INDEX sqlite_autoindex_lists_1"],
-    site: "src/domain/lists.ts#<anonymous> in listLists < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "a2ae66f512e72566",
@@ -2682,13 +2662,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d634d9244eae5d1e",
-    scans: ["scheduled_statuses: SCAN ss"],
-    site: "src/domain/scheduled-statuses.ts#scheduleErrors < src/domain/scheduled-statuses.ts#<anonymous> in postStatus < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
   },
   {
     id: "29d9fa4322758555",
