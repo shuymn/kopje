@@ -489,50 +489,57 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "3a39994e8f70d9df",
     scans: ["reports: SCAN r"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "607fc035a5a3ff84",
     scans: ["reports: SCAN r"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "6bc414eca6f2b09c",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "bdf72c7b9ba57b07",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "d3b08cb9746f9019",
     scans: ["?: SCAN peers"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "d8589742ced03205",
     scans: ["local_accounts: SCAN l"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "fe79c3ff8101310c",
     scans: ["reports: SCAN r"],
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
   },
   {
     id: "b4245fe9f65df15f",
@@ -717,8 +724,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "15b5e5b897b53642",
@@ -727,8 +735,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "22a7967fb5612cb2",
@@ -737,8 +746,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "69670a5037cce46d",
@@ -757,8 +767,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "563d70e4e039cfdf",
@@ -767,8 +778,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "635c7e6d558225da",
@@ -777,8 +789,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "79600bbfb9512fa2",
@@ -1067,8 +1080,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN s",
     ],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
     id: "17c3a2c9147a8837",
@@ -1633,8 +1647,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "56fbdb284ae24ea9",
@@ -1643,8 +1658,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "c8b5781765c9dc40",
@@ -1653,8 +1669,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "ee420686f7bc1093",
@@ -1663,8 +1680,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "66b5bbbd8d4addad",
@@ -1698,8 +1716,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "6c98c25ae08c0076",
     scans: ["fedify_kv: SCAN fedify_kv"],
     site: "src/domain/fedify-kv.ts#<anonymous> in kvList",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the KvStore contract's listing with no prefix (src/domain/fedify-kv.ts:63-67, federation/kv-store.ts:47-52); Fedify lists only under a prefix (its middleware's this.#kv.list(this.#prefix)), a range of the key",
   },
   {
     id: "f05478ccc7013224",
@@ -2240,15 +2259,17 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "c10d6d4de870645f",
     scans: ["admin_actions: SCAN admin_actions"],
     site: "src/domain/moderation-log.ts#<anonymous> in moderationLog",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
+    reason:
+      "admin_actions keeps the newest MODERATION_LOG_KEEP (10,000) rows: each logAction deletes up to MODERATION_LOG_PRUNE below the window (src/domain/moderation-log.ts:17-18, :65-69); only admin writes log a row, and the page is the Access-gated GET /admin/moderation-log, operator-only",
   },
   {
     id: "85e75d83d6d3987a",
     scans: ["admin_actions: SCAN admin_actions"],
     site: "src/domain/moderation-log.ts#logAction < src/domain/remote-suspension.ts#suspendRemote < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "write",
-    issue: "#1468 group 9",
+    disposition: "bounded",
+    reason:
+      "admin_actions keeps the newest MODERATION_LOG_KEEP (10,000) rows: each logAction deletes up to MODERATION_LOG_PRUNE below the window (src/domain/moderation-log.ts:17-18, :65-69); only admin writes log a row, and the page is the Access-gated GET /admin/moderation-log, operator-only",
   },
   {
     id: "2fb9c118025c0214",
@@ -2676,29 +2697,33 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statuses: SCAN statuses USING INDEX statuses_public",
     ],
     site: "src/domain/search.ts#searchHashtags < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the newest HASHTAG_PUBLIC_WINDOW (2,000) public statuses, read in order from the partial index statuses_public (src/domain/search.ts:41 and :190, migrations/0000_initial.sql:132); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "3ae16a72600377c8",
     scans: ["kopje_state: SCAN kopje_state"],
     site: "src/domain/setup.ts#<anonymous> in beginSetupSession",
-    disposition: "write",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
   },
   {
     id: "f8c1f4e4265e3864",
     scans: ["kopje_state: SCAN kopje_state"],
     site: "src/domain/setup.ts#<anonymous> in bootstrapInstance",
-    disposition: "write",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
   },
   {
     id: "467093ef10eaf7ee",
     scans: ["local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_2"],
     site: "src/domain/setup.ts#bootstrapped < src/domain/setup.ts#<anonymous> in beginSetupSession",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "read only while no configuration row exists (setup.ts:127-133, the || after the instance_settings probe): before bootstrap, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
   },
   {
     id: "883afee3d9b87bd9",
@@ -2707,15 +2732,18 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "announcement_reactions: SCAN announcement_reactions USING COVERING INDEX announcement_reactions_name",
     ],
     site: "src/domain/setup.ts#insertLocalAccount < src/domain/setup.ts#<anonymous> in bootstrapInstance",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no quotes nor announcement_reactions",
+    witness: "test/other-request-plans.test.ts",
   },
   {
     id: "3eb05efdf63fcd2b",
     scans: ["kopje_state: SCAN kopje_state"],
     site: "src/domain/setup.ts#sessionNames < src/domain/setup.ts#<anonymous> in beginSetupSession",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
   },
   {
     id: "74337db9b1e41efd",
@@ -2886,8 +2914,10 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/tags.ts#tagHistory < src/domain/tags.ts#<anonymous> in presentTags < src/domain/tags.ts#presentTags < src/domain/search.ts#searchHashtags < src/domain/search.ts#<anonymous> in search",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the rule has no viewer, so its follow probe asks for fo.account_id IS NULL, which follows.account_id (NOT NULL, migrations/0000_initial.sql:255) never holds: SQLite reads no follow for it, and the history admits public statuses only besides",
+    witness: "test/other-request-plans.test.ts",
   },
   {
     id: "a85388cc8a507b53",
@@ -2896,8 +2926,10 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
     site: "src/domain/tags.ts#tagHistory < src/domain/tags.ts#<anonymous> in presentTags < src/domain/tags.ts#presentTags < src/domain/tags.ts#presentTag < src/domain/tags.ts#<anonymous> in tagWrite",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "the rule has no viewer, so its follow probe asks for fo.account_id IS NULL, which follows.account_id (NOT NULL, migrations/0000_initial.sql:255) never holds: SQLite reads no follow for it, and the history admits public statuses only besides",
+    witness: "test/other-request-plans.test.ts",
   },
   {
     id: "fb9f6886321b49e0",
