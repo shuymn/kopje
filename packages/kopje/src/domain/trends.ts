@@ -1,5 +1,5 @@
 import { type ColumnMap, selectSql } from "../db/columns";
-import { STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import { type Db, ROW_OBJECT_BYTES, RowMeter, VALUE_BYTES } from "../db/sql";
 import { blockedDomain, normalizeDomain } from "../platform/domain-name";
 import { fromHex } from "../platform/dump-literals";
@@ -1152,8 +1152,9 @@ function adminStatus(row: StatusReviewRow, settings: TrendSettings): AdminTrendS
 
 function adminStatusRows(db: Db, where: string, tail: string, ...params: SqlStorageValue[]): StatusReviewRow[] {
   return db.all<StatusReviewRow>(
-    `SELECT ${ADMIN_STATUS_COLUMNS} FROM trend_statuses t CROSS JOIN statuses s ON s.id = t.status_id
-			CROSS JOIN accounts a ON a.id = t.account_id
+    `SELECT ${ADMIN_STATUS_COLUMNS} FROM trend_statuses t
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = t.status_id
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = t.account_id
 		WHERE ${where} ${tail}`,
     TREND_LANGUAGES_JSON,
     ...params,

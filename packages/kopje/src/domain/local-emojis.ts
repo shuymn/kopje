@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, CUSTOM_EMOJIS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { mediaUrl } from "../platform/media-files";
 import type { ImportAuthority } from "../platform/store-admin";
@@ -99,7 +100,8 @@ function adminEmoji(row: EmojiRow): AdminEmoji {
 
 function emojiById(db: Db, id: string): AdminEmoji | null {
   const row = db.first<EmojiRow>(
-    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?`,
+    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX}
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id WHERE e.id = ?`,
     id,
   );
   return row === undefined ? null : adminEmoji(row);
@@ -199,7 +201,7 @@ export const completeEmoji = writeOperation<
     return { ok: true, emoji: done };
   }
   const row = db.first<{ uri: string }>(
-    `SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id
+    `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
 		WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL
 			AND m.scheduled_status_id IS NULL`,
     input.id,
@@ -354,7 +356,8 @@ export const adminEmojis = readOperation<
 >((db, { after, limit }) => {
   const size = Math.min(Math.max(limit ?? ADMIN_EMOJI_PAGE, 1), MAX_ADMIN_EMOJI_PAGE);
   const rows = db.all<EmojiRow>(
-    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e JOIN media_attachments m ON m.id = e.id
+    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX}
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id
 		WHERE e.id > ?1 ORDER BY e.id LIMIT ?2`,
     after ?? "",
     size,
@@ -379,7 +382,7 @@ export type ListedEmoji = {
 export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
   const rows = db.all<{ shortcode: string; category: string | null; url: string }>(
     `SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled
-		JOIN media_attachments m ON m.id = e.id
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id
 		WHERE e.disabled = 0 AND e.visible_in_picker = 1 ORDER BY e.shortcode LIMIT ?`,
     MAX_ENABLED_EMOJIS,
   );
@@ -405,7 +408,7 @@ export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
 export function localEmojiObjectOf(db: Db, id: string, origin: string): EmojiTag | null {
   const row = db.first<{ id: string; shortcode: string; created_at: string; content_type: string; url: string }>(
     `SELECT e.id, e.shortcode, e.created_at, m.content_type, m.url
-			FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?`,
+			FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX} CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id WHERE e.id = ?`,
     id,
   );
   return row === undefined || emojiHref(row.url) !== row.url ? null : emojiTag(origin, row);

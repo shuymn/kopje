@@ -1,5 +1,5 @@
 import { selectSql } from "../db/columns";
-import { MEDIA_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { mediaUrl } from "../platform/media-files";
 import {
@@ -314,7 +314,8 @@ export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachm
   (db, input, { accountId }) => {
     const row = db.first<{ token: string | null; uri: string; processed: number; url: string; created_at: string }>(
       `SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at
-			FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?`,
+			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
+			WHERE m.id = ? AND m.account_id = ?`,
       input.id,
       accountId,
     );

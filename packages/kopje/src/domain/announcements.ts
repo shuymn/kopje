@@ -1,3 +1,4 @@
+import { MEDIA_ID_INDEX } from "../db/indexes";
 import { type Db, ROW_OBJECT_BYTES, RowCapExceeded, RowMeter, VALUE_BYTES } from "../db/sql";
 import { isUnicodeEmoji } from "../platform/emoji-names";
 import { railsBlank } from "../platform/rails-blank";
@@ -305,8 +306,8 @@ function reactionRows(db: Db, announcementId: string, viewer: string | null, nam
 			(SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first
 				FROM announcement_reactions INDEXED BY announcement_reactions_name
 				WHERE announcement_id = ?1${name === undefined ? "" : " AND name = ?3"} GROUP BY name) g
-		JOIN announcement_reactions r ON r.id = g.first
-		LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id
+		LEFT JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first)
 		ORDER BY g.first LIMIT ${MAX_REACTION_NAMES}`,
     announcementId,
     viewer,
@@ -882,7 +883,7 @@ export const deleteAnnouncement = writeOperation<
     );
   }
   const rows = new RowBudget(db, ANNOUNCEMENT_DELETE_ROWS);
-  db.run("DELETE FROM announcement_reactions WHERE announcement_id = ?", id);
+  db.run("DELETE FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcement_dismissals WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcements WHERE id = ?", id);
   const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
