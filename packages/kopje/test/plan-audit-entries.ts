@@ -2291,31 +2291,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "f3a7e25224c0ba4e",
-    scans: ["outbound_activities: SCAN o"],
-    site: "src/domain/deliveries.ts#holdHandshake < src/domain/deliveries.ts#<anonymous> in claimDeliveries",
-    disposition: "background",
-    reason:
-      'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "417df1a2f24038df",
-    scans: ["outbound_activities: SCAN o"],
-    site: "src/domain/deliveries.ts#holdHandshake < src/domain/deliveries.ts#<anonymous> in claimDeliveries",
-    disposition: "background",
-    reason:
-      'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "2c8c27602840b4eb",
+    id: "9736a0ab2fda848c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "reject_replays: SCAN r",
     ],
     site: "src/domain/handshake-replays.ts#replayReject < src/domain/handshake-replays.ts#<anonymous> in handshakeReplayStep < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
+    disposition: "deliberate",
     reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) reads the first entry of the partial index instance_domain_blocks_suspend',
+      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "34a11dd79061b053",

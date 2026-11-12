@@ -1108,14 +1108,47 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
       expect(await sql(store, "SELECT 1 FROM reject_replays WHERE follower_id = ?", r)).toHaveLength(1);
       await lift(w, r);
       await sql(store, "UPDATE reject_replays SET check_at = 0 WHERE follower_id = ?", r);
-      const step = await plannedRun(w.h, /FROM main\.reject_replays r\b/, handshakeReplayStep, { now: NOW }, true);
+      const step = await plannedRun(
+        w.h,
+        /FROM main\.reject_replays\s+WHERE id = /,
+        handshakeReplayStep,
+        { now: NOW },
+        true,
+      );
       expect(step.result).toEqual({ done: false, delivers: true });
       return {
-        hold: claim.plans.map((p) => [p.rows, p.plan.find((d) => / o /.test(` ${d} `)) ?? ""]),
-        read: step.plans.map((p) => [p.rows, p.plan[0]]),
+        hold: claim.plans.map((p) => [p.rows, p.plan.find((d) => d.includes("main.outbound_activities")) ?? ""]),
+        read: step.plans.map((p) => [p.rows, p.plan.find((d) => d.includes("main.reject_replays")) ?? ""]),
       };
     };
+    // Statistics taken with one intent and one hold of the measured shape (ANALYZE writes none for an empty table), so
+    // the planner sees one-row tables, then the growth.
+    await remotes(store, 1, "9", true);
+    await sql(
+      store,
+      `INSERT INTO outbound_activities (account_id, body, created_at, follow_pair)
+			VALUES (?1, '{"activity":{"type":"Reject","object":{"type":"Follow"}}}', 0, ?2)`,
+      w.dan.id,
+      `9${"1".padStart(17, "0")}`,
+    );
+    await sql(
+      store,
+      "INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, 'https://f/9', ?)",
+      w.dan.id,
+      `9${"1".padStart(17, "0")}`,
+      NOW + 1_000_000_000,
+    );
     const { before, after } = await staleStatistics(w.h, {
+      settle: async () => {
+        const stats = await sql<{ tbl: string; stat: string }>(
+          store,
+          "SELECT tbl, stat FROM sqlite_stat1 WHERE tbl IN ('outbound_activities', 'reject_replays') ORDER BY tbl, idx",
+        );
+        expect(new Set(stats.map((s) => s.tbl))).toEqual(new Set(["outbound_activities", "reject_replays"]));
+        for (const { tbl, stat } of stats) {
+          expect(Number(stat.split(" ")[0]), tbl).toBeLessThanOrEqual(1);
+        }
+      },
       capture: (phase) => cycle(phase === "before" ? w.alice : w.carol),
       // 20,000 intents (the tail key past them all) and 3,000 holds of 30 other local accounts, all due much later.
       grow: async () => {
@@ -1153,9 +1186,11 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
     expect([before.hold.length, before.read.length]).toEqual([2, 1]);
     expect(after.hold.map(([, plan]) => plan)).toEqual(before.hold.map(([, plan]) => plan));
     for (const [, plan] of after.hold) {
-      expect(plan).toMatch(/^SEARCH o USING INTEGER PRIMARY KEY \(rowid=\?\)$/);
+      expect(plan).toMatch(/^SEARCH main\.outbound_activities USING INTEGER PRIMARY KEY \(rowid=\?\)$/);
     }
-    expect(after.read.map(([, plan]) => plan)).toEqual(["SEARCH r USING INTEGER PRIMARY KEY (rowid=?)"]);
+    expect(after.read.map(([, plan]) => plan)).toEqual([
+      "SEARCH main.reject_replays USING INTEGER PRIMARY KEY (rowid=?)",
+    ]);
     expect(after).toEqual(before);
   }, 300_000);
 

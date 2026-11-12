@@ -154,7 +154,8 @@ function replay(db: Db, followId: string, now: number): Outcome {
 // A held Reject with what its replay reads, each by key: the Follow id and both actor uris as their bytes (decoded
 // strictly below), the edge id as TEXT (DATA-6), whether the follower is remote and the local account has its row,
 // whether the pair holds a follow (follows_pair), and the eligibility but for the inbox's checks, which read its URL
-// in code.
+// in code. The hold is read by its rowid in a LIMIT 1 subquery, which stale statistics cannot turn into a scan, as
+// deliveries.ts HELD_REJECT reads its intent (RES-7).
 const REJECT_HOLD = `SELECT r.account_id AS local_id, r.follower_id, CAST(r.follow_uri AS BLOB) AS follow_uri,
 		CAST(r.edge_id AS TEXT) AS edge_id, CAST(la.uri AS BLOB) AS local_uri, CAST(fa.uri AS BLOB) AS follower_uri,
 		fa.domain IS NOT NULL AS remote, l.account_id IS NOT NULL AS local,
@@ -162,11 +163,11 @@ const REJECT_HOLD = `SELECT r.account_id AS local_id, r.follower_id, CAST(r.foll
 			WHERE f.account_id = r.follower_id AND f.target_account_id = r.account_id) AS followed,
 		(l.account_id IS NOT NULL AND ${availableLocalSql("l")}) AS local_available,
 		${availableSql("r.follower_id")} AS follower_available, ${addressedInboxSql("fa")} AS inbox
-	FROM main.reject_replays r
+	FROM (SELECT account_id, follower_id, follow_uri, edge_id FROM main.reject_replays
+			WHERE id = CAST(?1 AS INTEGER) LIMIT 1) r
 		CROSS JOIN main.accounts la INDEXED BY ${ACCOUNTS_ID_INDEX} ON la.id = r.account_id
 		CROSS JOIN main.accounts fa INDEXED BY ${ACCOUNTS_ID_INDEX} ON fa.id = r.follower_id
-		LEFT JOIN main.local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = r.account_id
-	WHERE r.id = CAST(?1 AS INTEGER)`;
+		LEFT JOIN main.local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = r.account_id`;
 
 type RejectHold = {
   local_id: string;

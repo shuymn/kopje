@@ -2589,7 +2589,9 @@ export function heldFollowUriSql(v: string): string {
 // none, the edge id its own id ends with after `<local actor>#rejects/follows/`, when that suffix is the canonical
 // decimal of a 64-bit integer (CAST(f.id AS TEXT) wrote it; the suffix round-trips through INTEGER and TEXT to the
 // same bytes, so leading zeros, a sign, spaces, an exponent, a value past the range or an empty suffix fail).
-// Anything else is no row. Key lookups only: the intent, both accounts, the local row, and the pair's follow.
+// Anything else is no row. Key lookups only: the intent, both accounts, the local row, and the pair's follow. The
+// intent is read by its rowid in a LIMIT 1 subquery: joined directly, statistics taken while outbound_activities was
+// small plan its rowid lookup as a scan (RES-7; test/reject-replays.test.ts, "statistics older than both tables").
 const HELD_REJECT = `SELECT account, follower,
 		CASE WHEN uri_type = 'text' AND ${heldFollowUriSql("uri")} THEN uri END AS follow_uri,
 		CASE WHEN uri_type IS NULL AND id_type = 'text' AND substr(id, 1, length(prefix)) = prefix
@@ -2599,12 +2601,12 @@ const HELD_REJECT = `SELECT account, follower,
 			json_type(o.body, '$.activity.object.id') AS uri_type, json_extract(o.body, '$.activity.object.id') AS uri,
 			json_type(o.body, '$.activity.id') AS id_type, CAST(json_extract(o.body, '$.activity.id') AS BLOB) AS id,
 			CAST(la.uri || '#rejects/follows/' AS BLOB) AS prefix
-		FROM main.outbound_activities o NOT INDEXED
+		FROM (SELECT account_id, follow_pair, body FROM main.outbound_activities
+				WHERE id = CAST(?1 AS INTEGER) AND superseded = 0 AND retracts = 0 AND follow_pair IS NOT NULL LIMIT 1) o
 			CROSS JOIN main.accounts fa INDEXED BY ${ACCOUNTS_ID_INDEX} ON fa.id = o.follow_pair
 			CROSS JOIN main.local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = o.account_id
 			CROSS JOIN main.accounts la INDEXED BY ${ACCOUNTS_ID_INDEX} ON la.id = o.account_id
-		WHERE o.id = CAST(?1 AS INTEGER) AND o.superseded = 0 AND o.retracts = 0 AND o.follow_pair IS NOT NULL
-			AND json_extract(o.body, '$.activity.type') = 'Reject' AND json_extract(o.body, '$.activity.object.type') = 'Follow'
+		WHERE json_extract(o.body, '$.activity.type') = 'Reject' AND json_extract(o.body, '$.activity.object.type') = 'Follow'
 			AND fa.domain IS NOT NULL
 			AND NOT EXISTS (SELECT 1 FROM main.follows f INDEXED BY follows_pair
 				WHERE f.account_id = o.follow_pair AND f.target_account_id = o.account_id))
