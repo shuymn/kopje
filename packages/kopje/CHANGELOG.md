@@ -8,6 +8,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-12
+
+A minor release, published under the npm dist-tag `latest`. It adds one Store migration and bounds the domain-block
+check for host names longer than any DNS name. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: adds one migration (0090), applied on the first request after the deploy; a rollback to an earlier
+  version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store
+  defined in `test/bench/migration-cost.ts` it took 3–10 ms (median 4 ms) in three runs of the migration bench workflow
+  on a GitHub-hosted runner, in workerd's local Durable Object SQLite, skipping the Store-wide foreign-key check as
+  declared. No `wrangler.jsonc` change.
+
 ### Fixed
 
 - A host whose name is longer than 1,012 bytes as UTF-8 now counts as covered by the instance's domain blocks:
