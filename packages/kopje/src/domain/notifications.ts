@@ -110,7 +110,8 @@ export function notify(db: Db, input: NotifyInput): void {
       return;
     }
     db.run(
-      "DELETE FROM notifications WHERE account_id = ? AND type = ? AND from_account_id = ? AND status_id = ?",
+      `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = ?1 AND type = ?2 AND from_account_id = ?3 AND IFNULL(status_id, '') = ?4 AND status_id = ?4`,
       input.recipientId,
       input.type,
       input.fromId,
@@ -136,8 +137,8 @@ export function notify(db: Db, input: NotifyInput): void {
   // the notification is written again with a new id rather than lost to the conflict while the rounds have yet to
   // delete it.
   db.run(
-    `DELETE FROM notifications WHERE account_id = ?1 AND type = ?2 AND from_account_id = ?3
-			AND IFNULL(status_id, '') = IFNULL(?4, '') AND IFNULL(report_id, 0) = IFNULL(CAST(?5 AS INTEGER), 0)
+    `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = ?1 AND type = ?2 AND from_account_id = ?3 AND IFNULL(status_id, '') = IFNULL(?4, '') AND IFNULL(report_id, 0) = IFNULL(CAST(?5 AS INTEGER), 0)
 			AND IFNULL(account_warning_id, 0) = IFNULL(CAST(?6 AS INTEGER), 0)
 			AND NOT ${keptSql("notifications")}`,
     input.recipientId,
@@ -258,7 +259,8 @@ export function pushWantedSql(p: string, t: string, n: string, now: string): str
 }
 
 // One push per subscription of the recipient that wants notification `id`, due at once, within the room the backlog
-// has left: however many subscriptions want it, the total never passes MAX_PUSH_BACKLOG.
+// has left: however many subscriptions want it, the total never passes MAX_PUSH_BACKLOG. No index reaches an account's
+// subscriptions: walking its tokens costs every token it holds, so the join is left to the statistics (#1481).
 function queuePushes(db: Db, id: string, now: number): void {
   const waiting =
     db.first<{ n: number }>("SELECT count(*) AS n FROM (SELECT 1 FROM push_deliveries LIMIT ?)", MAX_PUSH_BACKLOG)?.n ??
