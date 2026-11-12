@@ -1633,10 +1633,12 @@ export function reportForwardees(
 ): string[] {
   return db
     .all<{ id: string }>(
-      `SELECT t.id FROM main.accounts t
+      `SELECT t.id FROM main.accounts t INDEXED BY ${ACCOUNTS_ID_INDEX}
 			WHERE t.id = ?1 AND t.domain IS NOT NULL AND t.domain IN (SELECT value FROM json_each(?3))
 			UNION
-			SELECT a.id FROM main.accounts t CROSS JOIN main.statuses s JOIN main.accounts a ON a.id = s.in_reply_to_account_id
+			SELECT a.id FROM main.accounts t INDEXED BY ${ACCOUNTS_ID_INDEX}
+			CROSS JOIN main.statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.in_reply_to_account_id
 			WHERE t.id = ?1 AND s.id IN (SELECT value FROM json_each(?2))
 				AND a.domain IS NOT NULL AND a.domain IN (SELECT value FROM json_each(?3))
 				AND COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url) IS NOT NULLIF(t.inbox_url, '')
@@ -1662,7 +1664,8 @@ export function remoteReportableSql(s: string, target: string, domain: string, f
 		AND ${availableSql(`${s}.account_id`)} AND (
 		${s}.visibility IN ${DISTRIBUTABLE_SQL}
 		OR (${s}.visibility = 'private' AND ${follower})
-		OR EXISTS (SELECT 1 FROM main.status_mentions rm JOIN main.accounts ra ON ra.id = rm.account_id
+		OR EXISTS (SELECT 1 FROM main.status_mentions rm
+			CROSS JOIN main.accounts ra INDEXED BY ${ACCOUNTS_ID_INDEX} ON ra.id = rm.account_id
 			WHERE rm.status_id = ${s}.id AND ra.domain = ${domain})))`;
 }
 
@@ -1679,7 +1682,7 @@ export function hasFollowerOn(db: Db, target: string, domain: string): boolean {
     db.first(
       `SELECT 1 AS x FROM (SELECT f.account_id FROM main.follows f INDEXED BY follows_target
 				WHERE f.target_account_id = ?1 AND f.state = 'accepted' LIMIT ?3) w
-			JOIN main.accounts a ON a.id = w.account_id WHERE a.domain = ?2
+			CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id WHERE a.domain = ?2
 			UNION ALL
 			SELECT 1 FROM (SELECT a.id FROM main.accounts a INDEXED BY accounts_domain_username WHERE a.domain = ?2 LIMIT ?3) d
 			WHERE EXISTS (SELECT 1 FROM main.follows f INDEXED BY follows_pair

@@ -559,7 +559,7 @@ function recountLocal(db: Db, ids: Iterable<string>): void {
 function removeFollow(db: Db, followerId: string, targetId: string): boolean {
   const removed = db.run("DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", followerId, targetId);
   db.run(
-    "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
+    "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ? AND type IN ('follow', 'follow_request') AND from_account_id = ?",
     targetId,
     followerId,
   );

@@ -496,6 +496,30 @@ describe("plan audit residuals", () => {
       5,
     ],
     ["a status's earlier replies", "src/domain/remote-statuses.ts#linkReplies", "statuses: SCAN statuses", 5],
+    // The block and report reads of group 6.
+    ["a forwarded report's addressees", "src/domain/audience.ts#reportForwardees", "accounts: SCAN t", 6],
+    ["a report's follower probe", "src/domain/audience.ts#hasFollowerOn", "accounts: SCAN a", 6],
+    [
+      "a domain's rule",
+      "src/domain/instance-domain-blocks.ts#ruleFor < src/domain/instance-domain-blocks.ts#createBlock",
+      "instance_domain_blocks: SCAN instance_domain_blocks",
+      6,
+    ],
+    ["a report's target page", "src/domain/reports.ts#<anonymous> in reportTargetPage", "reports: SCAN r", 6],
+    [
+      "a domain block's preview",
+      "src/domain/blocks.ts#count < src/domain/blocks.ts#<anonymous> in previewDomainBlock",
+      "accounts: SCAN a",
+      6,
+    ],
+    ["the viewer's mutes", "src/domain/blocks.ts#<anonymous> in listMutes", "mutes: SCAN m", 6],
+    ["an ended follow's notifications", "src/domain/blocks.ts#endFollow", "notifications: SCAN notifications", 6],
+    [
+      "an unfollow's notifications",
+      "src/domain/account-actions.ts#<anonymous> in unfollow",
+      "notifications: SCAN notifications",
+      6,
+    ],
   ])("fails %s put back", (_name, site, scan, group) => {
     for (const disposition of ["pending", "write"] as const) {
       const stray: PlanAuditEntry = {

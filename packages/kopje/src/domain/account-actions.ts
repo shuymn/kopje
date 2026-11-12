@@ -340,7 +340,7 @@ export const unfollow = userWriteOperation<{ target: string; now: number }, Rela
     }
     // The follow's notification goes with it, as Mastodon destroys a notification with its activity.
     db.run(
-      "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
+      "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ? AND type IN ('follow', 'follow_request') AND from_account_id = ?",
       target.id,
       viewerId,
     );

@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
   type Account,
@@ -80,7 +81,7 @@ function endFollow(db: Db, follower: Party, target: Party, now: number, severing
     return false;
   }
   db.run(
-    "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
+    "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ? AND type IN ('follow', 'follow_request') AND from_account_id = ?",
     target.id,
     follower.id,
   );
@@ -324,7 +325,7 @@ export const listMutes = userReadOperation<{ page: PageQuery; present: Present }
     const ascending = page.minId !== undefined;
     const rows = db.all<{ cursor: string; id: string; mute_expires_at: string | null }>(
       `SELECT CAST(m.id AS TEXT) AS cursor, m.target_account_id AS id, m.expires_at AS mute_expires_at
-			FROM mutes m WHERE m.account_id = ?1 AND ${activeMuteSql("m", "?5")}
+			FROM mutes m INDEXED BY mutes_pair WHERE m.account_id = ?1 AND ${activeMuteSql("m", "?5")}
 				AND ${edgeRangeSql("m.id", "?2", "?3")}
 			ORDER BY m.id ${ascending ? "ASC" : "DESC"} LIMIT ?4`,
       accountId,
@@ -400,7 +401,8 @@ function cleanupBatch(db: Db, cleanup: Cleanup, now: number): boolean {
   if (last != null && user !== undefined) {
     const ended = db.all<{ follower: string; target: string; other: string; other_uri: string }>(
       `SELECT f.account_id AS follower, f.target_account_id AS target, a.id AS other, a.uri AS other_uri
-			FROM follows f JOIN accounts a ON a.id = IIF(f.account_id = ?1, f.target_account_id, f.account_id)
+			FROM follows f CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+				ON a.id = IIF(f.account_id = ?1, f.target_account_id, f.account_id)
 			WHERE f.id > CAST(?3 AS INTEGER) AND f.id <= CAST(?4 AS INTEGER) AND ?1 IN (f.account_id, f.target_account_id)
 				AND ${inDomainSql("a", "?2")}
 			ORDER BY f.id`,
@@ -513,15 +515,16 @@ export const previewDomainBlock = userReadOperation<
   { domain: string },
   { following_count: number; followers_count: number }
 >((db, { domain }, { accountId }) => {
-  const count = (anchor: string, other: string) =>
+  const count = (anchor: string, other: string, index: string) =>
     db.first<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM follows f JOIN accounts a ON a.id = f.${other}
+      `SELECT COUNT(*) AS n FROM follows f INDEXED BY ${index}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = f.${other}
 			WHERE f.${anchor} = ?1 AND f.state = 'accepted' AND ${inDomainSql("a", "?2")}`,
       accountId,
       domain,
     )?.n ?? 0;
   return {
-    following_count: count("account_id", "target_account_id"),
-    followers_count: count("target_account_id", "account_id"),
+    following_count: count("account_id", "target_account_id", "follows_accepted"),
+    followers_count: count("target_account_id", "account_id", "follows_target"),
   };
 });
