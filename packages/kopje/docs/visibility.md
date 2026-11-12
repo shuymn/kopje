@@ -364,14 +364,14 @@ have been able to view the status at capture (R3): an author who blocks the view
 
 Pins and conversation mutes (`src/domain/status-actions.ts`, Mastodon's `StatusPin` and `ConversationMute`, migration
 `0018_status_pins_and_conversation_mutes`) act on a status the viewer may see by itself (R3; anything else is not
-found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`; the
-stored bound of migration `0089_pin_cap` holds five for a local account and 20 for a remote one, imports included);
-pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads the account's pins through their primary
-key (at most its limit of them) and applies the account statuses rule (R11), newest pin first; the actor's `featured` collection serves them as the
-object endpoint serves statuses (R4), the uri alone of a private one, as Mastodon's `CollectionsController` does; and
-pinning or unpinning records an `Add` or `Remove` for the followers (R23, kind `other`), after an `Update` of the
-actor before the account's first one, pin or featured hashtag (`announceFeatured` in `actor-update.ts`). A conversation mute is its
-owner's and names a thread (`statuses.thread`); only the policy module reads it (`conversationMutedSql`): the
+found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`;
+storage holds five for a local account and 20 for a remote one, imports included: RES-4 in
+[threat-model.md](threat-model.md)); pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads at
+most the account's limit of pins through their primary key and applies the account statuses rule (R11), newest pin
+first; the actor's `featured` collection serves them as the object endpoint serves statuses (R4), the uri alone of a
+private one, as Mastodon's `CollectionsController` does; and pinning or unpinning records an `Add` or `Remove` for the
+followers (R23, kind `other`), after an `Update` of the actor before the account's first one, pin or featured hashtag
+(`announceFeatured` in `actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`); only the policy module reads it (`conversationMutedSql`): the
 presenter shows it in the viewer's `muted` of each status (a boost's own thread, as Mastodon gives a boost its own
 conversation), and `notify` writes through `notifiedSql`, R15 less a notification about a status of a conversation
 the recipient mutes (`NotifyService#conversation_muted?`; a reblog notification names the original). Listing and
@@ -495,8 +495,7 @@ receivers of the `Accept`s it withdraws: a Follow's answer matters to the follow
 recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
 accounts' follows of it are kept; a pending one's `Follow` is held and sent once the account is available again
 ("Held handshakes", below), as is a local account's `Reject` of its request, and any other content to it is dropped at
-send time (VIS-30). Each round writes at most
-`MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
+send time (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
 ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
 the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
 under ID-7's rules for a pair id and the retraction cap.
@@ -668,16 +667,14 @@ an activity without `to` by shared inbox, else personal inbox (R38's severing `R
 test below).
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
-through each of them (VIS-3 in [threat-model.md](threat-model.md)): its audience names only the owner's references,
-which `shareReaches`' rule resolves when the forward is staged (one at a time, RES-6 in
+through each of them (VIS-3 in [threat-model.md](threat-model.md), with its gaps): its audience names only the owner's
+references, which `shareReaches`' rule resolves when the forward is staged (one at a time, RES-6 in
 [threat-model.md](threat-model.md)): its boost and its public, unlisted or private quoting statuses (`Audience.shares`)
 into the owner's followers, by shared inbox, and every inbox that received each or may (`receiversOf`); its direct or
-limited quoting statuses (`Audience.receiptShares`) into their receipts alone (`receiptsOf`: the inboxes the quote
-was delivered to, never a row or unexpanded target of its `Create`, which may never have been sent), so no server that
-never received such a quote learns of it. _Gap (accepted):_ an inbox whose `Create` of such a quote is still in
-flight when the forward is staged is not reached; it may get the quote and later find the original gone. The forwarded activity is the remote author's, so its `to` never decides a target: no account it
-names is addressed and nobody gets a personal copy. It is a retraction, so `recipientsFor` leaves out no follower and
-the send-time check never drops it. A direct or limited boost (a converted one) is no member: its booster's followers
+limited quoting statuses (`Audience.receiptShares`) into the inboxes the quote was delivered to alone (`receiptsOf`),
+so no server that never received such a quote learns of it. The forwarded activity is the remote author's, so its
+`to` never decides a target: no account it names is addressed and nobody gets a personal copy. It is a retraction, so
+`recipientsFor` leaves out no follower and the send-time check never drops it. A direct or limited boost (a converted one) is no member: its booster's followers
 may not see it, so it forwards nothing. A withdrawn quoting status is no member either.
 
 ### Instance domain blocks (R38, VIS-30)
@@ -740,8 +737,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   names: at most two unique seeks per suffix of 2 to 8 labels. No stored bound limits a host's length, so a host past
   1,012 bytes is never walked and is covered: no server's name has more in either form (DNS's longest is 253 octets,
   RFC 1035 §2.3.4, and its U-labels decode to no more code points than that, each of at most 4 UTF-8 bytes). A host
-  within them has at most a dot per byte, so its walk is at most 1,012 rows (`test/domain-suffix-walk.test.ts`). The check runs where the walk would: the
-  inbox gate and fetch refusals always, availability only while a `suspend` block exists (below).
+  within them has at most a dot per byte, so its walk is at most 1,012 rows (`test/domain-suffix-walk.test.ts`).
+  The check runs where the walk would: the inbox gate and fetch refusals always, availability only while a `suspend`
+  block exists (below).
 - **Availability.** `availableSql` makes a remote account unavailable when a block covers either key `inDomainSql`
   compares (its stored domain or its actor id's host), read live in every statement; no mark is read. While the
   instance has no `suspend` block the rule costs one constant seek per predicate a statement emits, and its `CASE`
@@ -864,7 +862,7 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   Misskey by the pair alone), so the newest is enough. Its identity is taken by bytes: the `Follow`'s id within
   `ACTIVITY_ID_LIMIT`, or, for a `Reject` that names none, the edge id its own id ends with, only when that suffix is
   the canonical decimal of a 64-bit integer; anything else holds nothing. A local account holds at most
-  `HELD_REJECTS_PER_ACCOUNT` (100) pairs; past it a new pair's `Reject` is dropped as before and logged
+  `HELD_REJECTS_PER_ACCOUNT` (100) pairs; past it a new pair's `Reject` is dropped and logged
   (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated, and a slot a replay
   frees may go to any pair. The replay (`replayReject` in `handshake-replays.ts`) records the `Reject` again with its
   original id once, read live, both accounts are available and the follower's inbox is deliverable and uncovered; no
@@ -876,20 +874,19 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   follower is purged.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
-  held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local account's pending
-  follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account its `Accept`;
-  any other ends the hold. The handshake is recorded again with its original id (activities.ts: a `Follow`'s id is
+  held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local
+  account's pending follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account
+  its `Accept`; any other ends the hold. The handshake is recorded again with its original id (activities.ts: a `Follow`'s id is
   `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without one) only when,
   read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared inbox, else the
   personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's rule
   (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower nor
   its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
   moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
-- **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing, is confirmed for sending
+- **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing is confirmed for sending
   while its recipient is unavailable (a retraction, a `Reject` that withdraws an accepted follow included, is exempt);
   a POST confirmed before an unavailability commits may still finish, as for any row. Once its replay records it, a
-  held `Reject` is a queued answer under NET-2's keep rule, with that rule's accepted window: a newer `Follow` of the
-  pair arriving before its claim keeps it, so the older generation's `Reject` is still sent.
+  held `Reject` is a queued answer under NET-2's keep rule and its accepted window ([threat-model.md](threat-model.md)).
 - **Latency (an estimate, not a bound).** With an unloaded queue and no failures, a hold is sent 5 to 10 minutes after
   its recipient is available again (the cron and each jobs message run a round); backlog, maintenance and backoff
   make it longer.
