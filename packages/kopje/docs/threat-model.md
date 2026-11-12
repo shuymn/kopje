@@ -4071,8 +4071,7 @@ heap).
   template statements with bound literals, into an empty Store with the same schema, and verification recomputes the
   digests from the imported rows. Of `kopje_state` it restores only the names the dump declares, which must be among
   the Store's (`last_local_id`, `profile_updates`); of `sqlite_sequence`, only counters of the tables the schema
-  declares AUTOINCREMENT; and it refuses more pending apps than registration keeps (`MAX_PENDING_APPS`, RES-6;
-  `test/import-bounds.test.ts`). _Enforced (main):_ `src/platform/store-dump.ts`,
+  declares AUTOINCREMENT (RES-6; `test/import-bounds.test.ts`). _Enforced (main):_ `src/platform/store-dump.ts`,
   `src/platform/store-import.ts`, `docs/dump-format.md`; `test/dump-import.test.ts`, `test/ops-regressions.test.ts`,
   `test/dump-format.test.ts`. Media tombstones (`media_orphans`) are left out of dumps (`src/platform/dump-catalog.ts`):
   they name R2 objects to delete, which a restored Store must not act on. So are card images (`card_images`): they

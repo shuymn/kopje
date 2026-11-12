@@ -3,34 +3,22 @@ import { describe, expect, it } from "vitest";
 
 import { SEQUENCE_TABLE } from "../src/platform/dump-catalog";
 import { type DumpTrailer, trailerLines } from "../src/platform/dump-format";
-import { MAX_PENDING_APPS } from "../src/platform/pending-apps";
 import type { StoreStub } from "../src/platform/store-client";
 import { autoincrementTables } from "../src/platform/store-import";
 import { migratedStore, rejectionOf } from "./helpers";
 import { copyConfig, dumpViaRpc, importViaRpc, seedStore, splitDump } from "./ops-helpers";
 
-// The import's bounds of what registration and SQLite keep (RES-6, docs/dump-format.md): a sqlite_sequence row names
-// one of the schema's AUTOINCREMENT tables, refused with its chunk otherwise; the pending apps of a verified import
-// number at most MAX_PENDING_APPS, by registration's own predicate, refused at verification otherwise. Kopje's own
-// export holds neither, so a fresh one round-trips; a dump past either bound is crafted or corrupted.
+// The import's bound of what SQLite keeps (RES-6, docs/dump-format.md): a sqlite_sequence row names one of the
+// schema's AUTOINCREMENT tables, refused with its chunk otherwise. Kopje's own export holds no other, an upgraded
+// Store's neither (SQLite drops and renames a table's counter with it), so a fresh one round-trips; a dump past the
+// bound is crafted or corrupted. The pending apps are not bounded on import: test/dump-import.test.ts restores a Store
+// whose upgrade through 0086 left more than registration keeps.
 
 const SEQUENCE_LINE = /^INSERT INTO "sqlite_sequence" .*$/m;
 
-// A seeded Store with `pending` apps no user has authorized (and one that one has, never counted).
-async function withApps(pending: number): Promise<StoreStub> {
+async function seeded(): Promise<StoreStub> {
   const store = await migratedStore();
   await seedStore(store, 3);
-  await runInDurableObject(store, (_instance, state) => {
-    state.storage.sql.exec(
-      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
-			INSERT INTO oauth_clients (id, secret, name, redirect_uris, authorized)
-			SELECT 'pending-' || i, 's', 'p', 'urn:x', 0 FROM n WHERE ?1 > 0`,
-      pending,
-    );
-    state.storage.sql.exec(
-      "INSERT INTO oauth_clients (id, secret, name, redirect_uris, authorized) VALUES ('authorized', 's', 'a', 'urn:x', 1)",
-    );
-  });
   return store;
 }
 
@@ -48,12 +36,12 @@ async function resealed(text: string): Promise<string> {
 async function restore(source: StoreStub, text: string) {
   const target = await migratedStore();
   await copyConfig(source, target);
-  return { target, run: importViaRpc(target, text) };
+  return importViaRpc(target, text);
 }
 
 describe("the schema's AUTOINCREMENT tables", () => {
   it("are read from the live schema, and hold every counter a seeded Store keeps", async () => {
-    const store = await withApps(0);
+    const store = await seeded();
     const { tables, counters } = await runInDurableObject(store, (_instance, state) => ({
       tables: [...autoincrementTables(state.storage.sql)].toSorted(),
       counters: state.storage.sql
@@ -68,49 +56,45 @@ describe("the schema's AUTOINCREMENT tables", () => {
     expect(counters.length).toBeGreaterThan(0);
     expect(tables).toEqual(expect.arrayContaining(counters));
   });
+
+  // What an upgrade does to a counter: a table renamed takes its counter's name, and a table dropped takes its counter.
+  it("keep their counters through a rename and a drop, as an upgrade's rebuild does", async () => {
+    const store = await migratedStore();
+    const counters = await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      const names = () =>
+        sql
+          .exec<{ name: string }>(`SELECT name FROM ${SEQUENCE_TABLE} WHERE name GLOB 'rebuilt*' ORDER BY name`)
+          .toArray()
+          .map((row) => row.name);
+      sql.exec("CREATE TABLE rebuilt_old (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
+      sql.exec("INSERT INTO rebuilt_old (v) VALUES ('a')");
+      const created = names();
+      sql.exec("ALTER TABLE rebuilt_old RENAME TO rebuilt_new");
+      const renamed = names();
+      sql.exec("DROP TABLE rebuilt_new");
+      return { created, renamed, dropped: names() };
+    });
+    expect(counters).toEqual({ created: ["rebuilt_old"], renamed: ["rebuilt_new"], dropped: [] });
+  });
 });
 
 describe("a dump's sqlite_sequence (RES-6)", () => {
   it("round-trips a fresh export, its counters each of an AUTOINCREMENT table", async () => {
-    const source = await withApps(1);
+    const source = await seeded();
     const { text } = await dumpViaRpc(source, 8 * 1024);
     expect(text).toMatch(SEQUENCE_LINE);
-    const { run } = await restore(source, text);
-    expect((await run).report).toMatchObject({ ok: true, problems: [] });
+    expect((await restore(source, text)).report).toMatchObject({ ok: true, problems: [] });
   });
 
   it("refuses with its chunk a counter of a table the Store does not declare AUTOINCREMENT", async () => {
-    const source = await withApps(1);
+    const source = await seeded();
     const { text } = await dumpViaRpc(source, 8 * 1024);
     const line = text.match(SEQUENCE_LINE)![0];
     const crafted = await resealed(text.replace(line, line.replace(/\('[^']*'/, "('statuses'")));
     expect(crafted).not.toBe(text);
-    const { run } = await restore(source, crafted);
-    expect(String(await rejectionOf(run))).toMatch(/sequence-not-allowed|names no AUTOINCREMENT table/);
-  });
-});
-
-describe("a dump's pending apps (RES-6)", () => {
-  it(`accepts ${MAX_PENDING_APPS} pending apps, as registration keeps at most`, async () => {
-    const source = await withApps(MAX_PENDING_APPS);
-    const { text } = await dumpViaRpc(source, 64 * 1024);
-    const { target, run } = await restore(source, text);
-    expect((await run).report).toMatchObject({ ok: true, problems: [] });
-    const pending = await runInDurableObject(
-      target,
-      (_instance, state) =>
-        state.storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM oauth_clients WHERE authorized = 0").one().n,
+    expect(String(await rejectionOf(restore(source, crafted)))).toMatch(
+      /sequence-not-allowed|names no AUTOINCREMENT table/,
     );
-    expect(pending).toBe(MAX_PENDING_APPS);
-  });
-
-  it(`refuses at verification one more than ${MAX_PENDING_APPS}`, async () => {
-    const source = await withApps(MAX_PENDING_APPS + 1);
-    const { text } = await dumpViaRpc(source, 64 * 1024);
-    const { run } = await restore(source, text);
-    expect((await run).report).toMatchObject({
-      ok: false,
-      problems: [expect.stringContaining("more than MAX_PENDING_APPS")],
-    });
   });
 });

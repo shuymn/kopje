@@ -1,7 +1,6 @@
 import { ACCOUNTS_ID_INDEX, OAUTH_CLIENTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { loginEmailMatchSql } from "../platform/login-email";
-import { MAX_PENDING_APPS, pendingAppsSql, WEB_CLIENT_SETTING } from "../platform/pending-apps";
 import { withinScopes } from "../security/scopes";
 import { constantTimeEqual } from "../security/tokens";
 import { type Authorized, authorize, type Credential, CREDENTIAL_EPOCH_SQL } from "./auth";
@@ -69,16 +68,26 @@ export type RegisterAppInput = {
 // anyone can get an app token without a user, so app tokens cannot protect an app, or the budget could be filled for
 // good. An authorized app is never counted or removed. If nothing can go, the registration is refused (429). The cron
 // removes unused pending apps after UNUSED_APP_TTL_MS as well (sweepOAuth). The web UI's own client is never counted or
-// removed. An import holding more than MAX_PENDING_APPS pending apps is refused (platform/store-import.ts), so no path
-// stores more. The pending predicate and the bound are platform/pending-apps.ts's, which the import shares.
-export { MAX_PENDING_APPS, WEB_CLIENT_SETTING };
+// removed.
+export const MAX_PENDING_APPS = 500;
 export const UNUSED_APP_TTL_MS = 24 * 60 * 60 * 1000;
 export const EVICTION_GRACE_MS = 60 * 60 * 1000;
+
+// instance_settings name of the web UI's own OAuth client (domain/web-session.ts).
+export const WEB_CLIENT_SETTING = "web_client_id";
 
 export function webClientId(db: Db): string | null {
   return (
     db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = ?", WEB_CLIENT_SETTING)?.value ?? null
   );
+}
+
+// Clients no user has authorized, by the partial index in (created_at, id) order; `extra` narrows them further.
+function pendingAppsSql(extra = ""): string {
+  return `FROM oauth_clients c INDEXED BY oauth_clients_pending
+		WHERE c.authorized = 0
+			AND c.id IS NOT (SELECT value FROM instance_settings WHERE name = '${WEB_CLIENT_SETTING}')
+			${extra}`;
 }
 
 const UNUSED = "AND NOT EXISTS (SELECT 1 FROM oauth_tokens u INDEXED BY oauth_tokens_client WHERE u.client_id = c.id)";

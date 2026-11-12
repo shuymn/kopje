@@ -781,6 +781,14 @@ export const ROWS_1468: readonly Row1468[] = [
     ids: ["097a7da331db250a"],
   },
   {
+    group: 9,
+    statement:
+      "registration's pending app count (found by the audit): not bounded on import, since an upgrade through 0086 can honestly leave more than MAX_PENDING_APPS (test/dump-import.test.ts)",
+    sites: ["src/domain/oauth.ts#pendingApps"],
+    status: "observed",
+    ids: ["7e7121a3e8e907cd"],
+  },
+  {
     group: 0,
     statement: "tagStatus author lookup with its pin removed",
     sites: ["src/domain/timelines.ts#tagStatus"],

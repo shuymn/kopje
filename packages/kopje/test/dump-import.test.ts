@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MIGRATIONS } from "../src/db/migrations";
 import { PIN_LIMIT } from "../src/domain/activities";
 import { accountFeaturedTags } from "../src/domain/featured-tags";
+import { MAX_PENDING_APPS } from "../src/domain/oauth";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
 import { followedTags } from "../src/domain/tags";
 import { MAX_PROFILE_UPDATES } from "../src/platform/dump-catalog";
@@ -160,7 +161,7 @@ describe("dump", () => {
     migration: string,
     seed: (sql: SqlStorage) => void,
     check: (sql: SqlStorage, upgrade: () => ReturnType<ReturnType<typeof testKernel>["upgrade"]>) => Promise<void>,
-  ): Promise<void> {
+  ): Promise<StoreStub> {
     const before = MIGRATIONS.slice(0, MIGRATION_NAMES.indexOf(migration));
     const options = { source: { build: BUILD, version: "test" }, log: () => {} };
     const source = freshStore();
@@ -214,7 +215,41 @@ describe("dump", () => {
       }
       await check(sql, () => testKernel(state, MIGRATIONS.slice(0, before.length + 1)).upgrade());
     });
+    return target;
   }
+
+  // A dump taken before 0086_authorized_apps, of apps each holding an app token only: the upgrade through 0086 leaves
+  // them all pending, more than registration keeps (MAX_PENDING_APPS), and the cron's sweep keeps them (each has a
+  // token). The upgraded Store's own export restores: no import bound may refuse what an honest upgrade made.
+  it("restores the export of a Store upgraded through 0086 with more pending apps than registration keeps", async () => {
+    const apps = MAX_PENDING_APPS + 1;
+    const restored = await restoredBefore(
+      "0086_authorized_apps",
+      (sql) => {
+        sql.exec(
+          `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+					INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes) SELECT 'app-' || i, 's', 'a', 'urn:x', 'read' FROM n`,
+          apps,
+        );
+        sql.exec(
+          `INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes)
+					SELECT 'token-' || id, 'access', id, NULL, 'read' FROM oauth_clients WHERE id GLOB 'app-*'`,
+        );
+      },
+      async () => {},
+    );
+    const pending = await runInDurableObject(restored, async (_instance, state) => {
+      expect(await testKernel(state).upgrade()).toMatchObject({ ok: true });
+      return state.storage.sql
+        .exec<{ n: number }>("SELECT count(*) AS n FROM oauth_clients WHERE authorized = 0 AND id GLOB 'app-*'")
+        .one().n;
+    });
+    expect(pending).toBe(apps);
+    const { text } = await dumpViaRpc(restored, 64 * 1024);
+    const target = await migratedStore();
+    await copyConfig(restored, target);
+    expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+  }, 120_000);
 
   // RES-2: a dump taken before 0048_stored_bounds, of rows past their stored bounds, restores into a Store at the
   // same migrations, which then upgrades through 0048 to P(x) of every value.
