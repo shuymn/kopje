@@ -20,14 +20,15 @@ import { type SqlRow, watchedCursor } from "./read-helpers";
 // the audit, so its identity is computed) with the same parameters, in a savepoint rolled back before the rewrite
 // runs, under the plan audit's singleton statistics and after ANALYZE, taken once the chunks and active rows exist.
 // Each flow names main's statements it runs, every one in order, and a production statement pairs with the next only
-// when it is that statement's rewrite (its pins taken out, or its rewritten form exactly). Each rewrite returns main's
-// rows, writes as many and leaves the same state (the ids a DELETE removes, some in each run; the receipts an
-// INSERT leaves), and reads no more than main after ANALYZE. The neighbours (other signers' activities, their rows, chunks, statuses and
-// receipts, the active backlog and a lane's active rows) grow on both sides of the subject's own rows (inserted
-// before and after them; the rows a flow writes are the newest), each counted by its own predicate: a statement
-// reads the same rows but for a count that walks its population. The subject's own key (an object's earlier
-// generations, with their rows and chunks) grows too, and the flow reads at least one and at most its stated rows per
-// row of it. The import-shaped rows: earlier generations under one object URI (duplicates of a non-unique column),
+// when it is that statement's rewrite (its pins taken out, or its rewritten form exactly); a rewrite out of that order,
+// or past its end, fails the flow. Each rewrite returns main's rows, writes as many and leaves the same state (the ids
+// a DELETE removes, some in each run; the receipts an INSERT leaves), and reads no more than main after ANALYZE. The
+// neighbours (other signers' activities, their rows, chunks, statuses and receipts, the active backlog and a lane's
+// active rows) grow on both sides of the subject's own rows (inserted before and after them; the rows a flow writes
+// are the newest), each counted by its own predicate: a statement reads the same rows but for a count that walks its
+// population. The subject's own key grows too, its activities, their rows and their chunks each counted by its own
+// predicate, and the flow reads at least one and at most its stated rows per row they gain together. The import-shaped
+// rows: earlier generations under one object URI (duplicates of a non-unique column),
 // an audience account named twice, an object URI that is the subject's with a NUL and more after it. Their orders are
 // by rowid or by key, so they hold no ties.
 
@@ -171,8 +172,8 @@ const ROLLBACK = new Error("rolled back");
 // A SqlStorage over `real` that pairs the production statements with `expected` (main's identities, in order): each
 // statement that is the rewrite of the next one runs main's of that identity first, with the same parameters, in a
 // nested transaction it rolls back (the state a write leaves, or the ids it deletes, read inside it), then itself,
-// recording both one `Side`.
-// Every other statement runs as it is.
+// recording both one `Side`. A rewrite of any other identity, or one after `expected` is used up, is recorded under
+// its own identity with nothing compared, so the flow's sequence fails. Every other statement runs as it is.
 function sideBySide(
   real: SqlStorage,
   transact: <T>(fn: () => T) => T,
@@ -182,8 +183,14 @@ function sideBySide(
   return {
     exec: (query: string, ...params: SqlStorageValue[]) => {
       const text = normalized(query);
+      const kind = Object.keys(MAIN).find((key) => rewrites(key, text));
+      if (kind === undefined) {
+        return real.exec(query, ...params);
+      }
       const id = expected[sides.length];
-      if (id === undefined || !rewrites(id, text)) {
+      if (id !== kind) {
+        const empty = { rows: 0, written: 0, result: [], state: [] };
+        sides.push({ id: kind, query, mine: { ...empty }, main: { ...empty } });
         return real.exec(query, ...params);
       }
       const ids = DELETED[id];
@@ -438,8 +445,8 @@ type Flow = {
   subject: (sql: SqlStorage, own: number) => void;
   run: (sql: SqlStorage, transact: <T>(fn: () => T) => T) => unknown;
   answer?: unknown;
-  // The subject's own key, counted, and the rows the flow reads at most per row of it.
-  own?: { count: string; walks: number };
+  // The subject's own key, each population counted, and the rows the flow reads at most per row of them.
+  own?: { count: Record<string, string>; walks: number };
 };
 
 // The neighbour populations, each by its own predicate, that every flow's world grows.
@@ -460,12 +467,15 @@ const WALKS: Record<string, { population: string; perRun: number }> = {
   "4bb9cf6368705988": { population: "lane", perRun: 1 },
 };
 
-const OWN_COUNT = (object: string) =>
-  `SELECT (SELECT count(*) FROM outbound_activities WHERE account_id = '${ALICE}' AND object_uri = '${object}')
-		+ (SELECT count(*) FROM deliveries d WHERE d.activity_id IN
-			(SELECT id FROM outbound_activities WHERE account_id = '${ALICE}' AND object_uri = '${object}'))
-		+ (SELECT count(*) FROM outbound_targets c WHERE c.activity_id IN
-			(SELECT id FROM outbound_activities WHERE account_id = '${ALICE}' AND object_uri = '${object}')) AS n`;
+// The subject's own key, each population by its own predicate: the object's activities, their rows and their chunks.
+const OWN_COUNT = (object: string): Record<string, string> => {
+  const own = `SELECT id FROM outbound_activities WHERE account_id = '${ALICE}' AND object_uri = '${object}'`;
+  return {
+    activities: `SELECT count(*) AS n FROM outbound_activities WHERE account_id = '${ALICE}' AND object_uri = '${object}'`,
+    rows: `SELECT count(*) AS n FROM deliveries WHERE activity_id IN (${own})`,
+    chunks: `SELECT count(*) AS n FROM outbound_targets WHERE activity_id IN (${own})`,
+  };
+};
 
 const FLOWS: Record<string, Flow> = {
   // An actor Update twice: the second replaces the first's waiting rows and those of the earlier generations; both
@@ -587,7 +597,9 @@ async function sides(statistics: (typeof STATISTICS)[number], flow: Flow, n: num
     const populations = Object.fromEntries(
       Object.entries(POPULATIONS).map(([name, count]) => [name, sql.exec<{ n: number }>(count).one().n]),
     );
-    const ownCount = flow.own === undefined ? 0 : sql.exec<{ n: number }>(flow.own.count).one().n;
+    const ownCount: Record<string, number> = Object.fromEntries(
+      Object.entries(flow.own?.count ?? {}).map(([name, count]) => [name, sql.exec<{ n: number }>(count).one().n]),
+    );
     if (statistics === "singleton") {
       singletonStatistics(sql);
     } else {
@@ -633,7 +645,9 @@ describe("delivery reads beside main's (RES-7)", () => {
       const runs = [few, many];
       const ownMany = flow.own === undefined ? undefined : await sides(statistics, flow, FEW, OWN_MANY);
       if (ownMany !== undefined) {
-        expect(ownMany.own).toBeGreaterThan(few.own);
+        for (const population of Object.keys(flow.own!.count)) {
+          expect(ownMany.own[population]!, `own ${population}`).toBeGreaterThan(few.own[population]!);
+        }
         runs.push(ownMany);
       }
       for (const run of runs) {
@@ -673,8 +687,10 @@ describe("delivery reads beside main's (RES-7)", () => {
         expect(after.rows - prior.rows, id).toBeLessThanOrEqual(allowed);
       }
       if (flow.own !== undefined && ownMany !== undefined) {
-        // The own key: at least one more row and at most `walks` per row of it, summed over the flow.
-        const gained = ownMany.own - few.own;
+        // The own key: at least one more row read and at most `walks` per row it gained (its populations added up),
+        // summed over the flow.
+        const total = (own: Record<string, number>) => Object.values(own).reduce((a, n) => a + n, 0);
+        const gained = total(ownMany.own) - total(few.own);
         const sum = (sides: readonly Side[]) => sides.reduce((a, s) => a + s.mine.rows, 0);
         const grown = sum(ownMany.sides) - sum(few.sides);
         expect(grown).toBeGreaterThanOrEqual(gained);
