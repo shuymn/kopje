@@ -2128,15 +2128,18 @@ const NO_PERSONAL_INBOX = "no personal inbox";
 
 // Writes up to `budget` targets of the oldest chunks still expanding, oldest first, reading each chunk from its cursor
 // (next). A target over a cap is written as gave_up 'backlog full'; a silent copy without a personal inbox as gave_up
-// 'no personal inbox' (inbox '').
+// 'no personal inbox' (inbox ''). The oldest chunk is the first of outbound_targets in rowid order, its activity read
+// once by its rowid in a correlated lookup (a join by rowid is planned as a scan under statistics taken while the tables
+// were small, RES-7); outbound_targets.activity_id references outbound_activities, so every chunk has one.
 export function expandPending(db: Db, now: number, budget: number): void {
   const admission = new Admission(db);
   while (budget > 0) {
     const chunk = db.first<{ id: string; activity_id: string; account_id: string; retracts: number; next: number }>(
-      `SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id,
-				(SELECT o.account_id FROM outbound_activities o WHERE o.id = c.activity_id) AS account_id,
-				(SELECT o.retracts FROM outbound_activities o WHERE o.id = c.activity_id) AS retracts, c.next
-			FROM outbound_targets c ORDER BY c.id LIMIT 1`,
+      `SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id,
+				o ->> 1 AS retracts, next
+			FROM (SELECT c.id, c.activity_id, c.next,
+					(SELECT json_array(o.account_id, o.retracts) FROM outbound_activities o WHERE o.id = c.activity_id) AS o
+				FROM outbound_targets c ORDER BY c.id LIMIT 1)`,
     );
     if (chunk === undefined) {
       return;
@@ -2950,12 +2953,12 @@ function forwardFallback(db: Db, row: LaneRow, now: number, status: number, erro
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
 		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
-				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) d
-			CROSS JOIN json_each(d.recipient_accounts) r
+				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
+			CROSS JOIN json_each(row.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.addressee IS NULL AND d.recipient_accounts IS NOT NULL
-			AND d.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url
-			AND a.inbox_url <> d.inbox_url
+		WHERE row.addressee IS NULL AND row.recipient_accounts IS NOT NULL
+			AND row.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = row.inbox_url
+			AND a.inbox_url <> row.inbox_url
 		ORDER BY a.id`,
     row.id,
   );

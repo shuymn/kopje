@@ -229,20 +229,11 @@ export function plannedSql(
 
 // The scans in `plan` (EXPLAIN QUERY PLAN details) of the tables the statement names `aliases` (the caller's list:
 // a plan names a CTE and a table alike, in any scope): a search by key is not one; a scan through an index, covering or
-// not, is (RES-7). A scan of a subquery the plan runs as a co-routine or materializes under that name is not one: what
-// it reads of a table is planned in its own lines (a row read by its rowid in a LIMIT 1 subquery is SEARCH there).
+// not, is (RES-7).
 export function scansOf(plan: readonly string[], aliases: readonly string[]): string[] {
-  const subqueries = new Set(
-    plan.flatMap((detail) => /^(?:CO-ROUTINE|MATERIALIZE) (\S+)$/.exec(detail.trim())?.slice(1) ?? []),
-  );
   return plan.filter((detail) => {
     const scanned = /^SCAN (?:main\.)?(\S+)/.exec(detail)?.[1];
-    return (
-      scanned !== undefined &&
-      aliases.includes(scanned) &&
-      !subqueries.has(scanned) &&
-      !detail.includes("VIRTUAL TABLE")
-    );
+    return scanned !== undefined && aliases.includes(scanned) && !detail.includes("VIRTUAL TABLE");
   });
 }
 

@@ -1568,12 +1568,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 8",
   },
   {
-    id: "5ea5d3bbf0d4b313",
+    id: "462ca529dc81901c",
     scans: ["outbound_targets: SCAN c"],
     site: "src/domain/deliveries.ts#expandPending < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost < src/domain/statuses.ts#postNow",
     disposition: "deliberate",
     reason:
-      "expandPending's oldest chunk (src/domain/deliveries.ts): outbound_targets in rowid order from its start, LIMIT 1 and no filter, so one row; its activity read by its rowid",
+      "expandPending's oldest chunk (src/domain/deliveries.ts): outbound_targets in rowid order from its start, LIMIT 1 and no filter, so one row; its activity read once by its rowid",
   },
   {
     id: "16731d8b485e0e6f",
