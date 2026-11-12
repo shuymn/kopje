@@ -5,9 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import { STATUSES_ID_INDEX } from "../src/db/indexes";
 import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
-import { PIN_LIMIT } from "../src/domain/activities";
+import { followAnswerActivity, PIN_LIMIT, recordOutbound } from "../src/domain/activities";
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
+import { claimDeliveries, HELD_REJECTS_PER_ACCOUNT, heldFollowUriSql } from "../src/domain/deliveries";
 import { instanceInfo } from "../src/domain/instance";
 import {
   HANDSHAKE_REPLAYS,
@@ -16,6 +17,7 @@ import {
   jobAttemptColumnsSql,
   jobAttemptIndexesSql,
   MAX_JOB_ATTEMPTS,
+  REJECT_REPLAYS,
   SAFE_MS,
 } from "../src/domain/job-attempts";
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
@@ -217,6 +219,7 @@ const SCHEMA_TABLES = [
   "push_subscriptions",
   "quote_revocations",
   "quotes",
+  "reject_replays",
   "remote_field_links",
   "remote_keys",
   "remote_media",
@@ -10144,8 +10147,8 @@ describe("0081_account_invitations", () => {
 describe("0084_family_job_attempts", () => {
   const NAME = "0084_family_job_attempts";
   const at = NAMES.indexOf(NAME);
-  // Every job table but inbound_jobs (0080) and handshake_replays (0088), in JOB_TABLES order.
-  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS);
+  // Every job table but inbound_jobs (0080), handshake_replays (0088) and reject_replays (0092), in JOB_TABLES order.
+  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS && t !== REJECT_REPLAYS);
 
   it("holds jobAttemptColumnsSql's and jobAttemptIndexesSql's output for each other job table, declared foreignKeys: 'unchanged'", () => {
     expect(NAMES[at - 1]).toBe("0083_kept_boosts");
@@ -11345,7 +11348,7 @@ describe("0088_handshake_replays", () => {
     }
     expect(sql).toContain(jobAttemptIndexesSql(HANDSHAKE_REPLAYS));
     expect(sql).toContain(`check_at BETWEEN 0 AND ${SAFE}`);
-    expect(JOB_TABLES.at(-1)).toBe(HANDSHAKE_REPLAYS);
+    expect(JOB_TABLES.at(-2)).toBe(HANDSHAKE_REPLAYS);
   });
 
   it.each([
@@ -11797,6 +11800,394 @@ describe("0091_live_local_quotes", () => {
         .map((row) => row.id);
       expect(live()).toEqual(scanned);
       expect(scanned).toEqual([status(3), status(4), status(5), status(7), status(40)]);
+    });
+  });
+});
+
+describe("0092_reject_replays", () => {
+  const NAME = "0092_reject_replays";
+  const at = NAMES.indexOf(NAME);
+  const SAFE = String(SAFE_MS);
+  const LOCAL = /reject_replays: the follower is local/;
+  const FULL = /reject_replays: more held Rejects than an account may keep/;
+  // Local accounts L1, L2 and remote accounts remote(1..n), each of its own domain.
+  const L1 = "100000000000000001";
+  const L2 = "100000000000000002";
+  const remote = (n: number) => `3${String(n).padStart(17, "0")}`;
+  const seed = (sql: SqlStorage, remotes: number) => {
+    for (const id of [L1, L2]) {
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?1, 'u' || ?1, NULL)",
+        id,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?1 || '@x.test', X'00', X'00', 'k')",
+        id,
+      );
+    }
+    sql.exec(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT printf('3%017d', i), 'https://r' || i || '.example/u', 'r', 'r' || i || '.example' FROM n`,
+      remotes,
+    );
+  };
+  const hold = (sql: SqlStorage, account: string, follower: string, uri: string | null = "https://r.example/f") =>
+    sql.exec(
+      "INSERT INTO reject_replays (account_id, follower_id, follow_uri, edge_id, check_at) VALUES (?, ?, ?, ?, 0)",
+      account,
+      follower,
+      uri,
+      uri === null ? 7 : null,
+    );
+  const upgraded = async (state: DurableObjectState) =>
+    expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+
+  it("follows 0091, holds the retry columns and indexes of a job table as job-attempts.ts writes them, and the writers' constants", () => {
+    expect(NAMES[at - 1]).toBe("0091_live_local_quotes");
+    // A new table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    const columns = jobAttemptColumnsSql("reject_replays")
+      .split(";\n")
+      .filter((s) => s.trim() !== "")
+      .map((s) => s.replace("ALTER TABLE reject_replays ADD COLUMN ", ""));
+    expect(columns).toHaveLength(2);
+    for (const column of columns) {
+      expect(sql).toContain(column);
+    }
+    expect(sql).toContain(jobAttemptIndexesSql(REJECT_REPLAYS));
+    expect(sql).toContain(`check_at BETWEEN 0 AND ${SAFE}`);
+    // ACTIVITY_ID_LIMIT in JSON-escaped bytes (its quotes added), and the raw length no escape can carry past it.
+    expect([ACTIVITY_ID_LIMIT + 2, Math.floor(ACTIVITY_ID_LIMIT / 6)]).toEqual([4098, 682]);
+    expect(sql).toContain(
+      "length(CAST(follow_uri AS BLOB)) <= 682 OR length(CAST(json_quote(follow_uri) AS BLOB)) <= 4098",
+    );
+    // The writer's acceptance rule is the CHECK's (HOLD_REJECT shares it, so the hold never fails on it).
+    const spaced = (text: string) => text.replace(/\s+/g, " ");
+    expect(spaced(sql)).toContain(spaced(`follow_uri IS NULL OR ${heldFollowUriSql("follow_uri")}`));
+    expect(HELD_REJECTS_PER_ACCOUNT).toBe(100);
+    expect(sql.match(/LIMIT 100\)\) >= 100;/g)).toHaveLength(2);
+    expect(JOB_TABLES.at(-1)).toBe(REJECT_REPLAYS);
+    expect(REJECT_REPLAYS.family).toBe(HANDSHAKE_REPLAYS.family);
+  });
+
+  it("admits a Follow id at its bounds and refuses one past them, NUL, empty, a blob, and a hold naming both or neither", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      seed(sql, 1);
+      const set = (uri: SqlStorageValue, edge: SqlStorageValue = null) =>
+        sql.exec("UPDATE reject_replays SET follow_uri = ?, edge_id = ?", uri, edge);
+      hold(sql, L1, remote(1));
+      const control = "\u0001";
+      // 4,096 escaped bytes or fewer: ASCII at the raw bound, 682 control characters (6 bytes each escaped), an
+      // astral character's 4 bytes, two-byte characters, and quotes (2 bytes each escaped).
+      for (const ok of [
+        "a".repeat(ACTIVITY_ID_LIMIT),
+        control.repeat(682),
+        `${"a".repeat(ACTIVITY_ID_LIMIT - 4)}😀`,
+        "é".repeat(ACTIVITY_ID_LIMIT / 2),
+        '"'.repeat(ACTIVITY_ID_LIMIT / 2),
+      ]) {
+        expect(withinIdentityBound(ok, ACTIVITY_ID_LIMIT)).toBe(true);
+        set(ok);
+      }
+      for (const past of [
+        "a".repeat(ACTIVITY_ID_LIMIT + 1),
+        control.repeat(683),
+        `${"a".repeat(ACTIVITY_ID_LIMIT - 3)}😀`,
+        '"'.repeat(ACTIVITY_ID_LIMIT / 2 + 1),
+        "a\u0000b",
+        "",
+        blob("a"),
+      ]) {
+        if (typeof past === "string" && past.length > 0 && !past.includes("\u0000")) {
+          expect(withinIdentityBound(past, ACTIVITY_ID_LIMIT)).toBe(false);
+        }
+        expect(() => set(past)).toThrow(/reject_replays_follow_uri/);
+      }
+      // A malformed UTF-8 Follow id is stored as its bytes: the replay judges it.
+      sql.exec("UPDATE reject_replays SET follow_uri = CAST(X'68ff' AS TEXT)");
+      expect(sql.exec("SELECT hex(CAST(follow_uri AS BLOB)) AS h FROM reject_replays").one().h).toBe("68FF");
+      expect(() => set(null, null)).toThrow(/reject_replays_name/);
+      expect(() => set("https://r.example/f", 7)).toThrow(/reject_replays_name/);
+    });
+  });
+
+  it("admits any 64-bit edge id and numeric text as its integer, and refuses other text, a real and a blob", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      seed(sql, 1);
+      hold(sql, L1, remote(1), null);
+      const edge = () => sql.exec("SELECT CAST(edge_id AS TEXT) AS e, typeof(edge_id) AS t FROM reject_replays").one();
+      for (const value of ["-9223372036854775808", "9223372036854775807", "0", "-1", "9007199254740993"]) {
+        sql.exec(`UPDATE reject_replays SET edge_id = ${value}`);
+        expect(edge()).toEqual({ e: value, t: "integer" });
+      }
+      sql.exec("UPDATE reject_replays SET edge_id = '42'");
+      expect(edge()).toEqual({ e: "42", t: "integer" });
+      for (const value of ["'abc'", "1.5", "X'01'", "'9223372036854775808'", "''"]) {
+        expect(() => sql.exec(`UPDATE reject_replays SET edge_id = ${value}`)).toThrow(/reject_replays_edge_id/);
+      }
+    });
+  });
+
+  it.each([
+    ["SAFE_MS + 1", `${SAFE_MS + 1}`],
+    ["a negative time", "-1"],
+    ["text", "'soon'"],
+    ["a real", "1.5"],
+    ["a blob", "X'01'"],
+    ["NULL", "NULL"],
+  ])("refuses a check_at of %s, after admitting 0 and SAFE_MS", async (_name, value) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      seed(sql, 1);
+      hold(sql, L1, remote(1));
+      sql.exec(`UPDATE reject_replays SET check_at = ${SAFE}`);
+      expect(() => sql.exec(`UPDATE reject_replays SET check_at = ${value}`)).toThrow(/constraint failed/);
+      expect(sql.exec("SELECT CAST(check_at AS TEXT) AS c FROM reject_replays").one().c).toBe(SAFE);
+    });
+  });
+
+  it("admits the three retry states at their ends, and refuses every other pair", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      seed(sql, 1);
+      hold(sql, L1, remote(1));
+      const last = MAX_JOB_ATTEMPTS;
+      for (const [attempts, due] of [
+        ["1", "0"],
+        [`${last - 1}`, SAFE],
+        [`${last}`, "NULL"],
+        ["0", "NULL"],
+      ]) {
+        sql.exec(`UPDATE reject_replays SET attempts = ${attempts}, due_at = ${due}`);
+      }
+      for (const [attempts, due] of [
+        ["0", "0"],
+        ["1", "NULL"],
+        ["1", `${SAFE_MS + 1}`],
+        ["1", "-1"],
+        [`${last}`, "0"],
+        [`${last + 1}`, "NULL"],
+        ["-1", "NULL"],
+      ]) {
+        expect(() => sql.exec(`UPDATE reject_replays SET attempts = ${attempts}, due_at = ${due}`)).toThrow(
+          /constraint failed/,
+        );
+      }
+    });
+  });
+
+  it("refuses a local follower and a new pair past the cap on insert and update, and passes an existing pair at the cap", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      const cap = HELD_REJECTS_PER_ACCOUNT;
+      seed(sql, cap + 2);
+      // A local follower, by its stored domain; a missing account passes the guard and fails the reference.
+      expect(() => hold(sql, L1, L2)).toThrow(LOCAL);
+      expect(() => hold(sql, L1, "399999999999999999")).toThrow(/FOREIGN KEY constraint failed/);
+      expect(() => hold(sql, "399999999999999999", remote(1))).toThrow(/FOREIGN KEY constraint failed/);
+      for (let i = 1; i <= cap; i++) {
+        hold(sql, L1, remote(i));
+      }
+      const count = (account: string) =>
+        sql.exec("SELECT count(*) AS n FROM reject_replays WHERE account_id = ?", account).one().n;
+      expect(count(L1)).toBe(cap);
+      // The 101st new pair is refused; an existing pair's upsert passes and replaces its identity.
+      expect(() => hold(sql, L1, remote(cap + 1))).toThrow(FULL);
+      sql.exec(
+        `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, 'https://r.example/g2', 5)
+					ON CONFLICT (account_id, follower_id) DO UPDATE SET follow_uri = excluded.follow_uri, check_at = excluded.check_at`,
+        L1,
+        remote(1),
+      );
+      expect(
+        sql.exec("SELECT follow_uri, check_at FROM reject_replays WHERE follower_id = ?", remote(1)).one(),
+      ).toEqual({ follow_uri: "https://r.example/g2", check_at: 5 });
+      expect(count(L1)).toBe(cap);
+      // An update: a row moved into a full account is refused, a new remote follower within it passes, a local one not.
+      hold(sql, L2, remote(cap + 1));
+      const move = (set: string, value: string, account: string, follower: string) =>
+        sql.exec(
+          `UPDATE reject_replays SET ${set} = ? WHERE account_id = ? AND follower_id = ?`,
+          value,
+          account,
+          follower,
+        );
+      expect(() => move("account_id", L1, L2, remote(cap + 1))).toThrow(FULL);
+      move("follower_id", remote(cap + 2), L1, remote(1));
+      expect(() => move("follower_id", L2, L1, remote(2))).toThrow(LOCAL);
+      // Another column changes without the guard.
+      sql.exec("UPDATE reject_replays SET check_at = 9 WHERE account_id = ?", L1);
+      expect(count(L1)).toBe(cap);
+      expect(count(L2)).toBe(1);
+    });
+  });
+
+  it("ends a pair's hold when a remote follower's follow of the local account is stored, and writes nothing for any other follow", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      seed(sql, 3);
+      hold(sql, L1, remote(1));
+      hold(sql, L2, remote(1));
+      hold(sql, L1, remote(2));
+      const held = () =>
+        sql
+          .exec<{ a: string; f: string }>("SELECT account_id AS a, follower_id AS f FROM reject_replays ORDER BY a, f")
+          .toArray()
+          .map((r) => `${r.a}:${r.f}`);
+      let id = 0;
+      // The rows a follow insert writes: its own, and those of the triggers that fire.
+      const follow = (follower: string, target: string) => {
+        const before = sql.exec<{ n: number }>("SELECT total_changes() AS n").one().n;
+        sql.exec(
+          "INSERT INTO follows (id, account_id, target_account_id, state, uri) VALUES (?, ?, ?, 'pending', NULL)",
+          ++id,
+          follower,
+          target,
+        );
+        return sql.exec<{ n: number }>("SELECT total_changes() AS n").one().n - before;
+      };
+      const base = follow(remote(3), L2);
+      // local -> remote, local -> local, remote -> remote: the follow and its usual rows only.
+      expect(follow(L1, remote(1))).toBe(base);
+      expect(follow(L2, L1)).toBe(base);
+      expect(follow(remote(2), remote(1))).toBe(base);
+      expect(held()).toEqual([`${L1}:${remote(1)}`, `${L1}:${remote(2)}`, `${L2}:${remote(1)}`]);
+      // remote(1) -> L1 ends L1's hold of remote(1) only.
+      expect(follow(remote(1), L1)).toBe(base + 1);
+      expect(held()).toEqual([`${L1}:${remote(2)}`, `${L2}:${remote(1)}`]);
+      // The follower's delete cascades its holds (the purge deletes them first).
+      sql.exec("DELETE FROM follows WHERE account_id = ?1 OR target_account_id = ?1", remote(2));
+      sql.exec("DELETE FROM accounts WHERE id = ?", remote(2));
+      expect(held()).toEqual([`${L2}:${remote(1)}`]);
+    });
+  });
+
+  it("walks the account's prefix of the unique key alone for the cap, and seeks each pair, under stale statistics", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      const cap = HELD_REJECTS_PER_ACCOUNT;
+      seed(sql, 3_000);
+      hold(sql, L1, remote(1));
+      // L2's key follows L1's: a walk of L1's prefix reads one entry past it, before and after the growth.
+      hold(sql, L2, remote(1));
+      // Statistics taken while the table held two rows.
+      sql.exec("ANALYZE");
+      sql.exec(
+        `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at)
+					SELECT ?1, id, 'https://r.example/f', 0 FROM accounts WHERE domain IS NOT NULL AND id > ?2 AND id < ?3`,
+        L1,
+        remote(1),
+        remote(cap),
+      );
+      // L1 holds cap - 1 pairs: an insert of a new pair passes after the cap's walk; an existing pair's upsert seeks it.
+      const reads = (follower: string) => {
+        const cursor = sql.exec(
+          `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, 'https://r.example/x', 0)
+						ON CONFLICT (account_id, follower_id) DO UPDATE SET check_at = excluded.check_at`,
+          L1,
+          follower,
+        );
+        cursor.toArray();
+        return cursor.rowsRead;
+      };
+      const existing = reads(remote(1));
+      const fresh = reads(remote(cap));
+      sql.exec("DELETE FROM reject_replays WHERE account_id = ? AND follower_id = ?", L1, remote(cap));
+      // 30 other local accounts at the cap, with keys on both sides of L1's: no read for L1 grows with them.
+      for (let i = 0; i < 30; i++) {
+        const other = `${i < 15 ? 0 : 2}${String(i).padStart(17, "0")}`;
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?1, 'u' || ?1, NULL)",
+          other,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?1 || '@x.test', X'00', X'00', 'k')",
+          other,
+        );
+        sql.exec(
+          `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at)
+						SELECT ?1, id, 'https://r.example/f', 0 FROM accounts WHERE domain IS NOT NULL ORDER BY id LIMIT ?2`,
+          other,
+          cap,
+        );
+      }
+      expect(sql.exec("SELECT count(*) AS n FROM reject_replays").one().n).toBe(30 * cap + cap);
+      sql.exec("ANALYZE sqlite_schema");
+      expect([reads(remote(1)), reads(remote(cap))]).toEqual([existing, fresh]);
+      // The cap's walk: at most 100 entries of L1's prefix, besides a handful of key lookups.
+      expect(fresh).toBeGreaterThanOrEqual(cap - 1);
+      expect(fresh).toBeLessThanOrEqual(cap + 10);
+      expect(existing).toBeLessThanOrEqual(10);
+      // The guard's and the trigger's statements as plans: each a seek of a named index.
+      const plan = (query: string, ...params: SqlStorageValue[]) =>
+        sql
+          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...params)
+          .toArray()
+          .map((r) => r.detail);
+      expect(plan("SELECT count(*) FROM (SELECT 1 FROM reject_replays WHERE account_id = ? LIMIT 100)", L1)).toEqual([
+        "CO-ROUTINE (subquery-1)",
+        "SEARCH reject_replays USING COVERING INDEX sqlite_autoindex_reject_replays_1 (account_id=?)",
+        "SCAN (subquery-1)",
+      ]);
+      expect(plan("DELETE FROM reject_replays WHERE account_id = ? AND follower_id = ?", L1, remote(1))).toEqual([
+        "SEARCH reject_replays USING INDEX sqlite_autoindex_reject_replays_1 (account_id=? AND follower_id=?)",
+      ]);
+      expect(plan("SELECT 1 FROM reject_replays WHERE follower_id = ?", remote(1))).toEqual([
+        "SEARCH reject_replays USING COVERING INDEX reject_replays_follower (follower_id=?)",
+      ]);
+    });
+  }, 60_000);
+
+  it("holds a Reject queued before it, once the requester is suspended after the upgrade (P18)", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      seed(sql, 1);
+      const r = remote(1);
+      sql.exec(
+        "UPDATE accounts SET inbox_url = uri || '/inbox', shared_inbox_url = 'https://r1.example/inbox' WHERE id = ?",
+        r,
+      );
+      // The previous release's Reject of r's request, queued with its delivery (the builder is unchanged).
+      const db = new Db(sql, (fn) => state.storage.transactionSync(fn));
+      const recorded = state.storage.transactionSync(() =>
+        recordOutbound(
+          db,
+          L1,
+          followAnswerActivity("Reject", {
+            localActorUri: `https://kopje.test/ap/users/${L1}`,
+            followerUri: "https://r1.example/u",
+            followerId: r,
+            followUri: "https://r1.example/follows/1",
+            edgeId: "",
+          }),
+          NOW,
+        ),
+      );
+      expect(recorded).toBe(true);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      sql.exec(
+        "UPDATE accounts SET suspended_at = '2026-11-01T00:00:00.000Z', suspension_source = 'account' WHERE id = ?",
+        r,
+      );
+      const claim = state.storage.transactionSync(() =>
+        claimDeliveries.run(sql, { now: NOW, leaseToken: "p18" }, (fn) => state.storage.transactionSync(fn)),
+      );
+      expect(claim.deliveries).toEqual([]);
+      expect(sql.exec("SELECT account_id, follower_id, follow_uri, edge_id FROM reject_replays").toArray()).toEqual([
+        { account_id: L1, follower_id: r, follow_uri: "https://r1.example/follows/1", edge_id: null },
+      ]);
     });
   });
 });
