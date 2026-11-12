@@ -9,6 +9,7 @@ import {
   MEDIA_ID_INDEX,
   QUOTES_STATUS_INDEX,
   STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -822,6 +823,10 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 // a Reject with Misskey's pair-shaped id (`/follows/<follower>/<followee>`): Misskey rejects a follower it removes with
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
 // with the pair Undo, a redelivered pair Reject cannot be told from a new one, and ends a later generation too.
+// By the id, the local accounts drive, each one's follow of the actor sought by follows_pair (no index holds a follow's
+// uri; local accounts are operator-sized: docs/threat-model.md, "Deployment assumptions"). The uri is not unique (an
+// import may repeat it): the follow of the follower the Follow names is probed first by its pair, and only when it does
+// not carry the uri does the oldest under the uri answer.
 function ourFollow(
   db: Db,
   actor: RemoteRow,
@@ -835,12 +840,25 @@ function ourFollow(
     return null;
   }
   if (ref.id !== null) {
-    const byUri = db.first<{ id: string; follower: string }>(
-      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM follows f JOIN local_accounts l ON l.account_id = f.account_id
-			WHERE f.uri = ? AND f.target_account_id = ?`,
-      ref.id,
-      actor.id,
-    );
+    const named = localAccount(db, ref.actor);
+    const byUri =
+      (named === undefined
+        ? undefined
+        : db.first<{ id: string; follower: string }>(
+            `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+            named.id,
+            actor.id,
+            ref.id,
+          )) ??
+      db.first<{ id: string; follower: string }>(
+        `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
+				WHERE f.uri = ?1
+				ORDER BY f.id LIMIT 1`,
+        ref.id,
+        actor.id,
+      );
     if (byUri !== undefined) {
       return byUri;
     }
@@ -955,12 +973,35 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   const pair = ref.type === "Follow" && isMisskeyPairId(ref.id);
   type Edge = { target: string; uri: string | null };
   let edge: Edge | undefined;
+  // The actor's follows and blocks by uri are walked through their pair indexes: the inbox writes only ones with a local
+  // target, but an import does not hold them to it, and no index holds their uri (#1481). The uri is not unique (an
+  // import may repeat it): the follow of the account the Undo names, local or not, is probed first by its pair, and only
+  // when it does not carry the uri does the oldest under the uri go.
   if (ref.type === null || ref.type === "Follow") {
-    edge = db.first<Edge>(
-      "SELECT target_account_id AS target, uri FROM follows WHERE account_id = ? AND uri = ?",
-      actor.id,
-      ref.id,
-    );
+    const named =
+      ref.object === null
+        ? undefined
+        : db.first<{ id: string }>(
+            `SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?`,
+            ref.object,
+          );
+    edge =
+      (named === undefined
+        ? undefined
+        : db.first<Edge>(
+            `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+            actor.id,
+            named.id,
+            ref.id,
+          )) ??
+      db.first<Edge>(
+        `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
+				ORDER BY id LIMIT 1`,
+        actor.id,
+        ref.id,
+      );
+    // The Misskey pair fallback is the named local account's follow.
     const target = localAccount(db, ref.object);
     if (edge === undefined && pair && target !== undefined) {
       edge = db.first<Edge>(
@@ -977,7 +1018,11 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
     ref.type === "Block" ||
     (ref.type === null &&
       edge === undefined &&
-      db.first("SELECT 1 AS x FROM blocks WHERE account_id = ? AND uri = ?", actor.id, ref.id) !== undefined);
+      db.first(
+        "SELECT 1 AS x FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?",
+        actor.id,
+        ref.id,
+      ) !== undefined);
   const undoesFollow = !undoesBlock && (ref.type === null || ref.type === "Follow");
   const retracted = [
     ...(undoesFollow && isMisskeyPairId(ref.id) ? [] : [ref.id]),
@@ -1004,7 +1049,7 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   }
   if (!undone && (ref.type === null || ref.type === "Block")) {
     undone =
-      db.run("DELETE FROM blocks WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0 ||
+      db.run("DELETE FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0 ||
       (ref.type === "Block" &&
         db.run(
           `DELETE FROM blocks WHERE account_id = ? AND uri IS NULL
@@ -2828,7 +2873,8 @@ type Original = { id: string; account_id: string; visibility: Visibility; local:
 function originalByUri(db: Db, uri: string): Original | undefined {
   return db.first<Original>(
     `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
-		FROM statuses s LEFT JOIN local_accounts l ON l.account_id = s.account_id
+		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
 		WHERE s.uri = ? AND s.reblog_of_id IS NULL`,
     uri,
   );
@@ -3083,12 +3129,13 @@ function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: string, now: num
 type TrackedLike = { id: string; favourite: string; status_id: string };
 
 // The actor's favourite tracking the Like id `uri`: one row at most (favourite_likes_uri is unique), found by that
-// index, never by the actor's favourites, which are any number.
+// index, then its favourite by the whole key of favourites_account (account_id, id), never by a range of the actor's
+// favourites, which are any number.
 function trackedLike(db: Db, actorId: string, uri: string): TrackedLike | undefined {
   return db.first<TrackedLike>(
     `SELECT CAST(l.id AS TEXT) AS id, CAST(f.id AS TEXT) AS favourite, f.status_id
 			FROM favourite_likes l INDEXED BY favourite_likes_uri
-			JOIN favourites f ON f.id = l.favourite_id
+			CROSS JOIN favourites f INDEXED BY favourites_account ON f.id = l.favourite_id
 		WHERE l.uri = ? AND f.account_id = ?`,
     uri,
     actorId,
@@ -3103,7 +3150,8 @@ type LegacyFavourite = { id: string; status_id: string };
 
 function legacyFavourite(db: Db, actorId: string, uri: string): LegacyFavourite | undefined {
   return db.first<LegacyFavourite>(
-    `SELECT CAST(f.id AS TEXT) AS id, f.status_id FROM statuses s CROSS JOIN favourites f ON f.status_id = s.id
+    `SELECT CAST(f.id AS TEXT) AS id, f.status_id FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+		CROSS JOIN favourites f INDEXED BY favourites_pair ON f.status_id = s.id
 		WHERE s.uri = ? AND f.account_id = ? AND f.uri IS NULL
 			AND NOT EXISTS (SELECT 1 FROM favourite_likes l WHERE l.favourite_id = f.id)`,
     uri,
@@ -3151,8 +3199,14 @@ function interactionOf(db: Db, actor: RemoteRow, uri: string): boolean {
 function removeFavourite(db: Db, actorId: string, favourite: { id: string; status_id: string }): void {
   db.run("DELETE FROM favourites WHERE id = CAST(? AS INTEGER)", favourite.id);
   recountStatus(db, favourite.status_id);
+  // The favourite's notification, whoever holds it (the writers notify the status author, but an import may hold others):
+  // each local account's (a notification's recipient is one: its foreign key) sought by the natural key, never through
+  // the actor's notifications, which are any number; local accounts are operator-sized (docs/threat-model.md,
+  // "Deployment assumptions").
   db.run(
-    `DELETE FROM notifications WHERE type = 'favourite' AND from_account_id = ? AND status_id = ?`,
+    `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id IN (SELECT account_id FROM local_accounts INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX})
+				AND type = 'favourite' AND from_account_id = ?1 AND IFNULL(status_id, '') = ?2`,
     actorId,
     favourite.status_id,
   );
@@ -3203,8 +3257,11 @@ function removeBoost(
     db.run("DELETE FROM statuses WHERE id = ?", boost.id);
   }
   recountStatus(db, boost.original);
+  // The boost's notification, whoever holds it, as removeFavourite's.
   db.run(
-    `DELETE FROM notifications WHERE type = 'reblog' AND from_account_id = ? AND status_id = ?`,
+    `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id IN (SELECT account_id FROM local_accounts INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX})
+				AND type = 'reblog' AND from_account_id = ?1 AND IFNULL(status_id, '') = ?2`,
     actor.id,
     boost.original,
   );

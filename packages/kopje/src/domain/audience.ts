@@ -188,7 +188,7 @@ export function activeMuteSql(m: string, now: string): string {
 
 // The mute of the account `x` by `owner` that applies at `now`, as `m`, LEFT JOINed (its options in a relationship).
 export function activeMuteJoinSql(m: string, owner: string, x: string, now: string): string {
-  return `LEFT JOIN main.mutes ${m} ON ${m}.account_id = ${owner} AND ${m}.target_account_id = ${x} AND ${activeMuteSql(m, now)}`;
+  return `LEFT JOIN main.mutes ${m} INDEXED BY mutes_pair ON ${m}.account_id = ${owner} AND ${m}.target_account_id = ${x} AND ${activeMuteSql(m, now)}`;
 }
 
 // Whether `owner` mutes the account `x` at `now`; with `notifications`, only a mute that also hides notifications.

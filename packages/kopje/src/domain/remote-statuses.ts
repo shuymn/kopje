@@ -1,4 +1,4 @@
-import { ACCOUNTS_URI_INDEX } from "../db/indexes";
+import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
@@ -486,9 +486,10 @@ function linkReplies(
   status: { id: string; uri: string; accountId: string; replyTarget: string | null; isReply: boolean },
 ): void {
   const changed = db.run(
-    `UPDATE statuses SET in_reply_to_id = ?1,
+    `UPDATE statuses INDEXED BY ${STATUSES_ID_INDEX} SET in_reply_to_id = ?1,
 			in_reply_to_account_id = CASE WHEN account_id = ?2 AND ?3 THEN ?4 ELSE ?2 END
-		WHERE id IN (SELECT id FROM statuses WHERE in_reply_to_uri = ?5 AND in_reply_to_id IS NULL LIMIT ?6)`,
+		WHERE id IN (SELECT id FROM statuses INDEXED BY statuses_unresolved_reply
+			WHERE in_reply_to_uri = ?5 AND in_reply_to_uri IS NOT NULL AND in_reply_to_id IS NULL LIMIT ?6)`,
     status.id,
     status.accountId,
     status.isReply ? 1 : 0,
@@ -527,9 +528,13 @@ function notifyCreated(
   if (created.isReply && created.replyTarget !== author.id) {
     return;
   }
+  // The local accounts drive, each one's accepted follow of the author sought by follows_accepted, so the author's other
+  // followers (an import may hold any number) are never read; local accounts are operator-sized (docs/threat-model.md,
+  // "Deployment assumptions").
   const subscribers = db.all<{ account_id: string }>(
-    `SELECT f.account_id FROM follows f JOIN local_accounts l ON l.account_id = f.account_id
-		WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.notify = 1
+    `SELECT f.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+		CROSS JOIN follows f INDEXED BY follows_accepted ON f.account_id = l.account_id AND f.target_account_id = ?1
+		WHERE f.state = 'accepted' AND f.notify = 1
 			AND (f.languages IS NULL OR ?2 IS NULL OR ?2 IN (SELECT value FROM json_each(f.languages)))`,
     author.id,
     created.language,
