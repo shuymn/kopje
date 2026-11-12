@@ -40,7 +40,7 @@ const MANY = 15_600;
 
 // The viewer and another local account, bob (remote), the viewer's status; then `n` remote accounts on each side of
 // bob's id and URI, each followed by the viewer (a third pending, the rest accepted, with post notifications) and muted
-// by it, each following the viewer (pending) and bob (accepted, with post notifications) and blocking the viewer by uri, each with a status that replies to a status not
+// by it, each following the viewer (pending) and bob (accepted, with post notifications), followed by bob, and blocking the viewer by uri, each with a status that replies to a status not
 // yet stored and that the viewer and bob favourited (bob by a tracked Like id), each having favourited the viewer's
 // status (by a tracked Like id), and notifications of each kind from each to the viewer and from bob to the other local
 // account.
@@ -115,6 +115,12 @@ async function world(n: number): Promise<StoreStub> {
       sql.exec(
         `INSERT INTO follows (account_id, target_account_id, state, notify, uri)
 				SELECT id, ?, 'accepted', 1, uri || '#bob' FROM accounts WHERE ${range}`,
+        BOB,
+      );
+      // Bob's own follows of each, as an import may hold them.
+      sql.exec(
+        `INSERT INTO follows (account_id, target_account_id, state, uri)
+				SELECT ?, id, 'accepted', uri || '#from-bob' FROM accounts WHERE ${range}`,
         BOB,
       );
       sql.exec(
@@ -255,7 +261,7 @@ const CASES: Record<string, Case> = {
     answer: { status: "ok", value: { status: "ok", relationship: { id: BOB, followed_by: false, requested: false } } },
   },
   "Accept of our follow": {
-    pattern: /WHERE f\.uri = \?1/,
+    pattern: /AS follower FROM follows INDEXED BY follows_pair|WHERE f\.uri = \?1/,
     scanned: ["f"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${VIEWER}', '${BOB}', 'pending', '${VIEWER_URI}#f')`,
@@ -268,7 +274,7 @@ const CASES: Record<string, Case> = {
     answer: { applied: true, reason: "follow-accepted" },
   },
   "Undo of a follow": {
-    pattern: /FROM follows INDEXED BY follows_pair WHERE account_id = \?1 AND uri = \?2/,
+    pattern: /AS target, uri FROM follows INDEXED BY follows_pair\s+WHERE account_id = \?/,
     scanned: ["follows"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', '${BOB_URI}#f')`,
@@ -414,6 +420,8 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
 // same under no statistics, the plan audit's singleton ones, and ANALYZE.
 const SHARED = `${BOB_URI}#shared`;
 const OTHER_URI = "https://kopje.test/ap/users/other";
+const CAROL = "560000000000000000";
+const CAROL_URI = "https://far.example/users/carol";
 
 async function shared(
   statistics: "none" | (typeof STATISTICS)[number],
@@ -443,6 +451,11 @@ async function shared(
       "INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES (?, ?, 'bob', 'far.example', 'https://far.example/inbox')",
       BOB,
       BOB_URI,
+    );
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES (?, ?, 'carol', 'far.example', 'https://far.example/inbox')",
+      CAROL,
+      CAROL_URI,
     );
     for (const [follower, target, followState] of rows) {
       sql.exec(
@@ -563,5 +576,16 @@ describe("follows sharing one uri", () => {
         follows: [{ follower: BOB, target: second, state: "accepted" }],
       });
     }
+    // A named remote target (an import may hold a follow of one): its follow ends, not the older local one.
+    expect(
+      await shared(
+        s,
+        [
+          [BOB, VIEWER, "accepted"],
+          [BOB, CAROL, "accepted"],
+        ],
+        undo(CAROL_URI),
+      ),
+    ).toEqual({ reason: "undone", follows: [{ follower: BOB, target: VIEWER, state: "accepted" }] });
   });
 });

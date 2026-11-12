@@ -2024,7 +2024,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "a deleted status's forwarding: KEPT_LOCAL_BOOSTS (src/domain/inbox.ts) walks the local accounts, each one's kept boost sought by statuses_account_reblogs_kept, up to MAX_FORWARD_OWNERS + 1: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
-    id: "912011af321ead3a",
+    id: "a099efaec4b6c8dd",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/inbox.ts#ourFollow < src/domain/inbox.ts#accept < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
     disposition: "deliberate",

@@ -824,8 +824,9 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
 // with the pair Undo, a redelivered pair Reject cannot be told from a new one, and ends a later generation too.
 // By the id, the local accounts drive, each one's follow of the actor sought by follows_pair (no index holds a follow's
-// uri; local accounts are operator-sized: docs/threat-model.md, "Deployment assumptions"). The uri is not unique: of
-// several follows under it, the one of the follower the Follow names comes first, then the oldest.
+// uri; local accounts are operator-sized: docs/threat-model.md, "Deployment assumptions"). The uri is not unique (an
+// import may repeat it): the follow of the follower the Follow names is probed first by its pair, and only when it does
+// not carry the uri does the oldest under the uri answer.
 function ourFollow(
   db: Db,
   actor: RemoteRow,
@@ -839,15 +840,25 @@ function ourFollow(
     return null;
   }
   if (ref.id !== null) {
-    const byUri = db.first<{ id: string; follower: string }>(
-      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-			CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
-			WHERE f.uri = ?1
-			ORDER BY f.account_id IS ?3 DESC, f.id LIMIT 1`,
-      ref.id,
-      actor.id,
-      localAccount(db, ref.actor)?.id ?? null,
-    );
+    const named = localAccount(db, ref.actor);
+    const byUri =
+      (named === undefined
+        ? undefined
+        : db.first<{ id: string; follower: string }>(
+            `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+            named.id,
+            actor.id,
+            ref.id,
+          )) ??
+      db.first<{ id: string; follower: string }>(
+        `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
+				WHERE f.uri = ?1
+				ORDER BY f.id LIMIT 1`,
+        ref.id,
+        actor.id,
+      );
     if (byUri !== undefined) {
       return byUri;
     }
@@ -963,17 +974,35 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   type Edge = { target: string; uri: string | null };
   let edge: Edge | undefined;
   // The actor's follows and blocks by uri are walked through their pair indexes: the inbox writes only ones with a local
-  // target, but an import does not hold them to it, and no index holds their uri (#1481). The uri is not unique: of
-  // several follows under it, the one of the target the Undo names comes first, then the oldest.
+  // target, but an import does not hold them to it, and no index holds their uri (#1481). The uri is not unique (an
+  // import may repeat it): the follow of the account the Undo names, local or not, is probed first by its pair, and only
+  // when it does not carry the uri does the oldest under the uri go.
   if (ref.type === null || ref.type === "Follow") {
+    const named =
+      ref.object === null
+        ? undefined
+        : db.first<{ id: string }>(
+            `SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?`,
+            ref.object,
+          );
+    edge =
+      (named === undefined
+        ? undefined
+        : db.first<Edge>(
+            `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+            actor.id,
+            named.id,
+            ref.id,
+          )) ??
+      db.first<Edge>(
+        `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
+				ORDER BY id LIMIT 1`,
+        actor.id,
+        ref.id,
+      );
+    // The Misskey pair fallback is the named local account's follow.
     const target = localAccount(db, ref.object);
-    edge = db.first<Edge>(
-      `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
-			ORDER BY target_account_id IS ?3 DESC, id LIMIT 1`,
-      actor.id,
-      ref.id,
-      target?.id ?? null,
-    );
     if (edge === undefined && pair && target !== undefined) {
       edge = db.first<Edge>(
         "SELECT target_account_id AS target, uri FROM follows WHERE account_id = ? AND target_account_id = ?",
