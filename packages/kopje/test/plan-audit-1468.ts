@@ -356,9 +356,18 @@ export const ROWS_1468: readonly Row1468[] = [
   },
   {
     group: 4,
-    statement: "the public timeline and its streamed status (found by the audit)",
+    statement: "the public timeline but the local one, and the streamed status (found by the audit)",
     sites: ["src/domain/timelines.ts#publicTimeline", "src/domain/timelines.ts#publicStatus"],
     status: "fixed",
+  },
+  {
+    group: 4,
+    statement: "the local public timeline's window (found by the audit)",
+    sites: ["src/domain/timelines.ts#publicTimeline"],
+    status: "outside",
+    why: "it keeps its join to the author: real statistics enter from the local accounts (accounts_domain_username), singleton ones walk the public statuses",
+    witness:
+      "needed: an index of the local public statuses (#1481); test/timeline-plans.test.ts shows the singleton growth",
   },
   {
     group: 4,

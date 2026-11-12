@@ -29,11 +29,12 @@ const READS: [string, StoreOperation<never, unknown>, Record<string, unknown>][]
   ["public remote", publicTimeline, { local: false, remote: true, onlyMedia: false }],
 ];
 
-// The viewer's world: 100 public statuses of its own (the newest), 50 followed remote accounts of 20 public statuses
+// The viewer's world: 100 public statuses of its own, 50 followed remote accounts of 20 public statuses
 // each, five of them members of the
 // viewer's exclusive list, a direct status of each mentioning the viewer, 30 bookmarks and favourites; then `grown`
-// older public statuses of accounts nobody follows, as many bookmarks and favourites of another account, and as many
-// lists of that account with members.
+// older public statuses of accounts nobody follows, as many bookmarks and favourites of another account, as many
+// lists of that account with members, as many newer public statuses of other accounts nobody follows, and as many
+// members of the viewer's exclusive list it does not follow (as an import may hold them).
 async function world(grown: number): Promise<StoreStub> {
   const store = await migratedStore();
   await runInDurableObject(store, (_instance, state) => {
@@ -143,6 +144,31 @@ async function world(grown: number): Promise<StoreStub> {
 				WHERE l.account_id = ? AND a.id GLOB '63*'`,
         OTHER,
       );
+      // Newer public statuses of `grown` / 10 accounts nobody follows, above everything the viewer's world holds.
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 / 10 - 1)
+				INSERT INTO accounts (id, uri, username, domain) SELECT CAST(650000000000000000 + i AS TEXT),
+					'https://n.example/u' || i, 'n' || i, 'n.example' FROM n`,
+        grown,
+      );
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+				SELECT CAST(950000000000000000 + i AS TEXT), 'https://n.example/s' || i,
+					CAST(650000000000000000 + i % CAST(?1 / 10 AS INTEGER) AS TEXT), 'public', ?2 FROM n`,
+        grown,
+        at,
+      );
+      // The viewer's exclusive list as an import may hold it: `grown` members the viewer does not follow.
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO accounts (id, uri, username, domain) SELECT CAST(660000000000000000 + i AS TEXT),
+					'https://m.example/u' || i, 'm' || i, 'm.example' FROM n`,
+        grown,
+      );
+      sql.exec(
+        "INSERT INTO list_accounts (list_id, account_id) SELECT '620000000000000000', id FROM accounts WHERE id GLOB '66*'",
+      );
     }
   });
   return store;
@@ -172,6 +198,14 @@ describe("timeline reads with grown neighbours (RES-7)", () => {
     async (statistics) => {
       const few = await rowsOf(statistics, 2_000);
       const many = await rowsOf(statistics, 20_000);
+      // The local timeline keeps its join to the author (timelines.ts publicTimeline): real statistics enter it from the
+      // local accounts, but singleton ones walk the public statuses, the listed gap of #1481 (no index holds the local
+      // public statuses).
+      if (statistics === "singleton") {
+        expect(many["public local"]).toBeGreaterThan(few["public local"]!);
+        delete many["public local"];
+        delete few["public local"];
+      }
       expect(many).toEqual(few);
     },
     180_000,

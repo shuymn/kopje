@@ -90,20 +90,18 @@ function binder(from: number): { values: SqlStorageValue[]; bind: (value: SqlSto
   };
 }
 
-// The ids among `candidates` that pass a request's own `conditions` (over the status `s` and, with `author`, its
-// account `pa`; their parameters from ?2), each candidate read by key: the conditions are applied outside the LIMIT of
-// the walk that examined the candidates (walkedWindow), never inside it.
+// The ids among `candidates` that pass a request's own `conditions` (over the status `s`; their parameters from ?2),
+// each candidate read by key: the conditions are applied outside the LIMIT of the walk that examined the candidates
+// (walkedWindow), never inside it.
 function passingIds(
   db: Db,
   candidates: Window["candidates"],
   conditions: string,
-  author: boolean,
   ...params: SqlStorageValue[]
 ): ReadonlySet<string> {
   const rows = db.all<{ id: string }>(
     `SELECT s.id FROM json_each(?1) c
 			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = json_extract(c.value, '$.id')
-			${author ? `CROSS JOIN accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} ON pa.id = s.account_id` : ""}
 			WHERE ${conditions}`,
     JSON.stringify(candidates),
     ...params,
@@ -237,23 +235,27 @@ function followOptionsSql(partner: string): string {
 			AND s.language NOT IN (SELECT value FROM json_each(hl.languages)))`;
 }
 
-// The members of the viewer's (?1) exclusive lists, pending ones included (Mastodon's
+// Whether the account `x` is a member of one of the viewer's (?1) exclusive lists, pending ones included (Mastodon's
 // FeedManager#crutches_exclusive_list_users): home leaves out their statuses and boosts (filter_from_home's
-// :skip_home), and shows them in those lists only. A non-correlated subquery, read once per query: the viewer's lists
-// and their members. Only home applies it: a post notification still follows homeFilterSql (shownSql), as
-// FeedInsertWorker#notify? lets :skip_home through.
-const EXCLUSIVE_MEMBERS = `(SELECT ela.account_id FROM lists el INDEXED BY lists_account
-	CROSS JOIN list_accounts ela ON ela.list_id = el.id
-	WHERE el.account_id = ?1 AND el.exclusive = 1)`;
+// :skip_home), and shows them in those lists only. The viewer's exclusive lists are read once per query (a
+// non-correlated set), and each account's membership of them by its key (list_accounts_account), so neither the
+// members of those lists nor anyone else's lists are read: an imported list may hold accounts the viewer does not
+// follow. Only home applies it: a post notification still follows homeFilterSql (shownSql), as FeedInsertWorker#notify?
+// lets :skip_home through.
+function exclusiveMemberSql(x: string): string {
+  return `EXISTS (SELECT 1 FROM list_accounts em INDEXED BY list_accounts_account WHERE em.account_id = ${x}
+		AND em.list_id IN (SELECT el.id FROM lists el INDEXED BY lists_account WHERE el.account_id = ?1 AND el.exclusive = 1))`;
+}
 
 // The accounts home shows (?1 the viewer): those the viewer follows (accepted), but for members of their exclusive lists.
-const FOLLOWED = `SELECT target_account_id AS account_id FROM follows WHERE account_id = ?1 AND state = 'accepted'
-	AND target_account_id NOT IN ${EXCLUSIVE_MEMBERS}`;
+const FOLLOWED = `SELECT hx.target_account_id AS account_id FROM follows hx WHERE hx.account_id = ?1 AND hx.state = 'accepted'
+	AND NOT ${exclusiveMemberSql("hx.target_account_id")}`;
 
 // FOLLOWED for home narrowed to the status ?7 (homeStatus): its author, if the viewer follows it (accepted) and it is in
-// none of their exclusive lists. The exclusion is read from the viewer's lists (lists_account, at most MAX_LISTS), each
-// checked through the (list_id, account_id) key, so it reads neither the members of those lists nor the lists of other
-// owners that hold the author.
+// none of their exclusive lists. The exclusion is read from the viewer's lists (lists_account), each checked through
+// the (list_id, account_id) key, so it reads neither the members of those lists nor the lists of other owners that
+// hold the author. Kopje's writers keep an account within MAX_LISTS lists; no stored bound does, so an imported
+// account's lists are walked here (#1481).
 const FOLLOWED_AUTHOR = `SELECT hf.target_account_id AS account_id FROM follows hf
 	WHERE hf.account_id = ?1 AND hf.state = 'accepted'
 		AND hf.target_account_id = (SELECT ha.account_id FROM statuses ha WHERE ha.id = ?7)
@@ -542,8 +544,8 @@ export type PublicTimelineInput = {
 // (Mastodon's PublicFeed). Never unlisted, private, direct or limited. The list rule (listableSql) follows these.
 // `local` and `remote` together select both, as PublicFeed#local_only? and #remote_only? read them (with Mastodon's
 // feed access settings open to everyone, the only setting Kopje has).
-function publicConditions(local: boolean, remote: boolean, onlyMedia: boolean): string {
-  return [PUBLIC_ORIGINAL_SQL, ...publicRequestTerms(local, remote, onlyMedia)].join(" AND ");
+function publicConditions(local: boolean, remote: boolean, onlyMedia: boolean, joined = false): string {
+  return [PUBLIC_ORIGINAL_SQL, ...publicRequestTerms(local, remote, onlyMedia, joined)].join(" AND ");
 }
 
 // The base of publicConditions: a public status that is not a boost.
@@ -554,10 +556,10 @@ const PUBLIC_ORIGINAL_SQL = "s.visibility = 'public' AND s.reblog_of_id IS NULL"
 const AUTHOR_DOMAIN_SQL = `(SELECT pa.domain FROM accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pa.id = s.account_id)`;
 
 // The request's part of publicConditions, over the status `s` (statuses.account_id references accounts, so its author
-// is always there).
-function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean): string[] {
+// is always there), and with `joined` over its account `pa` as well.
+function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean, joined = false): string[] {
   return [
-    ...(local && !remote ? [`${AUTHOR_DOMAIN_SQL} IS NULL`] : []),
+    ...(local && !remote ? [joined ? "pa.domain IS NULL" : `${AUTHOR_DOMAIN_SQL} IS NULL`] : []),
     ...(remote && !local ? [`${AUTHOR_DOMAIN_SQL} IS NOT NULL`] : []),
     ...(onlyMedia ? ["EXISTS (SELECT 1 FROM media_attachments pm WHERE pm.status_id = s.id AND pm.shown = 1)"] : []),
   ];
@@ -568,9 +570,18 @@ function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean)
 export const publicTimeline = optionalUserReadOperation<PublicTimelineInput, Page<Status>>((db, input, viewer) => {
   const cursor = statusPage(input.page);
   const size = readWindow(cursor.limit);
+  // The local timeline keeps its join to the author, which real statistics enter from the few local accounts
+  // (accounts_domain_username); no index holds the local public statuses, so singleton statistics walk them (#1481).
+  // The others walk statuses_public, each author's domain by its key.
+  const local = input.local && !input.remote;
   const window = singleWindow(
     db,
-    `SELECT s.id FROM statuses s INDEXED BY statuses_public
+    local
+      ? `SELECT s.id FROM statuses s JOIN accounts pa ON pa.id = s.account_id
+		WHERE ${publicConditions(true, false, input.onlyMedia, true)} AND ${NOT_A_REPLY_TO_OTHERS}
+			AND ${rangeSql("s.id")} AND ${audienceSql("s", "?4")}
+		ORDER BY s.id ${orderOf(cursor)} LIMIT ?1`
+      : `SELECT s.id FROM statuses s INDEXED BY statuses_public
 		WHERE ${publicConditions(input.local, input.remote, input.onlyMedia)} AND ${NOT_A_REPLY_TO_OTHERS}
 			AND ${rangeSql("s.id")} AND ${audienceSql("s", "?4")}
 		ORDER BY s.id ${orderOf(cursor)} LIMIT ?1`,
@@ -672,7 +683,7 @@ export function tagStatus(db: Db, viewer: UserContext, tag: string, local: boole
       "listable",
       {
         from: "status_tags t CROSS JOIN",
-        join: `ON s.id = t.status_id CROSS JOIN accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} ON pa.id = s.account_id`,
+        join: "ON s.id = t.status_id",
         where: `t.public = 1 AND t.name = ?6 AND t.status_id = ?7 AND ${publicConditions(local, false, false)}`,
         and: rangeSql("t.status_id"),
         tail: `ORDER BY t.status_id ${orderOf(cursor)} LIMIT ?4`,
@@ -763,7 +774,7 @@ function tagWindow(
         per,
         ...names,
       ),
-    request === null ? null : (candidates) => passingIds(db, candidates, request, true, ...values),
+    request === null ? null : (candidates) => passingIds(db, candidates, request, ...values),
     walkStart(cursor),
     streamWindow(cursor.limit),
     names.length,
@@ -943,7 +954,7 @@ export function accountStatusesWithin(
         per,
         viewerId,
       ),
-    request === null ? null : (candidates) => passingIds(db, candidates, request, false, ...values),
+    request === null ? null : (candidates) => passingIds(db, candidates, request, ...values),
     walkStart(cursor),
     size,
     1,
