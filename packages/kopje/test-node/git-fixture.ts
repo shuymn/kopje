@@ -10,7 +10,8 @@ import { afterAll, afterEach, beforeAll, beforeEach } from "vitest";
 // A hermetic git for every call of a case, the fixture's and the script's under test (which inherits process.env): no
 // inherited GIT_* override (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE, object, template and config variables, as a
 // calling hook may set them) and no user or system configuration (no signing, no hooks). The global configuration is
-// an empty file inside the suite's temporary directory. Call it once at a suite's top level: it registers the hooks
+// a file inside the suite's temporary directory that only turns off git's automatic gc and maintenance, which can
+// still be writing into a repository when the case removes it (ENOTEMPTY, #1495). Call it once at a suite's top level: it registers the hooks
 // that set up and restore the environment and remove every repository the suite made.
 export function gitFixture(name: string) {
   let home = "";
@@ -19,7 +20,7 @@ export function gitFixture(name: string) {
 
   beforeAll(() => {
     home = mkdtempSync(join(tmpdir(), `kopje-${name}-home-`));
-    writeFileSync(join(home, "gitconfig"), "");
+    writeFileSync(join(home, "gitconfig"), "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
   });
 
   afterAll(() => {
@@ -37,7 +38,7 @@ export function gitFixture(name: string) {
 
   afterEach(() => {
     for (const repo of repos.splice(0)) {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
     for (const variable of Object.keys(process.env).filter((n) => n.startsWith("GIT_"))) {
       Reflect.deleteProperty(process.env, variable);
