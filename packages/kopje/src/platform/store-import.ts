@@ -131,12 +131,32 @@ const LINK_RANGE = `name >= '${LINK_PREFIX}' AND name < 'import_link;'`;
 // chunk; this bounds what a step holds in memory per link.
 export const MAX_LINK_STATEMENT_BYTES = 64 * 1024;
 
+// The tables of this Store's schema declared AUTOINCREMENT, read from the live schema: SQLite keeps a sqlite_sequence row
+// for these only, so a dump's row naming any other table is refused. SQLite does not report the keyword, so it is read
+// from each CREATE TABLE, comments left out, where the grammar allows it: right after PRIMARY KEY, its order and its
+// conflict clause. A string or a quoted identifier spelling that phrase would be misread; the migrations hold none, and
+// the schema is the Store's own (a dump cannot run DDL).
+const AUTOINCREMENT = /\bPRIMARY\s+KEY(?:\s+(?:ASC|DESC))?(?:\s+ON\s+CONFLICT\s+\w+)?\s+AUTOINCREMENT\b/i;
+
+export function autoincrementTables(sql: SqlStorage): Set<string> {
+  return new Set(
+    sql
+      .exec<{ name: string; sql: string }>(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
+      )
+      .toArray()
+      .filter((t) => AUTOINCREMENT.test(t.sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "")))
+      .map((t) => t.name),
+  );
+}
+
 // Executes validated statements. parseStatements matched each against a template of this Store's catalog; the
 // literals are then bound as parameters (bindLiteral), which keeps the statement text short whatever the value size
 // (the platform limits a statement to 100 KB) and keeps every storage class exact. `first` is the ordinal of the
 // first statement in the body, which names the staged links in body order.
 export function applyStatements(sql: SqlStorage, statements: readonly ParsedStatement[], first: number): void {
   const columnLists = new Map<string, string>();
+  let sequenced: Set<string> | undefined;
   for (const [index, statement] of statements.entries()) {
     const table = quoteIdentifier(statement.table.name);
     const bound = bind(statement.literals);
@@ -170,6 +190,14 @@ export function applyStatements(sql: SqlStorage, statements: readonly ParsedStat
       }
     }
     if (statement.table.name === SEQUENCE_TABLE) {
+      // A counter of a table this Store declares AUTOINCREMENT only, so sqlite_sequence holds one row per such table.
+      sequenced ??= new Set([...autoincrementTables(sql)].map(textLiteral));
+      if (!sequenced.has(name)) {
+        throw new ImportError(
+          "sequence-not-allowed",
+          `sqlite_sequence ${name} names no AUTOINCREMENT table of this Store`,
+        );
+      }
       // AUTOINCREMENT inserts above created their own counter rows; the dumped value replaces them.
       const nameBound = bindAll([name]);
       sql.exec(`DELETE FROM ${table} WHERE name = ${nameBound.exprs[0]!}`, ...nameBound.params);

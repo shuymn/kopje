@@ -1817,19 +1817,19 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "79bfd658ce83ddaf",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundMark < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
     reason:
-      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:141 and :192-204, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+    witness: "test/import-bounds.test.ts",
   },
   {
     id: "8b7c5c8e7643177f",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundSince < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
     reason:
-      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:141 and :192-204, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+    witness: "test/import-bounds.test.ts",
   },
   {
     id: "54a0d7dbe28e2596",

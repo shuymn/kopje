@@ -430,7 +430,11 @@ so a restored Store never gives a report id twice.
    They are ordered like the rows.
 
 `sqlite_sequence` rows (`INSERT INTO "sqlite_sequence" ("name","seq") VALUES ('notifications',9);`) replace the
-counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own.
+counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own. The importer
+refuses a row naming a table the target's schema does not declare AUTOINCREMENT, with `sequence-not-allowed` and its
+chunk unapplied, so `sqlite_sequence` holds one row per such table (RES-6: the inbound jobs read it by name, and it has
+no index). Kopje's own dumps, an upgraded Store's too (SQLite drops a table's counter with the table and renames it
+with the table), hold no other row.
 
 ### What is not in a dump
 

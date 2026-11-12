@@ -8,6 +8,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
+  (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters
+  of those tables only, so only a crafted or corrupted dump is refused. The inbound jobs read the counters by name on
+  every round, and an import could otherwise grow them without limit ([docs/dump-format.md](docs/dump-format.md)).
+
 ## [0.5.0] - 2026-11-13
 
 A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now
