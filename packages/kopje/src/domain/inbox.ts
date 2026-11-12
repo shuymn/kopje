@@ -9,6 +9,7 @@ import {
   MEDIA_ID_INDEX,
   QUOTES_STATUS_INDEX,
   STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -822,6 +823,8 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 // a Reject with Misskey's pair-shaped id (`/follows/<follower>/<followee>`): Misskey rejects a follower it removes with
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
 // with the pair Undo, a redelivered pair Reject cannot be told from a new one, and ends a later generation too.
+// By the id, the actor's followers are walked through follows_target: the inbox writes only follows with a local side,
+// but an import does not hold them to it, and no index holds a follow's uri (#1481).
 function ourFollow(
   db: Db,
   actor: RemoteRow,
@@ -836,7 +839,8 @@ function ourFollow(
   }
   if (ref.id !== null) {
     const byUri = db.first<{ id: string; follower: string }>(
-      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM follows f JOIN local_accounts l ON l.account_id = f.account_id
+      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM follows f INDEXED BY follows_target
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = f.account_id
 			WHERE f.uri = ? AND f.target_account_id = ?`,
       ref.id,
       actor.id,
@@ -955,9 +959,11 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   const pair = ref.type === "Follow" && isMisskeyPairId(ref.id);
   type Edge = { target: string; uri: string | null };
   let edge: Edge | undefined;
+  // The actor's follows and blocks by uri are walked through their pair indexes: the inbox writes only ones with a local
+  // target, but an import does not hold them to it, and no index holds their uri (#1481).
   if (ref.type === null || ref.type === "Follow") {
     edge = db.first<Edge>(
-      "SELECT target_account_id AS target, uri FROM follows WHERE account_id = ? AND uri = ?",
+      "SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ? AND uri = ?",
       actor.id,
       ref.id,
     );
@@ -977,7 +983,11 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
     ref.type === "Block" ||
     (ref.type === null &&
       edge === undefined &&
-      db.first("SELECT 1 AS x FROM blocks WHERE account_id = ? AND uri = ?", actor.id, ref.id) !== undefined);
+      db.first(
+        "SELECT 1 AS x FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?",
+        actor.id,
+        ref.id,
+      ) !== undefined);
   const undoesFollow = !undoesBlock && (ref.type === null || ref.type === "Follow");
   const retracted = [
     ...(undoesFollow && isMisskeyPairId(ref.id) ? [] : [ref.id]),
@@ -1004,7 +1014,7 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   }
   if (!undone && (ref.type === null || ref.type === "Block")) {
     undone =
-      db.run("DELETE FROM blocks WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0 ||
+      db.run("DELETE FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0 ||
       (ref.type === "Block" &&
         db.run(
           `DELETE FROM blocks WHERE account_id = ? AND uri IS NULL
@@ -2828,7 +2838,8 @@ type Original = { id: string; account_id: string; visibility: Visibility; local:
 function originalByUri(db: Db, uri: string): Original | undefined {
   return db.first<Original>(
     `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
-		FROM statuses s LEFT JOIN local_accounts l ON l.account_id = s.account_id
+		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
 		WHERE s.uri = ? AND s.reblog_of_id IS NULL`,
     uri,
   );
@@ -3083,12 +3094,13 @@ function retireStaleLike(db: Db, actor: RemoteRow, favouriteId: string, now: num
 type TrackedLike = { id: string; favourite: string; status_id: string };
 
 // The actor's favourite tracking the Like id `uri`: one row at most (favourite_likes_uri is unique), found by that
-// index, never by the actor's favourites, which are any number.
+// index, then its favourite by the whole key of favourites_account (account_id, id), never by a range of the actor's
+// favourites, which are any number.
 function trackedLike(db: Db, actorId: string, uri: string): TrackedLike | undefined {
   return db.first<TrackedLike>(
     `SELECT CAST(l.id AS TEXT) AS id, CAST(f.id AS TEXT) AS favourite, f.status_id
 			FROM favourite_likes l INDEXED BY favourite_likes_uri
-			JOIN favourites f ON f.id = l.favourite_id
+			CROSS JOIN favourites f INDEXED BY favourites_account ON f.id = l.favourite_id
 		WHERE l.uri = ? AND f.account_id = ?`,
     uri,
     actorId,
@@ -3103,7 +3115,8 @@ type LegacyFavourite = { id: string; status_id: string };
 
 function legacyFavourite(db: Db, actorId: string, uri: string): LegacyFavourite | undefined {
   return db.first<LegacyFavourite>(
-    `SELECT CAST(f.id AS TEXT) AS id, f.status_id FROM statuses s CROSS JOIN favourites f ON f.status_id = s.id
+    `SELECT CAST(f.id AS TEXT) AS id, f.status_id FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+		CROSS JOIN favourites f INDEXED BY favourites_pair ON f.status_id = s.id
 		WHERE s.uri = ? AND f.account_id = ? AND f.uri IS NULL
 			AND NOT EXISTS (SELECT 1 FROM favourite_likes l WHERE l.favourite_id = f.id)`,
     uri,
@@ -3151,8 +3164,12 @@ function interactionOf(db: Db, actor: RemoteRow, uri: string): boolean {
 function removeFavourite(db: Db, actorId: string, favourite: { id: string; status_id: string }): void {
   db.run("DELETE FROM favourites WHERE id = CAST(? AS INTEGER)", favourite.id);
   recountStatus(db, favourite.status_id);
+  // A favourite's or boost's notification is the status author's, its only recipient (like, announce): sought by its
+  // natural key, never through the actor's notifications, which are any number.
   db.run(
-    `DELETE FROM notifications WHERE type = 'favourite' AND from_account_id = ? AND status_id = ?`,
+    `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = (SELECT s.account_id FROM statuses s INDEXED BY ${STATUSES_ID_INDEX} WHERE s.id = ?2)
+				AND type = 'favourite' AND from_account_id = ?1 AND IFNULL(status_id, '') = ?2`,
     actorId,
     favourite.status_id,
   );
@@ -3204,7 +3221,9 @@ function removeBoost(
   }
   recountStatus(db, boost.original);
   db.run(
-    `DELETE FROM notifications WHERE type = 'reblog' AND from_account_id = ? AND status_id = ?`,
+    `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = (SELECT s.account_id FROM statuses s INDEXED BY ${STATUSES_ID_INDEX} WHERE s.id = ?2)
+				AND type = 'reblog' AND from_account_id = ?1 AND IFNULL(status_id, '') = ?2`,
     actor.id,
     boost.original,
   );

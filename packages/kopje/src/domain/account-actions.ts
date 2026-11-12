@@ -401,7 +401,7 @@ export function answerPendingFollow(
 ): "ok" | "not_found" | "unavailable" {
   const request = db.first<{ id: string; uri: string | null; requester_uri: string; remote: number }>(
     `SELECT CAST(f.id AS TEXT) AS id, f.uri, a.uri AS requester_uri, a.domain IS NOT NULL AS remote
-		FROM follows f JOIN accounts a ON a.id = f.account_id
+		FROM follows f INDEXED BY follows_pair CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = f.account_id
 		WHERE f.account_id = ?1 AND f.target_account_id = ?2 AND f.state = 'pending' AND ${availableSql("?1")}`,
     requesterId,
     viewerId,
@@ -421,7 +421,7 @@ export function answerPendingFollow(
     db.run("DELETE FROM follows WHERE id = CAST(? AS INTEGER)", request.id);
   }
   db.run(
-    "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type = 'follow_request'",
+    "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ? AND type = 'follow_request' AND from_account_id = ?",
     viewerId,
     requesterId,
   );

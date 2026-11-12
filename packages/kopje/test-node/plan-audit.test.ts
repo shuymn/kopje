@@ -476,6 +476,26 @@ describe("plan audit residuals", () => {
       "statuses: SCAN s",
       4,
     ],
+    // The relationship and inbound edges of group 5.
+    ["a relationship's follows", "src/domain/accounts.ts#relationshipsOf", "follows: SCAN fo LEFT-JOIN", 5],
+    ["an account search's exact address", "src/domain/accounts.ts#findAccountIds", "accounts: SCAN accounts", 5],
+    ["an answered follow request", "src/domain/account-actions.ts#answerPendingFollow", "follows: SCAN f", 5],
+    [
+      "an announced original",
+      "src/domain/inbox.ts#originalByUri < src/domain/inbox.ts#announce",
+      "statuses: SCAN s",
+      5,
+    ],
+    ["a converted favourite", "src/domain/inbox.ts#legacyFavourite", "favourites: SCAN f", 5],
+    ["a tracked Like's favourite", "src/domain/inbox.ts#trackedLike", "favourites: SCAN f", 5],
+    ["an undone boost's notification", "src/domain/inbox.ts#removeBoost", "notifications: SCAN notifications", 5],
+    [
+      "an undone favourite's notification",
+      "src/domain/inbox.ts#removeFavourite",
+      "notifications: SCAN notifications",
+      5,
+    ],
+    ["a status's earlier replies", "src/domain/remote-statuses.ts#linkReplies", "statuses: SCAN statuses", 5],
   ])("fails %s put back", (_name, site, scan, group) => {
     for (const disposition of ["pending", "write"] as const) {
       const stray: PlanAuditEntry = {
