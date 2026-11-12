@@ -278,8 +278,8 @@ function textMatches(db: Db, rows: readonly Candidate[], filter: AdminAccountFil
     return null;
   }
   const found = db.all<{ id: string }>(
-    `SELECT a.id FROM json_each(?1) c CROSS JOIN accounts a ON a.id = c.value
-			LEFT JOIN local_accounts l ON l.account_id = a.id
+    `SELECT a.id FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
+			LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 		WHERE ${conditions.join(" AND ")}`,
     ...values,
   );
@@ -314,7 +314,9 @@ function readMatches(
     // The local accounts, an operator-sized set (a deployment assumption of about 10 accounts).
     return ordered(
       db,
-      db.all<Candidate>(`SELECT ${CANDIDATE_COLUMNS} FROM local_accounts l JOIN accounts a ON a.id = l.account_id`),
+      db.all<Candidate>(
+        `SELECT ${CANDIDATE_COLUMNS} FROM local_accounts l CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id`,
+      ),
       filter,
       adminId,
       bounds,
@@ -324,7 +326,7 @@ function readMatches(
   if (search !== null) {
     const rows = db.all<Candidate>(
       `SELECT ${CANDIDATE_COLUMNS} FROM accounts a INDEXED BY ${search.index}
-			LEFT JOIN local_accounts l ON l.account_id = a.id
+			LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 			WHERE ${search.where} LIMIT ${ADMIN_ACCOUNT_CANDIDATES + 1}`,
       ...search.values,
     );
@@ -340,13 +342,13 @@ function readMatches(
     // The suspended local accounts (operator-sized), and the remote accounts the instance suspended or whose deletion
     // has started, as one range of accounts_suspended and one of accounts_deleted in id order; merged by id.
     const local = db.all<Candidate>(
-      `SELECT ${CANDIDATE_COLUMNS} FROM local_accounts l JOIN accounts a ON a.id = l.account_id
+      `SELECT ${CANDIDATE_COLUMNS} FROM local_accounts l CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
 			WHERE NOT ${availableLocalSql("l")}`,
     );
     const range = (index: string, where: string) =>
       db.all<Candidate>(
         `SELECT ${CANDIDATE_COLUMNS} FROM accounts a INDEXED BY ${index}
-				LEFT JOIN local_accounts l ON l.account_id = a.id
+				LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 				WHERE ${where} AND ${ID_RANGE} ORDER BY a.id ${order} LIMIT ?3`,
         bounds.max,
         bounds.min,
@@ -368,7 +370,7 @@ function readMatches(
   ].join(" AND ");
   return db.all<Candidate>(
     `SELECT ${CANDIDATE_COLUMNS} FROM accounts a INDEXED BY ${active ? "accounts_active" : ACCOUNTS_ID_INDEX}
-		LEFT JOIN local_accounts l ON l.account_id = a.id
+		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 		WHERE ${ID_RANGE} AND ${residual} ORDER BY a.id ${order} LIMIT ?3`,
     bounds.max,
     bounds.min,
