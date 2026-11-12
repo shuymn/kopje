@@ -22,6 +22,7 @@ import {
 } from "./dump-format";
 import { bindAll, LiteralError, textLiteral } from "./dump-literals";
 import { errorMessage } from "./error-message";
+import { MAX_PENDING_APPS, pendingAppsSql } from "./pending-apps";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.
 export function parseHeader(value: unknown): DumpHeader {
@@ -131,12 +132,47 @@ const LINK_RANGE = `name >= '${LINK_PREFIX}' AND name < 'import_link;'`;
 // chunk; this bounds what a step holds in memory per link.
 export const MAX_LINK_STATEMENT_BYTES = 64 * 1024;
 
+// The tables of this Store's schema declared AUTOINCREMENT, read from the live schema (their CREATE TABLE, comments
+// left out): SQLite keeps a sqlite_sequence row for these only, so a dump's row naming any other table is refused.
+export function autoincrementTables(sql: SqlStorage): Set<string> {
+  return new Set(
+    sql
+      .exec<{ name: string; sql: string }>(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
+      )
+      .toArray()
+      .filter((t) => /\bAUTOINCREMENT\b/i.test(t.sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "")))
+      .map((t) => t.name),
+  );
+}
+
+// RES-6: the pending apps a verified import holds, by registration's own predicate (pending-apps.ts), counted to one
+// past MAX_PENDING_APPS: a dump holding more than registration keeps is refused, so no path stores more. Kopje's own
+// export never holds more, as registration evicts or refuses past it (domain/oauth.ts, registerApp).
+export function pendingAppsProblem(sql: SqlStorage): string | null {
+  // An import into a Store before 0086_authorized_apps holds no authorized column nor pending index to count by: its
+  // pending apps are made by the upgrade through 0086 (every app no user's token names), which this bound does not see.
+  const indexed = sql
+    .exec("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'oauth_clients_pending'")
+    .toArray().length;
+  if (indexed === 0) {
+    return null;
+  }
+  const pending = sql
+    .exec<{ n: number }>(`SELECT count(*) AS n FROM (SELECT 1 ${pendingAppsSql()} LIMIT ${MAX_PENDING_APPS + 1})`)
+    .one().n;
+  return pending > MAX_PENDING_APPS
+    ? `oauth_clients: more than MAX_PENDING_APPS (${MAX_PENDING_APPS}) pending apps (no user authorized them, the web UI's client aside); Kopje keeps at most that many, so this dump cannot be restored`
+    : null;
+}
+
 // Executes validated statements. parseStatements matched each against a template of this Store's catalog; the
 // literals are then bound as parameters (bindLiteral), which keeps the statement text short whatever the value size
 // (the platform limits a statement to 100 KB) and keeps every storage class exact. `first` is the ordinal of the
 // first statement in the body, which names the staged links in body order.
 export function applyStatements(sql: SqlStorage, statements: readonly ParsedStatement[], first: number): void {
   const columnLists = new Map<string, string>();
+  let sequenced: Set<string> | undefined;
   for (const [index, statement] of statements.entries()) {
     const table = quoteIdentifier(statement.table.name);
     const bound = bind(statement.literals);
@@ -170,6 +206,14 @@ export function applyStatements(sql: SqlStorage, statements: readonly ParsedStat
       }
     }
     if (statement.table.name === SEQUENCE_TABLE) {
+      // A counter of a table this Store declares AUTOINCREMENT only, so sqlite_sequence holds one row per such table.
+      sequenced ??= new Set([...autoincrementTables(sql)].map(textLiteral));
+      if (!sequenced.has(name)) {
+        throw new ImportError(
+          "sequence-not-allowed",
+          `sqlite_sequence ${name} names no AUTOINCREMENT table of this Store`,
+        );
+      }
       // AUTOINCREMENT inserts above created their own counter rows; the dumped value replaces them.
       const nameBound = bindAll([name]);
       sql.exec(`DELETE FROM ${table} WHERE name = ${nameBound.exprs[0]!}`, ...nameBound.params);

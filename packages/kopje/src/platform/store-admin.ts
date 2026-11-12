@@ -56,6 +56,7 @@ import {
   applyStagedLinks,
   applyStatements,
   BoostChainCheck,
+  pendingAppsProblem,
   catalogDifference,
   compareResults,
   dropStagedLinks,
@@ -891,6 +892,11 @@ export class StoreAdmin {
         if (migrations !== null) {
           report.ok = false;
           report.problems.push(migrations);
+        }
+        const pendingApps = pendingAppsProblem(this.#sql);
+        if (pendingApps !== null) {
+          report.ok = false;
+          report.problems.push(pendingApps);
         }
         if (report.ok) {
           // An import never changes configuration (domain, who administers this Store): its own rows come back exactly.

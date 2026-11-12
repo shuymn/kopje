@@ -430,7 +430,10 @@ so a restored Store never gives a report id twice.
    They are ordered like the rows.
 
 `sqlite_sequence` rows (`INSERT INTO "sqlite_sequence" ("name","seq") VALUES ('notifications',9);`) replace the
-counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own.
+counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own. The importer
+refuses a row naming a table the target's schema does not declare AUTOINCREMENT, with `sequence-not-allowed` and its
+chunk unapplied, so `sqlite_sequence` holds one row per such table (RES-6: the inbound jobs read it by name, and it has
+no index). Kopje's own dumps hold no other row.
 
 ### What is not in a dump
 
@@ -533,6 +536,12 @@ bytes it receives:
   link is applied, so the order of the links does not matter; each boost the call scans costs one seek of the status
   it names. The report's problem is `statuses: a boost of a boost …`, the import fails, and it needs a reset. A Store
   that already holds one (restored before the check) keeps it.
+- Verify refuses more than 500 pending apps (`MAX_PENDING_APPS`): `oauth_clients` rows no user has authorized, the web
+  UI's own client aside, counted by the same predicate as app registration (`src/platform/pending-apps.ts`), which keeps at
+  most that many (RES-6: registration counts them). The count reads at most 501 entries of the pending index. The
+  report's problem is `oauth_clients: more than MAX_PENDING_APPS (500) pending apps …`, the import fails, and it needs a
+  reset. Kopje's own dumps hold no more. A dump taken before `0086_authorized_apps` has no pending apps to count: its
+  upgrade through 0086 leaves pending every app no user's token names, which registration's eviction then trims.
 - A reset that unlinks rows stops the call after one such step, bounded the same way.
 
 ### Authority

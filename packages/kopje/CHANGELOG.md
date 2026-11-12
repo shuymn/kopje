@@ -8,6 +8,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- An import now refuses two things only a crafted or corrupted dump holds, since Kopje's own export never writes
+  them (RES-6, DATA-3): a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
+  (`sequence-not-allowed`, with its chunk), and more than 500 pending apps (`MAX_PENDING_APPS`, at verification, the
+  import then needs a reset). Each bounds a read the Store makes on every inbound job round or app registration, which
+  an import could otherwise grow without limit ([docs/dump-format.md](docs/dump-format.md)).
+
 ## [0.5.0] - 2026-11-13
 
 A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now

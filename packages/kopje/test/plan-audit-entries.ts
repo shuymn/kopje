@@ -1812,19 +1812,19 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "79bfd658ce83ddaf",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundMark < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
     reason:
-      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :200-212, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+    witness: "test/import-bounds.test.ts",
   },
   {
     id: "8b7c5c8e7643177f",
     scans: ["sqlite_sequence: SCAN sqlite_sequence"],
     site: "src/domain/inbox.ts#outboundSince < src/domain/inbox.ts#<anonymous> in runInboundJobs",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
     reason:
-      "sqlite_sequence is not bounded: an imported dump may name any table in it (src/platform/dump-catalog.ts, src/platform/store-import.ts)",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :200-212, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+    witness: "test/import-bounds.test.ts",
   },
   {
     id: "54a0d7dbe28e2596",
@@ -2366,8 +2366,10 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "7e7121a3e8e907cd",
     scans: ["oauth_clients: SCAN c USING COVERING INDEX oauth_clients_pending"],
     site: "src/domain/oauth.ts#pendingApps < src/domain/oauth.ts#<anonymous> in registerApp",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "deliberate",
+    reason:
+      "pending apps (pendingAppsSql, src/platform/pending-apps.ts:12) number at most MAX_PENDING_APPS (500, :6) on the paths of this schema: registerApp evicts or refuses past it (src/domain/oauth.ts:111-138), the web UI's client is not pending, and an import holding more is refused at verification (src/platform/store-import.ts pendingAppsProblem, src/platform/store-admin.ts importVerify; test/import-bounds.test.ts). Not bounded on one path: a dump taken before 0086_authorized_apps, whose upgrade leaves pending every app no user's token names (those whose tokens were revoked too), so the count walks them until registration's eviction or the sweep takes them",
+    witness: "test/import-bounds.test.ts",
   },
   {
     id: "4ad13738b4c4f7ef",
