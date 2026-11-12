@@ -526,6 +526,12 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: "a number constant (the filter text cap of a status), naming no column",
   },
+  "src/domain/deliveries.ts interpolation HELD_REJECTS_PER_ACCOUNT": {
+    count: 1,
+    reason: "a number constant (the held Rejects a local account keeps, HOLD_REJECT_ROOM), naming no column",
+  },
+  // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
+  'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
   "src/domain/remote-media.ts interpolation SAFE_INTEGER_MAX": {
     count: 1,
     reason: "a number constant (the bound of a slot id an object may name), naming no column",
@@ -623,10 +629,12 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/actor-update.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
-  // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL.
-  "src/domain/deliveries.ts accounts.uri": { count: 4, reason: IDENTITY },
+  // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
+  // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT).
+  "src/domain/deliveries.ts accounts.uri": { count: 6, reason: IDENTITY },
   "src/domain/featured-tags.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/handshake-replays.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // The last two: a held Reject's actor uris, read as bytes and decoded strictly (replayReject).
+  "src/domain/handshake-replays.ts accounts.uri": { count: 4, reason: IDENTITY },
   "src/domain/inbox.ts accounts.uri": { count: 5, reason: IDENTITY },
   "src/domain/remote-actors.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },

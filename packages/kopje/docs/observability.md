@@ -80,8 +80,11 @@ so a change made only in the dashboard does not last.
 
 `kopje.jobs.item.parked` is logged at warn, not error: the attempt that parks the job also logs `kopje.jobs.item.failed`
 at error with `parked: true`, and error is kept for events whose name says they failed. Family `handshake_replays` is a
-held `Follow` or `Accept` whose replay keeps failing (VIS-30): the handshake stays owed, and is recorded once the cause
-is fixed and the job retried.
+held `Follow`, `Accept` or `Reject` whose replay keeps failing (VIS-30): the activity stays owed, and is recorded once
+the cause is fixed and the job retried. A held `Reject` whose stored `Follow` id or actor uri is not valid UTF-8 (an
+import) fails each attempt with `kopje.jobs.reject_replay.invalid_identity` (warn, no fields) and parks: repair the
+uri, then `kopje-admin jobs retry`. `kopje.delivery.reject_hold_capped` (warn, no fields) records a refused `Reject` of
+a request dropped because its local account already holds 100 (docs/visibility.md, "Held handshakes").
 
 `kopje.delivery.stale_follow_answer` (level warn) records a follow answer (`type`: `Accept`, `Reject`, or `other` for an
 imported answer without either) that a newer `Follow` of its pair, the follower's `Undo` of its generation or a block

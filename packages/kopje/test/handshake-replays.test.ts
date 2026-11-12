@@ -295,7 +295,7 @@ describe("what is never held (W9)", () => {
     expect(await edge(w.h.store, w.alice.id, r)).toMatchObject({ state: "pending" });
   });
 
-  it("drops a Reject of a request, content and a quote's Accept without a hold", async () => {
+  it("drops content and a quote's Accept without a hold; a Reject of a request is held apart (reject_replays)", async () => {
     const w = await world();
     const { r, aliceUri, edgeId } = await rFollowsAlice(w);
     expect(await drain(w.h.store)).toHaveLength(1);
@@ -338,6 +338,10 @@ describe("what is never held (W9)", () => {
     expect(await drain(w.h.store)).toEqual([]);
     expect(await sql(w.h.store, "SELECT 1 FROM deliveries")).toEqual([]);
     expect(await holds(w.h.store)).toEqual([]);
+    // The Reject's pair holds it (test/reject-replays.test.ts); content and the quote's Accept hold nothing.
+    expect(await sql(w.h.store, "SELECT account_id, follower_id FROM reject_replays")).toEqual([
+      { account_id: w.bob.id, follower_id: r },
+    ]);
     expect(await edge(w.h.store, r, w.alice.id)).toMatchObject({ id: edgeId, state: "accepted" });
   });
 });

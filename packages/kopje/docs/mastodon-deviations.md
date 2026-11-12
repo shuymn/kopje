@@ -511,9 +511,14 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   `process_collection_service.rb` applies it.
 - Unsuspension does not fetch the account again; Mastodon's `unsuspend_account_service.rb` refetches it.
 - Nothing but retractions is sent to an unavailable account (VIS-30's send-time check); a `Follow` of a local
-  account's, or a local account's `Accept` of the account's follow, that the check drops is held and sent once the
-  account is available again (visibility.md, "Held handshakes"). Mastodon's `ActivityPub::DeliveryWorker` has no such
-  check and sends them during the suspension.
+  account's, a local account's `Accept` of the account's follow, or a local account's `Reject` of the account's
+  request, that the check drops is held and sent once the account is available again (visibility.md, "Held
+  handshakes"). Mastodon's `ActivityPub::DeliveryWorker` has no such check and sends them during the suspension
+  (`RejectFollowService` queues its `Reject` through `DeliveryWorker`, `reject_follow_service.rb:15-17`, which checks
+  only the inbox's availability, `delivery_worker.rb:25-36`).
+- A local account holds at most 100 refused `Reject`s of requests (`HELD_REJECTS_PER_ACCOUNT`); past it, a further
+  `Reject` of a new pair to an unavailable requester is dropped, the owner's own included while the account is
+  saturated. Mastodon sends each one. The cap is set by storage and recheck load.
 - Unsuspending an individually suspended account that a `suspend` block covers converts its suspension to a domain
   mark and keeps it unavailable, and an account held by a domain mark alone answers 403. Mastodon's admin unsuspend
   clears the suspension directly, and `UnblockDomainService` lifts only suspensions whose timestamp equals the block's

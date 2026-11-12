@@ -825,6 +825,92 @@ describe("dump", () => {
     expect(JSON.stringify(outcome)).toMatch(/foreign_key_check reported 1 violation|FOREIGN KEY/);
   }, 120_000);
 
+  it("round-trips held Rejects (0092) at their bounds, and refuses a Follow id past it, a local follower, a pair past the cap and a missing account (D1–D5)", async () => {
+    const source = await seeded(0);
+    // A local account's holds: a Follow id at 4,096 escaped bytes, a malformed one (it imports, and is parked at
+    // replay), and an edge id at the 64-bit maximum, parked.
+    const AT_BOUND = `https://remote.test/f/${"a".repeat(4096 - 22)}`;
+    const local = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const id = sql.exec<{ id: string }>("SELECT account_id AS id FROM local_accounts LIMIT 1").one().id;
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain) VALUES
+					('890000000000000011', 'https://remote.test/users/h', 'h', 'remote.test'),
+					('890000000000000012', 'https://remote.test/users/i', 'i', 'remote.test'),
+					('890000000000000013', 'https://remote.test/users/j', 'j', 'remote.test')`,
+      );
+      sql.exec(
+        `INSERT INTO reject_replays (id, account_id, follower_id, follow_uri, edge_id, check_at, attempts, due_at) VALUES
+					(1, ?1, '890000000000000011', ?2, NULL, 9007199254740991, 0, NULL),
+					(2, ?1, '890000000000000012', CAST(X'68747470733aff' AS TEXT), NULL, 0, 0, NULL),
+					(3, ?1, '890000000000000013', NULL, 9223372036854775807, 0, 6, NULL)`,
+        id,
+        AT_BOUND,
+      );
+      return id;
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, foreignKeyViolations: 0 });
+    const holds = `SELECT id, account_id, follower_id, hex(CAST(follow_uri AS BLOB)) AS uri, CAST(edge_id AS TEXT) AS edge,
+				CAST(check_at AS TEXT) AS c, attempts, due_at FROM reject_replays ORDER BY id`;
+    const read = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) => state.storage.sql.exec(holds).toArray());
+    expect(await read(restored)).toEqual(await read(source));
+    expect((await read(restored)).map((row) => row.edge)).toEqual([null, null, "9223372036854775807"]);
+    const lineOf = (id: string) => text.split("\n").find((row) => row.includes("reject_replays") && row.includes(id))!;
+    const refused = async (dump: string) => {
+      const store = await migratedStore();
+      await copyConfig(source, store);
+      return importViaRpc(store, dump).then(
+        ({ report }) => JSON.stringify(report),
+        (error: unknown) => String(error),
+      );
+    };
+    // D2: one byte past the bound.
+    const first = lineOf("890000000000000011");
+    expect(await refused(text.replace(first, first.replace(AT_BOUND, `${AT_BOUND}a`)))).toMatch(
+      /reject_replays_follow_uri/,
+    );
+    // D5: a local follower.
+    expect(await refused(text.replace(first, first.replace("'890000000000000011'", `'${local}'`)))).toMatch(
+      /reject_replays: the follower is local/,
+    );
+    // D4: a follower that is not stored.
+    expect(await refused(text.replace(first, first.replace("890000000000000011", "890000000000000099")))).toMatch(
+      /foreign_key_check reported 1 violation|FOREIGN KEY/,
+    );
+    // D3: a dump whose account holds 101 pairs (written past the guard, which is then put back as 0092 made it).
+    const full = await seeded(0);
+    await runInDurableObject(full, (_instance, state) => {
+      const sql = state.storage.sql;
+      const guard = sql
+        .exec<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE name = 'reject_replays_guard_insert'")
+        .one().sql;
+      sql.exec(
+        `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 101)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT printf('892%015d', i), 'https://remote.test/users/c' || i, 'c' || i, 'remote.test' FROM k`,
+      );
+      sql.exec("DROP TRIGGER reject_replays_guard_insert");
+      sql.exec(
+        `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at)
+				SELECT (SELECT account_id FROM local_accounts LIMIT 1), id, 'https://remote.test/f/' || id, 0 FROM accounts WHERE id LIKE '892%'`,
+      );
+      sql.exec(guard);
+    });
+    const fullText = (await dumpViaRpc(full)).text;
+    const capped = await migratedStore();
+    await copyConfig(full, capped);
+    expect(
+      await importViaRpc(capped, fullText).then(
+        ({ report }) => JSON.stringify(report),
+        (error: unknown) => String(error),
+      ),
+    ).toMatch(/reject_replays: more held Rejects than an account may keep/);
+  }, 120_000);
+
   it("restores followed and featured hashtags past the list bound as they are, which the lists leave out", async () => {
     const source = await seeded(0);
     const long = "a".repeat(300);

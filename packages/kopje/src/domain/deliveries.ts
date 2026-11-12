@@ -1,4 +1,10 @@
-import { ACCOUNTS_ID_INDEX, ACCOUNTS_URI_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import {
+  ACCOUNTS_ID_INDEX,
+  ACCOUNTS_URI_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
+  STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
+} from "../db/indexes";
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT } from "../platform/identity-bounds";
@@ -2540,6 +2546,11 @@ function sendRefused(db: Db, row: DueRow): boolean {
 // The wait before a held handshake's availability is read again (handshake-replays.ts): a fixed interval.
 export const HANDSHAKE_RECHECK_MS = 5 * 60_000;
 
+// The held Rejects a local account keeps at most (RES-4; migration 0092_reject_replays's guards hold it for imports):
+// set by storage (a row is about 4.2 KB at its bounds) and recheck load (each ineligible hold is read again every
+// HANDSHAKE_RECHECK_MS). Past it a new pair's refused Reject is dropped (docs/mastodon-deviations.md).
+export const HELD_REJECTS_PER_ACCOUNT = 100;
+
 // The time a hold is next read at `now`, clamped to its stored bound (migration 0088_handshake_replays: SAFE_MS).
 export function recheckAtSql(now: string): string {
   return `min(CAST(max(${now}, 0) AS INTEGER) + ${HANDSHAKE_RECHECK_MS}, ${SAFE_MS})`;
@@ -2563,10 +2574,64 @@ const OWED_HANDSHAKE = `SELECT f.id FROM main.outbound_activities o NOT INDEXED
 		AND json_extract(o.body, '$.activity.type') = 'Accept'
 		AND f.state = 'accepted' AND f.uri IS json_extract(o.body, '$.activity.object.id')`;
 
+// The stored bound of a held Reject's Follow id `v` (migration 0092_reject_replays, reject_replays_follow_uri):
+// TEXT, non-empty, no NUL, within ACTIVITY_ID_LIMIT JSON-escaped UTF-8 bytes (682 raw bytes cannot escape past it).
+// HOLD_REJECT shares it, so the hold never fails on it.
+export function heldFollowUriSql(v: string): string {
+  return `(typeof(${v}) = 'text' AND length(CAST(${v} AS BLOB)) > 0 AND instr(CAST(${v} AS BLOB), x'00') = 0
+		AND (length(CAST(${v} AS BLOB)) <= 682 OR length(CAST(json_quote(${v}) AS BLOB)) <= ${ACTIVITY_ID_LIMIT + 2}))`;
+}
+
+// The Reject of a follow request the intent ?1 is, when its pair is owed it (VIS-30, held Rejects): a local account's
+// Reject of a Follow, neither superseded nor a retraction, to a follow pair whose account is remote (accounts.domain
+// IS NOT NULL, the guard's predicate) and holds no follow of the local account, with the identity followAnswerActivity
+// rebuilds it from, taken by bytes: the Follow's id (`follow_uri`, within heldFollowUriSql), or, when the Reject names
+// none, the edge id its own id ends with after `<local actor>#rejects/follows/`, when that suffix is the canonical
+// decimal of a 64-bit integer (CAST(f.id AS TEXT) wrote it; the suffix round-trips through INTEGER and TEXT to the
+// same bytes, so leading zeros, a sign, spaces, an exponent, a value past the range or an empty suffix fail).
+// Anything else is no row. Key lookups only: the intent, both accounts, the local row, and the pair's follow. The
+// intent is read by its rowid in a LIMIT 1 subquery: joined directly, statistics taken while outbound_activities was
+// small plan its rowid lookup as a scan (RES-7; test/reject-replays.test.ts, "statistics older than both tables").
+const HELD_REJECT = `SELECT account, follower,
+		CASE WHEN uri_type = 'text' AND ${heldFollowUriSql("uri")} THEN uri END AS follow_uri,
+		CASE WHEN uri_type IS NULL AND id_type = 'text' AND substr(id, 1, length(prefix)) = prefix
+			AND CAST(CAST(CAST(substr(id, length(prefix) + 1) AS INTEGER) AS TEXT) AS BLOB) = substr(id, length(prefix) + 1)
+			THEN CAST(substr(id, length(prefix) + 1) AS INTEGER) END AS edge_id
+	FROM (SELECT o.account_id AS account, o.follow_pair AS follower,
+			json_type(o.body, '$.activity.object.id') AS uri_type, json_extract(o.body, '$.activity.object.id') AS uri,
+			json_type(o.body, '$.activity.id') AS id_type, CAST(json_extract(o.body, '$.activity.id') AS BLOB) AS id,
+			CAST(la.uri || '#rejects/follows/' AS BLOB) AS prefix
+		FROM (SELECT account_id, follow_pair, body FROM main.outbound_activities
+				WHERE id = CAST(?1 AS INTEGER) AND superseded = 0 AND retracts = 0 AND follow_pair IS NOT NULL LIMIT 1) o
+			CROSS JOIN main.accounts fa INDEXED BY ${ACCOUNTS_ID_INDEX} ON fa.id = o.follow_pair
+			CROSS JOIN main.local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = o.account_id
+			CROSS JOIN main.accounts la INDEXED BY ${ACCOUNTS_ID_INDEX} ON la.id = o.account_id
+		WHERE json_extract(o.body, '$.activity.type') = 'Reject' AND json_extract(o.body, '$.activity.object.type') = 'Follow'
+			AND fa.domain IS NOT NULL
+			AND NOT EXISTS (SELECT 1 FROM main.follows f INDEXED BY follows_pair
+				WHERE f.account_id = o.follow_pair AND f.target_account_id = o.account_id))
+	WHERE follow_uri IS NOT NULL OR edge_id IS NOT NULL`;
+
+// Whether the held Reject (HELD_REJECT) fits its account's cap: its pair holds one already (the upsert replaces it), or
+// the account holds fewer than HELD_REJECTS_PER_ACCOUNT, counted on the unique key's account prefix up to the cap.
+const HOLD_REJECT_ROOM = `SELECT EXISTS (SELECT 1 FROM main.reject_replays r WHERE r.account_id = c.account AND r.follower_id = c.follower)
+		OR (SELECT count(*) FROM (SELECT 1 FROM main.reject_replays r WHERE r.account_id = c.account
+			LIMIT ${HELD_REJECTS_PER_ACCOUNT})) < ${HELD_REJECTS_PER_ACCOUNT} AS room
+	FROM (${HELD_REJECT}) c`;
+
+// The pair's hold, fresh and due at the recheck, replacing the pair's earlier one (its identity included).
+const HOLD_REJECT = `INSERT INTO reject_replays (account_id, follower_id, follow_uri, edge_id, check_at)
+		SELECT account, follower, follow_uri, edge_id, ${recheckAtSql("?2")} FROM (${HELD_REJECT}) WHERE 1
+	ON CONFLICT (account_id, follower_id) DO UPDATE SET follow_uri = excluded.follow_uri, edge_id = excluded.edge_id,
+		check_at = excluded.check_at, ${FRESH_ATTEMPTS_SQL}`;
+
 // VIS-30's held handshakes: a row the send-time check refused because of its recipient (its sender available) that
-// is its follow's owed Follow or Accept (OWED_HANDSHAKE) holds that follow, fresh and due at the recheck, for
-// handshake-replays.ts to record again once the recipient is available. Run before the row is dropped, which may
-// delete its intent. One row at most (the follow's hold, its primary key).
+// is its follow's owed Follow or Accept (OWED_HANDSHAKE) holds that follow, and one that is a Reject its pair is owed
+// (HELD_REJECT) holds that pair, fresh and due at the recheck, for handshake-replays.ts to record again once the
+// recipient is available. Run before the row is dropped, which may delete its intent. One row at most: the types
+// exclude each other. A new pair past its account's cap holds nothing and is logged (kopje.delivery.reject_hold_capped,
+// no fields, DATA-5); the writer checks the cap first, so the guard trigger never aborts the claim. Reads: key lookups,
+// and for a Reject the cap's at most HELD_REJECTS_PER_ACCOUNT entries, twice for a new pair (here and the guard's).
 function holdHandshake(db: Db, row: DueRow, now: number): void {
   if (row.refused_sender === 1) {
     return;
@@ -2577,6 +2642,15 @@ function holdHandshake(db: Db, row: DueRow, now: number): void {
     row.activity_id,
     now,
   );
+  const reject = db.first<{ room: number }>(HOLD_REJECT_ROOM, row.activity_id);
+  if (reject === undefined) {
+    return;
+  }
+  if (reject.room !== 1) {
+    console.warn({ event: "kopje.delivery.reject_hold_capped" });
+    return;
+  }
+  db.run(HOLD_REJECT, row.activity_id, now);
 }
 
 function dropRow(db: Db, row: LaneRow, now: number): void {

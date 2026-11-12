@@ -15,6 +15,7 @@ import {
   NOTIFICATION_DISMISSALS,
   NOTIFICATION_REQUEST_JOBS,
   QUOTE_REVOCATIONS,
+  REJECT_REPLAYS,
   REMOTE_MODERATION_JOBS,
   RETRY_JOBS_LIMIT,
   retryParkedJobs,
@@ -445,6 +446,40 @@ const FAMILIES: Record<string, Family> = {
       ),
     }),
   },
+  // The held Rejects (migration 0092_reject_replays), the same family and rounds as the held handshakes.
+  reject_replays: {
+    t: REJECT_REPLAYS,
+    run: (store, now) => store.runHandshakeReplays(BUILD, { now }),
+    // Alice's Rejects of available accounts' requests, each held and due: a step records it and ends the hold.
+    seed: async (w, n) => {
+      const keys: Key[] = [];
+      for (let i = 0; i < n; i++) {
+        const follower = await remoteAccount(w.store, `j${i}`, "j.example");
+        const [hold] = await sql<{ id: string }>(
+          w.store,
+          `INSERT INTO reject_replays (id, account_id, follower_id, follow_uri, check_at)
+					VALUES (CAST(? AS INTEGER), ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+          `8900000000000001${String(i).padStart(2, "0")}`,
+          w.users.alice.id,
+          follower,
+          `https://j.example/follows/j${i}`,
+          NOW - n + i,
+        );
+        keys.push([hold!.id]);
+      }
+      return keys;
+    },
+    finished: gone(REJECT_REPLAYS),
+    state: async (store, key) => ({
+      row: await rowState(REJECT_REPLAYS)(store, key),
+      rejects: await count(
+        store,
+        `SELECT 1 FROM outbound_activities WHERE json_extract(body, '$.activity.type') = 'Reject'
+					AND follow_pair = (SELECT follower_id FROM reject_replays WHERE id = ?)`,
+        ...key,
+      ),
+    }),
+  },
 };
 
 const NAMES = Object.keys(FAMILIES);
@@ -743,8 +778,19 @@ describe("retry-all over every job table (RES-5)", () => {
     expect(Object.values(await counts())).toEqual(tables.map(() => PER));
     expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: RETRY_JOBS_LIMIT, more: true });
     // The first tables in order, up to the limit: 6 whole tables and 10 rows of the seventh.
-    expect(Object.values(await counts())).toEqual([0, 0, 0, 0, 0, 0, PER - (RETRY_JOBS_LIMIT - 6 * PER), PER, PER]);
-    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 9 * PER - RETRY_JOBS_LIMIT, more: false });
+    expect(Object.values(await counts())).toEqual([
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      PER - (RETRY_JOBS_LIMIT - 6 * PER),
+      PER,
+      PER,
+      PER,
+    ]);
+    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 10 * PER - RETRY_JOBS_LIMIT, more: false });
     expect(Object.values(await counts())).toEqual(tables.map(() => 0));
     expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 0, more: false });
     // Nothing but the retry state changed.
@@ -810,6 +856,20 @@ describe("the seeks under stale statistics (RES-7)", () => {
       `${N} INSERT INTO handshake_replays (follow_id, check_at, attempts, due_at)
 			SELECT 700000 + i, 0, ${PARKED}, ${DUE} FROM n WHERE ?2 = ?2`,
     ],
+    // 100 local accounts hold them, HELD_REJECTS_PER_ACCOUNT each at most (0092's guard).
+    reject_replays: [
+      `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 100)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('5%017d', i), 'https://kopje.test/ap/users/k' || i, 'k' || i, NULL FROM k WHERE ?1 = ?1 AND ?2 = ?2 AND ?3 = ?3`,
+      `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 100)
+			INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+			SELECT printf('5%017d', i), 'k' || i || '@example.com', X'00', X'00', 'k' FROM k WHERE ?1 = ?1 AND ?2 = ?2 AND ?3 = ?3`,
+      `${N} INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('7%017d', i), 'https://q.example/u/' || i, 'q' || i, 'q.example' FROM n WHERE ?2 = ?2 AND ?3 = ?3`,
+      `${N} INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at, attempts, due_at)
+			SELECT printf('5%017d', i % 100 + 1), printf('7%017d', i), 'https://q.example/f/' || i, 0, ${PARKED}, ${DUE}
+			FROM n WHERE ?2 = ?2`,
+    ],
   };
   // A round of held handshakes as Store.runHandshakeReplays runs its steps, in one transaction here.
   const handshakeRound: StoreOperation<{ now: number }, unknown> = {
@@ -829,6 +889,7 @@ describe("the seeks under stale statistics (RES-7)", () => {
     local_moderation: runModerationJobs,
     remote_moderation: runModerationJobs,
     handshake_replays: handshakeRound,
+    reject_replays: handshakeRound,
   };
   const PER_STATE = 5000;
 

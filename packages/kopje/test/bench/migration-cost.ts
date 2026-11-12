@@ -972,8 +972,23 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => row.detail),
         }
       : undefined;
+    // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
+    const rejectReplays = has("reject_replays")
+      ? {
+          rows: count("reject_replays"),
+          objects: sql
+            .exec<{ type: string; name: string }>(
+              "SELECT type, name FROM sqlite_schema WHERE tbl_name = 'reject_replays' OR name = 'reject_replays_follow_stored' ORDER BY type, name",
+            )
+            .toArray()
+            .map((row) => `${row.type} ${row.name}`),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
-      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft, liveQuotes } };
+      return {
+        seeded,
+        measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft, liveQuotes, rejectReplays },
+      };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
     // the retry on a fresh kernel, which finds nothing pending and verifies the whole Store.
@@ -993,7 +1008,16 @@ it("applies the migration to the benchmark store within the budget", async () =>
     await state.storage.deleteAlarm();
     return {
       seeded,
-      measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft, pinsLeft, liveQuotes },
+      measured: {
+        result,
+        ms,
+        foreignKeyCheck,
+        retryEstimateMs: ms + resumedMs,
+        jamoLeft,
+        pinsLeft,
+        liveQuotes,
+        rejectReplays,
+      },
     };
   });
   expect(seeded).toMatchObject({ accounts, local: SHAPE.local, statuses, notifications, reports, inboundJobs });
@@ -1040,6 +1064,23 @@ it("applies the migration to the benchmark store within the budget", async () =>
       "CORRELATED SCALAR SUBQUERY 1",
       "SEARCH s USING INDEX sqlite_autoindex_statuses_1 (id=?)",
     ]);
+  }
+  // 0092 made its table empty, with its four indexes and three triggers, and its upgrade checked every reference.
+  if (applied.includes("0092_reject_replays")) {
+    expect(measured.rejectReplays).toEqual({
+      rows: 0,
+      objects: [
+        "index reject_replays_failing",
+        "index reject_replays_follower",
+        "index reject_replays_fresh",
+        "index sqlite_autoindex_reject_replays_1",
+        "table reject_replays",
+        "trigger reject_replays_follow_stored",
+        "trigger reject_replays_guard_insert",
+        "trigger reject_replays_guard_update",
+      ],
+    });
+    expect(measured.foreignKeyCheck).toBe("store");
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));
