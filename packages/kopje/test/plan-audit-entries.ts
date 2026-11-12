@@ -1819,7 +1819,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/inbox.ts#outboundMark < src/domain/inbox.ts#<anonymous> in runInboundJobs",
     disposition: "bounded",
     reason:
-      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :200-212, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :208-220, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
     witness: "test/import-bounds.test.ts",
   },
   {
@@ -1828,7 +1828,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/inbox.ts#outboundSince < src/domain/inbox.ts#<anonymous> in runInboundJobs",
     disposition: "bounded",
     reason:
-      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :200-212, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
+      "sqlite_sequence holds at most one row per AUTOINCREMENT table of the schema: SQLite writes counters of those tables only, and an import restores a counter only of a table the live schema declares AUTOINCREMENT, replacing that table's row (src/platform/store-import.ts:137 and :208-220, refused as sequence-not-allowed otherwise; test/import-bounds.test.ts); the two names are read by equality",
     witness: "test/import-bounds.test.ts",
   },
   {
