@@ -113,10 +113,10 @@ function nextStreamSeq(db: Db, ownerId: string): string | null {
 }
 
 // AfterBlockService#clear_conversations!: the owner's conversations with the account go. Reads the owner's
-// conversations, as Mastodon's does.
+// conversations, as Mastodon's does (pinned to the owner's index, conversations_account: RES-7).
 export function leaveConversationsWith(db: Db, ownerId: string, accountId: string): void {
   db.run(
-    `DELETE FROM conversations WHERE account_id = ?1
+    `DELETE FROM conversations INDEXED BY conversations_account WHERE account_id = ?1
 			AND EXISTS (SELECT 1 FROM json_each(conversations.participants) WHERE value = ?2)`,
     ownerId,
     accountId,

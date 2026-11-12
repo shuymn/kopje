@@ -334,7 +334,8 @@ describe("activity plans with stale statistics (RES-7)", () => {
         const observed = {
           exec: (query: string, ...params: SqlStorageValue[]) => {
             const cursor = real.exec(query, ...params);
-            if (!query.includes("INDEXED BY accounts_domain_username")) {
+            // The address lookups only: the instance counts sum the local accounts' range of the same index.
+            if (!query.includes("INDEXED BY accounts_domain_username") || query === INSTANCE_COUNTS_SQL) {
               return cursor;
             }
             return {

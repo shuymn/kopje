@@ -257,7 +257,7 @@ function scheduleErrors(db: Db, accountId: string, at: string, now: number, exce
   const day = Date.parse(`${at.slice(0, 10)}T00:00:00.000Z`);
   const daily =
     db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss
+      `SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss INDEXED BY scheduled_statuses_account_time
 				WHERE ${scheduledOwnSql("ss", "?1")} AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4
 				LIMIT ?5)`,
       accountId,

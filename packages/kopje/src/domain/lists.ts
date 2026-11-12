@@ -54,7 +54,12 @@ export function ownList(db: Db, ownerId: string, id: string): ListRow | undefine
 
 // GET /api/v1/lists: the viewer's lists, oldest first.
 export const listLists = userReadOperation<object, List[]>((db, _input, { accountId }) =>
-  db.all<ListRow>(`SELECT ${LIST_COLUMNS} FROM lists WHERE account_id = ? ORDER BY id`, accountId).map(presentList),
+  db
+    .all<ListRow>(
+      `SELECT ${LIST_COLUMNS} FROM lists INDEXED BY lists_account WHERE account_id = ? ORDER BY id`,
+      accountId,
+    )
+    .map(presentList),
 );
 
 // GET /api/v1/lists/:id.
@@ -309,7 +314,8 @@ export const accountLists = userReadOperation<{ account: string }, List[] | null
   }
   return db
     .all<ListRow>(
-      `SELECT ${LIST_COLUMNS} FROM lists l WHERE ${holdingSql("?1", "?2")} AND ${availableSql("?2")} ORDER BY l.id`,
+      `SELECT ${LIST_COLUMNS} FROM lists l INDEXED BY lists_account
+			WHERE ${holdingSql("?1", "?2")} AND ${availableSql("?2")} ORDER BY l.id`,
       accountId,
       member,
     )
