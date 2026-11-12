@@ -1,4 +1,4 @@
-import { CUSTOM_EMOJIS_ID_INDEX, MEDIA_FILE_TOKEN_INDEX } from "../db/indexes";
+import { CUSTOM_EMOJIS_ID_INDEX, MEDIA_FILE_TOKEN_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN } from "../platform/media-files";
@@ -250,7 +250,7 @@ export function localEmojiSnapshot(db: Db, texts: readonly string[], bytes: numb
     .all<{ i: number; shortcode: string; url: string }>(
       `SELECT j.key AS i, e.shortcode, m.url FROM json_each(?1) j
 			CROSS JOIN custom_emojis e INDEXED BY custom_emojis_enabled ON e.shortcode = j.value AND e.disabled = 0
-			JOIN media_attachments m ON m.id = e.id`,
+			CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id`,
       JSON.stringify(names.slice(0, MAX_LOCAL_EMOJI_NAMES)),
     )
     .toSorted((a, b) => a.i - b.i);
