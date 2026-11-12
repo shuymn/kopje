@@ -313,7 +313,7 @@ export const ROWS_1468: readonly Row1468[] = [
   {
     group: 4,
     statement: "notifications within a window",
-    sites: ["src/domain/audience.ts#notificationWindow"],
+    sites: ["src/domain/audience.ts#notificationWindow", "src/domain/audience.ts#notifications"],
     status: "fixed",
   },
   {
@@ -380,7 +380,8 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 4,
     statement: "push selection inside queuePushes",
     sites: ["src/domain/notifications.ts#queuePushes"],
-    status: "fixed",
+    status: "observed",
+    ids: ["01ac9301afe35078"],
   },
   {
     group: 4,

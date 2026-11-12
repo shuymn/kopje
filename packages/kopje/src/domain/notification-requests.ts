@@ -265,7 +265,7 @@ type Job = { id: string; account_id: string; from_account_id: string; kind: "acc
 function jobBatch(db: Db, job: Job, now: string): void {
   const window = db.first<{ low: string | null; walked: number; bottom: number | null }>(
     `SELECT CAST(min(id) AS TEXT) AS low, count(*) AS walked, min(id) = -9223372036854775808 AS bottom FROM (
-			SELECT id FROM notifications WHERE from_account_id = ?1 AND id <= CAST(?2 AS INTEGER)
+			SELECT id FROM notifications INDEXED BY notifications_from WHERE from_account_id = ?1 AND id <= CAST(?2 AS INTEGER)
 			ORDER BY id DESC LIMIT ?3)`,
     job.from_account_id,
     job.cursor,
@@ -278,7 +278,7 @@ function jobBatch(db: Db, job: Job, now: string): void {
     const params = [job.from_account_id, low, job.cursor, job.account_id] as const;
     if (job.kind === "accept") {
       const shown = db.all<{ id: string; type: string; status_id: string | null }>(
-        `SELECT CAST(n.id AS TEXT) AS id, n.type, n.status_id FROM notifications n
+        `SELECT CAST(n.id AS TEXT) AS id, n.type, n.status_id FROM notifications n INDEXED BY notifications_from
 				WHERE n.from_account_id = ?1 AND n.id >= CAST(?2 AS INTEGER) AND n.id <= CAST(?3 AS INTEGER)
 					AND n.account_id = ?4 AND n.filtered = 1
 					AND ${keptSql("n")} AND ${notifiedSql("?4", "n.type", "n.from_account_id", "n.status_id", "?5", "NULL", "n.account_warning_id")}
@@ -292,11 +292,13 @@ function jobBatch(db: Db, job: Job, now: string): void {
         }
       }
       db.run(
-        "UPDATE notifications SET filtered = 0 WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))",
+        `UPDATE notifications INDEXED BY notifications_account SET filtered = 0
+				WHERE account_id = ?1 AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2))`,
+        job.account_id,
         JSON.stringify(shown.map((row) => row.id)),
       );
     } else {
-      db.run(`DELETE FROM notifications WHERE ${range}`, ...params);
+      db.run(`DELETE FROM notifications INDEXED BY notifications_from WHERE ${range}`, ...params);
     }
   }
   if (low === null || (window?.walked ?? 0) < REQUEST_JOB_WINDOW || window?.bottom === 1) {

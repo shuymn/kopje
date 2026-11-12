@@ -259,8 +259,8 @@ export function pushWantedSql(p: string, t: string, n: string, now: string): str
 }
 
 // One push per subscription of the recipient that wants notification `id`, due at once, within the room the backlog
-// has left: however many subscriptions want it, the total never passes MAX_PUSH_BACKLOG. The notification is read by
-// its recipient (a lookup by its key) and id, then the recipient's tokens and each one's subscription by key (RES-7).
+// has left: however many subscriptions want it, the total never passes MAX_PUSH_BACKLOG. No index reaches an account's
+// subscriptions: walking its tokens costs every token it holds, so the join is left to the statistics (#1481).
 function queuePushes(db: Db, id: string, now: number): void {
   const waiting =
     db.first<{ n: number }>("SELECT count(*) AS n FROM (SELECT 1 FROM push_deliveries LIMIT ?)", MAX_PUSH_BACKLOG)?.n ??
@@ -270,11 +270,10 @@ function queuePushes(db: Db, id: string, now: number): void {
   }
   db.run(
     `INSERT INTO push_deliveries (subscription_id, notification_id, next_attempt_at, updated_at)
-		SELECT p.id, n.id, ?2, ?2 FROM notifications n INDEXED BY notifications_account
-			CROSS JOIN oauth_tokens t INDEXED BY oauth_tokens_account ON t.account_id = n.account_id
-			CROSS JOIN push_subscriptions p INDEXED BY sqlite_autoindex_push_subscriptions_1 ON p.token_hash = t.token_hash
-		WHERE n.account_id = (SELECT r.account_id FROM notifications r WHERE r.id = CAST(?1 AS INTEGER))
-			AND n.id = CAST(?1 AS INTEGER) AND ${pushWantedSql("p", "t", "n", "?3")}
+		SELECT p.id, n.id, ?2, ?2 FROM notifications n
+			JOIN oauth_tokens t ON t.account_id = n.account_id
+			JOIN push_subscriptions p ON p.token_hash = t.token_hash
+		WHERE n.id = CAST(?1 AS INTEGER) AND ${pushWantedSql("p", "t", "n", "?3")}
 		ORDER BY p.id LIMIT ?4
 		ON CONFLICT DO NOTHING`,
     id,

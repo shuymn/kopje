@@ -411,7 +411,12 @@ describe("plan audit residuals", () => {
       "notifications: SCAN n",
       4,
     ],
-    ["a notification's pushes", "src/domain/notifications.ts#queuePushes", "push_subscriptions: SCAN p", 4],
+    [
+      "a notification read through statusReads",
+      "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications in statusReads < src/domain/notifications.ts#shownWindow < src/domain/notifications.ts#<anonymous> in listNotifications < src/domain/auth.ts#<anonymous> in guarded",
+      "notifications: SCAN n",
+      4,
+    ],
     ["a notification's replaced row", "src/domain/notifications.ts#notify", "notifications: SCAN notifications", 4],
     ["a push's target", "src/domain/push.ts#target", "push_subscriptions: SCAN p", 4],
     ["the answered requests", "src/domain/notification-requests.ts#takeRequests", "notification_requests: SCAN r", 4],

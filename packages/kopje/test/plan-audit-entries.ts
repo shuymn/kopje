@@ -532,7 +532,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/admin-authority.ts#oauthAdmin < src/domain/admin-authority.ts#adminAccountId < src/domain/admin-authority.ts#adminAccountIdOnce < src/domain/accounts.ts#presentIdentity < src/domain/accounts.ts#presentAccount",
     disposition: "deliberate",
     reason:
-      'no index serves the sign-in\'s email match, which oauthAdmin applies to the local accounts, each account then by its key (src/domain/admin-authority.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+      'no index serves the sign-in\'s email match, so oauthAdmin reads every local account, each then by its key (src/domain/admin-authority.ts): their number is a deployment assumption of about 10, not a stored bound (docs/threat-model.md, "Deployment assumptions"); LIMIT 2 bounds the matches returned, not the rows read',
   },
   {
     id: "3a39994e8f70d9df",
@@ -2440,22 +2440,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "36e2f8cf43097e70",
-    scans: ["notifications: SCAN notifications"],
-    site: "src/domain/notification-requests.ts#jobBatch < src/domain/notification-requests.ts#<anonymous> in runJobs < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
-    reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "8912838ed5fd5c3a",
-    scans: ["notifications: SCAN notifications"],
-    site: "src/domain/notification-requests.ts#jobBatch < src/domain/notification-requests.ts#<anonymous> in runJobs < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
-    reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
     id: "2fb9c118025c0214",
     scans: ["notification_request_jobs: SCAN j"],
     site: "src/domain/notification-requests.ts#runJobs < src/domain/notification-requests.ts#accept < src/domain/notification-requests.ts#<anonymous> in acceptNotificationRequest < src/domain/auth.ts#<anonymous> in guarded",
@@ -2482,7 +2466,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "startJob reads the newest notification: the table in rowid order from its end, LIMIT 1, NOT INDEXED (src/domain/notification-requests.ts)",
   },
   {
-    id: "733a444640b652fb",
+    id: "596e58d25a6bf507",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2544,6 +2528,13 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+  },
+  {
+    id: "01ac9301afe35078",
+    scans: ["notifications: SCAN n USING COVERING INDEX notifications_natural", "push_subscriptions: SCAN p"],
+    site: "src/domain/notifications.ts#queuePushes < src/domain/notifications.ts#notify < src/domain/quotes.ts#answerQuoteRequest < src/domain/inbox.ts#quoteRequest < src/domain/inbox.ts#receive",
+    disposition: "pending",
+    issue: "#1468 group 4",
   },
   {
     id: "598392e2e4ef590d",
