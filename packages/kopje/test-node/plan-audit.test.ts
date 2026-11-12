@@ -405,6 +405,11 @@ describe("plan audit residuals", () => {
   // Statements of #1468's sweeps put back as they stood before them, each a residual of a fixed row whatever its group
   // or its scans.
   it.each([
+    ["a poll and its author", "src/domain/polls.ts#votedPoll", "polls: SCAN p", 3],
+    ["a quote's fetch signer", "src/domain/quotes.ts#<anonymous> in quoteWork", "local_accounts: SCAN l", 3],
+    ["a QuoteRequest's quote", "src/domain/quotes.ts#answerQuoteRequest", "quotes: SCAN q", 3],
+    ["the quotes a status links", "src/domain/quotes.ts#linkQuotes", "quotes: SCAN quotes", 3],
+    ["a poll's voters", "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf", "?: SCAN pp", 3],
     ["statusFacts", "src/domain/activities.ts#statusFacts", "statuses: SCAN s", 2],
     ["the local emoji tags", "src/domain/custom-emojis.ts#localEmojiTags", "media_attachments: SCAN m", 2],
     ["a featured hashtag's count", "src/domain/featured-tags.ts#decrement", "featured_tags: SCAN featured_tags", 2],

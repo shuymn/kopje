@@ -1,5 +1,5 @@
 import { writeEach } from "../db/by-ids";
-import { POLL_VOTES_KEY_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { yieldsMoreThan } from "../platform/stored-bounds";
 import { type Present, resolveApiId } from "./accounts";
@@ -380,13 +380,17 @@ function updateSoon(db: Db, poll: VotedPoll, now: number): void {
   }
 }
 
+// A poll, its status and the status's author, each by its key (RES-7).
+const POLL_AUTHOR = `polls p INDEXED BY ${POLLS_STATUS_INDEX} CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX}
+	ON s.id = p.status_id
+	CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id`;
+
 // The live poll `pollId` with its choices and cut choices read once.
 function votedPoll(db: Db, pollId: string): VotedPoll | undefined {
   const row = db.first<Omit<VotedPoll, "options" | "cut_options"> & { options: string; cut_options: string }>(
     `SELECT p.status_id, s.uri AS status_uri, s.account_id AS author_id, a.uri AS author_uri, a.domain IS NULL AS local,
 			p.options, p.multiple, p.hide_totals, p.expires_at, p.ended, CAST(p.generation AS TEXT) AS generation, p.cut_options
-		FROM polls p JOIN statuses s ON s.id = p.status_id JOIN accounts a ON a.id = s.account_id
-		WHERE p.status_id = ? AND p.removed = 0`,
+		FROM ${POLL_AUTHOR} WHERE p.status_id = ? AND p.removed = 0`,
     pollId,
   );
   return row === undefined
@@ -502,11 +506,7 @@ export function receiveVote(db: Db, input: RemoteVote): boolean {
 // (receiveVote, which counts in live polls only, then drops it).
 export function isLocalPoll(db: Db, statusId: string): boolean {
   return (
-    db.first(
-      `SELECT 1 AS x FROM polls p JOIN statuses s ON s.id = p.status_id JOIN accounts a ON a.id = s.account_id
-			WHERE p.status_id = ? AND a.domain IS NULL`,
-      statusId,
-    ) !== undefined
+    db.first(`SELECT 1 AS x FROM ${POLL_AUTHOR} WHERE p.status_id = ? AND a.domain IS NULL`, statusId) !== undefined
   );
 }
 
