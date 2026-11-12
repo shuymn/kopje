@@ -69,7 +69,7 @@ import {
 } from "./job-attempts";
 import { deleteCard } from "./link-cards";
 import { listsHolding } from "./lists";
-import { notify } from "./notifications";
+import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
 import { deleteAccountVotes, deletePollVotes, hasPollVotes } from "./polls";
 import {
@@ -558,11 +558,7 @@ function recountLocal(db: Db, ids: Iterable<string>): void {
 // Removes a follow edge and the follow notifications it caused, as Mastodon destroys them with the follow.
 function removeFollow(db: Db, followerId: string, targetId: string): boolean {
   const removed = db.run("DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", followerId, targetId);
-  db.run(
-    "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
-    targetId,
-    followerId,
-  );
+  db.run(END_FOLLOW_NOTIFICATIONS_SQL, targetId, followerId);
   return removed > 0;
 }
 

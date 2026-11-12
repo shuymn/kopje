@@ -1,4 +1,4 @@
-import { ACCOUNTS_URI_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, ACCOUNTS_URI_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { blockedDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -776,8 +776,8 @@ export const reportTargetPage = readOperation<
     ? db.first<{ url: string | null; uri: string; username: string; domain: string | null }>(
         `SELECT a.url, ${actorUriSql("a.uri")} AS uri, ${usernameSql("a.username")} AS username,
 					a.domain
-				FROM reports r JOIN accounts a ON a.id = r.target_account_id
-				WHERE r.id = CAST(? AS INTEGER)`,
+				FROM (SELECT target_account_id FROM reports WHERE id = CAST(? AS INTEGER) LIMIT 1) r
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.target_account_id`,
         id,
       )
     : undefined;

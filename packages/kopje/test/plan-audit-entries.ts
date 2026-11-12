@@ -699,13 +699,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "0ead5423467132e8",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/audience.ts#hasFollowerOn < src/domain/audience.ts#remoteReportStatusIds",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
     id: "faf0592983e05942",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachFollowers < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
@@ -740,16 +733,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "31dde5cdf5785684",
-    scans: [
-      "accounts: SCAN ra",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#read < src/domain/audience.ts#remoteReportStatusIds < src/domain/reports.ts#<anonymous> in adminReportStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
     id: "c79c3012ca1ddc9f",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -769,13 +752,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "ps is ruledSql's recursive CTE over a follower's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_UTF8_BYTES (1,012) bytes, so of at most 1,012 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "0d56e46d5f99e045",
-    scans: ["accounts: SCAN a USING INDEX sqlite_autoindex_accounts_1", "accounts: SCAN t"],
-    site: "src/domain/audience.ts#reportForwardees < src/domain/reports.ts#<anonymous> in createReport < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 6",
   },
   {
     id: "19debcfdc5f0aafb",
@@ -1484,6 +1460,38 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
+    id: "31dde5cdf5785684",
+    scans: [
+      "accounts: SCAN ra",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+    ],
+    site: "src/domain/audience.ts#read < src/domain/audience.ts#remoteReportStatusIds < src/domain/reports.ts#<anonymous> in adminReportStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented",
+    disposition: "pending",
+    issue: "#1468 group 6",
+  },
+  {
+    id: "f9e061eec6bfcb55",
+    scans: ["domain_block_cleanups: SCAN c", "domain_blocks: SCAN d USING COVERING INDEX domain_blocks_pair"],
+    site: "src/domain/blocks.ts#nextCleanup < src/domain/blocks.ts#<anonymous> in runDomainBlockCleanups",
+    disposition: "background",
+    reason:
+      'a job or round traversal (blocks.ts#<anonymous> in runDomainBlockCleanups); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "2015293d7bfdb5c7",
+    scans: ["follows: SCAN follows"],
+    site: "src/domain/blocks.ts#cleanupBatch < src/domain/blocks.ts#<anonymous> in cleanupItem < src/domain/job-attempts.ts#<anonymous> in isolated",
+    disposition: "pending",
+    issue: "#1468 group 6",
+  },
+  {
+    id: "8469b7ffbdf3c6d9",
+    scans: ["follows: SCAN f"],
+    site: "src/domain/blocks.ts#cleanupBatch < src/domain/blocks.ts#<anonymous> < src/domain/job-attempts.ts#<anonymous>",
+    disposition: "pending",
+    issue: "#1468 group 6",
+  },
+  {
     id: "4e4d83746a939ce9",
     scans: ["mutes: SCAN m"],
     site: "src/domain/blocks.ts#<anonymous> in listMutes < src/domain/auth.ts#<anonymous> in guarded",
@@ -1496,49 +1504,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/blocks.ts#<anonymous> in listMutes < src/domain/auth.ts#<anonymous> in guarded",
     disposition: "pending",
     issue: "#1468 group 6",
-  },
-  {
-    id: "2015293d7bfdb5c7",
-    scans: ["follows: SCAN follows"],
-    site: "src/domain/blocks.ts#cleanupBatch < src/domain/blocks.ts#<anonymous> in cleanupItem < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
-    id: "f7fa41e22b4c5e65",
-    scans: ["accounts: SCAN a", "follows: SCAN f"],
-    site: "src/domain/blocks.ts#cleanupBatch < src/domain/blocks.ts#<anonymous> in cleanupItem < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
-    id: "6624b051aa030764",
-    scans: ["accounts: SCAN a", "follows: SCAN f USING COVERING INDEX follows_accepted"],
-    site: "src/domain/blocks.ts#count < src/domain/blocks.ts#<anonymous> in previewDomainBlock < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
-    id: "c829232584296b86",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/blocks.ts#count < src/domain/blocks.ts#<anonymous> in previewDomainBlock < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 6",
-  },
-  {
-    id: "92ed6178962ba241",
-    scans: ["notifications: SCAN notifications"],
-    site: "src/domain/blocks.ts#endFollow < src/domain/blocks.ts#<anonymous> in block < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "write",
-    issue: "#1468 group 6",
-  },
-  {
-    id: "f9e061eec6bfcb55",
-    scans: ["domain_block_cleanups: SCAN c", "domain_blocks: SCAN d USING COVERING INDEX domain_blocks_pair"],
-    site: "src/domain/blocks.ts#nextCleanup < src/domain/blocks.ts#<anonymous> in runDomainBlockCleanups",
-    disposition: "background",
-    reason:
-      'a job or round traversal (blocks.ts#<anonymous> in runDomainBlockCleanups); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
     id: "9ebfa8ad32d8ef68",
@@ -2032,14 +1997,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "an Accept's follow by its id: the local accounts drive, each one's follow of the actor sought by follows_pair (ourFollow, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
-    id: "40441f03ad0b8958",
+    id: "c507c60814b4afbe",
     scans: ["instance_domain_blocks: SCAN instance_domain_blocks"],
     site: "src/domain/instance-domain-blocks.ts#blocksPage < src/domain/admin-domain-blocks.ts#<anonymous> in listAdminDomainBlocks < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "pending",
     issue: "#1468 group 6",
   },
   {
-    id: "c507c60814b4afbe",
+    id: "40441f03ad0b8958",
     scans: ["instance_domain_blocks: SCAN instance_domain_blocks"],
     site: "src/domain/instance-domain-blocks.ts#blocksPage < src/domain/admin-domain-blocks.ts#<anonymous> in listAdminDomainBlocks < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "pending",
@@ -2831,13 +2796,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d6f2aca5bea01c97",
-    scans: ["accounts: SCAN a", "reports: SCAN r USING COVERING INDEX reports_pair_state"],
-    site: "src/domain/reports.ts#<anonymous> in reportTargetPage",
-    disposition: "pending",
-    issue: "#1468 group 6",
   },
   {
     id: "df262b468ace6d45",
