@@ -2811,7 +2811,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/remote-statuses.ts`;
   `test/inbox-statuses.test.ts` ("caps the attachments, tags and content one status stores", "deletes a status with
   many children in bounded batches"), `test/inbox-statuses-edge.test.ts` ("RES-4: bounds at their limits", "writes at
-  most … rows per batch, hiding included"). _Enforced (main)_ for pins (RES-2): `status_pins` holds at most an
+  most … rows per batch, hiding included"). _Enforced (main)_ for pins: `status_pins` holds at most an
   account's pin limit, `PIN_LIMIT` (5) for a local account (by its row's domain, which precedes its pins in any import
   order) and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in `src/domain/status-actions.ts`), imported rows
   included: the triggers `status_pins_cap_insert` and
