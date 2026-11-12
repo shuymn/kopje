@@ -365,7 +365,7 @@ have been able to view the status at capture (R3): an author who blocks the view
 Pins and conversation mutes (`src/domain/status-actions.ts`, Mastodon's `StatusPin` and `ConversationMute`, migration
 `0018_status_pins_and_conversation_mutes`) act on a status the viewer may see by itself (R3; anything else is not
 found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`;
-storage holds five for a local account and 20 for a remote one, imports included: RES-2 in
+storage holds five for a local account and 20 for a remote one, imports included: RES-4 in
 [threat-model.md](threat-model.md)); pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads at
 most the account's limit of pins through their primary key and applies the account statuses rule (R11), newest pin
 first; the actor's `featured` collection serves them as the object endpoint serves statuses (R4), the uri alone of a
