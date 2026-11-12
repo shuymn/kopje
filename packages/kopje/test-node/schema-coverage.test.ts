@@ -63,6 +63,7 @@ const NOT_CARRIED: Record<string, string> = {
   fedify_kv: "federation cache",
   follow_recommendation_mutes: "dismissed follow suggestions; legacy Wildebeest has no suggestions",
   handshake_replays: "Follows and Accepts Kopje's send-time check held; legacy queues are not carried",
+  reject_replays: "Rejects of follow requests Kopje's send-time check held; legacy queues are not carried",
   filter_keywords:
     "legacy never wrote filters (its filter_keywords is in UNUSED_LEGACY_TABLES, which stops the conversion)",
   filter_statuses:
