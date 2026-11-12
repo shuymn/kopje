@@ -66,6 +66,8 @@ backup, or a fix forward ([upgrade.md](upgrade.md#a-version-that-changed-the-sch
 14 days after publishing, as a reference. Delete nothing during that time, and nothing before a restore from a Store
 dump has been rehearsed. Keep the images in Cloudflare Images for at least 30 days
 ([after the cutover](#after-the-cutover-retire-cloudflare-images)).
+When the retention ends and the Pages project is deleted, repoint `<domain>`'s DNS record first if step 7 used a
+route ([after the cutover](#after-the-cutover-repoint-the-domains-dns-record)).
 
 ### The write barrier
 
@@ -512,6 +514,19 @@ Configure the Store's daily backup ([backup.md](backup.md)) and wait for the fir
 - **Done:** `kopje-admin health` shows `checks.backup.lastSuccess`.
 
 Afterwards: re-enable nothing on the legacy side. Keep it read-only for 14 days, then remove it as decided separately.
+
+## After the cutover: repoint the domain's DNS record
+
+If step 7 moved `<domain>` with a Worker route, the zone's DNS record for `<domain>` still points at the Pages
+project: a proxied CNAME to `<project>.pages.dev`. The route takes precedence, so Kopje serves the domain. But once the
+Pages project is deleted, the record points at a name that no longer exists. Before deleting the project, replace the
+record in place with a proxied `AAAA <domain> 100::`, a placeholder that only anchors the proxied name, so the route
+keeps serving it. A CNAME cannot sit beside another record of the same name, so deleting it and adding the new record
+leaves a moment in which the name does not resolve. Edit the record in place instead: the API's "Overwrite DNS
+record" (`PUT /zones/<zone>/dns_records/<id>`) changes the type in one step. Then check that the name resolves to
+Cloudflare's addresses and that `https://<domain>/api/v1/timelines/public` answers 200.
+
+A custom domain swap in step 7 needs none of this: the Worker's custom domain owns the record.
 
 ## After the cutover: retire Cloudflare Images
 
