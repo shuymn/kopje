@@ -552,13 +552,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "announcements holds at most 1,000 rows (announcements_cap, migration 0056_announcements)",
   },
   {
-    id: "8b964bbf6af22772",
-    scans: ["announcement_reactions: SCAN announcement_reactions"],
-    site: "src/domain/announcements.ts#<anonymous> in deleteAnnouncement",
-    disposition: "write",
-    issue: "#1468 group 7",
-  },
-  {
     id: "fd453bee5ce4722d",
     scans: ["announcements: SCAN a USING INDEX announcements_published"],
     site: "src/domain/announcements.ts#<anonymous> in listAnnouncements < src/domain/auth.ts#<anonymous> in tokenUserReadOperation",
@@ -571,20 +564,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/announcements.ts#liveCount < src/domain/announcements.ts#<anonymous> in createAnnouncement",
     disposition: "bounded",
     reason: "announcements holds at most 1,000 rows (announcements_cap, migration 0056_announcements)",
-  },
-  {
-    id: "4b444c31c87c91ff",
-    scans: ["announcement_reactions: SCAN r", "media_attachments: SCAN m LEFT-JOIN"],
-    site: "src/domain/announcements.ts#reactionRows < src/domain/announcements.ts#presentAnnouncement < src/domain/announcements.ts#entries < src/domain/answer-budget.ts#admit < src/domain/announcements.ts#<anonymous> in listAnnouncements",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "cf99c3ed84341d2c",
-    scans: ["announcement_reactions: SCAN r", "media_attachments: SCAN m LEFT-JOIN"],
-    site: "src/domain/announcements.ts#reactionRows < src/domain/announcements.ts#streamedAnnouncementReaction < src/domain/streaming.ts#<anonymous> in streamUnit",
-    disposition: "pending",
-    issue: "#1468 group 7",
   },
   {
     id: "0d17e63234debf2b",
@@ -1072,21 +1051,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "38ef2079b0de598f",
-    scans: [
-      "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "quotes: SCAN e_tq",
-      "statuses: SCAN e",
-      "statuses: SCAN e_tqs",
-      "statuses: SCAN s",
-      "trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/trends.ts#<anonymous> in trendingStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
     id: "0f8549d1c658c387",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -1428,6 +1392,21 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
+    id: "38ef2079b0de598f",
+    scans: [
+      "follows: SCAN fo USING COVERING INDEX follows_accepted",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "quotes: SCAN e_tq",
+      "statuses: SCAN e",
+      "statuses: SCAN e_tqs",
+      "statuses: SCAN s",
+      "trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account",
+    ],
+    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/trends.ts#<anonymous> in trendingStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
     id: "f9e061eec6bfcb55",
     scans: ["domain_block_cleanups: SCAN c", "domain_blocks: SCAN d USING COVERING INDEX domain_blocks_pair"],
     site: "src/domain/blocks.ts#nextCleanup < src/domain/blocks.ts#<anonymous> in runDomainBlockCleanups",
@@ -1476,13 +1455,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/conversations.ts#leaveConversationsWith < src/domain/blocks.ts#<anonymous> in block < src/domain/auth.ts#<anonymous> in guarded",
     disposition: "write",
     issue: "#1468 group 9",
-  },
-  {
-    id: "8a60356d41a087d5",
-    scans: ["media_attachments: SCAN m"],
-    site: "src/domain/custom-emojis.ts#localEmojiSnapshot < src/domain/announcements.ts#presentAnnouncement < src/domain/announcements.ts#entries < src/domain/answer-budget.ts#admit < src/domain/announcements.ts#<anonymous> in listAnnouncements",
-    disposition: "pending",
-    issue: "#1468 group 7",
   },
   {
     id: "1191adb04d0f75f6",
@@ -2276,46 +2248,20 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "8d54bf10c382eb21",
-    scans: ["media_attachments: SCAN m"],
-    site: "src/domain/local-emojis.ts#<anonymous> in adminEmojis",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "b2ba7bd7c87d186e",
-    scans: ["accounts: SCAN a", "media_attachments: SCAN m"],
-    site: "src/domain/local-emojis.ts#<anonymous> in completeEmoji",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "9ce2b4bc7b5d421c",
-    scans: ["custom_emojis: SCAN e USING INDEX custom_emojis_enabled", "media_attachments: SCAN m"],
-    site: "src/domain/local-emojis.ts#<anonymous> in customEmojis",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "80b7909111a47fc3",
-    scans: ["custom_emojis: SCAN e", "media_attachments: SCAN m"],
-    site: "src/domain/local-emojis.ts#emojiById < src/domain/local-emojis.ts#<anonymous> in completeEmoji",
-    disposition: "pending",
-    issue: "#1468 group 7",
+    id: "2a0ee985d5c04980",
+    scans: ["custom_emojis: SCAN e USING INDEX custom_emojis_enabled"],
+    site: "src/domain/local-emojis.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis); each image is read by key",
   },
   {
     id: "0b3e529f288063a3",
     scans: ["custom_emojis: SCAN custom_emojis USING COVERING INDEX custom_emojis_enabled"],
-    site: "src/domain/local-emojis.ts#enabledCount < src/domain/local-emojis.ts#placeRefusal < src/domain/local-emojis.ts#<anonymous> in reserveEmoji",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "8f2413f482d1c147",
-    scans: ["custom_emojis: SCAN e", "media_attachments: SCAN m"],
-    site: "src/domain/local-emojis.ts#localEmojiObjectOf < src/domain/federation-reads.ts#<anonymous> in apEmoji < src/domain/federation-reads.ts#<anonymous> in federationRead",
-    disposition: "pending",
-    issue: "#1468 group 7",
+    site: "src/domain/local-emojis.ts#enabledCount < src/domain/local-emojis.ts#placeRefusal < src/domain/local-emojis.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis)",
   },
   {
     id: "c5b6b541bb25507c",
@@ -2326,13 +2272,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "4ec0ae054c56140a",
-    scans: ["accounts: SCAN a", "media_attachments: SCAN m"],
-    site: "src/domain/media.ts#<anonymous> in completeMedia < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "pending",
-    issue: "#1468 group 7",
   },
   {
     id: "4c8b97dcc2191d66",
@@ -3048,24 +2987,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
   },
   {
-    id: "bae3ad0bc2fa20e3",
-    scans: [
-      "accounts: SCAN a",
-      "statuses: SCAN s",
-      "trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account",
-    ],
-    site: "src/domain/trends.ts#adminStatusRows < src/domain/trends.ts#<anonymous> in adminTrendStatuses",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
-    id: "e346544063f81fca",
-    scans: ["accounts: SCAN a", "statuses: SCAN s"],
-    site: "src/domain/trends.ts#adminStatusRows < src/domain/trends.ts#<anonymous> in reviewTrendStatus",
-    disposition: "pending",
-    issue: "#1468 group 7",
-  },
-  {
     id: "81ae782a1128780d",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -3204,6 +3125,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/trends.ts#writeTrendRows < src/domain/trends.ts#roundTags < src/domain/trends.ts#<anonymous> in trendsRound",
     disposition: "bounded",
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
+  },
+  {
+    id: "a6623e9966398a30",
+    scans: ["trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account"],
+    site: "src/domain/trends.ts#adminStatusRows < src/domain/trends.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends); each status and author is read by key",
   },
   {
     id: "2bb9d7eb91bcae90",
