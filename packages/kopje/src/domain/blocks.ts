@@ -26,6 +26,7 @@ import { userReadOperation, userWriteOperation } from "./auth";
 import { leaveConversationsWith } from "./conversations";
 import { retractFollow } from "./inbox";
 import { DOMAIN_BLOCK_CLEANUPS, nextJob, runJobItem } from "./job-attempts";
+import { END_FOLLOW_NOTIFICATIONS_SQL } from "./notifications";
 import { writeOperation } from "./operation";
 import { edgeRangeSql } from "./windows";
 
@@ -80,11 +81,7 @@ function endFollow(db: Db, follower: Party, target: Party, now: number, severing
   if (edge === undefined) {
     return false;
   }
-  db.run(
-    "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ? AND type IN ('follow', 'follow_request') AND from_account_id = ?",
-    target.id,
-    follower.id,
-  );
+  db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, follower.id);
   if (edge.state === "accepted") {
     db.run(
       "UPDATE accounts SET following_count = max(following_count - 1, 0) WHERE id = ? AND domain IS NULL",
@@ -325,7 +322,7 @@ export const listMutes = userReadOperation<{ page: PageQuery; present: Present }
     const ascending = page.minId !== undefined;
     const rows = db.all<{ cursor: string; id: string; mute_expires_at: string | null }>(
       `SELECT CAST(m.id AS TEXT) AS cursor, m.target_account_id AS id, m.expires_at AS mute_expires_at
-			FROM mutes m INDEXED BY mutes_pair WHERE m.account_id = ?1 AND ${activeMuteSql("m", "?5")}
+			FROM mutes m WHERE m.account_id = ?1 AND ${activeMuteSql("m", "?5")}
 				AND ${edgeRangeSql("m.id", "?2", "?3")}
 			ORDER BY m.id ${ascending ? "ASC" : "DESC"} LIMIT ?4`,
       accountId,

@@ -1,4 +1,3 @@
-import { INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { blockedDomain, DNS_NAME_OCTETS, hostDomain } from "../platform/domain-name";
 import { fetchableHref } from "../platform/http-url";
@@ -97,8 +96,7 @@ function ruleFor(db: Db, domain: string): BlockRow | undefined {
   const tail = domain.split(".").slice(-MAX_BLOCK_LABELS);
   const suffixes = tail.map((_, i) => tail.slice(i).join(".")).filter((suffix) => labels(suffix) >= 2);
   return db.first<BlockRow>(
-    `SELECT ${COLUMNS} FROM instance_domain_blocks INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
-		WHERE domain IN (SELECT value FROM json_each(?))
+    `SELECT ${COLUMNS} FROM instance_domain_blocks WHERE domain IN (SELECT value FROM json_each(?))
 		ORDER BY length(domain) DESC LIMIT 1`,
     JSON.stringify(suffixes),
   );

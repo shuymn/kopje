@@ -507,7 +507,8 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 6,
     statement: "ruleFor",
     sites: ["src/domain/instance-domain-blocks.ts#ruleFor"],
-    status: "fixed",
+    status: "observed",
+    ids: ["05c420b40a06b916"],
   },
   {
     group: 6,
@@ -519,9 +520,7 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 6,
     statement: "domain-cleanup raw window",
     sites: [],
-    status: "outside",
-    why: "a rowid range of follows past the cursor: real statistics read it by the rowid, singleton ones walk follows from their start; a walk of min() steps holds under both but reads several times the rows under real statistics, so main's SQL stays",
-    witness: "needed: a plan of the rowid range that small-table statistics keep (#1481)",
+    status: "observed",
     ids: ["2015293d7bfdb5c7"],
   },
   {
@@ -542,7 +541,15 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 6,
     statement: "the viewer's mutes (found by the audit)",
     sites: ["src/domain/blocks.ts#listMutes"],
-    status: "fixed",
+    status: "observed",
+    ids: ["4e4d83746a939ce9", "bb8f21d8c0950c13"],
+  },
+  {
+    group: 6,
+    statement: "a remote report's mention probe, remoteReportableSql (found by the audit)",
+    sites: ["src/domain/audience.ts#remoteReportStatusIds"],
+    status: "observed",
+    ids: ["31dde5cdf5785684"],
   },
   {
     group: 6,

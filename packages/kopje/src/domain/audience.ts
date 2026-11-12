@@ -1664,8 +1664,7 @@ export function remoteReportableSql(s: string, target: string, domain: string, f
 		AND ${availableSql(`${s}.account_id`)} AND (
 		${s}.visibility IN ${DISTRIBUTABLE_SQL}
 		OR (${s}.visibility = 'private' AND ${follower})
-		OR EXISTS (SELECT 1 FROM main.status_mentions rm
-			CROSS JOIN main.accounts ra INDEXED BY ${ACCOUNTS_ID_INDEX} ON ra.id = rm.account_id
+		OR EXISTS (SELECT 1 FROM main.status_mentions rm JOIN main.accounts ra ON ra.id = rm.account_id
 			WHERE rm.status_id = ${s}.id AND ra.domain = ${domain})))`;
 }
 

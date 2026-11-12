@@ -499,12 +499,6 @@ describe("plan audit residuals", () => {
     // The block and report reads of group 6.
     ["a forwarded report's addressees", "src/domain/audience.ts#reportForwardees", "accounts: SCAN t", 6],
     ["a report's follower probe", "src/domain/audience.ts#hasFollowerOn", "accounts: SCAN a", 6],
-    [
-      "a domain's rule",
-      "src/domain/instance-domain-blocks.ts#ruleFor < src/domain/instance-domain-blocks.ts#createBlock",
-      "instance_domain_blocks: SCAN instance_domain_blocks",
-      6,
-    ],
     ["a report's target page", "src/domain/reports.ts#<anonymous> in reportTargetPage", "reports: SCAN r", 6],
     [
       "a domain block's preview",
@@ -512,8 +506,13 @@ describe("plan audit residuals", () => {
       "accounts: SCAN a",
       6,
     ],
-    ["the viewer's mutes", "src/domain/blocks.ts#<anonymous> in listMutes", "mutes: SCAN m", 6],
     ["an ended follow's notifications", "src/domain/blocks.ts#endFollow", "notifications: SCAN notifications", 6],
+    [
+      "an inbound Undo's follow notifications",
+      "src/domain/inbox.ts#removeFollow",
+      "notifications: SCAN notifications",
+      6,
+    ],
     [
       "an unfollow's notifications",
       "src/domain/account-actions.ts#<anonymous> in unfollow",
