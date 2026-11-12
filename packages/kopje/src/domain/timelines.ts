@@ -154,7 +154,11 @@ function windowStatusesWithin(
       : statusReads(viewer, { viewer: "?1", now: "?2" }).select(
           db,
           rule,
-          { from: "json_each(?3) c CROSS JOIN", join: "ON s.id = json_extract(c.value, '$.id')", and },
+          {
+            from: "json_each(?3) c CROSS JOIN",
+            join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = json_extract(c.value, '$.id')`,
+            and,
+          },
           viewer.accountId,
           viewer.now,
           windowJson(window),
@@ -238,7 +242,8 @@ function followOptionsSql(partner: string): string {
 // :skip_home), and shows them in those lists only. A non-correlated subquery, read once per query: the viewer's lists
 // and their members. Only home applies it: a post notification still follows homeFilterSql (shownSql), as
 // FeedInsertWorker#notify? lets :skip_home through.
-const EXCLUSIVE_MEMBERS = `(SELECT ela.account_id FROM lists el JOIN list_accounts ela ON ela.list_id = el.id
+const EXCLUSIVE_MEMBERS = `(SELECT ela.account_id FROM lists el INDEXED BY lists_account
+	CROSS JOIN list_accounts ela ON ela.list_id = el.id
 	WHERE el.account_id = ?1 AND el.exclusive = 1)`;
 
 // The accounts home shows (?1 the viewer): those the viewer follows (accepted), but for members of their exclusive lists.
@@ -252,7 +257,8 @@ const FOLLOWED = `SELECT target_account_id AS account_id FROM follows WHERE acco
 const FOLLOWED_AUTHOR = `SELECT hf.target_account_id AS account_id FROM follows hf
 	WHERE hf.account_id = ?1 AND hf.state = 'accepted'
 		AND hf.target_account_id = (SELECT ha.account_id FROM statuses ha WHERE ha.id = ?7)
-		AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.exclusive = 1 AND ${holdingSql("?1", "hf.target_account_id")})`;
+		AND NOT EXISTS (SELECT 1 FROM lists l INDEXED BY lists_account
+			WHERE l.exclusive = 1 AND ${holdingSql("?1", "hf.target_account_id")})`;
 
 // Home (Mastodon's FeedManager#filter_from_home): the viewer's own statuses and those of accounts they follow,
 // public, unlisted and private; direct and limited statuses of their own, and of followed accounts that address
@@ -306,7 +312,7 @@ function homeWindow(db: Db, viewer: UserContext, cursor: Cursor): Window {
 					WHERE s.account_id = ?1 AND ${rangeSql("s.id")} ORDER BY s.id ${order} LIMIT ?4)
 				UNION ALL SELECT w.id, 'm' || a.account_id, ${FOLLOWED_STREAM} FROM (${authors}) a
 					CROSS JOIN statuses w ON w.id IN (SELECT m.status_id FROM status_mentions m
-						CROSS JOIN statuses s ON s.id = m.status_id
+						CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = m.status_id
 						WHERE m.account_id = ?1 AND m.author_id = a.account_id AND m.requires_mention = 1
 							AND ${rangeSql("m.status_id")} AND ${audienceSql("s", "?1")}
 						ORDER BY m.status_id ${order} LIMIT ?4)
@@ -361,8 +367,8 @@ function homeRows(db: Db, viewer: UserContext, cursor: Cursor, only: string) {
         // by that account in such statuses (status_mentions_requires_mention).
         {
           authors: FOLLOWED_AUTHOR,
-          from: "status_mentions m JOIN",
-          join: "ON s.id = m.status_id",
+          from: "status_mentions m INDEXED BY status_mentions_requires_mention CROSS JOIN",
+          join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = m.status_id`,
           author: "m.author_id",
           where: `m.account_id = ?1 AND m.requires_mention = 1 AND ${rangeSql("m.status_id")}
 							AND s.visibility IN ${REQUIRES_MENTION_SQL}`,
@@ -374,7 +380,7 @@ function homeRows(db: Db, viewer: UserContext, cursor: Cursor, only: string) {
           tags: "SELECT value AS name FROM json_each(?6)",
           tag: "t.name",
           from: "status_tags t CROSS JOIN",
-          join: "ON s.id = t.status_id",
+          join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = t.status_id`,
           where: `t.public = 1 AND ${rangeSql("t.status_id")}`,
           and: "s.visibility = 'public' AND s.reblog_of_id IS NULL",
           tail: `ORDER BY t.status_id ${order} LIMIT ?4`,
@@ -543,11 +549,16 @@ function publicConditions(local: boolean, remote: boolean, onlyMedia: boolean): 
 // The base of publicConditions: a public status that is not a boost.
 const PUBLIC_ORIGINAL_SQL = "s.visibility = 'public' AND s.reblog_of_id IS NULL";
 
-// The request's part of publicConditions, over the status `s` and its account `pa`.
+// The domain of the author of the status `s`, by its key: a correlated lookup, not a join, so no plan builds a Bloom
+// filter of every account for it (RES-7).
+const AUTHOR_DOMAIN_SQL = `(SELECT pa.domain FROM accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pa.id = s.account_id)`;
+
+// The request's part of publicConditions, over the status `s` (statuses.account_id references accounts, so its author
+// is always there).
 function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean): string[] {
   return [
-    ...(local && !remote ? ["pa.domain IS NULL"] : []),
-    ...(remote && !local ? ["pa.domain IS NOT NULL"] : []),
+    ...(local && !remote ? [`${AUTHOR_DOMAIN_SQL} IS NULL`] : []),
+    ...(remote && !local ? [`${AUTHOR_DOMAIN_SQL} IS NOT NULL`] : []),
     ...(onlyMedia ? ["EXISTS (SELECT 1 FROM media_attachments pm WHERE pm.status_id = s.id AND pm.shown = 1)"] : []),
   ];
 }
@@ -559,7 +570,7 @@ export const publicTimeline = optionalUserReadOperation<PublicTimelineInput, Pag
   const size = readWindow(cursor.limit);
   const window = singleWindow(
     db,
-    `SELECT s.id FROM statuses s JOIN accounts pa ON pa.id = s.account_id
+    `SELECT s.id FROM statuses s INDEXED BY statuses_public
 		WHERE ${publicConditions(input.local, input.remote, input.onlyMedia)} AND ${NOT_A_REPLY_TO_OTHERS}
 			AND ${rangeSql("s.id")} AND ${audienceSql("s", "?4")}
 		ORDER BY s.id ${orderOf(cursor)} LIMIT ?1`,
@@ -588,7 +599,7 @@ export function publicStatus(db: Db, viewer: UserContext, feed: PublicFeed, stat
     db,
     "listable",
     {
-      join: "JOIN accounts pa ON pa.id = s.account_id",
+      join: `INDEXED BY ${STATUSES_ID_INDEX}`,
       where: publicConditions(feed.local, feed.remote, feed.onlyMedia),
       and: `${NOT_A_REPLY_TO_OTHERS} AND ${rangeSql("s.id")}`,
       tail: `ORDER BY s.id ${orderOf(cursor)} LIMIT ?4`,
@@ -1036,8 +1047,9 @@ function edgeList(table: "bookmarks" | "favourites") {
               db,
               "listable",
               {
-                from: `json_each(?3) c CROSS JOIN ${table} e ON e.id = CAST(json_extract(c.value, '$.id') AS INTEGER) JOIN`,
-                join: "ON s.id = e.status_id",
+                from: `json_each(?3) c CROSS JOIN ${table} e INDEXED BY ${table}_account
+									ON e.account_id = ?1 AND e.id = CAST(json_extract(c.value, '$.id') AS INTEGER) CROSS JOIN`,
+                join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = e.status_id`,
                 where: "e.account_id = ?1",
                 columns: { cursor: "CAST(e.id AS TEXT)" },
               },

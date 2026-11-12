@@ -436,6 +436,31 @@ describe("plan audit residuals", () => {
     ["the staged actor Update rewrite", "src/domain/deliveries.ts#enqueueActivity", "outbound_activities: SCAN o", 8],
     ["the field-link candidates", "src/domain/field-links.ts#linkCandidates", "local_accounts: SCAN l", 1],
     ["the profile image release", "src/domain/media.ts#applyProfileImage", "media_attachments: SCAN m", 7],
+    // The timeline reads of group 4, each through its executors as the suites record them.
+    [
+      "a timeline window's statuses",
+      "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#windowStatusesWithin",
+      "statuses: SCAN s",
+      4,
+    ],
+    [
+      "home's window",
+      "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> in homeTimeline",
+      "lists: SCAN el",
+      4,
+    ],
+    [
+      "the public timeline's window",
+      "src/domain/windows.ts#singleWindow < src/domain/timelines.ts#<anonymous> in publicTimeline",
+      "accounts: SCAN pa",
+      4,
+    ],
+    [
+      "a bookmark window's statuses",
+      "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#<anonymous> in edgeList",
+      "statuses: SCAN s",
+      4,
+    ],
   ])("fails %s put back", (_name, site, scan, group) => {
     for (const disposition of ["pending", "write"] as const) {
       const stray: PlanAuditEntry = {
