@@ -521,10 +521,12 @@ If step 7 moved `<domain>` with a Worker route, the zone's DNS record for `<doma
 project: a proxied CNAME to `<project>.pages.dev`. The route takes precedence, so Kopje serves the domain. But once the
 Pages project is deleted, the record points at a name that no longer exists. Before deleting the project, replace the
 record in place with a proxied `AAAA <domain> 100::`, a placeholder that only anchors the proxied name, so the route
-keeps serving it. A CNAME cannot sit beside another record of the same name, so deleting it and adding the new record
-leaves a moment in which the name does not resolve. Edit the record in place instead: the API's "Overwrite DNS
-record" (`PUT /zones/<zone>/dns_records/<id>`) changes the type in one step. Then check that the name resolves to
-Cloudflare's addresses and that `https://<domain>/api/v1/timelines/public` answers 200.
+keeps serving it. A CNAME cannot sit beside another record of the same name, so the change replaces one record with
+the other. Make it in one API request rather than a delete and a separate add: the batch endpoint
+(`POST /zones/<zone>/dns_records/batch`, with the CNAME's id in `deletes` and the AAAA in `posts`), or, where the API
+still accepts it, overwriting the record with the new type (`PUT /zones/<zone>/dns_records/<id>`). Either way the change
+reaches resolvers as it propagates, so it is not guaranteed to be seamless. Delete the Pages project only after the
+name resolves to Cloudflare's addresses and `https://<domain>/api/v1/timelines/public` answers 200.
 
 A custom domain swap in step 7 needs none of this: the Worker's custom domain owns the record.
 
@@ -709,7 +711,7 @@ of the legacy Queue and its DLQ, and `kopje-admin cutover close` count a Queue a
 | 5, 6, 8  | D1: the query and export endpoints (Edit may be required even for reads; the rehearsal confirms)                                                                                                                                                                                                                      | Kopje: Access service token |
 | 6        | Cloudflare Images Read (`images-export --account-id`); Workers R2 Storage Edit (putting the originals)                                                                                                                                                                                                                | –                           |
 | 7        | Zone: Workers Routes Edit (a route) or Cloudflare Pages Edit, Workers Scripts Edit and DNS Edit (a custom domain); Access: Apps and Policies Edit                                                                                                                                                                     | –                           |
-| After    | Cloudflare Images Edit (deleting the images after the grace period)                                                                                                                                                                                                                                                   | –                           |
+| After    | Cloudflare Images Edit (deleting the images after the grace period); Zone: DNS Edit (repointing `<domain>`'s record)                                                                                                                                                                                                  | –                           |
 | 8, 9, 10 | Workers Scripts Edit (variables and secrets)                                                                                                                                                                                                                                                                          | Backup storage (backup.md)  |
 | Rollback | Workers Scripts Edit (`CUTOVER_ROLLBACK`); Queues Edit (the legacy consumer); Cloudflare Pages Edit (the previous deployment); Zone: Workers Routes Edit                                                                                                                                                              | Kopje: Access service token |
 
