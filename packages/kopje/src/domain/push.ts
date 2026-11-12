@@ -1,3 +1,4 @@
+import { LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { remoteHtmlText } from "../security/html";
 import { presentAccountById } from "./accounts";
@@ -218,19 +219,23 @@ type TargetRow = {
   content: string | null;
 };
 
-// The push of row `id` if it may still be sent at `now` (PUSH-3).
+// The push of row `id` if it may still be sent at `now` (PUSH-3): the row, its subscription, token, notification,
+// recipient and status, each by its key (RES-7): the subscription read alone first by the key the row gives (a plan
+// joining it by its integer key walked the table), the notification by the row's other key, then the rest by key.
 function target(db: Db, id: string, now: number): TargetRow | undefined {
   return db.first<TargetRow>(
-    `SELECT p.endpoint, p.key_p256dh, p.key_auth, p.standard, p.token_hash, p.token_sealed,
+    `WITH subscription AS MATERIALIZED (SELECT * FROM push_subscriptions
+			WHERE id = (SELECT d.subscription_id FROM push_deliveries d WHERE d.id = CAST(?1 AS INTEGER)))
+		SELECT p.endpoint, p.key_p256dh, p.key_auth, p.standard, p.token_hash, p.token_sealed,
 			n.id AS notification_id, n.type, n.from_account_id, s.spoiler_text,
 			s.content
-		FROM push_deliveries d
-			JOIN push_subscriptions p ON p.id = d.subscription_id
-			JOIN oauth_tokens t ON t.token_hash = p.token_hash
-			JOIN notifications n ON n.id = d.notification_id
-			JOIN local_accounts l ON l.account_id = n.account_id
-			LEFT JOIN statuses s ON s.id = n.status_id
-		WHERE d.id = CAST(?1 AS INTEGER) AND ${availableLocalSql("l")} AND n.created_at > ?3 AND ${UNFILTERED_SQL}
+		FROM subscription p
+			CROSS JOIN oauth_tokens t INDEXED BY sqlite_autoindex_oauth_tokens_1 ON t.token_hash = p.token_hash
+			CROSS JOIN notifications n
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = n.account_id
+			LEFT JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = n.status_id
+		WHERE n.id = (SELECT d.notification_id FROM push_deliveries d WHERE d.id = CAST(?1 AS INTEGER))
+			AND ${availableLocalSql("l")} AND n.created_at > ?3 AND ${UNFILTERED_SQL}
 			AND ${pushWantedSql("p", "t", "n", "?2")}
 			AND ${keptSql("n")} AND ${shownNotificationSql("n", "n.account_id", "?2", "?4")}`,
     id,

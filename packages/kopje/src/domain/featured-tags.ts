@@ -384,7 +384,10 @@ function recordFeaturedChange(db: Db, accountId: string, type: "Add" | "Remove",
 // unlisted, and carries the hashtag (FeaturedTag#visible_tagged_account_statuses: distributable_visibility).
 
 // The status's author, its publication time, and the names of its hashtags its author features, if it counts (none
-// when it does not, or when its author features none of them). A remote author's counts are not kept (the read counts
+// when it does not, or when its author features none of them). The names are read from the author's featured
+// hashtags, each sought among the status's by key, so a status of many hashtags costs no more (RES-7). Kopje's writers
+// keep a local account within MAX_FEATURED_TAGS (featuresMost); no stored bound does, so an imported account's
+// read is one key lookup per hashtag it features. A remote author's counts are not kept (the read counts
 // them), so its statuses count for none here.
 export type FeaturedOfStatus = { accountId: string; publishedAt: string; id: string; names: string[] };
 
@@ -400,8 +403,9 @@ export function featuredOfStatus(db: Db, statusId: string): FeaturedOfStatus | n
   }
   const names = db
     .all<{ name: string }>(
-      `SELECT t.name FROM status_tags t JOIN featured_tags f ON f.account_id = ?2 AND f.name = t.name
-			WHERE t.status_id = ?1`,
+      `SELECT t.name FROM featured_tags f INDEXED BY ${FEATURED_TAGS_ACCOUNT_INDEX}
+			CROSS JOIN status_tags t INDEXED BY sqlite_autoindex_status_tags_1 ON t.status_id = ?1 AND t.name = f.name
+			WHERE f.account_id = ?2 ORDER BY f.name`,
       statusId,
       status.account_id,
     )
