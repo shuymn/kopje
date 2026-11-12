@@ -67,7 +67,12 @@ const WRITING_TRIGGERS: Record<string, string> = {
   statuses_last_status_removed:
     "one account row per status deleted: deleteStatusWithin reserves it with the status's own delete",
   statuses_last_status_changed:
-    "one account row per status hidden: deleteStatusBatch hides a status only with three rows left (the status, this row and its card)",
+    "one account row per status hidden: deleteStatusBatch hides a status only with HIDE_ROWS (four) left (the status, this row, its card and quotes_withdrawn_status_changed's copy)",
+  quotes_withdrawn_status_changed:
+    "one quotes row (the status's own, by key, when marked local) per change of statuses.withdrawn: deleteStatusBatch's hide reserves it in HIDE_ROWS, withdrawLocalBoosts' marker in its budget.left() - 3, and the requests that hide (a local DELETE, an unboost) count it in their maxima (test/local-delete.test.ts REQUEST_ROWS, test/unboost.test.ts BOOST_REQUEST_ROWS)",
+  quotes_withdrawn_inserted: "fires on a quote insert, which no batched delete or purge makes",
+  quotes_withdrawn_changed:
+    "fires on an update of quotes.withdrawn, status_id or local: no batched delete or purge makes one itself (a detach sets quoted_status_id only), and when quotes_withdrawn_status_changed's copy fires it, the copy already equals its rule, so it writes no row",
   quotes_count_inserted: "fires on a quote insert, which no batched delete or purge makes",
   quotes_count_changed:
     "one statuses row per accepted quote that leaves its count or changes its target, two at most: a detach (STATUS_CHILDREN's quoted_status_id entry) takes an accepted one off the status being deleted, and takes a third of the rows left (with quotes_authorization_retired), a revocation batch (quotes.ts) half",

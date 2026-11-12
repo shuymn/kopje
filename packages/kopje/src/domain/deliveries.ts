@@ -16,7 +16,6 @@ import {
   shareReaches,
   type StagedAccount,
   stagedAccount,
-  stagedBoost,
   stagedBoosters,
   stagedFollowers,
   type StagedInbox,
@@ -24,6 +23,7 @@ import {
   stagedParent,
   stagedList,
   stagedQuoters,
+  stagedShare,
   stagedVoters,
 } from "./audience";
 import { EXPANSION_STEP } from "./delivery-bounds";
@@ -77,9 +77,9 @@ import { RowBudget } from "./row-budget";
 //   - Signer: an activity is signed by its lane's account, its author, except one recorded as signed by the instance
 //     actor (signedBy 'instance', DATA-7): a forwarded report's Flag (reports.ts), which Mastodon sends from
 //     Account.representative. Its lane is still the reporter's, which owns the intent and orders it with the reporter's
-//     other activities to that server. A remote author's Delete forwarded through local boosts (inbox.ts
-//     recordForwards) is one intent per booster, signed by it in its lanes, so no server learns of another booster's
-//     share (NET-2).
+//     other activities to that server. A remote author's Delete forwarded through local boosts and quotes (inbox.ts
+//     recordForwards) is one intent per owner, signed by it in its lanes, so no server learns of another owner's
+//     reference (NET-2).
 //   - Forwards: an intent whose audience has shares (Audience.shares) has a subject of its own (FORWARD_SUBJECT), so it
 //     neither supersedes nor is superseded by any other activity, whatever names its object's id (VIS-3).
 
@@ -383,22 +383,31 @@ function targetsOf(
   const recipients = recipientsFor(db, signerId, activity, audience, withdraws);
   reach(recipients);
   const { object, retracts } = subjectOf(activity, withdraws);
-  // A forward reaches its shares' receivers (below), never the earlier receivers of its object's id, which is not
+  // A forward reaches its references' receivers (below), never the earlier receivers of its object's id, which is not
   // the signer's.
   if (retracts && object !== null && earlierReceivers && audience.shares === undefined) {
     for (const inbox of receiversOf(db, signerId, object)) {
       add(inbox, null, null);
     }
   }
-  // A forward (VIS-3): the signer's followers, by shared inbox as its Announce went, and every inbox that received
-  // each of its boosts or may (receiversOf), neutral copies only, whatever the forwarded activity's to.
+  // A forward (VIS-3): every inbox that received each of its shares or may (receiversOf), and, when one of them
+  // resolves, the signer's followers, by shared inbox as its Announce or Create went; a receiptShares reference (a
+  // direct or limited quote) reaches its receipts alone. Neutral copies only, whatever the forwarded activity's to.
   const shared = audience.shares === undefined ? [] : shareReaches(db, signerId, audience.shares);
+  const receiptOnly = audience.receiptShares === undefined ? [] : shareReaches(db, signerId, audience.receiptShares);
   if (shared.length > 0) {
     reach(recipientsFor(db, signerId, activity, { followers: true, accounts: [] }, withdraws));
-    for (const uri of shared) {
-      for (const inbox of receiversOf(db, signerId, uri)) {
-        add(inbox, null, null);
-      }
+  }
+  for (const uri of shared) {
+    for (const inbox of receiversOf(db, signerId, uri)) {
+      add(inbox, null, null);
+    }
+  }
+  // A receiptShares reference reaches only the inboxes that received it (its receipts): no row or target of its
+  // Create, in any state, which may never have been sent, so no server that never received the quote learns of it.
+  for (const uri of receiptOnly) {
+    for (const inbox of receiptsOf(db, signerId, uri)) {
+      add(inbox, null, null);
     }
   }
   for (const other of reachOf) {
@@ -423,14 +432,21 @@ function targetsOf(
 const RECEIPTS_OF = `statuses s INDEXED BY ${STATUSES_URI_INDEX}
 	CROSS JOIN outbound_receipts r INDEXED BY outbound_receipts_account ON r.status_id = s.id`;
 
+// The inboxes an object of this signer was delivered to: its receipts.
+function receiptsOf(db: Db, signerId: string, object: string): string[] {
+  return db
+    .all<{ inbox: string }>(
+      `SELECT r.inbox_url AS inbox FROM ${RECEIPTS_OF} WHERE s.uri = ? AND r.account_id = ?`,
+      object,
+      signerId,
+    )
+    .map((row) => row.inbox);
+}
+
 // Every inbox that received an object of this signer, or may: its receipts, the rows of earlier activities about it
 // in any state (a leased one may have been POSTed already), and their targets not yet expanded.
 function receiversOf(db: Db, signerId: string, object: string): string[] {
-  const receipts = db.all<{ inbox: string }>(
-    `SELECT r.inbox_url AS inbox FROM ${RECEIPTS_OF} WHERE s.uri = ? AND r.account_id = ?`,
-    object,
-    signerId,
-  );
+  const receipts = receiptsOf(db, signerId, object).map((inbox) => ({ inbox }));
   const outstanding = db.all<{ inbox: string }>(
     `SELECT d.inbox_url AS inbox FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0`,
@@ -706,8 +722,9 @@ export function stagingRetraction(db: Db, signerId: string, object: string): str
 // bounds and gaps, and test/retraction-staging.test.ts ("the heap of a staging call") derives its heap.
 // The sources, in order: the audience's accounts (by position), the status's mentions, its parent's author, boosters
 // and quoters, the poll's voters, the followers (follows.id up to follow_bound, read when the staging began), then for
-// its object (a forward: for each of its shares that resolves, and the followers after them) the earlier activities'
-// targets not yet expanded, their delivery rows and the receipts, in that order: evidence only moves forward from a
+// its object (a forward: for each of its references that resolves, its shares then its receiptShares, whose receipts
+// alone are read, and the followers after them when a share resolved) the earlier activities' targets not yet
+// expanded, their delivery rows and the receipts, in that order: evidence only moves forward from a
 // target to a row to a receipt, so each is read before what it can become (docs/threat-model.md RES-6). Cursors over
 // text are account and status ids (18 ASCII digits by their CHECKs, bound back as they are) or a receipt's inbox, which
 // is set and compared in SQL only, never bound back from the Worker (DATA-6). A target is admitted by chunked()'s rule
@@ -813,9 +830,11 @@ type Plan = {
   distributable: boolean;
   pollVoters: SqlStorageValue | undefined;
   followers: boolean;
-  // The subject whose earlier receivers a retraction reaches, or null; a forward has shares (their count) instead.
+  // The subject whose earlier receivers a retraction reaches, or null; a forward has references instead: its shares
+  // (their count), the subjects 0 to shares - 1, then its receiptShares (receiptShares of them), the subjects after.
   object: string | null;
   shares: number | null;
+  receiptShares: number;
 };
 
 function planOf(db: Db, signerId: string, intent: IntentRow): Plan {
@@ -835,15 +854,24 @@ function planOf(db: Db, signerId: string, intent: IntentRow): Plan {
     pollVoters: intent.poll_type === null ? undefined : intent.poll,
     followers: truthy(intent.followers_type, intent.followers),
     object: retracts && !forward ? object : null,
-    // shareReaches' list as json_each reads it (a scalar is one share), counted once a call.
-    shares: forward
-      ? db.first<{ n: number }>(
-          `SELECT count(*) AS n FROM json_each((SELECT o.body FROM main.outbound_activities o
-						WHERE o.id = CAST(?1 AS INTEGER)), '$.audience.shares')`,
-          intent.id,
-        )!.n
-      : null,
+    // shareReaches' lists as json_each reads them (a scalar is one reference), counted once a call.
+    shares: forward ? listLength(db, intent.id, "$.audience.shares") : null,
+    receiptShares: forward ? listLength(db, intent.id, "$.audience.receiptShares") : 0,
   };
+}
+
+function listLength(db: Db, intentId: string, path: string): number {
+  return db.first<{ n: number }>(
+    `SELECT count(*) AS n FROM json_each((SELECT o.body FROM main.outbound_activities o
+			WHERE o.id = CAST(?1 AS INTEGER)), ?2)`,
+    intentId,
+    path,
+  )!.n;
+}
+
+// A forward's subjects: its shares, then its receiptShares.
+function references(plan: Plan): number {
+  return plan.shares === null ? 0 : plan.shares + plan.receiptShares;
 }
 
 // The phase after `phase` in the order above, whether or not it applies.
@@ -869,7 +897,7 @@ function successor(plan: Plan, phase: Phase, subject: number): [Phase, number] {
     case "deliveries":
       return ["receipts", subject];
     case "receipts":
-      return !forward ? ["emit", 0] : subject + 1 < plan.shares! ? ["unexpanded", subject + 1] : ["followers", 0];
+      return !forward ? ["emit", 0] : subject + 1 < references(plan) ? ["unexpanded", subject + 1] : ["followers", 0];
     case "emit":
       return ["emit", 0];
   }
@@ -890,10 +918,12 @@ function applies(plan: Plan, c: Cursor): boolean {
       return plan.pollVoters !== undefined;
     case "followers":
       return plan.followers || (plan.shares !== null && c.shared);
+    // A receiptShares subject (from plan.shares on) has its receipts read alone (targetsOf's rule).
     case "unexpanded":
     case "deliveries":
-    case "receipts":
       return plan.shares === null ? plan.object !== null && c.subject === 0 : c.subject < plan.shares;
+    case "receipts":
+      return plan.shares === null ? plan.object !== null && c.subject === 0 : c.subject < references(plan);
   }
 }
 
@@ -924,9 +954,11 @@ type GatheredTarget = {
 // One call's gathering: its budgets and what it read.
 class Gathering {
   readonly targets = new Map<string, GatheredTarget>();
-  // A forward's shares, read lazily from one page a call (stagedList): the page, whose next element is the next
-  // subject's, and the subject at `subjectAt` (its share's boost id, null when it resolves to none).
+  // A forward's references, read lazily from one page a call (stagedList) of the list at sharePath: the page, whose
+  // next element is the next subject's, and the subject at `subjectAt` (its reference's id, null when it resolves to
+  // none).
   shareRows: Iterator<{ id: string | null }> | null = null;
+  sharePath: "$.audience.shares" | "$.audience.receiptShares" = "$.audience.shares";
   subjectAt = -1;
   subject: string | null = null;
   reads = 0;
@@ -1221,8 +1253,8 @@ function pastSql(column: string, param: string, after: string | null): string {
   return `${column} ${after === null ? ">=" : ">"} CAST(${param} AS INTEGER)`;
 }
 
-// The subject whose evidence is read: the retraction's object, by its uri, or a forward's share, by its boost's id (its
-// uri stays in SQL, subjectUriSql); `param` is bound as the statement's subject.
+// The subject whose evidence is read: the retraction's object, by its uri, or a forward's reference (a boost or a
+// quoting status), by its id (its uri stays in SQL, subjectUriSql); `param` is bound as the statement's subject.
 type Subject = { param: SqlStorageValue; byId: boolean };
 
 function subjectUriSql(s: Subject, n: string): string {
@@ -1452,12 +1484,16 @@ function stepReceipts(g: Gathering, subject: Subject): boolean {
   }
 }
 
-// The subject the cursor names: the retraction's object, or a forward's share by position (shareReaches' rule; one that
-// does not resolve, null, is passed). A forward's shares are pulled one at a time from one page a call, so resolving a
-// share reads it alone (a page row and its boost's seek), and its evidence is read in the same call. A share that
-// resolves is recorded (shared), so its followers are read after the shares. Undefined when the call stops first.
+// The subject the cursor names: the retraction's object, or a forward's reference by position (shareReaches' rule; one
+// that does not resolve, null, is passed): subject s below plan.shares is the share at s, any later one the
+// receiptShares element at s - plan.shares. A forward's references are pulled one at a time from one page a call of
+// the list the subject is in, so resolving one reads it alone (a page row and its seek), and its evidence is read in
+// the same call; the page is closed and the other list's opened where the subjects cross from one to the other. A
+// share that resolves is recorded (shared), so the signer's followers are read after the references; a receiptShares
+// element never sets it. Undefined when the call stops first.
 function evidenceSubject(g: Gathering, c: Cursor): Subject | null | undefined {
-  if (g.plan.shares === null) {
+  const shares = g.plan.shares;
+  if (shares === null) {
     return { param: g.plan.object, byId: false };
   }
   if (g.subjectAt !== c.subject) {
@@ -1466,9 +1502,14 @@ function evidenceSubject(g: Gathering, c: Cursor): Subject | null | undefined {
     if (!g.admit()) {
       return undefined;
     }
-    g.shareRows ??= stagedList(g.db, g.plan.intentId, "$.audience.shares", c.subject, STAGING_READ - g.reads + 1)[
-      Symbol.iterator
-    ]();
+    const path = c.subject < shares ? "$.audience.shares" : "$.audience.receiptShares";
+    if (g.shareRows !== null && g.sharePath !== path) {
+      g.shareRows.return?.();
+      g.shareRows = null;
+    }
+    g.sharePath = path;
+    const offset = c.subject < shares ? c.subject : c.subject - shares;
+    g.shareRows ??= stagedList(g.db, g.plan.intentId, path, offset, STAGING_READ - g.reads + 1)[Symbol.iterator]();
     const step = g.shareRows.next();
     if (step.done === true) {
       g.shareRows = null;
@@ -1478,7 +1519,7 @@ function evidenceSubject(g: Gathering, c: Cursor): Subject | null | undefined {
       if (!g.admit()) {
         return undefined;
       }
-      id = stagedBoost(g.db, g.plan.signerId, id) ? id : null;
+      id = stagedShare(g.db, g.plan.signerId, id) ? id : null;
     }
     g.subjectAt = c.subject;
     g.subject = id;
@@ -1486,7 +1527,9 @@ function evidenceSubject(g: Gathering, c: Cursor): Subject | null | undefined {
   if (g.subject === null) {
     return null;
   }
-  c.shared = true;
+  if (c.subject < shares) {
+    c.shared = true;
+  }
   return { param: g.subject, byId: true };
 }
 
@@ -2819,8 +2862,8 @@ function moveToPersonal(
 // personalFallback for a forward's row: it moves in place, as there, only when its provenance (recipient_accounts, at
 // most PROVENANCE_MAX ids, each sought by id: RES-7) names exactly one account behind this shared inbox with a
 // different personal inbox on the same origin, which the activity has no row or unexpanded target for. A row serving
-// several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a boost)
-// does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
+// several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a
+// reference) does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
 // boost's Undo) overtake the copies written behind it.
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(

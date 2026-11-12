@@ -407,6 +407,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "quotePolicySql",
   // A quoted status's id.
   "quotedStatusIdSql",
+  // A list of visibilities, as DISTRIBUTABLE_SQL (domain/audience.ts).
+  "REACHES_FOLLOWERS_SQL",
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",
@@ -562,7 +564,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/trends.ts status_tags.name": { count: 1, reason: COMPARED_SQL },
   "src/domain/remote-suspension.ts accounts.uri": { count: 1, reason: IDENTITY },
   // Read from main.-qualified tables: a window's tag names compared in an IN subquery, the addressed accounts' ids
-  // matched against an activity's to and cc (deliveries.ts targetsOf), a forward's boost uris (shareReaches).
+  // matched against an activity's to and cc (deliveries.ts targetsOf), a forward's reference uris (shareReaches).
   "src/domain/audience.ts status_tags.name": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/audience.ts statuses.uri": { count: 1, reason: IDENTITY },
@@ -581,7 +583,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // The receipts' walk past a staging's cursor (receiptsPast): its inbox compared, and copied into the cursor, in SQL.
   "src/domain/deliveries.ts interpolation past": { count: 1, reason: IDENTITY },
-  // A forward's share, its boost's uri compared in SQL (subjectUriSql).
+  // A forward's reference, its boost's or quoting status's uri compared in SQL (subjectUriSql).
   "src/domain/deliveries.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/audience.ts interpolation host": { count: 2, reason: PREDICATE },
   "src/domain/audience.ts interpolation a": { count: 2, reason: PREDICATE },

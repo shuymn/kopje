@@ -1524,8 +1524,11 @@ export function addressingOf(
 // for a public or unlisted status, or for a retraction recorded with them. status and distributable: a local status's
 // Delete (statuses.ts deleteStatus), whose accounts are read when its targets are staged rather than when it is
 // recorded (statusAccounts): the status's id, and whether it was public or unlisted before its hide. shares: a
-// forwarded Delete of a remote original (inbox.ts recordForwards), the ids of the signer's local boosts of it, whose
-// reach is read when its targets are staged (shareReaches, VIS-3).
+// forwarded Delete of a remote original (inbox.ts recordForwards), the ids of the signer's references to it that reach
+// its followers (its local boost, its public, unlisted or private quoting statuses), whose reach and the signer's
+// followers are read when its targets are staged (shareReaches, VIS-3); always an array on a forward, which is how a
+// forward is known. receiptShares: the forward's direct or limited quoting statuses, which reach only their own
+// receivers, never the signer's followers.
 export type Audience = {
   followers: boolean;
   accounts: string[];
@@ -1533,6 +1536,7 @@ export type Audience = {
   status?: string;
   distributable?: true;
   shares?: string[];
+  receiptShares?: string[];
 };
 
 export function audienceOf(visibility: Visibility, recipients: readonly Recipient[], extra: readonly string[] = []) {
@@ -1824,15 +1828,20 @@ function statusAccounts(db: Db, statusId: string, distributable: boolean): strin
   return distributable ? [...mentioned, ...reachedAccounts(db, statusId)] : mentioned;
 }
 
-// The uris of the boosts among `shares` that are `signerId`'s, each sought by id (RES-7): a forwarded Delete's shares
-// (Audience.shares), whose receivers it reaches with the signer's followers (deliveries.ts targetsOf). A boost being
-// withdrawn still counts: its job stages the forward before it deletes the boost (inbox.ts withdrawLocalBoosts). Any
-// other id is ignored.
+// Whether the status `s`, sought by its key and the signer's (?2), is a forward's reference (Audience.shares,
+// receiptShares): a boost, or a status holding a local quote row (by its primary key). A boost or quoting status being
+// withdrawn still counts: the forward is staged before its evidence goes (inbox.ts stageForwards and its barriers).
+const SHARE_SQL = `s.account_id = ?2 AND (s.reblog_of_id IS NOT NULL
+	OR EXISTS (SELECT 1 FROM main.quotes q WHERE q.status_id = s.id AND q.local = 1))`;
+
+// The uris of the references among `shares` that are `signerId`'s, each sought by id (RES-7; SHARE_SQL): a forwarded
+// Delete's shares or receiptShares (Audience), whose receivers it reaches (deliveries.ts targetsOf). Any other id is
+// ignored.
 export function shareReaches(db: Db, signerId: string, shares: readonly string[]): string[] {
   return db
     .all<{ uri: string }>(
       `SELECT s.uri FROM json_each(?1) j CROSS JOIN main.statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = j.value
-			WHERE s.account_id = ?2 AND s.reblog_of_id IS NOT NULL`,
+			WHERE ${SHARE_SQL}`,
       JSON.stringify(shares),
       signerId,
     )
@@ -1958,8 +1967,8 @@ export function reachQuoters(db: Db, statusId: string): string[] {
 // the activity does not leave out, leavesOutSql) is judged outside that LIMIT, so a row that is not still moves the
 // cursor. The rows come lazily (Db.iterate), so the caller stops at its byte budget. A text value is projected
 // (projectedSql): over `bound` UTF-8 bytes it is read as NULL with its length, never reaching the Worker. The lists an
-// envelope holds (audience.accounts, audience.shares) are read with json_each over the stored body, as forwardFallback
-// reads them, and the audience's scalars are bound as SQLite reads them there.
+// envelope holds (audience.accounts, audience.shares, audience.receiptShares) are read with json_each over the stored
+// body, as forwardFallback reads them, and the audience's scalars are bound as SQLite reads them there.
 // `key` is the walk's key; `id` the recipient's account id, NULL when the row is no recipient.
 export type StagedAccount = {
   key: string;
@@ -2005,7 +2014,7 @@ function signerParams(kind: OutboundKind, signerId: string): SqlStorageValue[] {
 export function stagedList(
   db: Db,
   intentId: string,
-  path: "$.audience.accounts" | "$.audience.shares",
+  path: "$.audience.accounts" | "$.audience.shares" | "$.audience.receiptShares",
   offset: number,
   limit: number,
 ): Generator<{ id: string | null }> {
@@ -2190,12 +2199,11 @@ export function stagedFollowers(
   );
 }
 
-// Whether the share `id` resolves by shareReaches' rule: a boost of the signer's with this id. By key.
-export function stagedBoost(db: Db, signerId: string, id: string): boolean {
+// Whether the reference `id` resolves by shareReaches' rule (SHARE_SQL). One statement, by key.
+export function stagedShare(db: Db, signerId: string, id: string): boolean {
   return (
     db.first(
-      `SELECT 1 AS x FROM main.statuses s INDEXED BY ${STATUSES_ID_INDEX}
-			WHERE s.id = ?1 AND s.account_id = ?2 AND s.reblog_of_id IS NOT NULL`,
+      `SELECT 1 AS x FROM main.statuses s INDEXED BY ${STATUSES_ID_INDEX} WHERE s.id = ?1 AND ${SHARE_SQL}`,
       id,
       signerId,
     ) !== undefined

@@ -112,10 +112,10 @@ const ENVELOPE_BYTES =
 // a tombstone and 256 viewers), DELETE_SUPERSEDES earlier activities superseded (an update and a delete each, and the
 // end of the staging of one still staging, which only an import holds: outbound_activities_staging_ended), the
 // intent, the hide and the account's last status (its trigger), the card, trend row, review, author's pin and poll,
-// its own quote (the quote, its target's count and Kopje's revocation), MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA
-// media, the two counts and the job.
+// its own quote (the quote, its withdrawn copy written by the hide's trigger, migration 0091_live_local_quotes, its
+// target's count and Kopje's revocation), MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA media, the two counts and the job.
 const SUPERSEDE_ROWS = 3 * DELETE_SUPERSEDES;
-const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 3 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
+const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 4 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
 
 describe("the Delete of a local status (VIS-3, RES-6)", () => {
   it("stores its envelope within its derived bound, the identities at their bound at the worst escaping", async () => {

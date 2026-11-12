@@ -666,14 +666,18 @@ an activity without `to` by shared inbox, else personal inbox (R38's severing `R
 `personalInbox` option). No other SQL turns follows into inboxes or reads an account's shared inbox (the architecture
 test below).
 
-A remote author's proven `Delete` of a public or unlisted original that local accounts boosted is forwarded through
-each of them (VIS-3 in [threat-model.md](threat-model.md)): its audience names only the booster's boost
-(`Audience.shares`), which `shareReaches`' rule resolves when the forward is staged (one share at a time, RES-6 in
-[threat-model.md](threat-model.md)) into the booster's followers, by shared inbox, and every inbox that received the
-boost or may (`receiversOf`). The forwarded activity is the remote author's, so its `to` never decides a target: no
-account it names is addressed and nobody gets a personal copy. It is a retraction, so `recipientsFor` leaves out no
-follower and the send-time check never drops it. A direct
-or limited boost (a converted one) is no member: its booster's followers may not see it, so it forwards nothing.
+A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
+through each of them (VIS-3 in [threat-model.md](threat-model.md)): its audience names only the owner's references,
+which `shareReaches`' rule resolves when the forward is staged (one at a time, RES-6 in
+[threat-model.md](threat-model.md)): its boost and its public, unlisted or private quoting statuses (`Audience.shares`)
+into the owner's followers, by shared inbox, and every inbox that received each or may (`receiversOf`); its direct or
+limited quoting statuses (`Audience.receiptShares`) into their receipts alone (`receiptsOf`: the inboxes the quote
+was delivered to, never a row or unexpanded target of its `Create`, which may never have been sent), so no server that
+never received such a quote learns of it. _Gap (accepted):_ an inbox whose `Create` of such a quote is still in
+flight when the forward is staged is not reached; it may get the quote and later find the original gone. The forwarded activity is the remote author's, so its `to` never decides a target: no account it
+names is addressed and nobody gets a personal copy. It is a retraction, so `recipientsFor` leaves out no follower and
+the send-time check never drops it. A direct or limited boost (a converted one) is no member: its booster's followers
+may not see it, so it forwards nothing. A withdrawn quoting status is no member either.
 
 ### Instance domain blocks (R38, VIS-30)
 

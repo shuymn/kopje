@@ -11660,3 +11660,143 @@ describe("0090_exact_conversation_seq", () => {
     expect([before.error, before.mark.type, before.conversation.type]).toEqual([null, "real", "real"]);
   });
 });
+
+describe("0091_live_local_quotes", () => {
+  const NAME = "0091_live_local_quotes";
+  const at = NAMES.indexOf(NAME);
+  // Local account L, remote account R; R's original O, which every quote below quotes.
+  const [L, R] = ["100000000000000001", "100000000000000002"];
+  const O = "200000000000000000";
+  const status = (n: number) => `2000000000000000${String(n).padStart(2, "0")}`;
+
+  it("follows 0090, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0090_exact_conversation_seq");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("backfills the copy, keeps it to its quoting status's withdrawn through every write, and indexes the live local quotes", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [id, domain] of [
+        [L, null],
+        [R, "x.test"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/' || ?1, 'u' || ?1, ?2)",
+          id,
+          domain,
+        );
+      }
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'l@x.test', x'00', x'00', 'k')",
+        L,
+      );
+      const statusOf = (id: string, author: string, withdrawn: 0 | 1) =>
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, withdrawn)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'public', '2026-11-01T00:00:00.000Z', ?3)`,
+          id,
+          author,
+          withdrawn,
+        );
+      // A quote of O by the status `id` in `quoteState` (a deleted one names no target), its copy given explicitly
+      // when `copy` is.
+      const quoteOf = (id: string, local: 0 | 1, quoteState = "pending", copy?: 0 | 1) =>
+        sql.exec(
+          `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, local, updated_at
+							${copy === undefined ? "" : ", withdrawn"})
+						VALUES (?1, 'https://x.test/s/' || ?2, CASE WHEN ?3 <> 'deleted' THEN ?2 END,
+							CASE WHEN ?3 <> 'deleted' THEN ?4 END, ?3, ?5, '2026-11-01T00:00:00.000Z'${copy === undefined ? "" : ", ?6"})`,
+          id,
+          O,
+          quoteState,
+          R,
+          local,
+          ...(copy === undefined ? [] : [copy]),
+        );
+      statusOf(O, R, 0);
+      // Before 0091: a live and a withdrawn local quote in each state, and a received quote whose status is withdrawn.
+      const states = ["pending", "accepted", "rejected", "revoked", "deleted"] as const;
+      states.forEach((s, i) => {
+        statusOf(status(2 * i + 1), L, 0);
+        quoteOf(status(2 * i + 1), 1, s);
+        statusOf(status(2 * i + 2), L, 1);
+        quoteOf(status(2 * i + 2), 1, s);
+      });
+      statusOf(status(20), R, 1);
+      quoteOf(status(20), 0);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const copies = () =>
+        Object.fromEntries(
+          sql
+            .exec<{ id: string; withdrawn: number }>("SELECT status_id AS id, withdrawn FROM quotes ORDER BY status_id")
+            .toArray()
+            .map((row) => [row.id, row.withdrawn]),
+        );
+      const live = () =>
+        sql
+          .exec<{ id: string }>(
+            `SELECT status_id AS id FROM quotes INDEXED BY quotes_local_live
+							WHERE quoted_status_id = ? AND local = 1 AND withdrawn = 0 ORDER BY status_id`,
+            O,
+          )
+          .toArray()
+          .map((row) => row.id);
+      // The backfill: each local quote takes its status's withdrawn; the received one stays 0.
+      expect(copies()).toEqual({
+        ...Object.fromEntries(states.flatMap((_s, i) => [[status(2 * i + 1), 0] as const, [status(2 * i + 2), 1]])),
+        [status(20)]: 0,
+      });
+      // The index holds the live local quotes that name O, in every state but deleted (which names no target).
+      expect(live()).toEqual([status(1), status(3), status(5), status(7)]);
+
+      const set = (query: string, ...params: SqlStorageValue[]) =>
+        state.storage.transactionSync(() => sql.exec(query, ...params));
+      // statuses.withdrawn 0 -> 1 and 1 -> 0 move a local copy; a remote status's leaves its received quote at 0.
+      set("UPDATE statuses SET withdrawn = 1 WHERE id = ?", status(1));
+      set("UPDATE statuses SET withdrawn = 0 WHERE id = ?", status(4));
+      set("UPDATE statuses SET withdrawn = 0 WHERE id = ?", status(20));
+      set("UPDATE statuses SET withdrawn = 1 WHERE id = ?", status(20));
+      expect([copies()[status(1)], copies()[status(4)], copies()[status(20)]]).toEqual([1, 0, 0]);
+      // A quote inserted under a withdrawn status takes 1; one given an inconsistent value either way, the rule's.
+      statusOf(status(30), L, 1);
+      quoteOf(status(30), 1);
+      statusOf(status(31), L, 1);
+      quoteOf(status(31), 1, "pending", 0);
+      statusOf(status(32), L, 0);
+      quoteOf(status(32), 1, "pending", 1);
+      statusOf(status(33), R, 1);
+      quoteOf(status(33), 0, "pending", 1);
+      expect([status(30), status(31), status(32), status(33)].map((id) => copies()[id])).toEqual([1, 1, 0, 0]);
+      // A direct write of the copy is put back.
+      set("UPDATE quotes SET withdrawn = 1 WHERE status_id = ?", status(32));
+      set("UPDATE quotes SET withdrawn = 0 WHERE status_id = ?", status(30));
+      expect([copies()[status(32)], copies()[status(30)]]).toEqual([0, 1]);
+      // local 1 -> 0 clears the copy, 0 -> 1 takes the status's.
+      set("UPDATE quotes SET local = 0 WHERE status_id = ?", status(30));
+      expect(copies()[status(30)]).toBe(0);
+      set("UPDATE quotes SET local = 1 WHERE status_id = ?", status(30));
+      expect(copies()[status(30)]).toBe(1);
+      // status_id moved to a live status takes its 0, to a withdrawn one its 1.
+      statusOf(status(40), L, 0);
+      set("UPDATE quotes SET status_id = ? WHERE status_id = ?", status(40), status(30));
+      statusOf(status(41), L, 1);
+      set("UPDATE quotes SET status_id = ? WHERE status_id = ?", status(41), status(32));
+      expect([copies()[status(40)], copies()[status(41)]]).toEqual([0, 1]);
+      // The CHECK is the column's stored bound.
+      expect(() => set("UPDATE quotes SET withdrawn = 2 WHERE status_id = ?", status(3))).toThrow(/CHECK/);
+      // The index holds exactly the live local quotes: the rows a scan of the table finds with the same terms.
+      const scanned = sql
+        .exec<{ id: string }>(
+          `SELECT status_id AS id FROM quotes NOT INDEXED
+						WHERE quoted_status_id = ? AND local = 1 AND withdrawn = 0 ORDER BY status_id`,
+          O,
+        )
+        .toArray()
+        .map((row) => row.id);
+      expect(live()).toEqual(scanned);
+      expect(scanned).toEqual([status(3), status(4), status(5), status(7), status(40)]);
+    });
+  });
+});

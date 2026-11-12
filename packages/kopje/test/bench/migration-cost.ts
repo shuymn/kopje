@@ -47,7 +47,10 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //     reach jobs of each local account over three generations) and (from 0045_remote_suspension on) 1,000 remote
 //     account jobs with a bound, and a domain job with its fan-out of 10,000 account jobs without one;
 //   - 200,000 quotes (from migration 0033_quotes on), one by every tenth status, each of the status after it, in each
-//     stored state in turn (a quarter accepted);
+//     stored state in turn (a quarter accepted); and (from 0039_quotes_local on) 200,000 local quotes, each by a local
+//     status of the local accounts in turn, public, unlisted, private and direct in turn, in each of the five states in
+//     turn, its quoting status withdrawn for the share KOPJE_BENCH_WITHDRAWN_QUOTES gives (0, 0.5 or 1; by default 1,
+//     the slowest measured for 0091_live_local_quotes, which copies and indexes them);
 //   - 2,000,000 favourites, one of each status in a scattered order, by remote accounts in turn, each with its Like id;
 //   - 200,000 boosts on top of the statuses, public and unlisted in turn, each of a different status by another
 //     remote account;
@@ -110,12 +113,17 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
+// The share of the local quotes whose quoting status is withdrawn (SHAPE.localQuotes): the slowest of 0, 0.5 and 1
+// measured for 0091_live_local_quotes.
+const WITHDRAWN_QUOTES = 1;
+
 declare module "vitest" {
   interface ProvidedContext {
     benchMigration: string;
     benchFrom: string;
     benchScale: string;
     benchReportOnly: boolean;
+    benchWithdrawnQuotes: string;
   }
 }
 
@@ -132,6 +140,7 @@ const SHAPE = {
   remoteJobs: 1_000,
   domainFanOut: 10_000,
   quotes: 200_000,
+  localQuotes: 200_000,
   favourites: 2_000_000,
   boosts: 200_000,
   outbound: 500_000,
@@ -179,6 +188,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
   const notifications = Math.min(Math.round(SHAPE.notifications * scale), statuses);
   const reports = Math.round(SHAPE.reports * scale);
   const quotes = Math.min(Math.round(SHAPE.quotes * scale), Math.floor(statuses / 10));
+  const localQuotes = Math.round(SHAPE.localQuotes * scale);
+  const withdrawnQuotes = Number(inject("benchWithdrawnQuotes") || WITHDRAWN_QUOTES);
+  expect([0, 0.5, 1], "KOPJE_BENCH_WITHDRAWN_QUOTES is 0, 0.5 or 1").toContain(withdrawnQuotes);
   const favourites = Math.min(Math.round(SHAPE.favourites * scale), statuses);
   const boosts = Math.min(Math.round(SHAPE.boosts * scale), Math.floor(statuses / 10));
   const outbound = Math.round(SHAPE.outbound * scale);
@@ -420,6 +432,44 @@ it("applies the migration to the benchmark store within the budget", async () =>
 					CASE i % 4 WHEN 0 THEN 'pending' WHEN 1 THEN 'accepted' WHEN 2 THEN 'rejected' ELSE 'revoked' END, ?4
 				FROM n`,
         quotes,
+        SHAPE.local,
+        remote,
+        now,
+      );
+    }
+    // Local quotes (from 0039_quotes_local on): local status i (ids after the boosts' and media's ranges) by local
+    // account i mod the local ones, public, unlisted, private and direct in turn, quotes status 7i mod the statuses in
+    // the states pending, accepted, rejected, revoked and deleted in turn (a deleted one names no target; an accepted
+    // one its own stamp, quotes_local_stamp being unique). The quoting status is withdrawn for the share
+    // KOPJE_BENCH_WITHDRAWN_QUOTES (0, 0.5 or 1; default WITHDRAWN_QUOTES) of the rows, in alternate runs of 20.
+    const hasLocalQuotes = hasQuotes && has("quotes", "local");
+    if (hasLocalQuotes) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+					INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, created_at, withdrawn)
+					SELECT CAST(900000000000000000 + i AS TEXT), 'https://kopje.bench/ap/statuses/' || i,
+						CAST(100000000000000000 + i % ?2 AS TEXT),
+						CASE i % 4 WHEN 0 THEN 'public' WHEN 1 THEN 'unlisted' WHEN 2 THEN 'private' ELSE 'direct' END,
+						'<p>quote ' || i || '</p>', ?3, ?3, CASE WHEN (i / 20) % 2 < ?4 THEN 1 ELSE 0 END
+					FROM n WHERE ?1 > 0`,
+        localQuotes,
+        SHAPE.local,
+        now,
+        withdrawnQuotes * 2,
+      );
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+					INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, approval_uri, local,
+						updated_at)
+					SELECT CAST(900000000000000000 + i AS TEXT), 'https://bench.example/s/' || ((7 * i) % ?2),
+						CASE WHEN i % 5 <> 4 THEN CAST(500000000000000000 + (7 * i) % ?2 AS TEXT) END,
+						CASE WHEN i % 5 <> 4 THEN CAST(100000000000000000 + ?3 + ((7 * i) % ?2) % ?4 AS TEXT) END,
+						CASE i % 5 WHEN 0 THEN 'pending' WHEN 1 THEN 'accepted' WHEN 2 THEN 'rejected' WHEN 3 THEN 'revoked'
+							ELSE 'deleted' END,
+						CASE WHEN i % 5 = 1 THEN 'https://bench.example/stamps/' || i END, 1, ?5
+					FROM n WHERE ?1 > 0`,
+        localQuotes,
+        statuses,
         SHAPE.local,
         remote,
         now,
@@ -849,7 +899,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
       accounts: count("accounts"),
       local: count("local_accounts"),
       follows: count("follows"),
-      statuses: count("statuses WHERE reblog_of_id IS NULL"),
+      // The remote statuses (the local quoting statuses are counted with their quotes).
+      statuses: count("statuses WHERE reblog_of_id IS NULL AND id < '900000000000000000'"),
       boosts: count("statuses WHERE reblog_of_id IS NOT NULL"),
       favourites: count("favourites"),
       mentions: count("status_mentions"),
@@ -862,6 +913,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
       localJobs: hasLocalJobs ? count("moderation_jobs") : 0,
       remoteJobs: hasRemoteJobs ? count("remote_moderation_jobs") : 0,
       quotes: hasQuotes ? count("quotes") : 0,
+      localQuotes: hasLocalQuotes ? count("quotes WHERE local = 1") : 0,
+      withdrawnQuotes: hasLocalQuotes
+        ? count("quotes q WHERE q.local = 1 AND (SELECT s.withdrawn FROM statuses s WHERE s.id = q.status_id) = 1")
+        : 0,
       outbound: count("outbound_activities"),
       deliveries: count("deliveries"),
       media: count("media_attachments"),
@@ -903,8 +958,22 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
     const pinsLeft = pinsPending ? [count("status_pins"), excessPins()] : [0, 0];
+    // 0091_live_local_quotes: the backfilled copies, the rows of its index, and the plan of its backfill.
+    const liveQuotes = has("quotes", "withdrawn")
+      ? {
+          withdrawn: count("quotes WHERE local = 1 AND withdrawn = 1"),
+          live: count("quotes INDEXED BY quotes_local_live WHERE local = 1 AND withdrawn = 0"),
+          backfillPlan: sql
+            .exec<{ detail: string }>(
+              `EXPLAIN QUERY PLAN UPDATE quotes SET withdrawn = 1
+								WHERE local = 1 AND (SELECT s.withdrawn FROM statuses s WHERE s.id = quotes.status_id) = 1`,
+            )
+            .toArray()
+            .map((row) => row.detail),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
-      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft } };
+      return { seeded, measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft, liveQuotes } };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
     // the retry on a fresh kernel, which finds nothing pending and verifies the whole Store.
@@ -924,7 +993,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
     await state.storage.deleteAlarm();
     return {
       seeded,
-      measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft, pinsLeft },
+      measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms + resumedMs, jamoLeft, pinsLeft, liveQuotes },
     };
   });
   expect(seeded).toMatchObject({ accounts, local: SHAPE.local, statuses, notifications, reports, inboundJobs });
@@ -953,6 +1022,23 @@ it("applies the migration to the benchmark store within the budget", async () =>
     expect([seeded.excessPins, measured.pinsLeft]).toEqual([
       SHAPE.local + pinningRemotes,
       [SHAPE.local * 5 + pinningRemotes * 20, 0],
+    ]);
+  }
+  // The local quotes were there to copy and index, and the backfill read each once, its status by primary key.
+  if (applied.includes("0091_live_local_quotes")) {
+    expect(seeded.localQuotes).toBe(localQuotes);
+    expect(seeded.withdrawnQuotes).toBe(
+      Array.from({ length: localQuotes }, (_, i) => Math.floor(i / 20) % 2 < withdrawnQuotes * 2).filter(Boolean)
+        .length,
+    );
+    expect(measured.liveQuotes).toMatchObject({
+      withdrawn: seeded.withdrawnQuotes,
+      live: localQuotes - seeded.withdrawnQuotes,
+    });
+    expect(measured.liveQuotes?.backfillPlan).toEqual([
+      "SCAN quotes",
+      "CORRELATED SCALAR SUBQUERY 1",
+      "SEARCH s USING INDEX sqlite_autoindex_statuses_1 (id=?)",
     ]);
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;

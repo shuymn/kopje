@@ -40,6 +40,7 @@ describe("migration lint", () => {
       "0087_tag_key_fixed_points",
       "0089_pin_cap",
       "0090_exact_conversation_seq",
+      "0091_live_local_quotes",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

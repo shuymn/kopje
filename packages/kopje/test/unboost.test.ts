@@ -44,10 +44,11 @@ const count = async (store: StoreStub, query: string, ...params: SqlStorageValue
 
 // The rows an unboost writes at most (RES-6), at every input's maximum: the streaming capture (an event, a tombstone
 // and 256 viewers, R32), DELETE_SUPERSEDES earlier activities about the boost superseded (an update and a delete each,
-// and the end of the staging of one still staging, which only an import holds), the Undo's intent, the hide and the
-// booster's last status (its trigger), the two counts, the reblog notification's MAX_PUSH_BACKLOG pushes and the
+// and the end of the staging of one still staging, which only an import holds), the Undo's intent, the hide, the
+// booster's last status (its trigger) and the copy of withdrawn on a quote row of the boost marked local (an import's,
+// migration 0091_live_local_quotes), the two counts, the reblog notification's MAX_PUSH_BACKLOG pushes and the
 // notification, and the job.
-const BOOST_REQUEST_ROWS = 258 + 3 * DELETE_SUPERSEDES + 1 + 2 + 2 + MAX_PUSH_BACKLOG + 1 + 1;
+const BOOST_REQUEST_ROWS = 258 + 3 * DELETE_SUPERSEDES + 1 + 3 + 2 + MAX_PUSH_BACKLOG + 1 + 1;
 
 type As = "alice" | "dave";
 
@@ -159,6 +160,13 @@ describe("an unboost at every bound at once (RES-6)", () => {
       // DELETE_SUPERSEDES - 1 retractions of it still staging (an import's), recorded before the Updates: the request
       // supersedes them.
       await seedStagingRetractions(t.store, DELETE_SUPERSEDES - 1, ALICE, b.uri, "Undo");
+      // A quote row of the boost marked local (an import's): the hide copies withdrawn onto it.
+      await sql(
+        t.store,
+        `INSERT INTO quotes (status_id, quoted_uri, state, local, updated_at)
+					VALUES (?, 'https://elsewhere.example/s/1', 'pending', 1, '2026-10-11T12:00:00.000Z')`,
+        b.id,
+      );
       await sql(
         t.store,
         `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
@@ -212,7 +220,10 @@ describe("an unboost at every bound at once (RES-6)", () => {
 
       const result = await unboosted(t, how, how === "unreblog" ? original.id : b.id);
       expect([result.answer, result.jobsPending]).toEqual(["ok", true]);
-      expect(result.wrote).toBeLessThanOrEqual(BOOST_REQUEST_ROWS);
+      // Exactly the derived maxima less the three rows this fixture does not write: the capture of a boost has no
+      // tombstone (every boost), and the Announce in flight, the first of those superseded, keeps its row and has no
+      // staging (this fixture's).
+      expect(result.wrote).toBe(BOOST_REQUEST_ROWS - 3);
       console.info({ event: "unboost.request", how, wrote: result.wrote, bound: BOOST_REQUEST_ROWS });
       if (how === "unreblog") {
         expect(result.status).toMatchObject({ id: original.id, reblogged: false, reblogs_count: 1 });

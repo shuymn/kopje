@@ -5,9 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import {
+  audienceTargets,
   BACKLOG_FULL,
   claimDeliveries,
   completeDelivery,
+  type DeliveryEnvelope,
   expandPending,
   forwardSubject,
   stageRetraction,
@@ -19,6 +21,7 @@ import {
   FORWARD_BODY_MAX,
   JOB_BATCHES_PER_RUN,
   MAX_FORWARD_OWNERS,
+  MAX_FORWARD_QUOTES,
   PURGE_BATCH,
   purgeBatch,
   receiveActivity,
@@ -53,7 +56,7 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
-import { contexts, deliveryDeps, quoteAccept } from "./quote-helpers";
+import { contexts, deferred, deliveryDeps, quoteAccept } from "./quote-helpers";
 import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
 
@@ -874,21 +877,24 @@ const BOUND_MAX = utf8(
 // retractions, finished jobs, expired mutes, answered quote requests).
 const RECEIVE_SWEEP_ROWS = 4 * SWEEP_BATCH;
 // The Delete handler's own rows, apart from the batch's budget: the retraction, the deleted object and the job (3); the
-// streaming capture, an event, a tombstone and 256 viewers (258, R32); the hide, the status, the last status and the
-// card (3); retireQuoteOf, the quote, its target's count and the authorization's revocation (3); the forwards and the
-// job's bound.
-const DELETE_HANDLER_ROWS = 3 + 258 + 3 + 3 + MAX_FORWARD_OWNERS + 1;
+// streaming capture, an event, a tombstone and 256 viewers (258, R32); the hide, the status, the last status, the
+// card and the copy of withdrawn on the status's own quote row when an import marked it local (4, migration
+// 0091_live_local_quotes); retireQuoteOf, the quote, its target's count and the authorization's revocation (3); the
+// forwards and the job's bound.
+const DELETE_HANDLER_ROWS = 3 + 258 + 4 + 3 + MAX_FORWARD_OWNERS + 1;
 
 // Every other input of the first transaction at its most for the original `o`: it quotes alice's status holding
-// Kopje's authorization, has a card, 256 accounts listen (one on the public stream too, so a tombstone is written),
+// Kopje's authorization, its quote row marked local (as an import may: the hide writes its copy of withdrawn), has a
+// card, 256 accounts listen (one on the public stream too, so a tombstone is written),
 // and the sweep finds SWEEP_BATCH due rows in each source.
 async function saturated(w: World, o: { id: string; uri: string }): Promise<void> {
   const quoted = await w.t.request("/api/v1/statuses", json({ status: "quoted" }, bearer(w.t.tokens.alice)));
   const q = await quoted.json<{ id: string; uri: string }>();
   await sql(
     w.t.store,
-    `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, authorization_id, updated_at)
-		VALUES (?, ?, ?, ?, 'accepted', 'authorization-1', '2026-10-11T12:00:00.000Z')`,
+    `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, authorization_id, local,
+			updated_at)
+		VALUES (?, ?, ?, ?, 'accepted', 'authorization-1', 1, '2026-10-11T12:00:00.000Z')`,
     o.id,
     q.uri,
     q.id,
@@ -1344,8 +1350,10 @@ describe("the barrier runs at an original’s first boost", () => {
 // The statements this change adds or changes, by a fragment of each, and the names their plans give the large tables
 // they read: none may be scanned. The local accounts are walked by design (KEPT_LOCAL_BOOSTS: one seek each).
 const CHANGED =
-  /INDEXED BY outbound_activities_object|statuses_account_reblogs_kept|length\(CAST\(bound AS BLOB\)\)|json_each\(\?1\) f CROSS JOIN outbound_activities|id = CAST\(\?3 AS INTEGER\) AND account_id = \?1|WHERE s\.id = \?1 AND s\.account_id = \?2 AND s\.reblog_of_id IS NOT NULL|'\$\.audience\.shares'\) = 'array' AS forward|recipients_many IS NULL|e\.inbox_url = \?2|FROM inbound_jobs WHERE kind = 'delete' AND key = \?|o\.id AS original|SET bound = \?|reblog_of_id, visibility, withdrawn FROM statuses/;
+  /INDEXED BY outbound_activities_object|statuses_account_reblogs_kept|length\(CAST\(bound AS BLOB\)\)|json_each\(\?1\) f CROSS JOIN outbound_activities|id = CAST\(\?3 AS INTEGER\) AND account_id = \?1|WHERE s\.id = \?1 AND s\.account_id = \?2 AND \(s\.reblog_of_id IS NOT NULL|INDEXED BY quotes_local_live|'\$\.audience\.shares'\) = 'array' AS forward|recipients_many IS NULL|e\.inbox_url = \?2|FROM inbound_jobs WHERE kind = 'delete' AND key = \?|o\.id AS original|SET bound = \?|reblog_of_id, visibility, withdrawn FROM statuses/;
 const LARGE = [
+  "quotes",
+  "q",
   "statuses",
   "r",
   "o",
@@ -1363,10 +1371,11 @@ const LARGE = [
 // Of them, the statements the job runs whose reads the change bounds, each run on its own (the boosts' walk, which
 // reads every boost of the original each round, is #1253's and only gains two columns here).
 const OWN =
-  /length\(CAST\(bound AS BLOB\)\)|json_each\(\?1\) f CROSS JOIN outbound_activities|id = CAST\(\?3 AS INTEGER\) AND account_id = \?1|WHERE s\.id = \?1 AND s\.account_id = \?2 AND s\.reblog_of_id IS NOT NULL|SET bound = \?|INDEXED BY outbound_activities_object/;
+  /length\(CAST\(bound AS BLOB\)\)|json_each\(\?1\) f CROSS JOIN outbound_activities|id = CAST\(\?3 AS INTEGER\) AND account_id = \?1|WHERE s\.id = \?1 AND s\.account_id = \?2 AND \(s\.reblog_of_id IS NOT NULL|SET bound = \?|INDEXED BY outbound_activities_object/;
 
-// O's history past any floor: 3,000 remote boosts of it, 1,000 withdrawn generations of alice's boost, 10,000 retained
-// intents of alice about its uri and its forward subject each, and an intent of dave's with the largest id there is.
+// O's history past any floor: 3,000 remote boosts of it, 1,000 withdrawn generations of alice's boost, 10,000 received
+// quotes of it and 10,000 withdrawn local ones (none of which quotes_local_live holds), 10,000 retained intents of
+// alice about its uri and its forward subject each, and an intent of dave's with the largest id there is.
 async function grow(w: World, o: { id: string; uri: string }, digit: string): Promise<void> {
   const boosters = await remoteAccountsAt(w.t.store, digit, `g${digit}x`, 3000);
   await sql(
@@ -1389,6 +1398,33 @@ async function grow(w: World, o: { id: string; uri: string }, digit: string): Pr
     ALICE,
     o.id,
   );
+  for (const [prefix, author, withdrawn, local] of [
+    ["8", boosters[0]!, 0, 0],
+    ["2", ALICE, 1, 1],
+  ] as const) {
+    await sql(
+      w.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, withdrawn)
+			SELECT ?1 || ?2 || printf('%016d', i), 'https://kopje.test/quoting/' || ?1 || ?2 || i, ?3, 'public', '',
+				'2026-10-11T12:00:00.000Z', ?4 FROM n`,
+      prefix,
+      digit,
+      author,
+      withdrawn,
+    );
+    await sql(
+      w.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
+			INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, local, updated_at)
+			SELECT ?1 || ?2 || printf('%016d', i), s.uri, s.id, s.account_id, 'pending', ?4, '2026-10-11T12:00:00.000Z'
+			FROM n CROSS JOIN statuses s WHERE s.id = ?3`,
+      prefix,
+      digit,
+      o.id,
+      local,
+    );
+  }
   for (const subject of [o.uri, forwardSubject(o.uri)]) {
     await sql(
       w.t.store,
@@ -1448,6 +1484,7 @@ describe("the forward’s reads under stale statistics (T12, RES-7)", () => {
     const measure = async (phase: "before" | "after") => {
       const o = await original(w);
       await boost(w, o.id);
+      await localQuote(w, o, { receipts: [QP] });
       if (phase === "after") {
         await grow(w, o, "5");
       }
@@ -1496,6 +1533,31 @@ describe("the forward’s reads under stale statistics (T12, RES-7)", () => {
     expect(asked.result).toMatchObject({ need: { kind: "proof", uri: w.bob.uri } });
     expect(rowsOf(asked.plans)).toBeLessThanOrEqual(before.request);
     scanned("ask", asked.plans);
+    // The proof round of a quote-only original (no boost to stop at): its quotes' seek reads no more past 10,000
+    // received and 10,000 withdrawn local quotes of it (grow).
+    const quoteOnlyAsk = async (o: { id: string; uri: string }) => {
+      const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
+      const run = await planned(w.t.store, /./, receiveActivity, {
+        now: NOW,
+        storeNow: NOW,
+        origin: LOCAL,
+        actorUri: w.bob.uri,
+        actor: null,
+        actorRevision: null,
+        activity: { type: "Delete", id: body.id as string, object: o.uri, signed: true },
+      });
+      expect(run.result).toMatchObject({ need: { kind: "proof", uri: w.bob.uri } });
+      scanned("ask quote-only", run.plans);
+      return rowsOf(run.plans);
+    };
+    const lean = await original(w);
+    await localQuote(w, lean);
+    const grown = await original(w);
+    await localQuote(w, grown);
+    await grow(w, grown, "7");
+    const [leanRows, grownRows] = [await quoteOnlyAsk(lean), await quoteOnlyAsk(grown)];
+    console.info({ event: "forward.quote-only-ask", lean: leanRows, grown: grownRows });
+    expect(grownRows).toBeLessThanOrEqual(leanRows + 20);
     // The fallback's reads: a forward row at a shared inbox answering 404, its one recipient behind it.
     await jobs(w.t.store);
     await sql(w.t.store, "DELETE FROM deliveries");
@@ -1759,5 +1821,764 @@ describe("the forwards’ staging is the job’s progress", () => {
         o.id,
       ),
     ).toEqual([{ attempts: 0, due_at: null, done_at: null }]);
+  }, 120_000);
+});
+
+// ---- Forwards through local quotes (#1255): a quoting status in shares when its visibility reaches its author's
+// followers, in receiptShares (its receivers alone) when it is direct or limited.
+
+let quoteSeq = 0;
+
+// A local status of `owner` (alice unless named) quoting `o`, as a Store holds one (local = 1), in `state`, with a
+// receipt at each of `receipts`; withdrawn when `withdrawn` is 1. Its id is `id`, else the next of 47….
+async function localQuote(
+  w: World,
+  o: { id: string; uri: string },
+  options: {
+    owner?: string;
+    visibility?: "public" | "unlisted" | "private" | "direct" | "limited";
+    state?: "pending" | "accepted" | "rejected" | "revoked" | "deleted";
+    receipts?: string[];
+    withdrawn?: 0 | 1;
+    id?: string;
+  } = {},
+): Promise<{ id: string; uri: string }> {
+  const id = options.id ?? `47${String(++quoteSeq).padStart(16, "0")}`;
+  const owner = options.owner ?? ALICE;
+  const uri = `https://kopje.test/ap/o/${id}`;
+  await sql(
+    w.t.store,
+    `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, withdrawn)
+			VALUES (?, ?, ?, ?, '<p>q</p>', '2026-10-11T12:00:00.000Z', ?)`,
+    id,
+    uri,
+    owner,
+    options.visibility ?? "public",
+    options.withdrawn ?? 0,
+  );
+  await sql(
+    w.t.store,
+    `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, local, updated_at)
+			SELECT ?1, s.uri, s.id, s.account_id, ?2, 1, '2026-10-11T12:00:00.000Z' FROM statuses s WHERE s.id = ?3`,
+    id,
+    options.state ?? "pending",
+    o.id,
+  );
+  for (const inbox of options.receipts ?? []) {
+    await sql(
+      w.t.store,
+      "INSERT INTO outbound_receipts (status_id, inbox_url, account_id, delivered_at) VALUES (?, ?, ?, 0)",
+      id,
+      inbox,
+      owner,
+    );
+  }
+  return { id, uri };
+}
+
+// The targets the unstaged reader (audienceTargets) gives the forward `f` as recorded, by inbox.
+async function unstagedInboxes(store: StoreStub, f: Forward): Promise<string[]> {
+  const envelope = JSON.parse(f.body) as DeliveryEnvelope;
+  return runInDurableObject(store, (_instance, state) =>
+    audienceTargets(new Db(state.storage.sql), f.account_id, envelope.activity, envelope.audience)
+      .map((t) => t.inbox)
+      .toSorted(),
+  );
+}
+
+const QP = "https://quote-public.example/inbox";
+const QD = "https://quote-direct.example/inbox";
+const SHARED = "https://shared.example/inbox";
+
+describe("the forward through local quotes (P1–P4)", () => {
+  it("forwards through a local quote in every state, POSTed as received", async () => {
+    const w = await world();
+    const o = await original(w);
+    const states = ["pending", "accepted", "rejected", "revoked", "deleted"] as const;
+    const quotes = [];
+    for (const [i, state] of states.entries()) {
+      quotes.push(await localQuote(w, o, { state, receipts: [`https://state${i}.example/inbox`] }));
+    }
+    const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
+    expect(await w.post(w.bob, body)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    const [forward, ...others] = await forwards(w.t.store, o.uri);
+    expect(others).toEqual([]);
+    expect(forward).toMatchObject({ account_id: ALICE, staged: "" });
+    expect(JSON.parse(forward!.body)).toEqual({
+      activity: body,
+      audience: { followers: false, accounts: [], shares: quotes.map((q) => q.id) },
+      immutable: true,
+    });
+    await jobs(w.t.store);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete" && objectOf(s.json) === o.uri);
+    expect(sent.map((s) => s.inbox).toSorted()).toEqual(
+      [`${FANS}/inbox`, ...states.map((_s, i) => `https://state${i}.example/inbox`)].toSorted(),
+    );
+    for (const s of sent) {
+      expect(s.body).toBe(JSON.stringify(body));
+      expect(s.signer).toBe(ALICE_URI);
+    }
+  });
+
+  it("stages each reference's receivers and the followers of a follower-reaching one, as the unstaged reader does", async () => {
+    const w = await world();
+    const { o, b } = await boosted(w);
+    const qp = await localQuote(w, o, { visibility: "private", receipts: [QP, SHARED] });
+    const qd = await localQuote(w, o, { visibility: "direct", receipts: [QD, SHARED] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    expect(JSON.parse(forward!.body)).toMatchObject({
+      audience: { shares: [b.id, qp.id], receiptShares: [qd.id] },
+    });
+    const expected = [`${FANS}/inbox`, `${MASTODON}/inbox`, RECEIPTS, QP, QD, SHARED].toSorted();
+    expect(await unstagedInboxes(w.t.store, forward!)).toEqual(expected);
+    await jobs(w.t.store);
+    expect([...(await forwardInboxes(w.t.store, o.uri))].toSorted()).toEqual(expected);
+  });
+
+  // The guarded branch runs: the direct quote resolves (its receipt is reached), and still no follower inbox is.
+  it("a direct quote's forward reaches its receipts and no follower inbox", async () => {
+    const w = await world();
+    const o = await original(w);
+    const qd = await localQuote(w, o, { visibility: "direct", receipts: [QD] });
+    const limited = await localQuote(w, o, { visibility: "limited", receipts: [SHARED] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    expect(JSON.parse(forward!.body)).toMatchObject({ audience: { shares: [], receiptShares: [qd.id, limited.id] } });
+    expect(await unstagedInboxes(w.t.store, forward!)).toEqual([QD, SHARED].toSorted());
+    await jobs(w.t.store);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete" && objectOf(s.json) === o.uri);
+    expect(sent.map((s) => s.inbox).toSorted()).toEqual([QD, SHARED].toSorted());
+    expect(sent.map((s) => s.inbox)).not.toContain(`${FANS}/inbox`);
+  });
+
+  it("skips a withdrawn quoting status without counting it, before and after the proof round", async () => {
+    const w = await world();
+    const o = await original(w);
+    // 65 withdrawn quotes first by status id (MAX_FORWARD_QUOTES + 1), then the live one.
+    for (let i = 0; i <= MAX_FORWARD_QUOTES; i++) {
+      await localQuote(w, o, { withdrawn: 1, receipts: [`https://gone${i}.example/inbox`] });
+    }
+    const live = await localQuote(w, o, { receipts: [QP] });
+    const rows = () =>
+      sql(w.t.store, "SELECT count(*) AS n FROM quotes WHERE quoted_status_id = ? AND local = 1", o.id);
+    expect(await rows()).toEqual([{ n: MAX_FORWARD_QUOTES + 2 }]);
+    const warn = vi.spyOn(console, "warn");
+    try {
+      expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+      // The proof round ran (forwardable found the live one), and the record took it alone, logging no cap.
+      expect(proofRounds(w)).toBe(1);
+      expect(await rows()).toEqual([{ n: MAX_FORWARD_QUOTES + 2 }]);
+      expect(warn.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.forward_capped")).toEqual(
+        [],
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    const [forward] = await forwards(w.t.store, o.uri);
+    expect(JSON.parse(forward!.body)).toMatchObject({ audience: { shares: [live.id] } });
+    await jobs(w.t.store);
+    const inboxes = await forwardInboxes(w.t.store, o.uri);
+    expect([...inboxes].toSorted()).toEqual([`${FANS}/inbox`, QP].toSorted());
+  });
+
+  it("records one intent for an owner's boost and three quotes, one row per inbox", async () => {
+    const w = await world();
+    const { o, b } = await boosted(w);
+    const q1 = await localQuote(w, o, { visibility: "public", receipts: [SHARED, QP] });
+    const q2 = await localQuote(w, o, { visibility: "unlisted", receipts: [SHARED, RECEIPTS] });
+    const q3 = await localQuote(w, o, { visibility: "direct", receipts: [SHARED, `${FANS}/inbox`] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const recorded = await forwards(w.t.store, o.uri);
+    expect(recorded).toHaveLength(1);
+    expect(JSON.parse(recorded[0]!.body)).toMatchObject({
+      audience: { shares: [b.id, q1.id, q2.id], receiptShares: [q3.id] },
+    });
+    await jobs(w.t.store);
+    const rows = await sql<{ inbox: string }>(
+      w.t.store,
+      "SELECT inbox_url AS inbox FROM deliveries WHERE activity_id = CAST(? AS INTEGER)",
+      recorded[0]!.id,
+    );
+    await runInDurableObject(w.t.store, (_instance, state) => {
+      state.storage.transactionSync(() => expandPending(new Db(state.storage.sql), NOW, Number.MAX_SAFE_INTEGER));
+    });
+    const all = (
+      await sql<{ inbox: string }>(
+        w.t.store,
+        "SELECT inbox_url AS inbox FROM deliveries WHERE activity_id = CAST(? AS INTEGER)",
+        recorded[0]!.id,
+      )
+    ).map((r) => r.inbox);
+    expect(rows.length).toBeLessThanOrEqual(all.length);
+    expect(all.toSorted()).toEqual([`${FANS}/inbox`, `${MASTODON}/inbox`, RECEIPTS, QP, SHARED].toSorted());
+  });
+
+  it("keeps the ids as TEXT from the envelope through both readers (DATA-6)", async () => {
+    const w = await world();
+    const o = await original(w);
+    const low = await localQuote(w, o, { id: "100000000000000000", receipts: [QP] });
+    const high = await localQuote(w, o, { id: "999999999999999999", visibility: "direct", receipts: [QD] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    const audience = (JSON.parse(forward!.body) as DeliveryEnvelope).audience;
+    expect(audience).toMatchObject({ shares: [low.id], receiptShares: [high.id] });
+    expect([typeof audience.shares![0], typeof audience.receiptShares![0]]).toEqual(["string", "string"]);
+    expect(await unstagedInboxes(w.t.store, forward!)).toEqual([`${FANS}/inbox`, QD, QP].toSorted());
+    await jobs(w.t.store);
+    expect([...(await forwardInboxes(w.t.store, o.uri))].toSorted()).toEqual([`${FANS}/inbox`, QD, QP].toSorted());
+  });
+
+  it("sends a forward through a quote to an instance-suspended follower as a retraction (VIS-30)", async () => {
+    const w = await world();
+    await followersOn(w.t.store, "suspended.example", "86", 1);
+    await sql(
+      w.t.store,
+      `INSERT INTO instance_domain_blocks (domain, severity, created_at, updated_at)
+				VALUES ('suspended.example', 'suspend', '2026-10-11T12:00:00.000Z', '2026-10-11T12:00:00.000Z')`,
+    );
+    const o = await original(w);
+    await localQuote(w, o, { receipts: [QP] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    await jobs(w.t.store);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete" && objectOf(s.json) === o.uri);
+    expect(sent.map((s) => s.inbox)).toContain("https://suspended.example/inbox");
+  });
+});
+
+describe("a direct quote's forward reaches only the inboxes that received the quote", () => {
+  // Its Create's rows and targets, in any state, are no receipt: one gave up before any POST (a DNS failure), one is
+  // in flight (leased), one is not expanded yet. Only the receipt's inbox is reached, by both readers.
+  it("sends nothing to an inbox of a Create that gave up, is in flight or is unexpanded", async () => {
+    const w = await world();
+    const o = await original(w);
+    const qd = await localQuote(w, o, { visibility: "direct", receipts: [QD] });
+    const [create] = await sql<{ id: string }>(
+      w.t.store,
+      `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+				VALUES (?, '{"activity":{"type":"Create"},"audience":{"followers":false,"accounts":[]}}', ?, 0, 0)
+				RETURNING CAST(id AS TEXT) AS id`,
+      ALICE,
+      qd.uri,
+    );
+    for (const [inbox, state] of [
+      ["https://never.example/inbox", "gave_up"],
+      ["https://inflight.example/inbox", "leased"],
+    ] as const) {
+      await sql(
+        w.t.store,
+        `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at, lease_token,
+					exposed, last_error)
+				VALUES (CAST(? AS INTEGER), ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        create!.id,
+        ALICE,
+        inbox,
+        new URL(inbox).origin,
+        state,
+        state === "leased" ? NOW + 3_600_000 : 0,
+        state === "leased" ? "held" : null,
+        state === "leased" ? 1 : 0,
+        state === "gave_up" ? "DNS lookup failed" : null,
+      );
+    }
+    await sql(
+      w.t.store,
+      `INSERT INTO outbound_targets (activity_id, targets, next)
+				VALUES (CAST(? AS INTEGER), '[{"inbox":"https://unexpanded.example/inbox","addressee":null}]', 0)`,
+      create!.id,
+    );
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    expect(JSON.parse(forward!.body)).toMatchObject({ audience: { shares: [], receiptShares: [qd.id] } });
+    expect(await unstagedInboxes(w.t.store, forward!)).toEqual([QD]);
+    await jobs(w.t.store);
+    expect([...(await forwardInboxes(w.t.store, o.uri))]).toEqual([QD]);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete" && objectOf(s.json) === o.uri);
+    expect(sent.map((s) => s.inbox)).toEqual([QD]);
+  });
+});
+
+describe("the owners' places (P7)", () => {
+  // 16 local boosters (MAX_FORWARD_OWNERS) and a quote-only owner whose account id is lower than every booster's.
+  it("gives every booster its forward before any quote-only owner, and logs the owners' cap", async () => {
+    const w = await world();
+    const o = await original(w);
+    const boosters = await localBoosters(w, o.id, MAX_FORWARD_OWNERS);
+    const quoter = "300000000000000001";
+    await seedLocalAccount(w.t.store, "kopje.test", { id: quoter, username: "lowquoter", key: LEGACY_EMPTY_KEK });
+    await localQuote(w, o, { owner: quoter, visibility: "direct" });
+    const warn = vi.spyOn(console, "warn");
+    try {
+      expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+      expect(warn.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.forward_capped")).toEqual(
+        [[{ event: "kopje.inbox.forward_capped", owners: MAX_FORWARD_OWNERS }]],
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await forwards(w.t.store, o.uri)).map((f) => f.account_id).toSorted()).toEqual(boosters);
+  }, 120_000);
+});
+
+describe("the hide of an older build's job within its batch (RES-6)", () => {
+  // The batch's mentions leave three rows of PURGE_BATCH; the hide needs four, the status's own quote row being marked
+  // local (an import's), which its trigger copies withdrawn onto, with a card and the account's last status.
+  it("waits for the next batch rather than writing past PURGE_BATCH", async () => {
+    const w = await world();
+    const o = await original(w);
+    const mentioned = await remoteAccountsAt(w.t.store, "6", "m", PURGE_BATCH - 3);
+    await sql(
+      w.t.store,
+      "INSERT INTO status_mentions (status_id, account_id) SELECT ?, value FROM json_each(?)",
+      o.id,
+      JSON.stringify(mentioned),
+    );
+    await sql(
+      w.t.store,
+      "INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation) VALUES (?, 'https://site.example/card', 0, 0, 1)",
+      o.id,
+    );
+    await sql(
+      w.t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, state, local, updated_at)
+				VALUES (?, 'https://elsewhere.example/s/1', 'pending', 1, '2026-10-11T12:00:00.000Z')`,
+      o.id,
+    );
+    await sql(
+      w.t.store,
+      "INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('delete', ?, ?, 0)",
+      o.id,
+      w.bob.uri,
+    );
+    const first = await batch(w.t.store, o.id);
+    expect(first).toMatchObject({ more: true });
+    expect(first.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    // Every batch within PURGE_BATCH (batches checks each); the status hidden and then gone.
+    await batches(w.t.store, o.id);
+    expect(await sql(w.t.store, "SELECT id FROM statuses WHERE id = ?", o.id)).toEqual([]);
+  });
+});
+
+describe("a boost's withdrawal within its batch (RES-6)", () => {
+  // alice's boost holds a quote row an import marked local, so its marker's write copies withdrawn onto it: the marker,
+  // the copy and the cursor follow the Undo's rows. The original's mentions leave the withdrawal exactly the Undo's
+  // rows (its superseded intents, two each, and itself) and two more, one too few for those three.
+  it("records the Undo only with room for the marker, its quote row's copy and the cursor", async () => {
+    const w = await world();
+    const o = await original(w);
+    const b = await boost(w, o.id);
+    // Its Announce delivered and settled, so each intent the Undo supersedes is one without rows: updated and dropped,
+    // the two rows beginRetraction counts for it.
+    await deliver(w);
+    await sql(
+      w.t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, state, local, updated_at)
+				VALUES (?, 'https://elsewhere.example/s/1', 'pending', 1, '2026-10-11T12:00:00.000Z')`,
+      b.id,
+    );
+    await sql(
+      w.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10)
+				INSERT INTO outbound_activities (account_id, body, object_uri, created_at)
+				SELECT ?, json_object('activity', json_object('type', 'Update', 'id', 'u' || i), 'audience',
+					json_object('followers', json('true'), 'accounts', json('[]'))), ?, 0 FROM n`,
+      ALICE,
+      b.uri,
+    );
+    const [{ n }] = (await sql<{ n: number }>(
+      w.t.store,
+      "SELECT count(*) AS n FROM outbound_activities WHERE account_id = ? AND object_uri = ? AND superseded = 0",
+      ALICE,
+      b.uri,
+    )) as [{ n: number }];
+    const undoRows = 2 * n + 1;
+    // An older build's job, its status hidden already (so the batch's hide writes nothing), and its mentions.
+    await sql(
+      w.t.store,
+      "UPDATE statuses SET withdrawn = 1, visibility = 'direct', content = '', spoiler_text = '', search_text = NULL WHERE id = ?",
+      o.id,
+    );
+    await sql(
+      w.t.store,
+      "INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('delete', ?, ?, 0)",
+      o.id,
+      w.bob.uri,
+    );
+    const mentioned = await remoteAccountsAt(w.t.store, "6", "m", PURGE_BATCH - (undoRows + 2));
+    await sql(
+      w.t.store,
+      "INSERT INTO status_mentions (status_id, account_id) SELECT ?, value FROM json_each(?)",
+      o.id,
+      JSON.stringify(mentioned),
+    );
+    const first = await batch(w.t.store, o.id);
+    expect(first.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    console.info({ event: "forward.boost-withdrawal", wrote: first.wrote, n });
+    // The withdrawal waited: no Undo yet; the next batch records it, the copy written with its marker.
+    expect(await sql(w.t.store, "SELECT withdrawn FROM statuses WHERE id = ?", b.id)).toEqual([{ withdrawn: 0 }]);
+    const second = await batch(w.t.store, o.id);
+    expect(second.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    expect(
+      await sql(
+        w.t.store,
+        "SELECT 1 AS x FROM outbound_activities WHERE object_uri = ? AND json_extract(body, '$.activity.type') = 'Undo'",
+        b.uri,
+      ),
+    ).toEqual([{ x: 1 }]);
+    await batches(w.t.store, o.id);
+  });
+});
+
+describe("the quotes' forward and the proof (P5)", () => {
+  it("asks for the proof once for a quote-only original, records once, and nothing more when delivered again", async () => {
+    const w = await world();
+    const o = await original(w);
+    await localQuote(w, o, { receipts: [QP] });
+    const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
+    expect(await w.post(w.bob, body)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, o.uri)).toHaveLength(1);
+    expect(await w.post(w.bob, body)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, o.uri)).toHaveLength(1);
+    await jobs(w.t.store);
+    expect(await w.post(w.bob, body)).toBe(202);
+    expect(await forwards(w.t.store, o.uri)).toHaveLength(1);
+  });
+
+  it("forwards nothing through a quote when the proof is invalid, or when the Delete is unsigned", async () => {
+    const w = await world();
+    const o = await original(w);
+    await localQuote(w, o, { receipts: [QP] });
+    const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
+    const unsigned: Record<string, unknown> = { ...body };
+    delete unsigned.signature;
+    expect(await w.post(w.bob, unsigned)).toBe(202);
+    expect(proofRounds(w)).toBe(0);
+    expect(await forwards(w.t.store, o.uri)).toEqual([]);
+    const other = await original(w);
+    await localQuote(w, other, { receipts: [QP] });
+    // bob's key id, carol's key: the proof round runs and refuses it.
+    const forged = await ldSigned(deletion(w.bob, other.uri), { ...w.bob, privateKey: w.carol.privateKey });
+    expect(await w.post(w.bob, forged)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, other.uri)).toEqual([]);
+  });
+
+  it("reads both windows again at the record: a quote committed and one withdrawn during the proof await", async () => {
+    const w = await world();
+    const o = await original(w);
+    const gone = await localQuote(w, o, { receipts: [QD] });
+    const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
+    const held = w.t.web.hold(w.bob.uri);
+    const request = w.post(w.bob, body);
+    await held.reached;
+    // While the request waits at its proof: alice deletes one quote and posts another (as a Store holds it).
+    expect(
+      (await w.t.request(`/api/v1/statuses/${gone.id}`, bearer(w.t.tokens.alice, { method: "DELETE" }))).status,
+    ).toBe(200);
+    const added = await localQuote(w, o, { receipts: [QP] });
+    held.release();
+    expect(await request).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    // The withdrawn one is in neither list.
+    expect((JSON.parse(forward!.body) as DeliveryEnvelope).audience).toEqual({
+      followers: false,
+      accounts: [],
+      shares: [added.id],
+    });
+  });
+});
+
+describe("the barriers before a quote's evidence goes (P6)", () => {
+  // Barrier 1. The quote's receipts span more than a batch's staging (STAGING_READ a batch).
+  it("a quote-only forward is staged by the job, which stops at it while it stages", async () => {
+    const w = await world();
+    const o = await original(w);
+    const q = await localQuote(w, o);
+    await seedReceipts(w.t.store, q.id, ALICE, 2 * STAGING_READ);
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    let stopped = 0;
+    await batches(w.t.store, o.id, async (n) => {
+      const [now] = await forwards(w.t.store, o.uri);
+      if (now !== undefined && now.staged !== null) {
+        // The barrier stopped the batch: the original and its quote's link stay.
+        expect(await sql(w.t.store, "SELECT id FROM statuses WHERE id = ?", o.id), `batch ${n}`).toHaveLength(1);
+        expect(await sql(w.t.store, "SELECT quoted_status_id AS id FROM quotes WHERE status_id = ?", q.id)).toEqual([
+          { id: o.id },
+        ]);
+        stopped++;
+      }
+    });
+    expect(stopped).toBeGreaterThan(0);
+    expect(await forwards(w.t.store, o.uri)).toMatchObject([{ staged: null }]);
+    expect((await forwardInboxes(w.t.store, o.uri)).size).toBe(2 * STAGING_READ + 1);
+  }, 120_000);
+
+  // Barrier 2: the author's purge, its batches alone (the original's own job never runs here).
+  it("the purge stages quote-only forwards before deleting the status", async () => {
+    const w = await world();
+    const o = await original(w);
+    const q = await localQuote(w, o);
+    await seedReceipts(w.t.store, q.id, ALICE, 2 * STAGING_READ);
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    expect(await storeReceive(w.t.store, w.bob.uri, { type: "DeleteActor", id: `${w.bob.uri}#delete` })).toMatchObject({
+      applied: true,
+    });
+    let stopped = 0;
+    for (let n = 1; ; n++) {
+      expect(n).toBeLessThan(100);
+      const [now] = await forwards(w.t.store, o.uri);
+      const left = await sql(w.t.store, "SELECT id FROM statuses WHERE id = ?", o.id);
+      if (left.length === 0) {
+        expect(now?.staged ?? null, `batch ${n}`).toBeNull();
+      } else if (now !== undefined && now.staged !== null) {
+        stopped++;
+      }
+      const { result, rows } = await writtenBy(w.t.store, (db) => purgeBatch(db, w.bob.uri, NOW));
+      expect(rows).toBeLessThanOrEqual(PURGE_BATCH);
+      if (!result) {
+        break;
+      }
+    }
+    expect(stopped).toBeGreaterThan(0);
+    expect(await sql(w.t.store, "SELECT id FROM statuses WHERE id = ?", o.id)).toEqual([]);
+    expect(await forwards(w.t.store, o.uri)).toMatchObject([{ staged: null }]);
+    expect((await forwardInboxes(w.t.store, o.uri)).size).toBe(2 * STAGING_READ + 1);
+  }, 120_000);
+
+  // Barrier 3. alice's boost of O comes first among the forward's shares, with receipts past a batch's staging, so
+  // the forward cannot finish staging before the quoting status's Create completes; that Create's row to bob's
+  // personal inbox (a personal copy, the quoted author's) is the inbox's only evidence.
+  it("stages the forward before the quoting status's own Delete stages, so a Create completed later is reached", async () => {
+    const w = await world();
+    const theirs = mastodonNote(w.bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
+    expect(await w.post(w.bob, create(w.bob, theirs))).toBe(202);
+    w.t.web.serve(theirs.id, { "@context": AS, ...theirs });
+    const o = { uri: theirs.id, id: await statusId(w.t.store, theirs.id) };
+    const b = await boost(w, o.id);
+    await deliver(w);
+    await seedReceipts(w.t.store, b.id, ALICE, 3 * STAGING_READ);
+    const posted = await w.t.request(
+      "/api/v1/statuses",
+      json({ status: "look", quoted_status_id: o.id }, bearer(w.t.tokens.alice)),
+    );
+    expect(posted.status).toBe(200);
+    const quoting = await posted.json<{ id: string; uri: string }>();
+    const personal = `${MASTODON}/users/bob/inbox`;
+    // The Create's POST to the personal inbox held at its fetch.
+    const reached = deferred();
+    const release = deferred();
+    const gated = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const sent = JSON.parse(await request.text()) as Record<string, unknown>;
+      if (request.url === personal && sent.type === "Create") {
+        reached.resolve();
+        await release.promise;
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const round = deliveryRound(
+      w.t.env,
+      deliveryDeps(
+        () => w.t.store,
+        gated,
+        () => NOW,
+      ),
+    );
+    await reached.promise;
+    try {
+      // The forward is recorded, its staging not begun; then the quoting status is deleted: its Delete stages.
+      expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+      const [forward] = await forwards(w.t.store, o.uri);
+      expect(JSON.parse(forward!.body)).toMatchObject({ audience: { shares: [b.id, quoting.id] } });
+      const gone = await w.t.request(`/api/v1/statuses/${quoting.id}`, bearer(w.t.tokens.alice, { method: "DELETE" }));
+      expect(gone.status).toBe(200);
+      const ownDelete = () =>
+        sql<{ staged: string | null }>(
+          w.t.store,
+          "SELECT staged FROM outbound_activities WHERE object_uri = ? AND retracts = 1",
+          quoting.uri,
+        );
+      expect(await ownDelete()).toEqual([{ staged: expect.any(String) }]);
+      // A batch of its job: the forward stages first and stops it, so its own Delete still stages.
+      expect((await batch(w.t.store, quoting.id)).more).toBe(true);
+      expect(await ownDelete()).toEqual([{ staged: expect.any(String) }]);
+      expect(personal).not.toBe(`${MASTODON}/inbox`);
+    } finally {
+      // The Create's completion, before the next round of the forward's staging.
+      release.resolve();
+      await round;
+    }
+    await jobs(w.t.store);
+    expect(await forwards(w.t.store, o.uri)).toMatchObject([{ staged: null }]);
+    expect(await forwardInboxes(w.t.store, o.uri)).toContain(personal);
+  }, 120_000);
+});
+
+// The most a forward's envelope adds to its body with quotes (recordForwards): an owner's boost and an empty
+// receiptShares, and each of the MAX_FORWARD_QUOTES references, across all intents, as a 19-digit id with its quotes
+// and comma.
+const QUOTE_ENVELOPE_OVERHEAD =
+  utf8(
+    JSON.stringify({
+      activity: {},
+      audience: { followers: false, accounts: [], shares: ["9".repeat(19)], receiptShares: [] },
+      immutable: true,
+    }),
+  ) - 2;
+const REFERENCE_BYTES = utf8(`"${"9".repeat(19)}",`);
+
+describe("the first transaction at its bounds with quotes (P7, T9b)", () => {
+  // The inputs at their cap together: 17 local boosters (MAX_FORWARD_OWNERS + 1 candidates), each also quoting: 65 live
+  // quotes (MAX_FORWARD_QUOTES + 1 raw candidates), the first 64 by the first 16 owners, four each, public and direct
+  // in turn (both lists), the 65th by the 17th; a body of exactly FORWARD_BODY_MAX bytes; intent keys of 20 characters
+  // (a restored store's, sign and 19 digits), so the job's bound holds MAX_FORWARD_OWNERS ids at their longest
+  // (FORWARDS_BOUND_BYTES); and the rest of the first transaction at its most (saturated: the 4 x SWEEP_BATCH sweep,
+  // the largest streaming capture, the original's own quote row marked local).
+  it("records 16 intents of 64 references within the derived bytes and rows, logging both caps once", async () => {
+    const w = await world();
+    const o = await original(w);
+    const owners = await localBoosters(w, o.id, MAX_FORWARD_OWNERS + 1);
+    for (let i = 0; i <= MAX_FORWARD_QUOTES; i++) {
+      await localQuote(w, o, {
+        owner: owners[Math.floor(i / 4)]!,
+        visibility: i % 2 === 0 ? "public" : "direct",
+      });
+    }
+    await saturated(w, o);
+    await sql(w.t.store, "DELETE FROM outbound_activities");
+    await sql(
+      w.t.store,
+      `INSERT INTO outbound_activities (id, account_id, body, object_uri, created_at)
+				VALUES (-9223372036854775000, ?, '{"activity":{},"audience":{"followers":false,"accounts":[]}}', 'restored', 0)`,
+      DAVE,
+    );
+    const body = paddedTo(await ldSigned(deletion(w.bob, o.uri), w.bob), FORWARD_BODY_MAX);
+    const warn = vi.spyOn(console, "warn");
+    try {
+      const { result, rows } = await provenReceive(w, body, o.uri);
+      expect(result).toMatchObject({ applied: true, reason: "status-deleted" });
+      expect(warn.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.forward_capped")).toEqual(
+        [[{ event: "kopje.inbox.forward_capped", owners: MAX_FORWARD_OWNERS, quotes: MAX_FORWARD_QUOTES }]],
+      );
+      const recorded = await forwards(w.t.store, o.uri);
+      // forwards() orders by the TEXT spelling of the ids, which crosses a power of ten here.
+      expect(recorded.map((f) => f.account_id).toSorted()).toEqual(owners.slice(0, MAX_FORWARD_OWNERS));
+      const references = recorded.flatMap((f) => {
+        const { shares, receiptShares } = (JSON.parse(f.body) as DeliveryEnvelope).audience;
+        return [...shares!, ...(receiptShares ?? [])];
+      });
+      // Each owner's boost and the first 64 quotes.
+      expect(references).toHaveLength(MAX_FORWARD_OWNERS + MAX_FORWARD_QUOTES);
+      const bound = (await jobBound(w.t.store, o.id))!;
+      expect((JSON.parse(bound) as { forwards: string[] }).forwards.every((id) => id.length === 20)).toBe(true);
+      const bytes = recorded.reduce((n, f) => n + utf8(f.body), 0) + utf8(bound);
+      expect(bytes).toBeLessThanOrEqual(
+        MAX_FORWARD_OWNERS * (FORWARD_BODY_MAX + QUOTE_ENVELOPE_OVERHEAD) +
+          MAX_FORWARD_QUOTES * REFERENCE_BYTES +
+          BOUND_MAX,
+      );
+      expect(rows).toBe(RECEIVE_SWEEP_ROWS + DELETE_HANDLER_ROWS);
+      console.info({ event: "forward.first-transaction.quotes", rows, bytes });
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+});
+
+describe("the quote cap on the raw candidates (P7)", () => {
+  // A local quote row of a status no local account holds (an import's) first by id, then MAX_FORWARD_QUOTES live ones:
+  // the window's raw candidates pass the cap though only 64 of them resolve to an owner.
+  it("logs the cap when the raw candidates pass it, and forwards the resolved ones within it", async () => {
+    const w = await world();
+    const o = await original(w);
+    const stranger = (await remoteAccountsAt(w.t.store, "6", "imported", 1))[0]!;
+    await localQuote(w, o, { owner: stranger });
+    const live = [];
+    for (let i = 0; i < MAX_FORWARD_QUOTES; i++) {
+      live.push(await localQuote(w, o));
+    }
+    const warn = vi.spyOn(console, "warn");
+    try {
+      expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+      expect(warn.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.forward_capped")).toEqual(
+        [[{ event: "kopje.inbox.forward_capped", quotes: MAX_FORWARD_QUOTES }]],
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    const [forward, ...others] = await forwards(w.t.store, o.uri);
+    expect(others).toEqual([]);
+    expect(JSON.parse(forward!.body)).toMatchObject({
+      audience: { shares: live.slice(0, MAX_FORWARD_QUOTES - 1).map((q) => q.id) },
+    });
+  });
+});
+
+describe("the shared-inbox fallback of a quote's forward (P8)", () => {
+  it("gives up a receipt-only row, whose recipients are unknown, visibly", async () => {
+    const w = await world();
+    const o = await original(w);
+    const missing = "https://missing.example/inbox";
+    await localQuote(w, o, { visibility: "direct", receipts: [missing] });
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    await jobs(w.t.store);
+    const attempts: string[] = [];
+    await deliver(w, (url, sent) => {
+      if (sent.type === "Delete") {
+        attempts.push(url);
+      }
+      return url === missing ? 404 : 202;
+    });
+    // The fallback ran for the row (its answer is one it moves on) and moved nothing.
+    expect(attempts).toEqual([missing]);
+    expect(
+      await sql(
+        w.t.store,
+        "SELECT inbox_url, state, last_status FROM deliveries WHERE activity_id = CAST(? AS INTEGER)",
+        forward!.id,
+      ),
+    ).toEqual([{ inbox_url: missing, state: "gave_up", last_status: 404 }]);
+  });
+});
+
+describe("a quote's forward staged anew (RES-6)", () => {
+  // 0085_retraction_staging's contract: a staging another value of staged names is begun again, and may emit targets
+  // already emitted; receivers deduplicate by activity id.
+  it("regenerates its targets when restarted after a partial emit, missing none", async () => {
+    const w = await world();
+    const o = await original(w);
+    const q = await localQuote(w, o, { visibility: "direct" });
+    await seedReceipts(w.t.store, q.id, ALICE, 3 * STAGING_READ);
+    expect(await w.post(w.bob, await ldSigned(deletion(w.bob, o.uri), w.bob))).toBe(202);
+    const [forward] = await forwards(w.t.store, o.uri);
+    const subject = forwardSubject(o.uri);
+    const chunks = () =>
+      sql<{ n: number }>(
+        w.t.store,
+        "SELECT count(*) AS n FROM outbound_targets WHERE activity_id = CAST(? AS INTEGER)",
+        forward!.id,
+      );
+    // Calls until some targets are written out and more remain.
+    for (let call = 0; ; call++) {
+      expect(call).toBeLessThan(50);
+      const done = await runInDurableObject(w.t.store, (_instance, state) =>
+        state.storage.transactionSync(() =>
+          stageRetraction(new Db(state.storage.sql), ALICE, subject, PURGE_BATCH, forward!.id),
+        ),
+      );
+      expect(done).toBe(false);
+      if ((await chunks())[0]!.n > 0) {
+        break;
+      }
+    }
+    await sql(w.t.store, "UPDATE outbound_activities SET staged = 'other' WHERE id = CAST(? AS INTEGER)", forward!.id);
+    await jobs(w.t.store);
+    const inboxes = await forwardInboxes(w.t.store, o.uri);
+    expect(inboxes.size).toBe(3 * STAGING_READ);
+    expect(await forwards(w.t.store, o.uri)).toMatchObject([{ staged: null }]);
   }, 120_000);
 });

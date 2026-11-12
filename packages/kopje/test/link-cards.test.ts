@@ -329,9 +329,15 @@ describe("enqueue and reset", () => {
 });
 
 describe("the hide step of a remote delete", () => {
-  // deleteStatusBatch hides a status with three rows left: the status, the account's last status (0021_directory) and
-  // its card row; with two left it waits for the next batch.
-  it.each([3, 2])("deletes the card with the hide when %i rows are left", async (left) => {
+  // deleteStatusBatch hides a status with four rows left (HIDE_ROWS): the status, the account's last status
+  // (0021_directory), its card row and the copy of withdrawn on its own quote row when an import marked that row local
+  // (0091_live_local_quotes); with three left it waits for the next batch. Each with and without that quote row.
+  it.each([
+    [4, true],
+    [4, false],
+    [3, true],
+    [3, false],
+  ] as const)("deletes the card with the hide when %i rows are left (a local quote row: %s)", async (left, quoted) => {
     const { h, carol } = await world();
     const status = await runInDurableObject(h.store, (_instance, state) => {
       const db = new Db(state.storage.sql);
@@ -346,6 +352,13 @@ describe("the hide step of a remote delete", () => {
         "INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation) VALUES (?, 'https://e.example/', 1, 1, 1)",
         id,
       );
+      if (quoted) {
+        db.run(
+          `INSERT INTO quotes (status_id, quoted_uri, state, local, updated_at)
+						VALUES (?, 'https://elsewhere.example/s/1', 'pending', 1, '2026-10-12T00:00:00.000Z')`,
+          id,
+        );
+      }
       return id;
     });
     await sql(
@@ -368,9 +381,15 @@ describe("the hide step of a remote delete", () => {
       return changes() - before;
     });
     const hidden = await sql<{ visibility: string }>(h.store, "SELECT visibility FROM statuses WHERE id = ?", status);
-    expect(hidden).toEqual([{ visibility: left === 3 ? "direct" : "public" }]);
-    expect(await sql(h.store, "SELECT count(*) AS n FROM status_cards")).toEqual([{ n: left === 3 ? 0 : 1 }]);
-    expect(wrote).toBe(left === 3 ? PURGE_BATCH : PURGE_BATCH - 2);
+    expect(hidden).toEqual([{ visibility: left === 4 ? "direct" : "public" }]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM status_cards")).toEqual([{ n: left === 4 ? 0 : 1 }]);
+    if (quoted && left === 4) {
+      expect(await sql(h.store, "SELECT withdrawn FROM quotes WHERE status_id = ?", status)).toEqual([
+        { withdrawn: 1 },
+      ]);
+    }
+    // Waiting, the batch's room goes to the status's children instead: its quote row is one.
+    expect(wrote).toBe(left === 4 ? PURGE_BATCH - (quoted ? 0 : 1) : PURGE_BATCH - 3 + (quoted ? 1 : 0));
   });
 });
 

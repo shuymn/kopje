@@ -731,7 +731,7 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
   good: an `Accept` that arrives after the retraction expires applies, as in Mastodon. The refusal keeps a forged or
   replayed `Accept` naming a retracted stamp from taking effect while the retraction lasts. Accepted, 2026-11-11.
 
-Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted; Mastodon's
+Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):
 
 - Kopje forwards only once the author's own proof verifies, an RsaSignature2017 Linked Data Signature or an FEP-8b32
@@ -740,17 +740,26 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 - The body goes as received, serialized once in the Store (`JSON.stringify`), byte for byte to every inbox; Mastodon
   sends its processed document (`Oj.dump(@json)`, compacted JSON-LD after `patch_for_forwarding!`), without the
   `signature` unless it is safe to forward.
-- Each local booster forwards it to its own reach, signed with its own key: its followers' inboxes (shared, else
-  personal) and the inboxes that received its boost, or may still (receipts, earlier rows in any state). Mastodon signs
-  once, for everyone, with the replied-to local account's key when there is one, else the first sharer's (reboosters
-  before quoters), sends to the followers of every local booster and quoter and of the replied-to account, less the
-  inbox URLs `DeliveryFailureTracker` marks unavailable and the author's own inbox, and reads no receipts. So a server
-  may get one POST per local booster, and the deleting author's server may get it back.
-- At most 16 boosters forward (the first by account id), and nothing is forwarded for a body over 65,536 bytes as
-  serialized or holding a number JSON cannot carry; Mastodon has no such caps.
+- Each local booster or quoter forwards it to its own reach, signed with its own key: its followers' inboxes (shared,
+  else personal) and the inboxes that received its boost or quoting status, or may still (receipts, earlier rows in any
+  state). Mastodon signs once, for everyone, with the replied-to local account's key when there is one, else the first
+  sharer's (reboosters before quoters), sends to the followers of every local booster and quoter and of the replied-to
+  account, less the inbox URLs `DeliveryFailureTracker` marks unavailable and the author's own inbox, and reads no
+  receipts. So a server may get one POST per local booster or quoter, and the deleting author's server may get it back.
+- A quote in any state forwards, as in Mastodon (`forwarder.rb:30-32` reads every quote), but a direct or limited
+  quoting status forwards only to the inboxes it was delivered to (its receipts), never its author's followers, who
+  may not see it, nor an inbox whose delivery of it is still in flight or never succeeded; Mastodon sends a direct
+  quote's forward to its quoter's followers.
+- A quoting status whose removal has begun (withdrawn) forwards nothing, a reported or preserved one included, which
+  Mastodon keeps discarded with its quote and forwards through (`remove_status_service.rb:53`, `:162-164`).
+- At most 16 owners forward (the boosters first by account id, then the owners of the quotes read by account id),
+  through at most 64 quoting statuses across all owners (the first by status id, one owner may hold them all; a policy
+  cap, logged when passed), and
+  nothing is forwarded for a body over 65,536 bytes as serialized or holding a number JSON cannot carry; Mastodon has
+  no such caps.
 - Only a kept boost that is not direct or limited forwards (a converted direct boost is one Kopje kept from legacy
-  data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a quote of the status, a reply
-  to a local account, nor an `Update` is forwarded. A `Delete` another server relays is refused for a status, with or
+  data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local account nor
+  an `Update` is forwarded, nor are a quoting status's poll voters reached. A `Delete` another server relays is refused for a status, with or
   without the author's proof (ID-1's one exception covers a stamp only); Mastodon verifies a relayed `Delete`'s LD
   signature by its author (`process_collection_service.rb` `verify_account!`), then applies and forwards it as the
   author's own (`activity/delete.rb` `delete_status`).
