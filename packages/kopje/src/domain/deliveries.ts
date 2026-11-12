@@ -2494,12 +2494,6 @@ const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activi
 
 const DUE_FROM = "deliveries d LEFT JOIN outbound_activities o ON o.id = d.activity_id";
 
-// One leased row (?1 its id, ?2 its lease) and its activity, each read by its rowid in a LIMIT 1 subquery: joined by
-// rowid, statistics taken while the tables were small plan the lookups as scans (RES-7).
-const LEASED_FROM = `(SELECT * FROM deliveries WHERE id = CAST(?1 AS INTEGER) AND state = 'leased' AND lease_token = ?2 LIMIT 1) d
-	LEFT JOIN (SELECT * FROM outbound_activities
-		WHERE id = (SELECT activity_id FROM deliveries WHERE id = CAST(?1 AS INTEGER)) LIMIT 1) o ON 1`;
-
 function hostOf(inbox: string): string | null {
   try {
     return hostDomain(inbox);
@@ -2760,7 +2754,7 @@ export const confirmDelivery = writeOperation<{ id: string; leaseToken: string; 
   (db, { id, leaseToken, now }) => {
     const row = db.first<DueRow & { activity: string | null; immutable: number | null }>(
       `SELECT ${DUE_ROW}, json_extract(o.body, '$.activity') AS activity, json_extract(o.body, '$.immutable') AS immutable
-			FROM ${LEASED_FROM}`,
+			FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
       id,
       leaseToken,
     );
@@ -2806,7 +2800,7 @@ export const completeDelivery = writeOperation<
   const row = db.first<LaneRow & { stale_answer: number; answer_type: string }>(
     `SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
 			d.attempts, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type
-		FROM ${LEASED_FROM}`,
+		FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
     id,
     leaseToken,
   );
@@ -2899,15 +2893,12 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
   // refused. Each account is sought by id from the audience (RES-7).
   const candidates = db.all<{ inbox: string; id: string; uri: string; retracts: number; available: number }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri, o.retracts, ${availableSql("a.id")} AS available
-		FROM (SELECT addressee, inbox_url FROM deliveries WHERE id = CAST(?1 AS INTEGER) LIMIT 1) d
-			CROSS JOIN (SELECT id, body, retracts FROM outbound_activities
-				WHERE id = (SELECT activity_id FROM deliveries WHERE id = CAST(?1 AS INTEGER)) LIMIT 1) o
+		FROM deliveries d CROSS JOIN outbound_activities o ON o.id = d.activity_id
 			CROSS JOIN json_each(o.body, '$.audience.accounts') r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
+		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
 			AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url AND a.inbox_url <> d.inbox_url
-			AND NOT EXISTS (SELECT 1 FROM deliveries e INDEXED BY deliveries_activity
-				WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
-			AND NOT EXISTS (SELECT 1 FROM outbound_targets c INDEXED BY outbound_targets_activity, json_each(c.targets) t
+			AND NOT EXISTS (SELECT 1 FROM deliveries e WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
+			AND NOT EXISTS (SELECT 1 FROM outbound_targets c, json_each(c.targets) t
 				WHERE c.activity_id = o.id AND t.key >= c.next AND json_extract(t.value, '$.inbox') = a.inbox_url)
 		ORDER BY a.id`,
     row.id,

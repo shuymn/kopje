@@ -1584,16 +1584,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the active rows counted through the partial index deliveries_lane (state queued, pending or leased), at most the statement's LIMIT (MAX_BACKLOG or MAX_LANE_BACKLOG, src/domain/deliveries.ts activeCount: RES-4)",
   },
   {
-    id: "c73029f9958dc4bd",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/deliveries.ts#personalFallback < src/domain/deliveries.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "4e24afbeba55cd42",
     scans: ["deliveries: SCAN deliveries"],
     site: "src/domain/deliveries.ts#<anonymous>",
@@ -1608,6 +1598,33 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "the operator's delivery report (deliveriesReport, src/domain/deliveries.ts) counts the activities still expanding: the walk is the report, which only the Access admin reads (GET /admin/deliveries, src/app/admin.ts)",
+  },
+  {
+    id: "19c057c4ebf7cf4d",
+    scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
+    site: "src/domain/deliveries.ts#<anonymous> in confirmDelivery",
+    disposition: "pending",
+    issue: "#1468 group 8",
+  },
+  {
+    id: "b7eb6c56c31930ea",
+    scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
+    site: "src/domain/deliveries.ts#<anonymous> in completeDelivery",
+    disposition: "pending",
+    issue: "#1468 group 8",
+  },
+  {
+    id: "0b29b51f1d1d3bf9",
+    scans: [
+      "deliveries: SCAN d",
+      "deliveries: SCAN e",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "outbound_activities: SCAN o",
+      "outbound_targets: SCAN c",
+    ],
+    site: "src/domain/deliveries.ts#personalFallback < src/domain/deliveries.ts#<anonymous> in completeDelivery",
+    disposition: "pending",
+    issue: "#1468 group 8",
   },
   {
     id: "cacc6c5c1e413ee6",
