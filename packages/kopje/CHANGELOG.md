@@ -8,6 +8,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
+A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now
+reach the servers a local quote carried their status to, and a local `Reject` of a follow request is no longer lost
+while the requester is suspended. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: adds two migrations (0091 and 0092), applied on the first request after the deploy; a rollback to an
+  earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the
+  representative store defined in `test/bench/migration-cost.ts` they took 12,501–12,556 ms (median 12,512 ms) together
+  in three runs of the migration bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite,
+  including the Store-wide foreign-key check that 0092's new table requires. No `wrangler.jsonc` change.
+
 ### Added
 
 - A remote author's proven `Delete` of a public or unlisted status that local accounts quoted is now forwarded through
@@ -35,6 +49,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a table, the upgrade checks every reference of the Store (a median of 6,614 ms in three local runs of the migration
   bench for the file, 7,336 ms with `0091`). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release
   is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Reads of notifications, timelines, lists, follows and inbound follow edges that scanned a table under stale
+  statistics now seek by key (#1468), with the same results.
 
 ## [0.4.0] - 2026-11-12
 
