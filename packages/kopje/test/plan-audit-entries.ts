@@ -507,7 +507,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "deliberate",
     reason:
-      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only. The follow measures loop over local_accounts (src/domain/admin-measures.ts:238-241): their candidates are capped at MEASURE_ROWS + 1 (:53, the LIMIT at :261), which does not stop the loop over local accounts with no follow, so a measure is O(local accounts), a deployment assumption (one person or a small group; an import may bring more)",
   },
   {
     id: "bdf72c7b9ba57b07",
@@ -515,7 +515,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/admin-measures.ts#measureOf < src/domain/admin-measures.ts#<anonymous> in adminMeasure < src/domain/auth.ts#<anonymous> in adminGuarded",
     disposition: "deliberate",
     reason:
-      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only; each reads at most MEASURE_ROWS + 1 rows of its window and MEASURE_DOMAINS + 1 peers (src/domain/admin-measures.ts:53-54, the LIMITs at :189 and :261)",
+      "the OAuth admin's measures (POST /api/v1/admin/measures, adminGuarded), operator-only. The follow measures loop over local_accounts (src/domain/admin-measures.ts:238-241): their candidates are capped at MEASURE_ROWS + 1 (:53, the LIMIT at :261), which does not stop the loop over local accounts with no follow, so a measure is O(local accounts), a deployment assumption (one person or a small group; an import may bring more)",
   },
   {
     id: "d3b08cb9746f9019",
@@ -1642,7 +1642,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "56fbdb284ae24ea9",
@@ -1653,7 +1653,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "c8b5781765c9dc40",
@@ -1664,7 +1664,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "ee420686f7bc1093",
@@ -1675,7 +1675,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
   },
   {
     id: "66b5bbbd8d4addad",
@@ -2239,17 +2239,17 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "c10d6d4de870645f",
     scans: ["admin_actions: SCAN admin_actions"],
     site: "src/domain/moderation-log.ts#<anonymous> in moderationLog",
-    disposition: "bounded",
+    disposition: "deliberate",
     reason:
-      "admin_actions keeps the newest MODERATION_LOG_KEEP (10,000) rows: each logAction deletes up to MODERATION_LOG_PRUNE below the window (src/domain/moderation-log.ts:17-18, :65-69); only admin writes log a row, and the page is the Access-gated GET /admin/moderation-log, operator-only",
+      "an operator-only cost: the Access-gated GET /admin/moderation-log and the admin writes that log a row (src/domain/moderation-log.ts:14-15). logAction keeps the newest MODERATION_LOG_KEEP (10,000) rows by deleting at most MODERATION_LOG_PRUNE (10) below the window per write (:17-18, :65-69), but an import inserts admin_actions uncapped (src/platform/store-import.ts), so the table can hold more than the window until the writes prune it",
   },
   {
     id: "85e75d83d6d3987a",
     scans: ["admin_actions: SCAN admin_actions"],
     site: "src/domain/moderation-log.ts#logAction < src/domain/remote-suspension.ts#suspendRemote < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
-    disposition: "bounded",
+    disposition: "deliberate",
     reason:
-      "admin_actions keeps the newest MODERATION_LOG_KEEP (10,000) rows: each logAction deletes up to MODERATION_LOG_PRUNE below the window (src/domain/moderation-log.ts:17-18, :65-69); only admin writes log a row, and the page is the Access-gated GET /admin/moderation-log, operator-only",
+      "an operator-only cost: the Access-gated GET /admin/moderation-log and the admin writes that log a row (src/domain/moderation-log.ts:14-15). logAction keeps the newest MODERATION_LOG_KEEP (10,000) rows by deleting at most MODERATION_LOG_PRUNE (10) below the window per write (:17-18, :65-69), but an import inserts admin_actions uncapped (src/platform/store-import.ts), so the table can hold more than the window until the writes prune it",
   },
   {
     id: "2fb9c118025c0214",
@@ -2680,7 +2680,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
   },
   {
     id: "f8c1f4e4265e3864",
@@ -2688,15 +2688,16 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#<anonymous> in bootstrapInstance",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
   },
   {
-    id: "467093ef10eaf7ee",
+    id: "6f1738c70c69cc55",
     scans: ["local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_2"],
     site: "src/domain/setup.ts#bootstrapped < src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "deliberate",
     reason:
-      "read only while no configuration row exists (setup.ts:127-133, the || after the instance_settings probe): before bootstrap, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
+      "an existence probe of the local accounts: LIMIT 1 reads the first entry of local_accounts' email index whatever their number, and only while no configuration row exists (src/domain/setup.ts, bootstrapped)",
+    witness: "test/other-request-plans.test.ts",
   },
   {
     id: "883afee3d9b87bd9",
@@ -2716,7 +2717,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#sessionNames < src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions and the Store's own fixed names",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
   },
   {
     id: "74337db9b1e41efd",

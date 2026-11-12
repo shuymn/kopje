@@ -6,7 +6,7 @@ import { leaveConversationsWith } from "../src/domain/conversations";
 import { getFilterStatus } from "../src/domain/filters";
 import { instanceInfo } from "../src/domain/instance";
 import { accountLists, listLists } from "../src/domain/lists";
-import { updateScheduled } from "../src/domain/scheduled-statuses";
+import { DAILY_LIMIT, updateScheduled } from "../src/domain/scheduled-statuses";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
 import { statementId } from "./plan-audit";
@@ -26,7 +26,8 @@ import { type SqlRow, watchedCursor } from "./read-helpers";
 // conversations, filters, schedules of the day and of other days, lists past MAX_LISTS, which an import does not
 // enforce; the local accounts), each population counted by its own predicate, and the flow reads at most its stated
 // rows per row they gain together, and at least one when it walks them. The import-shaped rows: a participant named
-// twice and one with a NUL after it, lists and filters of one title, schedules at one time.
+// twice and one with a NUL after it, lists and filters of one title, schedules at one time. The day's count reads no
+// more as the other days grow, and reads to DAILY_LIMIT on a day already past it.
 
 const VIEWER = "600000000000000001";
 const LOW = "500000000000000001";
@@ -232,9 +233,9 @@ function holdings(sql: SqlStorage, owner: string, base: string, n: number, domai
 }
 
 // The viewer's own rows, `own` of each kind: conversations (as an owner's, and one naming TARGET with a NUL after
-// it), filters, schedules of the day after and own / 12 + 1 of DAY, the one SCHEDULE moved, lists, and own / 10 local
+// it), filters, schedules of the day after and `day` of DAY, the one SCHEDULE moved, lists, and own / 10 local
 // accounts.
-function subject(sql: SqlStorage, own: number) {
+function subject(sql: SqlStorage, own: number, day: number) {
   holdings(sql, VIEWER, "30", own, null);
   sql.exec(
     "INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'nul', json_array(? || char(0) || 'x'), ?)",
@@ -246,7 +247,7 @@ function subject(sql: SqlStorage, own: number) {
     "DELETE FROM scheduled_statuses WHERE account_id = ? AND scheduled_at = ? AND id > ?",
     VIEWER,
     AT,
-    id18("32", Math.floor(own / 12)),
+    id18("32", day - 1),
   );
   sql.exec(
     "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
@@ -298,6 +299,9 @@ type Flow = {
   // The viewer's own key, each population by its own predicate, and the rows the flow reads at most per row they gain
   // together (0: none, a lookup by key).
   own: { count: Record<string, string>; walks: number };
+  // The viewer's schedules of DAY at `own` (own / 12 + 1 by default), and the operation's value.
+  day?: (own: number) => number;
+  answer?: unknown;
 };
 
 const others = (table: string) => `SELECT count(*) AS n FROM ${table} WHERE account_id <> '${VIEWER}'`;
@@ -359,6 +363,35 @@ const FLOWS: Record<string, Flow> = {
       walks: 1,
     },
   },
+  // The same, the viewer's schedules of DAY held: other days grown, the day's count reads no more.
+  "a schedule moved to a day, other days grown": {
+    main: ["d634d9244eae5d1e"],
+    run: (sql, transact) =>
+      updateScheduled.run(sql, { id: SCHEDULE, scheduledAt: AT, now: NOW, credential: credential("write") }, transact),
+    neighbours: { day: others("scheduled_statuses") },
+    own: { count: { others: mine("scheduled_statuses", `scheduled_at <> '${AT}'`) }, walks: 0 },
+    day: () => 5,
+    answer: { status: "ok" },
+  },
+  // A schedule moved to a DAY that already holds more than DAILY_LIMIT: refused, the count read to its limit.
+  "a schedule moved to a full day": {
+    main: ["d634d9244eae5d1e"],
+    run: (sql, transact) =>
+      updateScheduled.run(sql, { id: SCHEDULE, scheduledAt: AT, now: NOW, credential: credential("write") }, transact),
+    neighbours: { day: others("scheduled_statuses") },
+    own: {
+      count: {
+        day: mine("scheduled_statuses", `scheduled_at = '${AT}'`),
+        others: mine("scheduled_statuses", `scheduled_at <> '${AT}'`),
+      },
+      walks: 0,
+    },
+    day: (own) => DAILY_LIMIT + own / 12,
+    answer: {
+      status: "invalid",
+      error: `Validation failed: You have exceeded the limit of ${DAILY_LIMIT} scheduled posts for today`,
+    },
+  },
   // The viewer's lists.
   "the viewer's lists": {
     main: ["c062eb1780f68065"],
@@ -387,7 +420,7 @@ const FLOWS: Record<string, Flow> = {
     main: ["782bd4dc8403b718"],
     run: (sql, transact) => instanceInfo.run(sql, { now: NOW, present: { origin: "https://kopje.test" } }, transact),
     neighbours: { remote: "SELECT count(*) AS n FROM accounts WHERE domain IS NOT NULL" },
-    // The peer domain count walks the remote accounts (#1481).
+    // The peer domain count walks the remote accounts (#1502).
     walks: { "782bd4dc8403b718": { population: "remote", perRun: 1 } },
     own: {
       count: {
@@ -399,13 +432,13 @@ const FLOWS: Record<string, Flow> = {
   },
 };
 
-function world(n: number, own: number) {
+function world(n: number, own: number, day: number) {
   return migratedStore().then(async (store) => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       base(sql);
       holdings(sql, LOW, "20", n, "a");
-      subject(sql, own);
+      subject(sql, own, day);
       holdings(sql, HIGH, "40", n, "z");
     });
     return store;
@@ -413,7 +446,7 @@ function world(n: number, own: number) {
 }
 
 async function sides(statistics: (typeof STATISTICS)[number], flow: Flow, n: number, own: number) {
-  const store = await world(n, own);
+  const store = await world(n, own, flow.day?.(own) ?? Math.floor(own / 12) + 1);
   return runInDurableObject(store, (_instance, state) => {
     const sql = state.storage.sql;
     const transact = <T>(fn: () => T): T => state.storage.transactionSync(fn);
@@ -476,6 +509,11 @@ describe("group 9's pinned reads beside main's (RES-7)", () => {
         }
       }
       expect(many.result).toEqual(few.result);
+      if (flow.answer !== undefined) {
+        for (const run of [few, many, ownMany]) {
+          expect(run.result).toMatchObject({ status: "ok", value: flow.answer });
+        }
+      }
       // The neighbours: the same rows but for a walk of a population.
       for (const [i, side] of many.sides.entries()) {
         const walk = flow.walks?.[side.id];

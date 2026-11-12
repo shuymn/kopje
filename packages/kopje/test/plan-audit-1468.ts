@@ -757,7 +757,7 @@ export const ROWS_1468: readonly Row1468[] = [
     status: "outside",
     why: "COUNT(DISTINCT domain) walks every remote account through accounts_domain_username (a SEARCH, domain > ?)",
     witness:
-      "needed: a peer domain count kept with the accounts (#1481); test/activity.test.ts's address lookups saw the counts read 203 rows at 200 remote accounts of one domain, 4 at one",
+      "needed: a stored or cached peer domain count for the anonymous GET /api/v1/instance (#1502); test/activity.test.ts's address lookups saw the counts read 203 rows at 200 remote accounts of one domain, 4 at one",
   },
   {
     group: 9,

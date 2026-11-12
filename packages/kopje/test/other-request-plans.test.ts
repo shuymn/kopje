@@ -2,14 +2,14 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { insertLocalAccount } from "../src/domain/setup";
+import { beginSetupSession, insertLocalAccount } from "../src/domain/setup";
 import { tagHistory, tagKey } from "../src/domain/tags";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { type PlannedStatement, plannedSql } from "./read-helpers";
 
-// RES-7 witnesses of two scans the plan audit lists that read nothing (test/plan-audit-entries.ts, their reasons): each
+// RES-7 witnesses of three scans the plan audit lists that read nothing or one row (test/plan-audit-entries.ts, their reasons): each
 // statement's plan names the scan, and its rows read stay the same as the scanned table grows, under the plan audit's
 // singleton statistics and after ANALYZE, taken once every population exists. Each population is counted by its own
 // predicate and asserted to grow.
@@ -30,7 +30,7 @@ async function measured(
   build: (sql: SqlStorage) => void,
   populations: Record<string, string>,
   pattern: RegExp,
-  run: (db: Db) => unknown,
+  run: (db: Db, sql: SqlStorage) => unknown,
 ): Promise<Run> {
   const store = await migratedStore();
   return runInDurableObject(store, (_instance, state) => {
@@ -45,7 +45,8 @@ async function measured(
       sql.exec("ANALYZE");
     }
     const plans: PlannedStatement[] = [];
-    const result = state.storage.transactionSync(() => run(new Db(plannedSql(sql, pattern, plans))));
+    const planned = plannedSql(sql, pattern, plans);
+    const result = state.storage.transactionSync(() => run(new Db(planned), planned));
     return { populations: counted, plans, result };
   });
 }
@@ -177,5 +178,40 @@ describe("a new local account beside the rows that reference local accounts (RES
       );
     }
     expect(many.plans[0]!.rows).toBe(few.plans[0]!.rows);
+  });
+});
+
+// `n` local accounts and no configuration row: an imported Store before /setup.
+function locals(sql: SqlStorage, n: number) {
+  sql.exec(
+    `WITH RECURSIVE i(k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM i WHERE k < ?1 - 1)
+		INSERT INTO accounts (id, uri, username) SELECT CAST(610000000000000000 + k AS TEXT), 'https://kopje.test/ap/users/l' || k, 'l' || k FROM i`,
+    n,
+  );
+  sql.exec(
+    `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+		SELECT id, username || '@example.com', X'00', X'00', 'k' FROM accounts WHERE id GLOB '61*'`,
+  );
+}
+
+describe("whether the instance is bootstrapped, beside its local accounts (RES-7)", () => {
+  it.each(STATISTICS)("%s statistics: the local accounts' probe reads one row", async (statistics) => {
+    const run = (n: number) =>
+      measured(
+        statistics,
+        (sql) => locals(sql, n),
+        { locals: "SELECT count(*) AS n FROM local_accounts" },
+        /FROM local_accounts/,
+        (_db, sql) => beginSetupSession.run(sql, { sessionHash: "h", now: NOW }, (fn) => fn()),
+      );
+    const few = await run(FEW);
+    const many = await run(MANY);
+    grows(few, many);
+    for (const measuredRun of [few, many]) {
+      expect(measuredRun.result).toBe("complete");
+      expect(measuredRun.plans).toHaveLength(1);
+      expect(measuredRun.plans[0]!.plan.join("\n")).toMatch(/^SCAN local_accounts USING COVERING INDEX/m);
+      expect(measuredRun.plans[0]!.rows).toBe(1);
+    }
   });
 });
