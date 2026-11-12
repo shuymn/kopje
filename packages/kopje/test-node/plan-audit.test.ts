@@ -526,6 +526,7 @@ describe("plan audit residuals", () => {
     ],
     ["the admin trend statuses", "src/domain/trends.ts#adminStatusRows", "statuses: SCAN s", 7],
     ["the admin emoji page", "src/domain/local-emojis.ts#<anonymous> in adminEmojis", "media_attachments: SCAN m", 7],
+    ["the emoji picker", "src/domain/local-emojis.ts#<anonymous> in customEmojis", "media_attachments: SCAN m", 7],
     [
       "a local status's emoji snapshot",
       "src/domain/custom-emojis.ts#localEmojiSnapshot",
