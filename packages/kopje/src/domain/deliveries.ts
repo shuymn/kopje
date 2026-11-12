@@ -454,14 +454,16 @@ function receiptsOf(db: Db, signerId: string, object: string): string[] {
 function receiversOf(db: Db, signerId: string, object: string): string[] {
   const receipts = receiptsOf(db, signerId, object).map((inbox) => ({ inbox }));
   const outstanding = db.all<{ inbox: string }>(
-    `SELECT d.inbox_url AS inbox FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
+    `SELECT d.inbox_url AS inbox FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN deliveries d INDEXED BY deliveries_activity ON d.activity_id = o.id
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0`,
     signerId,
     object,
   );
   const unexpanded = db.all<{ inbox: string }>(
     `SELECT json_extract(t.value, '$.inbox') AS inbox
-		FROM outbound_activities o JOIN outbound_targets c ON c.activity_id = o.id, json_each(c.targets) t
+		FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN outbound_targets c INDEXED BY outbound_targets_activity ON c.activity_id = o.id, json_each(c.targets) t
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0 AND t.key >= c.next`,
     signerId,
     object,
@@ -2029,14 +2031,14 @@ function serversWithObject(db: Db, signerId: string, object: string): Set<string
 // expanded): the pair of the current version's Create and the Update replaces them.
 function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<string>, now: number): void {
   const earlier = db.all<{ id: string }>(
-    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities
+    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities INDEXED BY outbound_activities_object
 		WHERE account_id = ? AND object_uri = ? AND retracts = 0`,
     signerId,
     object,
   );
   for (const intent of earlier) {
     const removed = db.all<{ lane: string }>(
-      `DELETE FROM deliveries WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
+      `DELETE FROM deliveries INDEXED BY deliveries_activity WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
 				AND lane IN (SELECT value FROM json_each(?)) RETURNING lane`,
       intent.id,
       JSON.stringify([...lanes]),
@@ -2045,7 +2047,8 @@ function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<str
       promoteLane(db, signerId, lane, now);
     }
     const chunks = db.all<{ id: string; targets: string; next: number }>(
-      "SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets WHERE activity_id = CAST(? AS INTEGER)",
+      `SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets INDEXED BY outbound_targets_activity
+				WHERE activity_id = CAST(? AS INTEGER)`,
       intent.id,
     );
     for (const chunk of chunks) {
@@ -2086,7 +2089,8 @@ function laneOf(inbox: string): string {
 function activeCount(db: Db, where: string, limit: number, ...params: SqlStorageValue[]): number {
   return (
     db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries WHERE ${where} AND state IN ${ACTIVE} LIMIT ?)`,
+      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries INDEXED BY deliveries_lane WHERE ${where} AND state IN ${ACTIVE}
+				LIMIT ?)`,
       ...params,
       limit,
     )?.n ?? 0
@@ -2124,13 +2128,18 @@ const NO_PERSONAL_INBOX = "no personal inbox";
 
 // Writes up to `budget` targets of the oldest chunks still expanding, oldest first, reading each chunk from its cursor
 // (next). A target over a cap is written as gave_up 'backlog full'; a silent copy without a personal inbox as gave_up
-// 'no personal inbox' (inbox '').
+// 'no personal inbox' (inbox ''). The oldest chunk is the first of outbound_targets in rowid order, its activity read
+// once by its rowid in a correlated lookup (a join by rowid is planned as a scan under statistics taken while the tables
+// were small, RES-7); outbound_targets.activity_id references outbound_activities, so every chunk has one.
 export function expandPending(db: Db, now: number, budget: number): void {
   const admission = new Admission(db);
   while (budget > 0) {
     const chunk = db.first<{ id: string; activity_id: string; account_id: string; retracts: number; next: number }>(
-      `SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id, o.account_id, o.retracts, c.next
-			FROM outbound_targets c JOIN outbound_activities o ON o.id = c.activity_id ORDER BY c.id LIMIT 1`,
+      `SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id,
+				o ->> 1 AS retracts, next
+			FROM (SELECT c.id, c.activity_id, c.next,
+					(SELECT json_array(o.account_id, o.retracts) FROM outbound_activities o WHERE o.id = c.activity_id) AS o
+				FROM outbound_targets c ORDER BY c.id LIMIT 1)`,
     );
     if (chunk === undefined) {
       return;
@@ -2146,8 +2155,8 @@ export function expandPending(db: Db, now: number, budget: number): void {
       `SELECT t.key, json_extract(t.value, '$.inbox') AS inbox, json_extract(t.value, '$.addressee') AS addressee,
 				json_extract(t.value, '$.accounts') AS accounts, json_extract(t.value, '$.domains') AS domains,
 				json_extract(t.value, '$.many') AS many
-			FROM outbound_targets c, json_each(c.targets) t
-			WHERE c.id = CAST(? AS INTEGER) AND t.key >= c.next ORDER BY t.key LIMIT ?`,
+			FROM (SELECT targets, next FROM outbound_targets WHERE id = CAST(?1 AS INTEGER) LIMIT 1) c, json_each(c.targets) t
+			WHERE t.key >= c.next ORDER BY t.key LIMIT ?2`,
       chunk.id,
       budget,
     );
@@ -2811,10 +2820,11 @@ export const completeDelivery = writeOperation<
     // reaches it then (VIS-3).
     db.run(
       `INSERT INTO outbound_receipts (status_id, inbox_url, account_id, delivered_at)
-			SELECT s.id, ?2, o.account_id, ?3 FROM outbound_activities o JOIN statuses s ON s.uri = o.object_uri
-			WHERE o.id = CAST(?1 AS INTEGER)
-				AND (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
-				AND NOT EXISTS (SELECT 1 FROM outbound_activities r
+			SELECT s.id, ?2, o.account_id, ?3
+			FROM (SELECT account_id, object_uri, body, retracts FROM outbound_activities WHERE id = CAST(?1 AS INTEGER) LIMIT 1) o
+				CROSS JOIN statuses s INDEXED BY ${STATUSES_URI_INDEX} ON s.uri = o.object_uri
+			WHERE (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
+				AND NOT EXISTS (SELECT 1 FROM outbound_activities r INDEXED BY outbound_activities_object
 					WHERE r.account_id = o.account_id AND r.object_uri = o.object_uri AND r.retracts = 1 AND r.staged IS NULL)
 			ON CONFLICT DO UPDATE SET delivered_at = excluded.delivered_at`,
       row.activity_id,
@@ -2942,11 +2952,13 @@ function moveToPersonal(
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
-		FROM deliveries d CROSS JOIN json_each(d.recipient_accounts) r
+		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
+				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
+			CROSS JOIN json_each(row.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND d.recipient_accounts IS NOT NULL
-			AND d.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url
-			AND a.inbox_url <> d.inbox_url
+		WHERE row.addressee IS NULL AND row.recipient_accounts IS NOT NULL
+			AND row.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = row.inbox_url
+			AND a.inbox_url <> row.inbox_url
 		ORDER BY a.id`,
     row.id,
   );

@@ -507,6 +507,17 @@ describe("plan audit residuals", () => {
       6,
     ],
     ["an ended follow's notifications", "src/domain/blocks.ts#endFollow", "notifications: SCAN notifications", 6],
+    // The delivery reads of group 8.
+    ["an object's earlier receivers", "src/domain/deliveries.ts#receiversOf", "deliveries: SCAN d", 8],
+    ["the oldest chunk", "src/domain/deliveries.ts#expandPending", "outbound_activities: SCAN o", 8],
+    ["the active backlog", "src/domain/deliveries.ts#activeCount", "deliveries: SCAN deliveries", 8],
+    [
+      "the waiting activities",
+      "src/domain/deliveries.ts#replaceWaiting",
+      "outbound_activities: SCAN outbound_activities",
+      8,
+    ],
+    ["a forward's fallback", "src/domain/deliveries.ts#forwardFallback", "deliveries: SCAN d", 8],
     // The emoji, media, announcement and trend reads of group 7.
     [
       "an admin account page's accounts",
