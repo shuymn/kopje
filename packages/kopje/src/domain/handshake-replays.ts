@@ -36,7 +36,7 @@ import { readOperation, writeOperation } from "./operation";
 // - The hold ends with nothing recorded once the pair holds a follow (that generation gets its own answer, and the
 //   receiver's pair fallback would apply an older Reject to it, NET-2), or when the follower is not remote
 //   (accounts.domain, the guard's predicate) or the local account has no row; only an import can produce either. A
-//   follow's insert, the follower's Undo and its purge end it too (0092's trigger reject_replays_follow_stored, inbox.ts
+//   follow's insert, the follower's Undo and its purge end it too (reject_replays_follow_stored, inbox.ts
 //   cancelUndoneAnswers and purgeRelationships).
 // - A stored identity (the Follow id, either actor uri) that is not valid UTF-8 cannot be sent as the original: hashing
 //   or signing its decoded form would name another Follow. The item throws (kopje.jobs.reject_replay.invalid_identity,

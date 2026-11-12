@@ -4,7 +4,7 @@
 --   reject_replays        one row per (local account, remote follower) pair whose Reject of a follow request the
 --                         send-time check dropped because of its recipient while the pair held no follow
 --                         (deliveries.ts HOLD_REJECT), owed until a replay records it again. The Reject is rebuilt from
---                         the row with its original id (activities.ts followAnswerActivity): follow_uri, the Follow's id
+--                         the row with its original id (followAnswerActivity): follow_uri, the Follow's id
 --                         as received (within ACTIVITY_ID_LIMIT, 4,096 JSON-escaped UTF-8 bytes, the CHECK
 --                         reject_replays_follow_uri; non-empty, no NUL, TEXT; 682 bytes cannot escape past it), else
 --                         edge_id, the ended follow's id (any 64-bit integer, as follows.id may hold after an import);
@@ -21,7 +21,7 @@
 --                         account is stored with domain NULL (the predicate HOLD_REJECT and the replay use), and
 --                         RAISE(ABORT, 'reject_replays: more held Rejects than an account may keep') when a new pair
 --                         would give its account more than HELD_REJECTS_PER_ACCOUNT (100) rows; an existing pair
---                         passes (an upsert's BEFORE INSERT fires before its conflict), as 0089's status_pins_cap_insert.
+--                         passes (an upsert's BEFORE INSERT fires before its conflict), as 0089's pin cap does.
 --                         Each reads the follower by key and at most 100 entries of the unique key's account prefix.
 --
 -- No backfill: a Reject dropped before this upgrade left no record.

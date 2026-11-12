@@ -494,7 +494,8 @@ alone, as Mastodon's `reject_remote_follows!` sends it (`inbox_url`), never to i
 receivers of the `Accept`s it withdraws: a Follow's answer matters to the follower's server only. Before it is
 recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
 accounts' follows of it are kept; a pending one's `Follow` is held and sent once the account is available again
-("Held handshakes", below), and any other content to it is dropped at send time (VIS-30). Each round writes at most
+("Held handshakes", below), as is a local account's `Reject` of its request, and any other content to it is dropped at
+send time (VIS-30). Each round writes at most
 `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
 ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
 the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
@@ -792,8 +793,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   about 100 a round (8 ms each): about 10,000 rounds, 80 s of Store time and 2,500 messages per million accounts it
   covers. The cron resumes the rounds if a message is lost.
 - **Deliveries.** The send-time check below refuses a covered inbox host, and a row all of whose listed hosts are
-  covered; retractions still go, and a refused `Follow` or `Accept` a follow still owes is held and sent once the
-  block is lifted, unless the domain job severed that follow first ("Held handshakes", below).
+  covered; retractions still go, and a refused `Follow` or `Accept` a follow still owes, or a refused `Reject` of a
+  request, is held and sent once the block is lifted, unless the domain job severed that follow first ("Held
+  handshakes", below).
 - **Fetches (advisory).** The Worker asks the Store before each request, a redirect's included (`fetchRefused`), and
   makes none to a covered host: search resolution, `Announce` originals, keys, owner documents, collection syncs and
   quote rounds. A block that commits between that read and a request costs that request, whose result the writes
@@ -851,11 +853,30 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   its intent is neither superseded nor a retraction and is that follow's owed handshake: a `Follow` whose local
   account's follow of the account its object names is pending under that `Follow`'s id, or a follow pair's `Accept`
   whose remote follow is accepted under the `Follow` it answers (an edge without a `Follow` id, by an `Accept` that
-  names none). Ids are compared by their bytes. Nothing else is held: content, a `Block`, a quote's `Accept`, a
-  superseded answer, a `Reject` of a request (#1463), or a row whose sender was refused. A claim holds at most
-  `CLAIM_LIMIT` follows.
-- **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time, a due retry
-  first, else the fresh holds by `check_at` and follow id, and reads the follow as it is now: a local account's pending
+  names none). Ids are compared by their bytes. Nothing else is held but a `Reject` of a request (below): content, a
+  `Block`, a quote's `Accept` or `Reject`, a superseded answer, a retraction, or a row whose sender was refused. A
+  claim holds at most `CLAIM_LIMIT` rows, one hold for each refused row at most.
+- **Held Rejects.** A local account's `Reject` of a remote account's `Follow` is held in `reject_replays` (migration
+  `0092_reject_replays`), keyed by the pair, when the check refuses it for a reason other than its sender, its intent is
+  neither superseded nor a retraction, its follow pair is a remote account (`accounts.domain IS NOT NULL`) and the pair
+  holds no follow (`HOLD_REJECT` in `deliveries.ts`). A newer refused `Reject` of the pair replaces its hold: the
+  receiver applies a `Reject` by its pair when the id names nothing it holds (Mastodon's `reject_embedded_follow`,
+  Misskey by the pair alone), so the newest is enough. Its identity is taken by bytes: the `Follow`'s id within
+  `ACTIVITY_ID_LIMIT`, or, for a `Reject` that names none, the edge id its own id ends with, only when that suffix is
+  the canonical decimal of a 64-bit integer; anything else holds nothing. A local account holds at most
+  `HELD_REJECTS_PER_ACCOUNT` (100) pairs; past it a new pair's `Reject` is dropped as before and logged
+  (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated, and a slot a replay
+  frees may go to any pair. The replay (`replayReject` in `handshake-replays.ts`) records the `Reject` again with its
+  original id once, read live, both accounts are available and the follower's inbox is deliverable and uncovered; no
+  block rule applies, as a `Reject` goes to its whole audience. A stored identity that is not valid UTF-8 is never
+  sent: the item fails and parks (RES-5), and replays after a repair and the admin's retry. A hold ends with nothing
+  recorded when a follow of the pair is stored (`reject_replays_follow_stored`: the new generation gets its own
+  answer, which an older `Reject` would reach through the pair fallback), when the follower's `Undo` of a `Follow`
+  names its `Follow` id or is a Misskey pair id within its pair (`cancelUndoneAnswers` in `inbox.ts`), and when the
+  follower is purged.
+- **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
+  due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
+  held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local account's pending
   follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account its `Accept`;
   any other ends the hold. The handshake is recorded again with its original id (activities.ts: a `Follow`'s id is
   `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without one) only when,
@@ -864,7 +885,7 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower nor
   its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
   moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
-- **The boundary.** No `Follow` or `Accept` is confirmed for sending while its recipient is unavailable; a POST
+- **The boundary.** No `Follow`, `Accept` or `Reject` is confirmed for sending while its recipient is unavailable; a POST
   confirmed before an unavailability commits may still finish, as for any row.
 - **Latency (an estimate, not a bound).** With an unloaded queue and no failures, a hold is sent 5 to 10 minutes after
   its recipient is available again (the cron and each jobs message run a round); backlog, maintenance and backoff
