@@ -508,6 +508,20 @@ describe("plan audit residuals", () => {
     ],
     ["an ended follow's notifications", "src/domain/blocks.ts#endFollow", "notifications: SCAN notifications", 6],
     // The emoji, media, announcement and trend reads of group 7.
+    [
+      "an admin account page's accounts",
+      "src/domain/admin-account-presenter.ts#adminAccountStream",
+      "accounts: SCAN a",
+      7,
+    ],
+    ["the admin search's text matches", "src/domain/admin-accounts.ts#textMatches", "accounts: SCAN a", 7],
+    ["the admin list's candidates", "src/domain/admin-accounts.ts#readMatches", "local_accounts: SCAN l LEFT-JOIN", 7],
+    [
+      "the admin list's suspended ranges",
+      "src/domain/admin-accounts.ts#range < src/domain/admin-accounts.ts#readMatches",
+      "local_accounts: SCAN l LEFT-JOIN",
+      7,
+    ],
     ["an upload's completion", "src/domain/media.ts#<anonymous> in completeMedia", "media_attachments: SCAN m", 7],
     ["an emoji upload's uploader", "src/domain/local-emojis.ts#<anonymous> in completeEmoji", "accounts: SCAN a", 7],
     ["an emoji by id", "src/domain/local-emojis.ts#emojiById", "custom_emojis: SCAN e", 7],
