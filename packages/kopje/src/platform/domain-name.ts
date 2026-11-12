@@ -31,9 +31,19 @@ export function normalizeDomain(raw: string): string | null {
 // hyphen at either end, which IDNA without CheckHyphens leaves). null for anything else.
 const LDH_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+// The octets a DNS name has at most (RFC 1035 §2.3.4).
+export const DNS_NAME_OCTETS = 253;
+
+// The UTF-8 bytes a DNS name has at most in either form: as A-labels it is at most DNS_NAME_OCTETS characters, and its
+// U-labels decode to no more code points than that (Punycode never decodes to more code points than it has
+// characters), each of at most 4 bytes.
+export const DNS_NAME_UTF8_BYTES = 4 * DNS_NAME_OCTETS;
+
 export function serverDomain(raw: string): string | null {
   const domain = normalizeDomain(raw.trim());
-  return domain !== null && domain.length <= 253 && domain.split(".").every((label) => LDH_LABEL.test(label))
+  return domain !== null &&
+    domain.length <= DNS_NAME_OCTETS &&
+    domain.split(".").every((label) => LDH_LABEL.test(label))
     ? domain
     : null;
 }

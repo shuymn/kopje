@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { storeMaintenanceError } from "../platform/store-errors";
 import type { StoreOperation } from "../platform/store-kernel";
@@ -251,9 +252,13 @@ export const streamEvents = readOperation<
   { position: StreamPosition; ceiling: string; events: StreamEvent[]; head: string; tail: string }
 >((db, { limit }) => {
   const { position, ceiling } = readCursor(db);
+  // The journal's ids span at most 4,096, so it holds at most 4,097 rows (migration 0026_streaming); a notification's
+  // recipient is read by its key, in a correlated lookup the plan cannot turn into a walk of the notifications (RES-7).
   const rows = db.all<{ id: string; kind: string; subject: string; recipient: string | null }>(
-    `SELECT CAST(e.id AS TEXT) AS id, e.kind, e.subject, n.account_id AS recipient FROM stream_events e
-			LEFT JOIN notifications n ON e.kind = 'notification' AND n.id = CAST(e.subject AS INTEGER)
+    `SELECT CAST(e.id AS TEXT) AS id, e.kind, e.subject,
+			CASE WHEN e.kind = 'notification'
+				THEN (SELECT n.account_id FROM notifications n WHERE n.id = CAST(e.subject AS INTEGER)) END AS recipient
+		FROM stream_events e
 		WHERE e.id > CAST(?1 AS INTEGER) OR (e.id = CAST(?1 AS INTEGER) AND ?3 IS NOT NULL) ORDER BY e.id LIMIT ?2`,
     position.event,
     limit,
@@ -637,8 +642,8 @@ function tombstoneCarries(t: Tombstone, key: string): boolean {
 // (one read, by the tombstone's key; a boost's subject finds none).
 function tombstoneFeeds(db: Db, eventId: string, subject: string, feeds: readonly string[]): string[] {
   const row = db.first<{ local: number; media: number; tags: string }>(
-    `SELECT t.local, t.media, t.tags FROM stream_delete_tombstones t JOIN stream_events e ON e.id = t.event_id
-		WHERE t.event_id = CAST(? AS INTEGER) AND e.subject = ?`,
+    `SELECT t.local, t.media, t.tags FROM stream_delete_tombstones t
+		WHERE t.event_id = CAST(?1 AS INTEGER) AND (SELECT e.subject FROM stream_events e WHERE e.id = t.event_id) = ?2`,
     eventId,
     subject,
   );
@@ -746,7 +751,8 @@ function tombstoneOf(db: Db, statusId: string, keys: readonly string[]): Tombsto
   const status = db.first<{ local: number; media: number }>(
     `SELECT a.domain IS NULL AS local,
 			EXISTS (SELECT 1 FROM media_attachments m WHERE m.status_id = s.id AND m.shown = 1) AS media
-		FROM statuses s JOIN accounts a ON a.id = s.account_id
+		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
 		WHERE s.id = ? AND s.visibility = 'public' AND s.reblog_of_id IS NULL`,
     statusId,
   );

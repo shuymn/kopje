@@ -14,6 +14,10 @@ export const FEATURED_TAGS_ID_INDEX = "sqlite_autoindex_featured_tags_1";
 export const FEATURED_TAGS_ACCOUNT_INDEX = "sqlite_autoindex_featured_tags_2";
 export const FILTER_STATUSES_ID_INDEX = "sqlite_autoindex_filter_statuses_1";
 export const MEDIA_ID_INDEX = "sqlite_autoindex_media_attachments_1";
+// media_attachments (file_token)
+export const MEDIA_FILE_TOKEN_INDEX = "sqlite_autoindex_media_attachments_2";
+// custom_emojis (id), migration 0055_local_custom_emojis.
+export const CUSTOM_EMOJIS_ID_INDEX = "sqlite_autoindex_custom_emojis_1";
 export const QUOTES_STATUS_INDEX = "sqlite_autoindex_quotes_1";
 export const POLLS_STATUS_INDEX = "sqlite_autoindex_polls_1";
 // (poll_id, generation, account_id, choice)

@@ -7,6 +7,7 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { DNS_NAME_UTF8_BYTES } from "../platform/domain-name";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
@@ -238,19 +239,26 @@ function guardedSql(covered: string): string {
 // suffixes are walked from the longest, and the walk stops at the first one a block names (the nearest), so the rule
 // is that block's; only suffixes of 2 to MAX_BLOCK_LABELS labels are sought, at most two unique seeks each (the walk's
 // and the match's; CROSS JOIN and INDEXED BY keep each a seek by domain for each suffix, whatever the statistics say
-// of the blocks: a rule no partial index serves was otherwise planned as a scan of the blocks). The keys and the walk
-// are CTEs, whose expressions do not add to the depth of the expression that holds this one (SQLite limits it to 100
-// in workerd).
+// of the blocks: a rule no partial index serves was otherwise planned as a scan of the blocks). No stored bound limits
+// an account's domain or its actor id's host, so a key past DNS_NAME_UTF8_BYTES (1,012) bytes, which no server's name
+// has in either form (platform/domain-name.ts: RFC 1035 §2.3.4), is never walked and its rule is taken to satisfy
+// `rule` (a suspend covers it; its media are rejected); a key within them has at most a dot per byte, so its walk is at
+// most DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do
+// not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
 function ruledSql(keys: string, rule: string): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
+  // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
+  // which satisfies the rule alone.
+  const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
   return `EXISTS (WITH RECURSIVE pk(d) AS (${keys}),
-			ps(d, dots) AS (SELECT d, length(d) - length(replace(d, '.', '')) FROM pk
+			ps(d, dots) AS (SELECT CASE WHEN ${named} THEN d END,
+					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
 				UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 					AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
 						WHERE ps.dots ${sought} AND pn.domain = ps.d))
-		SELECT 1 FROM ps CROSS JOIN main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
-			ON pr.domain = ps.d
-		WHERE ps.dots ${sought} AND ${rule})`;
+		SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
+			ON ps.dots ${sought} AND pr.domain = ps.d
+		WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND ${rule}))`;
 }
 
 // Whether an instance domain block covers one of `keys` (ruledSql): the rule of one is a suspend.
@@ -1795,11 +1803,13 @@ export function recipientsFor(
       ? []
       : db.all<ReachedInbox>(
           byInbox(`SELECT DISTINCT ${RECIPIENT_COLUMNS}, COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url) AS inbox
-					FROM main.statuses ps JOIN main.polls pp ON pp.status_id = ps.id AND pp.removed = 0
-						JOIN main.poll_votes pv ON pv.poll_id = pp.status_id AND pv.generation = pp.generation
-						JOIN main.accounts a ON a.id = pv.account_id
-					WHERE ps.id = ?1 AND ps.account_id = ?2
-						AND ${kind === "retraction" ? "1" : `ps.visibility IN ${DISTRIBUTABLE_SQL}`}
+					FROM main.statuses vs INDEXED BY ${STATUSES_ID_INDEX}
+						CROSS JOIN main.polls pp INDEXED BY ${POLLS_STATUS_INDEX} ON pp.status_id = vs.id AND pp.removed = 0
+						CROSS JOIN main.poll_votes pv INDEXED BY ${POLL_VOTES_KEY_INDEX}
+							ON pv.poll_id = pp.status_id AND pv.generation = pp.generation
+						CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = pv.account_id
+					WHERE vs.id = ?1 AND vs.account_id = ?2
+						AND ${kind === "retraction" ? "1" : `vs.visibility IN ${DISTRIBUTABLE_SQL}`}
 						AND a.domain IS NOT NULL AND NOT ${leavesOutSql(kind, "addressed", "?2", "a.id")}`),
           audience.pollVoters,
           signerId,

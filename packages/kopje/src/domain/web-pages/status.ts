@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../../db/indexes";
 import type { Db } from "../../db/sql";
 import { httpUrl } from "../../platform/http-url";
 import type { Account, Present } from "../accounts";
@@ -247,7 +248,8 @@ function pageStatus(db: Db, by: { id: string; username: string } | { uri: string
     db,
     "visible",
     {
-      join: "JOIN accounts au ON au.id = s.account_id",
+      join: `INDEXED BY ${byId ? STATUSES_ID_INDEX : STATUSES_URI_INDEX}
+				CROSS JOIN accounts au INDEXED BY ${ACCOUNTS_ID_INDEX} ON au.id = s.account_id`,
       where: `${byId ? "s.id = ?2 AND lower(au.username) = lower(?3)" : "s.uri = ?2"} AND au.domain IS NULL AND s.reblog_of_id IS NULL`,
       columns: { in_reply_to_id: "s.in_reply_to_id", username: "au.username" },
     },

@@ -1,5 +1,5 @@
 import { selectSql } from "../db/columns";
-import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { ACTOR_URI_LIMIT, STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
@@ -178,11 +178,16 @@ type Author = {
   default_quote_policy: QuotePolicyName;
 };
 
+// A status and its author, each by its key (RES-7).
+const STATUS_AUTHOR = `statuses s INDEXED BY ${STATUSES_ID_INDEX}
+	CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id`;
+
 function localAuthor(db: Db, accountId: string): Author {
   const author = db.first<Author>(
     `SELECT a.id, a.uri, a.username, l.default_visibility, l.default_sensitive, l.default_language,
 			l.default_quote_policy
-		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} CROSS JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?`,
+		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
   );
   if (author === undefined) {
@@ -266,7 +271,7 @@ function quoteLink(db: Db, id: string): QuoteLink | null {
   }>(
     `SELECT ${statusUriSql("s.uri")} AS uri, s.url, ${usernameSql("a.username")} AS username,
 			a.domain, ${actorUriSql("a.uri")} AS author_uri
-		FROM statuses s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`,
+		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
     id,
   );
   if (row === undefined) {
@@ -297,7 +302,8 @@ function mediaToAttach(
   // Each id is looked up by its stored form (storedIdOf), one primary-key probe each.
   const rows = db.all<{ i: number; id: string | null }>(
     `SELECT j.key AS i, m.id FROM json_each(?1) j
-		LEFT JOIN media_attachments m ON m.id = j.value AND m.account_id = ?2 AND (m.status_id = ?3
+		LEFT JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = j.value AND m.account_id = ?2
+			AND (m.status_id = ?3
 			OR (m.status_id IS NULL AND m.scheduled_status_id IS ?5 AND ${liveMediaSql("m", "?4")}))
 		ORDER BY j.key`,
     JSON.stringify(requested.map(storedIdOf)),
@@ -536,7 +542,9 @@ function quotable(db: Db, accountId: string, id: string): Quotable | null {
   return (
     db.first<Quotable>(
       `SELECT t.id, t.uri, t.account_id, t.visibility, a.domain IS NULL AS local
-			FROM statuses s JOIN statuses t ON t.id = IFNULL(s.reblog_of_id, s.id) JOIN accounts a ON a.id = t.account_id
+			FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = IFNULL(s.reblog_of_id, s.id)
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = t.account_id
 			WHERE s.id = ?1 AND ${mayQuoteSql("t", "?2")}`,
       resolved,
       accountId,
@@ -643,7 +651,8 @@ export function writePost(
   // rule.
   if (parent === null || replyTarget === accountId) {
     const subscribers = db.all<{ account_id: string }>(
-      `SELECT account_id FROM follows WHERE target_account_id = ?1 AND state = 'accepted' AND notify = 1
+      `SELECT account_id FROM follows INDEXED BY follows_target
+				WHERE target_account_id = ?1 AND state = 'accepted' AND notify = 1
 				AND (languages IS NULL OR ?2 IS NULL OR ?2 IN (SELECT value FROM json_each(languages)))`,
       accountId,
       language,
@@ -772,7 +781,8 @@ function replyParent(db: Db, viewerId: string, id: string): ReplyParent | null {
   return (
     db.first<ReplyParent>(
       `SELECT o.id, o.uri, o.account_id, o.in_reply_to_uri, o.in_reply_to_account_id
-			FROM statuses s JOIN statuses o ON o.id = IFNULL(s.reblog_of_id, s.id) WHERE s.id = ?`,
+			FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN statuses o INDEXED BY ${STATUSES_ID_INDEX} ON o.id = IFNULL(s.reblog_of_id, s.id) WHERE s.id = ?`,
       resolved,
     ) ?? null
   );
@@ -1264,7 +1274,7 @@ function deletedStatus(db: Db, current: OwnStatus): DeletedStatus | null {
   const row = db.first<{ uri: string; actor_uri: string; poll: number }>(
     `SELECT ${statusUriSql("s.uri")} AS uri, ${actorUriSql("a.uri")} AS actor_uri,
 			EXISTS (SELECT 1 FROM polls p WHERE p.status_id = s.id) AS poll
-		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX} CROSS JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`,
+		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
     current.id,
   );
   const usable = (value: string, limit: number) => value !== "" && withinIdentityBound(value, limit);
@@ -1631,7 +1641,9 @@ function actionTarget(db: Db, viewerId: string, id: string): Target | null {
   }
   const row = db.first<Target>(
     `SELECT o.id, o.uri, o.account_id, o.visibility, a.uri AS author_uri
-		FROM statuses s JOIN statuses o ON o.id = IFNULL(s.reblog_of_id, s.id) JOIN accounts a ON a.id = o.account_id
+		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+		CROSS JOIN statuses o INDEXED BY ${STATUSES_ID_INDEX} ON o.id = IFNULL(s.reblog_of_id, s.id)
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = o.account_id
 		WHERE s.id = ?`,
     resolved,
   );
@@ -1746,7 +1758,8 @@ export const unfavourite = userWriteOperation<ActionInput, Acted<Status>>((db, i
   const removed = db.all<{ uri: string | null; author_id: string; author_uri: string; object_uri: string }>(
     `DELETE FROM favourites WHERE account_id = ?1 AND status_id = ?2
 		RETURNING uri, (SELECT account_id FROM statuses WHERE id = ?2) AS author_id,
-			(SELECT a.uri FROM statuses s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?2) AS author_uri,
+			(SELECT a.uri FROM ${STATUS_AUTHOR}
+				WHERE s.id = ?2) AS author_uri,
 			(SELECT uri FROM statuses WHERE id = ?2) AS object_uri`,
     accountId,
     id,
@@ -1754,7 +1767,8 @@ export const unfavourite = userWriteOperation<ActionInput, Acted<Status>>((db, i
   if (removed !== undefined) {
     recountStatus(db, id);
     db.run(
-      "DELETE FROM notifications WHERE account_id = ? AND type = 'favourite' AND from_account_id = ? AND status_id = ?",
+      `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = ?1 AND type = 'favourite' AND from_account_id = ?2 AND IFNULL(status_id, '') = ?3`,
       removed.author_id,
       accountId,
       id,
@@ -2090,17 +2104,17 @@ export function interactorsWithin(
           size,
           viewerId,
         );
-  const edge =
+  const author =
     kind === "favourited_by"
-      ? `favourites e ON e.id = CAST(json_extract(c.value, '$.id') AS INTEGER)`
-      : `statuses e ON e.id = json_extract(c.value, '$.id')`;
+      ? `(SELECT e.account_id FROM favourites e WHERE e.id = CAST(json_extract(c.value, '$.id') AS INTEGER))`
+      : `(SELECT e.account_id FROM statuses e INDEXED BY ${STATUSES_ID_INDEX}
+				WHERE e.id = json_extract(c.value, '$.id'))`;
   const rows =
     window.candidates.length === 0
       ? []
       : db.all<{ cursor: string; id: string }>(
-          `SELECT CAST(e.id AS TEXT) AS cursor, a.id
-					FROM json_each(?3) c CROSS JOIN ${edge}
-						JOIN accounts a ON a.id = e.account_id
+          `SELECT json_extract(c.value, '$.id') AS cursor, a.id
+					FROM json_each(?3) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = ${author}
 					WHERE ${listedForSql("a.id", "?1", "?2")}`,
           viewerId,
           now,
@@ -2228,7 +2242,7 @@ function ownQuote(db: Db, accountId: string, target: RevokeTarget) {
     return { status: "not_found" } as const;
   }
   const author = db.first<{ account_id: string; uri: string }>(
-    "SELECT s.account_id, a.uri FROM statuses s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?",
+    `SELECT s.account_id, a.uri FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
     visible,
   );
   if (author === undefined || author.account_id !== accountId) {

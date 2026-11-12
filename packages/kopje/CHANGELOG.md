@@ -18,12 +18,32 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   statuses and 16 accounts forward per `Delete`, the boosters keeping their places before any quoter (`kopje.inbox.forward_capped` gains a `quotes` field when the quote
   cap is passed). A `Delete` an earlier build applied before the upgrade forwarded through boosts only. Migration
   `0091_live_local_quotes` copies each local quoting status's `withdrawn` onto its quote, kept by triggers, and indexes
-  the live local quotes (one pass over the quotes; a median of 581 ms in local runs of the migration bench, 567 ms with
-  `0090` in one upgrade). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a
+  the live local quotes (one pass over the quotes; a median of 581 ms in local runs of the migration bench, 1,202 ms with
+  `0090` on the hosted migration bench). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a
   minor version, and rolling back past it needs a point-in-time restore.
+
+## [0.4.0] - 2026-11-12
+
+A minor release, published under the npm dist-tag `latest`. It adds one Store migration and bounds the domain-block
+check for host names longer than any DNS name. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: adds one migration (0090), applied on the first request after the deploy; a rollback to an earlier
+  version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store
+  defined in `test/bench/migration-cost.ts` it took 3–10 ms (median 4 ms) in three runs of the migration bench workflow
+  on a GitHub-hosted runner, in workerd's local Durable Object SQLite, skipping the Store-wide foreign-key check as
+  declared. No `wrangler.jsonc` change.
 
 ### Fixed
 
+- A host whose name is longer than 1,012 bytes as UTF-8 now counts as covered by the instance's domain blocks:
+  activities from it are refused, its media is rejected, and it is unavailable wherever a suspend block applies. No
+  DNS name can be that long, in either its A-label or its Unicode form (4 × 253; `DNS_NAME_UTF8_BYTES`). Before, such
+  a host had every suffix of its name checked against the blocks, at a cost that grew faster than its length. Names
+  within the bound are checked as before. No migration, no `wrangler.jsonc` change.
+- Reads of quotes, polls, statuses, accounts and local accounts that scanned a table under stale statistics now seek
+  by key (#1468), with the same results.
 - Removing the last status of a direct-message conversation of an account whose streaming sequence is already at the
   largest INTEGER (only a restored Store can hold one) is now refused and rolled back, as that account's other
   conversation writes already are (#1452, DATA-6). Before, it stored the next value as a floating-point number in the
