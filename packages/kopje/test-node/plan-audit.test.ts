@@ -405,6 +405,16 @@ describe("plan audit residuals", () => {
   // Statements of #1468's sweeps put back as they stood before them, each a residual of a fixed row whatever its group
   // or its scans.
   it.each([
+    [
+      "a notification window",
+      "src/domain/audience.ts#Object.notificationWindow in statusReads < src/domain/notifications.ts#shownWindow",
+      "notifications: SCAN n",
+      4,
+    ],
+    ["a notification's pushes", "src/domain/notifications.ts#queuePushes", "push_subscriptions: SCAN p", 4],
+    ["a notification's replaced row", "src/domain/notifications.ts#notify", "notifications: SCAN notifications", 4],
+    ["a push's target", "src/domain/push.ts#target", "push_subscriptions: SCAN p", 4],
+    ["the answered requests", "src/domain/notification-requests.ts#takeRequests", "notification_requests: SCAN r", 4],
     ["a poll and its author", "src/domain/polls.ts#votedPoll", "polls: SCAN p", 3],
     ["a quote's fetch signer", "src/domain/quotes.ts#<anonymous> in quoteWork", "local_accounts: SCAN l", 3],
     ["a QuoteRequest's quote", "src/domain/quotes.ts#answerQuoteRequest", "quotes: SCAN q", 3],
