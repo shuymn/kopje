@@ -111,15 +111,18 @@ async function planned(statistics: (typeof STATISTICS)[number], n: number, own: 
       },
       (fn) => fn(),
     );
-    // The populations: others' tokens of apps, others' web sessions, the viewer's own tokens.
-    const count = (where: string) =>
-      sql.exec<{ n: number }>(`SELECT count(*) AS n FROM oauth_tokens WHERE ${where}`, VIEWER, WEB).one().n;
+    // The populations: others' tokens of apps and the apps they hold, others' web sessions, the viewer's own tokens
+    // and its own apps.
+    const count = (what: string, where: string) =>
+      sql.exec<{ n: number }>(`SELECT count(${what}) AS n FROM oauth_tokens WHERE ${where}`, VIEWER, WEB).one().n;
     const others = {
-      apps: count("account_id <> ?1 AND client_id <> ?2"),
-      web: count("account_id <> ?1 AND client_id = ?2"),
+      apps: count("*", "account_id <> ?1 AND client_id <> ?2"),
+      clients: count("DISTINCT client_id", "account_id <> ?1 AND client_id <> ?2"),
+      web: count("*", "account_id <> ?1 AND client_id = ?2"),
     };
-    const own = count("account_id = ?1 AND (client_id <> ?2 OR token_hash <> 'viewer')");
-    return { plans, answer, others, own };
+    const own = count("*", "account_id = ?1 AND (client_id <> ?2 OR token_hash <> 'viewer')");
+    const ownClients = count("DISTINCT client_id", "account_id = ?1 AND client_id <> ?2");
+    return { plans, answer, others, own, ownClients };
   });
 }
 
@@ -131,10 +134,13 @@ describe("the settings page's authorizations (RES-7)", () => {
       const many = await planned(statistics, 400, 0);
       const ownFew = await planned(statistics, 20, 100);
       const ownMany = await planned(statistics, 20, 200);
-      // Others' app tokens and web sessions grow by 400 each; the viewer's own tokens by 200.
+      // Others' app tokens, the apps they hold and their web sessions grow by 400 each; the viewer's own tokens by 200,
+      // its own apps by 100.
       expect(many.others.apps - few.others.apps).toBe(400);
+      expect(many.others.clients - few.others.clients).toBe(400);
       expect(many.others.web - few.others.web).toBe(400);
       expect(ownMany.own - ownFew.own).toBe(200);
+      expect(ownMany.ownClients - ownFew.ownClients).toBe(100);
       expect(few.answer).toMatchObject({ status: "ok", value: { authorizations: { apps: [], otherSessions: 0 } } });
       expect(ownMany.answer).toMatchObject({ status: "ok", value: { authorizations: { otherSessions: 200 } } });
       expect(few.plans).toHaveLength(2);
