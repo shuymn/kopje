@@ -4,6 +4,7 @@ import {
   INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX,
   POLL_VOTES_KEY_INDEX,
   POLLS_STATUS_INDEX,
+  QUOTES_STATUS_INDEX,
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
@@ -804,6 +805,14 @@ export function statusReads(
   // checked by its key.
   const notificationGroupSql = (query: NotificationQuery) =>
     query.group === undefined ? `n.id > ${dismissedSql(at.viewer, "n.group_key")}` : `n.group_key = ${query.group}`;
+  // The index a notification read walks the recipient's notifications by (RES-7): its group's, else its unfiltered
+  // ones' (notifications_unfiltered) or all of them (notifications_account), each by id.
+  const notificationIndex = (query: NotificationQuery) =>
+    query.group !== undefined
+      ? "notifications_group"
+      : query.includeFiltered
+        ? "notifications_account"
+        : "notifications_unfiltered";
   // A notification read's range above the floor, its group term (with `groups`: a window's candidates leave the
   // per-row dismissal to the read of them) and the filtered term.
   const notificationScope = (query: NotificationQuery, groups: boolean) => {
@@ -873,8 +882,8 @@ export function statusReads(
       const rule = shownNotificationSql("n", at.viewer, now(), admin);
       const from =
         query.within === undefined
-          ? "main.notifications n"
-          : `json_each(${query.within}) c CROSS JOIN main.notifications n
+          ? `main.notifications n INDEXED BY ${notificationIndex(query)}`
+          : `json_each(${query.within}) c CROSS JOIN main.notifications n INDEXED BY notifications_account
 						ON n.id = CAST(json_extract(c.value, '$.id') AS INTEGER)`;
       const scope = query.within === undefined ? notificationScope(query, true) : [notificationGroupSql(query)];
       return run<Extra & { status_id: VisibleStatusId | null }>(
@@ -886,7 +895,7 @@ export function statusReads(
     },
     notificationWindow(db, query, ...params) {
       return db.all<{ id: string }>(
-        `SELECT CAST(n.id AS TEXT) AS id FROM main.notifications n
+        `SELECT CAST(n.id AS TEXT) AS id FROM main.notifications n INDEXED BY ${notificationIndex(query)}
 				WHERE ${where(`n.account_id = ${at.viewer}`, ...notificationScope(query, false), query.where)} ${query.tail ?? ""}`,
         ...params,
       );
@@ -1236,7 +1245,8 @@ export function shownSql(
 				OR (mt.in_reply_to_account_id IS NOT NULL AND ${silencedSql(r, "mt.in_reply_to_account_id", now)}))))
 		AND (${type} <> 'status' OR EXISTS (SELECT 1 FROM main.statuses s WHERE s.id = ${status}
 			AND ${NOT_A_REPLY_TO_OTHERS} AND ${homeFilterSql("s", r, now)}))
-		AND (${type} <> 'quoted_update' OR EXISTS (SELECT 1 FROM main.quotes nq JOIN main.statuses nt ON nt.id = nq.quoted_status_id
+		AND (${type} <> 'quoted_update' OR EXISTS (SELECT 1 FROM main.quotes nq INDEXED BY ${QUOTES_STATUS_INDEX}
+			CROSS JOIN main.statuses nt INDEXED BY ${STATUSES_ID_INDEX} ON nt.id = nq.quoted_status_id
 			WHERE nq.status_id = ${status} AND nq.state = 'accepted' AND ${viewableSql("nt", r)})))`;
 }
 
@@ -1266,7 +1276,7 @@ export function notifiedSql(
   admin: string,
   warning: string,
 ): string {
-  return `((${status} IS NULL OR NOT EXISTS (SELECT 1 FROM main.statuses nc WHERE nc.id = ${status}
+  return `((${status} IS NULL OR NOT EXISTS (SELECT 1 FROM main.statuses nc INDEXED BY ${STATUSES_ID_INDEX} WHERE nc.id = ${status}
 			AND ${conversationMutedSql(r, "nc.thread")}))
 		AND ${shownSql(r, type, from, status, now, admin, warning)})`;
 }
@@ -1380,16 +1390,16 @@ function newAccountSql(from: string, now: string): string {
 function privateMentionNotInResponseSql(r: string, type: string, from: string, status: string): string {
   const mentionsSender = (s: string) => `EXISTS (SELECT 1 FROM main.status_mentions pm WHERE pm.status_id = ${s}.id
 		AND pm.account_id = ${from} AND pm.silent = 0)`;
-  return `(${type} = 'mention' AND EXISTS (SELECT 1 FROM main.statuses pd WHERE pd.id = ${status}
+  return `(${type} = 'mention' AND EXISTS (SELECT 1 FROM main.statuses pd INDEXED BY ${STATUSES_ID_INDEX} WHERE pd.id = ${status}
 		AND pd.visibility = 'direct' AND NOT (pd.in_reply_to_id IS NOT NULL AND EXISTS (
 			WITH RECURSIVE pw(id, parent, hit, depth) AS (
-				SELECT ps.id, ps.in_reply_to_id, ${mentionsSender("ps")}, 0 FROM main.statuses ps
+				SELECT ps.id, ps.in_reply_to_id, ${mentionsSender("ps")}, 0 FROM main.statuses ps INDEXED BY ${STATUSES_ID_INDEX}
 				WHERE ps.id = pd.in_reply_to_id
 				UNION ALL
 				SELECT ps.id, ps.in_reply_to_id, ps.account_id = ${r} AND ${mentionsSender("ps")}, pw.depth + 1
-				FROM pw JOIN main.statuses ps ON ps.id = pw.parent
+				FROM pw CROSS JOIN main.statuses ps INDEXED BY ${STATUSES_ID_INDEX} ON ps.id = pw.parent
 				WHERE pw.hit = 0 AND pw.depth < ${PRIVATE_MENTION_WALK})
-			SELECT 1 FROM pw JOIN main.statuses pa ON pa.id = pw.id
+			SELECT 1 FROM pw CROSS JOIN main.statuses pa INDEXED BY ${STATUSES_ID_INDEX} ON pa.id = pw.id
 			WHERE pw.hit AND pa.account_id = ${r} AND pa.visibility = 'direct'))))`;
 }
 

@@ -411,7 +411,7 @@ describe("moderation_warning: plans (RES-7)", () => {
     for (const { query, plan } of after) {
       expect(scansOf(plan, ["notifications", "account_warnings", "aw"]), `${query}\n${plan.join("\n")}`).toEqual([]);
     }
-    const [deleted] = of(/^DELETE FROM notifications WHERE account_id = \?1/);
+    const [deleted] = of(/^DELETE FROM notifications INDEXED BY notifications_natural\s+WHERE account_id = \?1/);
     expect(deleted?.plan.join("\n")).toMatch(
       /SEARCH notifications USING INDEX notifications_natural \(account_id=\? AND type=\? AND from_account_id=\? AND <expr>=\? AND <expr>=\? AND <expr>=\?\)/,
     );

@@ -1,3 +1,4 @@
+import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
@@ -150,8 +151,8 @@ function* requestStream(
     db,
     "visible",
     {
-      from: "main.notification_requests r JOIN",
-      join: "ON s.id = r.last_status_id",
+      from: "main.notification_requests r INDEXED BY notification_requests_account CROSS JOIN",
+      join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = r.last_status_id`,
       where: "r.account_id = ?1 AND r.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2))",
       // The request's own column, not `s.id`: shownSql names its own `statuses s`, inside which `s.id` would be that
       // status and not this one.
@@ -214,7 +215,8 @@ export const listNotificationRequests = userReadOperation<
       ? []
       : db.all<RequestRow>(
           `SELECT ${REQUEST_COLUMNS}
-					FROM json_each(?2) c CROSS JOIN notification_requests r ON r.id = CAST(json_extract(c.value, '$.id') AS INTEGER)
+					FROM json_each(?2) c CROSS JOIN notification_requests r INDEXED BY notification_requests_account
+						ON r.id = CAST(json_extract(c.value, '$.id') AS INTEGER)
 					WHERE r.account_id = ?1 AND ${availableSql("r.from_account_id")}`,
           viewer.accountId,
           windowJson(window),
@@ -263,7 +265,7 @@ type Job = { id: string; account_id: string; from_account_id: string; kind: "acc
 function jobBatch(db: Db, job: Job, now: string): void {
   const window = db.first<{ low: string | null; walked: number; bottom: number | null }>(
     `SELECT CAST(min(id) AS TEXT) AS low, count(*) AS walked, min(id) = -9223372036854775808 AS bottom FROM (
-			SELECT id FROM notifications WHERE from_account_id = ?1 AND id <= CAST(?2 AS INTEGER)
+			SELECT id FROM notifications INDEXED BY notifications_from WHERE from_account_id = ?1 AND id <= CAST(?2 AS INTEGER)
 			ORDER BY id DESC LIMIT ?3)`,
     job.from_account_id,
     job.cursor,
@@ -276,7 +278,7 @@ function jobBatch(db: Db, job: Job, now: string): void {
     const params = [job.from_account_id, low, job.cursor, job.account_id] as const;
     if (job.kind === "accept") {
       const shown = db.all<{ id: string; type: string; status_id: string | null }>(
-        `SELECT CAST(n.id AS TEXT) AS id, n.type, n.status_id FROM notifications n
+        `SELECT CAST(n.id AS TEXT) AS id, n.type, n.status_id FROM notifications n INDEXED BY notifications_from
 				WHERE n.from_account_id = ?1 AND n.id >= CAST(?2 AS INTEGER) AND n.id <= CAST(?3 AS INTEGER)
 					AND n.account_id = ?4 AND n.filtered = 1
 					AND ${keptSql("n")} AND ${notifiedSql("?4", "n.type", "n.from_account_id", "n.status_id", "?5", "NULL", "n.account_warning_id")}
@@ -290,11 +292,13 @@ function jobBatch(db: Db, job: Job, now: string): void {
         }
       }
       db.run(
-        "UPDATE notifications SET filtered = 0 WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))",
+        `UPDATE notifications INDEXED BY notifications_account SET filtered = 0
+				WHERE account_id = ?1 AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2))`,
+        job.account_id,
         JSON.stringify(shown.map((row) => row.id)),
       );
     } else {
-      db.run(`DELETE FROM notifications WHERE ${range}`, ...params);
+      db.run(`DELETE FROM notifications INDEXED BY notifications_from WHERE ${range}`, ...params);
     }
   }
   if (low === null || (window?.walked ?? 0) < REQUEST_JOB_WINDOW || window?.bottom === 1) {
@@ -337,10 +341,11 @@ function runJobs(db: Db, ids: readonly string[] | null, batches: number, now: nu
   }
 }
 
-// Records the job of an answered request, from the newest notification stored on down (read by the primary key, one
-// row). Returns its id, or null when no notification is stored at all. A recipient and sender have one job at most:
-// the latest answer replaces a job an earlier one left, and applies to all of the pair's filtered notifications that
-// remain, so the outcome does not depend on the order the rounds would run two jobs in.
+// Records the job of an answered request, from the newest notification stored on down (the table in rowid order from
+// its end, one row: NOT INDEXED keeps the plan from walking an index for it). Returns its id, or null when no
+// notification is stored at all. A recipient and sender have one job at most: the latest answer replaces a job an
+// earlier one left, and applies to all of the pair's filtered notifications that remain, so the outcome does not
+// depend on the order the rounds would run two jobs in.
 // A dismiss that replaces the recipient's last accept job ends their pending merge (mergedIfDone); an accept replacing
 // one does not.
 function startJob(db: Db, kind: Job["kind"], accountId: string, fromId: string, now: string): string | null {
@@ -353,7 +358,7 @@ function startJob(db: Db, kind: Job["kind"], accountId: string, fromId: string, 
     db.first<{ id: string }>(
       `INSERT INTO notification_request_jobs (account_id, from_account_id, kind, cursor, created_at)
 			SELECT ?1, ?2, ?3, n.id, ?4
-			FROM (SELECT id FROM notifications ORDER BY id DESC LIMIT 1) n
+			FROM (SELECT id FROM notifications NOT INDEXED ORDER BY id DESC LIMIT 1) n
 			RETURNING CAST(id AS TEXT) AS id`,
       accountId,
       fromId,
@@ -389,7 +394,7 @@ type Answered = { from_account_id: string };
 // The viewer's requests among `ids`, deleted.
 function takeRequests(db: Db, accountId: string, ids: readonly string[]): Answered[] {
   return db.all<Answered>(
-    `DELETE FROM notification_requests WHERE account_id = ?1
+    `DELETE FROM notification_requests INDEXED BY notification_requests_account WHERE account_id = ?1
 			AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2)) RETURNING from_account_id`,
     accountId,
     JSON.stringify(ids.filter((id) => isIntegerKey(id))),
