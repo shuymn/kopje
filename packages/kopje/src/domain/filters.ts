@@ -1,4 +1,5 @@
 import { selectSql } from "../db/columns";
+import { FILTER_STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { resolveApiId } from "./accounts";
 import { canView, type ViewerContext } from "./audience";
@@ -598,10 +599,13 @@ export const createFilterStatus = userWriteOperation<
   return { status: "ok", value: presentFilterStatus(row) };
 });
 
-// The filter status `id`, if its filter is the owner's.
+// The filter status `id`, if its filter is the owner's: the row by its key, then its filter by the owner's (account_id,
+// id) index, a seek that reads nothing for another owner's (pinned: the owner's filters would drive a scan of every
+// filter status under statistics taken while they were few, RES-7).
 function ownFilterStatus(db: Db, ownerId: string, id: string): StatusRow | undefined {
   return db.first<StatusRow>(
-    `SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs JOIN filters f ON f.id = fs.filter_id
+    `SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs INDEXED BY ${FILTER_STATUSES_ID_INDEX}
+			CROSS JOIN filters f INDEXED BY filters_account ON f.id = fs.filter_id
 		WHERE fs.id = ? AND f.account_id = ?`,
     id,
     ownerId,

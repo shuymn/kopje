@@ -518,6 +518,28 @@ describe("plan audit residuals", () => {
       8,
     ],
     ["a forward's fallback", "src/domain/deliveries.ts#forwardFallback", "deliveries: SCAN d", 8],
+    // The other request reads of group 9.
+    [
+      "the owner's conversations with a blocked account",
+      "src/domain/conversations.ts#leaveConversationsWith < src/domain/blocks.ts#<anonymous> in block",
+      "conversations: SCAN conversations",
+      9,
+    ],
+    ["the owner's filter status", "src/domain/filters.ts#ownFilterStatus", "filter_statuses: SCAN fs", 9],
+    ["a schedule's day count", "src/domain/scheduled-statuses.ts#scheduleErrors", "scheduled_statuses: SCAN ss", 9],
+    [
+      "the viewer's lists",
+      "src/domain/lists.ts#<anonymous> in listLists",
+      "lists: SCAN lists USING INDEX sqlite_autoindex_lists_1",
+      9,
+    ],
+    [
+      "the viewer's lists that hold an account",
+      "src/domain/lists.ts#<anonymous> in accountLists",
+      "lists: SCAN l USING INDEX sqlite_autoindex_lists_1",
+      9,
+    ],
+    ["the local statuses count", "src/domain/instance.ts#<anonymous> in instanceInfo", "accounts: SCAN accounts", 9],
     // The emoji, media, announcement and trend reads of group 7.
     [
       "an admin account page's accounts",

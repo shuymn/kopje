@@ -123,13 +123,14 @@ function accessState(db: Db): AccessState {
 }
 
 // SETUP-3: bootstrapped once any configuration row or any local account exists, however it got there (the wizard, or
-// /admin/config and an import at a cutover).
+// /admin/config and an import at a cutover). The local accounts are probed for one row (LIMIT 1: db.first reads every
+// row of its statement and keeps the first).
 function bootstrapped(db: Db): boolean {
   return (
     db.first(
       `SELECT 1 AS found FROM instance_settings WHERE name IN (${CONFIG_KEYS.map(() => "?").join(",")})`,
       ...CONFIG_KEYS,
-    ) !== undefined || db.first("SELECT 1 AS found FROM local_accounts") !== undefined
+    ) !== undefined || db.first("SELECT 1 AS found FROM local_accounts LIMIT 1") !== undefined
   );
 }
 

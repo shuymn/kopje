@@ -125,9 +125,11 @@ export function aboutSettingsOf(db: Db): AboutSettings {
 
 // The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
 // window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
-// text order is date order).
+// text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
+// (domain IS NULL, pinned: RES-7), never over the remote accounts.
 export const INSTANCE_COUNTS_SQL = `SELECT u.users, u.active,
-	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts WHERE domain IS NULL) AS statuses,
+	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
+		WHERE domain IS NULL) AS statuses,
 	(SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains
 FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
