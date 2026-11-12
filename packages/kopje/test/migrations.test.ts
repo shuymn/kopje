@@ -12149,6 +12149,29 @@ describe("0092_reject_replays", () => {
     });
   }, 60_000);
 
+  // D5's late-local order: an import writes accounts (parents first), then local_accounts(A), the hold (A, F), and
+  // local_accounts(F) last. The guard reads F's stored domain, which its accounts row holds before any hold, so it
+  // refuses the hold whatever order local_accounts takes.
+  it("refuses a hold of a local follower whose local_accounts row comes after it (D5, late-local order)", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      await upgraded(state);
+      const sql = state.storage.sql;
+      const F = "100000000000000009";
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/f', 'f', NULL)",
+        F,
+      );
+      seed(sql, 0);
+      expect(sql.exec("SELECT 1 FROM local_accounts WHERE account_id = ?", F).toArray()).toEqual([]);
+      expect(() => hold(sql, L1, F)).toThrow(LOCAL);
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'f@x.test', X'00', X'00', 'k')",
+        F,
+      );
+      expect(sql.exec("SELECT count(*) AS n FROM reject_replays").one().n).toBe(0);
+    });
+  });
+
   it("holds a Reject queued before it, once the requester is suspended after the upgrade (P18)", async () => {
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;

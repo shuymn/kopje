@@ -170,6 +170,33 @@ describe("a Reject refused at its claim (W1, W2, W2b, W4)", () => {
     ]);
   });
 
+  it("is held and deferred while only its inbox's host is covered, the actor and its domain available (W2)", async () => {
+    const w = await world();
+    const r = await requests(w, w.bob, G1);
+    // r's inboxes on another host than its actor's and its domain's.
+    await sql(
+      w.h.store,
+      `UPDATE accounts SET inbox_url = 'https://inbox.example/users/r/inbox', shared_inbox_url = 'https://inbox.example/inbox'
+				WHERE id = ?`,
+      r,
+    );
+    await rejectRequest(w, w.bob, r);
+    const block = await blockDomain(w.h.store, "inbox.example");
+    expect(await sql(w.h.store, "SELECT suspended_at FROM accounts WHERE id = ?", r)).toEqual([{ suspended_at: null }]);
+    expect(await drain(w.h.store)).toEqual([]);
+    expect(await holds(w.h.store)).toMatchObject([{ follower: r, follow_uri: G1 }]);
+    // Available by its account and domain: the step defers on the inbox's host alone.
+    expect(await replays(w.h.store, NOW + RECHECK)).toEqual({ pending: false, delivers: false });
+    expect(await holds(w.h.store)).toMatchObject([{ check_at: NOW + 2 * RECHECK }]);
+    expect(await rejectIntents(w.h.store)).toEqual([]);
+    await unblockDomain(w.h.store, block.id);
+    await settle(w.h.store);
+    expect(await replays(w.h.store, NOW + 2 * RECHECK)).toMatchObject({ delivers: true });
+    expect((await drain(w.h.store, NOW + 2 * RECHECK)).map((s) => [s.id, s.inbox])).toEqual([
+      [await rejectId(w, w.bob, G1), "https://inbox.example/inbox"],
+    ]);
+  });
+
   it("records nothing while an unsuspension leaves the requester covered (W2b, P8b)", async () => {
     const w = await world();
     const r = await requests(w, w.bob, D1, "d.example");
@@ -341,6 +368,49 @@ describe("the follower's Undo ends the hold within its pair (W6, P12)", () => {
     await undo(w, r, pairId, null);
     expect(await rejectIntents(w.h.store)).toEqual([]);
     expect(await holds(w.h.store)).toEqual([]);
+  });
+});
+
+// Once a replay records it, a held Reject is a queued answer like any other (NET-2's keep rule): a newer request that
+// arrives before its claim keeps it, so it is sent, and the peer's pair fallback (Mastodon's reject_embedded_follow)
+// may reject that request while Kopje keeps it pending. The same window as any queued Reject's (an accepted risk in
+// docs/threat-model.md); these pin today's behaviour, so a change to it is deliberate.
+describe("a replayed Reject under NET-2's keep rule (accepted risk)", () => {
+  const heldThenReplayed = async () => {
+    const w = await world();
+    const r = await requests(w, w.bob, G1);
+    await rejectRequest(w, w.bob, r);
+    await suspend(w, r);
+    expect(await drain(w.h.store)).toEqual([]);
+    await lift(w, r);
+    expect(await replays(w.h.store, NOW + RECHECK)).toMatchObject({ delivers: true });
+    expect(await holds(w.h.store)).toEqual([]);
+    return { w, r };
+  };
+
+  it("is still sent when r's newer request arrives before its claim, and that request stays pending here", async () => {
+    const { w, r } = await heldThenReplayed();
+    await requests(w, w.bob, G2);
+    expect(await rejectIntents(w.h.store)).toEqual([
+      { id: await rejectId(w, w.bob, G1), pair: r, superseded: 0, retracts: 0 },
+    ]);
+    expect((await drain(w.h.store, NOW + RECHECK)).map((s) => [s.type, s.id])).toEqual([
+      ["Reject", await rejectId(w, w.bob, G1)],
+    ]);
+    expect(await sql(w.h.store, "SELECT state, uri FROM follows WHERE account_id = ?", r)).toEqual([
+      { state: "pending", uri: G2 },
+    ]);
+  });
+
+  it("is cancelled when r's Undo of g1 also arrives before its claim", async () => {
+    const { w, r } = await heldThenReplayed();
+    await requests(w, w.bob, G2);
+    await undo(w, r, G1, w.bob);
+    expect(await rejectIntents(w.h.store)).toEqual([]);
+    expect(await drain(w.h.store, NOW + RECHECK)).toEqual([]);
+    expect(await sql(w.h.store, "SELECT state, uri FROM follows WHERE account_id = ?", r)).toEqual([
+      { state: "pending", uri: G2 },
+    ]);
   });
 });
 
@@ -784,7 +854,7 @@ describe("failures (W15, W18; RES-5)", () => {
     expect(await holds(w.h.store)).toEqual([]);
   });
 
-  it.each(["follow_uri", "follower uri"] as const)(
+  it.each(["follow_uri", "follower uri", "local actor uri"] as const)(
     "parks a hold whose %s is not valid UTF-8, sends nothing, and replays its original id once repaired (W18; AC-6)",
     async (what) => {
       const w = await world();
@@ -793,11 +863,16 @@ describe("failures (W15, W18; RES-5)", () => {
       await suspend(w, r);
       expect(await drain(w.h.store)).toEqual([]);
       await lift(w, r);
-      const rUri = await uriOf(w.h.store, r);
+      const account = what === "local actor uri" ? w.bob.id : r;
+      const accountUri = await uriOf(w.h.store, account);
       if (what === "follow_uri") {
         await sql(w.h.store, "UPDATE reject_replays SET follow_uri = CAST(X'68747470733aff' AS TEXT)");
       } else {
-        await sql(w.h.store, "UPDATE accounts SET uri = CAST(CAST(uri AS BLOB) || X'ff' AS TEXT) WHERE id = ?", r);
+        await sql(
+          w.h.store,
+          "UPDATE accounts SET uri = CAST(CAST(uri AS BLOB) || X'ff' AS TEXT) WHERE id = ?",
+          account,
+        );
       }
       const warns = vi.spyOn(console, "warn").mockImplementation(() => {});
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -819,7 +894,7 @@ describe("failures (W15, W18; RES-5)", () => {
       if (what === "follow_uri") {
         await sql(w.h.store, "UPDATE reject_replays SET follow_uri = ?", G1);
       } else {
-        await sql(w.h.store, "UPDATE accounts SET uri = ? WHERE id = ?", rUri, r);
+        await sql(w.h.store, "UPDATE accounts SET uri = ? WHERE id = ?", accountUri, account);
       }
       expect(await w.h.store.retryParkedJobs(BUILD, {})).toMatchObject({ reset: 1 });
       expect(await replays(w.h.store, now)).toMatchObject({ delivers: true });
@@ -985,6 +1060,105 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
     expect(await replays(store, NOW + 10 * RECHECK)).toEqual({ pending: false, delivers: false });
   }, 300_000);
 
+  it("takes the handshake's due retry first when its due_at is the earlier (B1, the reverse order)", async () => {
+    const w = await world();
+    const store = w.h.store;
+    await remotes(store, 1, "6", true);
+    await remotes(store, 1, "7", true);
+    await sql(
+      store,
+      "INSERT INTO reject_replays (id, account_id, follower_id, follow_uri, check_at, attempts, due_at) VALUES (5, ?, ?, 'https://f/5', 0, 1, ?)",
+      w.bob.id,
+      `6${"1".padStart(17, "0")}`,
+      NOW - 1,
+    );
+    await sql(
+      store,
+      "INSERT INTO follows (id, account_id, target_account_id, state, uri) VALUES (5, ?, ?, 'pending', 'https://kopje.test/f/5')",
+      w.alice.id,
+      `7${"1".padStart(17, "0")}`,
+    );
+    await sql(
+      store,
+      "INSERT INTO handshake_replays (follow_id, check_at, attempts, due_at) VALUES (5, 0, 1, ?)",
+      NOW - 2,
+    );
+    const moved = async () =>
+      sql<{ t: string }>(
+        store,
+        `SELECT 'h' AS t FROM handshake_replays WHERE attempts = 0 UNION ALL SELECT 'r' FROM reject_replays WHERE attempts = 0`,
+      );
+    // One step: the handshake's retry (due earlier) runs through and is reset; the Reject's still waits.
+    expect(await operationRows(store, handshakeReplayStep, { now: NOW })).toMatchObject({ result: { done: false } });
+    expect(await moved()).toEqual([{ t: "h" }]);
+  });
+
+  it("reads the intent and the hold by key under statistics older than both tables' growth (HOLD_REJECT, REJECT_HOLD)", async () => {
+    const w = await world();
+    const store = w.h.store;
+    // One cycle on `local`: a fresh requester's Reject refused at a claim (the hold's statements), then lifted and
+    // replayed (the hold's read); the rows each statement read.
+    let n = 0;
+    const cycle = async (local: { id: string; token: string }) => {
+      const domain = `s${++n}.example`;
+      const r = await requests(w, local, `https://${domain}/follows/1`, domain);
+      await rejectRequest(w, local, r);
+      await suspend(w, r);
+      const claim = await plannedRun(w.h, /reject_replays/, claimDeliveries, { now: NOW, leaseToken: `s${n}` }, true);
+      expect(await sql(store, "SELECT 1 FROM reject_replays WHERE follower_id = ?", r)).toHaveLength(1);
+      await lift(w, r);
+      await sql(store, "UPDATE reject_replays SET check_at = 0 WHERE follower_id = ?", r);
+      const step = await plannedRun(w.h, /FROM main\.reject_replays r\b/, handshakeReplayStep, { now: NOW }, true);
+      expect(step.result).toEqual({ done: false, delivers: true });
+      return {
+        hold: claim.plans.map((p) => [p.rows, p.plan.find((d) => / o /.test(` ${d} `)) ?? ""]),
+        read: step.plans.map((p) => [p.rows, p.plan[0]]),
+      };
+    };
+    const { before, after } = await staleStatistics(w.h, {
+      capture: (phase) => cycle(phase === "before" ? w.alice : w.carol),
+      // 20,000 intents (the tail key past them all) and 3,000 holds of 30 other local accounts, all due much later.
+      grow: async () => {
+        await sql(
+          store,
+          `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 20000)
+					INSERT INTO outbound_activities (account_id, body, created_at)
+					SELECT ?, '{"activity":{"type":"Reject","object":{"type":"Follow"}}}', 0 FROM k`,
+          w.dan.id,
+        );
+        await remotes(store, 100, "8", false);
+        for (let i = 0; i < 30; i++) {
+          const local = `191${String(i).padStart(15, "0")}`;
+          await sql(
+            store,
+            "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/g' || ?1, 'g' || ?1, NULL)",
+            local,
+          );
+          await sql(
+            store,
+            "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?1 || '@example.com', X'00', X'00', 'k')",
+            local,
+          );
+          await sql(
+            store,
+            `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at)
+						SELECT ?, id, 'https://f/' || id, ? FROM accounts WHERE id LIKE '80000%'`,
+            local,
+            NOW + 1_000_000_000,
+          );
+        }
+      },
+    });
+    // The intent and the hold each by rowid, and every statement's rows read the same after the growth.
+    expect([before.hold.length, before.read.length]).toEqual([2, 1]);
+    expect(after.hold.map(([, plan]) => plan)).toEqual(before.hold.map(([, plan]) => plan));
+    for (const [, plan] of after.hold) {
+      expect(plan).toMatch(/^SEARCH o USING INTEGER PRIMARY KEY \(rowid=\?\)$/);
+    }
+    expect(after.read.map(([, plan]) => plan)).toEqual(["SEARCH r USING INTEGER PRIMARY KEY (rowid=?)"]);
+    expect(after).toEqual(before);
+  }, 300_000);
+
   it("writes the recording's rows and two more at most a step (B2)", async () => {
     const w = await world();
     const r = await requests(w, w.bob, G1);
@@ -1059,7 +1233,7 @@ describe("bounds (RES-4, RES-6, RES-7)", () => {
       await sql(
         w.h.store,
         `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at)
-				SELECT ?, id, 'https://f/' || id, ? FROM accounts WHERE id LIKE '8%'`,
+				SELECT ?, id, 'https://f/' || id, ? FROM accounts WHERE id LIKE '80000%'`,
         other,
         NOW,
       );

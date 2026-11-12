@@ -192,6 +192,8 @@ async function setup(seed: Seed) {
     fences: new Map<string, JobRow>(),
     last: null as State | null,
     peer: null as Peer | null,
+    // R1's server as L2's peer (AC-11): R1's request of L2 as its server holds it, fed the bodies L2 confirmed to R1.
+    peerL2: null as Peer | null,
     // P2's records for the quiescence exceptions.
     receivedAt: new Map<string, number>(),
     undoReceivedAt: new Map<string, number>(),
@@ -1130,6 +1132,13 @@ async function complete(w: World, attempt: Attempt): Promise<void> {
   await check(w, { actual: result.status, predicted });
 }
 
+// A confirmed body to R1's server, when a peer runs for its pair: L1's (P2's peer) or L2's (AC-11's).
+function handOver(w: World, attempt: Attempt): void {
+  const peer =
+    attempt.remote !== "R1" ? null : attempt.local === "L1" ? w.peer : attempt.local === "L2" ? w.peerL2 : null;
+  peer?.receive(JSON.parse(attempt.body!) as Body, attempt.token);
+}
+
 // The usual path in one step: a claim whose row is confirmed and completed, its body handed to R1's server when it is
 // L1's to R1 and a peer runs.
 async function send(w: World): Promise<boolean> {
@@ -1139,9 +1148,7 @@ async function send(w: World): Promise<boolean> {
   }
   await confirm(w, attempt);
   if (attempt.phase === "confirmed") {
-    if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
-      w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-    }
+    handOver(w, attempt);
     await complete(w, attempt);
   }
   return true;
@@ -1196,9 +1203,7 @@ async function drainDeliveries(w: World): Promise<void> {
         await confirm(w, attempt);
       }
       if (attempt.phase === "confirmed") {
-        if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
-          w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-        }
+        handOver(w, attempt);
         await complete(w, attempt);
       }
     }
@@ -1637,9 +1642,7 @@ async function p2Act(w: World, a: P2Action): Promise<void> {
       const open = w.attempts.filter((t) => t.phase === "confirmed");
       if (open.length > 0) {
         const attempt = open[a.i % open.length]!;
-        if (attempt.local === "L1" && attempt.remote === "R1") {
-          peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-        }
+        handOver(w, attempt);
         await complete(w, attempt);
       }
       return;
@@ -1712,6 +1715,11 @@ async function settleP2(w: World): Promise<void> {
     }
     while (peer.inbox.length > 0) {
       await p2Act(w, { k: "process" });
+      moved = true;
+    }
+    // L2's peer only takes bodies: R1's server answers nothing to a Reject or an Accept of its request.
+    while ((w.peerL2?.inbox.length ?? 0) > 0) {
+      w.peerL2!.process(0, w.clock);
       moved = true;
     }
     while (peer.outbox.length > 0) {
@@ -1841,6 +1849,13 @@ async function p2World(seed: Seed): Promise<World> {
     w.peer.generations.push(pair.rl.uri!);
   }
   w.lastFollow = pair.lr?.uri ?? null;
+  const l2 = w.policy.pair("L2", "R1");
+  if (l2.rl?.state === "pending") {
+    w.peerL2 = new Peer("https://d.example", w.policy.remotes.R1.uri, w.localUris.L2);
+    w.peerL2.rl = { state: "requested", uri: l2.rl.uri! };
+    w.peerL2.lastRGeneration = l2.rl.uri;
+    w.peerL2.generations.push(l2.rl.uri!);
+  }
   await check(w);
   await apiReads(w);
   return w;
@@ -2185,6 +2200,26 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "unsuspend", i: 0 },
     ]);
     expect(w.stats["exception X2"]).toBe(1);
+  }, 60_000);
+
+  // #1463, AC-11 (VIS-30, held Rejects): L2's Reject of R1's request, refused at its claim for R1's suspension, is held
+  // and replayed with its id once R1 is available; R1's server (L2's peer, fed the bodies L2 confirmed) then holds no
+  // request either. Without the hold the Reject is lost and R1's server keeps the request.
+  it("#1463: a Reject of a request dropped at send time is held, replayed, and both servers agree", async () => {
+    const w = await p2World(peerSeed);
+    expect(w.peerL2?.rl).toMatchObject({ state: "requested" });
+    await steps(w, [
+      { k: "answer", r: "R1", accept: false },
+      { k: "suspend", r: "R1" },
+      { k: "claim" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    await settleP2(w);
+    quiescence(w);
+    expect(w.stats["held at claim: Reject"]).toBe(1);
+    expect(w.stats["replayed: Reject"]).toBe(1);
+    expect(projection(w, w.last!).follows.filter((f) => f.gen === "R1>L2")).toEqual([]);
+    expect({ rl: w.peerL2!.rl, pairAnswers: w.peerL2!.events.pairAnswer.size }).toEqual({ rl: null, pairAnswers: 0 });
   }, 60_000);
 
   // #1422 (VIS-30, held handshakes): L1's Follow queued at the suspension is dropped at send time, held, and replayed

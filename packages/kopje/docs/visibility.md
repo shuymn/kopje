@@ -885,8 +885,11 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower nor
   its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
   moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
-- **The boundary.** No `Follow`, `Accept` or `Reject` is confirmed for sending while its recipient is unavailable; a POST
-  confirmed before an unavailability commits may still finish, as for any row.
+- **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing, is confirmed for sending
+  while its recipient is unavailable (a retraction, a `Reject` that withdraws an accepted follow included, is exempt);
+  a POST confirmed before an unavailability commits may still finish, as for any row. Once its replay records it, a
+  held `Reject` is a queued answer under NET-2's keep rule, with that rule's accepted window: a newer `Follow` of the
+  pair arriving before its claim keeps it, so the older generation's `Reject` is still sent.
 - **Latency (an estimate, not a bound).** With an unloaded queue and no failures, a hold is sent 5 to 10 minutes after
   its recipient is available again (the cron and each jobs message run a round); backlog, maintenance and backoff
   make it longer.
