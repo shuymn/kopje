@@ -27,7 +27,7 @@ import { localEmojiSnapshot } from "./custom-emojis";
 import { armFieldLinks } from "./field-links";
 import { retractFollow } from "./inbox";
 import { applyProfileImage, PROFILE_IMAGES, type ProfileImage, profileUploadReady } from "./media";
-import { notify } from "./notifications";
+import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { plainTextToHtml } from "./plain-text";
 import { accountSearchText } from "./search-text";
 
@@ -339,11 +339,7 @@ export const unfollow = userWriteOperation<{ target: string; now: number }, Rela
       );
     }
     // The follow's notification goes with it, as Mastodon destroys a notification with its activity.
-    db.run(
-      "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
-      target.id,
-      viewerId,
-    );
+    db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
     recountFollows(db, viewerId, target);
     return relationshipResult(db, viewerId, target.id, now);
   },
