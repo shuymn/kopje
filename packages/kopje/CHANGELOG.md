@@ -23,6 +23,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
   past it needs a point-in-time restore.
 
+### Fixed
+
+- A local account's `Reject` of a remote follow request that the send-time check dropped, because the requester or its
+  domain was suspended, is now held and sent with its original id once the requester is available, so the requester's
+  server no longer keeps the request pending (#1463, VIS-30). One hold per (local account, requester) pair, the newest
+  `Reject`; at most 100 per local account, past which a new pair's `Reject` is dropped as before and logged
+  (`kopje.delivery.reject_hold_capped`). A new `Follow` of the pair, the requester's `Undo` of the held `Follow` (or a
+  Misskey pair `Undo`) and its purge end the hold. A `Reject` dropped before the upgrade is not replayed. Migration
+  `0092_reject_replays`: an empty table, three empty indexes besides its unique key, and three triggers; as it creates
+  a table, the upgrade checks every reference of the Store (a median of 6,614 ms in three local runs of the migration
+  bench for the file, 7,336 ms with `0091`). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release
+  is at least a minor version, and rolling back past it needs a point-in-time restore.
+
 ## [0.4.0] - 2026-11-12
 
 A minor release, published under the npm dist-tag `latest`. It adds one Store migration and bounds the domain-block

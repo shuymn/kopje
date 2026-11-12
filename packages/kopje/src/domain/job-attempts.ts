@@ -156,6 +156,18 @@ export const HANDSHAKE_REPLAYS: JobTable = {
   integerKey: true,
 };
 
+// The held Rejects of follow requests (migration 0092_reject_replays, handshake-replays.ts): the same family and rounds
+// as the held handshakes, whose selection merges both tables; a hold runs at its check_at, equal times in id order.
+export const REJECT_REPLAYS: JobTable = {
+  table: "reject_replays",
+  family: "handshake_replays",
+  key: ["id"],
+  fresh: "check_at, id",
+  order: "check_at, id",
+  rowid: true,
+  integerKey: true,
+};
+
 // The tables retryParkedJobs walks, in this order: a jobs round's (src/jobs/queue.ts STORE_JOB_FAMILIES).
 export const JOB_TABLES: readonly JobTable[] = [
   INBOUND_JOBS,
@@ -167,6 +179,7 @@ export const JOB_TABLES: readonly JobTable[] = [
   MODERATION_JOBS,
   REMOTE_MODERATION_JOBS,
   HANDSHAKE_REPLAYS,
+  REJECT_REPLAYS,
 ];
 
 // The predicate `condition` of the table's rows with work left.

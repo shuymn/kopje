@@ -192,6 +192,8 @@ async function setup(seed: Seed) {
     fences: new Map<string, JobRow>(),
     last: null as State | null,
     peer: null as Peer | null,
+    // R1's server as L2's peer (AC-11): R1's request of L2 as its server holds it, fed the bodies L2 confirmed to R1.
+    peerL2: null as Peer | null,
     // P2's records for the quiescence exceptions.
     receivedAt: new Map<string, number>(),
     undoReceivedAt: new Map<string, number>(),
@@ -433,6 +435,11 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
     const holds = q<{ follow: string; check_at: number; attempts: number }>(
       "SELECT CAST(follow_id AS TEXT) AS follow, check_at, attempts FROM handshake_replays ORDER BY follow_id",
     );
+    // The held Rejects (migration 0092_reject_replays), by their pair.
+    const rejectHolds = q<{ id: string; account: string; follower: string; check_at: number; attempts: number }>(
+      `SELECT CAST(id AS TEXT) AS id, account_id AS account, follower_id AS follower, check_at, attempts
+			FROM reject_replays ORDER BY id`,
+    );
     const unexpanded = q<{ n: number }>("SELECT count(*) AS n FROM outbound_targets")[0]!.n;
     const unrowed = q<{ type: string }>(
       `SELECT json_extract(body, '$.activity.type') AS type FROM outbound_activities o
@@ -461,6 +468,7 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
       statuses,
       lanes,
       holds,
+      rejectHolds,
       unexpanded,
       unrowed,
       snap,
@@ -534,6 +542,13 @@ function projection(w: World, s: State) {
         const gen = f === undefined ? h.follow : `${name(f.follower)}>${name(f.target)}`;
         return { gen, checkAt: h.check_at, attempts: h.attempts };
       })
+      .concat(
+        s.rejectHolds.map((h) => ({
+          gen: `${name(h.follower)}>${name(h.account)} reject`,
+          checkAt: h.check_at,
+          attempts: h.attempts,
+        })),
+      )
       .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: s.unexpanded,
     unrowed: s.unrowed.filter((type) => type !== "Update"),
@@ -615,7 +630,11 @@ function expected(w: World) {
     lanes,
     holds: p
       .holds()
-      .map((h) => ({ gen: h.side === "lr" ? `${h.l}>${h.r}` : `${h.r}>${h.l}`, checkAt: h.checkAt, attempts: 0 }))
+      .map((h) => ({
+        gen: h.side === "lr" ? `${h.l}>${h.r}` : h.side === "rl" ? `${h.r}>${h.l}` : `${h.r}>${h.l} reject`,
+        checkAt: h.checkAt,
+        attempts: 0,
+      }))
       .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: 0,
     unrowed: [] as string[],
@@ -924,8 +943,20 @@ async function moderation(w: World): Promise<boolean> {
   return pending;
 }
 
-// The follow a hold holds, by its id in the Store (the replay's order within equal times).
+// The activity each side of a hold records.
+const HOLD_TYPES: Record<Hold["side"], string> = { lr: "Follow", rl: "Accept", reject: "Reject" };
+
+// The follow a hold holds, by its id in the Store (the replay's order within equal times); a held Reject's own id.
 function holdFollowId(w: World, hold: Hold): bigint {
+  if (hold.side === "reject") {
+    const held = w.last!.rejectHolds.find(
+      (row) => row.account === w.ids[hold.l] && row.follower === w.remoteIds[hold.r],
+    );
+    if (held === undefined) {
+      throw new Error(`a held Reject of ${hold.l} ${hold.r} not in the Store\n${context(w)}`);
+    }
+    return BigInt(held.id);
+  }
   const [follower, target] =
     hold.side === "lr" ? [w.ids[hold.l], w.remoteIds[hold.r]] : [w.remoteIds[hold.r], w.ids[hold.l]];
   const f = w.last!.follows.find((row) => row.follower === follower && row.target === target);
@@ -946,10 +977,10 @@ async function replay(w: World): Promise<boolean> {
   const answer = await w.store.runHandshakeReplays(BUILD, { now: w.clock });
   const predicted = w.policy.replayRound(w.clock, (h) => holdFollowId(w, h), HANDSHAKE_REPLAYS_PER_ROUND);
   for (const h of predicted.replayed) {
-    tally(w.stats, `replayed: ${h.side === "lr" ? "Follow" : "Accept"}`);
+    tally(w.stats, `replayed: ${HOLD_TYPES[h.side]}`);
   }
   for (const h of predicted.deferred) {
-    tally(w.stats, `replay deferred: ${h.side === "lr" ? "Follow" : "Accept"}`);
+    tally(w.stats, `replay deferred: ${HOLD_TYPES[h.side]}`);
   }
   await after(w, { actual: answer, predicted: { pending: predicted.pending, delivers: predicted.delivers } });
   return answer.pending;
@@ -1004,11 +1035,14 @@ async function nextDue(w: World): Promise<{ local: Local; remote: Remote } | nul
   return { local: labelOf(w, row.account) as Local, remote };
 }
 
-// The holds a claim or confirmation wrote, from the pair's holds before it (`held`: its Follow's, then its Accept's).
+// The pair's hold times: its Follow's, its Accept's and its Reject's.
+const heldTimes = (pair: Policy) => [pair.heldLR, pair.heldRL, pair.heldReject?.checkAt ?? null];
+
+// The holds a claim or confirmation wrote, from the pair's holds before it (heldTimes).
 function tallyHeld(w: World, at: "claim" | "confirm", held: (number | null)[], pair: Policy): void {
-  for (const [i, now] of [pair.heldLR, pair.heldRL].entries()) {
+  for (const [i, now] of heldTimes(pair).entries()) {
     if (now !== null && now !== held[i]) {
-      tally(w.stats, `held at ${at}: ${i === 0 ? "Follow" : "Accept"}`);
+      tally(w.stats, `held at ${at}: ${["Follow", "Accept", "Reject"][i]}`);
     }
   }
 }
@@ -1024,7 +1058,7 @@ async function claim(w: World): Promise<Attempt | null> {
   const pair = w.policy.pair(due.local, due.remote);
   // The head's inbox, as the last projection (checked against the policy) holds it.
   const inbox = projection(w, w.last!).lanes[`${due.local} ${due.remote}`]?.[0]?.inbox;
-  const held = [pair.heldLR, pair.heldRL];
+  const held = heldTimes(pair);
   const predicted = pair.claim(w.clock, token);
   if (predicted.dropped !== null && !predicted.dropped.superseded) {
     tally(w.stats, `dropped at claim: ${predicted.dropped.type}`);
@@ -1059,7 +1093,7 @@ async function confirm(w: World, attempt: Attempt): Promise<void> {
     now: w.clock,
   });
   const pair = w.policy.pair(attempt.local, attempt.remote);
-  const held = [pair.heldLR, pair.heldRL];
+  const held = heldTimes(pair);
   const predicted = pair.confirm(attempt.token, w.clock);
   if (predicted.status === "dropped" && !attempt.intent.superseded) {
     tally(w.stats, `dropped at confirm: ${attempt.intent.type}`);
@@ -1098,6 +1132,13 @@ async function complete(w: World, attempt: Attempt): Promise<void> {
   await check(w, { actual: result.status, predicted });
 }
 
+// A confirmed body to R1's server, when a peer runs for its pair: L1's (P2's peer) or L2's (AC-11's).
+function handOver(w: World, attempt: Attempt): void {
+  const peer =
+    attempt.remote !== "R1" ? null : attempt.local === "L1" ? w.peer : attempt.local === "L2" ? w.peerL2 : null;
+  peer?.receive(JSON.parse(attempt.body!) as Body, attempt.token);
+}
+
 // The usual path in one step: a claim whose row is confirmed and completed, its body handed to R1's server when it is
 // L1's to R1 and a peer runs.
 async function send(w: World): Promise<boolean> {
@@ -1107,9 +1148,7 @@ async function send(w: World): Promise<boolean> {
   }
   await confirm(w, attempt);
   if (attempt.phase === "confirmed") {
-    if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
-      w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-    }
+    handOver(w, attempt);
     await complete(w, attempt);
   }
   return true;
@@ -1164,9 +1203,7 @@ async function drainDeliveries(w: World): Promise<void> {
         await confirm(w, attempt);
       }
       if (attempt.phase === "confirmed") {
-        if (w.peer !== null && attempt.local === "L1" && attempt.remote === "R1") {
-          w.peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-        }
+        handOver(w, attempt);
         await complete(w, attempt);
       }
     }
@@ -1605,9 +1642,7 @@ async function p2Act(w: World, a: P2Action): Promise<void> {
       const open = w.attempts.filter((t) => t.phase === "confirmed");
       if (open.length > 0) {
         const attempt = open[a.i % open.length]!;
-        if (attempt.local === "L1" && attempt.remote === "R1") {
-          peer.receive(JSON.parse(attempt.body!) as Body, attempt.token);
-        }
+        handOver(w, attempt);
         await complete(w, attempt);
       }
       return;
@@ -1680,6 +1715,11 @@ async function settleP2(w: World): Promise<void> {
     }
     while (peer.inbox.length > 0) {
       await p2Act(w, { k: "process" });
+      moved = true;
+    }
+    // L2's peer only takes bodies: R1's server answers nothing to a Reject or an Accept of its request.
+    while ((w.peerL2?.inbox.length ?? 0) > 0) {
+      w.peerL2!.process(0, w.clock);
       moved = true;
     }
     while (peer.outbox.length > 0) {
@@ -1809,6 +1849,13 @@ async function p2World(seed: Seed): Promise<World> {
     w.peer.generations.push(pair.rl.uri!);
   }
   w.lastFollow = pair.lr?.uri ?? null;
+  const l2 = w.policy.pair("L2", "R1");
+  if (l2.rl?.state === "pending") {
+    w.peerL2 = new Peer("https://d.example", w.policy.remotes.R1.uri, w.localUris.L2);
+    w.peerL2.rl = { state: "requested", uri: l2.rl.uri! };
+    w.peerL2.lastRGeneration = l2.rl.uri;
+    w.peerL2.generations.push(l2.rl.uri!);
+  }
   await check(w);
   await apiReads(w);
   return w;
@@ -2153,6 +2200,26 @@ describe("instance moderation witnesses: federation with R1's server", () => {
       { k: "unsuspend", i: 0 },
     ]);
     expect(w.stats["exception X2"]).toBe(1);
+  }, 60_000);
+
+  // #1463, AC-11 (VIS-30, held Rejects): L2's Reject of R1's request, refused at its claim for R1's suspension, is held
+  // and replayed with its id once R1 is available; R1's server (L2's peer, fed the bodies L2 confirmed) then holds no
+  // request either. Without the hold the Reject is lost and R1's server keeps the request.
+  it("#1463: a Reject of a request dropped at send time is held, replayed, and both servers agree", async () => {
+    const w = await p2World(peerSeed);
+    expect(w.peerL2?.rl).toMatchObject({ state: "requested" });
+    await steps(w, [
+      { k: "answer", r: "R1", accept: false },
+      { k: "suspend", r: "R1" },
+      { k: "claim" },
+      { k: "unsuspend", i: 0 },
+    ]);
+    await settleP2(w);
+    quiescence(w);
+    expect(w.stats["held at claim: Reject"]).toBe(1);
+    expect(w.stats["replayed: Reject"]).toBe(1);
+    expect(projection(w, w.last!).follows.filter((f) => f.gen === "R1>L2")).toEqual([]);
+    expect({ rl: w.peerL2!.rl, pairAnswers: w.peerL2!.events.pairAnswer.size }).toEqual({ rl: null, pairAnswers: 0 });
   }, 60_000);
 
   // #1422 (VIS-30, held handshakes): L1's Follow queued at the suspension is dropped at send time, held, and replayed

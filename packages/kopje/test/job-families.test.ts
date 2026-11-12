@@ -61,11 +61,18 @@ const FAMILIES = {
     work: "SELECT 1 FROM remote_moderation_jobs",
     fail: ["BEFORE UPDATE ON remote_moderation_jobs", "BEFORE DELETE ON remote_moderation_jobs"],
   },
+  // Both tables of the family: the held handshakes and the held Rejects (migration 0092_reject_replays).
   handshake_replays: {
     call: "handshake_replays",
-    state: "SELECT follow_id, check_at, attempts FROM handshake_replays ORDER BY follow_id",
-    work: "SELECT 1 FROM handshake_replays",
-    fail: ["BEFORE DELETE ON handshake_replays", "BEFORE UPDATE ON handshake_replays"],
+    state: `SELECT 'h' AS t, follow_id AS key, check_at, attempts FROM handshake_replays
+			UNION ALL SELECT 'r', id, check_at, attempts FROM reject_replays ORDER BY 1, 2`,
+    work: "SELECT 1 FROM handshake_replays UNION ALL SELECT 1 FROM reject_replays",
+    fail: [
+      "BEFORE DELETE ON handshake_replays",
+      "BEFORE UPDATE ON handshake_replays",
+      "BEFORE DELETE ON reject_replays",
+      "BEFORE UPDATE ON reject_replays",
+    ],
   },
   unlock_accepts: {
     call: "unlock_accepts",
@@ -184,6 +191,18 @@ async function seeded() {
       `https://kopje.test/ap/users/alice#follows/${name}`,
     );
     await sql(store, "INSERT INTO handshake_replays (follow_id, check_at) VALUES (?, ?)", edge!.id, NOW);
+  }
+  // Held Rejects: alice's Rejects of two available accounts' requests, each held and due after the handshakes.
+  for (const name of ["j1", "j2"]) {
+    const follower = await remoteAccount(store, name, "j.example");
+    await sql(
+      store,
+      "INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, ?, ?)",
+      w.alice.id,
+      follower,
+      `https://j.example/follows/${name}`,
+      NOW,
+    );
   }
   // Unlock: bob, locked, has two pending requests, then unlocks.
   await sql(store, "UPDATE accounts SET locked = 1 WHERE id = ?", w.bob.id);

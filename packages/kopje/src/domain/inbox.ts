@@ -745,6 +745,10 @@ function replacedAnswer(answer: FollowAnswer): boolean {
 // pairs are those of the local accounts with an answer naming `undone` (UNDONE_ANSWER_SIGNERS_SQL), and the Undo is
 // refused if any local account's pair with the follower is over the intent bound, as its answers are not all read.
 // Returns false over the bound of any pair (RES-6), with nothing written.
+// A pair's held Reject (migration 0092_reject_replays) goes by the same rule within each pair: when `undone` names its
+// Follow id, byte for byte, or is a Misskey pair id. Without a target, the pairs whose hold names `undone` count among
+// the named ones too (HELD_REJECT_SIGNERS_SQL), so the set is shared: a pair id reaches only the pairs found by a
+// named answer or a named hold, never another local account's pair by its shape alone. One hold per pair at most.
 function cancelUndoneAnswers(
   db: Db,
   followerId: string,
@@ -764,7 +768,8 @@ function cancelUndoneAnswers(
     if (pairs.some((p) => p.n > FOLLOW_ANSWER_INTENTS)) {
       return false;
     }
-    targets = pairs.filter((p) => p.named === 1).map((p) => p.id);
+    const held = db.all<{ id: string }>(HELD_REJECT_SIGNERS_SQL, followerId, undone);
+    targets = [...new Set([...pairs.filter((p) => p.named === 1).map((p) => p.id), ...held.map((h) => h.id)])];
   }
   const found: FollowAnswers[] = [];
   for (const target of targets) {
@@ -781,8 +786,23 @@ function cancelUndoneAnswers(
   for (const answers of found) {
     cancelFollowAnswers(db, answers, now);
   }
+  for (const target of targets) {
+    db.run(
+      `DELETE FROM reject_replays WHERE account_id = ?1 AND follower_id = ?2
+				AND (?4 OR CAST(follow_uri AS BLOB) = CAST(?3 AS BLOB))`,
+      target,
+      followerId,
+      undone,
+      pair ? 1 : 0,
+    );
+  }
   return true;
 }
+
+// The local accounts whose held Reject of the follower ?1 names the Follow ?2, byte for byte: the follower's holds,
+// one per local account at most, through reject_replays_follower.
+const HELD_REJECT_SIGNERS_SQL = `SELECT account_id AS id FROM reject_replays INDEXED BY reject_replays_follower
+	WHERE follower_id = ?1 AND CAST(follow_uri AS BLOB) = CAST(?2 AS BLOB)`;
 
 // The local accounts (operator-sized, read whole) and their answers to the follower ?1: for each, how many of the pair's
 // answers there are, counted up to ?3 (more than FOLLOW_ANSWER_INTENTS refuses the Undo), and whether one of its first
@@ -1547,6 +1567,17 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
       id,
     );
   }
+  // Its held Rejects (migration 0092_reject_replays), one per local account at most, each deleted by its key and
+  // cascading nothing, so the account's delete cascades none.
+  spend(
+    db,
+    budget,
+    {
+      ids: "SELECT CAST(id AS TEXT) AS id FROM reject_replays INDEXED BY reject_replays_follower WHERE follower_id = ?1 LIMIT ?2",
+      each: "DELETE FROM reject_replays WHERE id = CAST(?1 AS INTEGER)",
+    },
+    id,
+  );
   // A follow's delete, the held handshake it cascades to (migration 0088_handshake_replays, one at most) and its local
   // side's recount: PURGED_FOLLOW_ROWS each at most.
   // Its follows of either side, each side through its own index (an OR of the two lets statistics older than the
@@ -2106,6 +2137,7 @@ export const PURGED_ACCOUNT_CHILDREN: readonly { table: string; check: string; f
   { table: "favourite_likes", check: "favourite_id IN (SELECT id FROM favourites WHERE account_id = ?1)" },
   { table: "follows", check: "account_id = ?1" },
   { table: "follows", check: "target_account_id = ?1" },
+  { table: "reject_replays", check: "follower_id = ?1" },
   { table: "blocks", check: "account_id = ?1", filter: true },
   { table: "blocks", check: "target_account_id = ?1", filter: true },
   { table: "mutes", check: "target_account_id = ?1", filter: true },

@@ -152,6 +152,17 @@ from 0 to 2^53 − 1 (otherwise `handshake_replays_check_at` fails), and the ret
 follow fails the import's foreign key check. A dump carries holds as they are, so a restored Store replays them at
 their checks; a file built from legacy data writes none.
 
+A held `Reject` of a follow request (VIS-30, migration `0092_reject_replays`) is a `reject_replays` row: `account_id`,
+a foreign key to `local_accounts`, and `follower_id`, a foreign key to `accounts` whose delete cascades to it, unique
+together; `follow_uri`, the `Follow`'s id (TEXT, non-empty, no NUL, within 4,096 JSON-escaped UTF-8 bytes, otherwise
+`reject_replays_follow_uri` fails), or `edge_id`, the ended follow's id (any 64-bit integer; numeric text is stored as
+its integer, any other value fails `reject_replays_edge_id`), exactly one of them (`reject_replays_name`); `check_at`
+as in `handshake_replays` (`reject_replays_check_at`), and the retry state of a job (above). A follower stored with no
+domain fails with `reject_replays: the follower is local`, and a 101st pair of one local account with
+`reject_replays: more held Rejects than an account may keep`; a missing account fails the foreign key check. A
+`follow_uri` that is not valid UTF-8 imports, and its replay parks (docs/observability.md). A file built from legacy
+data writes none.
+
 A remote favourite's Like ids are rows of `favourite_likes` (migration `0052_favourite_likes`): the ids of the
 actor's Likes whose Undo has not arrived, each with the time the Store received it (`received_at`, ms since the
 epoch), at most 4 per favourite, each id once in the file and within 4,096 JSON-escaped UTF-8 bytes. `favourites.uri`
