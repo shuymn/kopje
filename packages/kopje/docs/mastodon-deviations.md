@@ -759,13 +759,12 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   Mastodon keeps discarded with its quote and forwards through (`remove_status_service.rb:53`, `:162-164`).
 - At most 16 owners forward (the boosters first by account id, then the owners of the quotes read by account id),
   through at most 64 quoting statuses across all owners (the first by status id, one owner may hold them all; a policy
-  cap, logged when passed), and
-  nothing is forwarded for a body over 65,536 bytes as serialized or holding a number JSON cannot carry; Mastodon has
-  no such caps.
-- Only a kept boost that is not direct or limited forwards (a converted direct boost is one Kopje kept from legacy
-  data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local account nor
-  an `Update` is forwarded, nor are a quoting status's poll voters reached. A `Delete` another server relays is refused for a status, with or
-  without the author's proof (ID-1's one exception covers a stamp only); Mastodon verifies a relayed `Delete`'s LD
+  cap, logged when passed), and nothing is forwarded for a body over 65,536 bytes as serialized or holding a number
+  JSON cannot carry; Mastodon has no such caps.
+- A boost forwards only when it is kept and neither direct nor limited (a converted direct boost is one Kopje kept from
+  legacy data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local
+  account nor an `Update` is forwarded, nor are a quoting status's poll voters reached. A `Delete` another server
+  relays is refused for a status, with or without the author's proof (ID-1's one exception covers a stamp only); Mastodon verifies a relayed `Delete`'s LD
   signature by its author (`process_collection_service.rb` `verify_account!`), then applies and forwards it as the
   author's own (`activity/delete.rb` `delete_status`).
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
