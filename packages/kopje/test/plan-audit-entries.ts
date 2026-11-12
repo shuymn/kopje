@@ -328,12 +328,196 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
+    id: "da96c2c02866408c",
+    scans: ["accounts: SCAN a", "local_accounts: SCAN l LEFT-JOIN"],
+    site: "src/domain/admin-account-presenter.ts#adminAccountStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented < src/domain/reports.ts#<anonymous> in getAdminReport < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
     id: "cd06801d1dce1dec",
     scans: ["local_accounts: SCAN local_accounts"],
     site: "src/domain/admin-accounts.ts#<anonymous> in setAccountEmail",
     disposition: "deliberate",
     reason:
       'no index serves the sign-in\'s email match, which the email repair applies to the other local accounts (setAccountEmail, src/domain/admin-accounts.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+  },
+  {
+    id: "5e93376476b36f62",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#range < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "aee0f20d53a2d8e7",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#range < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "06ec3b06baf5d9a5",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "564c8028d796e438",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "70b8e6d1f272c79d",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "87b5a6e097e2f0cb",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "92542d5a04dd9c95",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "bd9046d277ce1943",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "c692feac604bb9d0",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "84a709feed240a8b",
+    scans: [
+      "accounts: SCAN a",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "d3a51ed21b532871",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "e2e93a1a778c9707",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "9e86529db4696242",
+    scans: [
+      "accounts: SCAN a",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "f3be293181dee3a2",
+    scans: [
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "local_accounts: SCAN l LEFT-JOIN",
+    ],
+    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "7511bb5f1914c901",
+    scans: ["accounts: SCAN a"],
+    site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "78569b4e54647cc3",
+    scans: ["accounts: SCAN a"],
+    site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "82fc0e40127c6e76",
+    scans: ["local_accounts: SCAN l LEFT-JOIN"],
+    site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "86e3b5718de79c79",
+    scans: ["accounts: SCAN a"],
+    site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
+  },
+  {
+    id: "b0133054d2369745",
+    scans: ["accounts: SCAN a"],
+    site: "src/domain/admin-accounts.ts#textMatches < src/domain/admin-accounts.ts#ordered < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> in adminAccountOperations < src/domain/auth.ts#<anonymous> in adminGuarded",
+    disposition: "pending",
+    issue: "#1468 group 7",
   },
   {
     id: "71b67c065fd24966",
@@ -422,6 +606,16 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/announcements.ts#liveCount < src/domain/announcements.ts#<anonymous> in createAnnouncement",
     disposition: "bounded",
     reason: "announcements holds at most 1,000 rows (announcements_cap, migration 0056_announcements)",
+  },
+  {
+    id: "0d17e63234debf2b",
+    scans: [
+      "accounts: SCAN a",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+    ],
+    site: "src/domain/announcements.ts#resolveMentions < src/domain/announcements.ts#render < src/domain/announcements.ts#presentAnnouncement < src/domain/announcements.ts#entries < src/domain/answer-budget.ts#admit",
+    disposition: "pending",
+    issue: "#1468 group 7",
   },
   {
     id: "380af9bd36f5456a",
@@ -1238,6 +1432,21 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/audience.ts#read < src/domain/audience.ts#remoteReportStatusIds < src/domain/reports.ts#<anonymous> in adminReportStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented",
     disposition: "pending",
     issue: "#1468 group 6",
+  },
+  {
+    id: "38ef2079b0de598f",
+    scans: [
+      "follows: SCAN fo USING COVERING INDEX follows_accepted",
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      "quotes: SCAN e_tq",
+      "statuses: SCAN e",
+      "statuses: SCAN e_tqs",
+      "statuses: SCAN s",
+      "trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account",
+    ],
+    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/trends.ts#<anonymous> in trendingStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
+    disposition: "pending",
+    issue: "#1468 group 7",
   },
   {
     id: "f9e061eec6bfcb55",
@@ -2081,6 +2290,22 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
+    id: "2a0ee985d5c04980",
+    scans: ["custom_emojis: SCAN e USING INDEX custom_emojis_enabled"],
+    site: "src/domain/local-emojis.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis); each image is read by key",
+  },
+  {
+    id: "0b3e529f288063a3",
+    scans: ["custom_emojis: SCAN custom_emojis USING COVERING INDEX custom_emojis_enabled"],
+    site: "src/domain/local-emojis.ts#enabledCount < src/domain/local-emojis.ts#placeRefusal < src/domain/local-emojis.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis)",
+  },
+  {
     id: "c5b6b541bb25507c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -2097,6 +2322,13 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "background",
     reason:
       'a job or round traversal (media.ts#<anonymous> in purgeMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "c9fe4d5856b6c794",
+    scans: ["kopje_state: SCAN kopje_state"],
+    site: "src/domain/media.ts#<anonymous> in startTransforms < src/domain/auth.ts#<anonymous> in guarded",
+    disposition: "write",
+    issue: "#1468 group 7",
   },
   {
     id: "c10d6d4de870645f",
@@ -2935,6 +3167,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/trends.ts#writeTrendRows < src/domain/trends.ts#roundTags < src/domain/trends.ts#<anonymous> in trendsRound",
     disposition: "bounded",
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
+  },
+  {
+    id: "a6623e9966398a30",
+    scans: ["trend_statuses: SCAN t USING COVERING INDEX trend_statuses_account"],
+    site: "src/domain/trends.ts#adminStatusRows < src/domain/trends.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends); each status and author is read by key",
   },
   {
     id: "2bb9d7eb91bcae90",

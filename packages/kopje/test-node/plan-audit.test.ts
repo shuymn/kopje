@@ -507,6 +507,31 @@ describe("plan audit residuals", () => {
       6,
     ],
     ["an ended follow's notifications", "src/domain/blocks.ts#endFollow", "notifications: SCAN notifications", 6],
+    // The emoji, media, announcement and trend reads of group 7.
+    ["an upload's completion", "src/domain/media.ts#<anonymous> in completeMedia", "media_attachments: SCAN m", 7],
+    ["an emoji upload's uploader", "src/domain/local-emojis.ts#<anonymous> in completeEmoji", "accounts: SCAN a", 7],
+    ["an emoji by id", "src/domain/local-emojis.ts#emojiById", "custom_emojis: SCAN e", 7],
+    ["an emoji's federation object", "src/domain/local-emojis.ts#localEmojiObjectOf", "media_attachments: SCAN m", 7],
+    [
+      "an announcement's reaction groups",
+      "src/domain/announcements.ts#reactionRows",
+      "announcement_reactions: SCAN r",
+      7,
+    ],
+    [
+      "an announcement's delete",
+      "src/domain/announcements.ts#<anonymous> in deleteAnnouncement",
+      "announcement_reactions: SCAN announcement_reactions",
+      7,
+    ],
+    ["the admin trend statuses", "src/domain/trends.ts#adminStatusRows", "statuses: SCAN s", 7],
+    ["the admin emoji page", "src/domain/local-emojis.ts#<anonymous> in adminEmojis", "media_attachments: SCAN m", 7],
+    [
+      "a local status's emoji snapshot",
+      "src/domain/custom-emojis.ts#localEmojiSnapshot",
+      "media_attachments: SCAN m",
+      7,
+    ],
     [
       "an inbound Undo's follow notifications",
       "src/domain/inbox.ts#removeFollow",
