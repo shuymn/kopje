@@ -443,10 +443,7 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 5,
     statement: "inbox ourFollow",
     sites: ["src/domain/inbox.ts#ourFollow"],
-    status: "outside",
-    why: "walks the actor's followers through follows_target (no index holds a follow's uri): the inbox writes only follows with a local side, but an import does not hold them to it",
-    witness:
-      "needed: an index of the follows by uri (#1481); test/relationship-edge-plans.test.ts shows rows read flat as other accounts' follows grow",
+    status: "fixed",
   },
   {
     group: 5,
@@ -492,11 +489,7 @@ export const ROWS_1468: readonly Row1468[] = [
     group: 5,
     statement: "an arriving status's post subscribers (found by the audit)",
     sites: ["src/domain/remote-statuses.ts#notifyCreated"],
-    scans: "^follows: ",
-    status: "outside",
-    why: "walks the author's accepted followers through follows_target: the inbox writes only follows with a local side, but an import does not hold them to it",
-    witness:
-      "needed: an index of the notify = 1 follows (#1481); test/relationship-edge-plans.test.ts shows rows read flat as other accounts' follows grow",
+    status: "fixed",
   },
   {
     group: 6,

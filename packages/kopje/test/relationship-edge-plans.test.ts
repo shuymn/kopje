@@ -15,13 +15,14 @@ import { singletonStatistics } from "./plan-audit-store";
 import { type PlannedStatement, plannedSql, scansOf } from "./read-helpers";
 
 // RES-7 witnesses of the edges a relationship, an answered follow request and an inbound activity read by their keys
-// (follows_pair, follows_accepted, follows_target, blocks_pair, mutes_pair, favourites_pair, favourite_likes_uri and
-// favourites_account, notifications_natural, statuses by uri and statuses_unresolved_reply), under the plan audit's
-// singleton statistics and under ANALYZE of the Store as read: the rows they read stay the same as the neighbours they
-// never touch grow on both sides of their keys (accounts whose ids and URIs sort below and above the subject's, their
-// follows, blocks, mutes, favourites, Like ids and notifications), and as the viewer's follows and bob's favourites
-// grow. The walks the keys still allow (a remote actor's own follows and blocks by uri, a remote actor's followers) are
-// #1481's: the inbox writes only edges with a local side, but an import does not hold them to it.
+// (follows_pair, follows_accepted, blocks_pair, mutes_pair, favourites_pair, favourite_likes_uri and
+// favourites_account, notifications_natural, statuses by uri and statuses_unresolved_reply; an Accept's follow, an
+// arriving status's subscribers and an undone interaction's notifications from the local accounts), under the plan
+// audit's singleton statistics and under ANALYZE of the Store as read: the rows they read stay the same as the
+// neighbours they never touch grow on both sides of their keys (accounts whose ids and URIs sort below and above the
+// subject's, their follows, bob's followers among them, blocks, mutes, favourites, Like ids and notifications), and as
+// the viewer's follows and bob's favourites grow. The walks the keys still allow (a remote actor's own follows and
+// blocks by uri) are #1481's: the inbox writes only edges with a local target, but an import does not hold them to it.
 
 const VIEWER = "600000000000000001";
 const VIEWER_URI = "https://kopje.test/ap/users/viewer";
@@ -39,7 +40,7 @@ const MANY = 15_600;
 
 // The viewer and another local account, bob (remote), the viewer's status; then `n` remote accounts on each side of
 // bob's id and URI, each followed by the viewer (a third pending, the rest accepted, with post notifications) and muted
-// by it, each following the viewer (pending) and blocking it by uri, each with a status that replies to a status not
+// by it, each following the viewer (pending) and bob (accepted, with post notifications) and blocking the viewer by uri, each with a status that replies to a status not
 // yet stored and that the viewer and bob favourited (bob by a tracked Like id), each having favourited the viewer's
 // status (by a tracked Like id), and notifications of each kind from each to the viewer and from bob to the other local
 // account.
@@ -110,6 +111,12 @@ async function world(n: number): Promise<StoreStub> {
         VIEWER,
       );
       sql.exec(`INSERT INTO mutes (account_id, target_account_id) SELECT ?, id FROM accounts WHERE ${range}`, VIEWER);
+      // Followers of bob, as an import may hold them (the inbox writes only follows with a local side).
+      sql.exec(
+        `INSERT INTO follows (account_id, target_account_id, state, notify, uri)
+				SELECT id, ?, 'accepted', 1, uri || '#bob' FROM accounts WHERE ${range}`,
+        BOB,
+      );
       sql.exec(
         `INSERT INTO blocks (account_id, target_account_id, uri) SELECT id, ?, uri || '#block' FROM accounts WHERE ${range}`,
         VIEWER,
@@ -177,6 +184,8 @@ type Case = {
   run: (sql: SqlStorage, transact: Transact) => unknown;
   // What the subject's run answers, in part.
   answer: unknown;
+  // A count the run leaves at 0.
+  left?: string;
 };
 
 type Transact = <T>(fn: () => T) => T;
@@ -246,8 +255,8 @@ const CASES: Record<string, Case> = {
     answer: { status: "ok", value: { status: "ok", relationship: { id: BOB, followed_by: false, requested: false } } },
   },
   "Accept of our follow": {
-    pattern: /WHERE f\.uri = \? AND f\.target_account_id = \?/,
-    scanned: ["f", "l"],
+    pattern: /WHERE f\.uri = \?1/,
+    scanned: ["f"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${VIEWER}', '${BOB}', 'pending', '${VIEWER_URI}#f')`,
     ],
@@ -259,7 +268,7 @@ const CASES: Record<string, Case> = {
     answer: { applied: true, reason: "follow-accepted" },
   },
   "Undo of a follow": {
-    pattern: /FROM follows INDEXED BY follows_pair WHERE account_id = \? AND uri = \?/,
+    pattern: /FROM follows INDEXED BY follows_pair WHERE account_id = \?1 AND uri = \?2/,
     scanned: ["follows"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', '${BOB_URI}#f')`,
@@ -304,6 +313,8 @@ const CASES: Record<string, Case> = {
     subject: [
       `INSERT INTO favourites (account_id, status_id) VALUES ('${BOB}', '${STATUS}')`,
       `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${VIEWER}', 'favourite', '${BOB}', '${STATUS}')`,
+      // Another recipient's, as an import may hold it: the Undo removes it too.
+      `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${OTHER}', 'favourite', '${BOB}', '${STATUS}')`,
     ],
     run: inbound({
       type: "Undo",
@@ -311,6 +322,7 @@ const CASES: Record<string, Case> = {
       object: { id: `${BOB_URI}#like`, type: "Like", actor: BOB_URI, object: STATUS_URI },
     }),
     answer: { applied: true, reason: "undone" },
+    left: `SELECT count(*) AS n FROM notifications WHERE type = 'favourite' AND from_account_id = '${BOB}' AND status_id = '${STATUS}'`,
   },
   "Undo of a tracked like": {
     pattern: /favourite_likes_uri|type = 'favourite' AND from_account_id/,
@@ -319,6 +331,8 @@ const CASES: Record<string, Case> = {
       `INSERT INTO favourites (id, account_id, status_id) VALUES (990000, '${BOB}', '${STATUS}')`,
       `INSERT INTO favourite_likes (favourite_id, uri, received_at) VALUES (990000, '${BOB_URI}#tracked', ${NOW})`,
       `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${VIEWER}', 'favourite', '${BOB}', '${STATUS}')`,
+      // Another recipient's, as an import may hold it: the Undo removes it too.
+      `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${OTHER}', 'favourite', '${BOB}', '${STATUS}')`,
     ],
     run: inbound({
       type: "Undo",
@@ -326,6 +340,7 @@ const CASES: Record<string, Case> = {
       object: { id: `${BOB_URI}#tracked`, type: "Like", actor: BOB_URI, object: STATUS_URI },
     }),
     answer: { applied: true, reason: "undone" },
+    left: `SELECT count(*) AS n FROM notifications WHERE type = 'favourite' AND from_account_id = '${BOB}' AND status_id = '${STATUS}'`,
   },
   "Undo of a boost": {
     pattern: /type = 'reblog' AND from_account_id/,
@@ -333,6 +348,7 @@ const CASES: Record<string, Case> = {
     subject: [
       `INSERT INTO statuses (id, uri, account_id, visibility, reblog_of_id, published_at) VALUES ('950000000000000000', '${BOB_URI}/boosts/1', '${BOB}', 'public', '${STATUS}', '${AT}')`,
       `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${VIEWER}', 'reblog', '${BOB}', '${STATUS}')`,
+      `INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES ('${OTHER}', 'reblog', '${BOB}', '${STATUS}')`,
     ],
     run: inbound({
       type: "Undo",
@@ -340,10 +356,11 @@ const CASES: Record<string, Case> = {
       object: { id: `${BOB_URI}/boosts/1`, type: "Announce", actor: BOB_URI, object: STATUS_URI },
     }),
     answer: { applied: true, reason: "undone" },
+    left: `SELECT count(*) AS n FROM notifications WHERE type = 'reblog' AND from_account_id = '${BOB}' AND status_id = '${STATUS}'`,
   },
   Create: {
     pattern: /statuses_unresolved_reply|f\.notify = 1/,
-    scanned: ["statuses", "f", "l"],
+    scanned: ["statuses", "f"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, notify) VALUES ('${VIEWER}', '${BOB}', 'accepted', 1)`,
       `INSERT INTO statuses (id, uri, account_id, visibility, in_reply_to_uri, published_at) VALUES ('950000000000000001', 'https://z.example/users/u0/r', '700000000000000000', 'public', '${BOB_URI}/statuses/new', '${AT}')`,
@@ -367,7 +384,8 @@ async function planned(statistics: (typeof STATISTICS)[number], n: number, c: Ca
     }
     const plans: PlannedStatement[] = [];
     const result = c.run(plannedSql(sql, c.pattern, plans), (fn) => state.storage.transactionSync(fn));
-    return { result, plans };
+    const left = c.left === undefined ? 0 : sql.exec<{ n: number }>(c.left).one().n;
+    return { result, plans, left };
   });
 }
 
@@ -379,6 +397,7 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
       const few = await planned(statistics, FEW, c);
       const many = await planned(statistics, MANY, c);
       expect(few.result).toMatchObject(c.answer as object);
+      expect([few.left, many.left]).toEqual([0, 0]);
       expect(many.result).toEqual(few.result);
       expect(many.plans.length).toBeGreaterThan(0);
       for (const { plan } of many.plans) {
@@ -388,4 +407,161 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
     },
     120_000,
   );
+});
+
+// Follows sharing one uri (no constraint makes it unique; an import may hold them): an Accept answers the follow of the
+// follower its Follow names, else the oldest; an Undo ends the follow of the target it names, else the oldest. The
+// same under no statistics, the plan audit's singleton ones, and ANALYZE.
+const SHARED = `${BOB_URI}#shared`;
+const OTHER_URI = "https://kopje.test/ap/users/other";
+
+async function shared(
+  statistics: "none" | (typeof STATISTICS)[number],
+  rows: [string, string, string][],
+  activity: InboundActivity,
+) {
+  const store = await migratedStore();
+  return runInDurableObject(store, (_instance, state) => {
+    const sql = state.storage.sql;
+    for (const [id, name] of [
+      [VIEWER, "viewer"],
+      [OTHER, "other"],
+    ]) {
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
+        id,
+        `https://kopje.test/ap/users/${name}`,
+        name,
+      );
+      sql.exec(
+        `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'k')`,
+        id,
+        `${name}@example.com`,
+      );
+    }
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES (?, ?, 'bob', 'far.example', 'https://far.example/inbox')",
+      BOB,
+      BOB_URI,
+    );
+    for (const [follower, target, followState] of rows) {
+      sql.exec(
+        "INSERT INTO follows (account_id, target_account_id, state, uri) VALUES (?, ?, ?, ?)",
+        follower,
+        target,
+        followState,
+        SHARED,
+      );
+    }
+    if (statistics === "singleton") {
+      singletonStatistics(sql);
+    } else if (statistics === "analyzed") {
+      sql.exec("ANALYZE");
+    }
+    const result = receiveActivity.run(
+      sql,
+      { now: NOW, storeNow: NOW, origin: LOCAL, actorUri: BOB_URI, actor: null, actorRevision: null, activity },
+      (fn) => state.storage.transactionSync(fn),
+    );
+    const follows = sql
+      .exec<{ follower: string; target: string; state: string }>(
+        "SELECT account_id AS follower, target_account_id AS target, state FROM follows ORDER BY id",
+      )
+      .toArray();
+    return { reason: (result as { reason?: string }).reason, follows };
+  });
+}
+
+describe("follows sharing one uri", () => {
+  const accept = (actor: string | null): InboundActivity => ({
+    type: "Accept",
+    id: `${BOB_URI}#accept`,
+    object: { id: SHARED, type: "Follow", actor, object: BOB_URI },
+  });
+  const undo = (object: string): InboundActivity => ({
+    type: "Undo",
+    id: `${BOB_URI}#undo`,
+    object: { id: SHARED, type: "Follow", actor: BOB_URI, object },
+  });
+
+  it.each(["none", ...STATISTICS] as const)(
+    "an Accept answers the named follower's, else the oldest (%s)",
+    async (s) => {
+      // The pending follow the older, of the lower or the higher local account.
+      expect(
+        await shared(
+          s,
+          [
+            [VIEWER, BOB, "pending"],
+            [OTHER, BOB, "accepted"],
+          ],
+          accept(null),
+        ),
+      ).toEqual({
+        reason: "follow-accepted",
+        follows: [
+          { follower: VIEWER, target: BOB, state: "accepted" },
+          { follower: OTHER, target: BOB, state: "accepted" },
+        ],
+      });
+      expect(
+        await shared(
+          s,
+          [
+            [OTHER, BOB, "pending"],
+            [VIEWER, BOB, "accepted"],
+          ],
+          accept(null),
+        ),
+      ).toEqual({
+        reason: "follow-accepted",
+        follows: [
+          { follower: OTHER, target: BOB, state: "accepted" },
+          { follower: VIEWER, target: BOB, state: "accepted" },
+        ],
+      });
+      // Naming the accepted one's follower: the pending one stays pending.
+      expect(
+        await shared(
+          s,
+          [
+            [VIEWER, BOB, "pending"],
+            [OTHER, BOB, "accepted"],
+          ],
+          accept(OTHER_URI),
+        ),
+      ).toMatchObject({
+        follows: [
+          { follower: VIEWER, target: BOB, state: "pending" },
+          { follower: OTHER, target: BOB, state: "accepted" },
+        ],
+      });
+    },
+  );
+
+  it.each(["none", ...STATISTICS] as const)("an Undo ends the named target's, else the oldest (%s)", async (s) => {
+    for (const [first, second] of [
+      [VIEWER, OTHER],
+      [OTHER, VIEWER],
+    ] as const) {
+      const rows: [string, string, string][] = [
+        [BOB, first, "accepted"],
+        [BOB, second, "accepted"],
+      ];
+      for (const [named, kept] of [
+        [first, second],
+        [second, first],
+      ] as const) {
+        const uri = named === VIEWER ? VIEWER_URI : OTHER_URI;
+        expect(await shared(s, rows, undo(uri))).toEqual({
+          reason: "undone",
+          follows: [{ follower: BOB, target: kept, state: "accepted" }],
+        });
+      }
+      // A target that has none of them: the oldest.
+      expect(await shared(s, rows, undo(BOB_URI))).toMatchObject({
+        follows: [{ follower: BOB, target: second, state: "accepted" }],
+      });
+    }
+  });
 });

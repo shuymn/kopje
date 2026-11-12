@@ -1197,7 +1197,7 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
     ? `SELECT target_account_id AS id FROM (SELECT target_account_id FROM follows INDEXED BY follows_accepted
 				WHERE account_id = ? AND state = 'accepted' LIMIT ${ACCOUNT_RECENT_LIMIT})
 			UNION SELECT e.id FROM (${exact} LIMIT ${ACCOUNT_PREFIX_LIMIT}) e
-				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = ? AND f.target_account_id = e.id AND f.state = 'accepted'`
+				CROSS JOIN follows f INDEXED BY follows_accepted ON f.account_id = ? AND f.target_account_id = e.id AND f.state = 'accepted'`
     : `SELECT account_id AS id FROM local_accounts
 			UNION SELECT id FROM (${exact} LIMIT ${ACCOUNT_PREFIX_LIMIT})
 			UNION SELECT id FROM (SELECT id FROM accounts INDEXED BY accounts_username

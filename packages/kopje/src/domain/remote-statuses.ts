@@ -528,12 +528,13 @@ function notifyCreated(
   if (created.isReply && created.replyTarget !== author.id) {
     return;
   }
-  // The author's accepted followers, walked through follows_target: the inbox writes only follows with a local side,
-  // but an import does not hold them to it (#1481).
+  // The local accounts drive, each one's accepted follow of the author sought by follows_accepted, so the author's other
+  // followers (an import may hold any number) are never read; local accounts are operator-sized (docs/threat-model.md,
+  // "Deployment assumptions").
   const subscribers = db.all<{ account_id: string }>(
-    `SELECT f.account_id FROM follows f INDEXED BY follows_target
-		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = f.account_id
-		WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.notify = 1
+    `SELECT f.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+		CROSS JOIN follows f INDEXED BY follows_accepted ON f.account_id = l.account_id AND f.target_account_id = ?1
+		WHERE f.state = 'accepted' AND f.notify = 1
 			AND (f.languages IS NULL OR ?2 IS NULL OR ?2 IN (SELECT value FROM json_each(f.languages)))`,
     author.id,
     created.language,

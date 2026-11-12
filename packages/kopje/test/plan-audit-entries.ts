@@ -254,7 +254,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
   },
   {
-    id: "cae0c5aa4d15e4c4",
+    id: "aa725c8cf76dbd6c",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -264,7 +264,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "a1d11c7240346dc1",
+    id: "b2161e1beef20d75",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
     ],
@@ -2024,6 +2024,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "a deleted status's forwarding: KEPT_LOCAL_BOOSTS (src/domain/inbox.ts) walks the local accounts, each one's kept boost sought by statuses_account_reblogs_kept, up to MAX_FORWARD_OWNERS + 1: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
+    id: "912011af321ead3a",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/inbox.ts#ourFollow < src/domain/inbox.ts#accept < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "an Accept's follow by its id: the local accounts drive, each one's follow of the actor sought by follows_pair (ourFollow, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
+  },
+  {
     id: "40441f03ad0b8958",
     scans: ["instance_domain_blocks: SCAN instance_domain_blocks"],
     site: "src/domain/instance-domain-blocks.ts#blocksPage < src/domain/admin-domain-blocks.ts#<anonymous> in listAdminDomainBlocks < src/domain/auth.ts#<anonymous> in adminGuarded",
@@ -2787,6 +2795,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+  },
+  {
+    id: "4278d40f9cfbbc75",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/remote-statuses.ts#notifyCreated < src/domain/remote-statuses.ts#storeRemoteStatus < src/domain/inbox.ts#create < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "an arriving status's post subscribers: the local accounts drive, each one's accepted follow of the author sought by follows_accepted (notifyCreated, src/domain/remote-statuses.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
     id: "ecb815c73e12125d",
