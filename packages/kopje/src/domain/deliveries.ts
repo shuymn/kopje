@@ -454,14 +454,16 @@ function receiptsOf(db: Db, signerId: string, object: string): string[] {
 function receiversOf(db: Db, signerId: string, object: string): string[] {
   const receipts = receiptsOf(db, signerId, object).map((inbox) => ({ inbox }));
   const outstanding = db.all<{ inbox: string }>(
-    `SELECT d.inbox_url AS inbox FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
+    `SELECT d.inbox_url AS inbox FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN deliveries d INDEXED BY deliveries_activity ON d.activity_id = o.id
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0`,
     signerId,
     object,
   );
   const unexpanded = db.all<{ inbox: string }>(
     `SELECT json_extract(t.value, '$.inbox') AS inbox
-		FROM outbound_activities o JOIN outbound_targets c ON c.activity_id = o.id, json_each(c.targets) t
+		FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN outbound_targets c INDEXED BY outbound_targets_activity ON c.activity_id = o.id, json_each(c.targets) t
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0 AND t.key >= c.next`,
     signerId,
     object,
@@ -2029,14 +2031,14 @@ function serversWithObject(db: Db, signerId: string, object: string): Set<string
 // expanded): the pair of the current version's Create and the Update replaces them.
 function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<string>, now: number): void {
   const earlier = db.all<{ id: string }>(
-    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities
+    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities INDEXED BY outbound_activities_object
 		WHERE account_id = ? AND object_uri = ? AND retracts = 0`,
     signerId,
     object,
   );
   for (const intent of earlier) {
     const removed = db.all<{ lane: string }>(
-      `DELETE FROM deliveries WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
+      `DELETE FROM deliveries INDEXED BY deliveries_activity WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
 				AND lane IN (SELECT value FROM json_each(?)) RETURNING lane`,
       intent.id,
       JSON.stringify([...lanes]),
@@ -2045,7 +2047,8 @@ function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<str
       promoteLane(db, signerId, lane, now);
     }
     const chunks = db.all<{ id: string; targets: string; next: number }>(
-      "SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets WHERE activity_id = CAST(? AS INTEGER)",
+      `SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets INDEXED BY outbound_targets_activity
+				WHERE activity_id = CAST(? AS INTEGER)`,
       intent.id,
     );
     for (const chunk of chunks) {
@@ -2086,7 +2089,8 @@ function laneOf(inbox: string): string {
 function activeCount(db: Db, where: string, limit: number, ...params: SqlStorageValue[]): number {
   return (
     db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries WHERE ${where} AND state IN ${ACTIVE} LIMIT ?)`,
+      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries INDEXED BY deliveries_lane WHERE ${where} AND state IN ${ACTIVE}
+				LIMIT ?)`,
       ...params,
       limit,
     )?.n ?? 0
@@ -2129,8 +2133,10 @@ export function expandPending(db: Db, now: number, budget: number): void {
   const admission = new Admission(db);
   while (budget > 0) {
     const chunk = db.first<{ id: string; activity_id: string; account_id: string; retracts: number; next: number }>(
-      `SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id, o.account_id, o.retracts, c.next
-			FROM outbound_targets c JOIN outbound_activities o ON o.id = c.activity_id ORDER BY c.id LIMIT 1`,
+      `SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id,
+				(SELECT o.account_id FROM outbound_activities o WHERE o.id = c.activity_id) AS account_id,
+				(SELECT o.retracts FROM outbound_activities o WHERE o.id = c.activity_id) AS retracts, c.next
+			FROM outbound_targets c ORDER BY c.id LIMIT 1`,
     );
     if (chunk === undefined) {
       return;
@@ -2146,8 +2152,8 @@ export function expandPending(db: Db, now: number, budget: number): void {
       `SELECT t.key, json_extract(t.value, '$.inbox') AS inbox, json_extract(t.value, '$.addressee') AS addressee,
 				json_extract(t.value, '$.accounts') AS accounts, json_extract(t.value, '$.domains') AS domains,
 				json_extract(t.value, '$.many') AS many
-			FROM outbound_targets c, json_each(c.targets) t
-			WHERE c.id = CAST(? AS INTEGER) AND t.key >= c.next ORDER BY t.key LIMIT ?`,
+			FROM (SELECT targets, next FROM outbound_targets WHERE id = CAST(?1 AS INTEGER) LIMIT 1) c, json_each(c.targets) t
+			WHERE t.key >= c.next ORDER BY t.key LIMIT ?2`,
       chunk.id,
       budget,
     );
@@ -2488,6 +2494,12 @@ const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activi
 
 const DUE_FROM = "deliveries d LEFT JOIN outbound_activities o ON o.id = d.activity_id";
 
+// One leased row (?1 its id, ?2 its lease) and its activity, each read by its rowid in a LIMIT 1 subquery: joined by
+// rowid, statistics taken while the tables were small plan the lookups as scans (RES-7).
+const LEASED_FROM = `(SELECT * FROM deliveries WHERE id = CAST(?1 AS INTEGER) AND state = 'leased' AND lease_token = ?2 LIMIT 1) d
+	LEFT JOIN (SELECT * FROM outbound_activities
+		WHERE id = (SELECT activity_id FROM deliveries WHERE id = CAST(?1 AS INTEGER)) LIMIT 1) o ON 1`;
+
 function hostOf(inbox: string): string | null {
   try {
     return hostDomain(inbox);
@@ -2748,7 +2760,7 @@ export const confirmDelivery = writeOperation<{ id: string; leaseToken: string; 
   (db, { id, leaseToken, now }) => {
     const row = db.first<DueRow & { activity: string | null; immutable: number | null }>(
       `SELECT ${DUE_ROW}, json_extract(o.body, '$.activity') AS activity, json_extract(o.body, '$.immutable') AS immutable
-			FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
+			FROM ${LEASED_FROM}`,
       id,
       leaseToken,
     );
@@ -2794,7 +2806,7 @@ export const completeDelivery = writeOperation<
   const row = db.first<LaneRow & { stale_answer: number; answer_type: string }>(
     `SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
 			d.attempts, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type
-		FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
+		FROM ${LEASED_FROM}`,
     id,
     leaseToken,
   );
@@ -2811,10 +2823,11 @@ export const completeDelivery = writeOperation<
     // reaches it then (VIS-3).
     db.run(
       `INSERT INTO outbound_receipts (status_id, inbox_url, account_id, delivered_at)
-			SELECT s.id, ?2, o.account_id, ?3 FROM outbound_activities o JOIN statuses s ON s.uri = o.object_uri
-			WHERE o.id = CAST(?1 AS INTEGER)
-				AND (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
-				AND NOT EXISTS (SELECT 1 FROM outbound_activities r
+			SELECT s.id, ?2, o.account_id, ?3
+			FROM (SELECT account_id, object_uri, body, retracts FROM outbound_activities WHERE id = CAST(?1 AS INTEGER) LIMIT 1) o
+				CROSS JOIN statuses s INDEXED BY ${STATUSES_URI_INDEX} ON s.uri = o.object_uri
+			WHERE (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
+				AND NOT EXISTS (SELECT 1 FROM outbound_activities r INDEXED BY outbound_activities_object
 					WHERE r.account_id = o.account_id AND r.object_uri = o.object_uri AND r.retracts = 1 AND r.staged IS NULL)
 			ON CONFLICT DO UPDATE SET delivered_at = excluded.delivered_at`,
       row.activity_id,
@@ -2886,12 +2899,15 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
   // refused. Each account is sought by id from the audience (RES-7).
   const candidates = db.all<{ inbox: string; id: string; uri: string; retracts: number; available: number }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri, o.retracts, ${availableSql("a.id")} AS available
-		FROM deliveries d CROSS JOIN outbound_activities o ON o.id = d.activity_id
+		FROM (SELECT addressee, inbox_url FROM deliveries WHERE id = CAST(?1 AS INTEGER) LIMIT 1) d
+			CROSS JOIN (SELECT id, body, retracts FROM outbound_activities
+				WHERE id = (SELECT activity_id FROM deliveries WHERE id = CAST(?1 AS INTEGER)) LIMIT 1) o
 			CROSS JOIN json_each(o.body, '$.audience.accounts') r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
+		WHERE d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
 			AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url AND a.inbox_url <> d.inbox_url
-			AND NOT EXISTS (SELECT 1 FROM deliveries e WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
-			AND NOT EXISTS (SELECT 1 FROM outbound_targets c, json_each(c.targets) t
+			AND NOT EXISTS (SELECT 1 FROM deliveries e INDEXED BY deliveries_activity
+				WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
+			AND NOT EXISTS (SELECT 1 FROM outbound_targets c INDEXED BY outbound_targets_activity, json_each(c.targets) t
 				WHERE c.activity_id = o.id AND t.key >= c.next AND json_extract(t.value, '$.inbox') = a.inbox_url)
 		ORDER BY a.id`,
     row.id,
@@ -2942,9 +2958,11 @@ function moveToPersonal(
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
-		FROM deliveries d CROSS JOIN json_each(d.recipient_accounts) r
+		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
+				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) d
+			CROSS JOIN json_each(d.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND d.recipient_accounts IS NOT NULL
+		WHERE d.addressee IS NULL AND d.recipient_accounts IS NOT NULL
 			AND d.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url
 			AND a.inbox_url <> d.inbox_url
 		ORDER BY a.id`,
