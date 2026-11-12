@@ -83,6 +83,10 @@ export class Policy {
   // handshake_replays_generation ends it on an update).
   heldLR: number | null = null;
   heldRL: number | null = null;
+  // The held Reject of R's request (VIS-30, docs/visibility.md "Held Rejects"): the Follow it names (null for an edge
+  // without a Follow id) and when its replay next reads availability. Owed only while R holds no follow of L: a stored
+  // follow ends it (reject_replays_follow_stored), and a newer refused Reject replaces it.
+  heldReject: { ref: string | null; checkAt: number } | null = null;
   blockRL: string | null = null;
   blockLR: string | null = null;
   locked = false;
@@ -111,6 +115,9 @@ export class Policy {
   set rl(edge: RemoteEdge) {
     if (!sameEdge(this.rlEdge, edge)) {
       this.heldRL = null;
+    }
+    if (edge !== null) {
+      this.heldReject = null;
     }
     this.rlEdge = edge;
   }
@@ -393,8 +400,14 @@ export class Policy {
     // The pair is known by the Undo's local target or the stored Follow its id names; "An Undo naming no local target
     // looks for the pairs through the local accounts", by an answer naming its id.
     const named = ref.object === this.lUri || this.lane.some((i) => i.answer && i.ref === id);
-    const undoneAnswers = (ofPair: boolean): Intent[] =>
-      this.cancelAnswers(now, (answer) => (ofPair && pairShaped(id)) || answer.ref === id);
+    // The held Reject goes by the same rule within the pair, which a named hold makes known too (NET-2).
+    const undoneAnswers = (ofPair: boolean): Intent[] => {
+      const known = ofPair || this.heldReject?.ref === id;
+      if (this.heldReject !== null && (this.heldReject.ref === id || (known && pairShaped(id)))) {
+        this.heldReject = null;
+      }
+      return this.cancelAnswers(now, (answer) => (known && pairShaped(id)) || answer.ref === id);
+    };
     if (this.retracted.has(id)) {
       const caught = ref.type === null || ref.type === "Follow" ? undoneAnswers(named) : [];
       return { applied: false, reason: "retracted", caught };
@@ -633,7 +646,8 @@ export class Policy {
   }
 
   // VIS-30: a row the send-time check refuses holds its follow when it is that follow's owed handshake, not superseded:
-  // a Follow of L's pending follow under its id, or an Accept of R's accepted follow under the Follow it answers.
+  // a Follow of L's pending follow under its id, or an Accept of R's accepted follow under the Follow it answers; and a
+  // Reject of R's request holds the pair while R holds no follow of L, replacing the pair's earlier hold.
   private hold(intent: Intent, now: number): void {
     if (intent.superseded || intent.retracts) {
       return;
@@ -647,13 +661,19 @@ export class Policy {
       this.rl.uri === intent.ref
     ) {
       this.heldRL = now + HANDSHAKE_RECHECK_MS;
+    } else if (intent.type === "Reject" && intent.answer && this.rl === null) {
+      this.heldReject = { ref: intent.ref, checkAt: now + HANDSHAKE_RECHECK_MS };
     }
   }
 
   // A held handshake replayed (handshake-replays.ts): the edge's current generation's Follow or Accept is recorded
   // again with its id, and the hold is consumed.
-  replay(side: "lr" | "rl", now: number): void {
-    if (side === "lr") {
+  replay(side: "lr" | "rl" | "reject", now: number): void {
+    if (side === "reject") {
+      const ref = this.heldReject!.ref;
+      this.heldReject = null;
+      this.record(now, { type: "Reject", ref, subject: ref, answer: true, replayed: true });
+    } else if (side === "lr") {
       const edge = this.lr!;
       this.heldLR = null;
       this.record(now, { type: "Follow", ref: edge.uri, subject: edge.uri });

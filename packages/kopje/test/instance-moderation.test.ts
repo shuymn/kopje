@@ -433,6 +433,11 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
     const holds = q<{ follow: string; check_at: number; attempts: number }>(
       "SELECT CAST(follow_id AS TEXT) AS follow, check_at, attempts FROM handshake_replays ORDER BY follow_id",
     );
+    // The held Rejects (migration 0092_reject_replays), by their pair.
+    const rejectHolds = q<{ id: string; account: string; follower: string; check_at: number; attempts: number }>(
+      `SELECT CAST(id AS TEXT) AS id, account_id AS account, follower_id AS follower, check_at, attempts
+			FROM reject_replays ORDER BY id`,
+    );
     const unexpanded = q<{ n: number }>("SELECT count(*) AS n FROM outbound_targets")[0]!.n;
     const unrowed = q<{ type: string }>(
       `SELECT json_extract(body, '$.activity.type') AS type FROM outbound_activities o
@@ -461,6 +466,7 @@ async function read(w: { store: StoreStub; remoteIds: Record<Remote, string | nu
       statuses,
       lanes,
       holds,
+      rejectHolds,
       unexpanded,
       unrowed,
       snap,
@@ -534,6 +540,13 @@ function projection(w: World, s: State) {
         const gen = f === undefined ? h.follow : `${name(f.follower)}>${name(f.target)}`;
         return { gen, checkAt: h.check_at, attempts: h.attempts };
       })
+      .concat(
+        s.rejectHolds.map((h) => ({
+          gen: `${name(h.follower)}>${name(h.account)} reject`,
+          checkAt: h.check_at,
+          attempts: h.attempts,
+        })),
+      )
       .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: s.unexpanded,
     unrowed: s.unrowed.filter((type) => type !== "Update"),
@@ -615,7 +628,11 @@ function expected(w: World) {
     lanes,
     holds: p
       .holds()
-      .map((h) => ({ gen: h.side === "lr" ? `${h.l}>${h.r}` : `${h.r}>${h.l}`, checkAt: h.checkAt, attempts: 0 }))
+      .map((h) => ({
+        gen: h.side === "lr" ? `${h.l}>${h.r}` : h.side === "rl" ? `${h.r}>${h.l}` : `${h.r}>${h.l} reject`,
+        checkAt: h.checkAt,
+        attempts: 0,
+      }))
       .toSorted((a, b) => (a.gen < b.gen ? -1 : 1)),
     unexpanded: 0,
     unrowed: [] as string[],
@@ -924,8 +941,20 @@ async function moderation(w: World): Promise<boolean> {
   return pending;
 }
 
-// The follow a hold holds, by its id in the Store (the replay's order within equal times).
+// The activity each side of a hold records.
+const HOLD_TYPES: Record<Hold["side"], string> = { lr: "Follow", rl: "Accept", reject: "Reject" };
+
+// The follow a hold holds, by its id in the Store (the replay's order within equal times); a held Reject's own id.
 function holdFollowId(w: World, hold: Hold): bigint {
+  if (hold.side === "reject") {
+    const held = w.last!.rejectHolds.find(
+      (row) => row.account === w.ids[hold.l] && row.follower === w.remoteIds[hold.r],
+    );
+    if (held === undefined) {
+      throw new Error(`a held Reject of ${hold.l} ${hold.r} not in the Store\n${context(w)}`);
+    }
+    return BigInt(held.id);
+  }
   const [follower, target] =
     hold.side === "lr" ? [w.ids[hold.l], w.remoteIds[hold.r]] : [w.remoteIds[hold.r], w.ids[hold.l]];
   const f = w.last!.follows.find((row) => row.follower === follower && row.target === target);
@@ -946,10 +975,10 @@ async function replay(w: World): Promise<boolean> {
   const answer = await w.store.runHandshakeReplays(BUILD, { now: w.clock });
   const predicted = w.policy.replayRound(w.clock, (h) => holdFollowId(w, h), HANDSHAKE_REPLAYS_PER_ROUND);
   for (const h of predicted.replayed) {
-    tally(w.stats, `replayed: ${h.side === "lr" ? "Follow" : "Accept"}`);
+    tally(w.stats, `replayed: ${HOLD_TYPES[h.side]}`);
   }
   for (const h of predicted.deferred) {
-    tally(w.stats, `replay deferred: ${h.side === "lr" ? "Follow" : "Accept"}`);
+    tally(w.stats, `replay deferred: ${HOLD_TYPES[h.side]}`);
   }
   await after(w, { actual: answer, predicted: { pending: predicted.pending, delivers: predicted.delivers } });
   return answer.pending;
@@ -1004,11 +1033,14 @@ async function nextDue(w: World): Promise<{ local: Local; remote: Remote } | nul
   return { local: labelOf(w, row.account) as Local, remote };
 }
 
-// The holds a claim or confirmation wrote, from the pair's holds before it (`held`: its Follow's, then its Accept's).
+// The pair's hold times: its Follow's, its Accept's and its Reject's.
+const heldTimes = (pair: Policy) => [pair.heldLR, pair.heldRL, pair.heldReject?.checkAt ?? null];
+
+// The holds a claim or confirmation wrote, from the pair's holds before it (heldTimes).
 function tallyHeld(w: World, at: "claim" | "confirm", held: (number | null)[], pair: Policy): void {
-  for (const [i, now] of [pair.heldLR, pair.heldRL].entries()) {
+  for (const [i, now] of heldTimes(pair).entries()) {
     if (now !== null && now !== held[i]) {
-      tally(w.stats, `held at ${at}: ${i === 0 ? "Follow" : "Accept"}`);
+      tally(w.stats, `held at ${at}: ${["Follow", "Accept", "Reject"][i]}`);
     }
   }
 }
@@ -1024,7 +1056,7 @@ async function claim(w: World): Promise<Attempt | null> {
   const pair = w.policy.pair(due.local, due.remote);
   // The head's inbox, as the last projection (checked against the policy) holds it.
   const inbox = projection(w, w.last!).lanes[`${due.local} ${due.remote}`]?.[0]?.inbox;
-  const held = [pair.heldLR, pair.heldRL];
+  const held = heldTimes(pair);
   const predicted = pair.claim(w.clock, token);
   if (predicted.dropped !== null && !predicted.dropped.superseded) {
     tally(w.stats, `dropped at claim: ${predicted.dropped.type}`);
@@ -1059,7 +1091,7 @@ async function confirm(w: World, attempt: Attempt): Promise<void> {
     now: w.clock,
   });
   const pair = w.policy.pair(attempt.local, attempt.remote);
-  const held = [pair.heldLR, pair.heldRL];
+  const held = heldTimes(pair);
   const predicted = pair.confirm(attempt.token, w.clock);
   if (predicted.status === "dropped" && !attempt.intent.superseded) {
     tally(w.stats, `dropped at confirm: ${attempt.intent.type}`);

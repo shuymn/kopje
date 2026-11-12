@@ -888,6 +888,9 @@ export class WorldPolicy {
         if (pair.heldRL !== null) {
           out.push({ l, r, side: "rl", checkAt: pair.heldRL });
         }
+        if (pair.heldReject !== null) {
+          out.push({ l, r, side: "reject", checkAt: pair.heldReject.checkAt });
+        }
       }
     }
     return out;
@@ -895,26 +898,32 @@ export class WorldPolicy {
 
   // Whether a replay of the hold records it now: R is available and its inbox's host uncovered (the send-time check's
   // refusal, read live), and the follow API's rule for a Follow (neither blocks the other), or inbound acceptance's for
-  // an Accept (L does not block R). Every inbox of the model is an https URL.
+  // an Accept (L does not block R). A held Reject has no block rule (handshake-replays.ts replayReject). Every inbox of
+  // the model is an https URL.
   replayable(hold: Hold): boolean {
     const pair = this.pair(hold.l, hold.r);
+    if (hold.side === "reject") {
+      return !this.refused(hold.r);
+    }
     if (this.refused(hold.r) || pair.blockLR !== null) {
       return false;
     }
     return hold.side === "rl" || pair.blockRL === null;
   }
 
-  // A round of the held handshakes at `now`: the due holds in (checkAt, follow id) order, up to `cap` steps; each
-  // replayable one is recorded again, the others move to the next check. `pending`: all the steps were used and a hold
-  // is still due.
+  // A round of the held handshakes and Rejects at `now`: the due holds in (checkAt, table, key) order, a handshake
+  // before a Reject on equal times (handshake-replays.ts dueHold), up to `cap` steps; each replayable one is recorded
+  // again, the others move to the next check. `pending`: all the steps were used and a hold is still due. `key`: the
+  // hold's follow id, or a held Reject's id.
   replayRound(
     now: number,
-    followId: (hold: Hold) => bigint,
+    key: (hold: Hold) => bigint,
     cap: number,
   ): { pending: boolean; delivers: boolean; replayed: Hold[]; deferred: Hold[] } {
+    const table = (h: Hold) => (h.side === "reject" ? 1 : 0);
     const due = this.holds()
       .filter((h) => h.checkAt <= now)
-      .toSorted((a, b) => a.checkAt - b.checkAt || (followId(a) < followId(b) ? -1 : 1));
+      .toSorted((a, b) => a.checkAt - b.checkAt || table(a) - table(b) || (key(a) < key(b) ? -1 : 1));
     const replayed: Hold[] = [];
     const deferred: Hold[] = [];
     for (const hold of due.slice(0, cap)) {
@@ -923,7 +932,11 @@ export class WorldPolicy {
         pair.replay(hold.side, now);
         replayed.push(hold);
       } else {
-        pair[hold.side === "lr" ? "heldLR" : "heldRL"] = now + HANDSHAKE_RECHECK_MS;
+        if (hold.side === "reject") {
+          pair.heldReject = { ref: pair.heldReject!.ref, checkAt: now + HANDSHAKE_RECHECK_MS };
+        } else {
+          pair[hold.side === "lr" ? "heldLR" : "heldRL"] = now + HANDSHAKE_RECHECK_MS;
+        }
         deferred.push(hold);
       }
     }
@@ -932,4 +945,4 @@ export class WorldPolicy {
   }
 }
 
-export type Hold = { l: Local; r: Remote; side: "lr" | "rl"; checkAt: number };
+export type Hold = { l: Local; r: Remote; side: "lr" | "rl" | "reject"; checkAt: number };

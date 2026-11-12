@@ -12090,7 +12090,7 @@ describe("0092_reject_replays", () => {
         remote(1),
         remote(cap),
       );
-      // L1 holds cap - 1 pairs: an insert of a new pair passes after the cap's walk; an existing pair's upsert seeks it.
+      // L1 holds cap - 1 pairs: a new pair passes after the cap's walk; an existing pair's upsert seeks it.
       const reads = (follower: string) => {
         const cursor = sql.exec(
           `INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, 'https://r.example/x', 0)
