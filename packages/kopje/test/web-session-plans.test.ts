@@ -15,7 +15,7 @@ import { type PlannedStatement, plannedSql, scansOf } from "./read-helpers";
 //     rows per token of the viewer's own (its index entry, the token, its app or credential epoch by key): the page
 //     lists every app the viewer authorized;
 //   - the count of the viewer's other web sessions walks the web client's tokens through oauth_tokens_client, every
-//     account's web sessions (two rows each), a gap of #1481: no index holds an account's tokens by client, and the
+//     account's web sessions (a row each), a gap of #1481: no index holds an account's tokens by client, and the
 //     viewer's own tokens through oauth_tokens_account can be the larger walk. Web sessions are those of the local
 //     accounts, operator-sized (docs/threat-model.md, "Deployment assumptions"), but any number each.
 
@@ -111,21 +111,30 @@ async function planned(statistics: (typeof STATISTICS)[number], n: number, own: 
       },
       (fn) => fn(),
     );
-    const tokens = sql.exec<{ n: number }>("SELECT count(*) AS n FROM oauth_tokens").one().n;
-    return { plans, answer, tokens };
+    // The populations: others' tokens of apps, others' web sessions, the viewer's own tokens.
+    const count = (where: string) =>
+      sql.exec<{ n: number }>(`SELECT count(*) AS n FROM oauth_tokens WHERE ${where}`, VIEWER, WEB).one().n;
+    const others = {
+      apps: count("account_id <> ?1 AND client_id <> ?2"),
+      web: count("account_id <> ?1 AND client_id = ?2"),
+    };
+    const own = count("account_id = ?1 AND (client_id <> ?2 OR token_hash <> 'viewer')");
+    return { plans, answer, others, own };
   });
 }
 
 describe("the settings page's authorizations (RES-7)", () => {
   it.each(STATISTICS)(
-    "%s statistics: reads the same rows as others' tokens grow, and two per token of the viewer's own",
+    "%s statistics: the apps read the same rows as others' tokens grow, and at most three per token of the viewer's own",
     async (statistics) => {
       const few = await planned(statistics, 200, 0);
       const many = await planned(statistics, 400, 0);
       const ownFew = await planned(statistics, 20, 100);
       const ownMany = await planned(statistics, 20, 200);
-      expect(many.tokens).toBeGreaterThan(few.tokens);
-      expect(ownMany.tokens).toBeGreaterThan(ownFew.tokens);
+      // Others' app tokens and web sessions grow by 400 each; the viewer's own tokens by 200.
+      expect(many.others.apps - few.others.apps).toBe(400);
+      expect(many.others.web - few.others.web).toBe(400);
+      expect(ownMany.own - ownFew.own).toBe(200);
       expect(few.answer).toMatchObject({ status: "ok", value: { authorizations: { apps: [], otherSessions: 0 } } });
       expect(ownMany.answer).toMatchObject({ status: "ok", value: { authorizations: { otherSessions: 200 } } });
       expect(few.plans).toHaveLength(2);
@@ -135,10 +144,14 @@ describe("the settings page's authorizations (RES-7)", () => {
       const [apps, sessions] = [0, 1];
       // The apps: the same rows as others' tokens grow, at most three more per token of the viewer's own (200 more).
       expect(many.plans[apps]!.rows).toBe(few.plans[apps]!.rows);
-      expect(ownMany.plans[apps]!.rows - ownFew.plans[apps]!.rows).toBeLessThanOrEqual(3 * 200);
-      // The other sessions: two rows per web session of any account (400 more of others' as they grow), the gap.
-      expect(many.plans[sessions]!.rows - few.plans[sessions]!.rows).toBeLessThanOrEqual(2 * 400);
-      expect(ownMany.plans[sessions]!.rows - ownFew.plans[sessions]!.rows).toBeLessThanOrEqual(2 * 100);
+      const ownGrowth = ownMany.plans[apps]!.rows - ownFew.plans[apps]!.rows;
+      expect(ownGrowth).toBeGreaterThanOrEqual(ownMany.own - ownFew.own);
+      expect(ownGrowth).toBeLessThanOrEqual(3 * (ownMany.own - ownFew.own));
+      // The other sessions: a row per web session of any account, the gap.
+      expect(many.plans[sessions]!.rows - few.plans[sessions]!.rows).toBe(many.others.web - few.others.web);
+      expect(ownMany.plans[sessions]!.rows - ownFew.plans[sessions]!.rows).toBeLessThanOrEqual(
+        2 * (ownMany.own - ownFew.own),
+      );
     },
     120_000,
   );
