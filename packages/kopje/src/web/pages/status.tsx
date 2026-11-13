@@ -228,9 +228,9 @@ const TabSection: FC<{
   }
 };
 
-// A tab's list of statuses (its replies or quotes) on its page: the stub of a first that did not fit, then the cards,
-// each with the reply-to line of its parent link (`parentOf`), then the pager (PostFeed).
-const StatusFeed: FC<{
+// A list of statuses on a page (a status's replies or quotes, a hashtag's posts): the stub of a first that did not
+// fit, then the cards, each with the reply-to line of its parent link (`parentOf`), then the pager (PostFeed).
+export const StatusFeed: FC<{
   statuses: Status[];
   stub: StatusStub | null;
   parentOf: (status: Status) => ParentLink | null;

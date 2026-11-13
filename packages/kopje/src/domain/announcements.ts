@@ -18,7 +18,7 @@ import {
 } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { accountUrl, acctOf } from "./accounts";
-import { accessAdminRefusal } from "./admin-authority";
+import { accessAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES, jsonBytes, unitJsonBytes } from "./answer-budget";
 import { announcementShownSql, availableSql } from "./audience";
 import { tokenUserReadOperation, userWriteOperation } from "./auth";
@@ -582,11 +582,6 @@ function refusal(code: AnnouncementRefusal["code"], message: string): Announceme
 
 const ACCESS_ONLY = "only an Access admin manages announcements";
 
-function authorityRefusal(db: Db, authority: ImportAuthority): AnnouncementRefusal | null {
-  const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
-  return refused === null && authority.kind === "access" ? null : refusal("wrong-authority", refused ?? ACCESS_ONLY);
-}
-
 const TEXT_RULE = "the text is 1 to 10,000 UTF-8 bytes, not blank, with no NUL";
 const TIMES_RULE =
   "times are ISO 8601; starts and ends are both set or both unset, and the end is not before the start";
@@ -658,9 +653,9 @@ export const createAnnouncement = writeOperation.atStoreTime("now")<
   AnnouncementInput & { authority: ImportAuthority; now: number },
   AnnouncementWritten
 >((db, input) => {
-  const refused = authorityRefusal(db, input.authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, input.authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const text = storedAnnouncementText(input.text);
   if (text === null) {
@@ -696,8 +691,7 @@ export const createAnnouncement = writeOperation.atStoreTime("now")<
     now,
     now,
   );
-  const actor = input.authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "create", { type: "Announcement", id }, { excerpt: excerpt(text) }, input.now);
+  logAction(db, admin.actor, "create", { type: "Announcement", id }, { excerpt: excerpt(text) }, input.now);
   if (publish) {
     streamAnnouncement(db, "announcement", id, now);
   }
@@ -714,9 +708,9 @@ export const updateAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: AnnouncementChanges; now: number },
   AnnouncementWritten
 >((db, { authority, id, changes, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -775,8 +769,14 @@ export const updateAnnouncement = writeOperation.atStoreTime("now")<
     at,
     id,
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "update", { type: "Announcement", id }, { excerpt: excerpt(text ?? row.text), changed }, now);
+  logAction(
+    db,
+    admin.actor,
+    "update",
+    { type: "Announcement", id },
+    { excerpt: excerpt(text ?? row.text), changed },
+    now,
+  );
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, at);
   }
@@ -789,9 +789,9 @@ export const publishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -806,8 +806,7 @@ export const publishAnnouncement = writeOperation.atStoreTime("now")<
     at,
     id,
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "publish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "publish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   streamAnnouncement(db, "announcement", id, at);
   return { ok: true, announcement: adminAnnouncement(rowById(db, id)!) };
 });
@@ -818,9 +817,9 @@ export const unpublishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -828,8 +827,7 @@ export const unpublishAnnouncement = writeOperation.atStoreTime("now")<
   }
   const at = iso(now);
   db.run("UPDATE announcements SET published = 0, scheduled_at = NULL, updated_at = ? WHERE id = ?", at, id);
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "unpublish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "unpublish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, at);
   }
@@ -851,9 +849,9 @@ export const deleteAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementDeleted
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = db.first<{ text: string; published: number }>(
     "SELECT text, published FROM announcements WHERE id = ?",
@@ -883,8 +881,7 @@ export const deleteAnnouncement = writeOperation.atStoreTime("now")<
   db.run("DELETE FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcement_dismissals WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcements WHERE id = ?", id);
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "delete", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "delete", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, iso(now));
   }
