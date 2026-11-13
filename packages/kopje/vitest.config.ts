@@ -53,7 +53,8 @@ export default defineConfig({
     // harness leaves on the real queue reaches the Store of the default name, which no test reads. What stays in
     // module scope across suites is keyed per test (an Access team's key set, by its random domain), settles within
     // its test (a card image call given up, which its test waits out), or is the same for every test (the migrated
-    // schema that migratedStore replays, test/helpers.ts).
+    // schema that migratedStore replays, test/helpers.ts; the two key pairs every Access team signs with, relabelled
+    // with its own kid, test/api-helpers.ts).
     isolate: false,
     // The suites drive the real Store through workerd; on a loaded CI runner a heavy test can pass 5 s.
     testTimeout: 20_000,
