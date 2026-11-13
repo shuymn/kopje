@@ -9,6 +9,8 @@ import { expandPending } from "../src/domain/deliveries";
 import { allocateLocalId } from "../src/domain/ids";
 import { writeOperation } from "../src/domain/operation";
 import { accountSearchText } from "../src/domain/search-text";
+import { signAsAuthor } from "../src/federation/ld-sign";
+import type { AuthorSignature } from "../src/mastodon/context";
 import type { StoreStub } from "../src/platform/store-client";
 import { NOW } from "./app-helpers";
 import { LEGACY_EMPTY_KEK } from "./federation-helpers";
@@ -50,16 +52,11 @@ const seedAccountOperation = writeOperation<SeedAccount & { now: number }, strin
     domain === null ? null : `${uri}/inbox`,
     domain === null ? null : `https://${domain}/inbox`,
   );
-  // A local account holds the fixture key wrapped under the tests' empty USER_KEK, so its DELETE of a public status can
-  // sign the Delete (mastodon/statuses.ts deleteStatus).
   if (domain === null) {
     db.run(
-      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'test')",
       id,
       input.email ?? `${input.username}@example.com`,
-      new Uint8Array(LEGACY_EMPTY_KEK.privkey).buffer,
-      new Uint8Array(LEGACY_EMPTY_KEK.salt).buffer,
-      LEGACY_EMPTY_KEK.pubkey,
     );
   }
   return id;
@@ -221,6 +218,14 @@ export async function apiHarness(
     store: () => (wrapStore === undefined ? store : wrapStore(store)),
     fetch: team.fetch,
     randomToken,
+    // The accounts seedAccount makes hold no usable key: an author's signature (a public status's Delete) is made
+    // with the fixture key instead, which their actor documents do not publish. A test of the proof itself uses
+    // inbox-status-helpers' setup, whose accounts hold the fixture key.
+    signAsAuthor: (_env: Env, sign: AuthorSignature) =>
+      signAsAuthor(LEGACY_EMPTY_KEK.kek, {
+        ...sign,
+        key: { privkey: LEGACY_EMPTY_KEK.privkey, salt: LEGACY_EMPTY_KEK.salt, pubkey: LEGACY_EMPTY_KEK.pubkey },
+      }),
     ...seams,
     doorbell,
     jobs,

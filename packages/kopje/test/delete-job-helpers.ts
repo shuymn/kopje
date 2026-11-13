@@ -12,7 +12,7 @@ import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { writtenBy } from "./inbox-store-helpers";
 
 // The signed Delete a DELETE of `id` records, as the API's handler makes it (mastodon/statuses.ts deleteStatus):
-// prepareDelete, then signAsAuthor under the fixture accounts' KEK; null when the status's Delete is recorded unsigned.
+// prepareDelete, then signAsAuthor with the fixture key; null when the status's Delete is recorded unsigned.
 export async function deleteSignature(
   store: StoreStub,
   credential: UserCredential,
@@ -22,7 +22,9 @@ export async function deleteSignature(
     prepareDelete.run(state.storage.sql, { credential, id }),
   );
   const sign = prepared.status === "ok" && prepared.value.status === "ok" ? prepared.value.value.sign : null;
-  return sign === null ? null : signAsAuthor(LEGACY_EMPTY_KEK.kek, sign);
+  // The fixture key, which inbox-status-helpers' accounts hold, and seedAccount's (which hold none usable) borrow.
+  const key = { privkey: LEGACY_EMPTY_KEK.privkey, salt: LEGACY_EMPTY_KEK.salt, pubkey: LEGACY_EMPTY_KEK.pubkey };
+  return sign === null ? null : signAsAuthor(LEGACY_EMPTY_KEK.kek, { ...sign, key });
 }
 
 // deleteSignature inside a synchronous Store call, for a test that judges what a DELETE reaches rather than its proof:

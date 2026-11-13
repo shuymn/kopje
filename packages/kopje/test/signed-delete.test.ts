@@ -451,6 +451,38 @@ describe("the signed Delete is sent as recorded (VIS-2's exception)", () => {
     }
   });
 
+  it("sends the same bytes again when a delivery is retried", async () => {
+    const { t } = await world();
+    const status = await localStatus(t, { status: "retried" });
+    expect((await deleteRequest(t, status.id)).status).toBe(200);
+    await settle(t.store);
+    // Each round an hour on; the Delete's first POST fails (500), every other one is accepted.
+    const bodies: string[] = [];
+    for (let round = 0; round < 40 && bodies.length < 2; round++) {
+      const now = NOW + round * 3_600_000;
+      const leaseToken = `retry-${round}`;
+      const claim = await t.store.claimDeliveries(BUILD, { now, leaseToken });
+      for (const delivery of claim.deliveries) {
+        const confirmation = await t.store.confirmDelivery(BUILD, { id: delivery.id, leaseToken, now });
+        if (confirmation.status !== "send") {
+          continue;
+        }
+        const isDelete = (JSON.parse(confirmation.body) as Json).type === "Delete";
+        if (isDelete) {
+          bodies.push(confirmation.body);
+        }
+        const outcome =
+          isDelete && bodies.length === 1
+            ? ({ kind: "failed", status: 500, error: "HTTP 500", permanent: false } as const)
+            : ({ kind: "delivered", status: 202 } as const);
+        await t.store.completeDelivery(BUILD, { id: delivery.id, leaseToken, now, outcome });
+      }
+    }
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(JSON.parse(bodies[0]!)).toHaveProperty("signature");
+  });
+
   it("is sent from a restored Store as it was recorded, and its proof still verifies", async () => {
     const { t } = await world();
     await setAccess(t.store);
