@@ -147,6 +147,7 @@ immutable body, and only when it is two arrays of at most 202 strings, each at m
 each Public, the signer's followers collection or the stored actor id of a mention of the status that is not silent;
 any other value (another type, a silent recipient, an entry nothing stored names) is not refused at import but gives
 every addressed account a copy of its own at its personal inbox, so it never widens a copy nor stops the staging. A
+repeated `to` or `cc` key, which `json_valid` accepts, is read only at the one each path names, the one checked. A
 body without `addressing` (an unsigned `Delete`, every one recorded before the release that signs them) is placed by
 its activity's own `to` and `cc`.
 

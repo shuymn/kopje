@@ -842,6 +842,8 @@ type Plan = {
   // to and cc's names (placement): a personal copy goes to an addressed account they do not name.
   addressed: boolean;
   named: Set<string>;
+  // For a staged addressing (stagedAddressing), the ids of the accounts it names, which then alone place copies.
+  namedIds: Set<string> | null;
   // The most UTF-8 bytes of a name past TARGET_CHUNK_BYTES: a uri longer than it can decode to no name.
   namedPast: number;
   status: SqlStorageValue | undefined;
@@ -861,16 +863,22 @@ type Plan = {
 const ADDRESSING_ENTRIES = 2 + MAX_STATUS_MENTION_ROWS;
 const ADDRESSING_ENTRY_BYTES = ACTOR_URI_LIMIT + "/followers".length;
 
-// The to and cc an immutable intent's `addressing` places its copies by (DeliveryEnvelope), as staging may trust them:
-// each entry is Public, the signer's followers collection or the actor id of a mention of the intent's status that
-// is not silent, compared in SQL with the stored ids. Those are exactly what the status's unsigned Delete may name
-// (addressingOf over its named mentions), so the placement it gives can make a mentioned account's copy a neutral one,
-// as that Delete does, but never a silent recipient's (VIS-2) nor anyone's beyond the audience, which recipientsFor
-// alone decides. Anything else (a type other than two arrays of strings, too many or too long entries, an entry no
-// such row names, as an import may hold) gives empty names: every addressed account gets a copy of its own at its
-// personal inbox, the copy VIS-2 never widens, and nothing throws. Read once a call, only by a call that places
-// addressed accounts, each entry two seeks by unique key.
-function stagedAddressing(db: Db, signerId: string, intent: IntentRow): string[] {
+// The accounts an immutable intent's `addressing` names, as staging may trust it (DeliveryEnvelope): by id, each entry
+// Public, the signer's followers collection or the actor id of a mention of the intent's status that is not silent,
+// compared in SQL with the stored ids. Those are exactly what the status's unsigned Delete may name (addressingOf over
+// its named mentions), so the placement it gives can make a mentioned account's copy a neutral one, as that Delete
+// does, but never a silent recipient's (VIS-2) nor anyone's beyond the audience, which recipientsFor alone decides. The
+// ids, not the entries, go back to the Worker: two stored actor ids that decode to the same string (malformed UTF-8)
+// stay apart. `to` and `cc` are read at the one path each (json_extract, json_type and json_array_length agree on it
+// whatever duplicate keys a body holds), and listed only as the arrays they were checked to be. Anything else (a type
+// other than two arrays of strings, too many or too long entries, an entry no such row names, as an import may hold)
+// names no account: every addressed account gets a copy of its own at its personal inbox, the copy VIS-2 never
+// widens, and nothing throws. Read once a call, only by a call that places addressed accounts: the intent's row by key
+// and, for each entry, two seeks by unique key.
+function stagedAddressing(db: Db, signerId: string, intent: IntentRow): Set<string> {
+  if (intent.status_type !== "text") {
+    return new Set();
+  }
   const shaped = db.first<{ ok: number }>(
     `SELECT json_type(body, '$.addressing.to') IS 'array' AND json_type(body, '$.addressing.cc') IS 'array'
 			AND json_array_length(body, '$.addressing.to') + json_array_length(body, '$.addressing.cc') <= ?2 AS ok
@@ -878,26 +886,32 @@ function stagedAddressing(db: Db, signerId: string, intent: IntentRow): string[]
     intent.id,
     ADDRESSING_ENTRIES,
   );
-  if (shaped?.ok !== 1 || intent.status_type !== "text") {
-    return [];
+  if (shaped?.ok !== 1) {
+    return new Set();
   }
-  const checked = db.first<{ bad: number; entries: string }>(
-    `SELECT total(NOT (e.type = 'text' AND length(CAST(e.value AS BLOB)) <= ?3 AND (e.value = ?4
-				OR e.value = (SELECT s.uri || '/followers' FROM main.accounts s INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE s.id = ?2)
-				OR EXISTS (SELECT 1 FROM main.accounts a INDEXED BY ${ACCOUNTS_URI_INDEX}
+  // Each list read at its path (json_each's path argument), one scalar subquery a list.
+  const lists = (["to", "cc"] as const).map((path) =>
+    db.first<{ bad: number; ids: string }>(
+      `SELECT total(NOT (n.type = 'text' AND length(CAST(n.value AS BLOB)) <= ?3 AND (n.value = ?4
+					OR n.value = (SELECT s.uri || '/followers' FROM main.accounts s INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE s.id = ?2)
+					OR n.account IS NOT NULL))) AS bad,
+				json_group_array(n.account) FILTER (WHERE n.account IS NOT NULL) AS ids
+			FROM (SELECT e.type, e.value, (SELECT CAST(a.id AS TEXT) FROM main.accounts a INDEXED BY ${ACCOUNTS_URI_INDEX}
 					CROSS JOIN main.status_mentions m INDEXED BY status_mentions_shown ON m.status_id = ?5 AND m.account_id = a.id
-					WHERE a.uri = e.value AND m.silent = 0)))) AS bad,
-			json_group_array(e.value) AS entries
-		FROM json_each((SELECT o.body FROM main.outbound_activities o WHERE o.id = CAST(?1 AS INTEGER)), '$.addressing') l
-			CROSS JOIN json_each(l.value) e
-		WHERE l.key IN ('to', 'cc')`,
-    intent.id,
-    signerId,
-    ADDRESSING_ENTRY_BYTES,
-    PUBLIC_COLLECTION,
-    intent.status,
+					WHERE a.uri = e.value AND m.silent = 0) AS account
+				FROM json_each((SELECT o.body FROM main.outbound_activities o WHERE o.id = CAST(?1 AS INTEGER)), ?6) e) n`,
+      intent.id,
+      signerId,
+      ADDRESSING_ENTRY_BYTES,
+      PUBLIC_COLLECTION,
+      intent.status,
+      `$.addressing.${path}`,
+    ),
   );
-  return checked === undefined || checked.bad !== 0 ? [] : (JSON.parse(checked.entries) as string[]);
+  if (lists.some((list) => list === undefined || list.bad !== 0)) {
+    return new Set();
+  }
+  return new Set(lists.flatMap((list) => JSON.parse(list!.ids) as string[]));
 }
 
 // The phases that place addressed accounts (takeAccount), which alone read a plan's names.
@@ -910,17 +924,14 @@ function planOf(db: Db, signerId: string, intent: IntentRow, phase: Phase): Plan
   // An immutable intent with an addressing (a signed status Delete) is placed by it as validated; any other by its
   // activity's own to and cc, an addressing in its body left unread.
   const staged = intent.addressing === 1 && intent.immutable === 1;
-  const named = !staged
-    ? [...uris(activity.to), ...uris(activity.cc)]
-    : ADDRESSED_PHASES.has(phase)
-      ? stagedAddressing(db, signerId, intent)
-      : [];
+  const named = staged ? [] : [...uris(activity.to), ...uris(activity.cc)];
   return {
     signerId,
     intentId: intent.id,
     kind: outboundKind(activity, false),
     addressed: staged || Array.isArray(activity.to),
     named: new Set(named),
+    namedIds: !staged ? null : ADDRESSED_PHASES.has(phase) ? stagedAddressing(db, signerId, intent) : new Set(),
     namedPast: Math.max(0, ...named.map((uri) => utf8.encode(uri).byteLength).filter((n) => n > BOUND)),
     status: intent.status_type === null ? undefined : intent.status,
     distributable: intent.distributable === 1,
@@ -1159,7 +1170,13 @@ function takeAccount(g: Gathering, row: StagedAccount): boolean {
     return g.take(bytes, null, null);
   }
   let personal = false;
-  if (g.plan.addressed) {
+  if (g.plan.namedIds !== null) {
+    if (uri.value === null && !uri.over) {
+      return g.take(bytes, null, null);
+    }
+    // A staged addressing names accounts by id: two stored ids that decode to the same string stay apart.
+    personal = !g.plan.namedIds.has(row.id);
+  } else if (g.plan.addressed) {
     if (uri.value !== null) {
       personal = !g.plan.named.has(uri.value);
     } else if (!uri.over) {

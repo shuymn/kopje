@@ -421,7 +421,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `ACTOR_URI_LIMIT` + 10 bytes, each Public, the signer's followers collection or the stored actor id of a mention of
   the status that is not silent, exactly what the unsigned `Delete` may name; anything else (an import's, a wrong type,
   a silent recipient named) places every addressed account by a copy of its own at its personal inbox, which never
-  names or reaches anyone VIS-2 keeps out, and nothing throws. When it cannot be signed for a reason that may pass (the
+  names or reaches anyone VIS-2 keeps out, and nothing throws. `to` and `cc` are checked and listed at the same path
+  (a repeated key is never read past the one checked), and copies are placed by the ids of the accounts the entries
+  match, never by a decoded uri, so two stored ids that decode alike stay apart. When it cannot be signed for a reason that may pass (the
   key does not unwrap, signing throws, no signer, no key), the DELETE answers 503 and writes nothing: no intent, no
   job, no streaming delete, no hide, so the status stays and a later DELETE can still send a proven `Delete`. A
   private, direct or limited status's `Delete` is never signed (a proof would make a portable, authentic record of its
@@ -3370,7 +3372,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
   places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
   takes (VIS-3). A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
-  its `addressing` (`stagedAddressing`): two reads of the intent's row and, for each of its at most 202 entries, two
+  its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of its at most 202 entries, two
   seeks by unique key, outside `STAGING_READ`. Its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
   pins, its hashtags with its author's featured hashtags counted again, the forwards of the remote original it quotes

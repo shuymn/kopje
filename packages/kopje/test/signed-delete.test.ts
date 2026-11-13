@@ -625,6 +625,69 @@ describe("staging trusts a signed Delete's addressing only as the status's own (
     // Its own to is Public alone: nobody is named, so each addressed account gets a copy of its own.
     expect(targets).toEqual(new Set([OWN_M1, OWN_M2, CAROL]));
   });
+
+  // The stored body with its addressing replaced by `raw`, written as text: JSON that json_valid accepts though it
+  // repeats a key, which no JSON.stringify writes.
+  const rawAddressing = (raw: string) => async (t: Setup) => {
+    await sql(
+      t.store,
+      `UPDATE outbound_activities SET body = substr(body, 1, instr(body, '"addressing":') - 1) || ? || '}'
+			WHERE retracts = 1`,
+      `"addressing":${raw}`,
+    );
+    const [row] = await sql<{ valid: number; tail: string }>(
+      t.store,
+      "SELECT json_valid(body) AS valid, substr(body, instr(body, '\"addressing\":')) AS tail FROM outbound_activities WHERE retracts = 1",
+    );
+    expect(row).toEqual({ valid: 1, tail: `"addressing":${raw}}` });
+  };
+
+  it("checks and lists the same to and cc when a key is repeated, parsing nothing it did not check", async () => {
+    const followers = `"${ALICE_URI}/followers"`;
+    const m1 = '"https://m1.example/users/u"';
+    // A second cc that is no array: the one checked is listed, and nothing is parsed as JSON that is not.
+    const notJson = await staged(
+      undefined,
+      rawAddressing(`{"to":["${PUBLIC}"],"cc":[${followers},${m1}],"cc":"not-json"}`),
+    );
+    expect(notJson.has(OWN_M2)).toBe(true);
+    expect(notJson.has(SHARED_M2)).toBe(false);
+  });
+
+  it("lists no repeated key past ADDRESSING_ENTRIES", async () => {
+    const followers = `"${ALICE_URI}/followers"`;
+    const m1 = '"https://m1.example/users/u"';
+    // A second cc past ADDRESSING_ENTRIES that names m1: it is never listed, so m1 is not named.
+    const many = Array.from({ length: 300 }, () => m1).join(",");
+    const capped = await staged(undefined, rawAddressing(`{"to":["${PUBLIC}"],"cc":[${followers}],"cc":[${many}]}`));
+    expect(capped).toEqual(new Set([OWN_M1, OWN_M2, CAROL]));
+  });
+
+  it("names accounts by id: a silent account whose actor id decodes as a named one's still gets its own copy", async () => {
+    const targets = await staged(undefined, async (t) => {
+      // m1 (named) and m2 (silent) hold actor ids that differ in one invalid UTF-8 byte, which both decode to U+FFFD.
+      await sql(
+        t.store,
+        `UPDATE accounts SET uri = CAST(CAST('https://m1.example/users/u' AS BLOB) || CASE id WHEN ?1 THEN X'FF' ELSE X'FE' END
+					AS TEXT) WHERE id IN (?1, ?2)`,
+        "600000000000000001",
+        "600000000000000002",
+      );
+      // The addressing names m1's stored id byte for byte.
+      await sql(
+        t.store,
+        `UPDATE outbound_activities SET body = substr(body, 1, instr(body, '"addressing":') - 1) || '"addressing":{"to":["'
+				|| ?1 || '"],"cc":["' || ?2 || '","' || (SELECT uri FROM accounts WHERE id = ?3) || '"]}}' WHERE retracts = 1`,
+        PUBLIC,
+        `${ALICE_URI}/followers`,
+        "600000000000000001",
+      );
+    });
+    // m1 is named: its server's shared inbox. m2 is not: its own inbox, never its server's shared one.
+    expect([...targets].filter((t) => t.startsWith("https://m1.example/inbox "))).toHaveLength(1);
+    expect([...targets].filter((t) => t.startsWith("https://m2.example/users/u/inbox "))).toHaveLength(1);
+    expect([...targets].some((t) => t.startsWith("https://m2.example/inbox "))).toBe(false);
+  });
 });
 
 describe("a DELETE's token is checked at each Store call (docs/engineering.md)", () => {
