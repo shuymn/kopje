@@ -185,7 +185,7 @@ against their own instance. TLS is assumed between all parties.
   another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
   proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
   fixture derived from the sender's source with only the `@context` replaced, Mastodon's Ruby compaction not run; a
-  refusal for each profile check above that Fedify alone would pass, and for every exploit found against the proof;
+  refusal for each profile check above that Fedify alone would pass, and for the JSON-LD type, signature, proof and context confusion cases;
   stamp `Delete`s in the forwarded form refused; no allowed term that is or aliases a decision term; no network fetch
   while verifying, and an actor document naming a
   context that is not preloaded refused; the request's shared context cache is not observed by a test),
