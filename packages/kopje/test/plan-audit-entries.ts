@@ -1299,7 +1299,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
     id: "f8c1f4e4265e3864",
@@ -1307,7 +1307,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#<anonymous> in bootstrapInstance",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
     id: "6f1738c70c69cc55",
@@ -1336,7 +1336,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/setup.ts#sessionNames < src/domain/setup.ts#<anonymous> in beginSetupSession",
     disposition: "deliberate",
     reason:
-      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
+      "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
     id: "498ac8adb066550d",
