@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -17,6 +19,19 @@ const readRawConfig = experimental_readRawConfig as unknown as (args: { config: 
 
 function read(path: string) {
   return readRawConfig({ config: fileURLToPath(new URL(path, import.meta.url)) }).rawConfig;
+}
+
+// The observability value of a documented `"observability": {...}` block: written as a config file in a fresh temporary
+// directory, read with the reader above, and removed however the read ends.
+function readBlock(block: string): unknown {
+  const directory = mkdtempSync(join(tmpdir(), "kopje-observability-"));
+  try {
+    const path = join(directory, "wrangler.jsonc");
+    writeFileSync(path, `{\n${block}\n}\n`);
+    return readRawConfig({ config: path }).rawConfig.observability;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 // NET-1: every global fetch() is strictly public, whatever host it names.
@@ -41,13 +56,17 @@ describe("shipped Kopje Worker configs", () => {
   });
 
   // The block docs/observability.md shows as the template's is the template's: its one code block that sets
-  // "observability", read as JSON once its trailing commas are dropped.
+  // "observability", read by the same reader as a config file of its own.
   it("shows the template's observability block in docs/observability.md", () => {
     const doc = readFileSync(new URL("../docs/observability.md", import.meta.url), "utf8");
     const blocks = [...doc.matchAll(/^```jsonc\n("observability": [\s\S]*?)\n```$/gm)].map((m) => m[1] ?? "");
     expect(blocks).toHaveLength(1);
-    const shown = JSON.parse(`{${blocks[0]?.replace(/,(\s*[}\]])/g, "$1")}}`) as { observability: unknown };
-    expect(shown.observability).toEqual(read("../../../deploy/wrangler.jsonc").observability);
+    expect(readBlock(blocks[0] ?? "")).toEqual(read("../../../deploy/wrangler.jsonc").observability);
+  });
+
+  it("reads a documented block with comments and trailing commas", () => {
+    const block = '"observability": {\n  // on\n  "enabled": true, /* kept */\n  "logs": { "enabled": true, },\n}';
+    expect(readBlock(block)).toEqual({ enabled: true, logs: { enabled: true } });
   });
 
   // WEB-6: an instance answers only on its domain, so the template leaves the workers.dev address off.
