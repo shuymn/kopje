@@ -45,6 +45,7 @@ import {
 import { storeMaintenanceError } from "./store-errors";
 import {
   activeDump,
+  forgetDomainCount,
   type ImportReceipt,
   type ImportRecord,
   type OperatorFlags,
@@ -672,6 +673,7 @@ export class StoreAdmin {
         };
         writeFlag(this.#sql, "import", record);
         writeFlag(this.#sql, "import_receipt", null);
+        forgetDomainCount(this.#sql);
         this.#log({ event: "kopje.store.import.begin", id: record.id, mode: record.mode });
         const begun = { ok: true as const, progress: progressOf(record), resumed: false };
         return session === null ? begun : { ...begun, session };
@@ -1092,6 +1094,7 @@ export class StoreAdmin {
     writeFlag(this.#sql, "import", null);
     writeFlag(this.#sql, "unpublished", null);
     writeFlag(this.#sql, "import_reset", { id, completedAt: this.#now() });
+    forgetDomainCount(this.#sql);
     this.#log({ event: "kopje.store.import.reset-done", id });
     return "done";
   }

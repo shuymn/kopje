@@ -33,7 +33,8 @@ import { StoreUnavailableError } from "../platform/store-errors";
 //   - instance activity: deletes the counts and logins outside the kept days, at most ACTIVITY_PRUNE_ROWS of each
 //     (domain/instance-activity.ts pruneActivity). In the Store's maintenance or readonly state, they wait.
 //   - instance counts: refreshes the kept peer domain count /api/v1/instance presents (domain/instance.ts
-//     refreshDomainCount), one walk of the remote accounts. It is also kept in the Store's readonly state.
+//     refreshDomainCount), one walk of the remote accounts. It is also kept in the Store's readonly state; a skipped
+//     refresh leaves the count to age out (DOMAIN_COUNT_FRESH_MS), and requests then count it.
 export type ScheduledDeps = SweepDeps & {
   // Rings the delivery doorbell after statuses are published (default: a message on env.QUEUE).
   doorbell?: (env: Env) => Promise<void>;
@@ -107,7 +108,7 @@ export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<vo
     }
   }
   try {
-    await callStore(() => deps.store(env).refreshDomainCount(deps.build(env)));
+    await callStore(() => deps.store(env).refreshDomainCount(deps.build(env), { now: deps.now() }));
   } catch (error) {
     if (!(error instanceof StoreUnavailableError)) {
       console.error({ event: "kopje.scheduled.domain_count_failed", ...errorFields(error) });

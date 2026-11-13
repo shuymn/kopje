@@ -753,11 +753,11 @@ export const ROWS_1468: readonly Row1468[] = [
   {
     group: 9,
     statement: "the instance's peer domain count (found by the audit)",
-    sites: ["src/domain/instance.ts#instanceInfo"],
+    sites: ["src/domain/instance.ts#instanceInfo", "src/domain/instance.ts#refreshDomainCount"],
     status: "outside",
-    why: "COUNT(DISTINCT domain) walks every remote account through accounts_domain_username (a SEARCH, domain > ?), now only while the cron has kept no count (refreshDomainCount, src/domain/instance.ts)",
+    why: "COUNT(DISTINCT domain) walks every remote account through accounts_domain_username (a SEARCH, domain > ?): once per 5-minute cron run in refreshDomainCount, and in instanceInfo only while no count the cron kept is fresh (DOMAIN_COUNT_FRESH_MS, src/domain/instance.ts)",
     witness:
-      "test/other-request-rewrites.test.ts, the instance's counts after a refresh (flat as the remote accounts grow, on one domain and on one each) and before it (the walk, as main's)",
+      "request: test/other-request-rewrites.test.ts, the instance's counts after a refresh (flat as the remote accounts grow, on one domain and on one each, main's count over import-shaped domains) and test/instance-counts.test.ts (the fallback past DOMAIN_COUNT_FRESH_MS); refresh: one walk and one row written a run (test/instance-counts.test.ts, \"counts in the refresh as main does, with one row written\"), the walk measured at 3-32 ms over 200,000 to 1,000,000 accounts on one domain or one each (SQLite 3.53, in memory)",
   },
   {
     group: 9,

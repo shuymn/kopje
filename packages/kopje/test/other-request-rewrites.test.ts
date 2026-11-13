@@ -70,9 +70,10 @@ const WITNESS = new PlanWitness({
   },
 });
 
-// The instance counts (#1502) beside main's statement, which counts the peer domains over every remote account on every
-// request; the rewrite reads the kept count and counts only while none is kept. instanceInfo makes no other statement
-// than the allowed ones.
+// The instance counts (#1502) beside main's statement, which counts the peer domains over every remote account on
+// every request; the rewrite reads the count the cron kept, once a primary-key lookup (allowed) has found it fresh.
+// While none is fresh, instanceInfo runs main's statement itself, unchanged (test/instance-counts.test.ts).
+// instanceInfo makes no other statement than the allowed ones.
 const COUNTS_ID = "87ac6fd3852e69b1";
 const COUNTS_WITNESS = new PlanWitness(
   {
@@ -80,13 +81,14 @@ const COUNTS_WITNESS = new PlanWitness(
       sql: "SELECT u.users, u.active, (SELECT SUM(CASE WHEN typeof(statuses_count) = 'integer' AND statuses_count BETWEEN 0 AND 9007199254740991 THEN statuses_count ELSE 0 END) FROM accounts INDEXED BY accounts_domain_username WHERE domain IS NULL) AS statuses, (SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active FROM local_accounts l WHERE l.suspended_at IS NULL) u",
       pins: (text) =>
         text.replace(
-          /COALESCE\(\(SELECT CAST\(value AS INTEGER\) FROM kopje_state .*?\), (\(SELECT COUNT\(DISTINCT domain\) FROM accounts WHERE domain IS NOT NULL\))\)/,
-          "$1",
+          "(SELECT json_extract(value, '$.n') FROM kopje_state WHERE name = 'domain_count') AS domains",
+          () => "(SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains",
         ),
     },
   },
   undefined,
   [
+    "SELECT json_extract(value, '$.n') AS n FROM kopje_state WHERE name = 'domain_count' AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 64 AND instr(CAST(value AS BLOB), x'00') = 0 AND json_valid(value) AND json_type(value, '$.n') = 'integer' AND json_extract(value, '$.n') >= 0 AND json_type(value, '$.at') = 'integer' AND json_extract(value, '$.at') BETWEEN ?1 AND ?2",
     "SELECT name, CASE name WHEN 'contact_username' THEN CASE WHEN typeof(value) <> 'text' THEN NULL WHEN length(CAST(value AS BLOB)) > 509 THEN NULL WHEN instr(CAST(value AS BLOB), x'00') > 0 THEN NULL WHEN value = '' OR value GLOB '*[^-.0-9@A-Z_a-z]*' OR value GLOB '@*' OR value GLOB '*@' OR value GLOB '*@*@*' OR (instr(value, '@') = 0 AND length(value) > 255) OR instr(value, '@') - 1 > 255 THEN NULL ELSE value END ELSE value END AS value FROM instance_settings WHERE name IN (?, ?, ?, ?, ?, ?)",
     "SELECT name FROM instance_settings WHERE name IN ('privacy_policy', 'terms_of_service', 'terms_of_service_effective_date')",
   ],
@@ -373,20 +375,33 @@ const FLOWS: Record<string, Flow> = {
       walks: 2,
     },
   },
-  // The instance's counts before the cron has kept the peer domain count: counted over the remote accounts, as main.
-  "the instance's counts before a refresh": {
-    ...INSTANCE_COUNTS,
-    walks: { [COUNTS_ID]: { population: "remote", perRun: 1 } },
-  },
-  "the instance's counts before a refresh, one domain each": {
-    ...INSTANCE_COUNTS,
-    distinct: true,
-    walks: { [COUNTS_ID]: { population: "remote", perRun: 1 } },
-  },
-  // After it: no walk of the remote accounts, whether they share a domain or each has one (the walks stay empty).
+  // After the cron kept the peer domain count: no walk of the remote accounts, whether they share a domain or each has
+  // one (the walks stay empty), and main's count over import-shaped domains.
   "the instance's counts after a refresh": { ...INSTANCE_COUNTS, refreshed: true },
   "the instance's counts after a refresh, one domain each": { ...INSTANCE_COUNTS, refreshed: true, distinct: true },
 };
+
+// Remote accounts whose domains an import can hold and Kopje's writers do not make: one domain three times, one with a
+// trailing dot, one with a NUL inside and its prefix, an empty one, and a non-ASCII one.
+function importShapedDomains(sql: SqlStorage) {
+  for (const [i, domain] of [
+    "dup.example",
+    "dup.example",
+    "dup.example",
+    "dup.example.",
+    "nul\u0000.example",
+    "nul",
+    "",
+    "é.example",
+  ].entries()) {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'i', ?)",
+      id18("88", i),
+      `https://imported.example/u/${i}`,
+      domain,
+    );
+  }
+}
 
 function world(flow: Flow, n: number, own: number, day: number) {
   return migratedStore().then(async (store) => {
@@ -397,7 +412,8 @@ function world(flow: Flow, n: number, own: number, day: number) {
       subject(sql, own, day);
       holdings(sql, HIGH, "40", n, "z", flow.distinct);
       if (flow.refreshed === true) {
-        refreshDomainCount.run(sql, undefined);
+        importShapedDomains(sql);
+        refreshDomainCount.run(sql, { now: NOW });
       }
     });
     return store;

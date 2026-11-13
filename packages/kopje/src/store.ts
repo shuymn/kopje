@@ -1014,8 +1014,8 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, instanceUsage, input);
   }
 
-  refreshDomainCount(callerBuild: string) {
-    return this.#kernel.execute(callerBuild, refreshDomainCount, undefined);
+  refreshDomainCount(callerBuild: string, input: OperationInput<typeof refreshDomainCount>) {
+    return this.#kernel.execute(callerBuild, refreshDomainCount, input);
   }
 
   // GET /api/v1/instance/activity: the JSON body, or null when the API is off (instance-activity.ts).

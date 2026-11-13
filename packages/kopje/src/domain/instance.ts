@@ -2,6 +2,7 @@ import type { Db } from "../db/sql";
 import { normalizeDomain } from "../platform/domain-name";
 import { isRemoteUsername } from "../platform/identity-bounds";
 import type { ImportAuthority } from "../platform/store-admin";
+import { DOMAIN_COUNT_STATE } from "../platform/store-flags";
 import {
   CONTACT_EMAIL_BYTES,
   INSTANCE_DESCRIPTION_LIMIT,
@@ -125,27 +126,39 @@ export function aboutSettingsOf(db: Db): AboutSettings {
   };
 }
 
-// The peer domain count, kept in one kopje_state row (never dumped: dump-catalog.ts DUMPED_STATE) as the decimal text of
-// an integer, written only by refreshDomainCount; a row of any other shape reads as none.
-const DOMAIN_COUNT = "domain_count";
+// The peer domain count, kept in one kopje_state row (DOMAIN_COUNT_STATE: never dumped, cleared when an import begins
+// and when a reset ends, store-admin.ts) as JSON {"n": the count, "at": the refresh's ms}, written only by
+// refreshDomainCount. It serves a request only while fresh, refreshed within DOMAIN_COUNT_FRESH_MS of the request
+// (two cron periods), so whatever skips a refresh (a dump's freeze, the env's MAINTENANCE, a failed round) leaves it
+// stale by at most that. A row of any other shape reads as none.
+export const DOMAIN_COUNT_FRESH_MS = 2 * 5 * 60 * 1000;
 const DOMAIN_COUNT_SQL = "SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL";
-const KEPT_DOMAIN_COUNT_SQL = `SELECT CAST(value AS INTEGER) FROM kopje_state WHERE name = '${DOMAIN_COUNT}'
-	AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) BETWEEN 1 AND 15 AND instr(CAST(value AS BLOB), x'00') = 0
-	AND value NOT GLOB '*[^0-9]*'`;
+// The kept count when it is fresh (refreshed between ?1 and ?2): one primary-key lookup.
+export const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopje_state
+	WHERE name = '${DOMAIN_COUNT_STATE}' AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 64
+	AND instr(CAST(value AS BLOB), x'00') = 0 AND json_valid(value) AND json_type(value, '$.n') = 'integer'
+	AND json_extract(value, '$.n') >= 0 AND json_type(value, '$.at') = 'integer'
+	AND json_extract(value, '$.at') BETWEEN ?1 AND ?2`;
 
 // The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
 // window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
 // text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
-// (domain IS NULL, pinned: RES-7), never over the remote accounts. The peer domain count is the kept one; only while
-// none is kept (a new, upgraded or freshly imported Store before the cron's first refresh) is it counted here, over
-// every remote account, and not stored: a read writes nothing (COALESCE evaluates its second argument only when the
-// first is NULL).
-export const INSTANCE_COUNTS_SQL = `SELECT u.users, u.active,
+// (domain IS NULL, pinned: RES-7), never over the remote accounts. The peer domain count is `domains`.
+function countsSql(domains: string): string {
+  return `SELECT u.users, u.active,
 	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
 		WHERE domain IS NULL) AS statuses,
-	COALESCE((${KEPT_DOMAIN_COUNT_SQL}), (${DOMAIN_COUNT_SQL})) AS domains
+	(${domains}) AS domains
 FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
+}
+
+// The counts with the kept peer domain count, read in the same transaction as FRESH_DOMAIN_COUNT_SQL found it fresh.
+export const INSTANCE_COUNTS_KEPT_SQL = countsSql(`SELECT json_extract(value, '$.n') FROM kopje_state
+	WHERE name = '${DOMAIN_COUNT_STATE}'`);
+// The counts while none is fresh (a new, upgraded, imported or reset Store before the cron's next refresh, or one whose
+// refreshes were skipped): counted over every remote account, and not stored, as a read writes nothing.
+export const INSTANCE_COUNTS_SQL = countsSql(DOMAIN_COUNT_SQL);
 
 // What /api/v2/instance presents of the counts: the active users alone.
 export const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
@@ -161,8 +174,13 @@ function activeWindow(now: number): [string, string] {
 
 // /api/v1/instance: the settings and every count it presents.
 export const instanceInfo = readOperation<{ now: number; present: Present }, InstanceInfo>((db, { now, present }) => {
+  const fresh = db.first<{ n: number }>(
+    FRESH_DOMAIN_COUNT_SQL,
+    now - DOMAIN_COUNT_FRESH_MS,
+    now + DOMAIN_COUNT_FRESH_MS,
+  );
   const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
-    INSTANCE_COUNTS_SQL,
+    fresh === undefined ? INSTANCE_COUNTS_SQL : INSTANCE_COUNTS_KEPT_SQL,
     ...activeWindow(now),
   );
   const settings = settingsOf(db);
@@ -186,14 +204,14 @@ export const instanceUsage = readOperation<{ now: number; present: Present }, In
   };
 });
 
-// The cron's refresh of the kept peer domain count (jobs/scheduled.ts): one walk of the remote accounts, written only
-// when the value changed. A session operation, so it runs while the Store is readonly (its maintenance, a verified
-// import before publication) too; a dump's freeze defers it to the next run.
-export const refreshDomainCount = sessionOperation<void, void>((db) => {
+// The cron's refresh of the kept peer domain count (jobs/scheduled.ts): one walk of the remote accounts and one row
+// written. A session operation, so it runs while the Store is readonly (its maintenance, a verified import before
+// publication) too; a dump's freeze refuses it, and the kept count then ages out (DOMAIN_COUNT_FRESH_MS).
+export const refreshDomainCount = sessionOperation<{ now: number }, void>((db, { now }) => {
   db.run(
-    `INSERT INTO kopje_state (name, value) SELECT ?1, CAST((${DOMAIN_COUNT_SQL}) AS TEXT) WHERE true
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value WHERE value IS NOT excluded.value`,
-    DOMAIN_COUNT,
+    `INSERT OR REPLACE INTO kopje_state (name, value) SELECT ?1, json_object('n', (${DOMAIN_COUNT_SQL}), 'at', CAST(?2 AS INTEGER))`,
+    DOMAIN_COUNT_STATE,
+    now,
   );
 });
 

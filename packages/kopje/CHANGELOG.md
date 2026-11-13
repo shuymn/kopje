@@ -11,8 +11,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 ### Changed
 
 - `GET /api/v1/instance` no longer counts the remote accounts' domains on every request: `stats.domain_count` is the
-  count the 5-minute cron keeps in `kopje_state` (never dumped), so it lags the accounts by up to 5 minutes, and a Store
-  with none kept yet (new, upgraded or restored) counts it per request until the first cron run. `GET /api/v2/instance`
+  count the 5-minute cron keeps in `kopje_state`, at most 10 minutes old; past that, counted on request (a new or
+  upgraded Store before the first cron run, an import or a reset, which clear it, and a skipped refresh, such as during
+  a dump or under the env's `MAINTENANCE`). It is never dumped. `GET /api/v2/instance`
   reads only what it presents (`usage.users.active_month`) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)).
   No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 
