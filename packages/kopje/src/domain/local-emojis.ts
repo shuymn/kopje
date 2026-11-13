@@ -29,7 +29,7 @@ import { mediaDeleteOperation, readOperation, writeOperation } from "./operation
 // the reservation (abandonEmoji), which the sweep then deletes with a tombstone, as any upload's.
 //
 // Every write checks the Access admin in its transaction (AUTH-5) and logs it (moderation-log.ts, CustomEmoji
-// targets). Each runs at the Store's own time (store.ts), so the writer deadline is judged on one clock.
+// targets). Each runs at the Store's own time (atStoreTime), so the writer deadline is judged on one clock.
 
 export type AdminEmoji = {
   id: string;
@@ -137,7 +137,7 @@ export type EmojiReserved = { ok: true; id: string; deadline: number } | EmojiRe
 
 // Step 1 of an upload. `limit` is IMAGES_MONTHLY_TRANSFORMS: the two transformations are charged to the instance's
 // budget of the month `now` is in, as the media rebuild charges them (RES-6).
-export const reserveEmoji = writeOperation<
+export const reserveEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; token: string; shortcode: string; replace: boolean; limit: number; now: number },
   EmojiReserved
 >((db, { authority, token, shortcode, replace, limit, now }) => {
@@ -176,7 +176,7 @@ export type EmojiCompleted = { ok: true; emoji: AdminEmoji } | EmojiRefusal;
 // deadline at `now`, unattached), the shortcode and cap are judged again, the row is promoted (URLs, type, sizes,
 // processed = 1, gc_at NULL), a replaced emoji is disabled, and the emoji row is written and logged. A refusal leaves
 // the reservation as it was, for abandonEmoji.
-export const completeEmoji = writeOperation<
+export const completeEmoji = writeOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
     id: string;
@@ -258,7 +258,7 @@ export type EmojiAbandoned = "abandoned" | "kept" | "gone" | "denied";
 // A failed emoji upload, as abandonMedia dooms a failed upload: only the reservation of this id and token (the Worker's
 // own, so no other upload in flight is touched), refused while the media rebuild holds its lease (a
 // mediaDeleteOperation, platform/store-flags.ts).
-export const abandonEmoji = mediaDeleteOperation<
+export const abandonEmoji = mediaDeleteOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; token: string; now: number },
   EmojiAbandoned
 >((db, { authority, id, token, now }) => {
@@ -288,7 +288,7 @@ export type EmojiUpdated = { ok: true; emoji: AdminEmoji } | EmojiRefusal;
 // POST /admin/emojis/:id: the category and picker flag (logged `update`), and disabling or enabling (logged `disable`,
 // `enable`). Enabling is refused while another emoji of the shortcode is enabled, or at the cap. Changing nothing
 // answers the emoji and logs nothing.
-export const updateEmoji = writeOperation<
+export const updateEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: EmojiChanges; now: number },
   EmojiUpdated
 >((db, { authority, id, changes, now }) => {

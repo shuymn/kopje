@@ -714,7 +714,7 @@ type Walked = {
 // each deleted (ineligible, attempts exhausted, a counter at its end, an id no object may name), deferred by DEFER_MS when its reservation is
 // not admitted (bytes + R past the cap; no attempt charged), or claimed: its earlier object doomed, the token reserved
 // at R (bytes + R), and the slot's claim and attempts counted, due again after REMOTE_MEDIA_HOLD_MS.
-export const claimRemoteMedia = writeOperation<
+export const claimRemoteMedia = writeOperation.atStoreTime("now")<
   { now: number; tokens: readonly string[]; cap: number },
   RemoteMediaClaims
 >((db, { now, tokens, cap }) => {
@@ -910,7 +910,7 @@ function failSlot(db: Db, id: string, attempts: number, permanent: boolean, now:
 //   transient failure;
 // - failed: the object is doomed and the slot fails (permanent) or is retried;
 // - unattempted: the object is doomed and the attempt given back; the slot stays due.
-export const recordRemoteMedia = writeOperation<
+export const recordRemoteMedia = writeOperation.atStoreTime("now")<
   RemoteMediaFence & { outcome: RemoteMediaOutcome; now: number },
   { held: boolean }
 >((db, input) => {
@@ -1482,7 +1482,7 @@ function validationBatch(db: Db, now: number, restoredAt: number): { batch: Remo
 // head); then reservation expiry, the validity walk, the suspended accounts, the backfill, reclamation and the audit;
 // then the doomed objects due and whether an orphan sweep is due. `restoredAt`: the restore marker the Store read;
 // `cap`: REMOTE_MEDIA_CACHE_BYTES.
-export const maintainRemoteMedia = writeOperation<
+export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
   { now: number; restoredAt: number | null; cap: number; retentionDays?: number },
   RemoteMediaMaintenance
 >((db, { now, restoredAt, cap, retentionDays: retention }) => {
@@ -1546,7 +1546,7 @@ export const maintainRemoteMedia = writeOperation<
 // The round's R2 deletes, one result an object: its group's delete returned within its deadline (deleted) or not:
 // deleted, the ledger row goes and its charge is subtracted; otherwise it stays doomed and charged, due again after
 // DELETE_BACKOFF_MS × 2^n (at most DELETE_BACKOFF_MAX_MS). A group the round did not try is not reported.
-export const confirmRemoteMediaDeleted = writeOperation<
+export const confirmRemoteMediaDeleted = writeOperation.atStoreTime("now")<
   { results: readonly { token: string; deleted: boolean }[]; now: number },
   { confirmed: number }
 >((db, { results, now }) => {
@@ -1588,7 +1588,7 @@ export const confirmRemoteMediaDeleted = writeOperation<
 // (`failed`, the last result) is tried again from that object, and an object whose heads fail VALIDATION_FAILURES times
 // in a row is handled as missing, so it never holds the walk back: the cache is disposable, and the file is fetched
 // again. The pass ends when the maintenance finds no object past the cursor (remote_media_validated_at).
-export const recordRemoteMediaValidation = writeOperation<
+export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
   { results: readonly { token: string; missing: boolean; failed?: boolean }[]; now: number },
   { reset: number }
 >((db, { results, now }) => {
@@ -1651,7 +1651,7 @@ export const recordRemoteMediaValidation = writeOperation<
 // before its put (MEDIA-2). The page is checkpointed (the sweep's time and the list's next cursor) only once nothing of
 // it is left to delete: here when it has no orphan, otherwise by remoteMediaSwept after the Worker's delete returned,
 // so a page whose delete failed or did not run is listed again.
-export const remoteMediaOrphans = writeOperation<
+export const remoteMediaOrphans = writeOperation.atStoreTime("now")<
   { keys: readonly { key: string; uploaded: number }[]; cursor: string | null; now: number },
   { orphans: string[] }
 >((db, { keys, cursor, now }) => {
@@ -1674,12 +1674,13 @@ export const remoteMediaOrphans = writeOperation<
 });
 
 // The sweep's page whose orphans the Worker deleted: its checkpoint (remoteMediaOrphans).
-export const remoteMediaSwept = writeOperation<{ cursor: string | null; now: number }, { swept: boolean }>(
-  (db, { cursor }) => {
-    sweepCheckpoint(db, cursor);
-    return { swept: true };
-  },
-);
+export const remoteMediaSwept = writeOperation.atStoreTime("now")<
+  { cursor: string | null; now: number },
+  { swept: boolean }
+>((db, { cursor }) => {
+  sweepCheckpoint(db, cursor);
+  return { swept: true };
+});
 
 // The page's checkpoint: the list's next cursor, the attempt time kept.
 function sweepCheckpoint(db: Db, cursor: string | null): void {

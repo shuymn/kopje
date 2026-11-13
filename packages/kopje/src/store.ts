@@ -118,7 +118,7 @@ import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
 import { readFlags } from "./platform/store-flags";
-import { StoreKernel, type StoreOperation } from "./platform/store-kernel";
+import { type OperationInput, StoreKernel } from "./platform/store-kernel";
 import { StreamHub } from "./stream-hub";
 import { buildOf, PACKAGE_VERSION } from "./version";
 
@@ -131,8 +131,6 @@ async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null
   const at = (JSON.parse(await marker.text()) as { at?: unknown }).at;
   return typeof at === "number" ? at : null;
 }
-
-type OperationInput<T> = T extends StoreOperation<infer I, unknown> ? I : never;
 
 // The single source of truth of an instance: one SQLite-backed Durable Object. Every RPC takes the caller's build
 // (the Workers version id, see version.ts). Domain operations run through the kernel's gate. Rescue RPCs work in every
@@ -553,7 +551,7 @@ export class Store extends DurableObject<Env> {
 
   async receiveActivity(callerBuild: string, input: inbox.ReceiveInput): Promise<inbox.ReceiveAnswer> {
     try {
-      return await this.#kernel.execute(callerBuild, inbox.receiveActivity, { ...input, storeNow: Date.now() });
+      return await this.#kernel.execute(callerBuild, inbox.receiveActivity, input);
     } catch (error) {
       // Rolled back: a retryable refusal changes nothing (domain/remote-actors.ts, RetryLater).
       if (error instanceof remoteActors.RetryLater) {
@@ -699,45 +697,38 @@ export class Store extends DurableObject<Env> {
   // is measured from a Store-recorded time. The maintenance reads the restore marker first (restoreMarkerKey).
   async maintainRemoteMedia(callerBuild: string, input: { cap: number; retentionDays: number }) {
     const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
-    return this.#kernel.execute(callerBuild, remoteMedia.maintainRemoteMedia, {
-      ...input,
-      restoredAt,
-      now: Date.now(),
-    });
+    return this.#kernel.execute(callerBuild, remoteMedia.maintainRemoteMedia, { ...input, restoredAt });
   }
 
-  confirmRemoteMediaDeleted(
-    callerBuild: string,
-    input: Omit<OperationInput<typeof remoteMedia.confirmRemoteMediaDeleted>, "now">,
-  ) {
-    return this.#kernel.execute(callerBuild, remoteMedia.confirmRemoteMediaDeleted, { ...input, now: Date.now() });
+  confirmRemoteMediaDeleted(callerBuild: string, input: OperationInput<typeof remoteMedia.confirmRemoteMediaDeleted>) {
+    return this.#kernel.execute(callerBuild, remoteMedia.confirmRemoteMediaDeleted, input);
   }
 
   recordRemoteMediaValidation(
     callerBuild: string,
-    input: Omit<OperationInput<typeof remoteMedia.recordRemoteMediaValidation>, "now">,
+    input: OperationInput<typeof remoteMedia.recordRemoteMediaValidation>,
   ) {
-    return this.#kernel.execute(callerBuild, remoteMedia.recordRemoteMediaValidation, { ...input, now: Date.now() });
+    return this.#kernel.execute(callerBuild, remoteMedia.recordRemoteMediaValidation, input);
   }
 
-  remoteMediaOrphans(callerBuild: string, input: Omit<OperationInput<typeof remoteMedia.remoteMediaOrphans>, "now">) {
-    return this.#kernel.execute(callerBuild, remoteMedia.remoteMediaOrphans, { ...input, now: Date.now() });
+  remoteMediaOrphans(callerBuild: string, input: OperationInput<typeof remoteMedia.remoteMediaOrphans>) {
+    return this.#kernel.execute(callerBuild, remoteMedia.remoteMediaOrphans, input);
   }
 
-  remoteMediaSwept(callerBuild: string, input: Omit<OperationInput<typeof remoteMedia.remoteMediaSwept>, "now">) {
-    return this.#kernel.execute(callerBuild, remoteMedia.remoteMediaSwept, { ...input, now: Date.now() });
+  remoteMediaSwept(callerBuild: string, input: OperationInput<typeof remoteMedia.remoteMediaSwept>) {
+    return this.#kernel.execute(callerBuild, remoteMedia.remoteMediaSwept, input);
   }
 
-  claimRemoteMedia(callerBuild: string, input: Omit<OperationInput<typeof remoteMedia.claimRemoteMedia>, "now">) {
-    return this.#kernel.execute(callerBuild, remoteMedia.claimRemoteMedia, { ...input, now: Date.now() });
+  claimRemoteMedia(callerBuild: string, input: OperationInput<typeof remoteMedia.claimRemoteMedia>) {
+    return this.#kernel.execute(callerBuild, remoteMedia.claimRemoteMedia, input);
   }
 
   admitRemoteMedia(callerBuild: string, input: OperationInput<typeof remoteMedia.admitRemoteMedia>) {
     return this.#kernel.execute(callerBuild, remoteMedia.admitRemoteMedia, input);
   }
 
-  recordRemoteMedia(callerBuild: string, input: Omit<OperationInput<typeof remoteMedia.recordRemoteMedia>, "now">) {
-    return this.#kernel.execute(callerBuild, remoteMedia.recordRemoteMedia, { ...input, now: Date.now() });
+  recordRemoteMedia(callerBuild: string, input: OperationInput<typeof remoteMedia.recordRemoteMedia>) {
+    return this.#kernel.execute(callerBuild, remoteMedia.recordRemoteMedia, input);
   }
 
   remoteKey(callerBuild: string, input: OperationInput<typeof inbox.getRemoteKey>) {
@@ -1006,8 +997,8 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, suspendAccount, input);
   }
 
-  instanceInfo(callerBuild: string, input: Omit<OperationInput<typeof instanceInfo>, "storeNow">) {
-    return this.#kernel.executeTimed(callerBuild, instanceInfo, input);
+  instanceInfo(callerBuild: string, input: OperationInput<typeof instanceInfo>) {
+    return this.#kernel.execute(callerBuild, instanceInfo, input);
   }
 
   instanceUsage(callerBuild: string, input: OperationInput<typeof instanceUsage>) {
@@ -1015,7 +1006,7 @@ export class Store extends DurableObject<Env> {
   }
 
   refreshDomainCount(callerBuild: string) {
-    return this.#kernel.executeTimed(callerBuild, refreshDomainCount, {});
+    return this.#kernel.execute(callerBuild, refreshDomainCount, undefined);
   }
 
   // GET /api/v1/instance/activity: the JSON body, or null when the API is off (instance-activity.ts).
@@ -1855,50 +1846,47 @@ export class Store extends DurableObject<Env> {
   // The media rebuild (domain/media-rebuild.ts), from /admin/media/rebuild. Each runs at the Store's own time, never a
   // time the caller sends, so the lease and the fences that read it (store-admin.ts, store-flags.ts) share one clock.
 
-  mediaRebuildCandidates(
-    callerBuild: string,
-    input: Omit<OperationInput<typeof mediaRebuild.rebuildCandidates>, "now">,
-  ) {
-    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildCandidates, { ...input, now: Date.now() });
+  mediaRebuildCandidates(callerBuild: string, input: OperationInput<typeof mediaRebuild.rebuildCandidates>) {
+    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildCandidates, input);
   }
 
-  mediaRebuildRowLive(callerBuild: string, input: Omit<OperationInput<typeof mediaRebuild.rebuildRowLive>, "now">) {
-    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildRowLive, { ...input, now: Date.now() });
+  mediaRebuildRowLive(callerBuild: string, input: OperationInput<typeof mediaRebuild.rebuildRowLive>) {
+    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildRowLive, input);
   }
 
   async mediaRebuildLease(
     callerBuild: string,
-    input: Omit<OperationInput<typeof mediaRebuild.rebuildLease>, "now" | "restoredAt">,
+    input: Omit<OperationInput<typeof mediaRebuild.rebuildLease>, "restoredAt">,
   ) {
     const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
-    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt, now: Date.now() });
+    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
   }
 
-  chargeMediaRebuild(callerBuild: string, input: Omit<OperationInput<typeof mediaRebuild.chargeRebuild>, "now">) {
-    return this.#kernel.execute(callerBuild, mediaRebuild.chargeRebuild, { ...input, now: Date.now() });
+  chargeMediaRebuild(callerBuild: string, input: OperationInput<typeof mediaRebuild.chargeRebuild>) {
+    return this.#kernel.execute(callerBuild, mediaRebuild.chargeRebuild, input);
   }
 
-  recordMediaRebuild(callerBuild: string, input: Omit<OperationInput<typeof mediaRebuild.recordRebuild>, "now">) {
-    return this.#kernel.execute(callerBuild, mediaRebuild.recordRebuild, { ...input, now: Date.now() });
+  recordMediaRebuild(callerBuild: string, input: OperationInput<typeof mediaRebuild.recordRebuild>) {
+    return this.#kernel.execute(callerBuild, mediaRebuild.recordRebuild, input);
   }
 
   // Local custom emoji (domain/local-emojis.ts): the Access admin's writes from /admin/emojis, each at the Store's own
   // time, so the writer deadline is judged on one clock; the public list and the Emoji object.
 
-  reserveEmoji(callerBuild: string, input: Omit<OperationInput<typeof localEmojis.reserveEmoji>, "now">) {
-    return this.#kernel.execute(callerBuild, localEmojis.reserveEmoji, { ...input, now: Date.now() });
+  reserveEmoji(callerBuild: string, input: OperationInput<typeof localEmojis.reserveEmoji>) {
+    return this.#kernel.execute(callerBuild, localEmojis.reserveEmoji, input);
   }
 
-  completeEmoji(callerBuild: string, input: Omit<OperationInput<typeof localEmojis.completeEmoji>, "now">) {
-    return this.#kernel.execute(callerBuild, localEmojis.completeEmoji, { ...input, now: Date.now() });
+  completeEmoji(callerBuild: string, input: OperationInput<typeof localEmojis.completeEmoji>) {
+    return this.#kernel.execute(callerBuild, localEmojis.completeEmoji, input);
   }
 
-  abandonEmoji(callerBuild: string, input: Omit<OperationInput<typeof localEmojis.abandonEmoji>, "now">) {
-    return this.#kernel.execute(callerBuild, localEmojis.abandonEmoji, { ...input, now: Date.now() });
+  abandonEmoji(callerBuild: string, input: OperationInput<typeof localEmojis.abandonEmoji>) {
+    return this.#kernel.execute(callerBuild, localEmojis.abandonEmoji, input);
   }
 
-  updateEmoji(callerBuild: string, input: Omit<OperationInput<typeof localEmojis.updateEmoji>, "now">) {
-    return this.#kernel.execute(callerBuild, localEmojis.updateEmoji, { ...input, now: Date.now() });
+  updateEmoji(callerBuild: string, input: OperationInput<typeof localEmojis.updateEmoji>) {
+    return this.#kernel.execute(callerBuild, localEmojis.updateEmoji, input);
   }
 
   adminEmojis(callerBuild: string, input: OperationInput<typeof localEmojis.adminEmojis>) {
@@ -1928,30 +1916,24 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, announcements.unreactToAnnouncement, input);
   }
 
-  createAnnouncement(callerBuild: string, input: Omit<OperationInput<typeof announcements.createAnnouncement>, "now">) {
-    return this.#kernel.execute(callerBuild, announcements.createAnnouncement, { ...input, now: Date.now() });
+  createAnnouncement(callerBuild: string, input: OperationInput<typeof announcements.createAnnouncement>) {
+    return this.#kernel.execute(callerBuild, announcements.createAnnouncement, input);
   }
 
-  updateAnnouncement(callerBuild: string, input: Omit<OperationInput<typeof announcements.updateAnnouncement>, "now">) {
-    return this.#kernel.execute(callerBuild, announcements.updateAnnouncement, { ...input, now: Date.now() });
+  updateAnnouncement(callerBuild: string, input: OperationInput<typeof announcements.updateAnnouncement>) {
+    return this.#kernel.execute(callerBuild, announcements.updateAnnouncement, input);
   }
 
-  publishAnnouncement(
-    callerBuild: string,
-    input: Omit<OperationInput<typeof announcements.publishAnnouncement>, "now">,
-  ) {
-    return this.#kernel.execute(callerBuild, announcements.publishAnnouncement, { ...input, now: Date.now() });
+  publishAnnouncement(callerBuild: string, input: OperationInput<typeof announcements.publishAnnouncement>) {
+    return this.#kernel.execute(callerBuild, announcements.publishAnnouncement, input);
   }
 
-  unpublishAnnouncement(
-    callerBuild: string,
-    input: Omit<OperationInput<typeof announcements.unpublishAnnouncement>, "now">,
-  ) {
-    return this.#kernel.execute(callerBuild, announcements.unpublishAnnouncement, { ...input, now: Date.now() });
+  unpublishAnnouncement(callerBuild: string, input: OperationInput<typeof announcements.unpublishAnnouncement>) {
+    return this.#kernel.execute(callerBuild, announcements.unpublishAnnouncement, input);
   }
 
-  deleteAnnouncement(callerBuild: string, input: Omit<OperationInput<typeof announcements.deleteAnnouncement>, "now">) {
-    return this.#kernel.execute(callerBuild, announcements.deleteAnnouncement, { ...input, now: Date.now() });
+  deleteAnnouncement(callerBuild: string, input: OperationInput<typeof announcements.deleteAnnouncement>) {
+    return this.#kernel.execute(callerBuild, announcements.deleteAnnouncement, input);
   }
 
   adminAnnouncements(callerBuild: string, input: OperationInput<typeof announcements.adminAnnouncements>) {
@@ -1978,36 +1960,36 @@ export class Store extends DurableObject<Env> {
 
   // The Access admin's lists and reviews from /admin/trends, each at the Store's own time.
 
-  adminTrendTags(callerBuild: string, input: Omit<OperationInput<typeof trends.adminTrendTags>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.adminTrendTags, { ...input, now: Date.now() });
+  adminTrendTags(callerBuild: string, input: OperationInput<typeof trends.adminTrendTags>) {
+    return this.#kernel.execute(callerBuild, trends.adminTrendTags, input);
   }
 
   adminTrendStatuses(callerBuild: string, input: OperationInput<typeof trends.adminTrendStatuses>) {
     return this.#kernel.execute(callerBuild, trends.adminTrendStatuses, input);
   }
 
-  reviewTrendTag(callerBuild: string, input: Omit<OperationInput<typeof trends.reviewTrendTag>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.reviewTrendTag, { ...input, now: Date.now() });
+  reviewTrendTag(callerBuild: string, input: OperationInput<typeof trends.reviewTrendTag>) {
+    return this.#kernel.execute(callerBuild, trends.reviewTrendTag, input);
   }
 
-  reviewTrendStatus(callerBuild: string, input: Omit<OperationInput<typeof trends.reviewTrendStatus>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.reviewTrendStatus, { ...input, now: Date.now() });
+  reviewTrendStatus(callerBuild: string, input: OperationInput<typeof trends.reviewTrendStatus>) {
+    return this.#kernel.execute(callerBuild, trends.reviewTrendStatus, input);
   }
 
-  adminTrendLinks(callerBuild: string, input: Omit<OperationInput<typeof trends.adminTrendLinks>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.adminTrendLinks, { ...input, now: Date.now() });
+  adminTrendLinks(callerBuild: string, input: OperationInput<typeof trends.adminTrendLinks>) {
+    return this.#kernel.execute(callerBuild, trends.adminTrendLinks, input);
   }
 
   adminTrendPublishers(callerBuild: string, input: OperationInput<typeof trends.adminTrendPublishers>) {
     return this.#kernel.execute(callerBuild, trends.adminTrendPublishers, input);
   }
 
-  reviewTrendLink(callerBuild: string, input: Omit<OperationInput<typeof trends.reviewTrendLink>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.reviewTrendLink, { ...input, now: Date.now() });
+  reviewTrendLink(callerBuild: string, input: OperationInput<typeof trends.reviewTrendLink>) {
+    return this.#kernel.execute(callerBuild, trends.reviewTrendLink, input);
   }
 
-  reviewTrendPublisher(callerBuild: string, input: Omit<OperationInput<typeof trends.reviewTrendPublisher>, "now">) {
-    return this.#kernel.execute(callerBuild, trends.reviewTrendPublisher, { ...input, now: Date.now() });
+  reviewTrendPublisher(callerBuild: string, input: OperationInput<typeof trends.reviewTrendPublisher>) {
+    return this.#kernel.execute(callerBuild, trends.reviewTrendPublisher, input);
   }
 
   trendsRound(callerBuild: string, input: OperationInput<typeof trends.trendsRound>) {

@@ -622,7 +622,7 @@ function recordFollowAnswer(
 // The activities
 // ---------------------------------------------------------------------------------------------------------------
 
-// What the Store's RPC adds to a receive (store.ts): its own clock, which ages tracked Like ids (LIKE_RETIRE_AFTER_MS),
+// What the Store adds to a receive (atStoreTime): its own clock, which ages tracked Like ids (LIKE_RETIRE_AFTER_MS),
 // whatever the Worker's clock (`now`) says or however late the call comes.
 export type StoreReceiveInput = ReceiveInput & { storeNow: number };
 
@@ -3444,7 +3444,7 @@ const HANDLERS: { [T in InboundActivity["type"]]: Handler<T> } = {
   Flag: flag,
 };
 
-export const receiveActivity = writeOperation<StoreReceiveInput, ReceiveAnswer>((db, input) => {
+export const receiveActivity = writeOperation.atStoreTime("storeNow")<StoreReceiveInput, ReceiveAnswer>((db, input) => {
   const before = outboundMark(db);
   const { need, ...result } = receive(db, input);
   const answer = { ...result, delivers: outboundSince(db, before) };

@@ -1089,7 +1089,7 @@ const TAG_REVIEW_COLUMNS = `(SELECT r.trendable FROM tag_trend_reviews r WHERE r
 	(SELECT r.reviewed_at FROM tag_trend_reviews r WHERE r.name = t.name) AS reviewed_at`;
 
 // GET /admin/trends/tags: every listed stored hashtag (score of TAG_DECAY_THRESHOLD or more), allowed or not, by score.
-export const adminTrendTags = readOperation<
+export const adminTrendTags = readOperation.atStoreTime("now")<
   { authority: ImportAuthority; offset: number; limit: number; now: number; origin: string },
   { ok: true; tags: AdminTrendTag[]; settings: TrendSettings } | TrendRefusal
 >((db, { authority, offset, limit, now, origin }) => {
@@ -1194,7 +1194,7 @@ function reviewName(raw: string): string | null {
 
 // POST /admin/trends/tags/:action {name} (Admin::Trends::TagsController#approve, #reject): the hashtag's decision,
 // which takes effect at once; a new one is refused at MAX_TREND_REVIEWS.
-export const reviewTrendTag = writeOperation<
+export const reviewTrendTag = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; name: string; trendable: boolean; now: number; origin: string },
   { ok: true; tag: AdminTrendTag } | TrendRefusal
 >((db, { authority, name: raw, trendable, now, origin }) => {
@@ -1232,7 +1232,7 @@ export const reviewTrendTag = writeOperation<
 
 // POST /admin/trends/statuses/:id/:action {author?} (Admin::Trends::StatusesController#approve, #reject): the status's
 // decision, or with `author` its author's (Account#trendable, for every status of theirs without one of its own).
-export const reviewTrendStatus = writeOperation<
+export const reviewTrendStatus = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; trendable: boolean; author: boolean; now: number },
   { ok: true; id: string; trendable: boolean; status: AdminTrendStatus | null } | TrendRefusal
 >((db, { authority, id, trendable, author, now }) => {
@@ -1327,7 +1327,7 @@ function adminLink(db: Db, row: { url: string; domain: string | null; score: num
 }
 
 // GET /admin/trends/links: every listed stored link (score of LINK_DECAY_THRESHOLD or more), allowed or not, by score.
-export const adminTrendLinks = readOperation<
+export const adminTrendLinks = readOperation.atStoreTime("now")<
   { authority: ImportAuthority; offset: number; limit: number; now: number },
   { ok: true; links: AdminTrendLink[]; settings: TrendSettings } | TrendRefusal
 >((db, { authority, offset, limit, now }) => {
@@ -1391,7 +1391,7 @@ const ENCODER = new TextEncoder();
 // (the review that decides its domain now, else one for its domain), which also deletes the link's own review
 // (preview_card_batch.rb:28-59). A URL past the card URL rule is invalid-link, one with no public attached copy
 // link-not-found (one seek of the public link index).
-export const reviewTrendLink = writeOperation<
+export const reviewTrendLink = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; url: string; trendable: boolean; publisher: boolean; now: number },
   { ok: true; link: AdminTrendLink } | TrendRefusal
 >((db, { authority, url, trendable, publisher, now }) => {
@@ -1445,7 +1445,7 @@ export const reviewTrendLink = writeOperation<
 // POST /admin/trends/publishers/:action {domain} (Admin::Trends::Links::PreviewCardProvidersController#approve,
 // #reject): the publisher's decision, for the domain and its subdomains without a nearer one. The domain as
 // blockedDomain normalizes it, within the stored rule, else invalid-domain.
-export const reviewTrendPublisher = writeOperation<
+export const reviewTrendPublisher = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; domain: string; trendable: boolean; now: number },
   { ok: true; publisher: AdminTrendPublisher } | TrendRefusal
 >((db, { authority, domain: raw, trendable, now }) => {
