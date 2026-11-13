@@ -141,6 +141,14 @@ export function writeFlag<N extends FlagName>(sql: SqlStorage, name: N, value: O
   }
 }
 
+// The kept peer domain count (domain/instance.ts refreshDomainCount), derived from the accounts: never dumped, and
+// cleared when an import begins and when a reset ends (store-admin.ts), so no count of other accounts is served.
+export const DOMAIN_COUNT_STATE = "domain_count";
+
+export function forgetDomainCount(sql: SqlStorage): void {
+  sql.exec("DELETE FROM kopje_state WHERE name = ?", DOMAIN_COUNT_STATE);
+}
+
 // The media rebuild's lease (domain/media-rebuild.ts), { holder, until } at the Store's time: one rebuild call at a
 // time. While it is live the Store refuses media-deleting writes (admitFlags), leaving its maintenance, and beginning or
 // resetting an import, resetting a cutover or publishing (store-admin.ts).

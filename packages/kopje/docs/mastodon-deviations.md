@@ -349,6 +349,12 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   last 28 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
   request made while a dump holds the Store may go unrecorded. Mastodon counts logins over the 28 days before today,
   suspended users included.
+- `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
+  kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
+  past that, counted on request. A request counts it itself, and keeps nothing, whenever no kept count is that fresh:
+  before the cron's first run on a new or upgraded Store, after an import begins or a reset ends (both clear it, and
+  it is never dumped), and while the cron's refresh is skipped (a dump in progress, the env's `MAINTENANCE`).
+  `/api/v2/instance` presents no domain count and reads none. `user_count` and `status_count` are counted per request.
 - `GET /api/v1/instance/activity` counts from the upgrade that added it (migration `0072_activity_tracking`): earlier
   weeks read 0, and an import, a restore or a cutover conversion counts nothing (a restore keeps the counts it
   carries). A login is a UTC day with a successful authenticated API request or a signed-in `GET /settings` of the

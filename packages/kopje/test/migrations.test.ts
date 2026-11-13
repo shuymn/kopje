@@ -7341,7 +7341,7 @@ describe("0059_contact_and_activity", () => {
         ]);
         // The instance reads without throwing and names no contact (alice has no account here), at the current schema.
         await kernel(state, MIGRATIONS).upgrade();
-        const info = instanceInfo.run(sql, { now: NOW, present: { origin: "https://kopje.test" } });
+        const info = instanceInfo.run(sql, { now: NOW, storeNow: NOW, present: { origin: "https://kopje.test" } });
         expect(info).toMatchObject({ title: "Herd", contactAccount: null, contactUsername: kept ? "alice" : null });
       });
     }

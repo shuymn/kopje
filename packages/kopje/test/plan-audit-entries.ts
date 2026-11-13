@@ -1909,6 +1909,22 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the users and active counts are of every available local account, in the one scan of local_accounts they need (INSTANCE_COUNTS_SQL, src/domain/instance.ts; test/activity.test.ts asserts it)",
   },
   {
+    id: "0cad65b4d4b31af7",
+    scans: ["local_accounts: SCAN l"],
+    site: "src/domain/instance.ts#<anonymous> in instanceInfo",
+    disposition: "deliberate",
+    reason:
+      "the users and active counts are of every available local account, in the one scan of local_accounts they need (INSTANCE_COUNTS_KEPT_SQL, src/domain/instance.ts; test/other-request-rewrites.test.ts runs it beside main's)",
+  },
+  {
+    id: "2d0b6b5651861525",
+    scans: ["local_accounts: SCAN l"],
+    site: "src/domain/instance.ts#<anonymous> in instanceUsage",
+    disposition: "deliberate",
+    reason:
+      "the active count is of every available local account, in the one scan of local_accounts it needs (INSTANCE_ACTIVE_SQL, src/domain/instance.ts; test/instance-counts.test.ts asserts it)",
+  },
+  {
     id: "4b49e35df6db769a",
     scans: [
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",

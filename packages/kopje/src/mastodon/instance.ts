@@ -1,9 +1,7 @@
 import { PIN_LIMIT } from "../domain/activities";
-import type { InstanceInfo } from "../domain/instance";
 import { DEFAULT_THUMBNAIL, INSTANCE_ICONS } from "../platform/brand-assets";
 import {
   type ApiContext,
-  type ApiDeps,
   type ApiHandler,
   authorized,
   optionalTokenCredential,
@@ -56,15 +54,20 @@ const CONFIGURATION = {
   polls: { max_options: 4, max_characters_per_option: 50, min_expiration: 300, max_expiration: 2629746 },
 };
 
-async function load(c: ApiContext, deps: ApiDeps): Promise<{ info: InstanceInfo; domain: string; origin: string }> {
-  const info = await storeCall(c, deps, (s, b) => s.instanceInfo(b, { now: deps.now(), present: present(c) }));
+function placed<T extends { domain: string | null }>(
+  c: ApiContext,
+  info: T,
+): { info: T; domain: string; origin: string } {
   const url = new URL(c.req.url);
   // Before /setup fixes the domain, the request's host stands in.
   return { info, domain: info.domain ?? url.host, origin: url.origin };
 }
 
 export const instanceV1: ApiHandler = async (c, deps) => {
-  const { info, domain, origin } = await load(c, deps);
+  const { info, domain, origin } = placed(
+    c,
+    await storeCall(c, deps, (s, b) => s.instanceInfo(b, { now: deps.now(), present: present(c) })),
+  );
   return c.json({
     uri: domain,
     title: info.title ?? domain,
@@ -86,7 +89,10 @@ export const instanceV1: ApiHandler = async (c, deps) => {
 };
 
 export const instanceV2: ApiHandler = async (c, deps) => {
-  const { info, domain, origin } = await load(c, deps);
+  const { info, domain, origin } = placed(
+    c,
+    await storeCall(c, deps, (s, b) => s.instanceUsage(b, { now: deps.now(), present: present(c) })),
+  );
   return c.json({
     domain,
     title: info.title ?? domain,

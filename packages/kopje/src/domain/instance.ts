@@ -2,6 +2,7 @@ import type { Db } from "../db/sql";
 import { normalizeDomain } from "../platform/domain-name";
 import { isRemoteUsername } from "../platform/identity-bounds";
 import type { ImportAuthority } from "../platform/store-admin";
+import { DOMAIN_COUNT_STATE } from "../platform/store-flags";
 import {
   CONTACT_EMAIL_BYTES,
   INSTANCE_DESCRIPTION_LIMIT,
@@ -22,7 +23,7 @@ import { accessAdminRefusal } from "./admin-authority";
 import { availableLocalSql } from "./audience";
 import { forgetActivityAnswer } from "./instance-activity";
 import { logAction } from "./moderation-log";
-import { readOperation, writeOperation } from "./operation";
+import { readOperation, sessionOperation, writeOperation } from "./operation";
 
 // What the instance endpoints show, from instance_settings (the only settings store) and cached counters. The public
 // settings are data, not configuration (platform/access-settings.ts CONFIG_KEYS): dumped and imported, erased by a
@@ -51,17 +52,19 @@ export type InstanceSettings = {
   termsOfService: boolean;
 };
 
-export type InstanceInfo = InstanceSettings & {
-  userCount: number;
+// What /api/v2/instance presents beyond the settings.
+export type InstanceUsage = InstanceSettings & {
   // The available local accounts with an authenticated request on one of the last ACTIVE_DAYS UTC days, today
   // included (local_accounts.active_on, written by auth.ts noteActivity).
   activeMonth: number;
-  statusCount: number;
-  domainCount: number;
   // The account contact_username names, presented (an unavailable one redacted, VIS-30); null when none is set or
   // it names no account.
   contactAccount: Account | null;
 };
+
+// What /api/v1/instance presents beyond the settings. domainCount is the one the cron last kept (refreshDomainCount),
+// so it lags the remote accounts by up to one cron period.
+export type InstanceInfo = InstanceUsage & { userCount: number; statusCount: number; domainCount: number };
 
 // Mastodon's active_month counts the 28 days before today (InstancePresenter#active_user_count); Kopje keeps one day
 // per account, so its 28 days are today and the 27 before it.
@@ -123,33 +126,91 @@ export function aboutSettingsOf(db: Db): AboutSettings {
   };
 }
 
+// The peer domain count, kept in one kopje_state row (DOMAIN_COUNT_STATE: never dumped, cleared when an import begins
+// and when a reset ends, store-admin.ts) as JSON {"n": the count, "at": the refresh's ms}, written only by
+// refreshDomainCount. It serves a request only while fresh: refreshed at most DOMAIN_COUNT_FRESH_MS (two cron periods)
+// before the request and not after it, both by the Store's own clock, so whatever skips a refresh (a dump's freeze,
+// the env's MAINTENANCE, a failed round) leaves it stale by at most that. A row of any other shape reads as none.
+export const DOMAIN_COUNT_FRESH_MS = 2 * 5 * 60 * 1000;
+const DOMAIN_COUNT_SQL = "SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL";
+// The kept count when it is fresh (refreshed between ?1, DOMAIN_COUNT_FRESH_MS ago, and ?2, now): a primary-key lookup.
+const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopje_state
+	WHERE name = '${DOMAIN_COUNT_STATE}' AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 64
+	AND instr(CAST(value AS BLOB), x'00') = 0 AND json_valid(value) AND json_type(value, '$.n') = 'integer'
+	AND json_extract(value, '$.n') >= 0 AND json_type(value, '$.at') = 'integer'
+	AND json_extract(value, '$.at') BETWEEN ?1 AND ?2`;
+
 // The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
 // window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
 // text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
-// (domain IS NULL, pinned: RES-7), never over the remote accounts.
-export const INSTANCE_COUNTS_SQL = `SELECT u.users, u.active,
+// (domain IS NULL, pinned: RES-7), never over the remote accounts. The two statements differ only in the peer domain
+// count.
+const USERS_COUNT_SQL = `SELECT u.users, u.active,
 	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
-		WHERE domain IS NULL) AS statuses,
-	(SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains
-FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+		WHERE domain IS NULL) AS statuses`;
+const LOCAL_COUNT_FROM_SQL = `FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
+const KEPT_COUNT_SQL = `SELECT json_extract(value, '$.n') FROM kopje_state WHERE name = '${DOMAIN_COUNT_STATE}'`;
 
-export const instanceInfo = readOperation<{ now: number; present: Present }, InstanceInfo>((db, { now, present }) => {
-  const since = new Date(now - (ACTIVE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
-  const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
-    INSTANCE_COUNTS_SQL,
-    since,
+// The counts with the kept peer domain count, read in the same transaction as FRESH_DOMAIN_COUNT_SQL found it fresh.
+const INSTANCE_COUNTS_KEPT_SQL = `${USERS_COUNT_SQL}, (${KEPT_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
+// The counts while none is fresh (a new, upgraded, imported or reset Store before the cron's next refresh, or one whose
+// refreshes were skipped): counted over every remote account, and not stored, as a read writes nothing.
+export const INSTANCE_COUNTS_SQL = `${USERS_COUNT_SQL}, (${DOMAIN_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
+
+// What /api/v2/instance presents of the counts: the active users alone.
+const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+	FROM local_accounts l WHERE ${availableLocalSql("l")}`;
+
+// The active window's first day and today, as the two statements bind them.
+function activeWindow(now: number): [string, string] {
+  return [
+    new Date(now - (ACTIVE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10),
     new Date(now).toISOString().slice(0, 10),
-  );
+  ];
+}
+
+// /api/v1/instance: the settings and every count it presents.
+// storeNow is the Store's own time (StoreKernel.executeTimed), the clock refreshDomainCount stamps the kept count with.
+export const instanceInfo = readOperation<{ now: number; storeNow: number; present: Present }, InstanceInfo>(
+  (db, { now, storeNow, present }) => {
+    const fresh = db.first<{ n: number }>(FRESH_DOMAIN_COUNT_SQL, storeNow - DOMAIN_COUNT_FRESH_MS, storeNow);
+    const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
+      fresh === undefined ? INSTANCE_COUNTS_SQL : INSTANCE_COUNTS_KEPT_SQL,
+      ...activeWindow(now),
+    );
+    const settings = settingsOf(db);
+    return {
+      ...settings,
+      userCount: counts?.users ?? 0,
+      activeMonth: counts?.active ?? 0,
+      statusCount: counts?.statuses ?? 0,
+      domainCount: counts?.domains ?? 0,
+      contactAccount: contactAccount(db, settings, present),
+    };
+  },
+);
+
+// /api/v2/instance: the settings and the one count it presents (usage.users.active_month).
+export const instanceUsage = readOperation<{ now: number; present: Present }, InstanceUsage>((db, { now, present }) => {
   const settings = settingsOf(db);
   return {
     ...settings,
-    userCount: counts?.users ?? 0,
-    activeMonth: counts?.active ?? 0,
-    statusCount: counts?.statuses ?? 0,
-    domainCount: counts?.domains ?? 0,
+    activeMonth: db.first<{ active: number }>(INSTANCE_ACTIVE_SQL, ...activeWindow(now))?.active ?? 0,
     contactAccount: contactAccount(db, settings, present),
   };
+});
+
+// The cron's refresh of the kept peer domain count (jobs/scheduled.ts): one walk of the remote accounts and one row
+// written. A session operation, so it runs while the Store is readonly (its maintenance, a verified import before
+// publication) too; a dump's freeze refuses it, and the kept count then ages out (DOMAIN_COUNT_FRESH_MS).
+// Stamped with the Store's own time (storeNow, StoreKernel.executeTimed), the clock instanceInfo judges it by.
+export const refreshDomainCount = sessionOperation<{ storeNow: number }, void>((db, { storeNow }) => {
+  db.run(
+    `INSERT OR REPLACE INTO kopje_state (name, value) SELECT ?1, json_object('n', (${DOMAIN_COUNT_SQL}), 'at', CAST(?2 AS INTEGER))`,
+    DOMAIN_COUNT_STATE,
+    storeNow,
+  );
 });
 
 // A contact_username within its bound (read through its projection, or shaped by adminValue) split at its `@`, the
