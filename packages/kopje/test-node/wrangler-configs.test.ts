@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,16 @@ describe("shipped Kopje Worker configs", () => {
 
   it.each(SHIPPED)("%s pins the observability block", (path) => {
     expect(read(path).observability).toEqual(EXPECTED_OBSERVABILITY);
+  });
+
+  // The block docs/observability.md shows as the template's is the template's: its one code block that sets
+  // "observability", read as JSON once its trailing commas are dropped.
+  it("shows the template's observability block in docs/observability.md", () => {
+    const doc = readFileSync(new URL("../docs/observability.md", import.meta.url), "utf8");
+    const blocks = [...doc.matchAll(/^```jsonc\n("observability": [\s\S]*?)\n```$/gm)].map((m) => m[1] ?? "");
+    expect(blocks).toHaveLength(1);
+    const shown = JSON.parse(`{${blocks[0]?.replace(/,(\s*[}\]])/g, "$1")}}`) as { observability: unknown };
+    expect(shown.observability).toEqual(read("../../../deploy/wrangler.jsonc").observability);
   });
 
   // WEB-6: an instance answers only on its domain, so the template leaves the workers.dev address off.
