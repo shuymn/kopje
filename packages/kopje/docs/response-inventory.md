@@ -169,9 +169,11 @@ size (a first that uses it up ends them without reading the next), and a page of
 | Streaming events and catch-up (`stream-hub.ts`) | Unit per event; an event over 512 KiB is skipped whole         |                    |
 
 Grouped notifications admit whole groups in discovery order; for the cut page's range and cursors, readmission (at
-most four passes) and `partial_avatars` (partial accounts read from their own columns only), see
-`src/domain/notification-groups.ts` (`admitGroups`, `listGroupedNotifications`, `MAX_READMISSIONS`). A group may appear
-again on the next page with its notifications below the cursor. Unread counts and markers are not read by admission.
+most four passes), the work budget its passes share (RES-7: a page whose reads would pass it holds fewer groups,
+down to its first) and `partial_avatars` (partial accounts read from their own columns only), see
+`src/domain/notification-groups.ts` (`admitGroups`, `listGroupedNotifications`, `MAX_READMISSIONS`,
+`GROUP_ADMISSION_CANDIDATES`). A group may appear again on the next page with its notifications below the cursor.
+Unread counts and markers are not read by admission.
 
 ## Accounts
 

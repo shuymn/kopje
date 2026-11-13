@@ -10,6 +10,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- A page of grouped notifications (`GET /api/v2/notifications`) now does its work within one budget, shared by every
+  pass that admits it again after a byte cut: at most 7,200 notifications read for its groups' counts and oldest ones
+  (those the visibility rule hides included) and 81 group visits, of which 800 and one visit are kept for its first
+  group. A page whose reads would pass it holds the groups it admitted as far as what it read holds for a shorter page
+  (keyword filters still match within the requested page's text allowance), or else its first group alone, and its
+  `Link` goes on from its last group, so the next page finds the rest; a page whose reads fit answers as before. One
+  page could take seconds of the Store's time, during which every other request to the instance waited: a page of many
+  groups each favourited by hundreds of accounts, cut by its 8 MiB budget, read about 190,000 notifications, and now
+  reads at most 9,200 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), RES-7). A group's oldest notification
+  is also found with fewer reads. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
+
 - The Store admits each operation, and answers health, from the five operator records admission decides by
   (maintenance, the import, the unpublished import, the dump and the media rebuild's lease) instead of reading and
   parsing all eight. A completed dump's receipt, about 60 KB, is no longer handed to every operation, and the running

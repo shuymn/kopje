@@ -2,7 +2,14 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
-import { GROUP_WALK, listGroupedNotifications } from "../src/domain/notification-groups";
+import {
+  GROUP_ADMISSION_CANDIDATES,
+  GROUP_ADMISSION_VISITS,
+  GROUP_COUNT,
+  GROUP_WALK,
+  listGroupedNotifications,
+  VISIT_CANDIDATES,
+} from "../src/domain/notification-groups";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -16,7 +23,7 @@ import {
   ORIGIN,
   walkPages,
 } from "./budget-helpers";
-import { observedSql } from "./read-helpers";
+import { observedSql, remoteAccounts, watchedCursor } from "./read-helpers";
 import { community, mute, remoteAccount, seedStatus, type User } from "./status-helpers";
 
 // RES-3: a page of grouped notifications is within ANSWER_BYTES. Groups are admitted in discovery order, each with
@@ -374,5 +381,526 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     expect(only.body.partial_accounts.map((account) => Object.keys(account).toSorted())).toEqual([
       ["acct", "avatar", "avatar_static", "bot", "id", "locked", "url"],
     ]);
+  }, 300_000);
+});
+
+// RES-7: a page of groups does its admission within one work budget, shared by every pass and the fallback.
+
+// The most a page reads past its walk, its fallback's reserve included.
+const MOST = { candidates: GROUP_ADMISSION_CANDIDATES + VISIT_CANDIDATES, visits: GROUP_ADMISSION_VISITS + 1 };
+
+type PageInput = { limit: number; minId?: string; maxId?: string };
+
+type GroupWork = {
+  walk: number;
+  candidates: number;
+  visits: number;
+  // The group key of each visit, in order.
+  visited: string[];
+  groups: string[];
+  output: unknown;
+};
+
+// One run of the grouped list, its work counted from the statements it makes: the walk's candidates (windows of the
+// viewer's notifications), the group reads' candidates (windows of one group through its index, rows before the rule,
+// those of rejected groups and passes included) and the visits (one membersOf window each: every group here has a
+// key); its groups, by their most recent notification, and its whole output, cursors included.
+async function groupWork(
+  h: ApiHarness,
+  user: User,
+  page: PageInput,
+  expandAccounts: "full" | "partial_avatars",
+): Promise<GroupWork> {
+  const tokenHash = await sha256Hex(user.token);
+  return runInDurableObject(h.store, (_instance, state) => {
+    const work = { walk: 0, candidates: 0, visits: 0, visited: [] as string[] };
+    const window = "SELECT CAST(n.id AS TEXT) AS id FROM main.notifications n INDEXED BY ";
+    const real = state.storage.sql;
+    const counting = {
+      exec: (query: string, ...params: SqlStorageValue[]) =>
+        watchedCursor(
+          real.exec(query, ...params),
+          () => {},
+          (rows) => {
+            if (!query.includes(window)) {
+              return;
+            }
+            if (!query.includes(`${window}notifications_group`)) {
+              work.walk += rows.length;
+              return;
+            }
+            work.candidates += rows.length;
+            if (query.includes("ORDER BY n.id DESC")) {
+              work.visits += 1;
+              work.visited.push(params[2] as string);
+            }
+          },
+        ),
+    } as unknown as SqlStorage;
+    const result = listGroupedNotifications.run(counting, {
+      credential: { tokenHash, scope: "read:notifications", now: NOW },
+      page,
+      types: [],
+      excludeTypes: [],
+      groupedTypes: null,
+      includeFiltered: false,
+      expandAccounts,
+      present: { origin: ORIGIN },
+    } as never) as { value: { notification_groups: Group[] } };
+    const groups = result.value.notification_groups.map((group) => String(group.most_recent_notification_id));
+    return { ...work, groups, output: result.value };
+  });
+}
+
+// Within the walk's bound and the page's budget.
+function expectWithinBudget(work: GroupWork) {
+  expect(work.walk).toBeLessThanOrEqual(GROUP_WALK);
+  expect(work.candidates).toBeLessThanOrEqual(MOST.candidates);
+  expect(work.visits).toBeLessThanOrEqual(MOST.visits);
+}
+
+// A page cut by the budget to `cut.groups.length` groups answers what a page of that limit answers, cursors included,
+// and that page is within the budget without a cut: one pass that visits each of its groups once. The filter text
+// allowance stays the requested page's, so this holds where no filtered text is cut by it (the fixtures here; the
+// filter case is its own test).
+async function expectAsLimit(
+  h: ApiHarness,
+  user: User,
+  page: PageInput,
+  expandAccounts: "full" | "partial_avatars",
+  cut: GroupWork,
+) {
+  const limited = await groupWork(h, user, { ...page, limit: cut.groups.length }, expandAccounts);
+  expect(limited.visits).toBe(cut.groups.length);
+  expect(cut.output).toEqual(limited.output);
+}
+
+// The id of the viewer's newest notification.
+async function newestId(h: ApiHarness): Promise<string> {
+  const [row] = await sql<{ id: string }>(h.store, "SELECT CAST(max(id) AS TEXT) AS id FROM notifications");
+  return row!.id;
+}
+
+// `count` remote accounts of one domain (remoteAccounts), the only accounts of it; the domain.
+async function manyAccounts(h: ApiHarness, count: number): Promise<string> {
+  const base = 510_000_000_000_000_000n;
+  await remoteAccounts(h, 1, count, base);
+  const [row] = await sql<{ domain: string }>(h.store, "SELECT domain FROM accounts WHERE id = ?", String(base));
+  return row!.domain;
+}
+
+// The viewer mutes every account of `domain`, which hides their notifications (R15).
+async function muteAll(h: ApiHarness, viewer: User, domain: string) {
+  await sql(
+    h.store,
+    "INSERT INTO mutes (account_id, target_account_id) SELECT ?, id FROM accounts WHERE domain = ?",
+    viewer.id,
+    domain,
+  );
+}
+
+// For each of `statuses`, favourites from the accounts of `domain`, `count` of them from `offset` in id order, in the
+// status's group.
+async function favouritesFrom(
+  h: ApiHarness,
+  viewer: User,
+  domain: string,
+  statuses: readonly string[],
+  count: number,
+  offset = 0,
+) {
+  for (const status of statuses) {
+    await sql(
+      h.store,
+      `INSERT INTO notifications (account_id, type, from_account_id, status_id, created_at, group_key)
+			SELECT ?1, 'favourite', id, ?2, ?3, ?4 FROM accounts WHERE domain = ?5 ORDER BY id LIMIT ?6 OFFSET ?7`,
+      viewer.id,
+      status,
+      new Date(NOW).toISOString(),
+      `favourite-${status}-1`,
+      domain,
+      count,
+      offset,
+    );
+  }
+}
+
+async function smallStatuses(h: ApiHarness, viewer: User, count: number, content?: string): Promise<string[]> {
+  const statuses: string[] = [];
+  for (let i = 0; i < count; i++) {
+    statuses.push(
+      await seedStatus(h.store, {
+        accountId: viewer.id,
+        visibility: "public",
+        ...(content === undefined ? {} : { content }),
+      }),
+    );
+  }
+  return statuses;
+}
+
+// `count` favourite groups of small statuses of the viewer's, each of `members` favourites from many accounts (muted
+// with `hidden`, R15), older than every group's newest, which is one from a fan, in the groups' order: walked either
+// way, the newest are the groups' discovery positions, and a group reads its members and from a page's lower end up its
+// newest alone. The statuses carry `content` when given. The newest ones' ids, and the id just below them.
+async function headedGroups(
+  h: ApiHarness,
+  viewer: User,
+  count: number,
+  members: number,
+  hidden: boolean,
+  content?: string,
+) {
+  const domain = await manyAccounts(h, members);
+  if (hidden) {
+    await muteAll(h, viewer, domain);
+  }
+  const statuses = await smallStatuses(h, viewer, count, content);
+  await favouritesFrom(h, viewer, domain, statuses, members);
+  const below = await newestId(h);
+  const fan = await remoteAccount(h.store, "fan");
+  const heads: string[] = [];
+  for (const status of statuses) {
+    heads.push(await favourite(h, viewer.id, fan, status));
+  }
+  return { heads, below };
+}
+
+// The pass's groups when the budget runs out, as the pre-check of each read allows: a group's GROUP_COUNT window is
+// read while it still fits, and each visit reads `perVisit`.
+function admissible(perVisit: number): number {
+  return Math.floor((GROUP_ADMISSION_CANDIDATES - GROUP_COUNT) / perVisit) + 1;
+}
+
+describe("grouped notifications within one work budget (RES-7)", () => {
+  it("answers whole a page whose reads fit the budget", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Forty groups of 150 favourites: 6,040 candidates in all, read 400 at a time.
+    const { heads, below } = await headedGroups(h, alice, 40, 149, false);
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      for (const page of [{ limit: 40 }, { limit: 40, minId: below }]) {
+        const work = await groupWork(h, alice, page, expandAccounts);
+        expectWithinBudget(work);
+        expect([work.visits, work.candidates, work.groups.length]).toEqual([40, 40 * 151, heads.length]);
+      }
+    }
+  }, 300_000);
+
+  it.each([
+    ["150 favourites", 149, false],
+    ["GROUP_COUNT, all but the newest hidden", GROUP_COUNT - 1, true],
+  ] as const)(
+    "keeps the groups a cut pass admitted when its reads hold for them, in both directions (80 groups of %s)",
+    async (_name, members, hidden) => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const { heads, below } = await headedGroups(h, alice, 80, members, hidden);
+      const kept = admissible(members + 2);
+      expect(kept).toBeLessThan(heads.length);
+      for (const expandAccounts of ["full", "partial_avatars"] as const) {
+        for (const [page, expected] of [
+          [{ limit: 80 }, heads.slice(-kept).toReversed()],
+          [{ limit: 80, minId: below }, heads.slice(0, kept).toReversed()],
+        ] as const) {
+          const work = await groupWork(h, alice, page, expandAccounts);
+          expectWithinBudget(work);
+          // The groups of the pass, read once: nothing is read again for the shorter page.
+          expect([work.visits, work.candidates, work.groups]).toEqual([kept, kept * (members + 2), expected]);
+          await expectAsLimit(h, alice, page, expandAccounts, work);
+        }
+      }
+    },
+    300_000,
+  );
+
+  it("falls back to the first group when the reads do not hold for a shorter page, in both directions", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Twenty groups of GROUP_COUNT - 2 hidden favourites and, in the groups' order, two of each from two fans, older
+    // then newer: on a shorter page, newest first, the last group's oldest lies below the page; oldest first, its
+    // newer favourite lies above it.
+    const domain = await manyAccounts(h, GROUP_COUNT - 2);
+    await muteAll(h, alice, domain);
+    const statuses = await smallStatuses(h, alice, 20);
+    await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT - 2);
+    const below = await newestId(h);
+    const [older, newer] = [await remoteAccount(h.store, "older"), await remoteAccount(h.store, "newer")];
+    const pairs: [string, string][] = [];
+    for (const status of statuses) {
+      pairs.push([await favourite(h, alice.id, older, status), await favourite(h, alice.id, newer, status)]);
+    }
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      for (const [page, first] of [
+        [{ limit: 20 }, pairs.at(-1)![1]],
+        [{ limit: 20, minId: below }, pairs[0]![0]],
+      ] as const) {
+        const work = await groupWork(h, alice, page, expandAccounts);
+        expectWithinBudget(work);
+        // The pass's visits, then the fallback's of the first group.
+        expect(work.visits).toBeGreaterThan(1);
+        expect(work.visited.at(-1)).toBe(work.visited[0]);
+        expect(work.groups).toEqual([first]);
+        await expectAsLimit(h, alice, page, expandAccounts, work);
+      }
+    }
+  }, 300_000);
+
+  it("matches the kept statuses' filters within the requested page's text allowance", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Eighty groups as the 400 x 80 case, of statuses of 6,000 characters with "early" near their start and "needle"
+    // near 5,500: over eighty statuses the shared allowance (MAX_FILTER_REQUEST_TEXT) matches each on its first 5,000,
+    // over fifteen on the whole.
+    const text = `early ${"x".repeat(5_500)} needle ${"y".repeat(500)}`;
+    const { heads } = await headedGroups(h, alice, 80, GROUP_COUNT - 1, true, `<p>${text}</p>`);
+    // A filter reports its leftmost match, so each keyword has a filter of its own.
+    for (const keyword of ["early", "needle"]) {
+      await h.request("/api/v2/filters", {
+        method: "POST",
+        headers: { authorization: `Bearer ${alice.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ title: keyword, context: ["notifications"], keywords_attributes: [{ keyword }] }),
+      });
+    }
+    type Filtered = { statuses: { filtered?: { keyword_matches: string[] | null }[] }[] };
+    const matches = (output: unknown) =>
+      (output as Filtered).statuses.map((status) =>
+        (status.filtered ?? []).flatMap((each) => each.keyword_matches ?? []),
+      );
+    const kept = admissible(GROUP_COUNT + 1);
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      const work = await groupWork(h, alice, { limit: 80 }, expandAccounts);
+      expect(work.groups).toEqual(heads.slice(-kept).toReversed());
+      // The kept page matches as the requested page of eighty would: within its allowance, "early" alone.
+      expect(matches(work.output)).toEqual(Array.from({ length: kept }, () => ["early"]));
+      // A page asked for with that limit has the larger allowance of its own.
+      const limited = await groupWork(h, alice, { limit: kept }, expandAccounts);
+      expect(matches(limited.output)).toEqual(Array.from({ length: kept }, () => ["early", "needle"]));
+    }
+  }, 300_000);
+
+  it("keeps the accounts as the kept groups alone show them, when a dropped group showed one whole", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Eighty groups as the 400 x 80 case. Newest first, the pass admits fifteen. The fifteenth (G) is found by X's
+    // favourite, which it shows whole; an older shown favourite of it lies within the page, so G's oldest moves on a
+    // page that ends at G and G is dropped. The first group samples X after its newest (partial with partial_avatars),
+    // by a favourite above the last group kept.
+    const domain = await manyAccounts(h, GROUP_COUNT - 1);
+    await muteAll(h, alice, domain);
+    const statuses = await smallStatuses(h, alice, 80);
+    await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT - 1);
+    const [fan, x, y] = [
+      await remoteAccount(h.store, "fan"),
+      await remoteAccount(h.store, "x"),
+      await remoteAccount(h.store, "y"),
+    ];
+    for (const [i, status] of statuses.entries()) {
+      if (i === 65) {
+        await favourite(h, alice.id, y, status);
+        await favourite(h, alice.id, x, status);
+      } else {
+        await favourite(h, alice.id, fan, status);
+      }
+      if (i === 66) {
+        await favourite(h, alice.id, x, statuses[79]!);
+      }
+    }
+    const work = await groupWork(h, alice, { limit: 80 }, "partial_avatars");
+    expectWithinBudget(work);
+    // Fifteen admitted, fourteen kept.
+    expect([work.visits, work.groups.length]).toEqual([15, 14]);
+    const output = work.output as Grouped & { partial_accounts: { id: string }[] };
+    expect(output.notification_groups[0]!.sample_account_ids).toContain(x);
+    expect(output.partial_accounts.map((account) => account.id)).toContain(x);
+    expect(output.accounts.map((account) => account.id)).not.toContain(x);
+    await expectAsLimit(h, alice, { limit: 80 }, "partial_avatars", work);
+  }, 300_000);
+
+  it("keeps no group, oldest first, whose members were read from a hidden candidate above the shorter page", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Eighty groups as the 400 x 80 case, but group 5 has a shown favourite below its GROUP_COUNT - 2 hidden ones and,
+    // above the fifteenth group's newest, one more hidden one: over the walk's range its window of GROUP_COUNT holds
+    // that hidden one and leaves the shown one out (count 1); over a page that ends below it, it holds the shown one
+    // (count 2). Groups 0 to 4 are kept.
+    const domain = await manyAccounts(h, GROUP_COUNT - 1);
+    await muteAll(h, alice, domain);
+    const statuses = await smallStatuses(h, alice, 80);
+    const old = await remoteAccount(h.store, "old");
+    await favourite(h, alice.id, old, statuses[5]!);
+    await favouritesFrom(h, alice, domain, statuses.slice(0, 5), GROUP_COUNT - 1);
+    await favouritesFrom(h, alice, domain, [statuses[5]!], GROUP_COUNT - 2);
+    await favouritesFrom(h, alice, domain, statuses.slice(6), GROUP_COUNT - 1);
+    const below = await newestId(h);
+    const fan = await remoteAccount(h.store, "fan");
+    const heads: string[] = [];
+    for (const [i, status] of statuses.entries()) {
+      heads.push(await favourite(h, alice.id, fan, status));
+      if (i === 14) {
+        await favouritesFrom(h, alice, domain, [statuses[5]!], 1, GROUP_COUNT - 2);
+      }
+    }
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      const page = { limit: 80, minId: below };
+      const work = await groupWork(h, alice, page, expandAccounts);
+      expectWithinBudget(work);
+      await expectAsLimit(h, alice, page, expandAccounts, work);
+      expect(work.groups).toEqual(heads.slice(0, 5).toReversed());
+    }
+  }, 300_000);
+
+  it("keeps no group whose oldest the pass did not find shown, newest first", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Twenty groups as headedGroups makes them, all but the newest of each hidden; the newest group G also has
+    // GROUP_COUNT hidden favourites right above the oldest group's newest and a shown one just below its own newest.
+    // From the page's lower end G's GROUP_COUNT candidates are all hidden, so its oldest stands at its newest; on a
+    // shorter page, from a higher lower end, it is the shown one.
+    const domain = await manyAccounts(h, 2 * GROUP_COUNT);
+    await muteAll(h, alice, domain);
+    const statuses = await smallStatuses(h, alice, 20);
+    await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT - 1);
+    const [fan, other] = [await remoteAccount(h.store, "fan"), await remoteAccount(h.store, "other")];
+    const heads = [await favourite(h, alice.id, fan, statuses[0]!)];
+    await favouritesFrom(h, alice, domain, statuses.slice(-1), GROUP_COUNT, GROUP_COUNT - 1);
+    for (const status of statuses.slice(1, -1)) {
+      heads.push(await favourite(h, alice.id, fan, status));
+    }
+    await favourite(h, alice.id, other, statuses.at(-1)!);
+    heads.push(await favourite(h, alice.id, fan, statuses.at(-1)!));
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      const work = await groupWork(h, alice, { limit: 20 }, expandAccounts);
+      expectWithinBudget(work);
+      expect(work.visited.at(-1)).toBe(work.visited[0]);
+      expect(work.groups).toEqual([heads.at(-1)]);
+      await expectAsLimit(h, alice, { limit: 20 }, expandAccounts, work);
+    }
+  }, 300_000);
+
+  it("walks every group once by its Link when the budget cuts its pages, in both directions", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const { heads, below } = await headedGroups(h, alice, 80, GROUP_COUNT - 1, true);
+    const kept = admissible(GROUP_COUNT + 1);
+    await sql(
+      h.store,
+      "INSERT INTO markers (account_id, timeline, last_read_id, updated_at) VALUES (?, 'notifications', ?, ?)",
+      alice.id,
+      below,
+      new Date(NOW).toISOString(),
+    );
+    const unread = await answer<{ count: number }>(h, "/api/v2/notifications/unread_count", alice.token);
+    const marked = await markers(h, alice);
+    const ids = (body: Grouped) => body.notification_groups.map((group) => String(group.most_recent_notification_id));
+    const path = "/api/v2/notifications?limit=80";
+    const older = await walkPages<Grouped>(h, path, "next", alice.token, ids, 20);
+    expect(older.ids).toEqual(heads.toReversed());
+    expect(older.pages[0]).toMatchObject({ shown: heads.slice(-kept).toReversed(), cursor: heads.at(-kept) });
+    const newer = await walkPages<Grouped>(h, `${path}&min_id=${below}`, "prev", alice.token, ids, 20);
+    expect(newer.ids).toEqual(heads);
+    expect(newer.pages[0]).toMatchObject({ shown: heads.slice(0, kept).toReversed(), cursor: heads[kept - 1] });
+    // The unread count is of every group above the marker, not of a page, and reading pages moves no marker.
+    expect(unread.body.count).toBe(heads.length);
+    expect(await answer(h, "/api/v2/notifications/unread_count", alice.token)).toMatchObject({ body: unread.body });
+    expect(await markers(h, alice)).toEqual(marked);
+  }, 300_000);
+
+  it("charges the passes a byte cut repeats to the same budget", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const fan = await remoteAccount(h.store, "fan");
+    const domain = await manyAccounts(h, 2 * GROUP_COUNT);
+    // The measured worst case's shape, scaled: ten groups of big statuses (about 0.97 MB each, eight fit an answer),
+    // each with GROUP_COUNT favourites below min_id, one from a fan above it, in the groups' order, and GROUP_COUNT
+    // more above those. Walked up from min_id, the first pass is cut by bytes at the ninth group, and its eight are
+    // admitted again over their own range until the budget runs out.
+    const statuses: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      statuses.push(await bigStatus(h, alice.id, NOW - (20 - i) * 60_000));
+    }
+    await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT);
+    const below = await newestId(h);
+    const heads: string[] = [];
+    for (const status of statuses) {
+      heads.push(await favourite(h, alice.id, fan, status));
+    }
+    await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT, GROUP_COUNT);
+    const second = `favourite-${statuses[1]}-1`;
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      const page = { limit: heads.length, minId: below };
+      const work = await groupWork(h, alice, page, expandAccounts);
+      expectWithinBudget(work);
+      // The first pass visits nine groups; the second visits the second group again.
+      expect(work.visited.slice(0, 9)).toEqual(statuses.slice(0, 9).map((status) => `favourite-${status}-1`));
+      expect(work.visited.filter((key) => key === second)).toHaveLength(2);
+      expect(work.groups).toEqual(heads.slice(0, work.groups.length).toReversed());
+      expect(work.groups.length).toBeLessThan(8);
+      await expectAsLimit(h, alice, page, expandAccounts, work);
+    }
+  }, 300_000);
+
+  it("visits at most GROUP_ADMISSION_VISITS groups in its passes", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const fan = await remoteAccount(h.store, "fan");
+    // Sixty groups of one favourite each, of statuses of about 0.16 MB: about fifty fit an answer, and the groups
+    // kept fit again, so two passes would visit about a hundred groups.
+    const ids: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      ids.push(await favourite(h, alice.id, fan, await bigStatus(h, alice.id, NOW - (100 - i) * 60_000, {}, 6)));
+    }
+    for (const expandAccounts of ["full", "partial_avatars"] as const) {
+      const work = await groupWork(h, alice, { limit: 80 }, expandAccounts);
+      expectWithinBudget(work);
+      expect(work.visits).toBe(GROUP_ADMISSION_VISITS);
+      expect(work.groups).toEqual(ids.slice(-work.groups.length).toReversed());
+      await expectAsLimit(h, alice, { limit: 80 }, expandAccounts, work);
+    }
+  }, 300_000);
+
+  it("finds a group's oldest as one window of GROUP_COUNT candidates does, across its windows and at large ids", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const domain = await manyAccounts(h, GROUP_COUNT);
+    await muteAll(h, alice, domain);
+    const [z, older, newer] = [
+      await remoteAccount(h.store, "z"),
+      await remoteAccount(h.store, "older"),
+      await remoteAccount(h.store, "newer"),
+    ];
+    // A group Z, then `run` hidden favourites of a group G, an older and a newer shown one: a page of two from G's newer
+    // one down reads G's oldest from Z up, the older one if it is among the GROUP_COUNT candidates there, else its
+    // newer one, which stands for it.
+    const oldestAfter = async (run: number) => {
+      await favourite(h, alice.id, z, await seedStatus(h.store, { accountId: alice.id, visibility: "public" }));
+      const [status] = await smallStatuses(h, alice, 1);
+      await favouritesFrom(h, alice, domain, [status!], run);
+      const a = await favourite(h, alice.id, older, status!);
+      const b = await favourite(h, alice.id, newer, status!);
+      const page = await answer<Grouped>(h, `/api/v2/notifications?limit=2&max_id=${BigInt(b) + 1n}`, alice.token);
+      const group = page.body.notification_groups.find((each) => each.group_key === `favourite-${status}-1`);
+      return [run, group?.page_min_id, run < GROUP_COUNT ? a : b];
+    };
+    const runs = [0, 7, 8, 9, 15, 16, 17, 31, 32, 33, GROUP_COUNT - 1, GROUP_COUNT];
+    for (const run of runs) {
+      const [, found, expected] = await oldestAfter(run);
+      expect([run, found]).toEqual([run, expected]);
+    }
+    // Ids past 2^53, which a double would round.
+    await sql(
+      h.store,
+      `INSERT INTO notifications (id, account_id, type, from_account_id, created_at)
+			VALUES (CAST(? AS INTEGER), ?, 'follow', ?, ?)`,
+      "9007199254740993",
+      alice.id,
+      z,
+      new Date(NOW).toISOString(),
+    );
+    for (const run of [8, GROUP_COUNT - 1, GROUP_COUNT]) {
+      const [, found, expected] = await oldestAfter(run);
+      expect(BigInt(String(expected))).toBeGreaterThan(9_007_199_254_740_993n);
+      expect([run, found]).toEqual([run, expected]);
+    }
   }, 300_000);
 });
