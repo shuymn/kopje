@@ -1,6 +1,8 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { type StreamPosition, streamAdvance, streamUnit, streamUnitAdvance } from "../../src/domain/streaming";
+import { StoreKernel, type StoreOperation } from "../../src/platform/store-kernel";
 import { sha256Hex } from "../../src/security/tokens";
 import { STREAM_LIMITS } from "../../src/stream-hub";
 import { type ApiHarness, form, login, sql } from "../api-helpers";
@@ -488,6 +490,84 @@ describe("hibernation and turns", () => {
     expect(turns - before).toBeGreaterThanOrEqual(Math.ceil(count / 64));
     // Pruned behind the position, but for the newest row, which keeps ids from being given twice.
     expect(await sql(h.store, "SELECT count(*) AS n FROM stream_events")).toEqual([{ n: 1 }]);
+  });
+
+  it("makes each unit and moves the position past it in one Store execution", async () => {
+    const h = await community(["alice"]);
+    const inbox = await subscribed(h, h.users.alice.token, "user:notification");
+    const count = 3;
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('7%017d', i), 'https://few.example/users/u' || i, 'u' || i, 'few.example' FROM n`,
+      count,
+    );
+    await drained(h);
+    const execute = vi.spyOn(StoreKernel.prototype, "execute");
+    await sql(
+      h.store,
+      "INSERT INTO notifications (account_id, type, from_account_id) SELECT ?, 'follow', id FROM accounts WHERE domain = 'few.example' ORDER BY id",
+      h.users.alice.id,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, inbox);
+    expect(notifications(inbox.rest(), "user:notification")).toHaveLength(count);
+    const runs = (operation: unknown) => execute.mock.calls.filter(([, run]) => run === operation).length;
+    expect(runs(streamUnitAdvance)).toBe(count);
+    expect(runs(streamUnit)).toBe(0);
+    expect(runs(streamAdvance)).toBe(0);
+  });
+
+  it("sends nothing for a unit when another turn moved the position past it first", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const inbox = await subscribed(h, h.users.alice.token, "user:notification");
+    // The turn is held at its unit's execution, before the unit's transaction runs.
+    let reached: (input: { from: StreamPosition; to: StreamPosition }) => void = () => {};
+    const held = new Promise<{ from: StreamPosition; to: StreamPosition }>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const outcomes: unknown[] = [];
+    // oxlint-disable-next-line typescript/unbound-method -- called on the kernel the hub called it on
+    const execute = StoreKernel.prototype.execute;
+    vi.spyOn(StoreKernel.prototype, "execute").mockImplementation(async function (
+      this: StoreKernel,
+      build: string,
+      operation: StoreOperation<unknown, unknown>,
+      input: unknown,
+    ) {
+      if (operation !== streamUnitAdvance || outcomes.length > 0) {
+        return execute.call(this, build, operation, input);
+      }
+      reached(input as { from: StreamPosition; to: StreamPosition });
+      await released;
+      const output = await execute.call(this, build, operation, input);
+      outcomes.push(output);
+      return output;
+    });
+    try {
+      await follow(h, h.users.bob, h.users.alice.id);
+      const { from, to } = await held;
+      // Another turn moves the position past the held unit.
+      const moved = await runInDurableObject(h.store, (_instance, state) =>
+        streamAdvance.run(state.storage.sql, { from, to }),
+      );
+      expect(moved).toBe(true);
+    } finally {
+      release();
+    }
+    await drained(h, inbox);
+    // The held unit's compare-and-set failed, and nothing was sent for it.
+    expect(outcomes).toEqual([null]);
+    expect(inbox.rest()).toEqual([]);
+    // The next unit is sent.
+    await follow(h, h.users.carol, h.users.alice.id);
+    await drained(h, inbox);
+    expect(notifications(inbox.rest(), "user:notification")).toMatchObject([{ type: "follow" }]);
   });
 });
 

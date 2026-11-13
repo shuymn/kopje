@@ -62,7 +62,8 @@ import { homeStatus, listStatus, ownListStatus, type PublicFeed, publicStatus, t
 //
 // A unit is one subject for one viewer. Units go in a stable order (event id, then viewer account id ascending, then
 // the subject within the viewer's units: 0 for the status, then a delete's captured boosts by id), and the position
-// past a unit is persisted by compare-and-set before its messages are sent, so none is sent twice (streamAdvance).
+// past a unit is persisted by compare-and-set, in the transaction that makes the unit, before its messages are sent, so
+// none is sent twice (streamUnitAdvance).
 // Delivery is at most once and live: REST is authoritative.
 
 // The stream names Mastodon's streaming server knows (streaming/index.js channelNameToIds), all of them served.
@@ -424,19 +425,33 @@ const BOTH: StreamGrant = { statuses: true, notifications: true };
 // is sent when no token is valid. Each token is a check, and so is each reference read: home, the mention and one
 // for each list and feed (the account's keys, at most 16 in all), and the mention filter of the feeds, or a delete's
 // tombstone (UNIT_WORST in stream-hub.ts).
-export const streamUnit = readOperation<
-  {
-    kind: string;
-    subject: string;
-    accountId: string;
-    tokenHashes: readonly string[];
-    lists?: readonly string[];
-    feeds?: readonly string[];
-    eventId?: string;
-    now: number;
-  },
-  StreamUnit
->((db, { kind, subject, accountId, tokenHashes, lists = [], feeds = [], eventId, now }) => {
+export const streamUnit = readOperation(unitOf);
+
+// A unit (streamUnit), then the position moved from `from` to `to` (streamAdvance), in one transaction: the unit, or
+// null when another turn moved the position first.
+export const streamUnitAdvance = sessionOperation<
+  UnitInput & { from: StreamPosition; to: StreamPosition },
+  StreamUnit | null
+>((db, { from, to, ...input }) => {
+  const made = unitOf(db, input);
+  return advance(db, from, to) ? made : null;
+});
+
+type UnitInput = {
+  kind: string;
+  subject: string;
+  accountId: string;
+  tokenHashes: readonly string[];
+  lists?: readonly string[];
+  feeds?: readonly string[];
+  eventId?: string;
+  now: number;
+};
+
+function unitOf(
+  db: Db,
+  { kind, subject, accountId, tokenHashes, lists = [], feeds = [], eventId, now }: UnitInput,
+): StreamUnit {
   const { scopes, context } = authorizeStream(db, accountId, tokenHashes, now);
   const grants = Object.fromEntries([...scopes].map(([hash, granted]) => [hash, streamGrant(granted)]));
   const none = { grants, event: "", payload: null, streams: [], checks: 0 };
@@ -574,7 +589,7 @@ export const streamUnit = readOperation<
     default:
       return none;
   }
-});
+}
 
 function listedIn(db: Db, viewer: UserContext, lists: readonly string[], statusId: string) {
   return lists.flatMap((id) => {
@@ -809,7 +824,11 @@ function captureRow(lists: string[], boosts: [string, string[]][]): { lists: str
 
 // Moves the position from `from` to `to` if it is still at `from`: false when another turn moved it first.
 export const streamAdvance = sessionOperation<{ from: StreamPosition; to: StreamPosition }, boolean>(
-  (db, { from, to }) =>
+  (db, { from, to }) => advance(db, from, to),
+);
+
+function advance(db: Db, from: StreamPosition, to: StreamPosition): boolean {
+  return (
     db.run(
       `UPDATE stream_cursor SET event_id = CAST(?4 AS INTEGER), subject = CAST(?5 AS INTEGER), account_id = ?6
 			WHERE id = 1 AND event_id = CAST(?1 AS INTEGER) AND subject = CAST(?2 AS INTEGER) AND account_id IS ?3`,
@@ -819,8 +838,9 @@ export const streamAdvance = sessionOperation<{ from: StreamPosition; to: Stream
       to.event,
       to.subject,
       to.account,
-    ) === 1,
-);
+    ) === 1
+  );
+}
 
 // Moves the position from `from` into the conversation event `eventId` of `owner`, before its first unit, if it is
 // still at `from`, and fixes the event's ceiling: the owner's mark now. The same write makes the trigger
@@ -990,6 +1010,7 @@ export const STREAM_OPERATIONS: ReadonlySet<StoreOperation<never, unknown>> = ne
   streamPrune,
   streamRegister,
   streamReconcile,
+  streamUnitAdvance,
 ]);
 
 function insertKeys(db: Db, accountId: string, keys: StreamKeys): void {
