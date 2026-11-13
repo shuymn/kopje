@@ -13,6 +13,7 @@ import { type CredentialAccount, credentialAccount, type Present } from "./accou
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
+import { setState, state } from "./kopje-state";
 import { mediaDeleteOperation } from "./operation";
 import { type MediaAttachment, type MediaRow, presentMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
@@ -88,14 +89,6 @@ export const TRANSFORMS_PER_EMOJI = 2;
 const ATTEMPTS = "media_attempts:";
 const TRANSFORMS = "images_transforms:";
 const ACCOUNT_TRANSFORMS = "images_account_transforms:";
-
-function state(db: Db, name: string): string | undefined {
-  return db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name)?.value;
-}
-
-function setState(db: Db, name: string, value: string): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, value);
-}
 
 // At most this many uploads are swept per run; each is three R2 keys.
 export const SWEEP_BATCH = 100;

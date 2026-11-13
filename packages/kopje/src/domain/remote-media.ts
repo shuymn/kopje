@@ -44,6 +44,7 @@ import {
 } from "./audience";
 import { isIntegerKey } from "./ids";
 import { hostCovered, hostMediaRejected } from "./instance-domain-blocks";
+import { setState, state } from "./kopje-state";
 import { writeOperation } from "./operation";
 
 // The cache of remote media (MEDIA-7 in docs/threat-model.md; migration 0077_remote_media): the Store's part, the only
@@ -150,14 +151,6 @@ const STATE = {
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
 const isTimeOrNull = (n: unknown): n is number | null => n === null || isTime(n);
-
-function state(db: Db, name: string): string | undefined {
-  return db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name)?.value;
-}
-
-function setState(db: Db, name: string, value: string): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, value);
-}
 
 // An array input as given over RPC (a caller may send anything), or none.
 function listOf<T>(value: readonly T[]): readonly T[] {
