@@ -381,20 +381,23 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
     quoted: status,
   });
 
-  it("passes for Mastodon's and Kopje's status and stamp Deletes, under the context Mastodon 4.5.21 forwarded", async () => {
+  it("passes for Mastodon's and Kopje's status Deletes, under the context Mastodon 4.5.21 forwarded", async () => {
     const { bob, status } = await world();
-    const stamp = STAMP(bob, status);
     const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
     const kopje = (signing as { activity: Json }).activity;
-    const cases: [string, Json, string][] = [
-      ["Mastodon's status", await mastodonSigned(mastodonDelete(bob, status), bob), status],
-      ["Mastodon's stamp", await mastodonSigned(mastodonStampDelete(bob, stamp), bob), stamp.uri],
-      ["Kopje's status", await fedifySigned(kopje, bob), status],
-      ["Kopje's stamp", await fedifySigned(stampDeleteActivity(bob.uri, stamp.uri), bob), stamp.uri],
-    ];
-    for (const [name, signed, object] of cases) {
-      expect(await proves(mastodonForwarded(signed), bob, object), name).toBe(true);
-    }
+    expect(await proves(mastodonForwarded(await mastodonSigned(mastodonDelete(bob, status), bob)), bob, status)).toBe(
+      true,
+    );
+    expect(await proves(mastodonForwarded(await fedifySigned(kopje, bob)), bob, status)).toBe(true);
+  });
+
+  it("refuses a stamp's Delete in the forwarded form, which Mastodon sends without its signature", async () => {
+    const { bob, status } = await world();
+    const stamp = STAMP(bob, status);
+    const mastodon = await mastodonSigned(mastodonStampDelete(bob, stamp), bob);
+    await refused(mastodonForwarded(mastodon), bob, stamp.uri, "Mastodon's stamp");
+    const kopje = await fedifySigned(stampDeleteActivity(bob.uri, stamp.uri), bob);
+    await refused(mastodonForwarded(kopje), bob, stamp.uri, "Kopje's stamp");
   });
 
   it("passes with any subset of the allowed terms, the author's own alone included", async () => {

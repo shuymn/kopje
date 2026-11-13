@@ -152,22 +152,23 @@ against their own instance. TLS is assumed between all parties.
   actor's current document embeds (that document fetched anew in the request, never from a cache, so a key the actor
   has since replaced proves nothing; no other key is ever loaded). A proof is considered only on a body in one of the
   sender profiles (`PROFILES` in `src/federation/author-proof.ts`): Mastodon 4.5's status and stamp `Delete`, Kopje's
-  status and stamp `Delete`, each of those four as a Mastodon forwards it, holding a boost or quote of the status or a
-  quote with the stamp (the forwarded profiles: Mastodon compacts the body under its `full_context` and forwards it
-  with that `@context`, so the `@context` is activitystreams, security/v1 and one object whose every term is in
-  `MASTODON_CONTEXT_TERMS` with a definition some release gave it, the union of `full_context` in
-  `app/helpers/context_helper.rb` at every 4.4 and 4.5 release tag, v4.4.0 to v4.5.21, read from each tag's source,
-  none of whose terms is or aliases one the decision reads), and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof
-  (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to`
-  and `cc`, and a single proof). In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that
-  form), every URL in it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`,
-  the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's
-  shape, a proof's own `@context` the body's), so the body's JSON-LD meaning is its literal JSON: no inline term can
-  nest, drop, alias or redefine a key the decision reads, and no context resolves differently between verification and
-  parsing. Contexts are served from Fedify's preloaded set alone, for the verification and every parse. The proven
-  `Delete` has exactly the literal id, one actor (the author) and one object (the literal object's id). Any other form
-  is answered as a proof that does not verify: a relayed `Delete` from Misskey, or from a Mastodon release whose
-  context differs, is refused, and an author's own `Delete` in such a form applies but forwards nothing.
+  status and stamp `Delete`, Mastodon's and Kopje's status `Delete` as a Mastodon holding a boost or quote of the
+  status forwards it (the forwarded profiles, none for a stamp's `Delete`, which Mastodon 4.5.21 forwards without its
+  signature. Mastodon compacts the body under its `full_context` and forwards it with that `@context`, so the
+  `@context` is activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a
+  definition some release gave it, the union of `full_context` in `app/helpers/context_helper.rb` at every 4.4 and 4.5
+  release tag, v4.4.0 to v4.5.21, read from each tag's source, none of whose terms is or aliases one the decision
+  reads), and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI,
+  the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof). In a profile the
+  `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL in it preloaded, and every key at
+  every level is one the sender writes (`type` the string `Delete`, the object an IRI or the sender's Tombstone or
+  QuoteAuthorization, the signature or the single proof in the sender's shape, a proof's own `@context` the body's),
+  so the body's JSON-LD meaning is its literal JSON: no inline term can nest, drop, alias or redefine a key the
+  decision reads, and no context resolves differently between verification and parsing. Contexts are served from
+  Fedify's preloaded set alone, for the verification and every parse. The proven `Delete` has exactly the literal id,
+  one actor (the author) and one object (the literal object's id). Any other form is answered as a proof that does not
+  verify: a relayed `Delete` from Misskey, or from a Mastodon release whose context differs, is refused, and an
+  author's own `Delete` in such a form applies but forwards nothing.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
@@ -185,13 +186,14 @@ against their own instance. TLS is assumed between all parties.
   proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, a refusal with a
   signature Fedify alone accepts for the context, the key sets, the object values, the single proof, the signature's
   and the proof's context, the proven id and the forwarded context's shape, allowlist and definitions, Mastodon's and
-  Kopje's status and stamp `Delete`s forwarded under the context Mastodon 4.5.21 forwarded, that no allowed term is or
-  aliases a decision term, every exploit found against the proof, and no network fetch while verifying, with an actor
-  document naming a context that is not preloaded refused; the request's shared context cache is not observed by a
-  test), `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, a missing proof,
-  a forged signature, a proof by another actor's key, a proof covering another object, a valid proof on another
-  activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a `Delete` through a
-  nested signature), `test/inbox.test.ts` ("records no retraction for input that fails ID-1").
+  Kopje's status `Delete`s forwarded under the context Mastodon 4.5.21 forwarded, and their stamp `Delete`s in that
+  form refused, that no allowed term is or aliases a decision term, every exploit found against the proof, and no
+  network fetch while verifying, with an actor document naming a context that is not preloaded refused; the request's
+  shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)":
+  Mastodon's stamp `Delete`, a missing proof, a forged signature, a proof by another actor's key, a proof covering
+  another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of
+  the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction for input
+  that fails ID-1").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that

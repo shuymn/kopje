@@ -88,15 +88,14 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   },
   // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
   kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
-  // Each of the above with an LD signature, as a Mastodon (4.4 or 4.5) that holds a boost or quote of the status or a
-  // quote with the stamp forwards it: ActivityPub::ProcessCollectionService replaces the body with its compaction
-  // under full_context (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts back the
-  // values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder sends that
-  // copy. The keys of these senders' bodies are all full_context terms, so only the @context changes.
+  // Mastodon's and Kopje's status Delete, as a Mastodon (4.4 or 4.5) that holds a boost or quote of the status
+  // forwards it: ActivityPub::ProcessCollectionService replaces the body with its compaction under full_context
+  // (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts back the values compaction
+  // changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder sends that copy. The keys of
+  // these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no forwarded
+  // profile: Mastodon 4.5.21 drops its signature (safe_for_forwarding? fails for it), so it is relayed unproven.
   mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
-  mastodonForwardedStamp: { form: "mastodon", context: "forwarded", extra: ["to"], object: QUOTE_AUTHORIZATION },
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
-  kopjeForwardedStamp: { form: "fedify", context: "forwarded", extra: ["to"], object: "iri" },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
   // Delete#toJsonLd docContext), which copies that context into the proof.
   fedifyProof: {
