@@ -27,9 +27,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or
   of an actor changes no status. An author proof, on a relayed status or stamp `Delete` or on an author's own `Delete`
   to forward, is considered only in one of the sender profiles: Mastodon 4.5's status and stamp `Delete`, Kopje's own,
-  and a `Delete` Fedify signs with an FEP-8b32 proof, each with its sender's exact `@context` and keys. A relayed
-  `Delete` in any other form, from Misskey or from a Mastodon release whose context differs, is refused, and an
-  author's own `Delete` in such a form is no longer forwarded
+  and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI, the body
+  keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof), each with its sender's exact
+  `@context` and keys. A relayed `Delete` in any other form, from Misskey or from a Mastodon release whose context
+  differs, is refused, and an author's own `Delete` in such a form is no longer forwarded
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change; a
   code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 

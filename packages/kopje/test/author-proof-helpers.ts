@@ -71,7 +71,7 @@ export async function mastodonSigned(json: Json, signer: TestActor): Promise<Jso
 //     built on Fedify sends it;
 //   - sign: an eddsa-jcs-2022 proof over any document (vc-di-eddsa §3.3: the SHA-256 of the JCS of the proof
 //     configuration, its @context `proofContext`, by default the document's, then of the document), its proof carrying
-//     that @context unless `omitContext`.
+//     that @context unless `omitContext`, and the proof options `extra` in its configuration and proof.
 export async function fepActor(web: RemoteWeb, username: string) {
   const rsa = (await crypto.subtle.generateKey(
     { ...RSA_ALGORITHM, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
@@ -105,7 +105,10 @@ export async function fepActor(web: RemoteWeb, username: string) {
     });
     return (await signed.toJsonLd({ format: "compact", contextLoader: contexts })) as Json;
   };
-  const sign = async (body: Json, options: { proofContext?: unknown; omitContext?: boolean } = {}): Promise<Json> => {
+  const sign = async (
+    body: Json,
+    options: { proofContext?: unknown; omitContext?: boolean; extra?: Json } = {},
+  ): Promise<Json> => {
     const config = {
       "@context": options.proofContext ?? body["@context"],
       type: "DataIntegrityProof",
@@ -113,6 +116,7 @@ export async function fepActor(web: RemoteWeb, username: string) {
       verificationMethod: keyId,
       proofPurpose: "assertionMethod",
       created: "2026-11-13T00:00:00Z",
+      ...options.extra,
     };
     const digest = async (value: unknown) =>
       new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical(value))));

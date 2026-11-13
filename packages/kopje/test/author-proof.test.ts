@@ -1,5 +1,6 @@
-import { type DocumentLoader, preloadedContexts, signJsonLd } from "@fedify/fedify";
-import { describe, expect, it } from "vitest";
+import { type DocumentLoader, preloadedContexts, signJsonLd, verifyJsonLd, verifyObject } from "@fedify/fedify";
+import { Delete } from "@fedify/vocab";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deleteSigning, stampDeleteActivity } from "../src/domain/activities";
 import { PROFILES, verifyAuthorProof } from "../src/federation/author-proof";
@@ -30,6 +31,41 @@ async function world() {
 function proves(body: Json, actor: TestActor, object: string): Promise<boolean> {
   return verifyAuthorProof(body, { id: body.id as string, actor: actor.uri, object }, actor.document);
 }
+
+// Whether Fedify alone, given the actor's document and every context, accepts `body`'s signature or proof: so that a
+// refusal of `verifyAuthorProof` comes from Kopje's clause alone.
+async function fedifyAccepts(body: Json, actor: TestActor): Promise<boolean> {
+  const documentLoader: DocumentLoader = (url) =>
+    url.split("#")[0] === actor.uri
+      ? Promise.resolve({ document: actor.document, documentUrl: actor.uri, contextUrl: null })
+      : contexts(url);
+  const options = { documentLoader, contextLoader: contexts };
+  return "proof" in body ? (await verifyObject(Delete, body, options)) !== null : verifyJsonLd(body, options);
+}
+
+// A refusal by Kopje's clause alone: Fedify accepts `body`'s signature or proof, and verifyAuthorProof refuses it.
+async function refused(body: Json, actor: TestActor, object: string, message?: string): Promise<void> {
+  expect(await fedifyAccepts(body, actor), message).toBe(true);
+  expect(await proves(body, actor, object), message).toBe(false);
+}
+
+// The network, as Fedify's default loaders and any fetch reach it: every request recorded and answered from `served`
+// (404 otherwise), so a verification that fell back to it would be seen, and would find what it asked for.
+function network(served: Record<string, unknown>) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new Request(input, init).url;
+    const body = served[url];
+    return Promise.resolve(
+      body === undefined
+        ? new Response("Not Found", { status: 404 })
+        : new Response(JSON.stringify(body), { headers: { "content-type": "application/ld+json" } }),
+    );
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // An RsaSignature2017 as Fedify's signJsonLd writes it (federation/ld-sign.ts), its own @context identity/v1.
 async function fedifySigned(json: Json, signer: TestActor): Promise<Json> {
@@ -98,7 +134,7 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
     ["an inline term of the same IRI", [AS, { ...ATOM, Delete: "as:Delete" }, SECURITY]],
   ])("a context not a profile's: %s", async (_name, context) => {
     const { bob, status, body } = await variant((b) => ({ ...b, "@context": context }));
-    expect(await proves(body, bob, status)).toBe(false);
+    await refused(body, bob, status);
   });
 
   it.each([
@@ -109,12 +145,12 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
     ["a cc the sender does not write", { cc: [PUBLIC] }],
   ])("%s", async (_name, extra) => {
     const { bob, status, body } = await variant((b) => ({ ...b, ...extra }));
-    expect(await proves(body, bob, status)).toBe(false);
+    await refused(body, bob, status);
   });
 
   it("an addressee that is not a string", async () => {
     const { bob, status, body } = await variant((b) => ({ ...b, to: [{ id: PUBLIC }] }));
-    expect(await proves(body, bob, status)).toBe(false);
+    await refused(body, bob, status);
   });
 
   it("an id, actor or object other than the one the Worker read", async () => {
@@ -129,24 +165,45 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
   it("an extra key in the object, or a type its profile does not name", async () => {
     for (const object of [{ url: "https://mastodon.example/@bob/1" }, { type: "Note" }]) {
       const { bob, status, body } = await variant((b) => ({ ...b, object: { ...(b.object as Json), ...object } }));
-      expect(await proves(body, bob, status), JSON.stringify(object)).toBe(false);
+      await refused(body, bob, status, JSON.stringify(object));
     }
   });
 
   it("a type other than Delete, or an array of types", async () => {
     for (const type of ["Update", ["Delete", "Update"]]) {
       const { bob, status, body } = await variant((b) => ({ ...b, type }));
-      expect(await proves(body, bob, status), JSON.stringify(type)).toBe(false);
+      await refused(body, bob, status, JSON.stringify(type));
     }
   });
 
   it("a signature in the other sender's shape", async () => {
     const { bob, status } = await world();
     // Mastodon's context with Fedify's signature (its own @context), and Kopje's with Mastodon's (none).
-    expect(await proves(await fedifySigned(mastodonDelete(bob, status), bob), bob, status)).toBe(false);
+    await refused(await fedifySigned(mastodonDelete(bob, status), bob), bob, status);
     const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
     const kopje = (signing as { activity: Json }).activity;
-    expect(await proves(await mastodonSigned(kopje, bob), bob, status)).toBe(false);
+    await refused(await mastodonSigned(kopje, bob), bob, status);
+  });
+
+  it("a Kopje signature whose own @context is not identity/v1, which Fedify ignores", async () => {
+    const { bob, status } = await world();
+    const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
+    const signed = await fedifySigned((signing as { activity: Json }).activity, bob);
+    const body = { ...signed, signature: { ...(signed.signature as Json), "@context": SECURITY } };
+    await refused(body, bob, status);
+  });
+
+  it("an object value that is not a string", async () => {
+    const { bob, status, body } = await variant((b) => ({ ...b, object: { ...(b.object as Json), atomUri: 1 } }));
+    await refused(body, bob, status);
+  });
+
+  it("an id whose literal spelling is not its URL's (an upper-case host)", async () => {
+    const { bob, status } = await world();
+    const id = `${status.replace("mastodon.example", "MASTODON.example")}#delete`;
+    const body = await mastodonSigned(mastodonDelete(bob, status, id), bob);
+    // The literal id is what the Worker read; the proven one is its URL's spelling.
+    await refused(body, bob, status);
   });
 
   describe("FEP-8b32 proofs", () => {
@@ -164,13 +221,19 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
       expect(await proves(await fep.sign(unsigned, { omitContext: true }), fep.actor, status)).toBe(true);
     });
 
+    it("refuses a proof with a key its sender does not write, which Fedify accepts", async () => {
+      const { fep, status, unsigned } = await fedifyBody();
+      const body = await fep.sign(unsigned, { extra: { nonce: "n1" } });
+      await refused(body, fep.actor, status);
+    });
+
     it("refuses a proof whose @context is not the body's, though it verifies against it", async () => {
       const { fep, status, unsigned } = await fedifyBody();
       // Signed under a prefix of the body's context, which Fedify accepts (contextStartsWith).
       const context = unsigned["@context"] as unknown[];
       const signed = await fep.sign({ ...unsigned, "@context": context.slice(0, -1) });
       const proof = { ...(signed.proof as Json), "@context": context.slice(0, -1) };
-      expect(await proves({ ...unsigned, proof }, fep.actor, status)).toBe(false);
+      await refused({ ...unsigned, proof }, fep.actor, status);
     });
 
     it("refuses a second proof, valid, invalid or of another context, in either order, and no proof", async () => {
@@ -182,6 +245,8 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
         expect(await proves({ ...unsigned, proof: [valid, second] }, fep.actor, status)).toBe(false);
         expect(await proves({ ...unsigned, proof: [second, valid] }, fep.actor, status)).toBe(false);
       }
+      // A second copy of the valid proof, which Fedify accepts: refused by the single-proof clause alone.
+      await refused({ ...unsigned, proof: [valid, valid] }, fep.actor, status);
       expect(await proves({ ...unsigned, proof: [valid] }, fep.actor, status)).toBe(true);
       expect(await proves({ ...unsigned, proof: [] }, fep.actor, status)).toBe(false);
     });
@@ -252,18 +317,17 @@ describe("each exploit found against the proof is refused (ID-1)", () => {
   });
 
   it("a remote context, never fetched (round 3)", async () => {
-    const { web, bob, status } = await world();
+    const { bob, status } = await world();
     const remote = `${RELAY}/context.jsonld`;
     const document = { "@context": { ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" } };
-    web.serve(remote, document);
     // Signed by a loader that serves the remote context, so the signature verifies over it.
     const loader: DocumentLoader = (url) =>
       url === remote ? Promise.resolve({ document, documentUrl: url, contextUrl: null }) : contexts(url);
     const unsigned = { ...mastodonDelete(bob, status), "@context": [AS, remote, SECURITY] };
     const body = (await signJsonLd(unsigned, bob.privateKey, new URL(bob.keyId), { contextLoader: loader })) as Json;
-    const before = web.fetched.length;
+    const fetched = network({ [remote]: document });
     expect(await proves(body, bob, status)).toBe(false);
-    expect(web.fetched.slice(before)).toEqual([]);
+    expect(fetched).not.toHaveBeenCalled();
   });
 
   it("a typeless FEP-8b32 body (FEP-6757, plan review)", async () => {
@@ -275,12 +339,25 @@ describe("each exploit found against the proof is refused (ID-1)", () => {
 });
 
 describe("contexts come from the preloaded set alone (ID-1)", () => {
-  it("fetches nothing to verify a profile's body: no context, and no key but from the actor document given", async () => {
-    const { web, bob, fep, status } = await world();
-    const before = web.fetched.length;
+  it("verifies a profile's body without touching the network", async () => {
+    const { bob, fep, status } = await world();
+    const fetched = network({});
     expect(await proves(await mastodonSigned(mastodonDelete(bob, status), bob), bob, status)).toBe(true);
     const fepStatus = `${fep.actor.uri}/statuses/1`;
     expect(await proves(await fep.fedify(`${fepStatus}#delete`, fepStatus), fep.actor, fepStatus)).toBe(true);
-    expect(web.fetched.slice(before)).toEqual([]);
+    expect(fetched).not.toHaveBeenCalled();
+  });
+
+  it("refuses an actor document naming a context that is not preloaded, fetching nothing", async () => {
+    const { bob, status } = await world();
+    const remote = `${RELAY}/actor-context.jsonld`;
+    const context = bob.document["@context"];
+    const document = { ...bob.document, "@context": [...(Array.isArray(context) ? context : [context]), remote] };
+    const fetched = network({ [remote]: { "@context": { ex: "https://example.org/ns#" } } });
+    const body = await mastodonSigned(mastodonDelete(bob, status), bob);
+    expect(await verifyAuthorProof(body, { id: body.id as string, actor: bob.uri, object: status }, document)).toBe(
+      false,
+    );
+    expect(fetched).not.toHaveBeenCalled();
   });
 });

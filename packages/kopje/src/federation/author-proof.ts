@@ -200,8 +200,8 @@ function isSignature(value: unknown, form: "mastodon" | "fedify"): boolean {
 }
 
 // One proof (alone, or alone in an array, as Fedify's signObject writes one), a DataIntegrityProof (eddsa-jcs-2022)
-// whose own @context, when it has one, is the body's. A second proof is refused, valid or not: Fedify accepts a body
-// when any of its proofs verifies.
+// whose own @context, when it has one, is the body's. A second proof is refused, whatever it is: no sender of a profile
+// writes one, so how Fedify judges several (2.4.5 refuses the body when any of them fails) is not relied on.
 function isProof(json: Json): boolean {
   const proofs = Array.isArray(json.proof) ? json.proof : [json.proof];
   return (

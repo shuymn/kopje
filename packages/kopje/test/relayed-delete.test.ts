@@ -277,6 +277,24 @@ describe("a relayed status Delete that does not meet every condition changes not
     expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
   });
 
+  it("refuses a body naming a remote context, which the request's loaders never fetch", async () => {
+    const { t, bob, dan } = await world();
+    const status = await note(t, bob);
+    const remote = "https://relay.example/context.jsonld";
+    const document = { "@context": { ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" } };
+    t.web.serve(remote, document);
+    // Signed by a loader that serves the remote context, so the signature verifies over it.
+    const unsigned = { ...deletion(bob, status.uri), "@context": [AS, remote, SECURITY] };
+    const signed = await signJsonLd(unsigned, bob.privateKey, new URL(bob.keyId), {
+      contextLoader: (url) =>
+        url === remote ? Promise.resolve({ document, documentUrl: url, contextUrl: null }) : contexts(url),
+    });
+    const { "@context": _context, ...signature } = signed.signature;
+    expect(await t.post(dan, { ...signed, signature })).toBe(401);
+    expect(t.web.fetched).not.toContain(remote);
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  });
+
   it("refuses a relay whose HTTP signer does not own its key", async () => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
