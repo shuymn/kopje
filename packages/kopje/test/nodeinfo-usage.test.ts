@@ -91,6 +91,8 @@ describe("NodeInfo usage", () => {
 // an active account's history or the remote statuses, one row per status for an idle or imported account's history
 // (#1479). Import-shaped rows: statuses tied on published_at at the window's edge, a published_at with a NUL after it,
 // a suspended_at that is empty. Suspended accounts are counted by main and not by the rewrite, which never probes them.
+// The run's other statements are main's users and localPosts counts, unchanged and allowed literally; any further
+// statement fails the witness.
 const ACTIVE_PROBE = new PlanWitness(
   {
     e087e97290cf7451: {
@@ -99,6 +101,10 @@ const ACTIVE_PROBE = new PlanWitness(
     },
   },
   /s\.published_at >= \?/,
+  [
+    "SELECT count(*) AS n FROM local_accounts l WHERE l.suspended_at IS NULL",
+    "SELECT count(*) AS n FROM local_accounts l CROSS JOIN statuses s INDEXED BY statuses_account_originals ON s.account_id = l.account_id WHERE s.reblog_of_id IS NULL",
+  ],
 );
 // The month's probe, then the half-year's.
 const PROBES = ["e087e97290cf7451", "e087e97290cf7451"];
@@ -200,7 +206,8 @@ const POPULATIONS = {
   remote: `SELECT count(*) AS n FROM statuses WHERE account_id = '${REMOTE}'`,
 };
 
-async function probed(statistics: Statistics, shape: Shape): Promise<Run> {
+// `stray`: a further read the run makes after the usage, which the witness must refuse.
+async function probed(statistics: Statistics, shape: Shape, stray?: (sql: SqlStorage) => void): Promise<Run> {
   const store = await migratedStore();
   return runInDurableObject(store, (_instance, state) => {
     shaped(state.storage.sql, shape);
@@ -208,7 +215,11 @@ async function probed(statistics: Statistics, shape: Shape): Promise<Run> {
       statistics,
       expected: PROBES,
       populations: POPULATIONS,
-      run: (sql) => nodeInfoUsageOf(new Db(sql), NOW),
+      run: (sql) => {
+        const usage = nodeInfoUsageOf(new Db(sql), NOW);
+        stray?.(sql);
+        return usage;
+      },
     });
   });
 }
@@ -267,6 +278,25 @@ describe("NodeInfo's active probe beside main's (RES-7)", () => {
         expect(side.main.rows, side.query).toBeGreaterThan(base.sides[i]!.main.rows);
         expect(side.mine.rows, side.query).toBe(base.sides[i]!.mine.rows);
       }
+    },
+    120_000,
+  );
+
+  // A further read of an account's whole history, a SEARCH the plan audit passes, grows with that history unmeasured
+  // unless the witness refuses it.
+  it.each(STATISTICS)(
+    "%s statistics: fails a statement it does not allow",
+    async (statistics) => {
+      const run = await probed(statistics, shapeOf({ active: 80 }), (sql) =>
+        sql
+          .exec(
+            "SELECT count(*) AS n FROM statuses s INDEXED BY statuses_account WHERE s.account_id = ?",
+            "610000000000000000",
+          )
+          .toArray(),
+      );
+      expect(run.sides.map((side) => side.fault)).toEqual([undefined, undefined, "not allowed"]);
+      expect(() => expectBeside(statistics, run)).toThrow(/main's statements, every one in order/);
     },
     120_000,
   );
