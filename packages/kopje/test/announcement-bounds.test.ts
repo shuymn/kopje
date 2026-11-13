@@ -16,7 +16,7 @@ import {
   updateAnnouncement,
 } from "../src/domain/announcements";
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
-import { parseStatusText, renderSegmentHtml, renderStatusHtml } from "../src/domain/status-text";
+import { MAX_RAW_LENGTH, parseStatusText, renderSegmentHtml, renderStatusHtml } from "../src/domain/status-text";
 import { streamAnnouncement } from "../src/domain/stream-journal";
 import { MAX_LIVE_ANNOUNCEMENTS, STATUS_EMOJIS_BYTES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -73,14 +73,18 @@ function hashtagContentBytes(text: string): number {
   );
 }
 
-// 600 hashtags, then plain characters up to exactly the content budget.
+// 600 hashtags, then plain characters up to exactly the content budget: the most that fit, by bisection over the
+// count (the content grows with it) up to the parser's MAX_RAW_LENGTH, each count measured through the renderer.
 function contentAtCap(): string {
   const tags = "#a ".repeat(600);
-  let pad = 0;
-  while (hashtagContentBytes(`${tags}${"x".repeat(pad + 1)}`) <= ANNOUNCEMENT_CONTENT_BYTES) {
-    pad++;
+  const fits = (pad: number) => hashtagContentBytes(`${tags}${"x".repeat(pad)}`) <= ANNOUNCEMENT_CONTENT_BYTES;
+  let [low, high] = [0, MAX_RAW_LENGTH - tags.length];
+  expect([fits(low), fits(high)]).toEqual([true, false]);
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    [low, high] = fits(middle) ? [middle, high] : [low, middle];
   }
-  return `${tags}${"x".repeat(pad)}`;
+  return `${tags}${"x".repeat(low)}`;
 }
 
 // A SqlStorage over `real` that hands `capture` the joined EXPLAIN QUERY PLAN of each statement matching `pattern`,
