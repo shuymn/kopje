@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
+import { textRuns } from "./markdown.js";
 import { lineOf, parse, type Source, walk } from "./source-scan.js";
 
 // The operator documents name what an operator sets: every variable of the configuration schema
@@ -122,58 +123,46 @@ function usageCommands(usage: string): Set<string> {
   return commands;
 }
 
-const FENCE = /^\s*(`{3,}|~{3,})/;
-
-// The text with each line break inside a paragraph, outside code fences, made a space, so that a mention wrapped across
-// lines reads as one. Offsets, and so line numbers, stay those of the text.
-function joinedParagraphs(text: string): string {
-  const lines = text.split("\n");
-  let fence: string | null = null;
-  return lines
-    .map((line, i) => {
-      const marker = FENCE.exec(line)?.[1];
-      if (marker !== undefined) {
-        fence = fence === null ? marker : line.trim().startsWith(fence) ? null : fence;
-      }
-      const next = lines[i + 1];
-      const joins =
-        fence === null && marker === undefined && line.trim() !== "" && next !== undefined && next.trim() !== "";
-      return joins && !FENCE.test(next) ? `${line} ` : `${line}\n`;
-    })
-    .join("")
-    .slice(0, text.length);
-}
-
-// The commands a text names that the usage does not list, as `line: command`. A mention is `kopje-admin` and the plain
-// lowercase words after it in its paragraph, up to the first that is not one (an option, a value, `name=value`) or
-// that punctuation ends. Its first word must be a command; when that command has subcommands, a second word must be
-// one of them.
+// The commands a Markdown text names that the usage does not list, as `line: command`. The text is read from its parse
+// (markdown.ts): each text and inline code node, and each line of a code block, so quote markers and line breaks are
+// never part of it. A mention is `kopje-admin` and the plain lowercase words after it in the same node, up to the first
+// that is not one (an option, a value, `name=value`) or that punctuation ends. Its first word must be a command; when
+// that command has subcommands, a second word must be one of them.
 function unlistedCommands(text: string, commands: ReadonlySet<string>): string[] {
   const found: string[] = [];
-  const joined = joinedParagraphs(text);
-  for (const match of joined.matchAll(/\bkopje-admin(?=\s)/g)) {
-    const words: string[] = [];
-    const after = joined.slice(match.index + match[0].length).split("\n")[0] ?? "";
-    for (const raw of after.trim().split(/\s+/).slice(0, 2)) {
-      const word = raw.replace(/[`'".,;:)]+$/, "");
-      if (!WORD.test(word)) {
-        break;
+  for (const { value, line } of textRuns(text)) {
+    for (const match of value.matchAll(/\bkopje-admin(?=\s)/g)) {
+      const words = mentionedWords(value.slice(match.index + match[0].length));
+      if (!listed(words, commands)) {
+        found.push(`${lineOf(value, match.index) + line - 1}: kopje-admin ${words.join(" ")}`);
       }
-      words.push(word);
-      if (word !== raw) {
-        break;
-      }
-    }
-    const [name, sub] = words;
-    const listed =
-      name === undefined ||
-      (sub !== undefined && commands.has(`${name} ${sub}`)) ||
-      (commands.has(name) && (sub === undefined || ![...commands].some((c) => c.startsWith(`${name} `))));
-    if (!listed) {
-      found.push(`${lineOf(text, match.index)}: kopje-admin ${words.join(" ")}`);
     }
   }
   return found;
+}
+
+// The plain lowercase words, at most two, at the start of `after`.
+function mentionedWords(after: string): string[] {
+  const words: string[] = [];
+  for (const raw of after.trim().split(/\s+/).slice(0, 2)) {
+    const word = raw.replace(/[`'".,;:)]+$/, "");
+    if (!WORD.test(word)) {
+      break;
+    }
+    words.push(word);
+    if (word !== raw) {
+      break;
+    }
+  }
+  return words;
+}
+
+function listed([name, sub]: readonly string[], commands: ReadonlySet<string>): boolean {
+  return (
+    name === undefined ||
+    (sub !== undefined && commands.has(`${name} ${sub}`)) ||
+    (commands.has(name) && (sub === undefined || ![...commands].some((c) => c.startsWith(`${name} `))))
+  );
 }
 
 function undocumented(settings: readonly string[], docs: readonly string[]): string[] {
@@ -255,6 +244,11 @@ describe("operator documents", () => {
       "kopje-admin jobs",
       "retry",
       "```",
+      "",
+      "> Then kopje-admin",
+      "> images-export-old, and kopje-admin jobs",
+      "> retry, and `kopje-admin",
+      "> jobs retry`.",
     ].join("\n");
     expect(unlistedCommands(text, commands)).toEqual([
       "3: kopje-admin jobs retry-all",
@@ -263,6 +257,7 @@ describe("operator documents", () => {
       "3: kopje-admin jobs",
       "7: kopje-admin images-export-old",
       "10: kopje-admin jobs",
+      "14: kopje-admin images-export-old",
     ]);
   });
 
