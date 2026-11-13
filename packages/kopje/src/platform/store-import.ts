@@ -1,12 +1,4 @@
-import {
-  hasRows,
-  MAX_PROFILE_UPDATES,
-  parseProfileUpdates,
-  PROFILE_UPDATES,
-  type ScannedRow,
-  SEQUENCE_TABLE,
-  STATE_TABLE,
-} from "./dump-catalog";
+import { MAX_PROFILE_UPDATES, parseProfileUpdates, PROFILE_UPDATES, SEQUENCE_TABLE, STATE_TABLE } from "./dump-catalog";
 import {
   DUMP_FORMAT,
   type DumpHeader,
@@ -15,12 +7,12 @@ import {
   type MigrationRecord,
   type ParsedStatement,
   parseStatements,
-  quoteIdentifier,
   type TableResult,
   type TableSpec,
   utf8Length,
 } from "./dump-format";
-import { bindAll, LiteralError, readColumn, textLiteral, valueLiteral } from "./dump-literals";
+import { bindAll, LiteralError, quoteIdentifier, readColumn, textLiteral, valueLiteral } from "./dump-literals";
+import { hasRows, type ScannedRow } from "./dump-scan";
 import { errorMessage } from "./error-message";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.

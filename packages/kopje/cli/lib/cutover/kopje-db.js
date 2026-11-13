@@ -1,6 +1,6 @@
 // A local SQLite database with the Kopje Store schema, its dump catalog, and a dump writer, for the cutover. The
-// catalog and the literals follow src/platform/dump-catalog.ts and dump-literals.ts (docs/dump-format.md); a Store
-// refuses a dump whose header differs from its own catalog, so any drift fails at `import` begin.
+// catalog and the literals are the Store's own (src/platform/dump-catalog.ts and dump-literals.ts, through
+// kopje-runtime.js; docs/dump-format.md).
 
 import { createHash } from "node:crypto";
 import { closeSync, fsyncSync, openSync, readdirSync, readFileSync, writeSync } from "node:fs";
@@ -8,6 +8,13 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import { END_LINE, HEADER_PREFIX, TRAILER_PREFIX } from "../format.js";
+import {
+  MAX_PROFILE_UPDATES,
+  quoteIdentifier,
+  readCatalog as storeCatalog,
+  readColumn,
+  valueLiteral,
+} from "./kopje-runtime.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../../../migrations/", import.meta.url));
 
@@ -47,173 +54,21 @@ export function createKopjeDatabase(path = ":memory:") {
   return db;
 }
 
-/**
- * @typedef {{ name: string, columns: string[], order: { by: 'rowid' } | { by: 'key', columns: string[] },
- *   key: string[], deferred: string[], only?: { column: string, values: string[] } }} TableSpec
- */
+/** @typedef {ReturnType<typeof storeCatalog>[number]} TableSpec */
 
-const DUMPED_STATE = ["last_local_id", "profile_updates"];
-// At most this many local accounts in profile_updates, as the Store accepts (src/platform/dump-catalog.ts).
-export const MAX_PROFILE_UPDATES = 100;
-
-/** @param {string} name */
-function excluded(name) {
-  return (
-    name === "kopje_migrations" ||
-    name === "media_orphans" ||
-    name === "card_images" ||
-    name === "remote_media" ||
-    name === "remote_media_objects" ||
-    name === "remote_media_usage" ||
-    name === "backup_media" ||
-    name.startsWith("stream_") ||
-    name.startsWith("_cf_") ||
-    (name.startsWith("sqlite_") && name !== "sqlite_sequence")
-  );
-}
-
-/** @param {string} name */
-function quoteIdentifier(name) {
-  return `"${name.replaceAll('"', '""')}"`;
-}
+export { MAX_PROFILE_UPDATES };
 
 /**
- * The dump catalog of a database, as the Store's readCatalog computes it.
+ * The dump catalog of a database, by the Store's readCatalog over a SqlStorage-shaped view of node:sqlite.
  * @param {DatabaseSync} db
  * @returns {TableSpec[]}
  */
 export function readCatalog(db) {
-  const tables = /** @type {{ name: string, sql: string | null }[]} */ (
-    db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name COLLATE BINARY").all()
-  ).filter((t) => !excluded(t.name));
-  /** @type {Map<string, TableSpec>} */
-  const specs = new Map();
-  /** @type {Map<string, { parent: string, columns: string[] }[]>} */
-  const foreignKeys = new Map();
-  for (const table of tables) {
-    const info = /** @type {{ name: string, pk: number, hidden: number }[]} */ (
-      db.prepare("SELECT name, pk, hidden FROM pragma_table_xinfo(?) ORDER BY cid").all(table.name)
-    ).filter((c) => c.hidden === 0);
-    const key = info
-      .filter((c) => c.pk > 0)
-      .toSorted((a, b) => a.pk - b.pk)
-      .map((c) => c.name);
-    const withoutRowid = /\)\s*WITHOUT\s+ROWID\s*$/i.test(table.sql ?? "");
-    const sequence = table.name === "sqlite_sequence";
-    /** @type {TableSpec} */
-    const spec = {
-      name: table.name,
-      columns: info.map((c) => c.name),
-      order: sequence ? { by: "key", columns: ["name"] } : withoutRowid ? { by: "key", columns: key } : { by: "rowid" },
-      key: sequence ? ["name"] : key,
-      deferred: [],
-    };
-    if (table.name === "kopje_state") {
-      spec.only = { column: "name", values: [...DUMPED_STATE] };
-    }
-    specs.set(table.name, spec);
-    /** @type {Map<number, { parent: string, columns: string[] }>} */
-    const byId = new Map();
-    for (const fk of /** @type {{ id: number, table: string, from: string }[]} */ (
-      db.prepare('SELECT id, "table", "from" FROM pragma_foreign_key_list(?) ORDER BY id, seq').all(table.name)
-    )) {
-      const entry = byId.get(fk.id) ?? { parent: fk.table, columns: [] };
-      entry.columns.push(fk.from);
-      byId.set(fk.id, entry);
-    }
-    foreignKeys.set(table.name, [...byId.values()]);
-  }
-  /** @type {TableSpec[]} */
-  const ordered = [];
-  /** @type {Set<string>} */
-  const placed = new Set();
-  const remaining = [...specs.keys()].filter((name) => name !== "sqlite_sequence");
-  while (remaining.length > 0) {
-    const ready = remaining.findIndex((name) =>
-      (foreignKeys.get(name) ?? []).every((fk) => fk.parent === name || placed.has(fk.parent) || !specs.has(fk.parent)),
-    );
-    const name = remaining.splice(ready === -1 ? 0 : ready, 1)[0] ?? "";
-    const spec = specs.get(name);
-    if (spec === undefined) {
-      continue;
-    }
-    /** @type {Set<string>} */
-    const deferred = new Set();
-    for (const fk of foreignKeys.get(name) ?? []) {
-      if (fk.parent === name || (specs.has(fk.parent) && !placed.has(fk.parent))) {
-        fk.columns.forEach((column) => deferred.add(column));
-      }
-    }
-    spec.deferred = spec.columns.filter((column) => deferred.has(column));
-    placed.add(name);
-    ordered.push(spec);
-  }
-  const sequence = specs.get("sqlite_sequence");
-  if (sequence !== undefined) {
-    ordered.push(sequence);
-  }
-  return ordered;
-}
-
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const encoder = new TextEncoder();
-
-/** @param {Uint8Array} bytes */
-function hex(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0").toUpperCase()).join("");
-}
-
-/** @param {number} value */
-function realLiteral(value) {
-  if (value === Infinity) {
-    return "9e999";
-  }
-  if (value === -Infinity) {
-    return "-9e999";
-  }
-  if (Object.is(value, -0)) {
-    return "-0.0";
-  }
-  const text = String(value);
-  return /[.e]/.test(text) ? text : `${text}.0`;
-}
-
-/**
- * The canonical literal of a value read as (typeof, exact value).
- * @param {unknown} type
- * @param {unknown} value
- */
-function valueLiteral(type, value) {
-  switch (type) {
-    case "null":
-      return "NULL";
-    case "integer":
-      return String(value);
-    case "real":
-      return realLiteral(Number(value));
-    case "text": {
-      const bytes = value instanceof Uint8Array ? value : new Uint8Array();
-      let text = null;
-      try {
-        text = utf8.decode(bytes);
-      } catch {
-        text = null;
-      }
-      return text === null || text.includes("\0")
-        ? `CAST(X'${hex(bytes)}' AS TEXT)`
-        : `'${text.replaceAll("'", "''")}'`;
-    }
-    case "blob":
-      return `X'${hex(value instanceof Uint8Array ? value : new Uint8Array())}'`;
-    default:
-      throw new Error(`unexpected storage class ${String(type)}`);
-  }
-}
-
-/** @param {string} column */
-function readColumn(column) {
-  const q = quoteIdentifier(column);
-  return `typeof(${q}), CASE typeof(${q}) WHEN 'integer' THEN CAST(${q} AS TEXT) WHEN 'text' THEN CAST(${q} AS BLOB) ELSE ${q} END`;
+  const sql = {
+    /** @param {string} query @param {string[]} bindings */
+    exec: (query, ...bindings) => ({ toArray: () => db.prepare(query).all(...bindings) }),
+  };
+  return storeCatalog(/** @type {Parameters<typeof storeCatalog>[0]} */ (/** @type {unknown} */ (sql)));
 }
 
 /**
@@ -234,21 +89,24 @@ function* scan(db, spec, selected, filter) {
   }
   const order = spec.order.by === "rowid" ? "rowid" : spec.order.columns.map(quoteIdentifier).join(",");
   const statement = db.prepare(
-    `SELECT ${selected.map(readColumn).join(", ")} FROM ${quoteIdentifier(spec.name)}` +
+    `SELECT ${selected.flatMap(readColumn).join(", ")} FROM ${quoteIdentifier(spec.name)}` +
       (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "") +
       ` ORDER BY ${order}`,
   );
   statement.setReturnArrays(true);
   for (const row of statement.iterate()) {
-    const values = /** @type {unknown[]} */ (/** @type {unknown} */ (row));
+    // readColumn reads each column as (storage class, TEXT for an integer, a number, or a Uint8Array of the bytes).
+    const values = /** @type {(string | number | null | Uint8Array)[]} */ (/** @type {unknown} */ (row));
     /** @type {string[]} */
     const literals = [];
     for (let i = 0; i < values.length; i += 2) {
-      literals.push(valueLiteral(values[i], values[i + 1]));
+      literals.push(valueLiteral(/** @type {string} */ (values[i]), values[i + 1] ?? null));
     }
     yield literals;
   }
 }
+
+const encoder = new TextEncoder();
 
 /**
  * Writes the database as a Kopje dump to `path` and returns the trailer.

@@ -1,5 +1,3 @@
-import { quoteIdentifier } from "./dump-format";
-
 // The canonical literal of each stored value, and its way back into SQLite as a bound parameter.
 //
 // Values are read as exact bytes and encoded here rather than with SQLite's quote(): quote() doubles BLOBs inside
@@ -16,6 +14,12 @@ import { quoteIdentifier } from "./dump-format";
 //
 // Every literal is a valid SQLite expression of the same storage class, and the encoding is one-to-one, so a checksum
 // over literals covers the exact stored bytes.
+//
+// No relative imports and no Workers types: the cutover's dump writer runs this module from the sources on Node
+// (cli/lib/cutover/kopje-runtime.js) over values node:sqlite returns.
+
+// A value as SqlStorage binds and returns it.
+type SqlValue = ArrayBuffer | string | number | null;
 
 const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).toUpperCase().padStart(2, "0"));
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -46,11 +50,20 @@ function realLiteral(value: number): string {
   return /[.e]/.test(text) ? text : `${text}.0`;
 }
 
+export function quoteIdentifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
 export function textLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function bytesOf(value: SqlStorageValue): Uint8Array {
+// The bytes of a TEXT or BLOB value read by readColumn: an ArrayBuffer from SqlStorage, or a view from node:sqlite (a
+// Uint8Array, which may sit at an offset in a larger buffer).
+function bytesOf(value: SqlValue | ArrayBufferView): Uint8Array {
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   return value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array();
 }
 
@@ -63,7 +76,7 @@ export function readColumn(column: string): string[] {
   ];
 }
 
-export function valueLiteral(type: SqlStorageValue, value: SqlStorageValue): string {
+export function valueLiteral(type: SqlValue, value: SqlValue | ArrayBufferView): string {
   switch (type) {
     case "null":
       return "NULL";
@@ -96,7 +109,7 @@ export class LiteralError extends Error {}
 // A literal as an SQL expression with bound parameters, so statement text stays short (the platform limits a
 // statement to 100 KB) and every storage class is kept: integers go in as text and are cast, since a JS number always
 // binds as REAL.
-function bindLiteral(literal: string): { expr: string; params: SqlStorageValue[] } {
+function bindLiteral(literal: string): { expr: string; params: SqlValue[] } {
   if (literal === "NULL") {
     return { expr: "NULL", params: [] };
   }
@@ -120,9 +133,9 @@ function bindLiteral(literal: string): { expr: string; params: SqlStorageValue[]
 }
 
 // Binds a list of literals: their expressions and the flattened parameters.
-export function bindAll(literals: readonly string[]): { exprs: string[]; params: SqlStorageValue[] } {
+export function bindAll(literals: readonly string[]): { exprs: string[]; params: SqlValue[] } {
   const exprs: string[] = [];
-  const params: SqlStorageValue[] = [];
+  const params: SqlValue[] = [];
   for (const literal of literals) {
     const bound = bindLiteral(literal);
     exprs.push(bound.expr);

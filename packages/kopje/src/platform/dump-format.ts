@@ -1,3 +1,6 @@
+import type { TableSpec } from "./dump-catalog";
+import { quoteIdentifier } from "./dump-literals";
+
 // The Store dump format (version 1). One format serves the scheduled backup, the cutover import, and restore drills.
 // The full specification lives in docs/dump-format.md; this module is its executable half.
 //
@@ -19,23 +22,7 @@ export const HEADER_PREFIX = "-- kopje-dump-header ";
 export const TRAILER_PREFIX = "-- kopje-dump-trailer ";
 export const END_LINE = "-- kopje-dump-end";
 
-// Ordering of a table's rows, which the per-table checksum depends on.
-//   rowid  : ascending rowid (for INTEGER PRIMARY KEY tables that is the key; otherwise insertion order)
-//   key    : ascending by the listed columns (BINARY collation), for WITHOUT ROWID tables and sqlite_sequence
-type TableOrder = { by: "rowid" } | { by: "key"; columns: string[] };
-
-export type TableSpec = {
-  name: string;
-  columns: string[];
-  order: TableOrder;
-  // Primary key columns (used by link statements).
-  key: string[];
-  // FK columns referencing the same table (or a table later in the order). INSERTs write NULL there and a link
-  // statement sets the value after all rows are in.
-  deferred: string[];
-  // Only these rows are part of the dump (kopje_state keeps only allowlisted names).
-  only?: { column: string; values: string[] };
-};
+export type { TableSpec };
 
 export type MigrationRecord = { name: string; checksum: string };
 
@@ -61,10 +48,6 @@ export function headerLine(header: DumpHeader): string {
 
 export function trailerLines(trailer: DumpTrailer): string {
   return `${TRAILER_PREFIX}${JSON.stringify(trailer)}\n${END_LINE}\n`;
-}
-
-export function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
 }
 
 // Position of the first character after the literal that starts at `at`, or -1 if there is no valid literal there.

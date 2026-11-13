@@ -1,5 +1,3 @@
-import type { SQLInputValue } from "node:sqlite";
-
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
@@ -12,10 +10,10 @@ import { parse as parseSource, sources, walk } from "./source-scan.js";
 // (convert.js) writes columns of the Store schema, and the actual side of verify-conversion (verify-actual.js) reads
 // them back from a dump. A migration that adds a table or column fails here until each tool handles it or a list below
 // says why that tool leaves it alone. The dump, import and backup read their catalog from the live schema
-// (src/platform/dump-catalog.ts, and its copy for the converter in cli/lib/cutover/kopje-db.js); both run here, so a
-// table either leaves out must be in NOT_DUMPED.
+// (src/platform/dump-catalog.ts, which the converter runs too, through cli/lib/cutover/kopje-runtime.js), so a table it
+// leaves out must be in NOT_DUMPED.
 
-// Tables neither dump catalog includes, each with why (the other tables are dumped and restored whole).
+// Tables the dump catalog leaves out, each with why (the other tables are dumped and restored whole).
 const NOT_DUMPED: Record<string, string> = {
   backup_media: "the backup's media index for one bucket; a restored Store starts a fresh media baseline",
   card_images: "card images re-encoded with no original kept; a restored Store shows its cards without them",
@@ -609,36 +607,27 @@ describe("the source scanners", () => {
   });
 });
 
-describe("the dump catalogs", () => {
-  // The Store's catalog code, loaded by a computed path: test-node's tsconfig lacks the Workers types it is checked
-  // with (the package's own tsc run checks it). Its SqlStorage is a thin adapter over the node database.
+describe("the dump catalog", () => {
+  // The Store's catalog module, loaded by a computed path: test-node's tsconfig does not import sources by their .ts
+  // path (the package's own tsc run checks it).
   // oxlint-disable-next-line typescript/no-unnecessary-template-expression -- a literal path would be type-checked
-  const store = import(`../src/platform/${"dump-catalog"}.ts`) as Promise<{
-    readCatalog: (sql: {
-      exec: (query: string, ...bindings: SQLInputValue[]) => { toArray: () => unknown[] };
-    }) => unknown;
-    DUMPED_STATE: readonly string[];
-  }>;
+  const store = import(`../src/platform/${"dump-catalog"}.ts`) as Promise<{ DUMPED_STATE: readonly string[] }>;
 
-  it("match, dump every column of each table, and leave out only the tables NOT_DUMPED says why for", async () => {
+  it("dumps every column of each table, and leaves out only the tables NOT_DUMPED says why for", () => {
     const db = createKopjeDatabase();
-    const exec = (query: string, ...bindings: SQLInputValue[]) => ({
-      toArray: () => db.prepare(query).all(...bindings),
-    });
     const catalog = readCatalog(db);
-    expect((await store).readCatalog({ exec })).toEqual(catalog);
     const dumped = new Set(catalog.map((spec) => spec.name));
     const left = [...schema.keys()].filter((table) => !dumped.has(table));
     expect(sorted(left)).toEqual(sorted(Object.keys(NOT_DUMPED)));
     expect(catalogGaps(schema, catalog)).toEqual([]);
-    // Both catalogs leaving out the same column match each other, and still fail.
+    // A catalog leaving out a column fails.
     const withoutEmail = catalog.map((spec) =>
       spec.name === "local_accounts" ? { ...spec, columns: spec.columns.filter((c) => c !== "email") } : spec,
     );
     expect(catalogGaps(schema, withoutEmail)).toEqual(["local_accounts.email"]);
   });
 
-  it("keep every kopje_state name the converter writes", async () => {
+  it("keeps every kopje_state name the converter writes", async () => {
     const { DUMPED_STATE } = await store;
     const { stateNames, unparsed } = converted;
     expect(unparsed).toEqual([]);
