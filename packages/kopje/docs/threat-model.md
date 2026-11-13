@@ -2149,8 +2149,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (domain, url) slot holds a stored file shows paths on the instance origin built from its server token and stored
   types (its still as `static_url`), read with its row (`emojiCacheSql` in `src/platform/stored-bounds.ts`, presented by
   `emojiCacheOf` and `presentEmojis` in `src/domain/custom-emojis.ts` through `cachedImageUrls`); every other entry its
-  stored http(s) URL as above; `test/remote-emoji.test.ts` ("show the cached file and its still for the first entries,
-  the remote URL past them or uncached", "reads an entry past the limit, or a malformed cache, as the remote URL").
+  stored http(s) URL as above; `test/remote-emoji-presenter.test.ts` ("show the cached file and its still for the first
+  entries, the remote URL past them or uncached", "reads an entry past the limit, or a malformed cache, as the remote
+  URL").
 
 ### Media (MEDIA)
 
