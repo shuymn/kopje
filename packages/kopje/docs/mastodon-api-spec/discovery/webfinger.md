@@ -1,6 +1,7 @@
 # WebFinger Endpoint
 
-This document specifies the WebFinger endpoint for Mastodon-compatible servers, as defined in [RFC 7033](https://www.rfc-editor.org/rfc/rfc7033).
+This document specifies the WebFinger endpoint for Mastodon-compatible servers, as defined in
+[RFC 7033](https://www.rfc-editor.org/rfc/rfc7033).
 
 ## Endpoint
 
@@ -10,7 +11,8 @@ GET /.well-known/webfinger
 
 ## Purpose
 
-The WebFinger endpoint enables discovery of account information using the `acct:` URI scheme or HTTPS URLs. Remote servers use this endpoint to resolve user identities during federation.
+The WebFinger endpoint enables discovery of account information using the `acct:` URI scheme or HTTPS URLs. Remote
+servers use this endpoint to resolve user identities during federation.
 
 ## Request
 
@@ -172,11 +174,13 @@ Cache-Control: max-age=180, public
 
 ### Vary Header
 
-Responses MAY include a `Vary: Origin` header when CORS is enabled via `Rack::Cors` middleware. This is not explicitly set by the controller but may be added by the CORS middleware configuration.
+Responses MAY include a `Vary: Origin` header when CORS is enabled via `Rack::Cors` middleware. This is not explicitly
+set by the controller but may be added by the CORS middleware configuration.
 
 ## Instance Actor
 
-When the resource matches the server's domain (without a username), the endpoint returns information for the instance actor:
+When the resource matches the server's domain (without a username), the endpoint returns information for the instance
+actor:
 
 - **Resource**: `https://mastodon.social` or just the domain
 - **Subject**: `acct:mastodon.social@mastodon.social`

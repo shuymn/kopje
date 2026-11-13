@@ -116,8 +116,8 @@ both paging ends at 19 digits (`LONGEST_PAGING`), the site facts and one stub at
   of a stub's order, so a page whose head passes `WEB_PAGE_BYTES` holds the head and one account, and moves on past it.
   `test/status-bounds.test.ts` derives both tabs' ceilings beside the head at its bound (the frame, the head and a stub,
   or the frame, the head and an account at their conservative JSON, within `ANSWER_BYTES`);
-  `test/web-interaction-tabs.test.ts` ("walk to both ends through byte cuts and stubs", "admit the first account beside a
-  head past the page budget") walks them through cuts, and `test/web-page-maxima.test.ts` ("bound the interaction tabs
+  `test/web-interaction-tabs.test.ts` ("walk to both ends through byte cuts and stubs", "admit the first account beside
+  a head past the page budget") walks them through cuts, and `test/web-page-maxima.test.ts` ("bound the interaction tabs
   by the HTML ceiling and their budget") renders them at their stored bounds.
 - **The status page's edit history** comes last: its recorded versions newest first, each admitted whole while it fits
   the lesser of what the page budget leaves and `WEB_HISTORY_BYTES` (512 KiB), and none after the first that does not;
@@ -150,8 +150,9 @@ the page size. Text of ampersands takes a page to about 2.3 times its JSON (2.0 
 references stay within 1.5 times plus 512 KiB.
 
 A report keeps all its statuses; the admin sees those that fit `REPORT_STATUS_BYTES` (2 MiB), the first whatever its
-size (a first that uses it up ends them without reading the next), and a page of reports stops at `ADMIN_REPORT_STATUS_BUDGET` statuses, which bounds the statuses it reads. See
-`src/domain/reports.ts` (`REPORT_STATUS_BYTES`, `ADMIN_REPORT_STATUS_BUDGET`, `adminReportStream`).
+size (a first that uses it up ends them without reading the next), and a page of reports stops at
+`ADMIN_REPORT_STATUS_BUDGET` statuses, which bounds the statuses it reads. See `src/domain/reports.ts`
+(`REPORT_STATUS_BYTES`, `ADMIN_REPORT_STATUS_BUDGET`, `adminReportStream`).
 
 ## Notifications
 
@@ -168,9 +169,9 @@ size (a first that uses it up ends them without reading the next), and a page of
 | Streaming events and catch-up (`stream-hub.ts`) | Unit per event; an event over 512 KiB is skipped whole         |                    |
 
 Grouped notifications admit whole groups in discovery order; for the cut page's range and cursors, readmission (at
-most four passes) and `partial_avatars` (partial accounts read from their own columns only), see `src/domain/notification-groups.ts` (`admitGroups`,
-`listGroupedNotifications`, `MAX_READMISSIONS`). A group may appear again on the next page with its notifications
-below the cursor. Unread counts and markers are not read by admission.
+most four passes) and `partial_avatars` (partial accounts read from their own columns only), see
+`src/domain/notification-groups.ts` (`admitGroups`, `listGroupedNotifications`, `MAX_READMISSIONS`). A group may appear
+again on the next page with its notifications below the cursor. Unread counts and markers are not read by admission.
 
 ## Accounts
 

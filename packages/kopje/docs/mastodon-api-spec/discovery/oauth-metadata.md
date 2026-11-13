@@ -1,6 +1,7 @@
 # OAuth Authorization Server Metadata
 
-This document specifies the OAuth Authorization Server Metadata endpoint for Mastodon-compatible servers, implementing [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414).
+This document specifies the OAuth Authorization Server Metadata endpoint for Mastodon-compatible servers, implementing
+[RFC 8414](https://www.rfc-editor.org/rfc/rfc8414).
 
 ## Endpoint
 
@@ -10,7 +11,9 @@ GET /.well-known/oauth-authorization-server
 
 ## Purpose
 
-The OAuth Authorization Server Metadata endpoint provides clients with information about the OAuth 2.0 authorization server configuration, enabling automatic discovery of authorization endpoints, supported scopes, and authentication methods.
+The OAuth Authorization Server Metadata endpoint provides clients with information about the OAuth 2.0 authorization
+server configuration, enabling automatic discovery of authorization endpoints, supported scopes, and authentication
+methods.
 
 ## Response
 
@@ -218,9 +221,12 @@ Mastodon supports PKCE with the `S256` (SHA-256) method only. The `plain` method
 - **Value**: `{issuer}/api/v1/apps`
 - **Required**: No (Mastodon extension)
 
-This is a **non-standard extension** to the OAuth metadata specification. It points to the Mastodon-specific application registration endpoint, which does not conform to [RFC 7591 (OAuth 2.0 Dynamic Client Registration)](https://www.rfc-editor.org/rfc/rfc7591).
+This is a **non-standard extension** to the OAuth metadata specification. It points to the Mastodon-specific application
+registration endpoint, which does not conform to
+[RFC 7591 (OAuth 2.0 Dynamic Client Registration)](https://www.rfc-editor.org/rfc/rfc7591).
 
-Clients SHOULD use this endpoint to register applications dynamically, but MUST be aware that it follows Mastodon's custom API rather than RFC 7591.
+Clients SHOULD use this endpoint to register applications dynamically, but MUST be aware that it follows Mastodon's
+custom API rather than RFC 7591.
 
 ## Status Codes
 

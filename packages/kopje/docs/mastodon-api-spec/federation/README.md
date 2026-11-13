@@ -1,10 +1,12 @@
 # Federation
 
-This section documents the ActivityPub federation protocol and related security mechanisms for Mastodon-compatible servers.
+This section documents the ActivityPub federation protocol and related security mechanisms for Mastodon-compatible
+servers.
 
 ## Overview
 
-Mastodon implements the [ActivityPub](https://www.w3.org/TR/activitypub/) protocol for server-to-server (S2S) federation. Federation enables:
+Mastodon implements the [ActivityPub](https://www.w3.org/TR/activitypub/) protocol for server-to-server (S2S)
+federation. Federation enables:
 
 - Discovering users across instances
 - Following remote accounts

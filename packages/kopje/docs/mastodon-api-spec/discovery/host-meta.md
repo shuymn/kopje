@@ -1,6 +1,7 @@
 # Host-Meta Discovery
 
-This document specifies the Host-Meta endpoint for Mastodon-compatible servers, implementing [RFC 6415](https://www.rfc-editor.org/rfc/rfc6415).
+This document specifies the Host-Meta endpoint for Mastodon-compatible servers, implementing
+[RFC 6415](https://www.rfc-editor.org/rfc/rfc6415).
 
 ## Endpoint
 
@@ -10,7 +11,8 @@ GET /.well-known/host-meta
 
 ## Purpose
 
-The Host-Meta endpoint provides a discovery document that enables clients to locate the WebFinger endpoint. It returns a Link-based Resource Descriptor Document (LRDD) template that maps resource identifiers to their WebFinger URLs.
+The Host-Meta endpoint provides a discovery document that enables clients to locate the WebFinger endpoint. It returns a
+Link-based Resource Descriptor Document (LRDD) template that maps resource identifiers to their WebFinger URLs.
 
 ## Request
 
@@ -87,7 +89,8 @@ Where:
 
 ### LRDD (Link-based Resource Descriptor Discovery)
 
-The `lrdd` link relation indicates that the template can be used to discover information about a resource. Clients replace the `{uri}` placeholder with the resource they want to look up.
+The `lrdd` link relation indicates that the template can be used to discover information about a resource. Clients
+replace the `{uri}` placeholder with the resource they want to look up.
 
 **Example Usage:**
 
@@ -207,7 +210,8 @@ Host-Meta and WebFinger work together for resource discovery:
 1. **Host-Meta** provides the template for constructing WebFinger URLs
 2. **WebFinger** returns detailed information about specific resources
 
-While many implementations query WebFinger directly (the well-known path is standardized), Host-Meta provides a fallback discovery mechanism and is required for full RFC 6415 compliance.
+While many implementations query WebFinger directly (the well-known path is standardized), Host-Meta provides a fallback
+discovery mechanism and is required for full RFC 6415 compliance.
 
 ```
 Client                          Server

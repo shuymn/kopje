@@ -202,12 +202,12 @@ media-rebuild`, which a restore runs). A `shortcode` is 2 to 128 ASCII character
 emoji; `category` is NULL or 1 to 256 bytes with no NUL, no C0 control and no DEL, and at most 64 SQLite characters (a
 stored-bytes bound: a value that is not well-formed UTF-8 is judged again as decoded when it is presented, and left
 out if it does not pass); `visible_in_picker` and `disabled` are 0 or 1; `created_at` is
-`YYYY-MM-DDTHH:MM:SS.sssZ` with an hour of 00 to 23. At most 1,000 rows have `disabled` 0. The table comes after `media_attachments`. A chunk
-past these fails with the CHECK's name (`custom_emoji_id_is_a_snowflake`, `custom_emoji_shortcode_2_to_128_ascii`,
-`custom_emoji_category_within_256_bytes`, `custom_emoji_flags`, `custom_emoji_created_at_iso`), `custom_emojis: the
-image is not a kept local upload within the emoji limits`, `custom_emojis: more than 1000 enabled` or `UNIQUE
-constraint failed: custom_emojis.shortcode`. A file built from legacy data has no row (`verify-conversion` fails on
-any).
+`YYYY-MM-DDTHH:MM:SS.sssZ` with an hour of 00 to 23. At most 1,000 rows have `disabled` 0. The table comes after
+`media_attachments`. A chunk past these fails with the CHECK's name (`custom_emoji_id_is_a_snowflake`,
+`custom_emoji_shortcode_2_to_128_ascii`, `custom_emoji_category_within_256_bytes`, `custom_emoji_flags`,
+`custom_emoji_created_at_iso`), `custom_emojis: the image is not a kept local upload within the emoji limits`,
+`custom_emojis: more than 1000 enabled` or `UNIQUE constraint failed: custom_emojis.shortcode`. A file built from legacy
+data has no row (`verify-conversion` fails on any).
 
 An announcement is a row of `announcements` (migration `0056_announcements`): an 18-digit `id`; `text` of 1 to 10,000
 UTF-8 bytes with no NUL and not blank in SQLite's ASCII sense; `starts_at` and `ends_at` both NULL or both set, the
@@ -463,8 +463,9 @@ These are excluded because they must not be restored blindly:
 
 The importer refuses a `kopje_state` row whose name is not allowlisted. `profile_updates` is written only by
 `convert --images`: a JSON array of the ids of the local accounts whose avatar or header the conversion changed
-(the importer refuses any other value, a repeated id, or more than 100 ids, `state-invalid`). Publication sends each an `Update(Person)` and deletes the
-row ([cutover.md](cutover.md), "Media"), so a dump of a published Store does not hold it.
+(the importer refuses any other value, a repeated id, or more than 100 ids, `state-invalid`). Publication sends each an
+`Update(Person)` and deletes the row ([cutover.md](cutover.md), "Media"), so a dump of a published Store does not hold
+it.
 
 ## Trailer
 
@@ -535,22 +536,22 @@ bytes it receives:
 - A chunk writes its rows and every index entry they add, so it is bounded by statements as well as by bytes. A
   single row larger than the byte bound comes alone; the platform limits a stored row to 2 MB.
 - A link is a short statement, but SQLite rewrites the whole row it changes, overflow pages included, so a chunk of
-  links can rewrite many times its own size. The chunk only checks that each link's target row exists and that the link holds at most 64 KiB (it carries only key
-  values; a longer one is refused with `link-too-large`), and stages the
-  link (in `kopje_state`, under names that are never dumped). Verify reads the staged links one at a time and applies them in body order, a step
-  per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000 links; the quote count
-  correction (below) starts in the call that applies the last of them. A link that cannot be applied (its value breaks
-  a constraint) is refused at verify; the import then needs a reset.
+  links can rewrite many times its own size. The chunk only checks that each link's target row exists and that the link
+  holds at most 64 KiB (it carries only key values; a longer one is refused with `link-too-large`), and stages the
+  link (in `kopje_state`, under names that are never dumped). Verify reads the staged links one at a time and applies
+  them in body order, a step per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000
+  links; the quote count correction (below) starts in the call that applies the last of them. A link that cannot be
+  applied (its value breaks a constraint) is refused at verify; the import then needs a reset.
 - The import inserts every row, so the triggers that write on an insert run. One changes a dumped value: each
   accepted `quotes` row adds 1 to its quoted status's `quotes_count` (`quotes_count_inserted`), which the dumped
   `statuses` row already holds. After the links, verify takes that 1 off again for each accepted quote, the dumped
   value standing: a step per call reads at most 2,000 quotes in `status_id` order and stops after the status row that
   brings the rewritten bytes to 1 MiB, and the checksums start once a step finds no quote left. A verification that an
   earlier version began starts its checksums again once the correction starts. The other triggers leave the dumped
-  rows as they are: their writes match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
-  every stored row (`statuses_thread`) or while the tables a later one fills are still empty
-  (`reject_replays_follow_stored`), or they write `stream_events`, which no dump holds. `test/import-triggers.test.ts`
-  keeps the list of such triggers with these reasons.
+  rows as they are: their writes match the values a Store keeps (`quotes_withdrawn_inserted`,
+  `statuses_last_status_stored`), their WHEN is false for every stored row (`statuses_thread`) or while the tables a
+  later one fills are still empty (`reject_replays_follow_stored`), or they write `stream_events`, which no dump holds.
+  `test/import-triggers.test.ts` keeps the list of such triggers with these reasons.
 - Verify refuses a boost of a boost: a status whose `reblog_of_id` names a status that has a `reblog_of_id` itself.
   No Kopje writer starts such a chain, and a deletion or purge that meets one cannot remove it (its job parks: RES-6
   in [threat-model.md](threat-model.md)). The check runs on each `statuses` row the checksum scan reads, once every
@@ -613,8 +614,9 @@ The reset runs only when all of these hold:
 - its session has made no successful step (chunk, finish or verify) for 15 minutes;
 - admin access is still not usable.
 
-It resets the import as above; a reset it started is continued the same way, without waiting again. Before the 15 minutes are up, the answer is
-`409 import-not-idle`, with `resetAfter` giving the time the reset becomes possible. Then begin the import again.
+It resets the import as above; a reset it started is continued the same way, without waiting again. Before the 15
+minutes are up, the answer is `409 import-not-idle`, with `resetAfter` giving the time the reset becomes possible. Then
+begin the import again.
 
 This gives the token no new power: on an empty Store without admin access it could begin an import anyway.
 `IMPORT_TOKEN` never resets an Access import.

@@ -2,8 +2,9 @@
 
 Who may see a status or an account, what a viewer filters out, who is notified and whom an author may address are
 decided in one module: `src/domain/audience.ts`. It is plain SQL fragments, spliced into the queries that read and
-write. No read path, notification path or delivery path keeps its own copy of a rule. The threat model states the
-invariants (VIS-1 to VIS-32, NET-2, PUSH-3); this page describes how the code applies them.
+write. No read path, notification path or delivery path keeps its own copy of a rule.
+The threat model states the invariants (VIS-1 to VIS-20, VIS-22, VIS-23, VIS-25 to VIS-32, NET-2, PUSH-3); this page
+describes how the code applies them.
 
 ## The viewer context
 
@@ -128,11 +129,11 @@ received status that names its conversation (Mastodon's `conversation`, which `A
 takes that identifier, so the statuses of a thread delivered out of order share it; otherwise a reply to a status not
 stored takes the uri it names (`in_reply_to_uri`), and any other status its own uri (the trigger `statuses_thread`).
 Any identifier is taken, whatever its origin, as Mastodon takes it: a sender can only group its own statuses with
-others, and a conversation is also keyed by its participants, the sender among them. Deleting a status or a conversation changes no other status's thread, so a later reply joins
-the thread its parent was stored in. Migration `0009_conversations` gives the statuses already stored theirs by the
-same rule, from the start of each reply chain down (a status in a cycle of replies, or below one, takes what a start
-would), reading the conversation a received status named from the object it keeps (`raw`),
-with the same checks as the receive path. A status leaves its
+others, and a conversation is also keyed by its participants, the sender among them. Deleting a status or a conversation
+changes no other status's thread, so a later reply joins the thread its parent was stored in. Migration
+`0009_conversations` gives the statuses already stored theirs by the same rule, from the start of each reply chain down
+(a status in a cycle of replies, or below one, takes what a start would), reading the conversation a received status
+named from the object it keeps (`raw`), with the same checks as the receive path. A status leaves its
 conversations however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade,
 and the trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the
 newest left, or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the
@@ -193,20 +194,21 @@ index walk starts above what is hidden and never reads it; a read of every group
 dismissal by its key. The push target and an accepted request's job check both by key (`keptSql`), so a cleared
 notification is not pushed, unfiltered or added to a conversation. A notification written later has a higher id
 (notification ids are never reused) and shows as usual; `notify` does not join a group with no notification above them
-(a dismissed group is not remembered, as when its rows were deleted). A notification whose natural key a hidden row still holds
-replaces that row (`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then deleted in bounded
-batches, newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the request and the rest
-with the inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single dismissal
-(`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
+(a dismissed group is not remembered, as when its rows were deleted). A notification whose natural key a hidden row
+still holds replaces that row (`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then
+deleted in bounded batches, newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the
+request and the rest with the inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single
+dismissal (`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
 
 An account becomes unavailable when its deletion starts: a remote actor's `Delete` writes `accounts.deleted_at` in the
 transaction that writes its purge job (`deleteActor` in `src/domain/inbox.ts`), before the purge's batches remove its
 relationships, notifications and statuses, so none of them is shown while they are removed. Blocks and mutes of the
 account go last, once nothing they filter (its statuses, mentions of it, replies to it, its notifications) is left. The
 row goes with the purge's last batch; until then the actor's own activities are ignored, its document is not stored
-again, and no boost of its statuses is accepted nor any status of it fetched (its tombstone, `isDeletedActor`). `availableSql` finds a deleted account through the partial index
-`accounts_deleted`, which holds only such accounts, so for any other account the rule reads its `local_accounts` row
-alone. A local account is never marked (the schema refuses it), so `availableLocalSql` needs only that row.
+again, and no boost of its statuses is accepted nor any status of it fetched (its tombstone, `isDeletedActor`).
+`availableSql` finds a deleted account through the partial index `accounts_deleted`, which holds only such accounts, so
+for any other account the rule reads its `local_accounts` row alone. A local account is never marked (the schema refuses
+it), so `availableLocalSql` needs only that row.
 
 A remote account is a viewer when it acts on a local status: an inbound `Like` (a favourite, a Misskey reaction or
 an `EmojiReact`) or `Announce` is stored only if the actor may see the status by itself (`canView`, through
@@ -220,8 +222,8 @@ and notifications (R7, R15).
 
 A quote (R35, VIS-27; Mastodon 4.5's `REST::BaseQuoteSerializer` and `StatusFilter#filter_state_for_quote`) is shown
 with the status that makes it, and never widens what that status's rule passed: the quoted status is judged on its own
-by R2 for the same viewer. `quoteReads(viewer).of` in `src/domain/audience.ts` is the only read of `quotes` for a client.
-For each status it gives the quote's state and, when the viewer is shown it, the quoted status:
+by R2 for the same viewer. `quoteReads(viewer).of` in `src/domain/audience.ts` is the only read of `quotes` for a
+client. For each status it gives the quote's state and, when the viewer is shown it, the quoted status:
 
 - a status with no quote, or with a legacy quote (a Note without `quote`, a Misskey quote) that is not accepted, has
   none (`quote: null`), as Mastodon's `Quote#acceptable?`;
@@ -371,11 +373,12 @@ most the account's limit of pins through their primary key and applies the accou
 first; the actor's `featured` collection serves them as the object endpoint serves statuses (R4), the uri alone of a
 private one, as Mastodon's `CollectionsController` does; and pinning or unpinning records an `Add` or `Remove` for the
 followers (R23, kind `other`), after an `Update` of the actor before the account's first one, pin or featured hashtag
-(`announceFeatured` in `actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`); only the policy module reads it (`conversationMutedSql`): the
-presenter shows it in the viewer's `muted` of each status (a boost's own thread, as Mastodon gives a boost its own
-conversation), and `notify` writes through `notifiedSql`, R15 less a notification about a status of a conversation
-the recipient mutes (`NotifyService#conversation_muted?`; a reblog notification names the original). Listing and
-pushes keep `shownSql`: a notification written before the mute stays, as Mastodon drops only new ones.
+(`announceFeatured` in `actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`);
+only the policy module reads it (`conversationMutedSql`): the presenter shows it in the viewer's `muted` of each status
+(a boost's own thread, as Mastodon gives a boost its own conversation), and `notify` writes through `notifiedSql`, R15
+less a notification about a status of a conversation the recipient mutes (`NotifyService#conversation_muted?`; a reblog
+notification names the original). Listing and pushes keep `shownSql`: a notification written before the mute stays, as
+Mastodon drops only new ones.
 
 Endorsements (`src/domain/endorsements.ts`, Mastodon's `AccountPin`, migration `0014_account_notes_and_pins`) are
 the accounts a local user features. An account is endorsed only while its endorser follows it (an accepted follow,
@@ -393,15 +396,15 @@ lists the discoverable accounts that R12 lists to the viewer: `accounts.discover
 (`update_credentials`) or what a remote actor published (an actor that published nothing is not listed), and
 `listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute (while the
 mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
-`not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that an account moved). A local account
-is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon. `order=active` orders by the
-account's newest public, unlisted or private status (`accounts.last_status_id`, which the triggers of migration
-`0021_directory` keep as statuses are stored, deleted or hidden), accounts without one last, then by id; `order=new` by
-id. A page reads the partial index of its order (discoverable accounts only, all or local) from the start, a window of
-`DIRECTORY_WINDOW` (2) times offset plus limit entries, judges each by key, and answers those R12 lists from the offset:
-so it never reads an account that is not discoverable nor one below the window, and when more than half the window is
-hidden from the viewer the page comes back short (a slice of the full directory, since the window is a prefix of it).
-An offset above `MAX_DIRECTORY_OFFSET` (400) answers no accounts.
+`not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that
+an account moved). A local account is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon.
+`order=active` orders by the account's newest public, unlisted or private status (`accounts.last_status_id`, which the
+triggers of migration `0021_directory` keep as statuses are stored, deleted or hidden), accounts without one last, then
+by id; `order=new` by id. A page reads the partial index of its order (discoverable accounts only, all or local) from
+the start, a window of `DIRECTORY_WINDOW` (2) times offset plus limit entries, judges each by key, and answers those R12
+lists from the offset: so it never reads an account that is not discoverable nor one below the window, and when more
+than half the window is hidden from the viewer the page comes back short (a slice of the full directory, since the
+window is a prefix of it). An offset above `MAX_DIRECTORY_OFFSET` (400) answers no accounts.
 
 A scheduled status (`src/domain/scheduled-statuses.ts`, migration `0011_scheduled_statuses`) is not a status: it is
 a row of `scheduled_statuses` with the post's parameters, and its owner's alone (R26, `scheduledOwnSql`). No read,
@@ -433,14 +436,14 @@ it (the architecture test below) but the OAuth admin of the Mastodon admin API (
 newest first, by state, reporter and reported account, and resolves, reopens, assigns and re-categorizes them; each such
 write is recorded in the moderation log in its transaction. The admin is shown a report's statuses only while its
 reporter may still see them by the rule the report was made under (R11, the reporter as the viewer); Mastodon shows
-them all, deleted ones included. A resolved report shows `action_taken` to its reporter. It names an available account (any other is not
-found) and only statuses of that account the reporter may see by the account statuses rule (R11, `accountStatusIds`):
-one they may not see, or of another account, makes the whole report not found, as Mastodon's `.find` does. Unlike the
-profile read, the reporter's own block of the account hides nothing there, as `AccountStatusesFilter#blocked?` is the
-account's block of the reporter alone. Forwarded, the report becomes a `Flag` from the instance actor (so it names no
-local account), carrying the reporter's comment and the uris of the account and its reported statuses, to the
-servers Mastodon chooses (`reportForwardees`, R23, below). A reported status deleted later stays named by its id;
-a remote account's purge deletes the reports of it, and the notification of each before it.
+them all, deleted ones included. A resolved report shows `action_taken` to its reporter. It names an available account
+(any other is not found) and only statuses of that account the reporter may see by the account statuses rule (R11,
+`accountStatusIds`): one they may not see, or of another account, makes the whole report not found, as Mastodon's
+`.find` does. Unlike the profile read, the reporter's own block of the account hides nothing there, as
+`AccountStatusesFilter#blocked?` is the account's block of the reporter alone. Forwarded, the report becomes a `Flag`
+from the instance actor (so it names no local account), carrying the reporter's comment and the uris of the account and
+its reported statuses, to the servers Mastodon chooses (`reportForwardees`, R23, below). A reported status deleted later
+stays named by its id; a remote account's purge deletes the reports of it, and the notification of each before it.
 
 A remote server reports by a `Flag` (Mastodon's `ActivityPub::Activity::Flag`): its actor, a remote account, is the
 reporter, and each local account it names (or remote one, with a named status replying to a local account) gets a
@@ -467,13 +470,13 @@ deletion has started) as suspended, its nested account redacted as everywhere. T
 
 The admin suspends a local account other than its own (`POST .../action` with `suspend`, `src/domain/suspension.ts`),
 which makes it unavailable (R1) at once, and unsuspends it. The suspension refuses every token and code issued before
-it, also after the unsuspension (the credential epoch, which a suspension moves and an unsuspension keeps), resolves the reports on the account frozen at its time, and sends an
-`Update` of the redacted actor; the unsuspension sends one of the full actor. Both go to the audience of Mastodon's
-`AccountReachFinder` (R23, `reachFollowers`, `reachMentioned` and `reachFollowing` in `audience.ts`): the accepted
-remote followers, the remote accounts its newest 200 statuses of the two days before the suspension mention (at most
-2,000), and the remote accounts it followed or asked to follow in those two days (at most 2,000 of each). The `Update`
-is neither content nor a retraction, so no one is left out. While the account is suspended, its lanes send only
-retractions and that `Update` (R1 above).
+it, also after the unsuspension (the credential epoch, which a suspension moves and an unsuspension keeps), resolves the
+reports on the account frozen at its time, and sends an `Update` of the redacted actor; the unsuspension sends one of
+the full actor. Both go to the audience of Mastodon's `AccountReachFinder` (R23, `reachFollowers`, `reachMentioned` and
+`reachFollowing` in `audience.ts`): the accepted remote followers, the remote accounts its newest 200 statuses of the
+two days before the suspension mention (at most 2,000), and the remote accounts it followed or asked to follow in those
+two days (at most 2,000 of each). The `Update` is neither content nor a retraction, so no one is left out. While the
+account is suspended, its lanes send only retractions and that `Update` (R1 above).
 
 The admin also suspends a remote account (R38, `src/domain/remote-suspension.ts`, migration `0045_remote_suspension`),
 as Mastodon's `SuspendAccountService` for a remote account: it is unavailable (R1) from the suspension's commit, shown
@@ -495,26 +498,27 @@ receivers of the `Accept`s it withdraws: a Follow's answer matters to the follow
 recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
 accounts' follows of it are kept; a pending one's `Follow` is held and sent once the account is available again
 ("Held handshakes", below), as is a local account's `Reject` of its request, and any other content to it is dropped at
-send time (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
-ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
-the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
-under ID-7's rules for a pair id and the retraction cap.
+send time (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are
+deleted in bounded steps before the follow ends. Severing a remote follower's follow, or its request in a domain mode (a
+conversion, below, and the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow`
+id as retracted, under ID-7's rules for a pair id and the retraction cap.
 
 Once the account job ends, the account's availability and `suspension_source` are a function of the final decisions
 alone (the account's suspension source and the blocks), whatever the order of decisions and rounds; its exact
 `suspended_at` is not, since a suspension writes its own time and a conversion keeps the one it finds. What the job
 severed and resolved is not either: severing is monotone per follow generation (a follow row) and never reversed, as in
 Mastodon, so a generation severed while the job held stays severed after the suspension or block is lifted, and which
-generations were severed depends on the order of the decisions and the rounds. Reports are resolved a batch per round (`REPORT_ROUND`), each committed round
-under its job generation's fence: a job ended or reset meanwhile keeps the batches already resolved and leaves the
-rest open, or to the next generation's fence.
+generations were severed depends on the order of the decisions and the rounds. Reports are resolved a batch per round
+(`REPORT_ROUND`), each committed round under its job generation's fence: a job ended or reset meanwhile keeps the
+batches already resolved and leaves the rest open, or to the next generation's fence.
 
 Unsuspending an account that a `suspend` block still covers answers 200 and converts the suspension: the
 account keeps `suspended_at` with `suspension_source = 'domain'`, so it stays unavailable and the entity shows
 `suspended: true`, and the same transaction resets its job to mode `domain` with a fresh follow bound. In that mode
 each round requires the domain mark and live coverage, and the job severs both ways, its requests included, as the
 domain job severs a covered account (below). Suspending it again sets mode `account` back, which keeps local follows
-of it and its requests; a stale mode ends the job at its next round. An account held only by a domain mark answers 403: lowering the block lifts it.
+of it and its requests; a stale mode ends the job at its next round. An account held only by a domain mark answers 403:
+lowering the block lifts it.
 
 Inbound, the gate runs in every round after the deleted-actor check and before the actor upsert: a verified document
 of an individually suspended actor updates only its inbox and shared inbox, so the job's `Reject` reaches a current
@@ -539,8 +543,8 @@ R3, through `audience.ts`).
 Announcements (`announcements.ts`, migration `0056_announcements`) are the Access admin's: written only through
 `/admin/announcements` (AUTH-5) and shown, while published (`announcementShownSql`), to every signed-in local user
 alike, as Mastodon's `Announcement.published`. A draft, a scheduled or an unpublished announcement answers 404 to the
-dismiss and reaction routes. What a viewer is shown of its own is its dismissal (`read`) and its reactions (`me`); counts
-are everyone's. Mentions are resolved when read, to available accounts only (R1). The stream carries the same to
+dismiss and reaction routes. What a viewer is shown of its own is its dismissal (`read`) and its reactions (`me`);
+counts are everyone's. Mentions are resolved when read, to available accounts only (R1). The stream carries the same to
 every listener on `user` (R33). The rule has no per-viewer filter.
 
 ### Trends (R41)
@@ -624,13 +628,13 @@ selects what the rules let the viewer see, and the presenter then reports, in ea
 Mastodon's `StatusRelationshipsPresenter` does; a boost and its original report the same. Nothing is removed on the
 server: the client decides by context, so pages and cursors are those of the read. A filter matches a status by a
 keyword in its spoiler text, text (a remote status's lines as Mastodon's `PlainTextFormatter` extracts them), poll
-choices or media descriptions (of the original, for a boost), with `whole_word` as Mastodon's regex reads it, or by a status it names
-(the status or, for a boost, its original). A filter status can be added only for a status the viewer may view
-(`canView`); one they may not view is refused as a missing one is, and a filter status is listed by its ids alone,
-whatever the viewer may see of it later. `test/policy-filters.test.ts` checks the endpoints on generated worlds against
-a model of the matching. Matching is bounded: each status is matched on at most 10,000 code units of its text, and the
-statuses of one response on 400,000 together, by water-filling (short texts whole, long ones up to one level), so a
-keyword deep in a long status of a very large response may be missed; filter statuses always match.
+choices or media descriptions (of the original, for a boost), with `whole_word` as Mastodon's regex reads it, or by a
+status it names (the status or, for a boost, its original). A filter status can be added only for a status the viewer
+may view (`canView`); one they may not view is refused as a missing one is, and a filter status is listed by its ids
+alone, whatever the viewer may see of it later. `test/policy-filters.test.ts` checks the endpoints on generated worlds
+against a model of the matching. Matching is bounded: each status is matched on at most 10,000 code units of its text,
+and the statuses of one response on 400,000 together, by water-filling (short texts whole, long ones up to one level),
+so a keyword deep in a long status of a very large response may be missed; filter statuses always match.
 
 ## Outbound recipients
 
@@ -677,8 +681,9 @@ into the owner's followers, by shared inbox, and every inbox that received each 
 limited quoting statuses (`Audience.receiptShares`) into the inboxes the quote was delivered to alone (`receiptsOf`),
 so no server that never received such a quote learns of it. The forwarded activity is the remote author's, so its
 `to` never decides a target: no account it names is addressed and nobody gets a personal copy. It is a retraction, so
-`recipientsFor` leaves out no follower and the send-time check never drops it. A direct or limited boost (a converted one) is no member: its booster's followers
-may not see it, so it forwards nothing. A withdrawn quoting status is no member either.
+`recipientsFor` leaves out no follower and the send-time check never drops it. A direct or limited boost (a converted
+one) is no member: its booster's followers may not see it, so it forwards nothing. A withdrawn quoting status is no
+member either.
 
 ### Instance domain blocks (R38, VIS-30)
 
@@ -763,15 +768,15 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     `severFollow` with the account job's preparation. Before a local follower's follow ends, the preparation removes
     the account from that follower's lists, writing at most the round's room (257 rows,
     `src/domain/remote-suspension.ts`) a round, so the follow's final delete writes no list row. Its reads are not
-    bounded the same way: each preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all of the follower's
-    lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always removed in
-    one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round,
-    one resumed from the round before included. An individually suspended account is skipped, so its local follows
-    are kept (`account` wins; for Mastodon's rule, see [mastodon-deviations.md](mastodon-deviations.md), remote
-    suspension). **Limit (imported lists):** the memberships are removed before the follow ends,
-    and nothing restores them. A follower imported with more than 257 lists that include a covered account
-    needs several rounds for them; if the block is lifted meanwhile (an unblock, or a conversion back to an
-    individual suspension), the follow can survive with some of those list memberships removed.
+    bounded the same way: each preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all
+    of the follower's lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always
+    removed in one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS`
+    (100) accounts are reconciled a round, one resumed from the round before included. An individually suspended account
+    is skipped, so its local follows are kept (`account` wins; for Mastodon's rule, see
+    [mastodon-deviations.md](mastodon-deviations.md), remote suspension). **Limit (imported lists):** the memberships
+    are removed before the follow ends, and nothing restores them. A follower imported with more than 257 lists that
+    include a covered account needs several rounds for them; if the block is lifted meanwhile (an unblock, or a
+    conversion back to an individual suspension), the follow can survive with some of those list memberships removed.
 
   No account is stored or moves into a covered domain, so the last walk after the last reset finds every covered
   account. Once the job ends, the domain marks (`suspension_source = 'domain'`; not their exact `suspended_at`) and
@@ -880,12 +885,12 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
   held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local
   account's pending follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account
-  its `Accept`; any other ends the hold. The handshake is recorded again with its original id (activities.ts: a `Follow`'s id is
-  `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without one) only when,
-  read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared inbox, else the
-  personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's rule
-  (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower nor
-  its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
+  its `Accept`; any other ends the hold. The handshake is recorded again with its original id (activities.ts: a
+  `Follow`'s id is `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without
+  one) only when, read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared
+  inbox, else the personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's
+  rule (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower
+  nor its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
   moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
 - **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing is confirmed for sending
   while its recipient is unavailable (a retraction, a `Reject` that withdraws an accepted follow included, is exempt);
@@ -1046,10 +1051,11 @@ the viewer owns (their notifications, bookmarks, favourites, notification reques
 rule over what the row names: the viewer already knows their own relations and rows, and Mastodon paginates before
 filtering there. A candidate may also be left out by the request's own conditions (a post without media, a reply, a
 remote post on a local hashtag timeline), a status the viewer may see without them. Where a read cannot keep rows
-hidden by visibility out with an index, it walks past them: such rows cost their number, never a cursor. A public page's newer link from an empty page past its list's oldest is not an
-item's id but a boundary, `max_id` − 1 of that page's own request (`src/web/view/pager.ts`): it may equal a hidden
-status's id and discloses nothing, as it is derived from the request alone. A status page's replies list oldest first,
-and their earlier link from an empty page past their newest is the same kind of boundary, `min_id` + 1.
+hidden by visibility out with an index, it walks past them: such rows cost their number, never a cursor. A public page's
+newer link from an empty page past its list's oldest is not an item's id but a boundary, `max_id` − 1 of that page's own
+request (`src/web/view/pager.ts`): it may equal a hidden status's id and discloses nothing, as it is derived from the
+request alone. A status page's replies list oldest first, and their earlier link from an empty page past their newest is
+the same kind of boundary, `min_id` + 1.
 
 The windows, for a page of `limit` (`readWindow(limit)` = max(3 × limit, 40); `streamWindow(limit)` = max(2 ×
 limit, 40); statuses page by 20 and at most 40, accounts and notifications by 40 and at most 80):

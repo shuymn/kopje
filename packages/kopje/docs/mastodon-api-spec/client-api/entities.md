@@ -28,7 +28,8 @@ Fields marked as nullable MAY be `null` in responses. Clients MUST handle null v
 
 Represents a user account.
 
-**Serializer Reference:** [`app/serializers/rest/account_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/account_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/account_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/account_serializer.rb)
 
 ### Attributes
 
@@ -124,7 +125,8 @@ Represents a user account.
 
 Represents a post/status.
 
-**Serializer Reference:** [`app/serializers/rest/status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_serializer.rb)
 
 ### Attributes
 
@@ -243,7 +245,8 @@ These fields are only present when authenticated:
 
 Represents an uploaded media file.
 
-**Serializer Reference:** [`app/serializers/rest/media_attachment_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/media_attachment_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/media_attachment_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/media_attachment_serializer.rb)
 
 ### Attributes
 
@@ -333,7 +336,8 @@ For video/audio:
 
 Represents a notification of an event.
 
-**Serializer Reference:** [`app/serializers/rest/notification_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/notification_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_serializer.rb)
 
 ### Attributes
 
@@ -397,7 +401,8 @@ Represents a notification of an event.
 
 Represents notification filtering policy (v1 format).
 
-**Serializer Reference:** [`app/serializers/rest/v1/notification_policy_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/notification_policy_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/v1/notification_policy_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/notification_policy_serializer.rb)
 
 ### Attributes
 
@@ -415,7 +420,8 @@ Represents notification filtering policy (v1 format).
 
 Represents notification filtering policy (v2 format).
 
-**Serializer Reference:** [`app/serializers/rest/notification_policy_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_policy_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/notification_policy_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_policy_serializer.rb)
 
 ### Attributes
 
@@ -434,7 +440,8 @@ Represents notification filtering policy (v2 format).
 
 Represents a pending notification request.
 
-**Serializer Reference:** [`app/serializers/rest/notification_request_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_request_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/notification_request_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_request_serializer.rb)
 
 ### Attributes
 
@@ -453,7 +460,8 @@ Represents a pending notification request.
 
 Represents a grouped notification entry (v2 notifications).
 
-**Serializer Reference:** [`app/serializers/rest/notification_group_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_group_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/notification_group_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_group_serializer.rb)
 
 ### Attributes
 
@@ -475,7 +483,8 @@ Represents a grouped notification entry (v2 notifications).
 
 Response envelope for grouped notifications (v2 notifications).
 
-**Serializer Reference:** [`app/serializers/rest/dedup_notification_group_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/dedup_notification_group_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/dedup_notification_group_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/dedup_notification_group_serializer.rb)
 
 ### Attributes
 
@@ -492,7 +501,8 @@ Response envelope for grouped notifications (v2 notifications).
 
 Represents the source text of a status.
 
-**Serializer Reference:** [`app/serializers/rest/status_source_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_source_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/status_source_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_source_serializer.rb)
 
 ### Attributes
 
@@ -508,7 +518,8 @@ Represents the source text of a status.
 
 Represents a historical edit of a status.
 
-**Serializer Reference:** [`app/serializers/rest/status_edit_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_edit_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/status_edit_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_edit_serializer.rb)
 
 ### Attributes
 
@@ -530,7 +541,8 @@ Represents a historical edit of a status.
 
 Represents a machine translation result for a status.
 
-**Serializer Reference:** [`app/serializers/rest/translation_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/translation_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/translation_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/translation_serializer.rb)
 
 ### Attributes
 
@@ -550,7 +562,8 @@ Represents a machine translation result for a status.
 
 Represents a legacy filter keyword (v1 filters API).
 
-**Serializer Reference:** [`app/serializers/rest/v1/filter_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/filter_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/v1/filter_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/filter_serializer.rb)
 
 ### Attributes
 
@@ -569,7 +582,8 @@ Represents a legacy filter keyword (v1 filters API).
 
 Represents a filter category (v2 filters API).
 
-**Serializer Reference:** [`app/serializers/rest/filter_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/filter_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_serializer.rb)
 
 ### Attributes
 
@@ -589,7 +603,8 @@ Represents a filter category (v2 filters API).
 
 Represents a keyword rule within a filter.
 
-**Serializer Reference:** [`app/serializers/rest/filter_keyword_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_keyword_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/filter_keyword_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_keyword_serializer.rb)
 
 ### Attributes
 
@@ -605,7 +620,8 @@ Represents a keyword rule within a filter.
 
 Represents a status-specific rule within a filter.
 
-**Serializer Reference:** [`app/serializers/rest/filter_status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_status_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/filter_status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/filter_status_serializer.rb)
 
 ### Attributes
 
@@ -620,7 +636,8 @@ Represents a status-specific rule within a filter.
 
 Represents the relationship between accounts.
 
-**Serializer Reference:** [`app/serializers/rest/relationship_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/relationship_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/relationship_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/relationship_serializer.rb)
 
 ### Attributes
 
@@ -670,7 +687,8 @@ Represents the relationship between accounts.
 
 Represents a user-defined list.
 
-**Serializer Reference:** [`app/serializers/rest/list_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/list_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/list_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/list_serializer.rb)
 
 ### Attributes
 
@@ -698,7 +716,8 @@ Represents a user-defined list.
 
 Represents a featured hashtag on a user profile.
 
-**Serializer Reference:** [`app/serializers/rest/featured_tag_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/featured_tag_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/featured_tag_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/featured_tag_serializer.rb)
 
 ### Attributes
 
@@ -728,7 +747,8 @@ Represents a featured hashtag on a user profile.
 
 Represents a list of accounts you follow that also follow a given account.
 
-**Serializer Reference:** [`app/serializers/rest/familiar_followers_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/familiar_followers_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/familiar_followers_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/familiar_followers_serializer.rb)
 
 ### Attributes
 
@@ -754,7 +774,8 @@ Represents a list of accounts you follow that also follow a given account.
 
 Represents instance information.
 
-**Serializer Reference:** [`app/serializers/rest/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/instance_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/instance_serializer.rb)
 
 ### Attributes
 
@@ -819,7 +840,8 @@ Represents instance information.
 
 Deprecated instance representation.
 
-**Serializer Reference:** [`app/serializers/rest/v1/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/instance_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/v1/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/instance_serializer.rb)
 
 ### Attributes
 
@@ -848,7 +870,8 @@ Deprecated instance representation.
 
 Represents a read position marker.
 
-**Serializer Reference:** [`app/serializers/rest/marker_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/marker_serializer.rb)
+**Serializer Reference:**
+[`app/serializers/rest/marker_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/marker_serializer.rb)
 
 ### Attributes
 
@@ -962,14 +985,22 @@ Represents search results.
 
 ## File References
 
-- Account: [`app/serializers/rest/account_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/account_serializer.rb)
-- Status: [`app/serializers/rest/status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_serializer.rb)
-- MediaAttachment: [`app/serializers/rest/media_attachment_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/media_attachment_serializer.rb)
-- Notification: [`app/serializers/rest/notification_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_serializer.rb)
-- Relationship: [`app/serializers/rest/relationship_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/relationship_serializer.rb)
-- Instance v2: [`app/serializers/rest/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/instance_serializer.rb)
-- Instance v1: [`app/serializers/rest/v1/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/instance_serializer.rb)
-- Marker: [`app/serializers/rest/marker_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/marker_serializer.rb)
+- Account:
+  [`app/serializers/rest/account_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/account_serializer.rb)
+- Status:
+  [`app/serializers/rest/status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/status_serializer.rb)
+- MediaAttachment:
+  [`app/serializers/rest/media_attachment_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/media_attachment_serializer.rb)
+- Notification:
+  [`app/serializers/rest/notification_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/notification_serializer.rb)
+- Relationship:
+  [`app/serializers/rest/relationship_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/relationship_serializer.rb)
+- Instance v2:
+  [`app/serializers/rest/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/instance_serializer.rb)
+- Instance v1:
+  [`app/serializers/rest/v1/instance_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/v1/instance_serializer.rb)
+- Marker:
+  [`app/serializers/rest/marker_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/marker_serializer.rb)
 
 TypeScript type definitions are maintained in:
 - [`app/javascript/mastodon/api_types/accounts.ts`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/javascript/mastodon/api_types/accounts.ts)

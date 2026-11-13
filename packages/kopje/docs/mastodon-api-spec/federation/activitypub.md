@@ -44,7 +44,8 @@ When receiving `Delete` or `Update` activities where:
 - `actor` equals `object` (self-referential)
 - Actor does not exist in local database
 
-Server MUST respond `202 Accepted` without processing. This prevents unnecessary retries for cleanup activities from unknown actors.
+Server MUST respond `202 Accepted` without processing. This prevents unnecessary retries for cleanup activities from
+unknown actors.
 
 ### Collection Synchronization Header
 
@@ -54,11 +55,13 @@ Non-standard extension for follower list synchronization:
 Collection-Synchronization: collectionId="...",digest="...",url="..."
 ```
 
-Servers MAY process this header to synchronize follower collections. The header mechanism can be disabled with `DISABLE_FOLLOWERS_SYNCHRONIZATION=true` (disables both sending and processing of this header).
+Servers MAY process this header to synchronize follower collections. The header mechanism can be disabled with
+`DISABLE_FOLLOWERS_SYNCHRONIZATION=true` (disables both sending and processing of this header).
 
 ### Account Upgrade
 
-When receiving a signed activity from an OStatus (legacy) account, servers SHOULD upgrade the account to ActivityPub by re-resolving via WebFinger.
+When receiving a signed activity from an OStatus (legacy) account, servers SHOULD upgrade the account to ActivityPub by
+re-resolving via WebFinger.
 
 ## Outbox
 
@@ -215,7 +218,8 @@ GET /ap/users/{id}/statuses/{id}/shares
 }
 ```
 
-> **Note**: Mastodon uses `http://joinmastodon.org/ns#` (prefixed as `toot:`) for Mastodon-specific extensions like `discoverable`, `indexable`, `featured`, `blurhash`, and `focalPoint`.
+> **Note**: Mastodon uses `http://joinmastodon.org/ns#` (prefixed as `toot:`) for Mastodon-specific extensions like
+> `discoverable`, `indexable`, `featured`, `blurhash`, and `focalPoint`.
 
 ### Actor Types
 
@@ -307,7 +311,8 @@ Collection caching varies by type:
 GET /users/{username}/followers_synchronization
 ```
 
-Returns a subset of followers filtered by the requesting server's domain prefix. Used by remote servers to verify their local follower list matches the origin server.
+Returns a subset of followers filtered by the requesting server's domain prefix. Used by remote servers to verify their
+local follower list matches the origin server.
 
 **Authentication:** Signature REQUIRED (always, regardless of authorized fetch mode)
 
@@ -341,7 +346,9 @@ Returns a subset of followers filtered by the requesting server's domain prefix.
 
 **Related Configuration:**
 
-The `DISABLE_FOLLOWERS_SYNCHRONIZATION=true` environment variable disables the **synchronization mechanism** (sending/processing the `Collection-Synchronization` header on inbox deliveries), but does not disable this GET endpoint itself. The endpoint will still respond to properly signed requests regardless of this setting.
+The `DISABLE_FOLLOWERS_SYNCHRONIZATION=true` environment variable disables the **synchronization mechanism**
+(sending/processing the `Collection-Synchronization` header on inbox deliveries), but does not disable this GET endpoint
+itself. The endpoint will still respond to properly signed requests regardless of this setting.
 
 ### Quote Authorizations
 
@@ -349,7 +356,8 @@ The `DISABLE_FOLLOWERS_SYNCHRONIZATION=true` environment variable disables the *
 GET /users/{username}/quote_authorizations/{id}
 ```
 
-Returns authorization for a quote post. When a status quotes another status, the quoted account's server can verify the quote is authorized by fetching this endpoint.
+Returns authorization for a quote post. When a status quotes another status, the quoted account's server can verify the
+quote is authorized by fetching this endpoint.
 
 **Authentication:** Signature required in Authorized Fetch mode
 
