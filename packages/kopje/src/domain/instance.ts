@@ -143,22 +143,20 @@ export const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FR
 // The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
 // window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
 // text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
-// (domain IS NULL, pinned: RES-7), never over the remote accounts. The peer domain count is `domains`.
-function countsSql(domains: string): string {
-  return `SELECT u.users, u.active,
+// (domain IS NULL, pinned: RES-7), never over the remote accounts. The two statements differ only in the peer domain
+// count.
+const USERS_COUNT_SQL = `SELECT u.users, u.active,
 	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
-		WHERE domain IS NULL) AS statuses,
-	(${domains}) AS domains
-FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+		WHERE domain IS NULL) AS statuses`;
+const LOCAL_COUNT_FROM_SQL = `FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
-}
+const KEPT_COUNT_SQL = `SELECT json_extract(value, '$.n') FROM kopje_state WHERE name = '${DOMAIN_COUNT_STATE}'`;
 
 // The counts with the kept peer domain count, read in the same transaction as FRESH_DOMAIN_COUNT_SQL found it fresh.
-export const INSTANCE_COUNTS_KEPT_SQL = countsSql(`SELECT json_extract(value, '$.n') FROM kopje_state
-	WHERE name = '${DOMAIN_COUNT_STATE}'`);
+export const INSTANCE_COUNTS_KEPT_SQL = `${USERS_COUNT_SQL}, (${KEPT_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
 // The counts while none is fresh (a new, upgraded, imported or reset Store before the cron's next refresh, or one whose
 // refreshes were skipped): counted over every remote account, and not stored, as a read writes nothing.
-export const INSTANCE_COUNTS_SQL = countsSql(DOMAIN_COUNT_SQL);
+export const INSTANCE_COUNTS_SQL = `${USERS_COUNT_SQL}, (${DOMAIN_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
 
 // What /api/v2/instance presents of the counts: the active users alone.
 export const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
