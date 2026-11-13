@@ -87,7 +87,7 @@ function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
       const parsed = JSON.parse(body) as { type: string; object?: { suspended?: boolean } };
       return { type: parsed.type, inbox, suspended: parsed.object?.suspended === true, object: parsed.object };
     },
-    { now, until: "all", strict: true },
+    { now, until: "all", strict: true, rounds: 200 },
   );
 }
 

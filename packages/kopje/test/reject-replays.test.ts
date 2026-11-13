@@ -50,7 +50,7 @@ function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
       const parsed = JSON.parse(body) as { type: string; id: string };
       return { type: parsed.type, id: parsed.id, inbox, body };
     },
-    { now, until: "due" },
+    { now, until: "due", rounds: 200 },
   );
 }
 

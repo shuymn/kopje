@@ -291,7 +291,7 @@ function drain(store: StoreStub): Promise<[string, string][]> {
   return drainDeliveries(
     store,
     ({ inbox, body }): [string, string] => [(JSON.parse(body) as { type: string }).type, inbox],
-    { now: NOW, until: "all" },
+    { now: NOW, until: "all", rounds: 1_000 },
   );
 }
 

@@ -91,7 +91,7 @@ async function counts(store: StoreStub, statusId: string) {
 
 // Every body the delivery rounds send, by inbox, as confirmDelivery gives it, each row completed with 202.
 function sent(store: StoreStub): Promise<SentRow[]> {
-  return drainDeliveries(store, (row) => row, { now: NOW, until: "due" });
+  return drainDeliveries(store, (row) => row, { now: NOW, until: "due", rounds: 20 });
 }
 
 async function sentDeletes(store: StoreStub) {

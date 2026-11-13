@@ -1611,6 +1611,7 @@ describe("status deletes: the cap and the TTL", () => {
 function deliverAll(w: World): Promise<string[]> {
   return drainDeliveries(w.store, ({ body }) => (JSON.parse(body) as { id: string }).id, {
     now: w.clock,
+    rounds: 200,
     until: async () =>
       (await sql(w.store, "SELECT 1 FROM deliveries UNION ALL SELECT 1 FROM outbound_targets")).length === 0,
   });

@@ -35,6 +35,7 @@ function drainSent(store: StoreStub): Promise<{ body: SentBody; inbox: string }[
   return drainDeliveries(store, ({ inbox, body }) => ({ body: JSON.parse(body) as SentBody, inbox }), {
     now: NOW,
     until: "all",
+    rounds: 1_000,
   });
 }
 

@@ -199,16 +199,17 @@ export type SentRow = { inbox: string; body: string };
 
 // Claims at `now`, round after round as claimAndSettle with every row sent completed as delivered, until a claim is
 // empty and `until` holds: nothing due by `now` ("due"), nothing waiting at all ("all"), or the caller's own check.
-// With `strict`, every row claimed must be sent. Each row sent through `map`, in order; throws past 1,000 rounds.
+// With `strict`, every row claimed must be sent. Each row sent through `map`, in order; throws past `rounds` rounds, the
+// bound the caller's test holds the drain to.
 export async function drainDeliveries<T>(
   store: StoreStub,
   map: (row: SentRow) => T,
-  options: { now: number; until: "due" | "all" | (() => Promise<boolean>); strict?: boolean },
+  options: { now: number; until: "due" | "all" | (() => Promise<boolean>); rounds: number; strict?: boolean },
 ): Promise<T[]> {
   const { now, until } = options;
   const lease = `drain-${crypto.randomUUID()}`;
   const sent: T[] = [];
-  for (let round = 0; round < 1_000; round++) {
+  for (let round = 0; round < options.rounds; round++) {
     const { claim, sent: rows } = await claimAndSettle(store, {
       now,
       leaseToken: `${lease}-${round}`,

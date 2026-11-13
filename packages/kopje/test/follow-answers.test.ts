@@ -126,7 +126,7 @@ function drain(t: T): Promise<[string, string | null][]> {
       const object = typeof body.object === "string" ? body.object : (body.object as { id?: string }).id;
       return [body.type, object ?? null];
     },
-    { now: LATER, until: "due" },
+    { now: LATER, until: "due", rounds: 1_000 },
   );
 }
 
