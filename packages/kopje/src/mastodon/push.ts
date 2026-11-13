@@ -9,10 +9,10 @@ import {
   type ApiHandler,
   authorized,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
   vapidKey,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { type Params, parseBoolean } from "./params";
@@ -88,11 +88,7 @@ async function subscriptionParams(p: Params): Promise<Keys | Response> {
   return { endpoint: url.href, p256dh: base64url.encode(key), auth: base64url.encode(secret) };
 }
 
-export const createSubscription: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createSubscription: ApiHandler = withParams(async (c, deps, p) => {
   const jwk = vapidJwk(c.env);
   if (jwk === null) {
     return refuseAfterAuth(c, deps, NOT_FOUND());
@@ -116,7 +112,7 @@ export const createSubscription: ApiHandler = async (c, deps) => {
     ),
   );
   return c.json(present(subscription, c.env));
-};
+});
 
 export const getSubscription: ApiHandler = async (c, deps) => {
   if (vapidJwk(c.env) === null) {
@@ -127,11 +123,7 @@ export const getSubscription: ApiHandler = async (c, deps) => {
   return subscription === null ? NOT_FOUND() : c.json(present(subscription, c.env));
 };
 
-export const updateSubscription: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   if (vapidJwk(c.env) === null) {
     return refuseAfterAuth(c, deps, NOT_FOUND());
   }
@@ -144,7 +136,7 @@ export const updateSubscription: ApiHandler = async (c, deps) => {
     await storeCall(c, deps, (s, b) => s.updatePushSubscription(b, { credential, ...data })),
   );
   return subscription === null ? NOT_FOUND() : c.json(present(subscription, c.env));
-};
+});
 
 export const deleteSubscription: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);

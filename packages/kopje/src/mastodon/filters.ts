@@ -5,7 +5,7 @@ import type {
   KeywordAttributes,
   KeywordChanges,
 } from "../domain/filters";
-import { type ApiContext, type ApiHandler, authorized, requestParams, storeCall, userCredential } from "./context";
+import { type ApiContext, type ApiHandler, authorized, storeCall, userCredential, withParams } from "./context";
 import { mastodonError } from "./errors";
 import type { Params } from "./params";
 
@@ -86,23 +86,15 @@ export const getFilter: ApiHandler = async (c, deps) => {
   return found(c, authorized(await storeCall(c, deps, (s, b) => s.getFilter(b, input))));
 };
 
-export const createFilter: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createFilter: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...filterChanges(p), credential: userCredential(c, deps) };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.createFilter(b, input))));
-};
+});
 
-export const updateFilter: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateFilter: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...filterChanges(p), credential: userCredential(c, deps), id: id(c) };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.updateFilter(b, input))));
-};
+});
 
 export const deleteFilter: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: id(c) };
@@ -114,28 +106,20 @@ export const listFilterKeywords: ApiHandler = async (c, deps) => {
   return found(c, authorized(await storeCall(c, deps, (s, b) => s.listFilterKeywords(b, input))));
 };
 
-export const createFilterKeyword: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createFilterKeyword: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...keywordChanges(p), credential: userCredential(c, deps), filterId: id(c, "filter_id") };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.createFilterKeyword(b, input))));
-};
+});
 
 export const getFilterKeyword: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: id(c) };
   return found(c, authorized(await storeCall(c, deps, (s, b) => s.getFilterKeyword(b, input))));
 };
 
-export const updateFilterKeyword: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateFilterKeyword: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...keywordChanges(p), credential: userCredential(c, deps), id: id(c) };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.updateFilterKeyword(b, input))));
-};
+});
 
 export const deleteFilterKeyword: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: id(c) };
@@ -147,14 +131,10 @@ export const listFilterStatuses: ApiHandler = async (c, deps) => {
   return found(c, authorized(await storeCall(c, deps, (s, b) => s.listFilterStatuses(b, input))));
 };
 
-export const createFilterStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createFilterStatus: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), filterId: id(c, "filter_id"), statusId: p.get("status_id") };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.createFilterStatus(b, input))));
-};
+});
 
 export const getFilterStatus: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: id(c) };
@@ -176,23 +156,15 @@ export const getFilterV1: ApiHandler = async (c, deps) => {
   return found(c, authorized(await storeCall(c, deps, (s, b) => s.getFilterV1(b, input))));
 };
 
-export const createFilterV1: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createFilterV1: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...v1Changes(p), credential: userCredential(c, deps) };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.createFilterV1(b, input))));
-};
+});
 
-export const updateFilterV1: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateFilterV1: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...v1Changes(p), credential: userCredential(c, deps), id: id(c) };
   return outcome(c, authorized(await storeCall(c, deps, (s, b) => s.updateFilterV1(b, input))));
-};
+});
 
 export const deleteFilterV1: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: id(c) };

@@ -1,5 +1,5 @@
 import { SUGGESTIONS_DEFAULT_LIMIT, SUGGESTIONS_MAX_LIMIT } from "../domain/suggestions";
-import { type ApiHandler, authorized, present, requestParams, storeCall, userCredential } from "./context";
+import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
 import { limitParam, offsetParam } from "./params";
 
 // Follow suggestions (domain/suggestions.ts): Api::V1::SuggestionsController and Api::V2::SuggestionsController.
@@ -9,11 +9,7 @@ import { limitParam, offsetParam } from "./params";
 // unreadable one answers none) and `offset` (a negative or unreadable one is 0). An offset past the end answers [],
 // where Mastodon's slice of nil answers 500. No Deprecation header on v1, as on Kopje's other deprecated routes.
 function suggestionsHandler(version: 1 | 2): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const input = {
       credential: userCredential(c, deps),
       version,
@@ -22,7 +18,7 @@ function suggestionsHandler(version: 1 | 2): ApiHandler {
       present: present(c),
     };
     return c.json(authorized(await storeCall(c, deps, (s, b) => s.suggestions(b, input))));
-  };
+  });
 }
 
 export const suggestionsV1 = suggestionsHandler(1);

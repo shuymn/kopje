@@ -19,9 +19,9 @@ import {
   type ApiHandler,
   authorized,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { type FileRule, type Params, parseBody } from "./params";
@@ -494,23 +494,22 @@ export const getMedia: ApiHandler = async (c, deps) => {
 
 // PUT and PATCH /api/v1/media/:id: description and focus of own unattached media. Attached media is described through
 // media_attributes[] of a status edit, as in Mastodon.
-export const updateMedia: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps, { files: THUMBNAIL_FILE });
-  if (p instanceof Response) {
-    return p;
-  }
-  const description = p.get("description");
-  const problem = mediaProblem(p, description);
-  if (problem !== undefined) {
-    return refuseAfterAuth(c, deps, mastodonError(422, problem));
-  }
-  const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-  const credential = userCredential(c, deps);
-  const media = authorized(
-    await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
-  );
-  return media === null ? NOT_FOUND() : c.json(media);
-};
+export const updateMedia: ApiHandler = withParams(
+  async (c, deps, p) => {
+    const description = p.get("description");
+    const problem = mediaProblem(p, description);
+    if (problem !== undefined) {
+      return refuseAfterAuth(c, deps, mastodonError(422, problem));
+    }
+    const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
+    const credential = userCredential(c, deps);
+    const media = authorized(
+      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
+    );
+    return media === null ? NOT_FOUND() : c.json(media);
+  },
+  { files: THUMBNAIL_FILE },
+);
 
 // DELETE /api/v1/media/:id: own unattached media; the sweep deletes its R2 objects after the response.
 export const deleteMedia: ApiHandler = async (c, deps) => {

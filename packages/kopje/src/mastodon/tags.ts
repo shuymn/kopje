@@ -7,9 +7,9 @@ import {
   credential,
   optionalTokenCredential,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
@@ -67,15 +67,11 @@ export const unfeatureTag = tagWrite("unfeatureTag");
 
 // GET /api/v1/followed_tags: 100 hashtags by default and at most 200 (FollowedTagsController::TAGS_LIMIT,
 // limit_param).
-export const followedTags: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const followedTags: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, 100, 200);
   const input = { credential: userCredential(c, deps), page, present: present(c) };
   return pageResponse(c, authorized(await storeCall(c, deps, (s, b) => s.followedTags(b, input))), page.limit);
-};
+});
 
 // GET /api/v1/featured_tags.
 export const featuredTags: ApiHandler = async (c, deps) => {
@@ -90,11 +86,7 @@ export const featuredTagSuggestions: ApiHandler = async (c, deps) => {
 };
 
 // POST /api/v1/featured_tags: `name` is required (params.require(:name)), after the token and its user are checked.
-export const createFeaturedTag: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createFeaturedTag: ApiHandler = withParams(async (c, deps, p) => {
   const name = p.get("name") ?? "";
   if (name === "") {
     const value = credential(c, deps);
@@ -106,7 +98,7 @@ export const createFeaturedTag: ApiHandler = async (c, deps) => {
   }
   const input = { credential: userCredential(c, deps), name, now: deps.now(), present: present(c) };
   return tagResponse(c, authorized(await storeCall(c, deps, (s, b) => s.createFeaturedTag(b, input))));
-};
+});
 
 // DELETE /api/v1/featured_tags/:id: the viewer's own only; an empty object.
 export const deleteFeaturedTag: ApiHandler = async (c, deps) => {

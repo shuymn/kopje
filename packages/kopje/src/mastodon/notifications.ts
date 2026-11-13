@@ -1,4 +1,4 @@
-import { type ApiHandler, authorized, present, requestParams, storeCall, userCredential } from "./context";
+import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { parseBoolean } from "./params";
@@ -8,11 +8,7 @@ import { parseBoolean } from "./params";
 
 const NOT_FOUND = () => mastodonError(404, "Record not found");
 
-export const listNotifications: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
   const accountId = p.get("account_id");
   const credential = userCredential(c, deps);
@@ -30,7 +26,7 @@ export const listNotifications: ApiHandler = async (c, deps) => {
     ),
   );
   return pageResponse(c, result, page.limit);
-};
+});
 
 export const getNotification: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";

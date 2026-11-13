@@ -1,5 +1,5 @@
 import { SCHEDULED_PAGE } from "../domain/scheduled-statuses";
-import { type ApiHandler, authorized, requestParams, storeCall, userCredential } from "./context";
+import { type ApiHandler, authorized, storeCall, userCredential, withParams } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { parseScheduledAt } from "./statuses";
@@ -15,15 +15,11 @@ function scheduledId(c: Parameters<ApiHandler>[0]): string {
 }
 
 // GET /api/v1/scheduled_statuses: 20 by default, at most 40, with Link headers.
-export const list: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const list: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, SCHEDULED_PAGE.limit, SCHEDULED_PAGE.max);
   const input = { credential: userCredential(c, deps), page };
   return pageResponse(c, authorized(await storeCall(c, deps, (s, b) => s.listScheduled(b, input))), page.limit);
-};
+});
 
 export const show: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: scheduledId(c) };
@@ -32,11 +28,7 @@ export const show: ApiHandler = async (c, deps) => {
 };
 
 // PUT and PATCH: scheduled_at only (params.permit(:scheduled_at)); anything else sent is ignored.
-export const update: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const update: ApiHandler = withParams(async (c, deps, p) => {
   const raw = p.get("scheduled_at");
   const scheduledAt = raw === undefined ? undefined : parseScheduledAt(raw);
   const input = { credential: userCredential(c, deps), id: scheduledId(c), scheduledAt, now: deps.now() };
@@ -49,7 +41,7 @@ export const update: ApiHandler = async (c, deps) => {
     case "invalid":
       return mastodonError(422, result.error);
   }
-};
+});
 
 export const destroy: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: scheduledId(c), now: deps.now() };

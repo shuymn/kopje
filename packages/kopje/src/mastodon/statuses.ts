@@ -18,9 +18,9 @@ import {
   present,
   refuseAfterAuth,
   requestJobsSoon,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { descriptionProblem, parseFocus, sweepSoon, THUMBNAIL_MUST_BE_BLANK, thumbnailSent } from "./media";
@@ -188,11 +188,7 @@ export function parseScheduledAt(raw: string): string | null {
   return /^\d{4}-/.test(iso) ? iso : null;
 }
 
-export const createStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
   const inReplyToId = emptyToUndefined(p.get("in_reply_to_id"));
   const quotedStatusId = emptyToUndefined(p.get("quoted_status_id"));
   const composed = composition(p);
@@ -260,13 +256,9 @@ export const createStatus: ApiHandler = async (c, deps) => {
       // StatusesController#create rescues UnexpectedMentionsError with the accounts (REST::AccountSerializer).
       return c.json({ error: UNEXPECTED_MENTIONS, unexpected_accounts: result.accounts }, 422);
   }
-};
+});
 
-export const editStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const editStatus: ApiHandler = withParams(async (c, deps, p) => {
   const composed = composition(p);
   // UpdateStatusService applies description and focus of each entry; an entry with neither changes nothing. Entries
   // for the same attachment collapse to one, the later value of each field winning, before anything is compared.
@@ -316,15 +308,11 @@ export const editStatus: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
 // PUT and PATCH /api/v1/statuses/:id/interaction_policy (Statuses::InteractionPoliciesController#update). The policy
 // is checked in the Store, after the status is found (404) and found the viewer's own (403), as Mastodon checks it.
-export const updateInteractionPolicy: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateInteractionPolicy: ApiHandler = withParams(async (c, deps, p) => {
   const quotePolicy = quotePolicyOf(p);
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
@@ -336,7 +324,7 @@ export const updateInteractionPolicy: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
 // Prepare-and-record rounds one DELETE takes at most: another round only when the Delete signed in a round is not the
 // one the Store builds when it records it, which an edit of the status cannot cause (the signed Delete names its
@@ -389,11 +377,7 @@ async function deletion(c: ApiContext, deps: Parameters<ApiHandler>[1], deleteMe
   return mastodonError(503, "The status changed while it was being deleted; try again");
 }
 
-export const deleteStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const deleteStatus: ApiHandler = withParams(async (c, deps, p) => {
   const deleteMedia = parseBoolean(p.get("delete_media")) ?? false;
   const result = await deletion(c, deps, deleteMedia);
   if (result instanceof Response) {
@@ -408,7 +392,7 @@ export const deleteStatus: ApiHandler = async (c, deps) => {
     requestJobsSoon(c, deps);
   }
   return viewedResponse(c, result);
-};
+});
 
 export const getStatus: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);
@@ -420,11 +404,7 @@ export const getStatus: ApiHandler = async (c, deps) => {
 
 // GET /api/v1/statuses?id[]= (StatusesController#index): the statuses getStatus would show, in one read. More than
 // MAX_STATUSES_BY_ID distinct ids raise Mastodon::ValidationError, which answers 422 with the class's name.
-export const getStatuses: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const getStatuses: ApiHandler = withParams(async (c, deps, p) => {
   const ids = [...new Set(p.getAll("id"))];
   if (ids.length > MAX_STATUSES_BY_ID) {
     return refuseAfterAuth(c, deps, mastodonError(422, "Mastodon::ValidationError"));
@@ -434,7 +414,7 @@ export const getStatuses: ApiHandler = async (c, deps) => {
     s.getStatuses(b, { credential, ids, now: deps.now(), present: present(c) }),
   );
   return c.json(authorized(result));
-};
+});
 
 export const statusContext: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);
@@ -495,11 +475,7 @@ export const unpin = action("unpin");
 export const muteConversation = action("muteConversation");
 export const unmuteConversation = action("unmuteConversation");
 
-export const reblog: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const reblog: ApiHandler = withParams(async (c, deps, p) => {
   const requested = p.get("visibility");
   const visibility = API_VISIBILITIES.includes(requested as ApiVisibility) ? (requested as ApiVisibility) : undefined;
   const credential = userCredential(c, deps);
@@ -514,14 +490,10 @@ export const reblog: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
 function interactors(kind: "favourited_by" | "reblogged_by"): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const page = pageQuery(p);
     const credential = optionalCredential(c, deps);
     const result = authorized(
@@ -533,18 +505,14 @@ function interactors(kind: "favourited_by" | "reblogged_by"): ApiHandler {
       return NOT_FOUND();
     }
     return pageResponse(c, result.value, page.limit);
-  };
+  });
 }
 
 // GET /api/v1/statuses/:id/quotes (Statuses::QuotesController#index): a token with read:statuses, an app token read as
 // anonymous (Mastodon requires no user here); limit 20 by default, at most 40. The Link
 // header's bounds are the page's window (statusQuotes), so next is offered whenever the window was full, also for a
 // page the rule emptied.
-export const statusQuotes: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const statusQuotes: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, 20, 40);
   const credential = optionalCredential(c, deps);
   const result = authorized(
@@ -556,7 +524,7 @@ export const statusQuotes: ApiHandler = async (c, deps) => {
     return viewedResponse(c, result);
   }
   return pageResponse(c, result.value, page.limit, result.value.candidates);
-};
+});
 
 // Prepare-and-record rounds one revoke takes at most: another round only when the quote was accepted again between
 // its preparation and its recording (a QuoteRequest answered meanwhile), which a client cannot cause in a loop.

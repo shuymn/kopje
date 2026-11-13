@@ -4,9 +4,9 @@ import {
   type ApiHandler,
   authorized,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery, pageResponse, unlimitedResponse } from "./pagination";
@@ -54,23 +54,15 @@ export const getList: ApiHandler = async (c, deps) => {
   return list === null ? NOT_FOUND() : c.json(list);
 };
 
-export const createList: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createList: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...listChanges(p), credential: userCredential(c, deps), now: deps.now() };
   return listResponse(c, authorized(await storeCall(c, deps, (s, b) => s.createList(b, input))));
-};
+});
 
-export const updateList: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateList: ApiHandler = withParams(async (c, deps, p) => {
   const input = { ...listChanges(p), credential: userCredential(c, deps), id: c.req.param("id") ?? "" };
   return listResponse(c, authorized(await storeCall(c, deps, (s, b) => s.updateList(b, input))));
-};
+});
 
 export const deleteList: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "" };
@@ -82,11 +74,7 @@ export const deleteList: ApiHandler = async (c, deps) => {
 // member at once, without Link headers (Lists::AccountsController#unlimited?). Kopje's limit=0 answer stops at
 // MAX_LIST_MEMBERS_ANSWERED members and ANSWER_BYTES (8 MiB, RES-3); one cut by the bytes links next to the
 // rest, read by limit=0 with max_id, which Mastodon ignores there (unlimitedResponse).
-export const listAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const listAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const unlimited = p.get("limit") === "0";
   const query = pageQuery(p);
   const page = unlimited ? null : query;
@@ -102,7 +90,7 @@ export const listAccounts: ApiHandler = async (c, deps) => {
     return NOT_FOUND();
   }
   return page === null ? unlimitedResponse(c, result) : pageResponse(c, result, page.limit);
-};
+});
 
 function membersResponse(c: ApiContext, result: MembersResult): Response {
   switch (result.status) {
@@ -115,24 +103,16 @@ function membersResponse(c: ApiContext, result: MembersResult): Response {
   }
 }
 
-export const addListAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const addListAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", accounts: accountIds(p) };
   return membersResponse(c, authorized(await storeCall(c, deps, (s, b) => s.addListAccounts(b, input))));
-};
+});
 
-export const removeListAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const removeListAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", accounts: accountIds(p) };
   const removed = authorized(await storeCall(c, deps, (s, b) => s.removeListAccounts(b, input)));
   return removed ? c.json({}) : NOT_FOUND();
-};
+});
 
 export const accountLists: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), account: c.req.param("id") ?? "" };

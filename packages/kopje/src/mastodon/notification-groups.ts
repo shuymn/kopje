@@ -4,9 +4,9 @@ import {
   authorized,
   present,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { linkHeader, pageQuery, pageResponse } from "./pagination";
@@ -39,11 +39,7 @@ function unreadLimit(p: Params): number {
 
 // GET /api/v2/notifications: types[], exclude_types[], grouped_types[], include_filtered, expand_accounts, and the
 // page (40 groups by default, at most 80). Mastodon's v2 reads no account_id.
-export const listGroupedNotifications: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const expand = p.get("expand_accounts");
   if (expand !== undefined && expand !== "full" && expand !== "partial_avatars") {
     return refuseAfterAuth(
@@ -77,7 +73,7 @@ export const listGroupedNotifications: ApiHandler = async (c, deps) => {
     c.header("Link", link);
   }
   return c.json(grouped);
-};
+});
 
 export const getNotificationGroup: ApiHandler = async (c, deps) => {
   const groupKey = c.req.param("group_key") ?? "";
@@ -89,11 +85,7 @@ export const getNotificationGroup: ApiHandler = async (c, deps) => {
 };
 
 // GET /api/v2/notifications/:group_key/accounts: 40 by default, at most 80, by max_id and since_id.
-export const notificationGroupAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const notificationGroupAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const groupKey = c.req.param("group_key") ?? "";
   const { minId: _ignored, ...page } = pageQuery(p);
   const credential = userCredential(c, deps);
@@ -103,7 +95,7 @@ export const notificationGroupAccounts: ApiHandler = async (c, deps) => {
     ),
   );
   return pageResponse(c, result, page.limit);
-};
+});
 
 export const dismissNotificationGroup: ApiHandler = async (c, deps) => {
   const groupKey = c.req.param("group_key") ?? "";
@@ -114,11 +106,7 @@ export const dismissNotificationGroup: ApiHandler = async (c, deps) => {
 
 // GET /api/v1/notifications/unread_count: types[], exclude_types[], account_id, include_filtered and limit (100 by
 // default, at most 1,000).
-export const unreadCount: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const unreadCount: ApiHandler = withParams(async (c, deps, p) => {
   const accountId = p.get("account_id");
   const credential = userCredential(c, deps);
   const input = {
@@ -131,15 +119,11 @@ export const unreadCount: ApiHandler = async (c, deps) => {
     includeFiltered: includeFiltered(p),
   };
   return c.json(authorized(await storeCall(c, deps, (s, b) => s.unreadNotificationCount(b, input))));
-};
+});
 
 // GET /api/v2/notifications/unread_count: types[], exclude_types[], grouped_types[], include_filtered and limit (100
 // by default, at most 1,000).
-export const unreadGroupCount: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const unreadGroupCount: ApiHandler = withParams(async (c, deps, p) => {
   const credential = userCredential(c, deps);
   const input = {
     credential,
@@ -151,4 +135,4 @@ export const unreadGroupCount: ApiHandler = async (c, deps) => {
     includeFiltered: includeFiltered(p),
   };
   return c.json(authorized(await storeCall(c, deps, (s, b) => s.unreadNotificationGroupCount(b, input))));
-};
+});

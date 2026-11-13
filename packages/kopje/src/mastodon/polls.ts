@@ -3,9 +3,9 @@ import {
   authorized,
   optionalCredential,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 
@@ -31,11 +31,7 @@ export const showPoll: ApiHandler = async (c, deps) => {
 
 // POST /api/v1/polls/:id/votes: choices[] are the indexes of the choices voted for. None (an absent or empty list) is
 // refused as params.require refuses it.
-export const votePoll: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const votePoll: ApiHandler = withParams(async (c, deps, p) => {
   const choices = p
     .getAll("choices")
     .filter((choice) => choice !== "")
@@ -60,4 +56,4 @@ export const votePoll: ApiHandler = async (c, deps) => {
     case "invalid":
       return mastodonError(422, result.error);
   }
-};
+});
