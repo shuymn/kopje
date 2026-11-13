@@ -1275,13 +1275,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never rendered as HTML. Clearing or dismissing the notification leaves the warning, which nothing reads afterwards.
   Bounds: the text at most 10,000 UTF-8 bytes with no NUL, and `status_ids` NULL or at most 100 18-digit ids in
   2,101 bytes, held by CHECKs and triggers for imports too (RES-2, stored values); the presenter reads one row by key
-  per notification and reuses the presented sender for `target_account` (RES-7). _Enforced (main):_
-  `src/domain/account-warnings.ts`, `warningOf` in `src/domain/notifications.ts`, the groups in
-  `src/domain/notification-groups.ts`, `shownSql` in `src/domain/audience.ts`, `storedWarningText` and
-  `storedWarningStatusIds` in `src/platform/stored-bounds.ts`, migrations `0062_account_warnings` and
-  `0063_account_warning_notifications_key`; `test/moderation-warnings.test.ts`, `test/admin-suspension.test.ts`,
-  `test/migrations.test.ts`, `test/policy-oracle.test.ts` (against `shown` in `test/policy-model.ts`),
-  `test-node/policy-boundary.test.ts`, `test/status-bounds.test.ts` (the table of maxima),
+  per notification
+  and reuses the presented sender for `target_account` (RES-7). _Enforced (main):_ `src/domain/account-warnings.ts`,
+  `warningOf` in `src/domain/notifications.ts`, the groups in `src/domain/notification-groups.ts`, `shownSql` in
+  `src/domain/audience.ts`, `storedWarningText` and `storedWarningStatusIds` in `src/platform/stored-bounds.ts`,
+  migrations `0062_account_warnings` and `0063_account_warning_notifications_key`; `test/moderation-warnings.test.ts`,
+  `test/admin-suspension.test.ts`, `test/migrations.test.ts`, `test/policy-oracle.test.ts` (against `shown` in
+  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`, `test/status-bounds.test.ts` (the table of maxima),
   `test/account-warning-dump.test.ts`.
 
 - **VIS-32: a link card is fetched and held only for a public or unlisted original.** A status's card (R43,
@@ -2792,21 +2792,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the compiler refuses direct use
   outside their module; the exported paths present one unit or admit within a budget.
   _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds (RES-2,
-  stored values) and are read as stored: content and source text within 128 KiB as a JSON string, a content warning
-  within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048, descriptions within 10,000 code points
-  and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content, warning and choices the same. Columns that
-  keep a read-time projection are read through their helper in `src/domain/status-bounds.ts` (accounts and actor ids
-  through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes reads as ''; at most 4 attachments per status; at most
-  200 mentions and 70 hashtags (of the 100 stored) per status, the first by account id and by name; at most 100 poll
-  choices of 1,000 code points; each edit-history snapshot's first 4 attachments rebuilt through the attachment bounds
-  and '[]' over 308 KiB (four entries at their caps, at the worst escaping, `EDIT_MEDIA_BYTES`); a conversation presents
-  its first 12 participants in stored order, cut in SQL. Every presented URL stays within its bound as serialized,
-  derived or stored: a profile URL, avatar or header within 2,048 (a profile URL falls back from the stored one to the
-  actor's origin and to this instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs
-  within 2,048 (4,098 JSON bytes; a remote attachment's `remote_url` and `preview_remote_url` are its `url` and its
-  icon, read with whether its account is remote by key through `sqlite_autoindex_accounts_1`), live or in an edit's
-  snapshot. A local status's `application` reads its app's name and website as stored, within 240 and 2,000 bytes and
-  only as text (`appNameSql` and `appWebsiteSql` in `src/platform/stored-bounds.ts`, by key through
+  stored values)
+  and are read as stored: content and source text within 128 KiB as a JSON string, a content warning within 16 KiB, a
+  status url within 4,096 bytes, attachment URLs within 2,048, descriptions within 10,000 code points and meta within
+  1 KiB, a blurhash within 54 bytes, and an edit's content, warning and choices the same. Columns that keep a read-time
+  projection are read through their helper in `src/domain/status-bounds.ts` (accounts and actor ids through
+  `src/domain/profile-bounds.ts`): a uri over 4,096 bytes reads as ''; at most 4 attachments per status; at most 200
+  mentions and 70 hashtags (of the 100 stored) per status, the first by account id and by name; at most 100 poll choices
+  of 1,000 code points; each edit-history snapshot's first 4 attachments rebuilt through the attachment bounds and '[]'
+  over 308 KiB (four entries at their caps, at the worst escaping, `EDIT_MEDIA_BYTES`); a conversation presents its
+  first 12 participants in stored order, cut in SQL. Every presented URL stays within its bound as serialized, derived
+  or stored: a profile URL, avatar or header within 2,048 (a profile URL falls back from the stored one to the actor's
+  origin and to this instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs within 2,048
+  (4,098 JSON bytes; a remote attachment's `remote_url` and `preview_remote_url` are its `url` and its icon, read with
+  whether its account is remote by key through `sqlite_autoindex_accounts_1`), live or in an edit's snapshot. A local
+  status's `application` reads its app's name and website as stored, within 240 and 2,000 bytes and only as text
+  (`appNameSql` and `appWebsiteSql` in `src/platform/stored-bounds.ts`, by key through
   `sqlite_autoindex_oauth_clients_1`), and presents them as decoded: a name of at most 60 code points within 240 bytes
   and 362 JSON bytes, else `application: null`; a website that is well-formed, holds none of the characters that end
   or split an HTML attribute or a URL (listed in [mastodon-deviations.md](mastodon-deviations.md), Posting), is within
@@ -2865,11 +2866,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   asserts at both limits; a signed-in viewer, the request's conditions and a boost's original add lookups by key for
   each of those pins, not more pins, which no test measures. The cap: `test/migrations.test.ts` ("0089_pin_cap"),
   `test/dump-import.test.ts` ("round-trips an account's pins at its limit"). _Enforced (main)_ for status cards: one
-  `status_cards` row per status (its primary key), deleted with the status inside its final delete's reservation and
-  by the hide step of a remote delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an
-  open hold kept until it ends), and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`;
-  `test/link-card-rounds.test.ts` ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the
-  expiry, so a later round still defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
+  `status_cards` row per status
+  (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
+  delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an open hold kept until it ends),
+  and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
+  ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
+  defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
   `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). Card images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
@@ -4071,19 +4073,20 @@ reports. Normal: the rows are the larger of 1.25 × the target and the item's ro
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
 the isolate's memory even while the dropped chunk remains live, with 10,326 bytes to spare as logged (at least 4,096
-kept and asserted, as above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and
-moved-to account's cached profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account
-row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of
-snapshots at their most entries, and a moved-to account counts its at their cap), each account row's remote verification
-times at their 290-byte heap, each status row's card at its stored bounds, its embed's src and dimensions and its stored
-image's token, size, blurhash and alt text included (a quoted status's is not read), each account row's static images
-count at their stored bound (1,056 bytes of heap each, whatever the fills hold), each status row's app name and website
-at their raw bounds (4,544 bytes of heap), each attachment row's blurhash at 140 bytes, whether it is remote at 32 and
-its cached file and icon (two slots at the packed cap, read with the row: `mediaCacheSql`; the raw fill caches both of
-every remote attachment), each presented attachment's four URLs at 4,098 JSON bytes and its blurhash at 56, each
-moved-to account's row at its 25,536-byte heap cap and its JSON at 11,021 bytes, and its emojis' presentation holds one
-entry past those it admits at a time (18,060 bytes at three times its literals, decoded strings and the larger of its
-entity and an href normalization makes before rejecting it:
+kept and asserted, as
+above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and moved-to account's cached
+profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account row's cached emoji (its
+first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of snapshots at their most
+entries, and a moved-to account counts its at their cap), each account row's remote verification times at their 290-byte
+heap, each status row's card at its stored bounds, its embed's src and dimensions and its stored image's token, size,
+blurhash and alt text included (a quoted status's is not read), each account row's static images count at their stored
+bound (1,056 bytes of heap each, whatever the fills hold), each status row's app name and website at their raw bounds
+(4,544 bytes of heap), each attachment row's blurhash at 140 bytes, whether it is remote at 32 and its cached file and
+icon (two slots at the packed cap, read with the row: `mediaCacheSql`; the raw fill caches both of every remote
+attachment), each presented attachment's four URLs at 4,098 JSON bytes and its blurhash at 56, each moved-to account's
+row at its 25,536-byte heap cap and its JSON at 11,021 bytes, and its emojis' presentation holds one entry past those it
+admits at a time (18,060 bytes at three times its literals, decoded strings and the larger of its entity and an href
+normalization makes before rejecting it:
 `referencedEmojis` in `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the
 peak test rejects growth past that boundary. The backstop-fired figures bound the fallback whenever the dropped rows are
 collected. A boost that showed a quote, attachments, mentions, hashtags or a poll of its own (a legacy row may hold
