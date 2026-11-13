@@ -988,13 +988,11 @@ the viewer blocks. A Store converted by an earlier release may hold a block with
 ## The architecture test
 
 `test-node/policy-boundary.test.ts` reads the source tree (as `test-node/layering.test.ts` does) and keeps the rules of
-this page in the policy module. SQL elsewhere calls its fragments instead of reading the tables they decide on, and
-direct access to those tables outside the policy module is limited to the files the test's `RULES` array allows, each
-for its stated reason. The single writers of notifications, outbound activities and the audience rows are pinned the
-same way, and so is the selection of an activity's recipients: no other SQL turns follows into inboxes or picks an
-account's shared inbox. The inventory is the test's `RULES` array: each entry is a pattern, the files allowed to match
-it and the reason of each, and an allowed file that no longer matches fails the test too, so the list does not outlive
-its reason. Besides it:
+this page in the policy module: SQL elsewhere calls its fragments instead of reading the tables they decide on. It pins
+the single writers of notifications, outbound activities and the audience rows the same way, and the selection of an
+activity's recipients: no other SQL turns follows into inboxes or picks an account's shared inbox. The inventory is the
+test's `RULES` array: each entry is a pattern and the files allowed to match it, each with its reason, and an allowed
+file that no longer matches fails the test too, so the list does not outlive its reason. Besides it:
 
 - the status id brands (`VisibleStatusId`, `OwnStatusId`, `WithVisibleStatus`) are made by the policy module only:
   elsewhere a brand may be named only in an import or as the type of a function parameter, and statuses are presented
