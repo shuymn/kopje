@@ -113,6 +113,11 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **A cap counts raw candidates before any residual predicate**: an inner stage reads the candidates by the walk's
   index and the predicate is applied outside it (paged reads: [visibility.md](visibility.md), "Read bounds"). Where
   passing the cap must be detected (a refusal or a cut past it), the inner stage reads cap + 1.
+- **A work budget is one per request, shared by every retry, re-admission and fallback**, and charged with raw
+  candidates before residual filtering, the work of items and passes later rejected included; a step starts only while
+  the most it may read still fits, so the bound holds without measuring time (the Store's clock does not advance in
+  synchronous code). A fallback that must always answer keeps a reserve for its own step (the grouped notifications,
+  RES-7).
 - **A page may hold fewer rows than its limit only when its continuation is derived from the rows it consumed**, so no
   row is skipped (for example, an answer cut by its byte budget links on from the last row it consumed). A row is never
   dropped after the page's own `LIMIT`/`OFFSET` without the continuation moving past it.

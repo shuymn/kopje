@@ -566,6 +566,20 @@ Paged status lists with request conditions:
   is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
   status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
 
+Grouped notifications (`GET /api/v2/notifications`; threat model RES-7):
+
+- A page's walk reads at most 2,000 notifications (`GROUP_WALK`), shown or hidden; a page whose walk meets more of the
+  groups it has found (in practice a status favourited by thousands within a few hours) holds the groups found and
+  its `Link` continues from the last notification read. A group counts, samples and finds its oldest among its newest
+  400 shown notifications (`GROUP_COUNT`), so a larger group counts 400; Mastodon reads every notification of the
+  group up to the page's upper end (`NotificationGroup.load_groups_data`).
+- A page reads at most 6,400 notifications of its groups (`GROUP_ADMISSION_CANDIDATES`, rule-hidden ones included) and
+  visits at most 80 groups (`GROUP_ADMISSION_VISITS`), across the passes that admit it again after a byte cut. A page
+  whose admission would pass either holds its first group alone (with the groups before it that show nothing), and its
+  `Link` continues from that group's discovery position, so the next page finds the rest: a page of groups that each
+  hold more than about 6,400 / `limit` notifications, or one cut by bytes after more than 40 groups, is shorter than
+  Mastodon's. Mastodon has no such bound. Accepted, 2026-11-14.
+
 Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
