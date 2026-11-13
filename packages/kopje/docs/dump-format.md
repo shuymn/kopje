@@ -548,7 +548,7 @@ bytes it receives:
   accepted `quotes` row adds 1 to its quoted status's `quotes_count` (`quotes_count_inserted`), which the dumped
   `statuses` row already holds. After the links, verify takes that 1 off again for each accepted quote, the dumped
   value standing: a step per call reads at most 2,000 quotes in `status_id` order and stops after the status row that
-  brings the rewritten bytes to 1 MiB, and the checksums start in the call that reads the last quote. A verification
+  brings the rewritten bytes to 1 MiB, and the checksums start once a step finds no quote left. A verification
   that an earlier version began starts its checksums again once the correction starts. The others leave the dumped rows as they are: their writes
   match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
   every stored row (`statuses_thread`) or while the tables a later one fills are still empty

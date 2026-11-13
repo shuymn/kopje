@@ -547,9 +547,9 @@ describe("writing triggers and the importer", () => {
 
   // RES-7 witness of the correction's two statements, captured as correctQuoteCounts runs them: under the plan
   // audit's singleton statistics, and under ANALYZE taken while the Store held the seed's six quotes, a step reads by a
-  // rowid seek however many quotes the Store holds (grown past MAX_IMPORT_CHUNK_STATEMENTS, the step's row cap), and
-  // its rows read stay flat as the quotes grow.
-  it("reads each step's quotes by a rowid seek, flat as the quotes grow under stale statistics", async () => {
+  // seek on the quotes' primary key however many quotes the Store holds (grown past MAX_IMPORT_CHUNK_STATEMENTS, the
+  // step's row cap), and its rows read stay flat as the quotes grow.
+  it("reads each step's quotes by a primary-key seek, flat as the quotes grow under stale statistics", async () => {
     for (const statistics of ["singleton", "stale"] as const) {
       const store = await quotedStore();
       const measured: { quotes: number; select: number; first: number; plans: string[] }[] = [];
@@ -645,7 +645,7 @@ describe("writing triggers and the importer", () => {
           "SEARCH quotes USING INDEX sqlite_autoindex_quotes_1 (status_id>?)",
           "SCAN quotes USING INDEX sqlite_autoindex_quotes_1",
         ]);
-        // The resumed step reads the 50 quotes left; the first reads at most its cap, in rowid order.
+        // The resumed step reads the 50 quotes left; the first reads at most its cap, in primary-key order.
         expect(m.select, statistics).toBeLessThanOrEqual(51);
         expect(m.first, statistics).toBeLessThanOrEqual(MAX_IMPORT_CHUNK_STATEMENTS + 1);
       }
