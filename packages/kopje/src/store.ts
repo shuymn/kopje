@@ -53,17 +53,8 @@ export interface Store extends StoreRpc {}
 // bookkeeping, not data. pitrToBookmark(), maintenance, upgrade retry and import mutate, so they require the caller's
 // build to match like any other mutation.
 //
-// How a request talks to the Store: Store-local decisions whose inputs are available together are combined into one
-// call. A phase of a request ends at an external effect (verifying, fetching, sending) or at a commit, not at each
-// read. A call stays separate only when its timing is the guarantee: a policy read after an awaited remote response
-// (fetchRefused before a redirect hop or a later request, webHopRefused), a confirmation under lease right before a
-// send (confirmDelivery), a one-time write (ensureInstanceActorKey). A fetch's preparation (domain/inbox.ts
-// fetchPreparation: the signer and the policy verdict for its first request) is produced at the three answers that
-// decide a fetch, inboxGate, a receiveActivity need and resolutionGate, and nowhere else; it is optional, and the
-// Worker reads what is missing (fetchSigner, fetchRefused) as it would without it. A search resolution's actor revision
-// read (actorRevision) carries the verdict for the actor's fetch, its next request, the same way.
-// A federation GET is one read, the setup check included (domain/federation-reads.ts; the routes not yet moved there
-// read the domain in the setup gate first, federation/setup-gate.ts).
+// How a request talks to the Store, and when a call stays separate for its timing: docs/engineering.md, "How a request
+// talks to the Store".
 //
 // A method that only runs one domain operation is an entry of STORE_RPC (store-rpc.ts), defined below; the methods
 // written here have logic of their own.

@@ -40,6 +40,21 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **A credential or `now` that a Store call uses is taken after any await on network work**, never before it, and a
   writing path checks the Store's flags and the maintenance mode before any network-capable step.
 
+## How a request talks to the Store
+
+- **Store-local decisions whose inputs are available together are combined into one Store call.** A phase of a
+  request ends at an external effect (verifying, fetching, sending) or at a commit, not at each read. A call stays
+  separate only when its timing is the guarantee: a policy read after an awaited remote response (`fetchRefused` before
+  a redirect hop or a later request, `webHopRefused`), a confirmation under lease right before a send
+  (`confirmDelivery`), a one-time write (`ensureInstanceActorKey`).
+- **A fetch's preparation is read in the answer that decides the fetch** (`fetchPreparation` in
+  `src/domain/inbox.ts`: the signer and the policy verdict for its first request): `inboxGate`, a `receiveActivity`
+  need and `resolutionGate` produce it, and nothing else does. It is optional, and the Worker reads what is missing
+  (`fetchSigner`, `fetchRefused`) as it would without it. A search resolution's actor revision read (`actorRevision`)
+  carries the verdict for the actor's fetch, its next request, the same way.
+- **A federation GET is one read**, the setup check included (`src/domain/federation-reads.ts`; the routes not yet
+  moved there read the domain in the setup gate first, `src/federation/setup-gate.ts`).
+
 ## Bounds
 
 - **Every bound names its unit**: JSON-escaped UTF-8 bytes, UTF-8 bytes, code points or UTF-16 code units. Its test
@@ -121,3 +136,15 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   works on a Store of its own name, and what it leaves in module scope (a held call, a cache) is keyed per test or
   settles before the test ends, also when an assertion fails, unless it is the same for every test (the migrated schema
   `migratedStore` replays). The media bucket is emptied before each suite.
+
+## Documents and comments
+
+Each kind of fact has one home, and the other side points at it. A passage follows this when it is next touched.
+
+- **A rule** lives in a document under its ID. A comment carries the ID and only what is local to that code.
+- **A mechanism** lives in its module's header. A document points at the module and keeps what an operator or a
+  reviewer needs without the code: limits, timings, accepted risks.
+- **An inventory** lives in the code's data structure. Prose names the structure.
+- **A number** is written as its constant's name, with the value only where a check ties the two.
+- Two exceptions: the [threat model](threat-model.md) keeps complete invariant statements and their citations, and the
+  operator documents keep values, because their readers do not have the code.

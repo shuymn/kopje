@@ -103,8 +103,8 @@ export function boundedHref(value: string | null, limit: number): string | null 
   return href !== null && href.length <= limit ? href : null;
 }
 
-// The longest fetch target a Store answer prepares (store.ts, the rule): the longest identity fetched, a status uri, in
-// serialized URL characters, which are ASCII bytes.
+// The longest fetch target a Store answer prepares (docs/engineering.md, "How a request talks to the Store"): the
+// longest identity fetched, a status uri, in serialized URL characters, which are ASCII bytes.
 const FETCH_TARGET_LIMIT = STATUS_URI_LIMIT;
 
 // The serialized form of a URL the document loader would request (NET-1's shape, federation/loader.ts) within

@@ -3675,9 +3675,10 @@ export const inboxOwnerExists = readOperation<{ username: string }, boolean>((db
   ownerExists(db, username),
 );
 
-// What a fetch a Store answer decided needs, read in that answer (store.ts, the rule): its signer by DATA-7's rule
-// (fetchSignerOf), wrapped (DATA-1), and the domain policy's verdict for its first request (ticketFor; null when the
-// loader would refuse the target anyway). Optional: the Worker reads what is missing itself, as it would without it.
+// What a fetch a Store answer decided needs, read in that answer (docs/engineering.md, "How a request talks to the
+// Store"): its signer by DATA-7's rule (fetchSignerOf), wrapped (DATA-1), and the domain policy's verdict for its
+// first request (ticketFor; null when the loader would refuse the target anyway). Optional: the Worker reads what is
+// missing itself, as it would without it.
 export type FetchPreparation = { signer: FetchSigner; ticket: PolicyTicket | null };
 
 // The one producer of FetchPreparation, for the three answers that decide a fetch: the inbox gate, a receiveActivity

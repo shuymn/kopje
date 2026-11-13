@@ -1726,9 +1726,10 @@ describe("Store calls per inbox request", () => {
   });
 });
 
-// The cold path (store.ts, the rule): the Store answer that decides a fetch, the inbox gate or a receiveActivity need,
-// carries what the fetch needs, its signer (DATA-7) and the policy verdict for its first request (VIS-30). Each case
-// stores the instance key first, as its first use leaves it; that one-time write has its own case.
+// The cold path (docs/engineering.md, "How a request talks to the Store"): the Store answer that decides a fetch, the
+// inbox gate or a receiveActivity need, carries what the fetch needs, its signer (DATA-7) and the policy verdict for
+// its first request (VIS-30). Each case stores the instance key first, as its first use leaves it; that one-time write
+// has its own case.
 describe("Store calls on the inbox cold path", () => {
   const INSTANCE_KEY = `${LOCAL}/actor#main-key`;
 
