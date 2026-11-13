@@ -1,9 +1,10 @@
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import type { ImportAuthority } from "../platform/store-admin";
-import { ACCOUNT_EMOJIS_BYTES, presentedLocalFieldsSql } from "../platform/stored-bounds";
+import { ACCOUNT_EMOJIS_BYTES } from "../platform/stored-bounds";
 import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 import { type FieldSource, fieldSources } from "./accounts";
+import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
 import { accessAdminRefusal } from "./admin-authority";
 import { availableLocalSql, availableSql, followListsShownSql } from "./audience";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
@@ -40,26 +41,6 @@ export type LocalActor = {
 
 export type StoredKey = { privkey: Uint8Array; salt: Uint8Array; pubkey: string };
 
-type ActorRow = {
-  uri: string;
-  username: string;
-  actor_type: string;
-  display_name: string;
-  note: string;
-  avatar_url: string | null;
-  header_url: string | null;
-  locked: number;
-  discoverable: number | null;
-  indexable: number | null;
-  also_known_as: string;
-  fields: string | null;
-  attribution_domains: string;
-  suspended_at: string | null;
-  pubkey: string;
-  created_at: string;
-  emojis: string | null;
-};
-
 // A local account and its local row by username, in any case, through accounts_local_username and then the local
 // row's key (RES-7).
 const LOCAL_BY_USERNAME = `FROM accounts a INDEXED BY accounts_local_username
@@ -75,14 +56,7 @@ export const getInstanceDomain = readOperation<void, string | null>((db) => inst
 
 // A local actor by username, case-insensitively (local usernames are unique regardless of case).
 export function localActorOf(db: Db, username: string): LocalActor | null {
-  const row = db.first<ActorRow>(
-    `SELECT a.uri, a.username, a.actor_type, a.display_name, a.note, a.avatar_url, a.header_url, a.locked,
-			a.discoverable, a.indexable, l.also_known_as, ${presentedLocalFieldsSql("l.fields")} AS fields,
-			l.attribution_domains, l.suspended_at, l.pubkey,
-			a.created_at, a.emojis
-		${LOCAL_BY_USERNAME}`,
-    username,
-  );
+  const row = db.first<ActorRow>(`SELECT ${ACTOR_ROW_COLUMNS} ${LOCAL_BY_USERNAME}`, username);
   if (row === undefined) {
     return null;
   }

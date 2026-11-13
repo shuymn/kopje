@@ -21,6 +21,32 @@ async function setup() {
   return h;
 }
 
+// An actor document with every key kept, in the form the Update's object and the actor endpoint agree on. The
+// endpoint's is compacted JSON-LD from Fedify: a one-element array is its element and an empty one is left out, the
+// key is re-exported as PEM with line breaks, a time carries milliseconds, and its key is typed (CryptographicKey,
+// which Mastodon's PublicKeySerializer, and so the Update, leaves out). Its own @context is not part of the object.
+function comparable(value: unknown, key = ""): unknown {
+  if (Array.isArray(value)) {
+    return value.length === 1 ? comparable(value[0], key) : value.map((item) => comparable(item, key));
+  }
+  if (typeof value === "string") {
+    if (key === "publicKeyPem") {
+      return value.replaceAll(/\s/g, "");
+    }
+    return /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value) ? new Date(value).toISOString() : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([k, v]) =>
+      k === "@context" || (key === "publicKey" && k === "type") || (Array.isArray(v) && v.length === 0)
+        ? []
+        : [[k, comparable(v, k)]],
+    ),
+  );
+}
+
 function patch(h: Awaited<ReturnType<typeof setup>>, body: unknown) {
   return h.request(
     "/api/v1/accounts/update_credentials",
@@ -81,9 +107,7 @@ describe("Update(Person)", () => {
     const actor = await (
       await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
     ).json<Record<string, unknown>>();
-    for (const key of ["id", "type", "preferredUsername", "name", "summary", "url", "inbox", "followers"]) {
-      expect(latest?.object[key], key).toEqual(actor[key]);
-    }
+    expect(comparable(latest?.object ?? {})).toEqual(comparable(actor));
   });
 
   it("sends nothing when the published profile does not change", async () => {
