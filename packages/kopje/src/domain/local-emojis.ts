@@ -4,7 +4,7 @@ import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import type { ImportAuthority } from "../platform/store-admin";
 import { MAX_ENABLED_EMOJIS, presentedCategory, storedMediaMeta } from "../platform/stored-bounds";
-import { accessAdminRefusal, oauthAdmin } from "./admin-authority";
+import { accessAdmin, oauthAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { emojiHref, type EmojiTag, emojiTag } from "./custom-emojis";
 import {
@@ -64,11 +64,6 @@ function refusal(code: EmojiRefusal["code"], message: string): EmojiRefusal {
 }
 
 const ACCESS_ONLY = "only an Access admin manages custom emoji";
-
-function authorityRefusal(db: Db, authority: ImportAuthority): EmojiRefusal | null {
-  const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
-  return refused === null && authority.kind === "access" ? null : refusal("wrong-authority", refused ?? ACCESS_ONLY);
-}
 
 type EmojiRow = {
   id: string;
@@ -138,9 +133,13 @@ export const reserveEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; token: string; shortcode: string; replace: boolean; limit: number; now: number },
   EmojiReserved
 >((db, { authority, token, shortcode, replace, limit, now }) => {
-  const refused = authorityRefusal(db, authority) ?? placeRefusal(db, shortcode, replace);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
+  }
+  const placed = placeRefusal(db, shortcode, replace);
+  if (placed !== null) {
+    return placed;
   }
   const owner = oauthAdmin(db);
   if (owner.accountId === null) {
@@ -189,9 +188,9 @@ export const completeEmoji = writeOperation.atStoreTime("now")<
   },
   EmojiCompleted
 >((db, input) => {
-  const refused = authorityRefusal(db, input.authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, input.authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const done = emojiById(db, input.id);
   if (done !== null) {
@@ -222,11 +221,10 @@ export const completeEmoji = writeOperation.atStoreTime("now")<
     storedMediaMeta(JSON.stringify({ original: input.original, small: input.small })),
     input.id,
   );
-  const actor = input.authority as Extract<ImportAuthority, { kind: "access" }>;
   const replaced = enabledId(db, input.shortcode);
   if (replaced !== null) {
     db.run("UPDATE custom_emojis SET disabled = 1 WHERE id = ?", replaced);
-    logAction(db, actor, "disable", { type: "CustomEmoji", id: replaced }, { replacedBy: input.id }, input.now);
+    logAction(db, admin.actor, "disable", { type: "CustomEmoji", id: replaced }, { replacedBy: input.id }, input.now);
   }
   db.run(
     `INSERT INTO custom_emojis (id, shortcode, category, visible_in_picker, disabled, created_at)
@@ -239,7 +237,7 @@ export const completeEmoji = writeOperation.atStoreTime("now")<
   );
   logAction(
     db,
-    actor,
+    admin.actor,
     "create",
     { type: "CustomEmoji", id: input.id },
     { shortcode: input.shortcode, ...(replaced === null ? {} : { replaces: replaced }) },
@@ -259,7 +257,7 @@ export const abandonEmoji = mediaDeleteOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; token: string; now: number },
   EmojiAbandoned
 >((db, { authority, id, token, now }) => {
-  if (authorityRefusal(db, authority) !== null) {
+  if (!accessAdmin(db, authority, ACCESS_ONLY).ok) {
     return "denied";
   }
   const row = db.first<{ processed: number; url: string; emoji: number }>(
@@ -289,9 +287,9 @@ export const updateEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: EmojiChanges; now: number },
   EmojiUpdated
 >((db, { authority, id, changes, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const current = db.first<{ shortcode: string; category: string | null; visible_in_picker: number; disabled: number }>(
     "SELECT shortcode, category, visible_in_picker, disabled FROM custom_emojis WHERE id = ?",
@@ -300,7 +298,6 @@ export const updateEmoji = writeOperation.atStoreTime("now")<
   if (current === undefined) {
     return refusal("emoji-not-found", `no custom emoji has id ${id}`);
   }
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
   const target = { type: "CustomEmoji" as const, id };
   if (changes.disabled === false && current.disabled === 1) {
     const placed = placeRefusal(db, current.shortcode, false);
@@ -308,10 +305,10 @@ export const updateEmoji = writeOperation.atStoreTime("now")<
       return placed;
     }
     db.run("UPDATE custom_emojis SET disabled = 0 WHERE id = ?", id);
-    logAction(db, actor, "enable", target, { shortcode: current.shortcode }, now);
+    logAction(db, admin.actor, "enable", target, { shortcode: current.shortcode }, now);
   } else if (changes.disabled === true && current.disabled === 0) {
     db.run("UPDATE custom_emojis SET disabled = 1 WHERE id = ?", id);
-    logAction(db, actor, "disable", target, { shortcode: current.shortcode }, now);
+    logAction(db, admin.actor, "disable", target, { shortcode: current.shortcode }, now);
   }
   // The category is bound only when the change names one: a stored value is kept in SQL, never read into the Worker
   // and bound again (an imported value of malformed UTF-8 would come back as replacement characters, past its CHECK).
@@ -328,7 +325,7 @@ export const updateEmoji = writeOperation.atStoreTime("now")<
     );
     logAction(
       db,
-      actor,
+      admin.actor,
       "update",
       target,
       {

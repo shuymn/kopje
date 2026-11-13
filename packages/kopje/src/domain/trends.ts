@@ -38,7 +38,7 @@ import {
 } from "../platform/stored-bounds";
 import { cutCodeUnits, remotePlainText } from "../security/html";
 import { acctOf, type Present } from "./accounts";
-import { accessAdminRefusal } from "./admin-authority";
+import { accessAdmin } from "./admin-authority";
 import { ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { availableSql, statusReads, trendableStatusSql } from "./audience";
 import { optionalUserReadOperation } from "./auth";
@@ -1061,13 +1061,6 @@ export type TrendRefusal = {
 
 const ACCESS_ONLY = "only an Access admin reviews trends";
 
-function authorityRefusal(db: Db, authority: ImportAuthority): TrendRefusal | null {
-  const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
-  return refused === null && authority.kind === "access"
-    ? null
-    : { ok: false, code: "wrong-authority", message: refused ?? ACCESS_ONLY };
-}
-
 type TagReviewRow = { key: string; score: number | null; trendable: number | null; reviewed_at: string | null };
 
 function adminTag(db: Db, row: TagReviewRow, name: string, settings: TrendSettings, origin: string, now: number) {
@@ -1090,9 +1083,9 @@ export const adminTrendTags = readOperation.atStoreTime("now")<
   { authority: ImportAuthority; offset: number; limit: number; now: number; origin: string },
   { ok: true; tags: AdminTrendTag[]; settings: TrendSettings } | TrendRefusal
 >((db, { authority, offset, limit, now, origin }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const settings = trendSettings(db);
   const rows = db.all<TagReviewRow>(
@@ -1163,9 +1156,9 @@ export const adminTrendStatuses = readOperation<
   { authority: ImportAuthority; offset: number; limit: number },
   { ok: true; statuses: AdminTrendStatus[]; settings: TrendSettings } | TrendRefusal
 >((db, { authority, offset, limit }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const settings = trendSettings(db);
   const rows = adminStatusRows(
@@ -1195,9 +1188,9 @@ export const reviewTrendTag = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; name: string; trendable: boolean; now: number; origin: string },
   { ok: true; tag: AdminTrendTag } | TrendRefusal
 >((db, { authority, name: raw, trendable, now, origin }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const name = reviewName(raw);
   if (name === null) {
@@ -1217,8 +1210,7 @@ export const reviewTrendTag = writeOperation.atStoreTime("now")<
     trendable ? 1 : 0,
     iso(now),
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, trendable ? "approve" : "reject", { type: "Tag", id: tagId(name) }, { name }, now);
+  logAction(db, admin.actor, trendable ? "approve" : "reject", { type: "Tag", id: tagId(name) }, { name }, now);
   const row = db.first<TagReviewRow>(
     `SELECT hex(t.name) AS key, (SELECT score FROM trend_tags WHERE name = t.name) AS score, ${TAG_REVIEW_COLUMNS}
 		FROM tag_trend_reviews t WHERE t.name = ?1`,
@@ -1233,9 +1225,9 @@ export const reviewTrendStatus = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; trendable: boolean; author: boolean; now: number },
   { ok: true; id: string; trendable: boolean; status: AdminTrendStatus | null } | TrendRefusal
 >((db, { authority, id, trendable, author, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const status = db.first<{ account_id: string }>("SELECT account_id FROM statuses WHERE id = ?", id);
   if (status === undefined) {
@@ -1255,8 +1247,7 @@ export const reviewTrendStatus = writeOperation.atStoreTime("now")<
     trendable ? 1 : 0,
     iso(now),
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, trendable ? "approve" : "reject", { type, id: key }, author ? { status: id } : {}, now);
+  logAction(db, admin.actor, trendable ? "approve" : "reject", { type, id: key }, author ? { status: id } : {}, now);
   const [row] = adminStatusRows(db, "t.status_id = ?2", "", id);
   return { ok: true, id, trendable, status: row === undefined ? null : adminStatus(row, trendSettings(db)) };
 });
@@ -1328,9 +1319,9 @@ export const adminTrendLinks = readOperation.atStoreTime("now")<
   { authority: ImportAuthority; offset: number; limit: number; now: number },
   { ok: true; links: AdminTrendLink[]; settings: TrendSettings } | TrendRefusal
 >((db, { authority, offset, limit, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const rows = db.all<{ url: string; domain: string; score: number }>(
     `SELECT t.url, t.domain, t.score FROM trend_links t INDEXED BY ${TREND_LINKS_LISTED_INDEX}
@@ -1346,9 +1337,9 @@ export const adminTrendPublishers = readOperation<
   { authority: ImportAuthority; offset: number; limit: number },
   { ok: true; publishers: AdminTrendPublisher[] } | TrendRefusal
 >((db, { authority, offset, limit }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const rows = db.all<PublisherRow>(
     "SELECT domain, trendable, reviewed_at FROM link_provider_reviews ORDER BY domain LIMIT ?1 OFFSET ?2",
@@ -1392,9 +1383,9 @@ export const reviewTrendLink = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; url: string; trendable: boolean; publisher: boolean; now: number },
   { ok: true; link: AdminTrendLink } | TrendRefusal
 >((db, { authority, url, trendable, publisher, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const invalid: TrendRefusal = { ok: false, code: "invalid-link", message: `${JSON.stringify(url)} is not a link` };
   if (
@@ -1412,7 +1403,6 @@ export const reviewTrendLink = writeOperation.atStoreTime("now")<
     return { ok: false, code: "link-not-found", message: `no public post shows ${url}` };
   }
   const domain = linkDomain(url);
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
   const action = trendable ? "approve" : "reject";
   if (publisher) {
     if (domain === null) {
@@ -1424,13 +1414,13 @@ export const reviewTrendLink = writeOperation.atStoreTime("now")<
       return limited;
     }
     db.run("DELETE FROM link_trend_reviews WHERE url = ?", url);
-    logAction(db, actor, action, { type: "PreviewCardProvider", id: matched }, { domain: matched, url }, now);
+    logAction(db, admin.actor, action, { type: "PreviewCardProvider", id: matched }, { domain: matched, url }, now);
   } else {
     const limited = writeReview(db, "link_trend_reviews", url, trendable, now);
     if (limited !== null) {
       return limited;
     }
-    logAction(db, actor, action, { type: "PreviewCard", id: idOfBytes(ENCODER.encode(url)) }, { url }, now);
+    logAction(db, admin.actor, action, { type: "PreviewCard", id: idOfBytes(ENCODER.encode(url)) }, { url }, now);
   }
   const stored = db.first<{ domain: string; score: number }>(
     "SELECT domain, score FROM trend_links WHERE url = ?",
@@ -1446,9 +1436,9 @@ export const reviewTrendPublisher = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; domain: string; trendable: boolean; now: number },
   { ok: true; publisher: AdminTrendPublisher } | TrendRefusal
 >((db, { authority, domain: raw, trendable, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const domain =
     typeof raw === "string" && raw.length <= 2 * LINK_DOMAIN_BYTES ? storedLinkDomain(blockedDomain(raw)) : null;
@@ -1459,7 +1449,13 @@ export const reviewTrendPublisher = writeOperation.atStoreTime("now")<
   if (limited !== null) {
     return limited;
   }
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, trendable ? "approve" : "reject", { type: "PreviewCardProvider", id: domain }, { domain }, now);
+  logAction(
+    db,
+    admin.actor,
+    trendable ? "approve" : "reject",
+    { type: "PreviewCardProvider", id: domain },
+    { domain },
+    now,
+  );
   return { ok: true, publisher: { domain, trendable, reviewed_at: iso(now) } };
 });
