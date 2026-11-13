@@ -27,6 +27,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- `POST /api/v1/statuses` answers 404 for a status replied to or quoted that is missing or hidden from the poster
+  before anything else, as Mastodon does: a reply that also fails validation (its length, visibility, poll, media
+  count, `quote_approval_policy` or `scheduled_at`) no longer answers 422, and a repeated `Idempotency-Key` no longer
+  answers the earlier status or scheduled status. A quote post that passes validation makes one Store call instead of
+  two.
+
 - An import of a dump that holds an accepted quote, a backup restore included, verifies: the insert of each accepted
   quote adds 1 to its quoted status's count, which the dumped row already holds, and verify takes that 1 off again in
   bounded steps before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work"). An import whose
