@@ -984,11 +984,12 @@ the viewer blocks. A Store converted by an earlier release may hold a block with
 
 `test-node/policy-boundary.test.ts` reads the source tree (as `test-node/layering.test.ts` does) and keeps the rules of
 this page in the policy module. SQL elsewhere calls its fragments instead of reading the tables they decide on, and
-only the modules that write a table (or, for a few, read the viewer's own rows of it) may name it, each for its reason.
-The single writers of notifications, outbound activities and the audience rows are pinned the same way, and so is the
-selection of an activity's recipients: no other SQL turns follows into inboxes or picks an account's shared inbox. The
-inventory is the test's `RULES` array: each entry is a pattern, the files allowed to match it and the reason of each,
-and an allowed file that no longer matches fails the test too, so the list does not outlive its reason. Besides it:
+direct access to those tables outside the policy module is limited to the files the test's `RULES` array allows, each
+for its stated reason. The single writers of notifications, outbound activities and the audience rows are pinned the
+same way, and so is the selection of an activity's recipients: no other SQL turns follows into inboxes or picks an
+account's shared inbox. The inventory is the test's `RULES` array: each entry is a pattern, the files allowed to match
+it and the reason of each, and an allowed file that no longer matches fails the test too, so the list does not outlive
+its reason. Besides it:
 
 - the status id brands (`VisibleStatusId`, `OwnStatusId`, `WithVisibleStatus`) are made by the policy module only:
   elsewhere a brand may be named only in an import or as the type of a function parameter, and statuses are presented
@@ -1123,10 +1124,11 @@ inventory:
 - `test/policy-oracle.test.ts`: each fragment of the policy module accepts exactly the pairs the model's statement of
   its rule accepts, over every pair the rule takes. A failure prints the shrunk world, the pairs only one side accepts,
   and the seed; `FC_SEED=<seed> pnpm vitest run test/policy-oracle.test.ts` replays it.
-- `test/policy-endpoints.test.ts`: the read endpoints themselves show no status or account the model does not allow
-  the viewer by the endpoint's rule, never a boost without its own original, and the lists exactly the model's members
-  in order, page after page, so a page cannot come back short while members remain. Each endpoint must show something
-  in some case, so a property cannot pass by showing nothing.
+- `test/policy-endpoints.test.ts`: the read endpoints themselves show only the statuses and accounts the endpoint's
+  rule allows the viewer, and never a boost without its own visible original. The test names the lists whose ordered
+  membership it checks exactly; home, list and link timelines also compare each page with the model's expected slice,
+  so a page cannot come back short while members remain. Each endpoint must show something in some case, so a property
+  cannot pass by showing nothing.
 - `test/policy-writes.test.ts`: after each action of a generated sequence, what it recorded (targets, `to` and `cc`,
   notifications, pushes, list members, endorsements, conversations) agrees with the model (R15, R16, R22, R23, R25,
   VIS-30). Next to the property, witnesses written by hand run each scenario it must check, so coverage never depends
@@ -1135,9 +1137,9 @@ inventory:
   conversations against the owner's list; its window cases pin the accepted difference of home's followed-hashtag
   windows (the streaming API, above). `test/stream-delete.test.ts` checks R32's capture: when it is taken, whom it
   names, and its bounds.
-- `test/policy-bounds.test.ts`, the bounds harness (RES-7): each read endpoint, streamed item and round reads at most
-  `ALLOWANCE` rows more as data it should not read grows. Its first case adds unrelated accounts with their rows to one
+- `test/policy-bounds.test.ts`, the bounds harness (RES-7): each read endpoint, streamed item and round stays within its
+  case's growth budget as data it should not read grows. Its first case adds unrelated accounts with their rows to one
   generated world (an endpoint's extra rows are `UNRELATED_EXTRA`, each with its reason), its second replicates the
   world's history (the endpoints whose windows grow with it up to their limits are `GROWING`); both fail when a read
-  shows the viewer nothing, or on its newest page something else than without the growth. Every other `describe` grows the dimension
-  its title names.
+  shows the viewer nothing, or on its newest page something else than without the growth. Every other `describe` grows
+  the dimension its title names.
