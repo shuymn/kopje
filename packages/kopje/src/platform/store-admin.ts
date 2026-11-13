@@ -39,6 +39,7 @@ import {
   MAX_DUMP_CHUNK_BYTES,
   MIN_DUMP_CHUNK_BYTES,
   parseCursor,
+  type ScanPosition,
   trailerOf,
 } from "./store-dump";
 import { storeMaintenanceError } from "./store-errors";
@@ -180,6 +181,11 @@ export type CutoverStatus = {
 // Thrown to roll back the read-only SQL transaction.
 class Rollback extends Error {}
 const ROLLBACK = new Rollback("rollback");
+
+// Where a verification's checksums start: the first row of the first table.
+function verifyStart(): ScanPosition {
+  return { phase: "rows", table: 0, after: null, rows: 0, hash: null };
+}
 
 function refuse(code: string, message: string): Refusal {
   return { ok: false, code, message };
@@ -813,7 +819,7 @@ export class StoreAdmin {
           ...record,
           state: "finished",
           trailer,
-          verify: { position: { phase: "rows", table: 0, after: null, rows: 0, hash: null }, results: [] },
+          verify: { position: verifyStart(), results: [] },
           updatedAt: this.#now(),
         };
         writeFlag(this.#sql, "import", finished);
@@ -868,6 +874,11 @@ export class StoreAdmin {
         // Then the quote counts the insert triggers raised go back to their dumped values, bounded the same way.
         let verify = record.verify;
         if (verify.quoteCounts !== QUOTE_COUNTS_DONE) {
+          if (verify.quoteCounts === undefined) {
+            // The correction has not started, so no checksum may be kept: a record whose verification an earlier
+            // version began may hold the hash of a statuses row read before its count was corrected.
+            verify = { position: verifyStart(), results: [] };
+          }
           const quoteCounts = correctQuoteCounts(
             this.#sql,
             record.header.tables,

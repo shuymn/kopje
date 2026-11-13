@@ -20,7 +20,7 @@ import {
   type TableSpec,
   utf8Length,
 } from "./dump-format";
-import { bindAll, LiteralError, textLiteral } from "./dump-literals";
+import { bindAll, LiteralError, readColumn, textLiteral, valueLiteral } from "./dump-literals";
 import { errorMessage } from "./error-message";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.
@@ -298,10 +298,13 @@ export function applyStagedLinks(
 // (quotes.quoted_status_id references statuses), and an import begins only in a Store without quotes. No other write
 // of an import changes a quote's state or quoted status, so the triggers that would move the count again never run.
 // correctQuoteCounts takes the same 1 off again for each accepted quote, before the checksums start, so the dumped
-// value stands. It reads at most maxRows quotes by rowid after `after` (a rowid read as TEXT, DATA-6), whatever their
-// state, and stops after the statuses row that brings the bytes it rewrote to maxBytes (one always goes in, as in
-// applyStagedLinks). The quoted status is named in SQL through the quote's rowid, so its stored bytes are never
-// decoded. Returns the rowid the next step continues after, or QUOTE_COUNTS_DONE once every quote is read. The other
+// value stands. It reads at most maxRows quotes in status_id order after `after`, whatever their state, and stops
+// after the statuses row that brings the bytes it rewrote to maxBytes (one always goes in, as in applyStagedLinks).
+// The walk is pinned to the primary key's index, so it seeks to its cursor under any statistics (a rowid range does
+// not: under singleton statistics SQLite scans the table from its start). The cursor is the key's canonical literal
+// (dump-literals.ts), bound back with its exact storage class and bytes, as scanTable's cursors are; the quoted status
+// is named in SQL through the quote's rowid, read as TEXT and bound back with CAST (DATA-6), so no stored id is
+// decoded. Returns the literal the next step continues after, or QUOTE_COUNTS_DONE once every quote is read. The other
 // triggers that write on an insert leave the dumped rows as they are (docs/dump-format.md, "Bounded work").
 export function correctQuoteCounts(
   sql: SqlStorage,
@@ -314,14 +317,20 @@ export function correctQuoteCounts(
   if (statuses === undefined || !tables.some((t) => t.name === "quotes")) {
     return QUOTE_COUNTS_DONE;
   }
-  const quotes = sql
-    .exec<{ at: string; counted: number }>(
-      `SELECT CAST(rowid AS TEXT) AS at, (state = 'accepted' AND quoted_status_id IS NOT NULL) AS counted FROM quotes` +
-        (after === null ? "" : " WHERE rowid > CAST(? AS INTEGER)") +
-        " ORDER BY rowid LIMIT ?",
-      ...(after === null ? [maxRows] : [after, maxRows]),
-    )
-    .toArray();
+  const cursor = after === null ? null : bind([after]);
+  const quotes = [
+    ...sql
+      .exec(
+        `SELECT ${readColumn("status_id").join(", ")}, CAST(rowid AS TEXT),` +
+          ` (state = 'accepted' AND quoted_status_id IS NOT NULL)` +
+          " FROM quotes INDEXED BY sqlite_autoindex_quotes_1" +
+          (cursor === null ? "" : ` WHERE status_id > ${cursor.exprs[0]!}`) +
+          " ORDER BY status_id LIMIT ?",
+        ...(cursor?.params ?? []),
+        maxRows,
+      )
+      .raw(),
+  ].map(([type, value, at, counted]) => ({ key: valueLiteral(type ?? null, value ?? null), at, counted }));
   const update =
     "UPDATE statuses SET quotes_count = quotes_count - 1" +
     " WHERE id = (SELECT quoted_status_id FROM quotes WHERE rowid = CAST(? AS INTEGER))" +
@@ -329,16 +338,16 @@ export function correctQuoteCounts(
   let rewritten = 0;
   for (const [index, quote] of quotes.entries()) {
     if (quote.counted === 1) {
-      rewritten += sql.exec<{ size: number }>(update, quote.at).toArray()[0]?.size ?? 0;
+      rewritten += sql.exec<{ size: number }>(update, quote.at ?? null).toArray()[0]?.size ?? 0;
     }
     if (rewritten >= maxBytes && index < quotes.length - 1) {
-      return quote.at;
+      return quote.key;
     }
   }
-  return quotes.length < maxRows ? QUOTE_COUNTS_DONE : (quotes.at(-1)?.at ?? QUOTE_COUNTS_DONE);
+  return quotes.length < maxRows ? QUOTE_COUNTS_DONE : (quotes.at(-1)?.key ?? QUOTE_COUNTS_DONE);
 }
 
-// Where correctQuoteCounts stands once every quote is read (a rowid is never empty).
+// Where correctQuoteCounts stands once every quote is read (a literal is never empty).
 export const QUOTE_COUNTS_DONE = "";
 
 function nextStagedLink(sql: SqlStorage, after: string | null): { name: string; value: string } | null {

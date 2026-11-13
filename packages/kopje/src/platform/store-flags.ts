@@ -35,7 +35,7 @@ export type DumpRecord = {
 };
 
 // quoteCounts: where the quote count correction stands (store-import.ts correctQuoteCounts): absent before it starts
-// (a record written by an earlier version too), the rowid it continues after, or QUOTE_COUNTS_DONE.
+// (a record written by an earlier version too), the status_id literal it continues after, or QUOTE_COUNTS_DONE.
 type VerifyProgress = { position: ScanPosition; results: TableResult[]; quoteCounts?: string | undefined };
 
 // resetting: the imported rows are being deleted (StoreAdmin.importReset); nothing else continues the import.

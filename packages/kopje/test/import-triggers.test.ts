@@ -2,11 +2,18 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { readCatalog } from "../src/platform/dump-catalog";
-import type { DumpTrailer } from "../src/platform/dump-format";
-import { StoreAdmin } from "../src/platform/store-admin";
+import type { DumpTrailer, TableResult } from "../src/platform/dump-format";
+import { type SqlToken, tokenizeSql } from "../src/platform/readonly-sql";
+import { MAX_IMPORT_CHUNK_STATEMENTS, StoreAdmin } from "../src/platform/store-admin";
 import type { StoreStub } from "../src/platform/store-client";
-import { readFlags } from "../src/platform/store-flags";
-import { correctQuoteCounts, QUOTE_COUNTS_DONE } from "../src/platform/store-import";
+import { checksumStep } from "../src/platform/store-dump";
+import { readFlags, writeFlag } from "../src/platform/store-flags";
+import {
+  applyStagedLinks,
+  correctQuoteCounts,
+  QUOTE_COUNTS_DONE,
+  type VerifyReport,
+} from "../src/platform/store-import";
 import { BUILD, migratedStore, testKernel } from "./helpers";
 import {
   ACCESS,
@@ -19,6 +26,7 @@ import {
   splitDump,
   tableSnapshot,
 } from "./ops-helpers";
+import { singletonStatistics } from "./plan-audit-store";
 
 // The import inserts every dumped row, so each trigger that writes on an INSERT runs during it, and so does each
 // trigger that writes on an UPDATE of a column the importer itself updates: the deferred columns its links set, and
@@ -61,55 +69,132 @@ const WRITING_TRIGGERS: Record<string, { reason: string; fires: true } | { reaso
   },
 };
 
-// Columns the importer updates after inserting the rows: the links (deferred columns) and the quote counts.
+// Columns the importer updates after inserting the rows, besides the links (deferred columns): the quote counts.
 const IMPORTER_UPDATES: Record<string, string[]> = { statuses: ["quotes_count"] };
 
-type Trigger = { name: string; table: string; event: string; columns: string[] | null; when: string | null };
+type Trigger = {
+  name: string;
+  // Identifiers as SQLite compares them: unquoted, lower-cased (ASCII case is ignored).
+  table: string;
+  event: "INSERT" | "UPDATE" | "DELETE";
+  columns: string[] | null;
+  when: string | null;
+  writes: boolean;
+};
 
-function readTriggers(sql: SqlStorage): Trigger[] {
-  return sql
-    .exec<{ name: string; tbl_name: string; sql: string }>(
-      "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
-    )
-    .toArray()
-    .map((row) => {
-      const text = row.sql.replace(/--[^\n]*/g, "");
-      const head = /\b(?:BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|DELETE|UPDATE)(?:\s+OF\s+([\w\s,]+?))?\s+ON\s+\w+/i.exec(
-        text,
-      );
-      const when = /\bON\s+\w+\s+(?:FOR\s+EACH\s+ROW\s+)?WHEN\s+([\s\S]*?)\s+BEGIN\b/i.exec(text);
-      return {
-        name: row.name,
-        table: row.tbl_name,
-        event: (head?.[1] ?? "?").toUpperCase(),
-        columns: head?.[2] === undefined ? null : head[2].split(",").map((c) => c.trim()),
-        when: when?.[1] ?? null,
-        writes: text,
-      };
-    })
-    .filter((t) => writes(t.writes))
-    .map(({ writes: _sql, ...t }) => t);
+// The identifier a token spells, unquoted and lower-cased, or null when the token is no identifier.
+function identifier(sql: string, token: SqlToken | undefined): string | null {
+  if (token?.kind === "word") {
+    return token.text.toLowerCase();
+  }
+  if (token?.kind !== "other" || !['"', "`", "["].includes(token.text)) {
+    return null;
+  }
+  const close = token.text === "[" ? "]" : token.text;
+  let value = "";
+  for (let i = token.at + 1; i < sql.length; i++) {
+    if (sql[i] === close) {
+      if (close !== "]" && sql[i + 1] === close) {
+        value += close;
+        i++;
+        continue;
+      }
+      return value.toLowerCase();
+    }
+    value += sql[i];
+  }
+  return null;
 }
 
-// Whether a trigger body writes a row: an INSERT, UPDATE, DELETE or REPLACE after BEGIN, a RAISE aside.
-function writes(sql: string): boolean {
-  const body = sql.slice(sql.search(/\bBEGIN\b/i)).replace(/\bRAISE\s*\([^)]*\)/gi, "");
-  return /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(body);
+// Parses a CREATE TRIGGER statement as sqlite_master keeps it (src/platform/readonly-sql.ts tokens, so comments,
+// strings and quoted identifiers are read as SQLite reads them). Throws on any header it cannot read, so a trigger is
+// never left out of the inventory for its spelling.
+function parseTrigger(sql: string): Trigger {
+  const tokens = tokenizeSql(sql);
+  const fail = (why: string): never => {
+    throw new Error(`cannot read the trigger header (${why}): ${sql.slice(0, 200)}`);
+  };
+  if (typeof tokens === "string") {
+    return fail(tokens);
+  }
+  let i = 0;
+  const word = (...texts: string[]) => {
+    const token = tokens[i];
+    if (token?.kind === "word" && texts.includes(token.text)) {
+      i++;
+      return token.text;
+    }
+    return null;
+  };
+  // [schema .] name
+  const qualified = (what: string) => {
+    let name = identifier(sql, tokens[i]) ?? fail(`no ${what}`);
+    i++;
+    if (tokens[i]?.kind === "punct" && tokens[i]?.text === ".") {
+      i++;
+      name = identifier(sql, tokens[i]) ?? fail(`no ${what} after its schema`);
+      i++;
+    }
+    return name;
+  };
+  if (word("CREATE") === null) fail("no CREATE");
+  word("TEMP", "TEMPORARY");
+  if (word("TRIGGER") === null) fail("no TRIGGER");
+  if (word("IF") !== null && (word("NOT") === null || word("EXISTS") === null)) fail("IF without NOT EXISTS");
+  const name = qualified("name");
+  // An omitted timing is BEFORE.
+  if (word("BEFORE", "AFTER") === null && word("INSTEAD") !== null && word("OF") === null) fail("INSTEAD without OF");
+  const event = (word("INSERT", "UPDATE", "DELETE") ?? fail("no event")) as Trigger["event"];
+  let columns: string[] | null = null;
+  if (event === "UPDATE" && word("OF") !== null) {
+    columns = [];
+    for (;;) {
+      columns.push(identifier(sql, tokens[i]) ?? fail("no column"));
+      i++;
+      if (!(tokens[i]?.kind === "punct" && tokens[i]?.text === ",")) break;
+      i++;
+    }
+  }
+  if (word("ON") === null) fail("no ON");
+  const table = qualified("table");
+  if (word("FOR") !== null && (word("EACH") === null || word("ROW") === null)) fail("FOR without EACH ROW");
+  let when: string | null = null;
+  const whenToken = tokens[i];
+  if (word("WHEN") !== null) {
+    const begin = tokens.findIndex((t, at) => at > i && t.kind === "word" && t.text === "BEGIN");
+    if (begin === -1) fail("no BEGIN after WHEN");
+    when = sql.slice((whenToken?.at ?? 0) + 4, tokens[begin]?.at).trim();
+    i = begin;
+  }
+  if (word("BEGIN") === null) fail("no BEGIN");
+  // The body writes when it holds an INSERT, UPDATE, DELETE or REPLACE statement keyword (a replace() call counts
+  // too: the inventory then asks for an entry it does not need, never the reverse).
+  const writes = tokens
+    .slice(i)
+    .some((t) => t.kind === "word" && ["INSERT", "UPDATE", "DELETE", "REPLACE"].includes(t.text));
+  if (name === "") fail("empty name");
+  return { name, table, event, columns, when, writes };
 }
 
 // The writing triggers an import runs: on INSERT, or on an UPDATE that may name a column the importer updates.
 function importTriggers(sql: SqlStorage): Trigger[] {
   const updated = new Map<string, Set<string>>();
   for (const spec of readCatalog(sql)) {
-    updated.set(spec.name, new Set([...spec.deferred, ...(IMPORTER_UPDATES[spec.name] ?? [])]));
+    const columns = [...spec.deferred, ...(IMPORTER_UPDATES[spec.name] ?? [])];
+    updated.set(spec.name.toLowerCase(), new Set(columns.map((c) => c.toLowerCase())));
   }
-  return readTriggers(sql).filter(
-    (t) =>
-      t.event === "INSERT" ||
-      (t.event === "UPDATE" &&
-        (updated.get(t.table)?.size ?? 0) > 0 &&
-        (t.columns === null || t.columns.some((c) => updated.get(t.table)?.has(c)))),
-  );
+  return sql
+    .exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+    .toArray()
+    .map((row) => parseTrigger(row.sql))
+    .filter(
+      (t) =>
+        t.writes &&
+        (t.event === "INSERT" ||
+          (t.event === "UPDATE" &&
+            (updated.get(t.table)?.size ?? 0) > 0 &&
+            (t.columns === null || t.columns.some((c) => updated.get(t.table)?.has(c))))),
+    );
 }
 
 function id(n: number): string {
@@ -196,8 +281,10 @@ async function quotedStore(bulk = 0, bulkBytes = 0): Promise<StoreStub> {
   return store;
 }
 
-// Adds to `store`, before an import, a probe beside each listed trigger: one that records the insert or update it is
-// attached to (reached) and one with the trigger's own WHEN (fired), both in kopje_state names no dump holds.
+// Adds to `store`, before an import, two probes beside each listed trigger: one that records the insert or update it
+// is attached to (reached) and one with a copy of the trigger's WHEN (fired), both in kopje_state names no dump holds.
+// They are sibling triggers on the same event: they show which rows reach each trigger and satisfy its WHEN, not what
+// the production trigger's body did (the snapshot comparison covers that).
 async function addProbes(store: StoreStub): Promise<void> {
   await runInDurableObject(store, (_instance, state) => {
     const sql = state.storage.sql;
@@ -262,9 +349,19 @@ describe("writing triggers and the importer", () => {
     expect(found.map((t) => t.name)).toEqual(Object.keys(WRITING_TRIGGERS).toSorted());
     // The guard sees the trigger kinds it filters: a writing UPDATE trigger of an unlinked column and a check are left
     // out, and the importer's own updates name columns that exist.
-    const all = await runInDurableObject(store, (_instance, state) => readTriggers(state.storage.sql));
-    expect(all.map((t) => t.name)).toContain("statuses_last_status_changed");
-    expect(all.map((t) => t.name)).not.toContain("statuses_bounds_insert");
+    const all = await runInDurableObject(store, (_instance, state) =>
+      state.storage.sql
+        .exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'trigger'")
+        .toArray()
+        .map((row) => parseTrigger(row.sql)),
+    );
+    expect(all.find((t) => t.name === "statuses_last_status_changed")).toMatchObject({
+      event: "UPDATE",
+      columns: ["visibility", "account_id"],
+      writes: true,
+    });
+    expect(all.find((t) => t.name === "statuses_bounds_insert")).toMatchObject({ event: "INSERT", writes: false });
+    expect(found.map((t) => t.name)).not.toContain("statuses_last_status_changed");
     const columns = await runInDurableObject(store, (_instance, state) =>
       state.storage.sql
         .exec<{ name: string }>("SELECT name FROM pragma_table_info('statuses')")
@@ -280,6 +377,40 @@ describe("writing triggers and the importer", () => {
     expect(order.indexOf("follows")).toBeLessThan(order.indexOf("reject_replays"));
     expect(order.indexOf("statuses")).toBeLessThan(order.indexOf("quotes"));
     expect(order.indexOf("accounts")).toBeLessThan(order.indexOf("statuses"));
+  });
+
+  it("reads a trigger with no timing, an identifier in another case and quoted identifiers, and refuses a header it cannot read", async () => {
+    const store = await migratedStore();
+    const found = await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      // No timing (BEFORE), on INSERT.
+      sql.exec(
+        "CREATE TRIGGER fixture_untimed INSERT ON quotes BEGIN UPDATE statuses SET quotes_count = 0 WHERE 0; END",
+      );
+      // An importer-updated column in upper case.
+      sql.exec(
+        "CREATE TRIGGER fixture_upper AFTER UPDATE OF QUOTES_COUNT ON statuses BEGIN DELETE FROM stream_events WHERE 0; END",
+      );
+      // A linked column, the trigger and its table quoted three ways, and a schema-qualified table.
+      sql.exec(
+        `CREATE TRIGGER "fixture ""quoted""" AFTER UPDATE OF \`In_Reply_To_Id\` ON main.[statuses]
+         BEGIN DELETE FROM stream_events WHERE 0; END`,
+      );
+      return importTriggers(sql).map((t) => t.name);
+    });
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "fixture_untimed",
+        "fixture_upper",
+        'fixture "quoted"',
+        ...Object.keys(WRITING_TRIGGERS),
+      ]),
+    );
+    expect(found).toHaveLength(Object.keys(WRITING_TRIGGERS).length + 3);
+    expect(() => parseTrigger("CREATE TRIGGER t SOMETIMES INSERT ON quotes BEGIN DELETE FROM quotes; END")).toThrow(
+      /cannot read the trigger header \(no event\)/,
+    );
+    expect(() => parseTrigger("CREATE TRIGGER t INSERT quotes BEGIN DELETE FROM quotes; END")).toThrow(/no ON/);
   });
 
   it("round-trips accepted, pending and revoked quotes and rows that fire each writing trigger, keeping the dumped values", async () => {
@@ -347,38 +478,16 @@ describe("writing triggers and the importer", () => {
     ]);
   });
 
-  it("reads quotes by rowid and names each quoted status by its key", async () => {
+  it("resumes each step after the last quote it read", async () => {
     const store = await quotedStore();
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
-      const plan = (query: string, ...params: SqlStorageValue[]) =>
-        sql
-          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...params)
-          .toArray()
-          .map((r) => r.detail);
-      expect(
-        plan(
-          "SELECT CAST(rowid AS TEXT) AS at, (state = 'accepted' AND quoted_status_id IS NOT NULL) AS counted FROM quotes WHERE rowid > CAST(? AS INTEGER) ORDER BY rowid LIMIT ?",
-          "1",
-          2000,
-        ),
-      ).toEqual(["SEARCH quotes USING INTEGER PRIMARY KEY (rowid>?)"]);
-      expect(
-        plan(
-          "UPDATE statuses SET quotes_count = quotes_count - 1 WHERE id = (SELECT quoted_status_id FROM quotes WHERE rowid = CAST(? AS INTEGER))",
-          "1",
-        ),
-      ).toEqual([
-        "SEARCH statuses USING INDEX sqlite_autoindex_statuses_1 (id=?)",
-        "SCALAR SUBQUERY 1",
-        "SEARCH quotes USING INTEGER PRIMARY KEY (rowid=?)",
-      ]);
       // A step reads at most maxRows quotes and resumes after the last it read.
       const tables = readCatalog(sql);
       const before = sql.exec(QUOTE_COUNTS).toArray();
       const first = correctQuoteCounts(sql, tables, null, 1 << 20, 2);
       expect(first).toBe(
-        sql.exec<{ at: string }>("SELECT CAST(rowid AS TEXT) AS at FROM quotes ORDER BY rowid LIMIT 1 OFFSET 1").one()
+        sql.exec<{ at: string }>("SELECT quote(status_id) AS at FROM quotes ORDER BY status_id LIMIT 1 OFFSET 1").one()
           .at,
       );
       expect(correctQuoteCounts(sql, tables, first, 1 << 20, 2000)).toBe(QUOTE_COUNTS_DONE);
@@ -392,4 +501,156 @@ describe("writing triggers and the importer", () => {
       expect(before.filter((r) => r.n !== "0")).toHaveLength(2);
     });
   });
+
+  it("verifies an import whose checksums an earlier version began before the counts were corrected", async () => {
+    const source = await quotedStore();
+    const { text } = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    const importId = await beginImport(target, text);
+    let seq = 0;
+    for (const chunk of await importChunks(text, 64 * 1024)) {
+      expect(await target.importChunk(BUILD, ACCESS, importId, ++seq, chunk)).toMatchObject({ ok: true });
+    }
+    expect(await target.importFinish(BUILD, ACCESS, importId, splitDump(text).trailer)).toMatchObject({ ok: true });
+    await runInDurableObject(target, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const record = readFlags(sql).import!;
+      const tables = record.header.tables;
+      // What an earlier version's verify calls left: links applied, then checksums taken over the raised counts
+      // past the whole statuses table, in a record with no quoteCounts.
+      while (applyStagedLinks(sql, tables, 1 << 20, 2000)) {
+        // applied in steps
+      }
+      let position = record.verify!.position;
+      const results: TableResult[] = [];
+      while (!results.some((r) => r.name === "statuses")) {
+        const step = checksumStep(sql, tables, position, 1024, () => null);
+        position = step.position;
+        results.push(...step.finished);
+      }
+      expect(sql.exec("SELECT quotes_count FROM statuses WHERE id = ?", id(20)).one().quotes_count).toBe(4);
+      writeFlag(sql, "import", { ...record, verify: { position, results } });
+      let report: VerifyReport | null = null;
+      for (let call = 0; call < 100; call++) {
+        const step = await admin(state).importVerify(BUILD, ACCESS, record.id);
+        if (!step.ok) throw new Error(step.message);
+        if (step.done) {
+          report = step.report;
+          break;
+        }
+      }
+      expect(report).toMatchObject({ ok: true, problems: [] });
+      expect(sql.exec("SELECT quotes_count FROM statuses WHERE id = ?", id(20)).one().quotes_count).toBe(2);
+    });
+  });
+
+  // RES-7 witness of the correction's two statements, captured as correctQuoteCounts runs them: under the plan
+  // audit's singleton statistics, and under ANALYZE taken while the Store held the seed's six quotes, a step reads by a
+  // rowid seek however many quotes the Store holds (grown past MAX_IMPORT_CHUNK_STATEMENTS, the step's row cap), and
+  // its rows read stay flat as the quotes grow.
+  it("reads each step's quotes by a rowid seek, flat as the quotes grow under stale statistics", async () => {
+    for (const statistics of ["singleton", "stale"] as const) {
+      const store = await quotedStore();
+      const measured: { quotes: number; select: number; first: number; plans: string[] }[] = [];
+      for (const grown of [MAX_IMPORT_CHUNK_STATEMENTS + 1000, 3 * MAX_IMPORT_CHUNK_STATEMENTS]) {
+        measured.push(
+          await runInDurableObject(store, (_instance, state) => {
+            const sql = state.storage.sql;
+            if (statistics === "stale" && measured.length === 0) {
+              sql.exec("ANALYZE");
+            }
+            const have = sql.exec<{ n: number }>("SELECT count(*) AS n FROM quotes").one().n;
+            sql.exec(
+              `WITH RECURSIVE n(i) AS (SELECT CAST(?1 AS INTEGER) UNION ALL SELECT i + 1 FROM n WHERE i < CAST(?2 AS INTEGER))
+               INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+               SELECT CAST(140000000000000000 + i AS TEXT), 'https://remote.test/q/' || i, ?3, 'public', 'q',
+                 '2026-10-12T00:00:00.000Z' FROM n`,
+              have,
+              grown - 1,
+              id(2),
+            );
+            sql.exec(
+              `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, updated_at)
+               SELECT id, 'https://kopje.test/ap/o/20', ?1, ?2, 'accepted', '2026-10-12T00:00:00.000Z'
+               FROM statuses WHERE id >= '140000000000000000' AND id NOT IN (SELECT status_id FROM quotes)`,
+              id(20),
+              id(1),
+            );
+            const quotes = sql.exec<{ n: number }>("SELECT count(*) AS n FROM quotes").one().n;
+            if (statistics === "singleton") {
+              singletonStatistics(sql);
+            }
+            const seen: {
+              query: string;
+              params: SqlStorageValue[];
+              cursor: SqlStorageCursor<Record<string, SqlStorageValue>>;
+            }[] = [];
+            const recording = {
+              exec: (query: string, ...params: SqlStorageValue[]) => {
+                const cursor = sql.exec(query, ...params);
+                seen.push({ query, params, cursor });
+                return cursor;
+              },
+            } as unknown as SqlStorage;
+            const tables = readCatalog(sql);
+            const plan = (s: (typeof seen)[number]) =>
+              sql
+                .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${s.query}`, ...s.params)
+                .toArray()
+                .map((r) => r.detail)
+                .join(" | ");
+            // A step that starts 50 quotes before the end, and the first step.
+            const near = sql
+              .exec<{ at: string }>(
+                "SELECT quote(status_id) AS at FROM quotes ORDER BY status_id DESC LIMIT 1 OFFSET 50",
+              )
+              .one().at;
+            state.storage.transactionSync(() => {
+              expect(correctQuoteCounts(recording, tables, near, 1 << 30, MAX_IMPORT_CHUNK_STATEMENTS)).toBe(
+                QUOTE_COUNTS_DONE,
+              );
+            });
+            const resumed = seen.splice(0);
+            state.storage.transactionSync(() => {
+              correctQuoteCounts(recording, tables, null, 1 << 30, MAX_IMPORT_CHUNK_STATEMENTS);
+            });
+            const started = seen.splice(0);
+            const select = resumed.filter((s) => s.query.startsWith("SELECT"));
+            const updates = [...resumed, ...started].filter((s) => s.query.startsWith("UPDATE"));
+            expect(select).toHaveLength(1);
+            expect(resumed.filter((s) => s.query.startsWith("UPDATE"))).toHaveLength(50);
+            // Each update: the quote by rowid and its status by key.
+            for (const u of updates.slice(0, 3)) {
+              expect(plan(u)).toBe(
+                "SEARCH statuses USING INDEX sqlite_autoindex_statuses_1 (id=?) | SCALAR SUBQUERY 1 | SEARCH quotes USING INTEGER PRIMARY KEY (rowid=?)",
+              );
+            }
+            expect(Math.max(...updates.map((u) => u.cursor.rowsRead))).toBeLessThanOrEqual(3);
+            const first = started.find((s) => s.query.startsWith("SELECT"))!;
+            return {
+              quotes,
+              select: select[0]!.cursor.rowsRead,
+              first: first.cursor.rowsRead,
+              plans: [plan(select[0]!), plan(first)],
+            };
+          }),
+        );
+      }
+      const [small, large] = measured;
+      expect(large!.quotes, statistics).toBeGreaterThan(small!.quotes);
+      expect(small!.quotes, statistics).toBeGreaterThan(MAX_IMPORT_CHUNK_STATEMENTS);
+      for (const m of measured) {
+        expect(m.plans, statistics).toEqual([
+          "SEARCH quotes USING INDEX sqlite_autoindex_quotes_1 (status_id>?)",
+          "SCAN quotes USING INDEX sqlite_autoindex_quotes_1",
+        ]);
+        // The resumed step reads the 50 quotes left; the first reads at most its cap, in rowid order.
+        expect(m.select, statistics).toBeLessThanOrEqual(51);
+        expect(m.first, statistics).toBeLessThanOrEqual(MAX_IMPORT_CHUNK_STATEMENTS + 1);
+      }
+      expect(large!.select, statistics).toBe(small!.select);
+      expect(large!.first, statistics).toBe(small!.first);
+    }
+  }, 120_000);
 });

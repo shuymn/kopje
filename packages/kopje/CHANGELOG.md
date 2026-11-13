@@ -27,9 +27,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
-- An import of a dump that holds an accepted quote, a backup restore included, no longer fails its verification: the
-  insert of each accepted quote counted it on its quoted status a second time. Verify now takes that count off again,
-  in bounded steps, before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work").
+- An import of a dump that holds an accepted quote, a backup restore included, verifies: the insert of each accepted
+  quote adds 1 to its quoted status's count, which the dumped row already holds, and verify takes that 1 off again in
+  bounded steps before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work"). An import whose
+  verification began before the upgrade starts its checksums again.
 
 ## [0.5.0] - 2026-11-13
 
