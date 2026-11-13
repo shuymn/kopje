@@ -39,6 +39,7 @@ import {
   MAX_DUMP_CHUNK_BYTES,
   MIN_DUMP_CHUNK_BYTES,
   parseCursor,
+  type ScanPosition,
   trailerOf,
 } from "./store-dump";
 import { storeMaintenanceError } from "./store-errors";
@@ -58,6 +59,7 @@ import {
   BoostChainCheck,
   catalogDifference,
   compareResults,
+  correctQuoteCounts,
   dropStagedLinks,
   hasStagedLinks,
   ImportError,
@@ -65,6 +67,7 @@ import {
   migrationDifference,
   parseHeader,
   parseTrailer,
+  QUOTE_COUNTS_DONE,
   rowBytes,
   type VerifyReport,
 } from "./store-import";
@@ -178,6 +181,11 @@ export type CutoverStatus = {
 // Thrown to roll back the read-only SQL transaction.
 class Rollback extends Error {}
 const ROLLBACK = new Rollback("rollback");
+
+// Where a verification's checksums start: the first row of the first table.
+function verifyStart(): ScanPosition {
+  return { phase: "rows", table: 0, after: null, rows: 0, hash: null };
+}
 
 function refuse(code: string, message: string): Refusal {
   return { ok: false, code, message };
@@ -811,7 +819,7 @@ export class StoreAdmin {
           ...record,
           state: "finished",
           trailer,
-          verify: { position: { phase: "rows", table: 0, after: null, rows: 0, hash: null }, results: [] },
+          verify: { position: verifyStart(), results: [] },
           updatedAt: this.#now(),
         };
         writeFlag(this.#sql, "import", finished);
@@ -863,14 +871,36 @@ export class StoreAdmin {
           const next = this.#touch(record);
           return { ok: true as const, done: false, report: null, progress: progressOf(next) };
         }
+        // Then the quote counts the insert triggers raised go back to their dumped values, bounded the same way.
+        let verify = record.verify;
+        if (verify.quoteCounts !== QUOTE_COUNTS_DONE) {
+          if (verify.quoteCounts === undefined) {
+            // The correction has not started, so no checksum may be kept: a record whose verification an earlier
+            // version began may hold the hash of a statuses row read before its count was corrected.
+            verify = { position: verifyStart(), results: [] };
+          }
+          const quoteCounts = correctQuoteCounts(
+            this.#sql,
+            record.header.tables,
+            verify.quoteCounts ?? null,
+            Math.min(budget, LINK_STEP_BYTES),
+            MAX_IMPORT_CHUNK_STATEMENTS,
+          );
+          verify = { ...verify, quoteCounts };
+          if (quoteCounts !== QUOTE_COUNTS_DONE) {
+            const next: ImportRecord = { ...record, verify, updatedAt: this.#now() };
+            writeFlag(this.#sql, "import", next);
+            return { ok: true as const, done: false, report: null, progress: progressOf(next) };
+          }
+        }
         const step = checksumStep(
           this.#sql,
           record.header.tables,
-          record.verify.position,
+          verify.position,
           budget,
           new BoostChainCheck(this.#sql).check,
         );
-        const results = [...record.verify.results, ...step.finished];
+        const results = [...verify.results, ...step.finished];
         if (step.refused !== null) {
           // A row the Store cannot hold (BoostChainCheck): the import fails and needs a reset.
           const report: VerifyReport = { ok: false, tables: [], foreignKeyViolations: 0, problems: [step.refused] };
@@ -879,7 +909,7 @@ export class StoreAdmin {
         if (step.position.phase !== "done") {
           const next: ImportRecord = {
             ...record,
-            verify: { position: step.position, results },
+            verify: { ...verify, position: step.position, results },
             updatedAt: this.#now(),
           };
           writeFlag(this.#sql, "import", next);

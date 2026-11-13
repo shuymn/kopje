@@ -229,6 +229,8 @@ const RULES: readonly Rule[] = [
         "quotes, their verification work, revocations, answered QuoteRequests and Kopje’s authorizations",
       "src/domain/inbox.ts":
         "a status’s batched delete detaches the quotes of it and deletes its own (STATUS_CHILDREN), never a revocation",
+      "src/platform/store-import.ts":
+        "an import's verification reads the imported quotes to restore their quoted statuses' dumped quotes_count (correctQuoteCounts), never a quote's state",
     },
   },
   {

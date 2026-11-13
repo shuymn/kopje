@@ -1029,8 +1029,10 @@ outside the policy module:
 - reads or writes `quotes`, `quote_revocations` or `quote_requests` outside `quotes.ts`, which stores and verifies
   received quotes, applies the `Delete` of a stamp (ID-6), answers QuoteRequests, serves and revokes Kopje's
   authorizations (VIS-28) and reads the quotes list's window, `inbox.ts`, whose batched delete of a status detaches the
-  quotes of it and deletes its own, and the policy module, whose `quoteReads` is the only read of a quote for a client
-  (R35) and `reachQuoters` the only one for an audience.
+  quotes of it and deletes its own, the importer (`store-import.ts`), whose verification reads the imported quotes'
+  state and quoted status to restore their statuses' dumped `quotes_count` and never writes a quote, and the policy
+  module, whose `quoteReads` is the only read of a quote for a client (R35) and `reachQuoters` the only one for an
+  audience.
 - writes `status_mentions` outside `statuses.ts`, `remote-statuses.ts`, `inbox.ts` and `quotes.ts` (an accepted
   QuoteRequest's silent mention of the quoted author).
 

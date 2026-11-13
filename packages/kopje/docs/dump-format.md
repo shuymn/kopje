@@ -541,9 +541,19 @@ bytes it receives:
   links can rewrite many times its own size. The chunk only checks that each link's target row exists and that the link holds at most 64 KiB (it carries only key
   values; a longer one is refused with `link-too-large`), and stages the
   link (in `kopje_state`, under names that are never dumped). Verify reads the staged links one at a time and applies them in body order, a step
-  per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000 links; the checksums
-  start in the call that applies the last of them. A link that cannot be applied (its value breaks a constraint) is
+  per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000 links; the quote count
+  correction (below) starts in the call that applies the last of them. A link that cannot be applied (its value breaks a constraint) is
   refused at verify; the import then needs a reset.
+- The import inserts every row, so the triggers that write on an insert run. One changes a dumped value: each
+  accepted `quotes` row adds 1 to its quoted status's `quotes_count` (`quotes_count_inserted`), which the dumped
+  `statuses` row already holds. After the links, verify takes that 1 off again for each accepted quote, the dumped
+  value standing: a step per call reads at most 2,000 quotes in `status_id` order and stops after the status row that
+  brings the rewritten bytes to 1 MiB, and the checksums start once a step finds no quote left. A verification
+  that an earlier version began starts its checksums again once the correction starts. The others leave the dumped rows as they are: their writes
+  match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
+  every stored row (`statuses_thread`) or while the tables a later one fills are still empty
+  (`reject_replays_follow_stored`), or they write `stream_events`, which no dump holds. `test/import-triggers.test.ts`
+  keeps the list of such triggers with these reasons.
 - Verify refuses a boost of a boost: a status whose `reblog_of_id` names a status that has a `reblog_of_id` itself.
   No Kopje writer starts such a chain, and a deletion or purge that meets one cannot remove it (its job parks: RES-6
   in [threat-model.md](threat-model.md)). The check runs on each `statuses` row the checksum scan reads, once every
