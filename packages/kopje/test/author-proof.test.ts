@@ -434,6 +434,7 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
       [AS, SECURITY, { ...(MASTODON_FORWARDED_CONTEXT[2] as Json), blurhash: "toot:other" }],
     ],
     ["security/v1 before activitystreams", [SECURITY, AS, MASTODON_FORWARDED_CONTEXT[2]]],
+    ["activitystreams twice, no security/v1", [AS, AS, MASTODON_FORWARDED_CONTEXT[2]]],
     ["the object first", [MASTODON_FORWARDED_CONTEXT[2], AS, SECURITY]],
     ["two inline objects", [AS, SECURITY, { ostatus: "http://ostatus.org#" }, { atomUri: "ostatus:atomUri" }]],
   ])("refuses %s", async (_name, context) => {

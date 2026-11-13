@@ -183,17 +183,18 @@ against their own instance. TLS is assumed between all parties.
   and applied with the author's own effects, and the refusal of a missing or invalid proof, a proof of another
   activity id or by a key on another host, a signer that does not own its key, another author's status, a uri of
   another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
-  proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, a refusal with a
-  signature Fedify alone accepts for the context, the key sets, the object values, the single proof, the signature's
-  and the proof's context, the proven id and the forwarded context's shape, allowlist and definitions, Mastodon's and
-  Kopje's status `Delete`s forwarded under the context Mastodon 4.5.21 forwarded, and their stamp `Delete`s in that
-  form refused, that no allowed term is or aliases a decision term, every exploit found against the proof, and no
-  network fetch while verifying, with an actor document naming a context that is not preloaded refused; the request's
-  shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)":
-  Mastodon's stamp `Delete`, a missing proof, a forged signature, a proof by another actor's key, a proof covering
-  another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of
-  the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction for input
-  that fails ID-1").
+  proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
+  fixture derived from the sender's source with only the `@context` replaced, Mastodon's Ruby compaction not run, a
+  refusal with a signature Fedify alone accepts for the context, the key sets, the object values, the single proof,
+  the signature's and the proof's context, the proven id and the forwarded context's shape, allowlist and definitions,
+  Mastodon's and Kopje's status `Delete`s forwarded under the context Mastodon 4.5.21 forwarded, and their stamp
+  `Delete`s in that form refused, that no allowed term is or aliases a decision term, every exploit found against the
+  proof, and no network fetch while verifying, with an actor document naming a context that is not preloaded refused;
+  the request's shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s
+  exception)": Mastodon's stamp `Delete`, a missing proof, a forged signature, a proof by another actor's key, a proof
+  covering another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed
+  `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction
+  for input that fails ID-1").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that

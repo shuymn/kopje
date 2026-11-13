@@ -112,10 +112,11 @@ export const MASTODON_FORWARDED_CONTEXT = [
   },
 ];
 
-// `signed` as a Mastodon that holds a boost or quote of it forwards it: JsonLdHelper#compact under full_context, the
-// signature kept, and patch_for_forwarding! putting back every value but the @context. Every key of the senders'
-// bodies is a full_context term, so the compaction changes nothing else (checked with jsonld.js on Mastodon's, Kopje's
-// status and stamp Deletes).
+// `signed` with its @context replaced by `context` and its signature kept: what a Mastodon holding a boost or quote of a
+// status forwards of its signed Delete (JsonLdHelper#compact under full_context, then patch_for_forwarding! putting back
+// every value but the @context). Every key of Mastodon's and Kopje's status Deletes is a full_context term, so the
+// compaction changes nothing else (checked once with jsonld.js, not with Mastodon's Ruby). A stamp's Delete in this form
+// is an artificial input: Mastodon forwards a stamp's Delete without its signature.
 export function mastodonForwarded(signed: Json, context: unknown = MASTODON_FORWARDED_CONTEXT): Json {
   return { ...signed, "@context": context };
 }
