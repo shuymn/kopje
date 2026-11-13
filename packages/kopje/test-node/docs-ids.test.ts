@@ -53,14 +53,15 @@ function definedIds(): Set<string> {
 
 type Run = { value: string; line: number };
 
-// The texts a range is read from, each with its first line in the file. Markdown: the text a reader sees
-// (markdown.ts), so quote markers and list indentation never sit inside a range. Other files: the file itself, and each
-// comment block with its markers removed, consecutive `//` lines or one `/* ... */` with each line's leading `*`.
+// The texts a range is read from, each with its first line in the file: the file itself (an HTML comment, a fenced
+// block), and then for Markdown the text a reader sees (markdown.ts), so quote markers and list indentation never sit
+// inside a range, and for other files each comment block with its markers removed, consecutive `//` lines or one
+// `/* ... */` with each line's leading `*`. A range found in several is reported once.
 function rangeRuns(path: string, text: string): Run[] {
-  if (path.endsWith(".md")) {
-    return textRuns(text);
-  }
   const runs: Run[] = [{ value: text, line: 1 }];
+  if (path.endsWith(".md")) {
+    return [...runs, ...textRuns(text)];
+  }
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const block: string[] = [];
@@ -201,13 +202,18 @@ describe("document ids", () => {
     const defined = new Set(["VIS-1", "VIS-2", "VIS-4"]);
     const files = [
       { path: "packages/kopje/src/a.ts", text: "// a\n// VIS-1 to\n// VIS-4\nf();\n/* b\n * VIS-1 to\n * VIS-4 */\n" },
-      { path: "packages/kopje/docs/a.md", text: "> VIS-1 to\n> VIS-4\n\n- VIS-1 to\n  VIS-4\n" },
+      {
+        path: "packages/kopje/docs/a.md",
+        text: "> VIS-1 to\n> VIS-4\n\n- VIS-1 to\n  VIS-4\n\n<!-- review VIS-1 to VIS-4 -->\n\n```\nVIS-1 to\nVIS-4\n```\n",
+      },
     ];
     expect(undefinedIds(files, defined)).toEqual([
       "packages/kopje/src/a.ts:2: VIS-3",
       "packages/kopje/src/a.ts:6: VIS-3",
       "packages/kopje/docs/a.md:1: VIS-3",
       "packages/kopje/docs/a.md:4: VIS-3",
+      "packages/kopje/docs/a.md:7: VIS-3",
+      "packages/kopje/docs/a.md:10: VIS-3",
     ]);
   });
 });
