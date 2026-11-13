@@ -26,9 +26,9 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
-import { pinCapMigrationSql } from "../src/domain/status-actions";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
+import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
 import { normalizeOnce, normalizeTag } from "../src/domain/tag-name";
 import { parseRemoteStatus } from "../src/federation/remote-status";
@@ -44,49 +44,33 @@ import { StoreUnavailableError, toStoreUnavailable } from "../src/platform/store
 import {
   ACTIVITY_SETTING_BOUNDS,
   ACTIVITY_VALUE_MAX,
-  activityMigrationSql,
-  accountMovesMigrationSql,
-  accountStaticImagesMigrationSql,
-  accountWarningsMigrationSql,
   ANNOUNCEMENT_TEXT_BYTES,
   APP_ID_BYTES,
   BLURHASH_BYTES,
   CONTACT_USERNAME_BYTES,
-  contactActivityMigrationSql,
   DOCUMENT_REVISION_MAX,
-  documentRevisionMigrationSql,
   EMOJI_CATEGORY_BYTES,
-  fieldVerificationMigrationSql,
   VERIFIED_LINKS_BYTES,
-  fieldLinkChecksMigrationSql,
   UNVERIFIED_LINKS_BYTES,
   FILTER_TEXT_UNITS_MAX,
-  filterTextUnitsMigrationSql,
   CARD_MAX_ATTEMPTS,
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
-  statusCardsMigrationSql,
   CARD_DIMENSION_MAX,
   CARD_EMBED_SRC_BYTES,
-  cardEmbedsMigrationSql,
   CARD_IMAGE_DESCRIPTION_JSON_BYTES,
   CARD_IMAGE_EDGE_MAX,
-  cardImagesMigrationSql,
   LINK_DOMAIN_BYTES,
-  linkTrendsMigrationSql,
   MAX_TREND_LINKS,
   OEMBED_TEMPLATE_BYTES,
   REMOTE_FIELD_LINK_BYTES,
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_LINK_BACK_BYTES,
   REMOTE_VERIFIED_SHOWN,
-  remoteFieldLinksMigrationSql,
   EMOJI_CATEGORY_LENGTH,
-  emojiBoundsMigrationSql,
   INSTANCE_SETTING_BOUNDS,
   INSTANCE_SETTING_NAMES,
-  instanceBoundsMigrationSql,
   type InstanceSettingName,
   LOCAL_EMOJI_SHORTCODE,
   MAX_ANNOUNCEMENTS,
@@ -96,11 +80,7 @@ import {
   MAX_TREND_REVIEWS,
   MAX_TREND_STATUSES,
   MAX_TREND_TAGS,
-  profileBoundsMigrationSql,
   REACTION_NAME_BYTES,
-  mediaBlurhashMigrationSql,
-  statusApplicationsMigrationSql,
-  storedBoundsMigrationSql,
   storedInstanceSetting,
   storedApplicationId,
   storedSetting,
@@ -115,8 +95,6 @@ import {
   WARNING_STATUS_IDS_BYTES,
   WARNING_TEXT_BYTES,
   REMOTE_MEDIA_HOSTS,
-  remoteMediaMigrationSql,
-  accountInvitationsMigrationSql,
   INVITATION_EMAIL_BYTES,
   LOCAL_USERNAME_BYTES,
   MAX_ACCOUNT_INVITATIONS,
@@ -258,6 +236,173 @@ function bookkeeping(sql: SqlStorage) {
     .exec<{ name: string; applied_at: number }>("SELECT name, applied_at FROM kopje_migrations ORDER BY name")
     .toArray();
 }
+
+// The triggers of the schema written by hand, by the reason none repeats a predicate a writer shares: each holds a
+// structure, a derived value or a cap whose constants its migration's tests compare.
+const HAND_WRITTEN_TRIGGERS: readonly { reason: string; names: readonly string[] }[] = [
+  {
+    reason: "0000: a local account keeps no domain and its statuses no raw document (structure)",
+    names: [
+      "local_accounts_local_insert",
+      "local_accounts_local_update",
+      "accounts_local_keeps_domain",
+      "statuses_local_no_raw_insert",
+      "statuses_local_no_raw_update",
+      "accounts_local_no_status_raw",
+    ],
+  },
+  {
+    reason: "0007, 0014: an ended follow removes its list membership and endorsement (cascade)",
+    names: ["list_members_follow_ended", "account_pins_follow_ended"],
+  },
+  {
+    reason: "0009, 0021, 0074: a status's thread and its author's last status (derived values)",
+    names: [
+      "statuses_thread",
+      "statuses_last_status_stored",
+      "statuses_last_status_removed",
+      "statuses_last_status_changed",
+    ],
+  },
+  {
+    reason: "0033, 0038, 0091: a quoted status's count, revoked authorizations and withdrawn quotes (derived values)",
+    names: [
+      "quotes_count_inserted",
+      "quotes_count_changed",
+      "quotes_count_deleted",
+      "quotes_authorization_retired",
+      "quotes_authorization_deleted",
+      "quotes_withdrawn_status_changed",
+      "quotes_withdrawn_inserted",
+      "quotes_withdrawn_changed",
+    ],
+  },
+  {
+    reason: "0052, 0055, 0056: caps and immutable rows of likes, emoji and announcements (constants compared there)",
+    names: [
+      "favourite_likes_cap",
+      "custom_emojis_image_insert",
+      "custom_emojis_enabled_insert",
+      "custom_emojis_enabled_update",
+      "custom_emojis_immutable",
+      "announcements_cap",
+      "announcements_live_insert",
+      "announcements_live_update",
+      "announcements_immutable",
+      "announcement_reactions_names",
+      "announcement_reactions_emoji",
+      "announcement_reactions_immutable",
+    ],
+  },
+  {
+    reason: "0056: the stream journal (events written for subscribed streams)",
+    names: [
+      "stream_notification_inserted",
+      "stream_status_inserted",
+      "stream_status_edited",
+      "stream_conversation_changed",
+    ],
+  },
+  {
+    reason: "0057: the trend caps, a trend status's author, and the trends settings (constants compared there)",
+    names: [
+      "trend_tags_cap",
+      "trend_statuses_cap",
+      "trend_statuses_per_author",
+      "trend_statuses_author_insert",
+      "trend_statuses_author_update",
+      "tag_trend_reviews_cap",
+      "status_trend_reviews_cap",
+      "account_trend_reviews_cap",
+      "instance_settings_trends_insert",
+      "instance_settings_trends_update",
+    ],
+  },
+  {
+    reason:
+      "0085, 0088, 0090, 0092: retraction stagings, handshake and reject replays, conversation sequence (lifecycle)",
+    names: [
+      "outbound_activities_staging_ended",
+      "handshake_replays_generation",
+      "conversation_statuses_removed",
+      "reject_replays_follow_stored",
+      "reject_replays_guard_insert",
+      "reject_replays_guard_update",
+    ],
+  },
+];
+
+// What differs between the triggers of `sql`'s schema and the registry: a trigger whose text (SQLite keeps it
+// verbatim, without the trailing `;`) is not what `emit` gives for its name, one neither registered nor written by
+// hand, and a registered or hand-written name the schema lacks.
+function triggerMismatches(sql: SqlStorage, emit: (name: string) => string | undefined): string[] {
+  const rows = sql
+    .exec<{ name: string; sql: string }>("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+    .toArray();
+  const hand = new Set(HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names));
+  const problems: string[] = [];
+  for (const { name, sql: text } of rows) {
+    const emitted = emit(name);
+    if (emitted !== undefined) {
+      if (`${text};\n` !== emitted) {
+        problems.push(`${name}: differs from the registry`);
+      }
+      if (hand.has(name)) {
+        problems.push(`${name}: registered and listed as hand-written`);
+      }
+    } else if (!hand.has(name)) {
+      problems.push(`${name}: neither registered nor listed as hand-written`);
+    }
+  }
+  const names = new Set(rows.map((row) => row.name));
+  for (const name of [...STORED_TRIGGERS.keys(), ...hand]) {
+    if (!names.has(name)) {
+      problems.push(`${name}: not in the schema`);
+    }
+  }
+  return problems;
+}
+
+const emitRegistered = (name: string) => (STORED_TRIGGERS.has(name) ? emitTriggers([name]) : undefined);
+
+describe("the triggers in force", () => {
+  it("are each the registry's text or listed as hand-written, and the registry names only triggers in force", async () => {
+    const store = await migratedStore();
+    await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
+      expect(STORED_TRIGGERS.size).toBe(68);
+      expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
+        68 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+      );
+    });
+  });
+
+  it("reports a changed text, an unlisted trigger and a registered one the schema lacks", async () => {
+    const store = await migratedStore();
+    await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      const changed = (name: string) =>
+        name === "status_cards_bounds_update"
+          ? emitRegistered(name)?.replace("<> 'text'", "<> 'blob'")
+          : emitRegistered(name);
+      expect(triggerMismatches(sql, changed)).toEqual(["status_cards_bounds_update: differs from the registry"]);
+      sql.exec("CREATE TRIGGER statuses_unlisted BEFORE DELETE ON statuses BEGIN SELECT 1; END");
+      sql.exec("DROP TRIGGER trend_links_cap");
+      expect(triggerMismatches(sql, emitRegistered)).toEqual([
+        "statuses_unlisted: neither registered nor listed as hand-written",
+        "trend_links_cap: not in the schema",
+      ]);
+    });
+  });
+
+  it("emits a migration's statements in order, a blank line between them", () => {
+    expect(emitTriggers(["trend_links_cap", "account_invitations_immutable"])).toBe(
+      `${STORED_TRIGGERS.get("trend_links_cap")}\n\n${STORED_TRIGGERS.get("account_invitations_immutable")}\n`,
+    );
+    expect(() => emitTriggers(["statuses_thread"])).toThrow(/not registered/);
+  });
+});
 
 describe("Store migration runner", () => {
   it("applies the schema on a fresh Store through the alarm, never on construction", async () => {
@@ -5277,10 +5422,6 @@ describe("0048_stored_bounds", () => {
   const at = NAMES.indexOf(NAME);
   const REFUSED = (table: string) => new RegExp(`${table}: a value past its stored bound`);
 
-  it("holds storedBoundsMigrationSql's output after its header", () => {
-    expectGenerated(at, storedBoundsMigrationSql());
-  });
-
   it("stores each covered value as P(x), keeps values at their bounds, and leaves only fixed points", async () => {
     const store = freshStore();
     await runInDurableObject(store, async (_instance, state) => {
@@ -5405,10 +5546,6 @@ describe("0049_instance_bounds", () => {
       sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES (?, ?)", name, value);
     }
   };
-
-  it("holds instanceBoundsMigrationSql's output after its header", () => {
-    expectGenerated(at, instanceBoundsMigrationSql());
-  });
 
   it("measures each bound in its unit", () => {
     expect([bytes(documentAt), documentAt.length, bytes(emailAt), bytes(rulesAt)]).toEqual([
@@ -5744,10 +5881,6 @@ describe("0052_favourite_likes", () => {
 describe("0053_custom_emoji_snapshots", () => {
   const NAME = "0053_custom_emoji_snapshots";
   const at = NAMES.indexOf(NAME);
-
-  it("holds emojiBoundsMigrationSql's output after its header", () => {
-    expectGenerated(at, emojiBoundsMigrationSql());
-  });
 
   it("keeps every row as it was, with no emoji, then refuses a snapshot past its bound on insert and update", async () => {
     const store = freshStore();
@@ -7090,7 +7223,6 @@ describe("0057_trends", () => {
         sql.exec("UPDATE instance_settings SET name = 'trends', value = 'x' WHERE name = 'trendable_by_default'"),
       ).toThrow(setting);
       sql.exec("INSERT INTO instance_settings (name, value) VALUES ('domain', 'on')");
-      expect(MIGRATIONS.find((m) => m.name === "0049_instance_bounds")?.sql).toContain(instanceBoundsMigrationSql());
     });
   });
 
@@ -7242,10 +7374,6 @@ describe("0058_profile_credentials", () => {
   const NAME = "0058_profile_credentials";
   const at = NAMES.indexOf(NAME);
 
-  it("holds profileBoundsMigrationSql's output after its header", () => {
-    expectGenerated(at, profileBoundsMigrationSql());
-  });
-
   it("keeps rows as they were, then bounds indexable as stored and the cursor", async () => {
     const store = freshStore();
     await runInDurableObject(store, async (_instance, state) => {
@@ -7312,8 +7440,7 @@ describe("0059_contact_and_activity", () => {
   const NAME = "0059_contact_and_activity";
   const at = NAMES.indexOf(NAME);
 
-  it("holds contactActivityMigrationSql's output after its header, with the 509-byte bound", () => {
-    expectGenerated(at, contactActivityMigrationSql());
+  it("holds the 509-byte bound", () => {
     expect(CONTACT_USERNAME_BYTES).toBe(509);
     expect(MIGRATIONS[at]?.sql).toContain("length(CAST(NEW.value AS BLOB)) > 509");
   });
@@ -7430,10 +7557,6 @@ describe("0060_account_moves", () => {
   const B = "100000000000000002";
   const LOCAL = "100000000000000003";
 
-  it("holds accountMovesMigrationSql's output after its header", () => {
-    expectGenerated(at, accountMovesMigrationSql());
-  });
-
   it("keeps rows as they were with no pointer, then bounds the pointer as stored", async () => {
     const store = freshStore();
     await runInDurableObject(store, async (_instance, state) => {
@@ -7503,10 +7626,6 @@ describe("0061_account_static_images", () => {
   const IMAGE = "https://kopje.test/media/AAAA/full.webp";
   const STILL = "https://kopje.test/media/AAAA/small.webp";
   const REFUSED = /accounts: static image past its stored bound/;
-
-  it("holds accountStaticImagesMigrationSql's output after its header", () => {
-    expectGenerated(at, accountStaticImagesMigrationSql());
-  });
 
   it("keeps rows as they were with no static, then bounds both statics as stored", async () => {
     const store = freshStore();
@@ -7616,10 +7735,6 @@ describe("0062_account_warnings", () => {
 
   // The bytes of `text`, each code unit below 256 one byte.
   const blob = (text: string) => new Uint8Array([...text].map((c) => c.charCodeAt(0))).buffer;
-
-  it("holds accountWarningsMigrationSql's output after its header", () => {
-    expectGenerated(at, accountWarningsMigrationSql());
-  });
 
   it("keeps notifications as they were, then bounds each column as stored, in order, on INSERT and UPDATE", async () => {
     const store = freshStore();
@@ -7897,11 +8012,6 @@ describe("0064_status_applications", () => {
   const LEGACY = "0b8c4a2e-6f1d-4e3a-9c7b-5d2e8f1a3b4c";
   const REFUSED = /statuses: application_id past its stored bound/;
 
-  it("holds statusApplicationsMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, statusApplicationsMigrationSql());
-  });
-
   it("keeps rows as they were with no app, then bounds the app as stored", async () => {
     const store = freshStore();
     await runInDurableObject(store, async (_instance, state) => {
@@ -7996,11 +8106,6 @@ describe("0065_media_blurhash", () => {
   const THEIR_MEDIA = "100000000000000022";
   const REFUSED = /media_attachments: blurhash past its stored bound/;
 
-  it("holds mediaBlurhashMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, mediaBlurhashMigrationSql());
-  });
-
   it("keeps media as they were with no blurhash, then bounds the blurhash as stored", async () => {
     const store = freshStore();
     await runInDurableObject(store, async (_instance, state) => {
@@ -8086,11 +8191,6 @@ describe("0066_field_verification", () => {
   const LOCAL = "100000000000000001";
   const REFUSED = /local_accounts: verified_links past its stored bound/;
   const TIME = "2026-10-22T00:00:00.000Z";
-
-  it("holds fieldVerificationMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, fieldVerificationMigrationSql());
-  });
 
   it("keeps local accounts as they were with nothing due, then bounds the new columns as stored", async () => {
     const store = freshStore();
@@ -8210,11 +8310,6 @@ describe("0067_status_cards", () => {
   const STATUS = "100000000000000002";
   const REFUSED = /status_cards: a value past its stored bound/;
   const TIME = "2026-10-23T00:00:00.000Z";
-
-  it("holds statusCardsMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, statusCardsMigrationSql());
-  });
 
   it("adds an empty table that goes with its status, then bounds every column as stored", async () => {
     const store = freshStore();
@@ -8362,11 +8457,6 @@ describe("0068_remote_field_verification", () => {
   const TIME = "2026-10-23T00:00:00.000Z";
   const HREF = "https://site.example/";
   const LINKS = JSON.stringify([[0, HREF, null, 0]]);
-
-  it("holds remoteFieldLinksMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, remoteFieldLinksMigrationSql());
-  });
 
   it("adds an empty table that goes with its account, then bounds every column as stored", async () => {
     const store = freshStore();
@@ -8541,11 +8631,6 @@ describe("0069_card_embeds", () => {
   const REFUSED = /status_cards: a value past its stored bound/;
   const ENDPOINT_REFUSED = /card_oembed_endpoints: a value past its stored bound/;
   const TIME = "2026-10-23T00:00:00.000Z";
-
-  it("holds cardEmbedsMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, cardEmbedsMigrationSql());
-  });
 
   it("defaults the existing rows without rewriting them, then bounds every new column as stored", async () => {
     const store = freshStore();
@@ -8741,11 +8826,6 @@ describe("0070_card_images", () => {
   const TIME = "2026-10-23T00:00:00.000Z";
   const label = (value: unknown) =>
     JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v))?.slice(0, 80);
-
-  it("holds cardImagesMigrationSql's output after its header", () => {
-    expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, cardImagesMigrationSql());
-  });
 
   it("defaults the existing rows without rewriting them, then bounds every new column as stored", async () => {
     const store = freshStore();
@@ -8966,10 +9046,8 @@ describe("0071_link_trends", () => {
     ...[...'"<>\\^`{|}'].map((c) => `${url(30)}${c}`),
   ];
 
-  it("holds linkTrendsMigrationSql's output after its header, and leaves 0070's file as released", () => {
+  it("is not declared foreignKeys: 'unchanged', and keeps each GLOB pattern within 50 bytes", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, linkTrendsMigrationSql());
-    expectGenerated(NAMES.indexOf("0070_card_images"), cardImagesMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     expect([MAX_TREND_LINKS, MAX_TREND_REVIEWS, LINK_DOMAIN_BYTES]).toEqual([250, 10_000, 253]);
     for (const [, pattern] of (MIGRATIONS[at]?.sql ?? "").matchAll(/GLOB\s+'([^']*)'/g)) {
@@ -9220,10 +9298,8 @@ describe("0072_activity_tracking", () => {
   const SETTING = /instance_settings: a value past its stored bound/;
   const label = (value: unknown) => JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v));
 
-  it("holds activityMigrationSql's output after its header, and leaves 0059's file as released", () => {
+  it("is not declared foreignKeys: 'unchanged', and keeps each GLOB pattern within 50 bytes", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, activityMigrationSql());
-    expectGenerated(NAMES.indexOf("0059_contact_and_activity"), contactActivityMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     expect(ACTIVITY_VALUE_MAX).toBe(1e12);
     expect(Object.keys(ACTIVITY_SETTING_BOUNDS)).toEqual(["activity_api_enabled"]);
@@ -9378,9 +9454,8 @@ describe("0073_actor_document_revision", () => {
   const LOCAL = "100000000000000002";
   const REFUSED = /accounts: document_revision past its stored bound/;
 
-  it("holds documentRevisionMigrationSql's output after its header, declared foreignKeys: 'unchanged'", () => {
+  it("is declared foreignKeys: 'unchanged'", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, documentRevisionMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     expect(DOCUMENT_REVISION_MAX).toBe(2 ** 53 - 1);
   });
@@ -9587,9 +9662,8 @@ describe("0076_field_link_checks", () => {
   const LOCAL = "100000000000000001";
   const REFUSED = /local_accounts: unverified_links past its stored bound/;
 
-  it("holds fieldLinkChecksMigrationSql's output after its header, declared foreignKeys: 'unchanged'", () => {
+  it("is declared foreignKeys: 'unchanged'", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, fieldLinkChecksMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
   });
 
@@ -9702,9 +9776,8 @@ describe("0077_remote_media", () => {
   const label = (value: unknown) =>
     JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v))?.slice(0, 100);
 
-  it("holds remoteMediaMigrationSql's output after its header, verifying the whole Store's foreign keys", () => {
+  it("verifies the whole Store's foreign keys, and keeps each GLOB pattern within 50 bytes", () => {
     expect(NAMES[at - 1]).toBe("0076_field_link_checks");
-    expectGenerated(at, remoteMediaMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     for (const [, pattern] of (MIGRATIONS[at]?.sql ?? "").matchAll(/GLOB\s+'([^']*)'/g)) {
       expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
@@ -9932,9 +10005,8 @@ describe("0079_filter_text_units", () => {
   const OWN = "200000000000000001";
   const REFUSED = /statuses: filter_text_units past its stored bound/;
 
-  it("holds filterTextUnitsMigrationSql's output after its header, declared foreignKeys: 'unchanged'", () => {
+  it("is declared foreignKeys: 'unchanged'", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, filterTextUnitsMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     expect(FILTER_TEXT_UNITS_MAX).toBe(10_000);
   });
@@ -10057,9 +10129,8 @@ describe("0081_account_invitations", () => {
   const T = "2026-10-27T00:00:00.000Z";
   const REFUSED = /CHECK constraint failed: account_invitation_/;
 
-  it("holds accountInvitationsMigrationSql's output after its header, not declared foreignKeys: 'unchanged'", () => {
+  it("is not declared foreignKeys: 'unchanged'", () => {
     expect(at).toBeGreaterThan(-1);
-    expectGenerated(at, accountInvitationsMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     expect([INVITATION_EMAIL_BYTES, LOCAL_USERNAME_BYTES, MAX_ACCOUNT_INVITATIONS]).toEqual([254, 30, 10]);
     // workerd refuses a LIKE or GLOB pattern over 50 bytes.
@@ -11449,9 +11520,8 @@ describe("0089_pin_cap", () => {
   const status = (n: number) => `2${String(n).padStart(17, "0")}`;
   const day = (d: number) => `2026-10-${String(d).padStart(2, "0")}T00:00:00.000Z`;
 
-  it("holds pinCapMigrationSql's output after its header, declared foreignKeys: 'unchanged', at both limits", () => {
+  it("is declared foreignKeys: 'unchanged', at both limits", () => {
     expect(NAMES[at - 1]).toBe("0088_handshake_replays");
-    expectGenerated(at, pinCapMigrationSql());
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     // The trigger's limits are the writers' constants (0089's header states them).
     expect([PIN_LIMIT, MAX_REMOTE_PINS]).toEqual([5, 20]);

@@ -62,7 +62,9 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **A new stored column or setting gets a stored bound that holds for imported values**, judged in order: the raw
   bytes first, then NUL anywhere, then the structure. Its writer drops what the trigger would refuse by sharing the
   trigger's acceptance rule, so a write never fails on it, and its presenter never throws on a stored value (RES-2,
-  "stored values", applies this per column).
+  "stored values", applies this per column). The migration writes the trigger as `emitTriggers` gives it from that
+  rule, registered in `src/domain/stored-triggers.ts`; `test/migrations.test.ts` holds every trigger of the migrated
+  schema to its registered text, or to the list of those written by hand.
 - **Every presented string or href passes its raw bound and its escaped-JSON bound after UTF-8 decoding**, through one
   shared helper per kind. A stored-bound predicate refuses NUL inside decoded JSON elements too, not only in the raw
   text.
