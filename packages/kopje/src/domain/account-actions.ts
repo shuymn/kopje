@@ -337,8 +337,11 @@ export const unfollow = userWriteOperation<{ target: string; now: number }, Rela
     if (removed !== undefined) {
       recountFollows(db, viewerId, target);
     }
-    // The follow's notification goes with it, as Mastodon destroys a notification with its activity.
-    db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
+    // The follow's notification goes with it, as Mastodon destroys a notification with its activity, also without an
+    // edge; unfollowRemote has already removed it with a remote edge.
+    if (target.domain === null || removed === undefined) {
+      db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
+    }
     return relationshipResult(db, viewerId, target.id, now);
   },
 );
