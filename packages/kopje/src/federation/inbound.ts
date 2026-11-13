@@ -742,12 +742,7 @@ async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay)
       json,
       { id: activity.id, actor: actorUri, object: activity.object },
       JSON.parse(fetched.input.raw) as unknown,
-      loaders.context,
     );
-    rethrowStoreError(state);
-    if (verdict === "transient") {
-      return { status: 503, reason: "proof-unavailable" };
-    }
     if (!verdict) {
       return { status: 401, reason: "proof-invalid" };
     }
@@ -899,7 +894,6 @@ async function proveDelete(
     body,
     { id: activity.id, actor: actorUri, object: activity.object },
     JSON.parse(fetched.input.raw) as unknown,
-    loaders.context,
   );
 }
 

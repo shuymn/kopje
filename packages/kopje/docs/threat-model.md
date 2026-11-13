@@ -150,12 +150,18 @@ against their own instance. TLS is assumed between all parties.
   the `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked Data
   Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key the
   actor's current document embeds (that document fetched anew in the request, never from a cache, so a key the actor
-  has since replaced proves nothing; no other key is ever loaded), and only when the proven activity is a `Delete`
-  with exactly the id, actor and object Kopje read. What a proof proves is read only from the document its verifier
-  hashed, never from the body as received: for a signature, the body without `signature`; for an FEP-8b32 proof, the
-  body without `proof`, whose `@context` must be the proof's when the proof names one. That document's single node is
-  typed `as:Delete` and nothing else, so a context entry the proof does not cover (a nested `signature`, a term
-  redefined after the proof's context) cannot make a signed `Update`, `Like` or untyped document read as a `Delete`.
+  has since replaced proves nothing; no other key is ever loaded). A proof is considered only on a body in one of the
+  sender profiles (`PROFILES` in `src/federation/author-proof.ts`): Mastodon 4.5's status and stamp `Delete`, Kopje's
+  status and stamp `Delete`, and a `Delete` Fedify signs with an FEP-8b32 proof under its default context. In a profile
+  the `@context` is deep-equal to the sender's, every URL in it preloaded, and every key at every level is one the
+  sender writes (`type` the string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the
+  signature or the single proof in the sender's shape, a proof's own `@context` the body's), so the body's JSON-LD
+  meaning is its literal JSON: no inline term can nest, drop, alias or redefine a key the decision reads, and no
+  context resolves differently between verification and parsing. Contexts are served from Fedify's preloaded set
+  alone, for the verification and every parse. The proven `Delete` has exactly the literal id, one actor (the author)
+  and one object (the literal object's id). Any other form is answered as a proof that does not verify: a relayed
+  `Delete` from Misskey, or from a Mastodon release whose context differs, is refused, and an author's own `Delete` in
+  such a form applies but forwards nothing.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
@@ -168,14 +174,14 @@ against their own instance. TLS is assumed between all parties.
   _Enforced (main):_ `relayed` in `src/federation/inbound.ts`, `src/federation/author-proof.ts`, `relayedDelete` in
   `src/domain/inbox.ts`; `test/relayed-delete.test.ts` (a Mastodon-signed and a Kopje-signed status `Delete` relayed
   and applied with the author's own effects, and the refusal of a missing or invalid proof, a proof of another
-  activity id or by a key on another host, a signed graph with no `Delete` type or another type beside it, a signed
-  `Update` read as a `Delete` through a nested signature, an FEP-8b32 proof whose context the body extends, a signer
-  that does not own its key, another author's status, a uri of another origin, a private, direct or limited status, a
-  boost, an actor, and a status that turned private while the proof was verified), `test/quotes.test.ts` ("relayed
-  revocations (ID-1’s exception)": a missing proof, a forged signature, a proof by another actor's key, a proof
-  covering another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed
-  `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction
-  for input that fails ID-1").
+  activity id or by a key on another host, a signer that does not own its key, another author's status, a uri of
+  another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
+  proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, a refusal with a
+  verifying signature for each clause of the closed form, every exploit found against the proof, and no fetch while
+  verifying), `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, a missing
+  proof, a forged signature, a proof by another actor's key, a proof covering another object, a valid proof on another
+  activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a `Delete` through a
+  nested signature), `test/inbox.test.ts` ("records no retraction for input that fails ID-1").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that

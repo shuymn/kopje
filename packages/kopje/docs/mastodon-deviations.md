@@ -773,6 +773,13 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Kopje changes
   no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
   `Delete` of an actor.
+- An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
+  profiles (`PROFILES` in `src/federation/author-proof.ts`): Mastodon 4.5's status `Delete` (`DeleteSerializer`) and
+  stamp `Delete` (`DeleteQuoteAuthorizationSerializer`), each with the `@context` Mastodon 4.5 writes and the keys its
+  serializer and `LinkedDataSignature#sign!` write; Kopje's own; and a `Delete` Fedify signs with an FEP-8b32 proof.
+  Mastodon verifies a signature on any JSON-LD form. So a relayed `Delete` from Misskey, or from a Mastodon release
+  whose context differs, is refused, and an author's own `Delete` in such a form applies but is not forwarded. Adding a
+  profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 

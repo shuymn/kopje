@@ -28,6 +28,7 @@ import { StoreUnavailableError } from "../src/platform/store-errors";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
+import { mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
 import { BUILD } from "./helpers";
 import {
   actorDefaults,
@@ -997,6 +998,13 @@ describe("relayed revocations (ID-1’s exception)", () => {
       Record<string, unknown>
     >;
   }
+
+  it("applies Mastodon's stamp Delete, its QuoteAuthorization embedded, as the author's", async () => {
+    const { t, carol, dan, stamp, quote, target } = await relayWorld();
+    const body = mastodonStampDelete(carol, { uri: stamp, quoting: quote.id, quoted: target.id });
+    expect(await t.post(dan, await mastodonSigned(body, carol))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+  });
 
   it("applies the author’s LD-signed Delete as the author’s", async () => {
     const { t, carol, dan, stamp, quote, target } = await relayWorld();

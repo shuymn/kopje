@@ -1,32 +1,247 @@
-import { type DocumentLoader, verifyJsonLd, verifyObject } from "@fedify/fedify";
-import { Delete, Object as ApObject } from "@fedify/vocab";
-import jsonld from "@fedify/vocab-runtime/jsonld";
+import { type DocumentLoader, preloadedContexts, verifyJsonLd, verifyObject } from "@fedify/fedify";
+import { Delete } from "@fedify/vocab";
 
-import { isTransientLoadError, loadFailureOf, RefusedFetchError } from "./loader";
+import { RefusedFetchError } from "./loader";
 
-// The author's own proof on an activity another server relayed (ID-1's exception, domain/inbox.ts relayedDelete):
-// a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's Delete with always_sign) or an
-// FEP-8b32 Object Integrity Proof. Fedify verifies both; Kopje only chooses the key and reads what was proven:
+// The author's own proof on a Delete (ID-1's exception, domain/inbox.ts relayedDelete, and the forward of an author's
+// own Delete, recordForwards): a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's
+// Delete with always_sign) or an FEP-8b32 Object Integrity Proof, which Fedify verifies. A body is considered only in
+// one of the closed forms below (PROFILES), taken from its sender's source: its @context deep-equal to the profile's,
+// every URL in it preloaded, and every key at every level one the sender writes. In that form the body's JSON-LD
+// meaning is its literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop, alias or
+// redefine a key (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification and
+// parsing. Any other form, a relayed Delete from Misskey or from a Mastodon release with another context included, is
+// refused as without a proof (docs/mastodon-deviations.md).
 //   - The key must be one the actor's own document embeds: the verifiers load keys through a loader that serves only
 //     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
 //     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
-//   - What was proven is read only from the document the verifier hashed (signedDocument), never from the body as
-//     received: a context entry the signature does not cover (a `@nest`ed `signature`, a term redefined after the
-//     proof's context) can make the body read differently from the signed graph. That document's expanded node must
-//     be typed as:Delete and nothing else (Delete.fromJsonLd accepts a node of no type, and Fedify's decoder picks
-//     Delete from several), with exactly the id, actor and object Kopje read. Fedify's LD verification refuses @graph,
-//     @included and @reverse, and their aliases, before and after compacting the document (the class of bypass
-//     Mastodon fixed in 4.5.10, GHSA-53m7-2wrh-q839).
+//   - Contexts come from Fedify's preloaded set alone, for the verification and every parse: never fetched, never from
+//     the request's loaders or their cache.
+//   - The proven Delete has exactly the literal id, one actor (the author) and one object, the literal object's id.
 
 type Json = Record<string, unknown>;
 
 export type ProvenDelete = { id: string; actor: string; object: string };
 
-const AS_DELETE = "https://www.w3.org/ns/activitystreams#Delete";
+const AS = "https://www.w3.org/ns/activitystreams";
+const SECURITY = "https://w3id.org/security/v1";
+const IDENTITY = "https://w3id.org/identity/v1";
+
+type Profile = {
+  // The proof: an RsaSignature2017 signature as Mastodon's LinkedDataSignature#sign! writes it, or as Fedify's
+  // createSignature does (with its own @context, identity/v1), or FEP-8b32 proofs.
+  form: "mastodon" | "fedify" | "proof";
+  context: readonly unknown[];
+  // The top-level keys the sender may write besides @context, id, type, actor, object and its proof.
+  extra: readonly string[];
+  // The object: an IRI string, or an embedded object with exactly these keys, its `type` this one, every value a string.
+  object: "iri" | { type: string; keys: readonly string[] };
+};
+
+const TOMBSTONE = { type: "Tombstone", keys: ["id", "type", "atomUri"] } as const;
+
+// The accepted forms, each its sender's @context verbatim and the keys its serializer writes.
+export const PROFILES: Readonly<Record<string, Profile>> = {
+  // Mastodon 4.5's status Delete: ActivityPub::DeleteSerializer (its TombstoneSerializer's context_extensions
+  // :atom_uri, app/helpers/context_helper.rb atom_uri), signed by LinkedDataSignature#sign!, which appends security/v1.
+  mastodonStatus: {
+    form: "mastodon",
+    context: [AS, { ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" }, SECURITY],
+    extra: ["to"],
+    object: TOMBSTONE,
+  },
+  // Mastodon 4.5's stamp Delete: ActivityPub::DeleteQuoteAuthorizationSerializer, its object the
+  // QuoteAuthorizationSerializer's (context_helper.rb quote_authorizations), signed as above (RevokeQuoteService).
+  mastodonStamp: {
+    form: "mastodon",
+    context: [
+      AS,
+      {
+        gts: "https://gotosocial.org/ns#",
+        QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
+        interactingObject: { "@id": "gts:interactingObject", "@type": "@id" },
+        interactionTarget: { "@id": "gts:interactionTarget", "@type": "@id" },
+      },
+      SECURITY,
+    ],
+    extra: ["to"],
+    object: {
+      type: "QuoteAuthorization",
+      keys: ["id", "type", "attributedTo", "interactingObject", "interactionTarget"],
+    },
+  },
+  // Kopje's status Delete (domain/activities.ts deleteSigning, SIGNED_DELETE_CONTEXT; federation/ld-sign.ts).
+  kopjeStatus: {
+    form: "fedify",
+    context: [
+      AS,
+      { sensitive: "as:sensitive", Hashtag: "as:Hashtag", ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" },
+      SECURITY,
+    ],
+    extra: ["to"],
+    object: TOMBSTONE,
+  },
+  // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
+  kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
+  // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
+  // Delete#toJsonLd docContext), which copies that context into the proof.
+  fedifyProof: {
+    form: "proof",
+    context: [
+      IDENTITY,
+      AS,
+      "https://w3id.org/security/data-integrity/v1",
+      "https://gotosocial.org/ns",
+      {
+        toot: "http://joinmastodon.org/ns#",
+        misskey: "https://misskey-hub.net/ns#",
+        fedibird: "http://fedibird.com/ns#",
+        sensitive: "as:sensitive",
+        votersCount: { "@id": "toot:votersCount", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" },
+        Emoji: "toot:Emoji",
+        Hashtag: "as:Hashtag",
+        ChatMessage: "http://litepub.social/ns#ChatMessage",
+        quote: { "@id": "https://w3id.org/fep/044f#quote", "@type": "@id" },
+        quoteUrl: "as:quoteUrl",
+        _misskey_quote: "misskey:_misskey_quote",
+        quoteUri: "fedibird:quoteUri",
+        QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
+        QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest",
+        quoteAuthorization: { "@id": "https://w3id.org/fep/044f#quoteAuthorization", "@type": "@id" },
+      },
+    ],
+    extra: ["to", "cc"],
+    object: "iri",
+  },
+};
+
+const SIGNATURE_KEYS = ["type", "creator", "created", "signatureValue"];
+const PROOF_KEYS = ["type", "cryptosuite", "verificationMethod", "proofPurpose", "proofValue", "created"];
+
+function isJson(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// JSON equality, member order aside.
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
+  }
+  if (isJson(a) && isJson(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && deepEqual(a[k], b[k]));
+  }
+  return a === b;
+}
+
+// Whether `value` has every key of `required`, and no key outside `required` and `optional`.
+function hasKeys(value: Json, required: readonly string[], optional: readonly string[] = []): boolean {
+  const keys = Object.keys(value);
+  return (
+    required.every((k) => Object.hasOwn(value, k)) && keys.every((k) => required.includes(k) || optional.includes(k))
+  );
+}
+
+function isAddress(value: unknown): boolean {
+  return typeof value === "string" || (Array.isArray(value) && value.every((v) => typeof v === "string"));
+}
+
+function everyString(value: Json): boolean {
+  return Object.values(value).every((v) => typeof v === "string");
+}
+
+// The profile `json` is in exactly, and its literal object id; null when it is in none.
+function profileOf(json: Json): { profile: Profile; object: string } | null {
+  for (const profile of Object.values(PROFILES)) {
+    if (!deepEqual(json["@context"], profile.context)) {
+      continue;
+    }
+    const base = ["@context", "id", "type", "actor", "object", profile.form === "proof" ? "proof" : "signature"];
+    if (
+      !hasKeys(json, base, profile.extra) ||
+      json.type !== "Delete" ||
+      typeof json.id !== "string" ||
+      typeof json.actor !== "string" ||
+      !profile.extra.every((k) => json[k] === undefined || isAddress(json[k]))
+    ) {
+      return null;
+    }
+    const object = objectId(json.object, profile.object);
+    if (object === null || !(profile.form === "proof" ? isProof(json) : isSignature(json.signature, profile.form))) {
+      return null;
+    }
+    return { profile, object };
+  }
+  return null;
+}
+
+function objectId(value: unknown, form: Profile["object"]): string | null {
+  if (form === "iri") {
+    return typeof value === "string" ? value : null;
+  }
+  return isJson(value) && hasKeys(value, form.keys) && everyString(value) && value.type === form.type
+    ? (value.id as string)
+    : null;
+}
+
+// Fedify's createSignature names identity/v1 as the signature's own @context (@fedify/fedify 2.4.5 ld-*.mjs); Mastodon
+// writes none.
+function isSignature(value: unknown, form: "mastodon" | "fedify"): boolean {
+  if (!isJson(value)) {
+    return false;
+  }
+  const required = form === "fedify" ? [...SIGNATURE_KEYS, "@context"] : SIGNATURE_KEYS;
+  return (
+    hasKeys(value, required) &&
+    everyString(value) &&
+    value.type === "RsaSignature2017" &&
+    (form === "mastodon" || value["@context"] === IDENTITY)
+  );
+}
+
+// One proof (alone, or alone in an array, as Fedify's signObject writes one), a DataIntegrityProof (eddsa-jcs-2022)
+// whose own @context, when it has one, is the body's. A second proof is refused, valid or not: Fedify accepts a body
+// when any of its proofs verifies.
+function isProof(json: Json): boolean {
+  const proofs = Array.isArray(json.proof) ? json.proof : [json.proof];
+  return (
+    proofs.length === 1 &&
+    proofs.every((proof) => {
+      if (!isJson(proof) || !hasKeys(proof, PROOF_KEYS, ["@context"])) {
+        return false;
+      }
+      const { "@context": context, ...rest } = proof;
+      return (
+        everyString(rest) &&
+        rest.type === "DataIntegrityProof" &&
+        rest.cryptosuite === "eddsa-jcs-2022" &&
+        (context === undefined || deepEqual(context, json["@context"]))
+      );
+    })
+  );
+}
+
+// Fedify's preloaded contexts, and nothing else: no fetch, no shared cache.
+const preloaded: DocumentLoader = (url) => {
+  const document = preloadedContexts[url];
+  return document === undefined
+    ? Promise.reject(new RefusedFetchError(new URL(url), "Not a preloaded JSON-LD context"))
+    : Promise.resolve({ document, documentUrl: url, contextUrl: null });
+};
 
 function withoutFragment(url: string): string {
   const hash = url.indexOf("#");
   return hash === -1 ? url : url.slice(0, hash);
+}
+
+// The key ids a body in a profile names (its signature's creator, every proof's verificationMethod): strings there.
+function keyIdsOf(json: Json): string[] {
+  if (isJson(json.signature)) {
+    return [json.signature.creator as string];
+  }
+  return (Array.isArray(json.proof) ? json.proof : [json.proof]).map(
+    (proof) => (proof as Json).verificationMethod as string,
+  );
 }
 
 // Whether the body carries an author proof at all (an LD signature or an FEP-8b32 proof), valid or not.
@@ -34,101 +249,40 @@ export function hasAuthorProof(json: Json): boolean {
   return (json.signature !== undefined && json.signature !== null) || (json.proof !== undefined && json.proof !== null);
 }
 
-function proofsOf(json: Json): unknown[] {
-  return Array.isArray(json.proof) ? json.proof : json.proof === undefined || json.proof === null ? [] : [json.proof];
-}
-
-// The ids of the keys a proof names: the LD signature's creator and every proof's verificationMethod.
-function proofKeyIds(json: Json): unknown[] {
-  const signature = json.signature as Json | null | undefined;
-  return [
-    ...(signature === undefined || signature === null ? [] : [signature.creator]),
-    ...proofsOf(json).map((proof) =>
-      typeof proof === "object" && proof !== null ? (proof as Json).verificationMethod : null,
-    ),
-  ];
-}
-
-// The document a form's verifier hashes, or null when Kopje cannot tell it from the body:
-//   - signature: the body without `signature` (@fedify/fedify ld-*.mjs: compactJsonLd detaches it before compacting,
-//     detachSignature, and verifySignature hashes the compacted document without it; compaction keeps the graph).
-//   - proof: the body without `proof`, its @context replaced by the proof's (proof-*.mjs createProofMessageDigests,
-//     which also accepts the same message with its public audience and attachments normalized, a change of neither
-//     type, id, actor nor object; createProofConfiguration takes the proof's @context, else the body's). Kopje
-//     requires every proof's @context, when it has one, to be the body's, so the body read is the one hashed.
-function signedDocument(json: Json, form: "signature" | "proof"): Json | null {
-  if (form === "signature") {
-    const { signature: _signature, ...document } = json;
-    return document;
-  }
-  const context = JSON.stringify(json["@context"] ?? null);
-  const sameContext = proofsOf(json).every(
-    (proof) =>
-      typeof proof === "object" &&
-      proof !== null &&
-      (!("@context" in proof) || JSON.stringify((proof as Json)["@context"]) === context),
-  );
-  if (!sameContext) {
-    return null;
-  }
-  const { proof: _proof, ...document } = json;
-  return document;
-}
-
-// Whether `document`, the one a verifier hashed, is a Delete of exactly `expected`: its single expanded node typed
-// as:Delete alone, and Fedify's reading of the same document naming the same id, one actor and one object.
-async function provesDelete(document: Json, expected: ProvenDelete, contextLoader: DocumentLoader): Promise<boolean> {
-  const expanded = (await jsonld.expand(document, { documentLoader: contextLoader })) as Json[];
-  const types = expanded.length === 1 ? expanded[0]!["@type"] : undefined;
-  if (!Array.isArray(types) || types.length !== 1 || types[0] !== AS_DELETE) {
-    return false;
-  }
-  const proven = await Delete.fromJsonLd(document, { contextLoader, documentLoader: contextLoader });
-  return (
-    proven.id?.href === expected.id &&
-    proven.actorIds.length === 1 &&
-    proven.actorIds[0]?.href === expected.actor &&
-    proven.objectIds.length === 1 &&
-    proven.objectIds[0]?.href === expected.object
-  );
-}
-
-// true: proven by a key the actor's document embeds, and the proof covers exactly `expected`; false: no such proof;
-// 'transient': a JSON-LD context could not be loaded in a way that may pass.
-export async function verifyAuthorProof(
-  json: Json,
-  expected: ProvenDelete,
-  actorDocument: unknown,
-  contextLoader: DocumentLoader,
-): Promise<boolean | "transient"> {
-  const keyIds = proofKeyIds(json);
-  if (keyIds.length === 0 || !keyIds.every((id) => typeof id === "string" && withoutFragment(id) === expected.actor)) {
+// Whether `json` is, in one of the PROFILES, a Delete of exactly `expected` proven by a key the actor's document
+// embeds.
+export async function verifyAuthorProof(json: Json, expected: ProvenDelete, actorDocument: unknown): Promise<boolean> {
+  const matched = profileOf(json);
+  if (
+    matched === null ||
+    json.id !== expected.id ||
+    json.actor !== expected.actor ||
+    matched.object !== expected.object ||
+    !keyIdsOf(json).every((id) => withoutFragment(id) === expected.actor)
+  ) {
     return false;
   }
   const documentLoader: DocumentLoader = (url) =>
     withoutFragment(url) === expected.actor
       ? Promise.resolve({ document: actorDocument, documentUrl: expected.actor, contextUrl: null })
       : Promise.reject(new RefusedFetchError(new URL(url), "Not the actor document"));
-  const options = { documentLoader, contextLoader };
-  const verifiers = {
-    proof: async () => (await verifyObject(ApObject, json, options)) !== null,
-    signature: () => verifyJsonLd(json, options),
-  };
-  // Each form on its own: a malformed proof does not hide a valid signature.
-  let transient = false;
-  for (const form of ["proof", "signature"] as const) {
-    if (json[form] === undefined || json[form] === null) {
-      continue;
+  const options = { documentLoader, contextLoader: preloaded };
+  try {
+    let proven: unknown;
+    if (matched.profile.form !== "proof") {
+      proven = (await verifyJsonLd(json, options)) ? await Delete.fromJsonLd(json, options) : null;
+    } else {
+      proven = await verifyObject(Delete, json, options);
     }
-    const document = signedDocument(json, form);
-    try {
-      if (document !== null && (await verifiers[form]()) && (await provesDelete(document, expected, contextLoader))) {
-        return true;
-      }
-    } catch (error) {
-      const failure = loadFailureOf(error);
-      transient ||= failure !== undefined && isTransientLoadError(failure);
-    }
+    return (
+      proven instanceof Delete &&
+      proven.id?.href === expected.id &&
+      proven.actorIds.length === 1 &&
+      proven.actorIds[0]?.href === expected.actor &&
+      proven.objectIds.length === 1 &&
+      proven.objectIds[0]?.href === expected.object
+    );
+  } catch {
+    return false;
   }
-  return transient ? "transient" : false;
 }
