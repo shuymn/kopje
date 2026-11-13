@@ -9,25 +9,21 @@ import { accountLists, listLists } from "../src/domain/lists";
 import { DAILY_LIMIT, updateScheduled } from "../src/domain/scheduled-statuses";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
-import { statementId } from "./plan-audit";
-import { singletonStatistics } from "./plan-audit-store";
-import { type SqlRow, watchedCursor } from "./read-helpers";
+import { expectBeside, expectGrowth, PlanWitness, STATISTICS, type Statistics } from "./plan-witness";
 
 // RES-7 witnesses of the request reads group 9 of #1468 pinned (conversations.ts, filters.ts, scheduled-statuses.ts,
-// lists.ts, instance.ts), each run side by side with main's statement (MAIN: main's audited SQL, each guarded by its
-// identity) with the same parameters, in a savepoint rolled back before the pinned statement runs, under the plan
-// audit's singleton statistics and after ANALYZE, taken once every population exists. Each flow names main's
-// statements it runs, every one in order, and a production statement pairs with the next only when it is that
-// statement with its pins taken out; a pinned statement out of that order, or past its end, fails the flow. Each pinned
-// statement returns main's rows, writes as many and deletes the same ids, and reads no more than main after ANALYZE.
-// The neighbours (other owners' conversations, filters and their statuses, scheduled statuses, lists, the remote
-// accounts) grow on both sides of the viewer's rows (inserted before and after them), each counted by its own
-// predicate: a statement reads the same rows but for a walk it states. The viewer's own key grows too (its
-// conversations, filters, schedules of the day and of other days, lists past MAX_LISTS, which an import does not
-// enforce; the local accounts), each population counted by its own predicate, and the flow reads at most its stated
-// rows per row they gain together, and at least one when it walks them. The import-shaped rows: a participant named
-// twice and one with a NUL after it, lists and filters of one title, schedules at one time. The day's count reads no
-// more as the other days grow, and reads to DAILY_LIMIT on a day already past it.
+// lists.ts, instance.ts), each run beside main's statement by test/plan-witness.ts (WITNESS: main's audited SQL and the
+// pins its rewrite adds), under the plan audit's singleton statistics and after ANALYZE, taken once every population
+// exists: each flow names main's statements it runs, every one in order, and each pinned statement returns main's rows,
+// writes as many and deletes the same ids, and reads no more than main after ANALYZE. The neighbours (other owners'
+// conversations, filters and their statuses, scheduled statuses, lists, the remote accounts) grow on both sides of the
+// viewer's rows (inserted before and after them), each counted by its own predicate: a statement reads the same rows
+// but for a walk it states. The viewer's own key grows too (its conversations, filters, schedules of the day and of
+// other days, lists past MAX_LISTS, which an import does not enforce; the local accounts), each population counted by
+// its own predicate, and the flow reads at most its stated rows per row they gain together, and at least one when it
+// walks them. The import-shaped rows: a participant named twice and one with a NUL after it, lists and filters of one
+// title, schedules at one time. The day's count reads no more as the other days grow, and reads to DAILY_LIMIT on a day
+// already past it.
 
 const VIEWER = "600000000000000001";
 const LOW = "500000000000000001";
@@ -37,125 +33,46 @@ const STATUS = "560000000000000001";
 const SCHEDULE = "399999999999999999";
 const DAY = "2026-11-20";
 const AT = `${DAY}T12:00:00.000Z`;
-const STATISTICS = ["singleton", "analyzed"] as const;
 const FEW = 20;
 const MANY = 60;
 const OWN_FEW = 60;
 const OWN_MANY = 120;
-const normalized = (sql: string) => sql.replace(/\s+/g, " ").trim();
 const id18 = (prefix: string, i: number) => `${prefix}${String(i).padStart(18 - prefix.length, "0")}`;
 const credential = (scope: "read" | "write") => ({ tokenHash: "viewer", scope, now: NOW });
 
-// main's audited statements, as main's code wrote them.
-const MAIN: Record<string, string> = {
-  "483bcfadf028a776":
-    "DELETE FROM conversations WHERE account_id = ?1 AND EXISTS (SELECT 1 FROM json_each(conversations.participants) WHERE value = ?2)",
-  "6e80489968ad0885":
-    "SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs JOIN filters f ON f.id = fs.filter_id WHERE fs.id = ? AND f.account_id = ?",
-  d634d9244eae5d1e:
-    "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4 LIMIT ?5)",
-  c062eb1780f68065: "SELECT id, title, replies_policy, exclusive FROM lists WHERE account_id = ? ORDER BY id",
-  "28567507fc2af2e0":
-    "SELECT id, title, replies_policy, exclusive FROM lists l WHERE l.account_id = ?1 AND EXISTS (SELECT 1 FROM list_accounts lh WHERE lh.list_id = l.id AND lh.account_id = ?2) AND (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ?2 AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ?2 AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = ?2 AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = ?2), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY l.id",
-  "782bd4dc8403b718":
-    "SELECT u.users, u.active, (SELECT SUM(CASE WHEN typeof(statuses_count) = 'integer' AND statuses_count BETWEEN 0 AND 9007199254740991 THEN statuses_count ELSE 0 END) FROM accounts WHERE domain IS NULL) AS statuses, (SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active FROM local_accounts l WHERE l.suspended_at IS NULL) u",
-};
-
-// The pins each rewrite adds to main's statement.
-const PINS: Record<string, (text: string) => string> = {
-  "483bcfadf028a776": (text) => text.replace(" INDEXED BY conversations_account", ""),
-  "6e80489968ad0885": (text) =>
-    text.replace(
-      " INDEXED BY sqlite_autoindex_filter_statuses_1 CROSS JOIN filters f INDEXED BY filters_account ON",
-      " JOIN filters f ON",
-    ),
-  d634d9244eae5d1e: (text) => text.replace(" INDEXED BY scheduled_statuses_account_time", ""),
-  c062eb1780f68065: (text) => text.replace(" INDEXED BY lists_account", ""),
-  "28567507fc2af2e0": (text) => text.replace(" INDEXED BY lists_account", ""),
-  "782bd4dc8403b718": (text) => text.replace(" INDEXED BY accounts_domain_username", ""),
-};
-
-// The rows a DELETE removes, read on both sides as the ids there before it and not after it.
-const DELETED: Record<string, string> = {
-  "483bcfadf028a776": "SELECT CAST(id AS TEXT) AS id FROM conversations ORDER BY id",
-};
-
-// Whether `text` is the pinned form of main's statement `id`.
-function rewrites(id: string, text: string): boolean {
-  const main = MAIN[id];
-  return main !== undefined && text !== normalized(main) && PINS[id]!(text) === normalized(main);
-}
-
-type Measure = { rows: number; written: number; result: SqlRow[]; deleted: SqlRow[] };
-type Side = { id: string; query: string; mine: Measure; main: Measure };
-
-const ROLLBACK = new Error("rolled back");
-
-// A SqlStorage over `real` that pairs the production statements with `expected` (main's identities, in order): each
-// statement that is the pinned form of the next one runs main's of that identity first, with the same parameters, in
-// a nested transaction it rolls back (the ids it deletes read inside it), then itself, recording both one `Side`. A
-// pinned form of any other identity, or one after `expected` is used up, is recorded under its own identity with
-// nothing compared, so the flow's sequence fails. Every other statement runs as it is.
-function sideBySide(
-  real: SqlStorage,
-  transact: <T>(fn: () => T) => T,
-  expected: readonly string[],
-  sides: Side[],
-): SqlStorage {
-  return {
-    exec: (query: string, ...params: SqlStorageValue[]) => {
-      const text = normalized(query);
-      const kind = Object.keys(PINS).find((key) => rewrites(key, text));
-      if (kind === undefined) {
-        return real.exec(query, ...params);
-      }
-      const empty = (): Measure => ({ rows: 0, written: 0, result: [], deleted: [] });
-      const side: Side = { id: kind, query, mine: empty(), main: empty() };
-      sides.push(side);
-      if (expected[sides.length - 1] !== kind) {
-        return real.exec(query, ...params);
-      }
-      const ids = DELETED[kind];
-      const before = ids === undefined ? [] : real.exec<{ id: string }>(ids).toArray();
-      const deleted = (): SqlRow[] => {
-        if (ids === undefined) {
-          return [];
-        }
-        const left = new Set(
-          real
-            .exec<{ id: string }>(ids)
-            .toArray()
-            .map((row) => row.id),
-        );
-        return before.filter((row) => !left.has(row.id));
-      };
-      try {
-        transact(() => {
-          const cursor = real.exec<SqlRow>(MAIN[kind]!, ...params);
-          side.main.result = cursor.toArray();
-          side.main.rows = cursor.rowsRead;
-          side.main.written = cursor.rowsWritten;
-          side.main.deleted = deleted();
-          throw ROLLBACK;
-        });
-      } catch (error) {
-        if (error !== ROLLBACK) {
-          throw error;
-        }
-      }
-      const cursor = real.exec<SqlRow>(query, ...params);
-      return watchedCursor(
-        cursor,
-        () => {
-          side.mine.rows += cursor.rowsRead;
-          side.mine.written = cursor.rowsWritten;
-          side.mine.deleted = deleted();
-        },
-        (rows) => (side.mine.result = rows),
-      );
-    },
-  } as unknown as SqlStorage;
-}
+// main's audited statements, as main's code wrote them, the pins each rewrite adds, and the rows the conversations'
+// DELETE removes, read on both sides as the ids there before it and not after it.
+const WITNESS = new PlanWitness({
+  "483bcfadf028a776": {
+    sql: "DELETE FROM conversations WHERE account_id = ?1 AND EXISTS (SELECT 1 FROM json_each(conversations.participants) WHERE value = ?2)",
+    pins: (text) => text.replace(" INDEXED BY conversations_account", ""),
+    writes: "SELECT CAST(id AS TEXT) AS id FROM conversations ORDER BY id",
+  },
+  "6e80489968ad0885": {
+    sql: "SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs JOIN filters f ON f.id = fs.filter_id WHERE fs.id = ? AND f.account_id = ?",
+    pins: (text) =>
+      text.replace(
+        " INDEXED BY sqlite_autoindex_filter_statuses_1 CROSS JOIN filters f INDEXED BY filters_account ON",
+        " JOIN filters f ON",
+      ),
+  },
+  d634d9244eae5d1e: {
+    sql: "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4 LIMIT ?5)",
+    pins: (text) => text.replace(" INDEXED BY scheduled_statuses_account_time", ""),
+  },
+  c062eb1780f68065: {
+    sql: "SELECT id, title, replies_policy, exclusive FROM lists WHERE account_id = ? ORDER BY id",
+    pins: (text) => text.replace(" INDEXED BY lists_account", ""),
+  },
+  "28567507fc2af2e0": {
+    sql: "SELECT id, title, replies_policy, exclusive FROM lists l WHERE l.account_id = ?1 AND EXISTS (SELECT 1 FROM list_accounts lh WHERE lh.list_id = l.id AND lh.account_id = ?2) AND (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ?2 AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ?2 AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = ?2 AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = ?2), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY l.id",
+    pins: (text) => text.replace(" INDEXED BY lists_account", ""),
+  },
+  "782bd4dc8403b718": {
+    sql: "SELECT u.users, u.active, (SELECT SUM(CASE WHEN typeof(statuses_count) = 'integer' AND statuses_count BETWEEN 0 AND 9007199254740991 THEN statuses_count ELSE 0 END) FROM accounts WHERE domain IS NULL) AS statuses, (SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active FROM local_accounts l WHERE l.suspended_at IS NULL) u",
+    pins: (text) => text.replace(" INDEXED BY accounts_domain_username", ""),
+  },
+});
 
 function local(sql: SqlStorage, id: string, name: string) {
   sql.exec(
@@ -445,35 +362,25 @@ function world(n: number, own: number, day: number) {
   });
 }
 
-async function sides(statistics: (typeof STATISTICS)[number], flow: Flow, n: number, own: number) {
+async function sides(statistics: Statistics, flow: Flow, n: number, own: number) {
   const store = await world(n, own, flow.day?.(own) ?? Math.floor(own / 12) + 1);
   return runInDurableObject(store, (_instance, state) => {
-    const sql = state.storage.sql;
-    const transact = <T>(fn: () => T): T => state.storage.transactionSync(fn);
-    const count = (queries: Record<string, string>) =>
-      Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, sql.exec<{ n: number }>(q).one().n]));
-    const neighbours = count(flow.neighbours);
-    const ownCount = count(flow.own.count);
-    if (statistics === "singleton") {
-      singletonStatistics(sql);
-    } else {
-      sql.exec("ANALYZE");
-    }
-    const out: Side[] = [];
-    const result = transact(() => flow.run(sideBySide(sql, transact, flow.main, out), transact));
-    return { sides: out, neighbours, own: ownCount, result };
+    return WITNESS.measure(state, {
+      statistics,
+      expected: flow.main,
+      populations: { ...flow.neighbours, ...owned(flow) },
+      run: flow.run,
+    });
   });
 }
 
-const total = (counts: Record<string, number>) => Object.values(counts).reduce((a, n) => a + n, 0);
-const readOf = (sides: readonly Side[]) => sides.reduce((a, s) => a + s.mine.rows, 0);
+// The flow's own populations, named apart from its neighbours'.
+const owned = (flow: Flow) =>
+  Object.fromEntries(Object.entries(flow.own.count).map(([name, count]) => [`own ${name}`, count]));
 
 describe("main's statements", () => {
   it("are main's audited ones", async () => {
-    expect(Object.keys(MAIN).toSorted()).toEqual(Object.keys(PINS).toSorted());
-    for (const [id, sql] of Object.entries(MAIN)) {
-      expect(await statementId(sql), sql).toBe(id);
-    }
+    await WITNESS.expectAudited();
   });
 });
 
@@ -485,27 +392,10 @@ describe("group 9's pinned reads beside main's (RES-7)", () => {
       const few = await sides(statistics, flow, FEW, OWN_FEW);
       const many = await sides(statistics, flow, MANY, OWN_FEW);
       const ownMany = await sides(statistics, flow, FEW, OWN_MANY);
-      for (const population of Object.keys(flow.neighbours)) {
-        expect(many.neighbours[population]!, population).toBeGreaterThan(few.neighbours[population]!);
-      }
-      for (const population of Object.keys(flow.own.count)) {
-        expect(ownMany.own[population]!, `own ${population}`).toBeGreaterThan(few.own[population]!);
-      }
       for (const run of [few, many, ownMany]) {
-        expect(
-          run.sides.map((s) => s.id),
-          "main's statements, every one in order",
-        ).toEqual(flow.main);
-        for (const side of run.sides) {
-          expect(side.mine.result, side.query).toEqual(side.main.result);
-          expect(side.mine.written, side.query).toBe(side.main.written);
-          expect(side.mine.deleted, side.query).toEqual(side.main.deleted);
-          if (statistics === "analyzed") {
-            expect(side.mine.rows, side.query).toBeLessThanOrEqual(side.main.rows);
-          }
-        }
-        if (Object.keys(DELETED).some((id) => flow.main.includes(id))) {
-          expect(run.sides.reduce((n, side) => n + side.main.deleted.length, 0)).toBeGreaterThan(0);
+        expectBeside(statistics, run);
+        if (flow.main.some((id) => WITNESS.baselines[id]!.writes !== undefined)) {
+          expect(run.sides.reduce((n, side) => n + side.main.removed.length, 0)).toBeGreaterThan(0);
         }
       }
       expect(many.result).toEqual(few.result);
@@ -515,19 +405,12 @@ describe("group 9's pinned reads beside main's (RES-7)", () => {
         }
       }
       // The neighbours: the same rows but for a walk of a population.
-      for (const [i, side] of many.sides.entries()) {
-        const walk = flow.walks?.[side.id];
-        const allowed =
-          walk === undefined ? 0 : walk.perRun * (many.neighbours[walk.population]! - few.neighbours[walk.population]!);
-        const grown = side.mine.rows - few.sides[i]!.mine.rows;
-        expect(grown, side.id).toBeGreaterThanOrEqual(0);
-        expect(grown, side.id).toBeLessThanOrEqual(allowed);
-      }
+      expectGrowth(few, many, { populations: Object.keys(flow.neighbours), perSide: flow.walks ?? {} });
       // The own key: at most `walks` rows per row it gained (its populations added up), at least one when it walks.
-      const gained = total(ownMany.own) - total(few.own);
-      const grown = readOf(ownMany.sides) - readOf(few.sides);
-      expect(grown).toBeLessThanOrEqual(flow.own.walks * gained);
-      expect(grown).toBeGreaterThanOrEqual(flow.own.walks === 0 ? 0 : 1);
+      expectGrowth(few, ownMany, {
+        populations: Object.keys(owned(flow)),
+        total: { atLeast: flow.own.walks === 0 ? 0 : 1, walks: flow.own.walks },
+      });
     },
     120_000,
   );
