@@ -134,7 +134,7 @@ export function aboutSettingsOf(db: Db): AboutSettings {
 export const DOMAIN_COUNT_FRESH_MS = 2 * 5 * 60 * 1000;
 const DOMAIN_COUNT_SQL = "SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL";
 // The kept count when it is fresh (refreshed between ?1, DOMAIN_COUNT_FRESH_MS ago, and ?2, now): a primary-key lookup.
-export const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopje_state
+const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopje_state
 	WHERE name = '${DOMAIN_COUNT_STATE}' AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 64
 	AND instr(CAST(value AS BLOB), x'00') = 0 AND json_valid(value) AND json_type(value, '$.n') = 'integer'
 	AND json_extract(value, '$.n') >= 0 AND json_type(value, '$.at') = 'integer'
@@ -153,13 +153,13 @@ const LOCAL_COUNT_FROM_SQL = `FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.
 const KEPT_COUNT_SQL = `SELECT json_extract(value, '$.n') FROM kopje_state WHERE name = '${DOMAIN_COUNT_STATE}'`;
 
 // The counts with the kept peer domain count, read in the same transaction as FRESH_DOMAIN_COUNT_SQL found it fresh.
-export const INSTANCE_COUNTS_KEPT_SQL = `${USERS_COUNT_SQL}, (${KEPT_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
+const INSTANCE_COUNTS_KEPT_SQL = `${USERS_COUNT_SQL}, (${KEPT_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
 // The counts while none is fresh (a new, upgraded, imported or reset Store before the cron's next refresh, or one whose
 // refreshes were skipped): counted over every remote account, and not stored, as a read writes nothing.
 export const INSTANCE_COUNTS_SQL = `${USERS_COUNT_SQL}, (${DOMAIN_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
 
 // What /api/v2/instance presents of the counts: the active users alone.
-export const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}`;
 
 // The active window's first day and today, as the two statements bind them.
