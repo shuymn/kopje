@@ -41,12 +41,14 @@ export type PlanRow = { id: number; parent: number; detail: string };
 export type PlanSchema = { tables: ReadonlySet<string>; indexes: ReadonlyMap<string, string> };
 
 // One sample of a statement's parameters, as planned on the audit Store: its plan and violations, or why EXPLAIN QUERY
-// PLAN refused it.
+// PLAN refused it. `without`: for each allowance's fragment the statement contains, by the fragment's text, the plan of
+// the statement with that fragment taken out (withoutFragment) and the same parameters, or null when it was refused.
 export type PlannedSample = {
   params: readonly unknown[];
   plan: readonly PlanRow[];
   violations: readonly string[];
   error?: string;
+  without?: Readonly<Record<string, readonly PlanRow[] | null>>;
 };
 
 // A statement a suite executed, with each sample of its parameters as planned.
@@ -548,26 +550,49 @@ const typeOf = (p: unknown) => (p === null ? "null" : p instanceof ArrayBuffer ?
 // test that shows it.
 export type FragmentAllowance = { fragment: string; scan: string; reason: string; witness: string };
 
-// How often `sql` contains `fragment`, as non-overlapping runs of the tokens normalizeSql keeps (spelled as the source
-// spells them), so the fragment's text inside a literal or a quoted name, which is one token, is no occurrence.
-export function fragmentCount(sql: string, fragment: string): number {
-  const text = tokenize(sql).tokens.map((token) => token.text);
+// The source spans of `sql` where it contains `fragment`, as non-overlapping runs of the tokens normalizeSql keeps
+// (spelled as the source spells them), so the fragment's text inside a literal or a quoted name, which is one token, is
+// no occurrence.
+function fragmentSpans(sql: string, fragment: string): { start: number; end: number }[] {
+  const { tokens } = tokenize(sql);
   const needle = tokenize(fragment).tokens.map((token) => token.text);
-  let count = 0;
-  for (let n = 0; needle.length > 0 && n + needle.length <= text.length;) {
-    if (needle.every((token, k) => text[n + k] === token)) {
-      count++;
+  const spans: { start: number; end: number }[] = [];
+  for (let n = 0; needle.length > 0 && n + needle.length <= tokens.length;) {
+    if (needle.every((token, k) => tokens[n + k]!.text === token)) {
+      spans.push({ start: tokens[n]!.start, end: tokens[n + needle.length - 1]!.end });
       n += needle.length;
     } else {
       n++;
     }
   }
-  return count;
+  return spans;
 }
 
-// One sample's violations less those an allowance stands for: its scan only while the plan has no more lines of that
-// detail (each line its signature could come from, so a count that can only be too high) than the statement contains
-// its fragment, so a statement that makes the same scan some other way, besides the fragment or without it, fails.
+// How often `sql` contains `fragment` (fragmentSpans).
+export function fragmentCount(sql: string, fragment: string): number {
+  return fragmentSpans(sql, fragment).length;
+}
+
+// What stands for a fragment taken out: an integer that is not a constant (random()), so the planner has no value to
+// fold a branch the fragment guarded (`CASE WHEN fragment THEN …`) by, and plans the rest as in the statement.
+export const FRAGMENT_STAND_IN = "(random() IS NULL)";
+
+// `sql` with each occurrence of `fragment` (fragmentSpans) replaced by FRAGMENT_STAND_IN.
+export function withoutFragment(sql: string, fragment: string): string {
+  let out = "";
+  let at = 0;
+  for (const { start, end } of fragmentSpans(sql, fragment)) {
+    out += `${sql.slice(at, start)}${FRAGMENT_STAND_IN}`;
+    at = end;
+  }
+  return out + sql.slice(at);
+}
+
+// One sample's violations less those an allowance stands for. Its scan is the fragment's only when the statement
+// contains the fragment, the plan of the statement without it (`without`, the same parameters) has no line of that
+// detail, so every such line came from the fragment's occurrences, and the plan has no more such lines than the
+// statement contains the fragment. A statement that makes the same scan some other way, besides the fragment or
+// without it, fails, and so does one whose plan without the fragment is missing or refused.
 function sampleViolations(sql: string, sample: PlannedSample, allowances: readonly FragmentAllowance[]): string[] {
   if (sample.error !== undefined) {
     return [UNPLANNABLE];
@@ -579,8 +604,10 @@ function sampleViolations(sql: string, sample: PlannedSample, allowances: readon
           return false;
         }
         const detail = scan.slice(scan.indexOf(": ") + 2);
-        const lines = sample.plan.filter((row) => row.detail === detail).length;
-        return lines <= fragmentCount(sql, allowance.fragment);
+        const linesOf = (plan: readonly PlanRow[]) => plan.filter((row) => row.detail === detail).length;
+        const without = sample.without?.[allowance.fragment];
+        const count = fragmentCount(sql, allowance.fragment);
+        return count > 0 && without != null && linesOf(without) === 0 && linesOf(sample.plan) <= count;
       }),
   );
 }

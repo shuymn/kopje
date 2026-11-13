@@ -5,6 +5,7 @@ import { Db } from "../src/db/sql";
 import { SUSPEND_BLOCKS_SQL } from "../src/domain/audience";
 import { cachedImagesOf } from "../src/domain/remote-media";
 import { migratedStore } from "./helpers";
+import { fragmentCount } from "./plan-audit";
 import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { auditStore, queryPlan, singletonStatistics } from "./plan-audit-store";
 import { STATISTICS } from "./plan-witness";
@@ -199,7 +200,8 @@ describe("plan audit", () => {
   });
 
   // The suspend blocks' allowance (PLAN_AUDIT_ALLOWANCES) on the planner's own plans: each occurrence of
-  // SUSPEND_BLOCKS_SQL plans as one line of its scan, and a walk of the same index by other SQL is one line more.
+  // SUSPEND_BLOCKS_SQL plans as one line of its scan, and a walk of the same index by other SQL stays in the plan of
+  // the statement without the fragment.
   describe("the suspend blocks' allowance", () => {
     const SUSPEND_SCAN = "SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend";
     const walk = `(SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
@@ -236,6 +238,36 @@ describe("plan audit", () => {
         `SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend'`,
       ]) {
         expect(await failuresOf(recorded(query, [])), query).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}instance_domain_blocks: ${SUSPEND_SCAN}$`, "m")),
+        ]);
+      }
+    });
+
+    // The fragment's line can drop out of the plan (an unused column of a flattened subquery) while another walk of
+    // the same index prints exactly its detail, as often as the statement contains the fragment: the plan of the
+    // statement without the fragment still shows that walk, an aggregate or a correlated one. A walk the fragment
+    // guards (`CASE WHEN fragment THEN walk`) stays in that plan too, since its stand-in does not fold.
+    it("fails a walk of the index that prints as the fragment's scan", async () => {
+      const correlated = `(SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
+				WHERE severity = 'suspend' AND id + 0 <> length(a.username))`;
+      const unused = (n: string, from = "") =>
+        `SELECT n FROM (SELECT ${SUSPEND_BLOCKS_SQL} AS unused, ${n} AS n${from})`;
+      const guarded = `CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN ${correlated} ELSE 0 END`;
+      const cases: [string, SqlStorageValue[], number][] = [
+        [unused(walk), [], 1],
+        [unused(correlated, " FROM accounts a WHERE a.id = ?"), ["1"], 1],
+        [unused(guarded, " FROM accounts a WHERE a.id = ?"), ["1"], 2],
+      ];
+      const store = await migratedStore();
+      const plans = await runInDurableObject(store, (_instance, state) => {
+        singletonStatistics(state.storage.sql);
+        return cases.map(([query, params]) => details(state.storage.sql, query, ...params));
+      });
+      for (const [n, [query, params, occurrences]] of cases.entries()) {
+        // Each prints the allowed detail exactly as often as the statement contains the fragment.
+        expect(fragmentCount(query, SUSPEND_BLOCKS_SQL), query).toBe(occurrences);
+        expect(plans[n]!.filter((detail) => detail === SUSPEND_SCAN).length, query).toBe(occurrences);
+        expect(await failuresOf(recorded(query, params)), query).toEqual([
           expect.stringMatching(new RegExp(`offending lines:\\n {4}instance_domain_blocks: ${SUSPEND_SCAN}$`, "m")),
         ]);
       }

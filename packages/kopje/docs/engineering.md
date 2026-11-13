@@ -88,8 +88,9 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   whole table or index (a scan, an automatic index, a Bloom filter, a skip-scan) fails its suite unless
   `test/plan-audit-entries.ts` lists that scan of that statement. A reviewed fragment allowance
   (`test/plan-audit-allowances.ts`) stands for the entries of every statement that includes one shared fragment: it
-  passes the fragment's scan in a sample's plan only while the plan shows that scan no more often than the statement
-  contains the fragment, and a witness shows the fragment's read stays flat as its table grows. A listed scan a suite
+  passes the fragment's scan in a sample's plan only while the same statement with the fragment taken out plans no
+  such scan and the plan shows it no more often than the statement contains the fragment, and a witness shows the
+  fragment's read stays flat as its table grows. A listed scan a suite
   did not show is only reported, since another suite may pass the value that scans: a change that fixes listed
   statements removes their entries and shows the audit passes without them. The audit sees no prefix or range walk
   that EQP shows as a search, nor a plan only a value the suites never pass would choose (a partial index's

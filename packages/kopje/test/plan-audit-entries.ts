@@ -4,7 +4,7 @@ import type { PlanAuditEntry } from "./plan-audit.js";
 // scans singleton statistics give it and what is known of them (Disposition); a pending or write entry names the
 // #1468 group whose sweep removes it (test/plan-audit-1468.ts maps the issue's rows; group 9 holds the other request
 // reads and writes). A scan a fragment allowance stands for (test/plan-audit-allowances.ts) is listed only for a
-// statement whose plan shows it more often than the statement contains the fragment.
+// statement the allowance refuses (FragmentAllowance, test/plan-audit.ts).
 export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "33f13a83681454ff",

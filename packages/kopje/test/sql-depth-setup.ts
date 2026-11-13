@@ -8,11 +8,14 @@ import {
   auditDecision,
   bindsPattern,
   callerFrames,
+  fragmentCount,
   type PlannedSample,
+  type PlanRow,
   type PlanSchema,
   planSignatures,
   sampleKey,
   statementId,
+  withoutFragment,
 } from "./plan-audit";
 import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { PLAN_AUDIT_ENTRIES } from "./plan-audit-entries";
@@ -206,12 +209,26 @@ export async function auditPlans(
     }
   }
   if (unplanned.size > 0) {
-    const { schema, planned } = await planOnAuditStore(cache, [...unplanned.values()]);
-    [...unplanned].forEach(([key, { sql, params }], n) => {
-      const { plan, error } = planned[n]!;
+    // Each sample, and for each allowance's fragment it contains, the sample without it (withoutFragment).
+    const queries = [...unplanned.values()].flatMap(({ sql, params }) => [
+      { sql, params },
+      ...PLAN_AUDIT_ALLOWANCES.filter(({ fragment }) => fragmentCount(sql, fragment) > 0).map(({ fragment }) => ({
+        sql: withoutFragment(sql, fragment),
+        params,
+      })),
+    ]);
+    const { schema, planned } = await planOnAuditStore(cache, queries);
+    let n = 0;
+    for (const [key, { sql, params }] of unplanned) {
+      const { plan, error } = planned[n++]!;
+      const without: Record<string, PlanRow[] | null> = {};
+      for (const { fragment } of PLAN_AUDIT_ALLOWANCES.filter((a) => fragmentCount(sql, a.fragment) > 0)) {
+        const stripped = planned[n++]!;
+        without[fragment] = stripped.error === undefined ? stripped.plan : null;
+      }
       const violations = error === undefined ? planSignatures(sql, plan, schema) : [];
-      cache.plans.set(key, { params, plan, violations, ...(error === undefined ? {} : { error }) });
-    });
+      cache.plans.set(key, { params, plan, violations, without, ...(error === undefined ? {} : { error }) });
+    }
   }
   const audited: AuditedStatement[] = production.map(([sql, seen]) => ({
     id: cache.ids.get(sql)!,
