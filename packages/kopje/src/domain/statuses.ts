@@ -939,6 +939,14 @@ export function recordEdit(db: Db, statusId: string, at: string): string {
   return row.id;
 }
 
+// Api::V1::StatusesController#update finds the status among the caller's own (a boost of theirs included, which
+// StatusPolicy#update? lets its owner through) before UpdateStatusService validates anything: ownStatus as a read, for
+// an edit the Worker refuses, so its 404 comes before the Worker's 422, also in readonly maintenance, where editStatus
+// is refused. editStatus finds it again where it writes, and alone authorizes.
+export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">((db, { id }, { accountId }) =>
+  ownStatus(db, accountId, id) === null ? "not_found" : "ok",
+);
+
 // PUT /statuses/:id replaces the text, the spoiler, the sensitive flag, the media and their descriptions as Mastodon's
 // UpdateStatusService does (absent media_ids removes the media); an absent language keeps the current one.
 // Visibility cannot change. An edit that changes nothing is not recorded. The first edit also records the original

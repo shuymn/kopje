@@ -33,6 +33,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   repeated `Idempotency-Key` no longer answers the earlier status or scheduled status. A quote post that passes
   validation is posted in one Store call instead of two.
 
+- `PUT /api/v1/statuses/:id` answers 404 for a status that is missing or not the caller's own before validation, as
+  Mastodon does: an edit that also fails validation (its length, media count, poll, `quote_approval_policy`, a media
+  description or a thumbnail) no longer answers 422.
+
 - An import of a dump that holds an accepted quote, a backup restore included, verifies: the insert of each accepted
   quote adds 1 to its quoted status's count, which the dumped row already holds, and verify takes that 1 off again in
   bounded steps before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work"). An import whose

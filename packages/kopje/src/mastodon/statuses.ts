@@ -297,7 +297,11 @@ export const editStatus: ApiHandler = async (c, deps) => {
         : (mediaAttributes.map((a) => descriptionProblem(a.description)).find((found) => found !== undefined) ??
           (thumbnail ? THUMBNAIL_MUST_BE_BLANK : undefined));
   if (typeof composed === "string" || quotePolicy === null || problem !== undefined) {
-    return refuseAfterAuth(c, deps, mastodonError(422, problem ?? "Validation failed"));
+    // Mastodon's 404 for a status that is not the caller's own comes before any 422 (domain/statuses.ts editTarget); a
+    // read, so it is answered in readonly maintenance too. It authenticates as refuseAfterAuth would.
+    const credential = userCredential(c, deps);
+    const found = authorized(await storeCall(c, deps, (s, b) => s.editTarget(b, { credential, id: statusId(c) })));
+    return found === "ok" ? mastodonError(422, problem ?? "Validation failed") : NOT_FOUND();
   }
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>

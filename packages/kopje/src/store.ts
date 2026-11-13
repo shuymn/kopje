@@ -1476,6 +1476,10 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, statuses.editStatus, input);
   }
 
+  editTarget(callerBuild: string, input: OperationInput<typeof statuses.editTarget>) {
+    return this.#kernel.execute(callerBuild, statuses.editTarget, input);
+  }
+
   updateInteractionPolicy(callerBuild: string, input: OperationInput<typeof statuses.updateInteractionPolicy>) {
     return this.#kernel.execute(callerBuild, statuses.updateInteractionPolicy, input);
   }
