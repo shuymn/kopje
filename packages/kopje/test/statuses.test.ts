@@ -802,19 +802,34 @@ describe("editing", () => {
     const editing = (h: ApiHarness, token: string, id: string, body: Record<string, unknown>) =>
       posting(h, token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
 
-    it("answers a missing status, someone else's or a boost 404 for each of the Worker's 422s", async () => {
+    it("answers a missing status or someone else's 404 for each of the Worker's 422s", async () => {
       const h = await community(["alice", "bob"]);
       const { alice, bob } = h.users;
       const own = await post(h, alice, { status: "mine" });
       const theirs = await post(h, bob, { status: "theirs" });
-      const boost = await (await act(h, alice, `/api/v1/statuses/${theirs.id}/reblog`)).json<Status>();
+      const theirBoost = await (await act(h, bob, `/api/v1/statuses/${own.id}/reblog`)).json<Status>();
       for (const body of REFUSED) {
         const refused = await editing(h, alice.token, own.id, body);
         expect(refused.status, JSON.stringify(body)).toBe(422);
-        for (const id of ["123", theirs.id, boost.id]) {
+        for (const id of ["123", theirs.id, theirBoost.id]) {
           expect(await editing(h, alice.token, id, body), `${id} ${JSON.stringify(body)}`).toEqual(NOT_FOUND);
         }
       }
+      expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
+    });
+
+    // StatusPolicy#update? lets the owner of a boost through, so the Worker's 422 stands; an edit that passes them is
+    // refused by editStatus, which edits no boost (404).
+    it("answers the caller's own boost the Worker's 422, and a valid edit of it 404", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const theirs = await post(h, bob, { status: "theirs" });
+      const boost = await (await act(h, alice, `/api/v1/statuses/${theirs.id}/reblog`)).json<Status>();
+      for (const body of REFUSED) {
+        const refused = await editing(h, alice.token, boost.id, body);
+        expect(refused.status, JSON.stringify(body)).toBe(422);
+      }
+      expect(await editing(h, alice.token, boost.id, { status: "x" })).toEqual(NOT_FOUND);
       expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
     });
 
