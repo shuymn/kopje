@@ -11,7 +11,7 @@ import {
 import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
 import { DeadlinePassed, inTime, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { type StoreStub, storeRpc } from "../platform/store-client";
 import { randomToken } from "../security/tokens";
 import type { InboxDeps } from "./inbox";
 import { dnsCheckHost } from "./loader";
@@ -146,7 +146,7 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
   const cap = config.ok ? config.config.REMOTE_MEDIA_CACHE_BYTES : 0;
   const retentionDays = config.ok ? config.config.MEDIA_CACHE_RETENTION_DAYS : MEDIA_CACHE_RETENTION_DEFAULT_DAYS;
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const bucket = deps.bucket?.(env) ?? env.MEDIA;
   const start = deps.now();
   const maintenanceEnd = start + MAINTENANCE_MS;

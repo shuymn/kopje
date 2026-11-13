@@ -22,7 +22,7 @@ import {
 } from "../platform/images";
 import { fileKey } from "../platform/media-files";
 import { PACKAGE_VERSION } from "../platform/package-version";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { storeRpc } from "../platform/store-client";
 import {
   CARD_DECODE_PIXELS,
   CARD_IMAGE_BODY_LIMIT,
@@ -303,7 +303,7 @@ type ClaimResult = { outcome: CardImageOutcome | "lost"; stop: boolean; step: st
 // One round (above). Returns what it did, for the logs and tests.
 export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<CardImagesRound> {
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const config = readConfig(env);
   const share = config.ok ? config.config.IMAGES_CARD_MONTHLY_TRANSFORMS : 0;
   const start = deps.now();

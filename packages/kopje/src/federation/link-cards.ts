@@ -13,7 +13,7 @@ import { DeadlinePassed, inTime } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { storeRpc } from "../platform/store-client";
 import {
   CARD_IMAGE_DESCRIPTION_JSON_BYTES,
   CARD_OPTIONAL_URL_LIMIT,
@@ -200,7 +200,7 @@ function endpointOutcome(
 // One round (above). Returns what it did, for the logs and tests.
 export async function linkCardsRound(env: Env, deps: LinkCardsDeps): Promise<LinkCardsRound> {
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const start = deps.now();
   const end = start + CARD_ROUND_MS;
   const deadline = start + CARD_FETCHES_MS;

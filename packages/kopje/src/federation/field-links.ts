@@ -2,7 +2,7 @@ import { FIELD_LINK_HOLD_MS, type FieldLinksClaim, type FieldLinksFence } from "
 import { DeadlinePassed, inTime } from "../platform/deadline";
 import { outputMaxUnits, SCAN_LIMITS, type ScanLimits } from "../platform/html-scan";
 import { PACKAGE_VERSION } from "../platform/package-version";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { storeRpc } from "../platform/store-client";
 import { LOCAL_FIELDS, REMOTE_VERIFIED_SHOWN } from "../platform/stored-bounds";
 import type { InboxDeps } from "./inbox";
 import { dnsCheckHost } from "./loader";
@@ -145,7 +145,7 @@ async function checkLink(
 // again after its hold. Returns what it did, for the logs and tests.
 export async function fieldLinksRound(env: Env, deps: FieldLinksDeps): Promise<FieldLinksRound> {
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const start = deps.now();
   const end = start + FIELD_LINK_ROUND_MS;
   const deadline = start + FIELD_LINK_CHECKS_MS;
