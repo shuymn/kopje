@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
-import { parse, type Source, walk } from "./source-scan.js";
+import { lineOf, parse, type Source, walk } from "./source-scan.js";
 
 // The operator documents name what an operator sets: every variable of the configuration schema
 // (src/platform/config.ts) that is not a binding, and every backup setting (src/platform/backup-config.ts). Their
@@ -122,38 +122,57 @@ function usageCommands(usage: string): Set<string> {
   return commands;
 }
 
+const FENCE = /^\s*(`{3,}|~{3,})/;
+
+// The text with each line break inside a paragraph, outside code fences, made a space, so that a mention wrapped across
+// lines reads as one. Offsets, and so line numbers, stay those of the text.
+function joinedParagraphs(text: string): string {
+  const lines = text.split("\n");
+  let fence: string | null = null;
+  return lines
+    .map((line, i) => {
+      const marker = FENCE.exec(line)?.[1];
+      if (marker !== undefined) {
+        fence = fence === null ? marker : line.trim().startsWith(fence) ? null : fence;
+      }
+      const next = lines[i + 1];
+      const joins =
+        fence === null && marker === undefined && line.trim() !== "" && next !== undefined && next.trim() !== "";
+      return joins && !FENCE.test(next) ? `${line} ` : `${line}\n`;
+    })
+    .join("")
+    .slice(0, text.length);
+}
+
 // The commands a text names that the usage does not list, as `line: command`. A mention is `kopje-admin` and the plain
-// lowercase words after it, up to the first that is not one (an option, a value, `name=value`) or that punctuation
-// ends. Its first word must be a command; when that command has subcommands, a second word must be one of them.
+// lowercase words after it in its paragraph, up to the first that is not one (an option, a value, `name=value`) or
+// that punctuation ends. Its first word must be a command; when that command has subcommands, a second word must be
+// one of them.
 function unlistedCommands(text: string, commands: ReadonlySet<string>): string[] {
   const found: string[] = [];
-  text.split("\n").forEach((line, i) => {
-    for (const match of line.matchAll(/\bkopje-admin(?= )/g)) {
-      const words: string[] = [];
-      for (const raw of line
-        .slice(match.index + match[0].length)
-        .trim()
-        .split(/ +/)
-        .slice(0, 2)) {
-        const word = raw.replace(/[`'".,;:)]+$/, "");
-        if (!WORD.test(word)) {
-          break;
-        }
-        words.push(word);
-        if (word !== raw) {
-          break;
-        }
+  const joined = joinedParagraphs(text);
+  for (const match of joined.matchAll(/\bkopje-admin(?=\s)/g)) {
+    const words: string[] = [];
+    const after = joined.slice(match.index + match[0].length).split("\n")[0] ?? "";
+    for (const raw of after.trim().split(/\s+/).slice(0, 2)) {
+      const word = raw.replace(/[`'".,;:)]+$/, "");
+      if (!WORD.test(word)) {
+        break;
       }
-      const [name, sub] = words;
-      const listed =
-        name === undefined ||
-        (sub !== undefined && commands.has(`${name} ${sub}`)) ||
-        (commands.has(name) && (sub === undefined || ![...commands].some((c) => c.startsWith(`${name} `))));
-      if (!listed) {
-        found.push(`${i + 1}: kopje-admin ${words.join(" ")}`);
+      words.push(word);
+      if (word !== raw) {
+        break;
       }
     }
-  });
+    const [name, sub] = words;
+    const listed =
+      name === undefined ||
+      (sub !== undefined && commands.has(`${name} ${sub}`)) ||
+      (commands.has(name) && (sub === undefined || ![...commands].some((c) => c.startsWith(`${name} `))));
+    if (!listed) {
+      found.push(`${lineOf(text, match.index)}: kopje-admin ${words.join(" ")}`);
+    }
+  }
   return found;
 }
 
@@ -175,7 +194,8 @@ describe("operator documents", () => {
   });
 
   it("name only kopje-admin commands the CLI's usage lists", () => {
-    const commands = usageCommands(usageText(read("cli/lib/main.js")));
+    // `help` prints the usage (cli/lib/main.js answers it, like --help, before any command), which does not list it.
+    const commands = new Set([...usageCommands(usageText(read("cli/lib/main.js"))), "help"]);
     expect(commands).toEqual(
       new Set([
         ...commands,
@@ -227,12 +247,22 @@ describe("operator documents", () => {
       "`kopje-admin emoji enable 3`; kopje-admin health and more; `kopje-admin maintenance on`.",
       "`kopje-admin jobs retry-all`, `kopje-admin trends statuses`, kopje-admin frobnicate, `kopje-admin jobs`",
       "The `kopje-admin` CLI, kopje-admin.",
+      "",
+      "Run `kopje-admin",
+      "  jobs retry`, then kopje-admin",
+      "  images-export-old.",
+      "```sh",
+      "kopje-admin jobs",
+      "retry",
+      "```",
     ].join("\n");
     expect(unlistedCommands(text, commands)).toEqual([
       "3: kopje-admin jobs retry-all",
       "3: kopje-admin trends statuses",
       "3: kopje-admin frobnicate",
       "3: kopje-admin jobs",
+      "7: kopje-admin images-export-old",
+      "10: kopje-admin jobs",
     ]);
   });
 
