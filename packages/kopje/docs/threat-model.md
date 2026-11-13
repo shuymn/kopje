@@ -2864,7 +2864,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   without conditions reads at most 3 + 4 × the limit rows, every pin examined (83 for a remote account), an enforced
   bound that `test/pin-cap.test.ts` ("reads at most the account's limit of pins, by primary key, at each limit filled")
   asserts at both limits; a signed-in viewer, the request's conditions and a boost's original add lookups by key for
-  each of those pins, not more pins, which no test measures. The cap: `test/migrations.test.ts` ("0089_pin_cap"),
+  each of those pins, not more pins, for which `test/pin-cap.test.ts` establishes no ceiling. The cap:
+  `test/migrations.test.ts` ("0089_pin_cap"),
   `test/dump-import.test.ts` ("round-trips an account's pins at its limit"). _Enforced (main)_ for status cards: one
   `status_cards` row per status
   (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
@@ -4042,12 +4043,13 @@ short mentions and 70 hashtags, and 1.15 at the maxima.
 Peaks, as `test/status-bounds.test.ts` ("keeps the peaks of the heap model within their bounds, from the maxima per
 column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap
 any fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with
-25% headroom; the largest single row sums each column's largest value the same way (1.20 MB, the escaped poll row,
+25% headroom; the largest single row sums each column's largest value the same way (1.20 MB as logged, the escaped
+poll row,
 which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above); the
 admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima,
 whatever runs before it, and asserts the timelines' peaks within half of the Store isolate's 128 MB with at least
-4,096 bytes to spare, and the groups' and reports' within the whole. The figures in megabytes below (the rows, the
-rejected items and the peaks) are what that test logs, not what it asserts.
+4,096 bytes to spare, and the groups' and reports' within the whole. The figures in the two Store tables below (the
+rows, the rejected items and the answers' peaks) are what that test logs, not what it asserts.
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
