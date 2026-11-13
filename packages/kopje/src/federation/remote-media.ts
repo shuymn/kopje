@@ -11,6 +11,7 @@ import {
 import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
 import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
+import { remoteFileKey } from "../platform/media-files";
 import { type StoreStub, storeRpc } from "../platform/store-client";
 import { randomToken } from "../security/tokens";
 import type { InboxDeps } from "./inbox";
@@ -379,14 +380,14 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     if (!(await admit(claim, file.hosts, deadline))) {
       return { outcome: { kind: "unattempted" }, step: "admission", host };
     }
-    if (!(await put(`remote/${claim.token}/full`, file.bytes, file.type))) {
+    if (!(await put(remoteFileKey(claim.token, "full"), file.bytes, file.type))) {
       return { outcome: { kind: "failed", permanent: false }, step: "put", host };
     }
     if (file.still !== null) {
       if (!(await admit(claim, file.hosts, deadline))) {
         return { outcome: { kind: "partial" }, step: "admission", host };
       }
-      if (!(await put(`remote/${claim.token}/still`, file.still.bytes, file.still.type))) {
+      if (!(await put(remoteFileKey(claim.token, "still"), file.still.bytes, file.still.type))) {
         return { outcome: { kind: "partial" }, step: "put", host };
       }
     }
@@ -418,7 +419,7 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     }
     try {
       await bounded(
-        () => bucket.put(`remote/${claim.token}/full`, file.body, { httpMetadata: { contentType: file.type } }),
+        () => bucket.put(remoteFileKey(claim.token, "full"), file.body, { httpMetadata: { contentType: file.type } }),
         deadline,
         deps.now,
       );

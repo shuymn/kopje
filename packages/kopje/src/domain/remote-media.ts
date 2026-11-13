@@ -8,7 +8,7 @@ import {
 } from "../platform/config";
 import { hostDomain } from "../platform/domain-name";
 import { remoteMediaUrlRefusal } from "../platform/http-url";
-import { FILE_TOKEN } from "../platform/media-files";
+import { FILE_TOKEN, remoteFileKey } from "../platform/media-files";
 import { type RemoteCategory, type RemoteFileKind, remoteFileLimits } from "../platform/remote-media-bytes";
 import {
   cardUrlPastSql,
@@ -1008,7 +1008,7 @@ export type RemoteMediaMaintenance = {
 };
 
 function keysOf(token: string): string[] {
-  return [`remote/${token}/full`, `remote/${token}/still`];
+  return [remoteFileKey(token, "full"), remoteFileKey(token, "still")];
 }
 
 // The doomed objects whose deletion is due at `now`, by due_at, at most DELETE_BATCH.
@@ -1467,7 +1467,7 @@ function validationBatch(db: Db, now: number, restoredAt: number): { batch: Remo
   const batch: RemoteMediaDeletion[] = [];
   let heads = 0;
   for (const row of rows) {
-    const keys = row.still === 1 ? keysOf(row.token) : [`remote/${row.token}/full`];
+    const keys = row.still === 1 ? keysOf(row.token) : [remoteFileKey(row.token, "full")];
     if (heads + keys.length > VALIDATION_HEADS) {
       break;
     }
