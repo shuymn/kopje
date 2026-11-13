@@ -181,6 +181,13 @@ export function readConfig(env: object): ConfigResult {
   return result;
 }
 
+// Whether the env holds the Worker in maintenance: MAINTENANCE is not off, or the env is invalid, so nothing runs
+// through a misconfigured Worker.
+export function envInMaintenance(env: object): boolean {
+  const config = readConfig(env);
+  return !config.ok || config.config.MAINTENANCE !== "off";
+}
+
 // The VAPID keys when Web Push is available: VAPID_JWK is set (an invalid one fails readConfig, and the gate answers
 // 503, DATA-2). jwk signs VAPID tokens and seals push tokens; publicKey is the server_key clients subscribe with.
 export function webPushKeys(env: object): { jwk: JsonWebKey; publicKey: string } | null {

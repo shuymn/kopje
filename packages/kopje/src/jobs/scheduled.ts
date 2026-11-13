@@ -5,7 +5,7 @@ import { type FieldLinksDeps, fieldLinksRound } from "../federation/field-links"
 import { type LinkCardsDeps, linkCardsRound } from "../federation/link-cards";
 import { type RemoteMediaDeps, remoteMediaRound } from "../federation/remote-media";
 import { reconcileMedia, sweepMedia, type SweepDeps } from "../mastodon/media";
-import { readConfig } from "../platform/config";
+import { envInMaintenance } from "../platform/config";
 import { DeadlinePassed } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { callStore } from "../platform/store-client";
@@ -43,8 +43,7 @@ export type ScheduledDeps = SweepDeps & {
 };
 
 export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   // The marker /setup's cron check reads (domain/setup.ts).
@@ -120,8 +119,7 @@ export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<vo
 // scheduled work's failure skips it and its failure skips none: one claimed account per tick, outside the env's
 // maintenance; in the Store's, the claim is refused before any request and the check waits for a later tick.
 export async function scheduledFieldLinks(env: Env, deps: FieldLinksDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   try {
@@ -137,8 +135,7 @@ export async function scheduledFieldLinks(env: Env, deps: FieldLinksDeps): Promi
 // CARD_ROUND_CLAIMS cards per tick, outside the env's maintenance; in the Store's, the claim is refused before any
 // request and the cards wait for a later tick.
 export async function scheduledLinkCards(env: Env, deps: LinkCardsDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   try {
@@ -154,8 +151,7 @@ export async function scheduledLinkCards(env: Env, deps: LinkCardsDeps): Promise
 // CARD_IMAGE_ROUND_CLAIMS images per tick, outside the env's maintenance; in the Store's, the claim is refused before
 // any request and the images wait for a later tick.
 export async function scheduledCardImages(env: Env, deps: CardImagesDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   try {
@@ -171,8 +167,7 @@ export async function scheduledCardImages(env: Env, deps: CardImagesDeps): Promi
 // maintenance and at most LANE0_CLAIMS files per tick, outside the env's maintenance; in the Store's, the maintenance
 // call is refused before any R2 operation or request, and the files wait for a later tick.
 export async function scheduledRemoteMedia(env: Env, deps: RemoteMediaDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   try {
