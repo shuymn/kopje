@@ -3654,7 +3654,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `statuses_reblogged_by` (migration `0083_kept_boosts`), so a withdrawn boost is never read and never a cursor of the
   page or of `reblogged_by` (`test/web-interaction-tabs.test.ts` ("seek each tab’s index from the cursor both ways, with
   stale statistics", "name no withdrawn boost as a cursor where it would end a full window")). _Gap:_ the number of
-  streams is the viewer's follows (their own choice); rows hidden by visibility are walked past, not windowed (account
+  streams is the viewer's follows (their own choice), and the bounds harness (`test/policy-bounds.test.ts`) grows
+  histories evenly, never a skewed one where one author's statuses dominate a merged read; rows hidden by visibility are walked past, not windowed (account
   statuses read by a non-follower of an account that posts mostly to followers: a remote account's private statuses are
   stored only while a local account follows it, so no outside party can grow it at will; accepted); the public
   timeline's request conditions (`local`, `remote`, `only_media`) and its reply predicate are tested inside its `LIMIT`
