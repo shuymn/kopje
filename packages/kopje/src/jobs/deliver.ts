@@ -3,7 +3,7 @@ import type { Completion, Confirmation, DeliverySigner } from "../domain/deliver
 import { CLAIM_LIMIT, INSTANCE_SIGNER } from "../domain/deliveries";
 import { COMPLETION_MARGIN_MS, type PostDeps, postActivity, ringDoorbell } from "../federation/delivery";
 import { instanceActorKey } from "../federation/federation";
-import { readConfig, userKek } from "../platform/config";
+import { envInMaintenance, readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { callStore, type StoreResolver } from "../platform/store-client";
@@ -175,8 +175,7 @@ export async function deliveryRound(env: Env, deps: DeliveryDeps): Promise<Round
 // claim), with one round of Web Push beside it (jobs/push.ts). In maintenance nothing is claimed and nothing is
 // counted (RES-5); the cron resumes afterwards.
 export async function handleDoorbells(messages: readonly Message[], env: Env, deps: DeliveryDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     ackAll(messages);
     return;
   }
@@ -217,8 +216,7 @@ function ackAll(messages: readonly Message[]): void {
 
 // The 5-minute cron: sweeps expired given-up rows and rings the doorbell. A no-op in maintenance.
 export async function scheduledDeliveries(env: Env, deps: DeliveryDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   try {

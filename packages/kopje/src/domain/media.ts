@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import {
   staticUrlPastBoundSql,
@@ -12,6 +13,7 @@ import { type CredentialAccount, credentialAccount, type Present } from "./accou
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
+import { setState, state } from "./kopje-state";
 import { mediaDeleteOperation } from "./operation";
 import { type MediaAttachment, type MediaRow, presentMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
@@ -88,20 +90,8 @@ const ATTEMPTS = "media_attempts:";
 const TRANSFORMS = "images_transforms:";
 const ACCOUNT_TRANSFORMS = "images_account_transforms:";
 
-function state(db: Db, name: string): string | undefined {
-  return db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name)?.value;
-}
-
-function setState(db: Db, name: string, value: string): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, value);
-}
-
 // At most this many uploads are swept per run; each is three R2 keys.
 export const SWEEP_BATCH = 100;
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 // The gc_at of media an explicit deletion dooms (DELETE /api/v1/media/:id, delete_media, a replaced or removed profile
 // image): the epoch, which every request reads as past whatever its own time, so a request that started before the

@@ -17,3 +17,8 @@ export async function callStore<T>(call: () => Promise<T>): Promise<T> {
     throw toStoreUnavailable(error) ?? error;
   }
 }
+
+// A caller of env's Store through callStore, resolving the stub at each call.
+export function storeRpc(store: StoreResolver, env: Env): <T>(call: (store: StoreStub) => Promise<T>) => Promise<T> {
+  return (call) => callStore(() => call(store(env)));
+}

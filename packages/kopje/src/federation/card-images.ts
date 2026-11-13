@@ -7,8 +7,8 @@ import {
   type CardImageStart,
 } from "../domain/card-images";
 import { imageBlurhash } from "../platform/blurhash";
-import { readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, withinKept } from "../platform/deadline";
+import { envInMaintenance, readConfig } from "../platform/config";
+import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { webpSize, sniffImageType } from "../platform/image-bytes";
 import {
@@ -22,7 +22,7 @@ import {
 } from "../platform/images";
 import { fileKey } from "../platform/media-files";
 import { PACKAGE_VERSION } from "../platform/package-version";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { storeRpc } from "../platform/store-client";
 import {
   CARD_DECODE_PIXELS,
   CARD_IMAGE_BODY_LIMIT,
@@ -298,18 +298,12 @@ function bounded<T>(work: () => Promise<T>, end: number, now: () => number): Pro
   return withinKept(running, work, end, now);
 }
 
-// Whether the env holds the Worker in maintenance (a write must not start).
-function envMaintenance(env: Env): boolean {
-  const config = readConfig(env);
-  return !config.ok || config.config.MAINTENANCE !== "off";
-}
-
 type ClaimResult = { outcome: CardImageOutcome | "lost"; stop: boolean; step: string; host?: string | null };
 
 // One round (above). Returns what it did, for the logs and tests.
 export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<CardImagesRound> {
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const config = readConfig(env);
   const share = config.ok ? config.config.IMAGES_CARD_MONTHLY_TRANSFORMS : 0;
   const start = deps.now();
@@ -353,7 +347,7 @@ export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<C
   const fence = (claim: CardImageClaim) => ({ id: claim.id, claim: claim.claim, token: claim.token });
   // An admission (#1 or #3): the env's maintenance first, then the Store's write under the fence, within `until`.
   const admitted = async (claim: CardImageClaim, until: number): Promise<boolean> => {
-    if (envMaintenance(env)) {
+    if (envInMaintenance(env)) {
       return false;
     }
     try {
@@ -384,7 +378,7 @@ export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<C
         guard: (work) => bounded(work, until, deps.now),
         admit: () => admitted(claim, until),
         start: async () => {
-          if (envMaintenance(env)) {
+          if (envInMaintenance(env)) {
             return "lost";
           }
           try {
@@ -480,17 +474,10 @@ export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<C
       }
     }
   }
-  for (const claim of queue) {
-    try {
-      if ((await record(claim, { kind: "unattempted" })).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.card_images.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queue,
+    (claim) => record(claim, { kind: "unattempted" }),
+    "kopje.card_images.release_failed",
+  );
   return round;
 }

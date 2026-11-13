@@ -9,7 +9,7 @@ import {
 } from "../federation/inbox";
 import { verifyQuotes } from "../federation/quotes";
 import { encodeSpoolRecord, inflate, spoolDigest, type SpoolMessage, spoolMessageOptions } from "../federation/spool";
-import { type Config, readConfig } from "../platform/config";
+import { type Config, envInMaintenance, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
@@ -43,8 +43,7 @@ function inboxDepsOf(deps: QueueDeps): InboxDeps {
 export async function handleQueue(batch: MessageBatch, env: Env, queueDeps: QueueDeps): Promise<void> {
   const deps = inboxDepsOf(queueDeps);
   const config = readConfig(env);
-  // An invalid env counts as maintenance, so nothing is replayed through a misconfigured Worker.
-  const maintenance = !config.ok || config.config.MAINTENANCE !== "off";
+  const maintenance = envInMaintenance(env);
   const doorbells = batch.messages.filter((message) => isDeliverMessage(message.body));
   if (doorbells.length > 0) {
     const delivery = queueDeps.delivery ?? { now: () => Date.now(), fetch: (input, init) => fetch(input, init) };
@@ -212,8 +211,7 @@ export async function jobsRound(env: Env, deps: InboxDeps): Promise<void> {
 // Cron: a jobs round every run, outside maintenance. This is what makes a purge or Move finish, and a sync or a
 // verification run, even if every Queue message about it was lost.
 export async function runScheduledJobs(env: Env, deps: InboxDeps): Promise<void> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return;
   }
   await jobsRound(env, deps);

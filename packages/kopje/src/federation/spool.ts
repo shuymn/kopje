@@ -1,4 +1,6 @@
 import { errorFields } from "../platform/error-message";
+import { toHex } from "../platform/hex";
+import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 
 // Inbox requests received while the Store cannot take them are spooled to the Queue and answered with 202. A request
 // must fit one message (no chunking): a larger one is answered 503 and not accepted.
@@ -92,16 +94,15 @@ export async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
 // The identity of a spool message: the same for every copy the maintenance requeue makes and every redelivery, so a
 // cutover rollback's handoff receipt matches each (platform/store-admin.ts).
 export async function spoolDigest(message: SpoolMessage): Promise<string> {
-  const json = JSON.stringify({ ...message, body: toBase64(message.body) });
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  const json = JSON.stringify({ ...message, body: bytesToBase64(message.body) });
+  return toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json)));
 }
 
 // A spool message as one record of the cutover's rollback journal (inbound_spool, docs/cutover-runbook.md): the
 // message as JSON with its deflated body in base64, deflated as a whole. Nothing is lost or reinterpreted, so the
 // request can still be verified against the time it was spooled.
 export async function encodeSpoolRecord(message: SpoolMessage): Promise<Uint8Array> {
-  const json = JSON.stringify({ ...message, body: toBase64(message.body) });
+  const json = JSON.stringify({ ...message, body: bytesToBase64(message.body) });
   return deflate(new TextEncoder().encode(json));
 }
 
@@ -125,22 +126,10 @@ export async function decodeSpoolRecord(bytes: Uint8Array): Promise<SpoolMessage
       url: value.url,
       method: value.method,
       headers: headers as [string, string][],
-      body: fromBase64(value.body),
+      body: base64ToBytes(value.body),
       spooledAt: value.spooledAt,
     };
   } catch {
     return null;
   }
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function fromBase64(text: string): Uint8Array {
-  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 }

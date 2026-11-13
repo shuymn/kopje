@@ -27,6 +27,7 @@ import {
 } from "./dump-format";
 import { fromHex } from "./dump-literals";
 import { errorFields, errorMessage } from "./error-message";
+import { toHex } from "./hex";
 import { consoleSink, type LogSink } from "./log";
 import { readOnlyProblem } from "./readonly-sql";
 import { Sha256, sha256Hex } from "./sha256";
@@ -281,8 +282,7 @@ export class StoreAdmin {
   // Entering records when maintenance began (a media rebuild waits for it to settle: domain/media-rebuild.ts); entering
   // again keeps that time. Leaving is refused while a media rebuild holds its lease.
   async setMaintenance(callerBuild: string, on: boolean): Promise<{ maintenance: boolean } | Refusal> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     const refused = this.#transaction(() => {
       const flags = readFlags(this.#sql);
       if (on) {
@@ -695,8 +695,7 @@ export class StoreAdmin {
     | Result<{ progress: ImportProgress; duplicate: boolean }>
     | (Refusal & { progress: ImportProgress | null; applied: boolean })
   > {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     let record: ImportRecord;
     try {
       // Checked here to avoid parsing for nothing, and again in the transaction that writes.
@@ -790,8 +789,7 @@ export class StoreAdmin {
     id: string,
     trailerValue: unknown,
   ): Promise<Result<{ progress: ImportProgress }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     try {
       const trailer = parseTrailer(trailerValue);
       return this.#transaction(() => {
@@ -841,8 +839,7 @@ export class StoreAdmin {
     id: string,
     maxBytes = VERIFY_STEP_BYTES,
   ): Promise<Result<{ done: boolean; report: VerifyReport | null; progress: ImportProgress | null }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     const budget = clamp(maxBytes, 1024, VERIFY_STEP_BYTES, VERIFY_STEP_BYTES);
     let outcome: Result<{ done: boolean; report: VerifyReport | null; progress: ImportProgress | null }>;
     try {
@@ -1141,37 +1138,33 @@ export class StoreAdmin {
       return refuse("invalid-config", changes);
     }
     await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        const flags = readFlags(this.#sql);
-        if (authority.kind === "import-session") {
-          throw new ImportError("wrong-authority", "an import session cannot change the configuration");
+    return this.#refusing(() => {
+      const flags = readFlags(this.#sql);
+      if (authority.kind === "import-session") {
+        throw new ImportError("wrong-authority", "an import session cannot change the configuration");
+      }
+      if (flags.import !== null) {
+        throw new ImportError("import-in-progress", "the configuration is set aside while an import runs");
+      }
+      if (activeDump(flags, this.#now()) !== null) {
+        throw new ImportError("dump-in-progress", "a dump is in progress");
+      }
+      if (authority.kind === "import-token" && !this.#inBootstrap(flags, false)) {
+        throw new ImportError("not-bootstrap", "IMPORT_TOKEN only configures a Store without admin access");
+      }
+      if (authority.kind === "access") {
+        this.#assertAdmin(authority, readAccessSettings(this.#sql));
+      }
+      for (const [name, value] of Object.entries(changes)) {
+        if (value === null) {
+          this.#sql.exec("DELETE FROM instance_settings WHERE name = ?", name);
+        } else {
+          this.#sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES (?, ?)", name, value);
         }
-        if (flags.import !== null) {
-          throw new ImportError("import-in-progress", "the configuration is set aside while an import runs");
-        }
-        if (activeDump(flags, this.#now()) !== null) {
-          throw new ImportError("dump-in-progress", "a dump is in progress");
-        }
-        if (authority.kind === "import-token" && !this.#inBootstrap(flags, false)) {
-          throw new ImportError("not-bootstrap", "IMPORT_TOKEN only configures a Store without admin access");
-        }
-        if (authority.kind === "access") {
-          this.#assertAdmin(authority, readAccessSettings(this.#sql));
-        }
-        for (const [name, value] of Object.entries(changes)) {
-          if (value === null) {
-            this.#sql.exec("DELETE FROM instance_settings WHERE name = ?", name);
-          } else {
-            this.#sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES (?, ?)", name, value);
-          }
-        }
-        this.#log({ event: "kopje.store.config", names: Object.keys(changes), authority: authority.kind });
-        return { ok: true as const, values: readConfigRows(this.#sql) };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+      }
+      this.#log({ event: "kopje.store.config", names: Object.keys(changes), authority: authority.kind });
+      return { ok: true as const, values: readConfigRows(this.#sql) };
+    });
   }
 
   // Why a token import may not be abandoned (yet), or null when it may.
@@ -1211,8 +1204,7 @@ export class StoreAdmin {
   // bounded reset an interrupted import uses, keeping the configuration.
 
   async cutoverStatus(callerBuild: string): Promise<CutoverStatus> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     const flags = readFlags(this.#sql);
     return {
       published: flags.published,
@@ -1235,84 +1227,73 @@ export class StoreAdmin {
     callerBuild: string,
     authority: ImportAuthority,
   ): Promise<Result<{ published: PublishedFlag; profileUpdates: number }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        const flags = readFlags(this.#sql);
-        if (authority.kind === "import-token") {
-          if (!this.#inBootstrap(flags, false)) {
-            throw new ImportError("not-bootstrap", "IMPORT_TOKEN only publishes a Store without admin access");
-          }
-        } else if (authority.kind === "access") {
-          this.#assertAdmin(authority, this.#currentSettings(flags));
-        } else {
-          throw new ImportError("wrong-authority", "publish with Access or IMPORT_TOKEN");
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      const flags = readFlags(this.#sql);
+      if (authority.kind === "import-token") {
+        if (!this.#inBootstrap(flags, false)) {
+          throw new ImportError("not-bootstrap", "IMPORT_TOKEN only publishes a Store without admin access");
         }
-        if (flags.import !== null) {
-          throw new ImportError("import-exists", "an import is running");
-        }
-        if (flags.published !== null && flags.unpublished === null) {
-          return { ok: true as const, published: flags.published, profileUpdates: 0 };
-        }
-        if (flags.unpublished === null) {
-          // Publication ends a verified import; a Store that never had one is not readonly and has nothing to
-          // publish. Refusing it keeps a published mark off a Store an import may still begin into.
-          throw new ImportError("not-unpublished", "nothing to publish: no verified import is waiting");
-        }
-        // A rescue dump's freeze holds: publication makes the Store writable and records profile Updates, which
-        // would mix states within the dump.
-        if (activeDump(flags, this.#now()) !== null) {
-          throw new ImportError("dump-in-progress", "a dump is in progress");
-        }
-        if (this.#rollbackInProgress()) {
-          throw new ImportError("rollback-in-progress", "the journal holds requests or a drain runs");
-        }
-        this.#assertNoRebuild();
-        const published = { at: this.#now() };
-        writeFlag(this.#sql, "unpublished", null);
-        writeFlag(this.#sql, "published", published);
-        const profileUpdates = this.#onPublish(this.#sql, published.at);
-        if (profileUpdates === null) {
-          // Refused before anything is kept: the transaction rolls back, so the Store stays unpublished and the
-          // list stays for the operator to inspect.
-          throw new ImportError("state-invalid", "the profile update list is malformed");
-        }
-        this.#log({ event: "kopje.store.published", profileUpdates });
-        return { ok: true as const, published, profileUpdates };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+      } else if (authority.kind === "access") {
+        this.#assertAdmin(authority, this.#currentSettings(flags));
+      } else {
+        throw new ImportError("wrong-authority", "publish with Access or IMPORT_TOKEN");
+      }
+      if (flags.import !== null) {
+        throw new ImportError("import-exists", "an import is running");
+      }
+      if (flags.published !== null && flags.unpublished === null) {
+        return { ok: true as const, published: flags.published, profileUpdates: 0 };
+      }
+      if (flags.unpublished === null) {
+        // Publication ends a verified import; a Store that never had one is not readonly and has nothing to
+        // publish. Refusing it keeps a published mark off a Store an import may still begin into.
+        throw new ImportError("not-unpublished", "nothing to publish: no verified import is waiting");
+      }
+      // A rescue dump's freeze holds: publication makes the Store writable and records profile Updates, which
+      // would mix states within the dump.
+      if (activeDump(flags, this.#now()) !== null) {
+        throw new ImportError("dump-in-progress", "a dump is in progress");
+      }
+      if (this.#rollbackInProgress()) {
+        throw new ImportError("rollback-in-progress", "the journal holds requests or a drain runs");
+      }
+      this.#assertNoRebuild();
+      const published = { at: this.#now() };
+      writeFlag(this.#sql, "unpublished", null);
+      writeFlag(this.#sql, "published", published);
+      const profileUpdates = this.#onPublish(this.#sql, published.at);
+      if (profileUpdates === null) {
+        // Refused before anything is kept: the transaction rolls back, so the Store stays unpublished and the
+        // list stays for the operator to inspect.
+        throw new ImportError("state-invalid", "the profile update list is malformed");
+      }
+      this.#log({ event: "kopje.store.published", profileUpdates });
+      return { ok: true as const, published, profileUpdates };
+    });
   }
 
   // Whether a spool message was handed to the legacy instance (a handoff receipt), so it is neither journaled nor
   // replayed again.
   async handedOff(callerBuild: string, digest: string): Promise<boolean> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     return this.#hasReceipt(digest);
   }
 
   // Ends a rollback: its receipts are removed once the journal is empty and no drain runs; the Worker checks first that
   // Kopje's Queue is empty (no copy of a handed-off request is left to arrive).
   async closeRollback(callerBuild: string, authority: ImportAuthority): Promise<Result<{ receipts: number }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        this.#assertJournalAdmin(authority);
-        if (this.#rollbackInProgress()) {
-          throw new ImportError("rollback-in-progress", "the journal holds requests or a drain runs");
-        }
-        const receipts = this.#journalCounts().done;
-        this.#sql.exec("DELETE FROM kopje_state WHERE substr(name, 1, 8) = 'handoff:'");
-        this.#sql.exec("DELETE FROM kopje_state WHERE name = ?", FULL_STOP);
-        return { ok: true as const, receipts };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      this.#assertJournalAdmin(authority);
+      if (this.#rollbackInProgress()) {
+        throw new ImportError("rollback-in-progress", "the journal holds requests or a drain runs");
+      }
+      const receipts = this.#journalCounts().done;
+      this.#sql.exec("DELETE FROM kopje_state WHERE substr(name, 1, 8) = 'handoff:'");
+      this.#sql.exec("DELETE FROM kopje_state WHERE name = ?", FULL_STOP);
+      return { ok: true as const, receipts };
+    });
   }
 
   // From the Worker's Queue consumer: refused once published (nothing is rolled back then), during an import, and when
@@ -1322,42 +1303,37 @@ export class StoreAdmin {
     entry: { digest: string; spooledAt: number; record: Uint8Array },
     limits: { entries?: number | undefined; bytes?: number | undefined } = {},
   ): Promise<Result<{ stored: boolean }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     const digest = entry.digest;
     const maxEntries = clamp(limits.entries, 1, JOURNAL_MAX_ENTRIES, JOURNAL_MAX_ENTRIES);
     const maxBytes = clamp(limits.bytes, 1, JOURNAL_MAX_BYTES, JOURNAL_MAX_BYTES);
-    try {
-      return this.#transaction(() => {
-        const flags = readFlags(this.#sql);
-        if (flags.published !== null) {
-          throw new ImportError("published", "this instance is published; nothing is rolled back");
-        }
-        if (flags.import !== null) {
-          throw new ImportError("import-in-progress", "an import is running");
-        }
-        if (!/^[0-9a-f]{64}$/.test(digest)) {
-          throw new ImportError("invalid-digest", "not a spool digest");
-        }
-        if (this.#journalState(digest) !== null || this.#hasReceipt(digest)) {
-          return { ok: true as const, stored: false };
-        }
-        const held = this.#journalCounts();
-        const entries = held.pending + held.sending + held.unverified + held.noRecipient;
-        if (entries + 1 > maxEntries || held.bytes + entry.record.byteLength > maxBytes) {
-          throw new ImportError("journal-full", "the rollback journal is at its quota");
-        }
-        this.#sql.exec(
-          "INSERT INTO inbound_spool (spool_id, part, part_count, fragment, spooled_at) VALUES (?, 0, 1, ?, ?)",
-          `${JOURNAL.pending}${digest}`,
-          entry.record,
-          entry.spooledAt,
-        );
-        return { ok: true as const, stored: true };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+    return this.#refusing(() => {
+      const flags = readFlags(this.#sql);
+      if (flags.published !== null) {
+        throw new ImportError("published", "this instance is published; nothing is rolled back");
+      }
+      if (flags.import !== null) {
+        throw new ImportError("import-in-progress", "an import is running");
+      }
+      if (!/^[0-9a-f]{64}$/.test(digest)) {
+        throw new ImportError("invalid-digest", "not a spool digest");
+      }
+      if (this.#journalState(digest) !== null || this.#hasReceipt(digest)) {
+        return { ok: true as const, stored: false };
+      }
+      const held = this.#journalCounts();
+      const entries = held.pending + held.sending + held.unverified + held.noRecipient;
+      if (entries + 1 > maxEntries || held.bytes + entry.record.byteLength > maxBytes) {
+        throw new ImportError("journal-full", "the rollback journal is at its quota");
+      }
+      this.#sql.exec(
+        "INSERT INTO inbound_spool (spool_id, part, part_count, fragment, spooled_at) VALUES (?, 0, 1, ?, ?)",
+        `${JOURNAL.pending}${digest}`,
+        entry.record,
+        entry.spooledAt,
+      );
+      return { ok: true as const, stored: true };
+    });
   }
 
   // The drain's lease: one drain at a time. Taken for leaseMs, released by the holder.
@@ -1366,35 +1342,30 @@ export class StoreAdmin {
     authority: ImportAuthority,
     request: { holder: string; release?: boolean; leaseMs?: number },
   ): Promise<Result<{ until: number | null }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        this.#assertJournalAdmin(authority);
-        this.#assertUnpublished();
-        const now = this.#now();
-        const current = this.#drainLeaseRow();
-        const lease = current === null ? null : (JSON.parse(current) as { holder: string; until: number });
-        if (request.release === true) {
-          if (lease?.holder === request.holder) {
-            this.#sql.exec("DELETE FROM kopje_state WHERE name = ?", DRAIN_LEASE);
-          }
-          return { ok: true as const, until: null };
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      this.#assertJournalAdmin(authority);
+      this.#assertUnpublished();
+      const now = this.#now();
+      const current = this.#drainLeaseRow();
+      const lease = current === null ? null : (JSON.parse(current) as { holder: string; until: number });
+      if (request.release === true) {
+        if (lease?.holder === request.holder) {
+          this.#sql.exec("DELETE FROM kopje_state WHERE name = ?", DRAIN_LEASE);
         }
-        if (lease !== null && lease.holder !== request.holder && lease.until > now) {
-          throw new ImportError("drain-in-progress", "another drain holds the journal");
-        }
-        const until = now + clamp(request.leaseMs, 1000, 10 * 60 * 1000, DRAIN_LEASE_MS);
-        this.#sql.exec(
-          "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
-          DRAIN_LEASE,
-          JSON.stringify({ holder: request.holder, until }),
-        );
-        return { ok: true as const, until };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+        return { ok: true as const, until: null };
+      }
+      if (lease !== null && lease.holder !== request.holder && lease.until > now) {
+        throw new ImportError("drain-in-progress", "another drain holds the journal");
+      }
+      const until = now + clamp(request.leaseMs, 1000, 10 * 60 * 1000, DRAIN_LEASE_MS);
+      this.#sql.exec(
+        "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
+        DRAIN_LEASE,
+        JSON.stringify({ holder: request.holder, until }),
+      );
+      return { ok: true as const, until };
+    });
   }
 
   // The next record to hand off: one being sent (a crash left it; it is sent again), else the oldest pending one.
@@ -1404,8 +1375,7 @@ export class StoreAdmin {
     holder: string,
     skip: string[] = [],
   ): Promise<Result<{ entry: { id: string; spooledAt: number; record: Uint8Array; resend: boolean } | null }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
+    await this.#ready(callerBuild);
     try {
       this.#assertJournalAdmin(authority);
       this.#assertUnpublished();
@@ -1448,44 +1418,35 @@ export class StoreAdmin {
     id: string,
     state: "sending" | "done" | "unverified" | "no-recipient",
   ): Promise<Result<{ journal: JournalCounts }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        this.#assertJournalAdmin(authority);
-        this.#assertUnpublished();
-        this.#assertLease(holder);
-        const current = this.#journalState(id);
-        const allowed: string[] = state === "done" ? [JOURNAL.sending] : [JOURNAL.pending, JOURNAL.sending];
-        if (current === null || !allowed.includes(current)) {
-          throw new ImportError("journal-state", "the record is not in a state that allows this");
-        }
-        const target = {
-          sending: JOURNAL.sending,
-          done: JOURNAL.done,
-          unverified: JOURNAL.unverified,
-          "no-recipient": JOURNAL.noRecipient,
-        }[state];
-        if (state === "done") {
-          // Handed off: the request leaves the journal, and a receipt outside the dumped data stays.
-          this.#sql.exec("DELETE FROM inbound_spool WHERE spool_id = ?", `${current}${id}`);
-          this.#sql.exec(
-            "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
-            `${RECEIPT}${id}`,
-            JSON.stringify({ at: this.#now() }),
-          );
-        } else {
-          this.#sql.exec(
-            "UPDATE inbound_spool SET spool_id = ? WHERE spool_id = ?",
-            `${target}${id}`,
-            `${current}${id}`,
-          );
-        }
-        return { ok: true as const, journal: this.#journalCounts() };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      this.#assertJournalAdmin(authority);
+      this.#assertUnpublished();
+      this.#assertLease(holder);
+      const current = this.#journalState(id);
+      const allowed: string[] = state === "done" ? [JOURNAL.sending] : [JOURNAL.pending, JOURNAL.sending];
+      if (current === null || !allowed.includes(current)) {
+        throw new ImportError("journal-state", "the record is not in a state that allows this");
+      }
+      const target = {
+        sending: JOURNAL.sending,
+        done: JOURNAL.done,
+        unverified: JOURNAL.unverified,
+        "no-recipient": JOURNAL.noRecipient,
+      }[state];
+      if (state === "done") {
+        // Handed off: the request leaves the journal, and a receipt outside the dumped data stays.
+        this.#sql.exec("DELETE FROM inbound_spool WHERE spool_id = ?", `${current}${id}`);
+        this.#sql.exec(
+          "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
+          `${RECEIPT}${id}`,
+          JSON.stringify({ at: this.#now() }),
+        );
+      } else {
+        this.#sql.exec("UPDATE inbound_spool SET spool_id = ? WHERE spool_id = ?", `${target}${id}`, `${current}${id}`);
+      }
+      return { ok: true as const, journal: this.#journalCounts() };
+    });
   }
 
   // The drain's journal-full stop: 'record' notes the journal's state as the round stops on it; 'check' answers whether
@@ -1497,48 +1458,38 @@ export class StoreAdmin {
     holder: string,
     action: "record" | "check",
   ): Promise<Result<{ matches: boolean }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        this.#assertJournalAdmin(authority);
-        this.#assertUnpublished();
-        this.#assertLease(holder);
-        const state = JSON.stringify(this.#journalCounts());
-        if (action === "record") {
-          this.#sql.exec("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", FULL_STOP, state);
-          return { ok: true as const, matches: true };
-        }
-        const recorded = this.#sql
-          .exec<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", FULL_STOP)
-          .toArray()[0]?.value;
-        return { ok: true as const, matches: recorded === state };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      this.#assertJournalAdmin(authority);
+      this.#assertUnpublished();
+      this.#assertLease(holder);
+      const state = JSON.stringify(this.#journalCounts());
+      if (action === "record") {
+        this.#sql.exec("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", FULL_STOP, state);
+        return { ok: true as const, matches: true };
+      }
+      const recorded = this.#sql
+        .exec<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", FULL_STOP)
+        .toArray()[0]?.value;
+      return { ok: true as const, matches: recorded === state };
+    });
   }
 
   // The operator's decision about records the drain kept (after inspecting them).
   async journalDiscardKept(callerBuild: string, authority: ImportAuthority): Promise<Result<{ discarded: number }>> {
-    this.#requireBuild(callerBuild);
-    await this.#kernel.state();
-    try {
-      return this.#transaction(() => {
-        this.#assertJournalAdmin(authority);
-        const counts = this.#journalCounts();
-        const discarded = counts.unverified + counts.noRecipient;
-        this.#sql.exec(
-          "DELETE FROM inbound_spool WHERE substr(spool_id, 1, 2) IN (?, ?)",
-          JOURNAL.unverified,
-          JOURNAL.noRecipient,
-        );
-        this.#log({ event: "kopje.store.cutover.discard-kept", discarded });
-        return { ok: true as const, discarded };
-      });
-    } catch (error) {
-      return asRefusal(error);
-    }
+    await this.#ready(callerBuild);
+    return this.#refusing(() => {
+      this.#assertJournalAdmin(authority);
+      const counts = this.#journalCounts();
+      const discarded = counts.unverified + counts.noRecipient;
+      this.#sql.exec(
+        "DELETE FROM inbound_spool WHERE substr(spool_id, 1, 2) IN (?, ?)",
+        JOURNAL.unverified,
+        JOURNAL.noRecipient,
+      );
+      this.#log({ event: "kopje.store.cutover.discard-kept", discarded });
+      return { ok: true as const, discarded };
+    });
   }
 
   // Takes the Store back to empty after a completed import, keeping the configuration, so a new import can follow.
@@ -1781,6 +1732,21 @@ export class StoreAdmin {
     }
   }
 
+  // The prologue of a call that reads the Store: the caller's build checked, then the schema ready.
+  async #ready(callerBuild: string): Promise<void> {
+    this.#requireBuild(callerBuild);
+    await this.#kernel.state();
+  }
+
+  // Runs fn in a transaction; what it throws is answered as a refusal (asRefusal).
+  #refusing<T>(fn: () => T): T | Refusal {
+    try {
+      return this.#transaction(fn);
+    } catch (error) {
+      return asRefusal(error);
+    }
+  }
+
   #requireBuild(callerBuild: string): void {
     if (callerBuild !== this.#kernel.build) {
       throw storeMaintenanceError("version-mismatch");
@@ -1957,7 +1923,7 @@ function asRefusal(error: unknown): Refusal {
 
 function encodeValue(value: unknown): unknown {
   if (value instanceof ArrayBuffer) {
-    return { blob: Array.from(new Uint8Array(value), (b) => b.toString(16).padStart(2, "0")).join("") };
+    return { blob: toHex(value) };
   }
   return value;
 }

@@ -6,6 +6,7 @@ import { forgetAdminAccountId, oauthAdmin } from "./admin-authority";
 import { authorize, type UserCredential } from "./auth";
 import { allocateLocalId } from "./ids";
 import { countRegistration, recordLogin } from "./instance-activity";
+import { readState, writeState } from "./kopje-state";
 import { chargeInstanceTransforms } from "./media";
 import { webClientId } from "./oauth";
 import { readOperation, writeOperation } from "./operation";
@@ -96,15 +97,6 @@ export type InstanceConfig = {
   adminUsername: string | null;
   serviceTokenClientId: string | null;
 };
-
-function readState<T>(db: Db, name: string): T | null {
-  const row = db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name);
-  return row === undefined ? null : (JSON.parse(row.value) as T);
-}
-
-function writeState(db: Db, name: string, value: unknown): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, JSON.stringify(value));
-}
 
 function setting(db: Db, name: string): string | null {
   return db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = ?", name)?.value ?? null;

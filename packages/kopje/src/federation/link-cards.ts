@@ -9,11 +9,11 @@ import {
   cardHost,
   storedCardText,
 } from "../domain/link-cards";
-import { DeadlinePassed, inTime } from "../platform/deadline";
+import { DeadlinePassed, inTime, releaseUnstarted } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { storeRpc } from "../platform/store-client";
 import {
   CARD_IMAGE_DESCRIPTION_JSON_BYTES,
   CARD_OPTIONAL_URL_LIMIT,
@@ -200,7 +200,7 @@ function endpointOutcome(
 // One round (above). Returns what it did, for the logs and tests.
 export async function linkCardsRound(env: Env, deps: LinkCardsDeps): Promise<LinkCardsRound> {
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const start = deps.now();
   const end = start + CARD_ROUND_MS;
   const deadline = start + CARD_FETCHES_MS;
@@ -325,17 +325,10 @@ export async function linkCardsRound(env: Env, deps: LinkCardsDeps): Promise<Lin
     }
   };
   await Promise.all(Array.from({ length: CARD_CONCURRENCY }, worker));
-  for (const claim of queue) {
-    try {
-      if ((await record(claim, { kind: "unattempted" }, end)).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.link_cards.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queue,
+    (claim) => record(claim, { kind: "unattempted" }, end),
+    "kopje.link_cards.release_failed",
+  );
   return round;
 }

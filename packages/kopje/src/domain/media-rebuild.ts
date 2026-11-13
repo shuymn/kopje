@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
 import { storedBlurhash } from "../platform/stored-bounds";
@@ -40,10 +41,6 @@ export type RebuildRow = { id: string; token: string; contentType: string | null
 // rows: the candidates; next: the id the listing scanned to (the next listing starts after it); done: nothing is after
 // it.
 export type RebuildPage = { rows: RebuildRow[]; next: string | null; done: boolean };
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 // Complete local media with a token that is not doomed: what is served, or should be.
 const ELIGIBLE = `file_token IS NOT NULL AND processed = 1 AND url <> '' AND (gc_at IS NULL OR gc_at > ?)`;

@@ -1,6 +1,7 @@
 import { MEDIA_ID_INDEX } from "../db/indexes";
 import { type Db, ROW_OBJECT_BYTES, RowCapExceeded, RowMeter, VALUE_BYTES } from "../db/sql";
 import { isUnicodeEmoji } from "../platform/emoji-names";
+import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
 import type { ImportAuthority } from "../platform/store-admin";
 import {
@@ -584,10 +585,6 @@ const ACCESS_ONLY = "only an Access admin manages announcements";
 function authorityRefusal(db: Db, authority: ImportAuthority): AnnouncementRefusal | null {
   const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
   return refused === null && authority.kind === "access" ? null : refusal("wrong-authority", refused ?? ACCESS_ONLY);
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
 }
 
 const TEXT_RULE = "the text is 1 to 10,000 UTF-8 bytes, not blank, with no NUL";

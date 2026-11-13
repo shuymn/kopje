@@ -1,6 +1,6 @@
 import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
-import { readConfig } from "../platform/config";
+import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
 import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
 import {
@@ -128,8 +128,7 @@ export async function resolveQuery(
   deps: Parameters<ApiHandler>[1],
   query: string,
 ): Promise<Found | null> {
-  const config = readConfig(c.env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(c.env)) {
     return null;
   }
   const gate = authorized(

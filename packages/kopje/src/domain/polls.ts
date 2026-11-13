@@ -1,6 +1,7 @@
 import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { yieldsMoreThan } from "../platform/stored-bounds";
 import { type Present, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
@@ -122,10 +123,6 @@ export function checkPoll(request: PollRequest): PollInput | { error: string } {
 
 export function isPollInput(value: PollInput | { error: string }): value is PollInput {
   return !("error" in value);
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
 }
 
 // ---- Writing a local poll (statuses.ts).
