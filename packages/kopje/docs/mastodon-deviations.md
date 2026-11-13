@@ -763,10 +763,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   JSON cannot carry; Mastodon has no such caps.
 - A boost forwards only when it is kept and neither direct nor limited (a converted direct boost is one Kopje kept from
   legacy data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local
-  account nor an `Update` is forwarded, nor are a quoting status's poll voters reached. A `Delete` another server
-  relays is refused for a status, with or without the author's proof (ID-1's one exception covers a stamp only); Mastodon verifies a relayed `Delete`'s LD
-  signature by its author (`process_collection_service.rb` `verify_account!`), then applies and forwards it as the
-  author's own (`activity/delete.rb` `delete_status`).
+  account nor an `Update` is forwarded, nor are a quoting status's poll voters reached.
+- A status's `Delete` another server relays (its HTTP signer is not its actor) is applied, and forwarded, as the
+  author's own only when it carries the author's proof, verified (an RsaSignature2017 signature or an FEP-8b32 proof),
+  and only to a public or unlisted original Kopje holds as that author's, on the author's origin (ID-1). Mastodon
+  verifies a relayed `Delete`'s RsaSignature2017 signature by its author (`process_collection_service.rb`
+  `verify_account!`), then applies and forwards it as the author's own (`activity/delete.rb` `delete_status`) to a
+  status of any visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion
+  (`delete_person`). Kopje changes no status for a relay without a proof, nor for a private, direct or limited status
+  or a boost, and refuses a relayed `Delete` of an actor.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
@@ -793,8 +798,6 @@ Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStat
 - The signed body goes unchanged to every target, a silent recipient's own copy included, and an inbox that is a
   target of the neutral copy and of one or more personal copies gets the same bytes once for each; Mastodon delivers
   one copy per inbox. Each is applied once. Accepted, 2026-11-13.
-- A Kopje receiver refuses a `Delete` of a status another server relays, proof or not (Forwarded deletes above), so a
-  Kopje author's `Delete` forwarded by a booster or quoter reaches a Kopje server only from the author's own server.
 
 Outboxes (`/ap/users/:username/outbox` and the instance actor's `/actor/outbox`; Mastodon's
 `ActivityPub::OutboxesController`, which serves the instance actor's for `Account.representative`, empty):

@@ -13,12 +13,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
   addressed to Public alone, as Mastodon sends it, so a booster or quoter can forward it with the author's proof, and
   a server that holds the status only through that boost or quote removes its copy when it applies a relayed `Delete`
-  (Mastodon and Misskey do; a Kopje server still refuses a relayed status `Delete`, #1506) (VIS-3, ID-1). It reaches
-  the same inboxes as before and is sent byte for byte on every attempt. When the author's key cannot sign it, the
-  DELETE answers 503 and the status stays; an imported status whose uri or actor id can never be signed is deleted
-  with an unsigned `Delete`, logged as `kopje.delivery.delete_unsigned`. Private, direct and limited `Delete`s are
-  unchanged, and `Delete`s recorded before the upgrade stay unsigned. No Store migration and no `wrangler.jsonc`
-  change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+  (Mastodon, Misskey and Kopje do) (VIS-3, ID-1). It reaches the same inboxes as before and is sent byte for byte on
+  every attempt. When the author's key cannot sign it, the DELETE answers 503 and the status stays; an imported status
+  whose uri or actor id can never be signed is deleted with an unsigned `Delete`, logged as
+  `kopje.delivery.delete_unsigned`. Private, direct and limited `Delete`s are unchanged, and `Delete`s recorded before
+  the upgrade stay unsigned. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
+
+- A status's `Delete` that another server relays (a booster or quoter forwarding the author's `Delete`) is now applied
+  as the author's own, with the same effects and forwards, when it carries the author's proof, verified against the
+  author's current key, and the status is a public or unlisted original Kopje holds as that author's, on the author's
+  origin (ID-1, #1506). So a status its author deletes leaves a Kopje server that holds it only through another
+  server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or of
+  an actor changes nothing. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
 
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters

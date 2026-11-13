@@ -703,11 +703,12 @@ type Relay = {
   revisions: InboxGate["revisions"];
 };
 
-// A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a stamp's Delete, signed
-// by a local sharer of the quoting status). The signer owns its key as any actor must (ID-1, judged on the signer).
-// With the actor's own proof, verified against a key the actor's current document embeds, it is applied as the actor's
-// Delete; without one it is handed on unproven, which can only have a stamp verified again. A proof that is present but
-// does not verify refuses it. Only the Store's relayedDelete applies either: never to an actor, a status or a boost.
+// A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a status's or a stamp's
+// Delete, signed by a local sharer of the status or the quoting status). The signer owns its key as any actor must
+// (ID-1, judged on the signer). With the actor's own proof, verified against a key the actor's current document embeds,
+// it is applied as the actor's Delete; without one it is handed on unproven, which can only have a stamp verified
+// again. A proof that is present but does not verify refuses it. Only the Store's relayedDelete applies either, and
+// decides again what it may apply to: never an actor or a boost, a status only when proven, public or unlisted.
 // The actor's document is stored under the actor's revision (the gate read it for the envelope's actor, not for the
 // signer, whose document is only checked here).
 async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay): Promise<InboxOutcome> {

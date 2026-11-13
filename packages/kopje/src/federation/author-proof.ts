@@ -3,10 +3,10 @@ import { Delete } from "@fedify/vocab";
 
 import { isTransientLoadError, loadFailureOf, RefusedFetchError } from "./loader";
 
-// The author's own proof on an activity another server relayed (ID-1's one exception, domain/inbox.ts relayedDelete):
-// a Linked Data Signature (RsaSignature2017, as Mastodon signs a stamp's Delete with always_sign) or an FEP-8b32
-// Object Integrity Proof. Fedify verifies both; Kopje only chooses the key and compares what was proven with what it
-// read:
+// The author's own proof on an activity another server relayed (ID-1's exception, domain/inbox.ts relayedDelete):
+// a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's Delete with always_sign) or an
+// FEP-8b32 Object Integrity Proof. Fedify verifies both; Kopje only chooses the key and compares what was proven with
+// what it read:
 //   - The key must be one the actor's own document embeds: the verifiers load keys through a loader that serves only
 //     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
 //     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
