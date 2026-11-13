@@ -30,7 +30,7 @@ async function witnessed(
   entries: Record<string, Baseline>,
   expected: (ids: string[]) => string[],
   statements: [string, ...SqlStorageValue[]][],
-  options: { statistics?: "singleton" | "analyzed"; keys?: number; family?: RegExp } = {},
+  options: { statistics?: "singleton" | "analyzed"; keys?: number; family?: RegExp; catching?: boolean } = {},
 ): Promise<Run> {
   const witness = new PlanWitness(entries, options.family);
   const ids = Object.keys(entries);
@@ -48,7 +48,17 @@ async function witnessed(
       statistics: options.statistics ?? "analyzed",
       expected: expected(ids),
       populations: { t: "SELECT count(*) AS n FROM t" },
-      run: (wrapped) => statements.map(([query, ...params]) => wrapped.exec(query, ...params).toArray()),
+      run: (wrapped) =>
+        statements.map(([query, ...params]) => {
+          try {
+            return wrapped.exec(query, ...params).toArray();
+          } catch (error) {
+            if (options.catching !== true) {
+              throw error;
+            }
+            return String(error);
+          }
+        }),
     });
   });
 }
@@ -66,6 +76,12 @@ describe("the baselines", () => {
   it("fail a baseline with both or neither rewrite form", async () => {
     const both = new PlanWitness({ [await statementId(SELECT)]: { sql: SELECT, text: PINNED, pins: (text) => text } });
     await expect(both.expectAudited()).rejects.toThrow(/expected false to be true/);
+    const neither = new PlanWitness({ [await statementId(SELECT)]: { sql: SELECT } });
+    await expect(neither.expectAudited()).rejects.toThrow(/expected false to be true/);
+  });
+
+  it("fail when there are none", async () => {
+    await expect(new PlanWitness({}).expectAudited()).rejects.toThrow(/expected 0 to be greater than 0/);
   });
 });
 
@@ -76,7 +92,9 @@ describe("the sequence", () => {
       ["DELETE FROM t WHERE k = ? AND id > 0", 4],
     ]);
     expectBeside("analyzed", run);
+    // main's DELETE ran first and was rolled back: the rewrite removed the same two rows again.
     expect(run.sides.map((side) => side.mine.removed.toSorted())).toEqual([[], ['{"id":"10"}', '{"id":"9"}']]);
+    expect(run.sides.map((side) => side.main.removed.toSorted())).toEqual([[], ['{"id":"10"}', '{"id":"9"}']]);
   });
 
   it("fails a rewrite other than the next expected", async () => {
@@ -106,6 +124,31 @@ describe("the sequence", () => {
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
   });
 
+  it("fails a variant of a baseline's rewrite after the expected ones (LIMIT 8 for LIMIT 1), with its family", async () => {
+    const id = await statementId(SELECT);
+    const variant = "SELECT id FROM t INDEXED BY t_k WHERE k = ? ORDER BY id LIMIT 1";
+    const statements: [string, ...SqlStorageValue[]][] = [
+      [PINNED, 3],
+      [PINNED, 4],
+      [variant, 5],
+    ];
+    const unguarded = await witnessed(await baselines(), () => [id, id], statements);
+    // Without its family the variant runs unpaired and the witness cannot see it.
+    expectBeside("analyzed", unguarded);
+    const guarded = await witnessed(await baselines(), () => [id, id], statements, { family: /^SELECT id FROM t / });
+    expect(guarded.sides.map((side) => side.fault)).toEqual([undefined, undefined, "no baseline's"]);
+    expect(() => expectBeside("analyzed", guarded)).toThrow(/main's statements, every one in order/);
+  });
+
+  it("fails a pair whose baseline threw, the flow catching it", async () => {
+    const id = await statementId(SELECT);
+    const entries = { [id]: { sql: "SELECT id FROM missing WHERE k = ? ORDER BY id", text: PINNED } };
+    const run = await witnessed(entries, () => [id], [[PINNED, 3]], { catching: true });
+    expect(run.result).toEqual([expect.stringContaining("no such table: missing")]);
+    expect(run.sides.map((side) => side.fault)).toEqual(["incomplete"]);
+    expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
+  });
+
   it("fails a statement of the family that is no baseline's rewrite", async () => {
     const run = await witnessed(await baselines(), () => [], [["SELECT id FROM t WHERE k > ? ORDER BY id", 3]], {
       family: /^SELECT id FROM t /,
@@ -121,6 +164,27 @@ describe("each pair", () => {
     const entries = { [id]: { sql: SELECT, text: "SELECT id FROM t WHERE k = ? ORDER BY id LIMIT 1" } };
     const run = await witnessed(entries, () => [id], [["SELECT id FROM t WHERE k = ? ORDER BY id LIMIT 1", 3]]);
     expect(() => expectBeside("analyzed", run)).toThrow(/LIMIT 1: expected/);
+  });
+
+  it("fails an UPDATE that writes another number of rows", async () => {
+    const id = await statementId("UPDATE t SET k = k WHERE k = ?");
+    const fewer = "UPDATE t SET k = k WHERE k = ? AND id % 2 = 0";
+    const entries = { [id]: { sql: "UPDATE t SET k = k WHERE k = ?", text: fewer } };
+    const run = await witnessed(entries, () => [id], [[fewer, 3]]);
+    // Each row updated, and its index entry.
+    expect([run.sides[0]!.main.written, run.sides[0]!.mine.written]).toEqual([4, 2]);
+    expect(() => expectBeside("analyzed", run)).toThrow(/AND id % 2 = 0: expected 2 to be 4/);
+  });
+
+  it("fails an INSERT that adds as many rows, but others (its write set by id)", async () => {
+    const insert = "INSERT INTO t (id, k) VALUES (?1 + 1000, 0)";
+    const other = "INSERT INTO t (id, k) VALUES (?1 + 2000, 0)";
+    const id = await statementId(insert);
+    const entries = { [id]: { sql: insert, text: other, writes: "SELECT CAST(id AS TEXT) AS id FROM t ORDER BY id" } };
+    const run = await witnessed(entries, () => [id], [[other, 1]]);
+    expect([run.sides[0]!.main.added, run.sides[0]!.mine.added]).toEqual([['{"id":"1001"}'], ['{"id":"2001"}']]);
+    expect(run.sides[0]!.mine.written).toBe(run.sides[0]!.main.written);
+    expect(() => expectBeside("analyzed", run)).toThrow(/\+ 2000, 0\): expected/);
   });
 
   it("fails a DELETE that removes as many rows, but others (its write set by id)", async () => {
@@ -163,6 +227,20 @@ describe("the growth", () => {
       perSide: { s1: { population: "p", perRun: 1 } },
       total: { atLeast: "gain", walks: 1 },
     });
+  });
+
+  it("fails sides that do not match statement for statement", () => {
+    const base = run({ p: 10 }, [5, 5]);
+    const grown = { ...run({ p: 20 }, [5, 5]), sides: [side("s0", 5), side("other", 5)] };
+    expect(() => expectGrowth(base, grown, { populations: ["p"], perSide: {} })).toThrow(
+      /expected \[ 's0', 'other' \]/,
+    );
+  });
+
+  it("fails a flow whose reads grow by less than a stated least", () => {
+    expect(() =>
+      expectGrowth(run({ p: 10 }, [5]), run({ p: 20 }, [7]), { populations: ["p"], total: { atLeast: 5 } }),
+    ).toThrow(/reads at least/);
   });
 
   it("fails a population held fixed", () => {

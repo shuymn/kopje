@@ -32,7 +32,8 @@ export type Baseline = {
 type Measure = { rows: number; written: number; result: SqlRow[]; removed: string[]; added: string[] };
 
 // One production statement: `id` the baseline it is the rewrite of; `fault` set when it did not pair (out of order,
-// past the sequence, or main's own statement unchanged), with nothing compared.
+// past the sequence, main's own statement unchanged, a statement of the family no baseline names) or did not finish
+// (`incomplete`: main's statement or the rewrite threw), with nothing compared.
 export type Side = { id: string; query: string; fault?: string; mine: Measure; main: Measure };
 
 export type Run = { expected: readonly string[]; sides: Side[]; populations: Record<string, number>; result: unknown };
@@ -96,6 +97,9 @@ export class PlanWitness {
           side.fault = kind.main ? "main's own" : next === undefined ? "past the sequence" : `not ${next}`;
           return real.exec(query, ...params);
         }
+        // Incomplete until both sides are measured: a throw on either (caught by the flow) leaves the pair faulty.
+        side.fault = "incomplete";
+        let measured = false;
         const baseline = this.baselines[kind.id]!;
         const rows = () =>
           baseline.writes === undefined
@@ -117,6 +121,7 @@ export class PlanWitness {
             side.main.rows = cursor.rowsRead;
             side.main.written = cursor.rowsWritten;
             changes(side.main);
+            measured = true;
             throw ROLLBACK;
           });
         } catch (error) {
@@ -131,6 +136,9 @@ export class PlanWitness {
             side.mine.rows += cursor.rowsRead;
             side.mine.written = cursor.rowsWritten;
             changes(side.mine);
+            if (measured) {
+              delete side.fault;
+            }
           },
           (result) => (side.mine.result = result),
         );

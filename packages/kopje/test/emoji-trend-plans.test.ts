@@ -33,98 +33,120 @@ const ANNOUNCEMENT = "550000000000000002";
 const OTHER_ANNOUNCEMENT = "550000000000000003";
 const AT = new Date(NOW).toISOString();
 
+// The statements the rewrites wrote, each of which must be a baseline's rewrite: a variant of one (another LIMIT, a
+// condition more) fails the case rather than running unpaired.
+const FAMILY = new RegExp(
+  [
+    /SELECT m\.file_token AS token, a\.uri/,
+    /SELECT a\.uri FROM media_attachments m/,
+    /FROM custom_emojis e INDEXED BY \S+\s+CROSS JOIN media_attachments m INDEXED BY \S+ ON m\.id = e\.id WHERE e\.id = \?$/,
+    /SELECT e\.id, e\.shortcode, e\.created_at, m\.content_type/,
+    /WHERE e\.id > \?1 ORDER BY e\.id/,
+    /visible_in_picker = 1 ORDER BY e\.shortcode/,
+    /FROM json_each\(\?1\) j\s+CROSS JOIN custom_emojis e/,
+    /min\(id\) AS first/,
+    /DELETE FROM announcement_reactions INDEXED BY/,
+    /FROM trend_statuses t\s+CROSS JOIN statuses s/,
+  ]
+    .map((pattern) => `(?:${pattern.source})`)
+    .join("|"),
+);
+
 // main's audited statements (origin/main as of #1468 group 7), by their audit identity, each with its rewrite: the
 // pins it adds (an index named, CROSS JOIN for JOIN), or, for the reaction groups (each group's first reaction read by
 // a correlated lookup), its form exactly. The delete's write: the ids of the reactions it removes.
-const WITNESS = new PlanWitness({
-  // completeMedia
-  "4ec0ae054c56140a": {
-    sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
-        " JOIN accounts a ON",
-      ),
+const WITNESS = new PlanWitness(
+  {
+    // completeMedia
+    "4ec0ae054c56140a": {
+      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
+          " JOIN accounts a ON",
+        ),
+    },
+    // completeEmoji's uploader
+    b2ba7bd7c87d186e: {
+      sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
+          " JOIN accounts a ON",
+        ),
+    },
+    // emojiById
+    "80b7909111a47fc3": {
+      sql: "SELECT e.id, e.shortcode, m.url, e.category, e.visible_in_picker, e.disabled, e.created_at FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
+          " JOIN media_attachments m ON",
+        ),
+    },
+    // localEmojiObjectOf
+    "8f2413f482d1c147": {
+      sql: "SELECT e.id, e.shortcode, e.created_at, m.content_type, m.url FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
+          " JOIN media_attachments m ON",
+        ),
+    },
+    // adminEmojis
+    "8d54bf10c382eb21": {
+      sql: "SELECT e.id, e.shortcode, m.url, e.category, e.visible_in_picker, e.disabled, e.created_at FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id > ?1 ORDER BY e.id LIMIT ?2",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
+          " JOIN media_attachments m ON",
+        ),
+    },
+    // customEmojis
+    "9ce2b4bc7b5d421c": {
+      sql: "SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled JOIN media_attachments m ON m.id = e.id WHERE e.disabled = 0 AND e.visible_in_picker = 1 ORDER BY e.shortcode LIMIT ?",
+      pins: (text) =>
+        text.replace(
+          " CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
+          " JOIN media_attachments m ON",
+        ),
+    },
+    // localEmojiSnapshot
+    "8a60356d41a087d5": {
+      sql: "SELECT j.key AS i, e.shortcode, m.url FROM json_each(?1) j CROSS JOIN custom_emojis e INDEXED BY custom_emojis_enabled ON e.shortcode = j.value AND e.disabled = 0 JOIN media_attachments m ON m.id = e.id",
+      pins: (text) =>
+        text.replace(
+          " CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
+          " JOIN media_attachments m ON",
+        ),
+    },
+    // reactionRows with a name
+    cf99c3ed84341d2c: {
+      sql: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 AND name = ?3 GROUP BY name) g JOIN announcement_reactions r ON r.id = g.first LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id ORDER BY g.first LIMIT 8",
+      text: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 AND name = ?3 GROUP BY name) g LEFT JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first) ORDER BY g.first LIMIT 8",
+    },
+    // reactionRows
+    "4b444c31c87c91ff": {
+      sql: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 GROUP BY name) g JOIN announcement_reactions r ON r.id = g.first LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id ORDER BY g.first LIMIT 8",
+      text: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 GROUP BY name) g LEFT JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first) ORDER BY g.first LIMIT 8",
+    },
+    // deleteAnnouncement's reactions
+    "8b964bbf6af22772": {
+      sql: "DELETE FROM announcement_reactions WHERE announcement_id = ?",
+      pins: (text) => text.replace(" INDEXED BY announcement_reactions_name", ""),
+      writes: "SELECT CAST(id AS TEXT) AS id FROM announcement_reactions ORDER BY id",
+    },
+    // adminStatusRows, a page
+    bae3ad0bc2fa20e3: {
+      sql: "SELECT t.status_id AS id, CASE WHEN length(CAST(s.url AS BLOB)) <= 4096 THEN s.url END AS url, s.account_id, CAST(substr(CAST(CASE WHEN length(CAST(a.username AS BLOB)) = length(a.username) AND a.username NOT GLOB '*[^A-Za-z0-9_.-]*' THEN CASE WHEN length(CAST(a.username AS BLOB)) <= 255 THEN a.username ELSE substr(a.username, 1, 255) END ELSE substr(a.username, 1, 42) END AS BLOB), 1, 255) AS TEXT) AS username, CAST(substr(CAST(a.domain AS BLOB), 1, 253) AS TEXT) AS domain, (CASE WHEN length(CAST(s.published_at AS BLOB)) = 24 AND substr(s.published_at, 12, 2) < '24' AND strftime('%Y-%m-%dT%H:%M:%fZ', s.published_at) = s.published_at THEN s.published_at END) AS published_at, CASE WHEN s.language IN (SELECT value FROM json_each(?1)) THEN s.language END AS language, t.score, (SELECT v.trendable FROM status_trend_reviews v WHERE v.status_id = t.status_id) AS status_review, (SELECT v.trendable FROM account_trend_reviews v WHERE v.account_id = t.account_id) AS account_review, CAST(substr(CAST(s.content AS BLOB), 1, 4000) AS TEXT) AS content FROM trend_statuses t CROSS JOIN statuses s ON s.id = t.status_id CROSS JOIN accounts a ON a.id = t.account_id WHERE 1 ORDER BY t.score DESC, t.status_id DESC LIMIT ?2 OFFSET ?3",
+      pins: (text) =>
+        text
+          .replace(" CROSS JOIN statuses s INDEXED BY sqlite_autoindex_statuses_1 ON", " CROSS JOIN statuses s ON")
+          .replace(" CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON", " CROSS JOIN accounts a ON"),
+    },
   },
-  // completeEmoji's uploader
-  b2ba7bd7c87d186e: {
-    sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
-        " JOIN accounts a ON",
-      ),
-  },
-  // emojiById
-  "80b7909111a47fc3": {
-    sql: "SELECT e.id, e.shortcode, m.url, e.category, e.visible_in_picker, e.disabled, e.created_at FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
-        " JOIN media_attachments m ON",
-      ),
-  },
-  // localEmojiObjectOf
-  "8f2413f482d1c147": {
-    sql: "SELECT e.id, e.shortcode, e.created_at, m.content_type, m.url FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
-        " JOIN media_attachments m ON",
-      ),
-  },
-  // adminEmojis
-  "8d54bf10c382eb21": {
-    sql: "SELECT e.id, e.shortcode, m.url, e.category, e.visible_in_picker, e.disabled, e.created_at FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id > ?1 ORDER BY e.id LIMIT ?2",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_custom_emojis_1 CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
-        " JOIN media_attachments m ON",
-      ),
-  },
-  // customEmojis
-  "9ce2b4bc7b5d421c": {
-    sql: "SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled JOIN media_attachments m ON m.id = e.id WHERE e.disabled = 0 AND e.visible_in_picker = 1 ORDER BY e.shortcode LIMIT ?",
-    pins: (text) =>
-      text.replace(
-        " CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
-        " JOIN media_attachments m ON",
-      ),
-  },
-  // localEmojiSnapshot
-  "8a60356d41a087d5": {
-    sql: "SELECT j.key AS i, e.shortcode, m.url FROM json_each(?1) j CROSS JOIN custom_emojis e INDEXED BY custom_emojis_enabled ON e.shortcode = j.value AND e.disabled = 0 JOIN media_attachments m ON m.id = e.id",
-    pins: (text) =>
-      text.replace(
-        " CROSS JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON",
-        " JOIN media_attachments m ON",
-      ),
-  },
-  // reactionRows with a name
-  cf99c3ed84341d2c: {
-    sql: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 AND name = ?3 GROUP BY name) g JOIN announcement_reactions r ON r.id = g.first LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id ORDER BY g.first LIMIT 8",
-    text: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 AND name = ?3 GROUP BY name) g LEFT JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first) ORDER BY g.first LIMIT 8",
-  },
-  // reactionRows
-  "4b444c31c87c91ff": {
-    sql: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 GROUP BY name) g JOIN announcement_reactions r ON r.id = g.first LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id ORDER BY g.first LIMIT 8",
-    text: "SELECT g.name, g.count, g.me, m.url FROM (SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 GROUP BY name) g LEFT JOIN media_attachments m INDEXED BY sqlite_autoindex_media_attachments_1 ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first) ORDER BY g.first LIMIT 8",
-  },
-  // deleteAnnouncement's reactions
-  "8b964bbf6af22772": {
-    sql: "DELETE FROM announcement_reactions WHERE announcement_id = ?",
-    pins: (text) => text.replace(" INDEXED BY announcement_reactions_name", ""),
-    writes: "SELECT CAST(id AS TEXT) AS id FROM announcement_reactions ORDER BY id",
-  },
-  // adminStatusRows, a page
-  bae3ad0bc2fa20e3: {
-    sql: "SELECT t.status_id AS id, CASE WHEN length(CAST(s.url AS BLOB)) <= 4096 THEN s.url END AS url, s.account_id, CAST(substr(CAST(CASE WHEN length(CAST(a.username AS BLOB)) = length(a.username) AND a.username NOT GLOB '*[^A-Za-z0-9_.-]*' THEN CASE WHEN length(CAST(a.username AS BLOB)) <= 255 THEN a.username ELSE substr(a.username, 1, 255) END ELSE substr(a.username, 1, 42) END AS BLOB), 1, 255) AS TEXT) AS username, CAST(substr(CAST(a.domain AS BLOB), 1, 253) AS TEXT) AS domain, (CASE WHEN length(CAST(s.published_at AS BLOB)) = 24 AND substr(s.published_at, 12, 2) < '24' AND strftime('%Y-%m-%dT%H:%M:%fZ', s.published_at) = s.published_at THEN s.published_at END) AS published_at, CASE WHEN s.language IN (SELECT value FROM json_each(?1)) THEN s.language END AS language, t.score, (SELECT v.trendable FROM status_trend_reviews v WHERE v.status_id = t.status_id) AS status_review, (SELECT v.trendable FROM account_trend_reviews v WHERE v.account_id = t.account_id) AS account_review, CAST(substr(CAST(s.content AS BLOB), 1, 4000) AS TEXT) AS content FROM trend_statuses t CROSS JOIN statuses s ON s.id = t.status_id CROSS JOIN accounts a ON a.id = t.account_id WHERE 1 ORDER BY t.score DESC, t.status_id DESC LIMIT ?2 OFFSET ?3",
-    pins: (text) =>
-      text
-        .replace(" CROSS JOIN statuses s INDEXED BY sqlite_autoindex_statuses_1 ON", " CROSS JOIN statuses s ON")
-        .replace(" CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON", " CROSS JOIN accounts a ON"),
-  },
-});
+  FAMILY,
+);
 
 const FEW = 200;
 const MANY = 400;
