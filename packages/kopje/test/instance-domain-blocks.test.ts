@@ -18,7 +18,7 @@ import { bearer, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain, setSeverity, unblockDomain } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
-import { BUILD, deferred } from "./helpers";
+import { BUILD, deferred, drainDeliveries } from "./helpers";
 import { deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { adminEntity, uriOf, world } from "./remote-suspension-helpers";
@@ -287,28 +287,12 @@ const deliveries = (store: StoreStub) =>
   );
 
 // Claims until nothing is due; the activity type and inbox of each row sent, in order.
-async function drain(store: StoreStub): Promise<[string, string][]> {
-  const sent: [string, string][] = [];
-  for (let round = 0; round < 1_000; round++) {
-    const leaseToken = `drain-${round}`;
-    const claimed = await store.claimDeliveries(BUILD, { now: NOW, leaseToken });
-    for (const delivery of claimed.deliveries) {
-      const confirmation = await store.confirmDelivery(BUILD, { id: delivery.id, leaseToken, now: NOW });
-      if (confirmation.status === "send") {
-        sent.push([(JSON.parse(confirmation.body) as { type: string }).type, delivery.inbox]);
-        await store.completeDelivery(BUILD, {
-          id: delivery.id,
-          leaseToken,
-          now: NOW,
-          outcome: { kind: "delivered", status: 202 },
-        });
-      }
-    }
-    if (claimed.deliveries.length === 0 && claimed.nextDueAt === null) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+function drain(store: StoreStub): Promise<[string, string][]> {
+  return drainDeliveries(
+    store,
+    ({ inbox, body }): [string, string] => [(JSON.parse(body) as { type: string }).type, inbox],
+    { now: NOW, until: "all" },
+  );
 }
 
 describe("deliveries to a blocked domain (VIS-30)", () => {

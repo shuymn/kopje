@@ -7,7 +7,7 @@ import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, runStoreJobs } from "./helpers";
+import { BUILD, runStoreJobs, drainDeliveries } from "./helpers";
 import { LOCAL } from "./inbox-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { runs } from "./policy-world";
@@ -1608,28 +1608,12 @@ describe("status deletes: the cap and the TTL", () => {
 });
 
 // Every delivery Kopje has, claimed, confirmed and completed until none is left: the ids of the bodies it sent.
-async function deliverAll(w: World, prefix: string): Promise<string[]> {
-  const sent: string[] = [];
-  for (let round = 0; round < 200; round++) {
-    const token = `${prefix}-${round}`;
-    const claimed = await w.store.claimDeliveries(BUILD, { now: w.clock, leaseToken: token });
-    for (const d of claimed.deliveries) {
-      const confirmation = await w.store.confirmDelivery(BUILD, { id: d.id, leaseToken: token, now: w.clock });
-      if (confirmation.status === "send") {
-        sent.push((JSON.parse(confirmation.body) as { id: string }).id);
-        await w.store.completeDelivery(BUILD, {
-          id: d.id,
-          leaseToken: token,
-          now: w.clock,
-          outcome: { kind: "delivered", status: 202 },
-        });
-      }
-    }
-    if ((await sql(w.store, "SELECT 1 FROM deliveries UNION ALL SELECT 1 FROM outbound_targets")).length === 0) {
-      return sent;
-    }
-  }
-  throw new Error("deliveries left after 200 rounds");
+function deliverAll(w: World): Promise<string[]> {
+  return drainDeliveries(w.store, ({ body }) => (JSON.parse(body) as { id: string }).id, {
+    now: w.clock,
+    until: async () =>
+      (await sql(w.store, "SELECT 1 FROM deliveries UNION ALL SELECT 1 FROM outbound_targets")).length === 0,
+  });
 }
 
 // R's s1 stored, L's boost of it with receipts beyond the staging budget (STAGING_READ): the boost's row.
@@ -1672,7 +1656,7 @@ describe("status deletes: the production cleanup", () => {
     expect((await undos()).map((u) => u.staged)).toEqual([null]);
     expect(await sql(w.store, "SELECT withdrawn FROM statuses WHERE id = ?", boost.id)).toEqual([{ withdrawn: 1 }]);
     // Kopje delivers the Undo everywhere.
-    const undoIds = new Set((await deliverAll(w, "cleanup")).filter((s) => s.endsWith("/undo")));
+    const undoIds = new Set((await deliverAll(w)).filter((s) => s.endsWith("/undo")));
     expect(undoIds.size).toBe(1);
     // R's Delete again, then the cleanup to its end.
     await storeReceive(w.store, R, activityOf(R, remove), NOW);
@@ -1708,7 +1692,7 @@ describe("status deletes: the production cleanup", () => {
       await runStoreJobs(w.store, BUILD, { now: NOW });
     }
     expect((await undos()).map((u) => u.staged)).toEqual([null]);
-    const undoIds = new Set((await deliverAll(w, "unboost")).filter((s) => s.endsWith("/undo")));
+    const undoIds = new Set((await deliverAll(w)).filter((s) => s.endsWith("/undo")));
     expect(undoIds.size).toBe(1);
     // Delivered: its intent is gone, while the boost's row stays, withdrawn.
     expect(await undos()).toEqual([]);
@@ -1723,7 +1707,7 @@ describe("status deletes: the production cleanup", () => {
       }
     }
     expect(await undos()).toEqual([]);
-    expect(await deliverAll(w, "removal")).toEqual([]);
+    expect(await deliverAll(w)).toEqual([]);
     expect(await sql(w.store, "SELECT 1 FROM statuses")).toEqual([]);
   }, 120_000);
 });
