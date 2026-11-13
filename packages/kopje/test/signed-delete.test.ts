@@ -13,7 +13,7 @@ import { bearer, settle, sql } from "./api-helpers";
 import { harness, NOW, offline } from "./app-helpers";
 import { deleteSignature, remoteAccountsAt, retractionInboxes, signedActivity } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
-import { BUILD, claimAndSettle, migratedStore } from "./helpers";
+import { BUILD, migratedStore, deferred, drainDeliveries, type SentRow } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -28,7 +28,6 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
-import { deferred } from "./quote-helpers";
 
 // VIS-3, ID-1, RES-6: the Delete of a local public or unlisted original carries its author's RsaSignature2017
 // signature (statuses.ts prepareDelete and deleteStatus, mastodon/statuses.ts deleteStatus, federation/ld-sign.ts),
@@ -91,20 +90,8 @@ async function counts(store: StoreStub, statusId: string) {
 }
 
 // Every body the delivery rounds send, by inbox, as confirmDelivery gives it, each row completed with 202.
-async function sent(store: StoreStub): Promise<{ inbox: string; body: string }[]> {
-  const all: { inbox: string; body: string }[] = [];
-  for (let round = 0; round < 20; round++) {
-    const { claim, sent: bodies } = await claimAndSettle(store, {
-      now: NOW,
-      leaseToken: `lease-${round}`,
-      outcome: { kind: "delivered", status: 202 },
-    });
-    all.push(...bodies);
-    if (claim.deliveries.length === 0) {
-      return all;
-    }
-  }
-  throw new Error("the deliveries did not settle");
+function sent(store: StoreStub): Promise<SentRow[]> {
+  return drainDeliveries(store, (row) => row, { now: NOW, until: "due", rounds: 20 });
 }
 
 async function sentDeletes(store: StoreStub) {

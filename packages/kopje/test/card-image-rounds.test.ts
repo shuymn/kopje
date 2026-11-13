@@ -21,7 +21,7 @@ import { CARD_IMAGE_BODY_LIMIT } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { cardWorld, type CardWorld, pageWith } from "./card-image-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { localRgba } from "./images-binding";
 import { r2Keys } from "./media-helpers";
 import { encodeWebp } from "./webp-fixtures";
@@ -33,14 +33,6 @@ const SHARE = { IMAGES_CARD_MONTHLY_TRANSFORMS: "1000" };
 const IMAGE = "https://cdn.example/a.webp";
 const SITE = "https://site.example/a";
 const iso = (ms: number) => new Date(ms).toISOString();
-
-function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 const webp = (bytes: Uint8Array) => () => new Response(bytes, { headers: { "content-type": "image/webp" } });
 

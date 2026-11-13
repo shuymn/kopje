@@ -19,7 +19,7 @@ import {
   retractionInboxes,
   seedStagingRetractions,
 } from "./delete-job-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -34,7 +34,6 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
-import { deferred } from "./quote-helpers";
 import { type PlannedStatement, plannedSql, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
 

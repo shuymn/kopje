@@ -10,7 +10,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { settleDeliveries, sql } from "./api-helpers";
 import { countingStore, harness, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { LOCAL, mastodonActor, MASTODON, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -30,7 +30,7 @@ import {
   undo,
   update,
 } from "./inbox-status-helpers";
-import { contexts, deferred, deliveryDeps, quoting } from "./quote-helpers";
+import { contexts, deliveryDeps, quoting } from "./quote-helpers";
 import { outbound } from "./status-helpers";
 
 // Being quoted (VIS-28): remote servers' QuoteRequests for local

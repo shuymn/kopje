@@ -25,8 +25,8 @@ import { NOW } from "./app-helpers";
 import { deleteSignature } from "./delete-job-helpers";
 import { blockDomain, blockDomainIn } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
-import { BUILD, freshStore, runStoreJobs, testKernel } from "./helpers";
-import { deferred, deliveryDeps, gatedHost } from "./quote-helpers";
+import { BUILD, freshStore, runStoreJobs, testKernel, deferred, drainDeliveries } from "./helpers";
+import { deliveryDeps, gatedHost } from "./quote-helpers";
 import { plannedRun, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import { community, post, remoteAccount, remoteFollows, type User } from "./status-helpers";
 
@@ -78,29 +78,12 @@ async function purge(store: StoreStub, accountId: string): Promise<void> {
 }
 
 // Claims until nothing is due; the activity type and inbox of each row claimed (and completed), in order.
-async function drain(store: StoreStub): Promise<[string, string][]> {
-  const sent: [string, string][] = [];
-  for (let round = 0; round < 20; round++) {
-    const leaseToken = `drain-${round}`;
-    const claimed = await claim(store, leaseToken);
-    for (const delivery of claimed.deliveries) {
-      const confirmation = await store.confirmDelivery(BUILD, { id: delivery.id, leaseToken, now: NOW });
-      if (confirmation.status !== "send") {
-        throw new Error(`delivery ${delivery.id} claimed, then ${confirmation.status} at confirmation`);
-      }
-      sent.push([(JSON.parse(confirmation.body) as { type: string }).type, delivery.inbox]);
-      await store.completeDelivery(BUILD, {
-        id: delivery.id,
-        leaseToken,
-        now: NOW,
-        outcome: { kind: "delivered", status: 202 },
-      });
-    }
-    if (claimed.deliveries.length === 0 && claimed.nextDueAt === null) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+function drain(store: StoreStub): Promise<[string, string][]> {
+  return drainDeliveries(
+    store,
+    ({ inbox, body }): [string, string] => [(JSON.parse(body) as { type: string }).type, inbox],
+    { now: NOW, until: "all", strict: true, rounds: 20 },
+  );
 }
 
 const sorted = (ids: string[]) => JSON.stringify([...ids].toSorted());

@@ -19,7 +19,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain, unblockDomain } from "./domain-block-helpers";
-import { BUILD, claimAndSettle } from "./helpers";
+import { BUILD, claimAndSettle, drainDeliveries } from "./helpers";
 import { writtenBy } from "./inbox-store-helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { act, receive, unsuspend, uriOf, world, type World } from "./remote-suspension-helpers";
@@ -43,23 +43,15 @@ afterEach(() => {
 type Sent = { type: string; id: string; inbox: string; body: string };
 
 // Claims at `now` until nothing is due then; each row sent, in order, with its body.
-async function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
-  const sent: Sent[] = [];
-  for (let round = 0; round < 200; round++) {
-    const { claim, sent: rows } = await claimAndSettle(store, {
-      now,
-      leaseToken: `drain-${now}-${round}`,
-      outcome: { kind: "delivered", status: 202 },
-    });
-    for (const { inbox, body } of rows) {
+function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
+  return drainDeliveries(
+    store,
+    ({ inbox, body }) => {
       const parsed = JSON.parse(body) as { type: string; id: string };
-      sent.push({ type: parsed.type, id: parsed.id, inbox, body });
-    }
-    if (claim.deliveries.length === 0 && (claim.nextDueAt === null || claim.nextDueAt > now)) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+      return { type: parsed.type, id: parsed.id, inbox, body };
+    },
+    { now, until: "due", rounds: 200 },
+  );
 }
 
 type HoldRow = {

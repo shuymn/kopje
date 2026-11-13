@@ -38,7 +38,7 @@ import { countingStore, harness, NOW } from "./app-helpers";
 import { mastodonDelete, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
 import { batch, batches, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
-import { BUILD, runStoreJobs } from "./helpers";
+import { BUILD, runStoreJobs, deferred } from "./helpers";
 import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -57,7 +57,7 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
-import { contexts, deferred, deliveryDeps, quoteAccept } from "./quote-helpers";
+import { contexts, deliveryDeps, quoteAccept } from "./quote-helpers";
 import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
 

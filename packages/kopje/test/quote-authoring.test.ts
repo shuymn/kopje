@@ -11,7 +11,7 @@ import { deliveryRound } from "../src/jobs/deliver";
 import { publishScheduled } from "../src/jobs/scheduled";
 import { settle, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, runStoreJobs } from "./helpers";
+import { BUILD, runStoreJobs, deferred } from "./helpers";
 import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -29,7 +29,7 @@ import {
   type Setup,
   update,
 } from "./inbox-status-helpers";
-import { contexts, deferred, deliveryDeps, quoteAccept as accept, quoteReject as reject } from "./quote-helpers";
+import { contexts, deliveryDeps, quoteAccept as accept, quoteReject as reject } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { outbound } from "./status-helpers";
 

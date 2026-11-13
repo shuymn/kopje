@@ -1,5 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
+import { expect } from "vitest";
 
+import type { StoreStub } from "../src/platform/store-client";
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { type ApiHarness, type App, form, login, registerApp, sql } from "./api-helpers";
 
@@ -51,6 +53,15 @@ export async function rowsRead<I>(
   operation: StoreOperation<I, unknown>,
   input: I,
 ): Promise<number> {
+  return (await measuredRead(h, operation, input)).rows;
+}
+
+// Runs a read operation as rowsRead does: its output and the rows its statements read.
+export async function measuredRead<I, O>(
+  h: Pick<ApiHarness, "store">,
+  operation: StoreOperation<I, O>,
+  input: I,
+): Promise<{ output: O; rows: number }> {
   return runInDurableObject(h.store, (_instance, state) => {
     let read = 0;
     const real = state.storage.sql;
@@ -60,9 +71,50 @@ export async function rowsRead<I>(
         return watchedCursor(cursor, () => (read += cursor.rowsRead));
       },
     } as unknown as SqlStorage;
-    operation.run(counting, input, (fn) => state.storage.transactionSync(fn));
-    return read;
+    const output = operation.run(counting, input, (fn) => state.storage.transactionSync(fn));
+    return { output, rows: read };
   });
+}
+
+// A read of a growth witness (RES-7): the operation, its input (`manyInput` in the grown Store, where its ids differ)
+// and what it must answer in each Store, so that a read that answered nothing (a refused credential, an empty page)
+// cannot pass as flat. `extra` is rows it may add past the allowance, which the caller names the reason for.
+export type GrownRead = {
+  name: string;
+  operation: StoreOperation<never, unknown>;
+  input: unknown;
+  manyInput?: unknown;
+  shows: (output: unknown, store: "few" | "many") => boolean;
+  extra?: number;
+};
+
+// Runs each read once in the `few` Store and once in the `many` one, which differ only in what the reads should not
+// walk. Every output must satisfy its read's `shows` and, with `same`, project the same in both Stores. The answer is
+// each read whose rows grew by more than `allowance` (and its `extra`), as "name: few -> many": a witness of flat reads
+// expects none.
+export async function grownReads(
+  few: StoreStub,
+  many: StoreStub,
+  reads: readonly GrownRead[],
+  options: { allowance: number; same?: (output: unknown) => unknown },
+): Promise<string[]> {
+  const grown: string[] = [];
+  for (const read of reads) {
+    const a = await measuredRead({ store: few }, read.operation, read.input as never);
+    const b = await measuredRead(
+      { store: many },
+      read.operation,
+      ("manyInput" in read ? read.manyInput : read.input) as never,
+    );
+    expect([read.name, read.shows(a.output, "few"), read.shows(b.output, "many")]).toEqual([read.name, true, true]);
+    if (options.same !== undefined) {
+      expect([read.name, options.same(b.output)]).toEqual([read.name, options.same(a.output)]);
+    }
+    if (b.rows > a.rows + options.allowance + (read.extra ?? 0)) {
+      grown.push(`${read.name}: ${a.rows} -> ${b.rows}`);
+    }
+  }
+  return grown;
 }
 
 export async function remoteAccounts(

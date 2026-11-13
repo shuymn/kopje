@@ -2,13 +2,6 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect } from "vitest";
 
-import { sql } from "./api-helpers";
-import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
-import { BUILD } from "./helpers";
-import { MASTODON } from "./inbox-helpers";
-import { setup } from "./inbox-status-helpers";
-import { bytes } from "./media-helpers";
-export { deferred } from "./quote-helpers";
 import { Db } from "../src/db/sql";
 import {
   claimRemoteMedia,
@@ -23,6 +16,12 @@ import {
 } from "../src/domain/remote-media";
 import { type RemoteMediaDeps, remoteMediaRound } from "../src/federation/remote-media";
 import type { StoreOperation } from "../src/platform/store-kernel";
+import { sql } from "./api-helpers";
+import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
+import { BUILD } from "./helpers";
+import { MASTODON } from "./inbox-helpers";
+import { setup } from "./inbox-status-helpers";
+import { bytes } from "./media-helpers";
 
 // A federation harness for the cache of remote media (domain/remote-media.ts, federation/remote-media.ts): remote
 // accounts seeded with profile image URLs, the files those URLs serve, the Store's operations run in one transaction,

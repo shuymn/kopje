@@ -9,12 +9,11 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, heldStore, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY } from "./federation-helpers";
-import { completeSetup, migratedStore } from "./helpers";
+import { completeSetup, migratedStore, deferred } from "./helpers";
 import { mastodonActor, RemoteWeb, signedInit } from "./inbox-helpers";
 import { ALICE, create, followed, mastodonNote, remove, setup, statusRow } from "./inbox-status-helpers";
 import { failItem } from "./job-item-helpers";
 import { QueueSim } from "./queue-sim";
-import { deferred } from "./quote-helpers";
 import { act, world } from "./remote-suspension-helpers";
 import { remoteAccount } from "./status-helpers";
 

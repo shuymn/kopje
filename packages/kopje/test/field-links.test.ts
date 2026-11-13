@@ -45,7 +45,7 @@ import {
 import { apiHarness, bearer, json, login, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { observedSql } from "./read-helpers";
 
 // Account fields[].verified_at of local accounts (domain/field-links.ts, federation/field-links.ts): Mastodon's
@@ -56,14 +56,6 @@ const SITE = "https://site.example/";
 const HTML = { "content-type": "text/html; charset=utf-8" };
 
 type Route = (request: Request) => Response | Promise<Response>;
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 const page =
   (body: string, headers: Record<string, string> = HTML) =>

@@ -14,7 +14,7 @@ import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { answer, maximalAccounts } from "./budget-helpers";
 import { migratedStore } from "./helpers";
-import { observedSql, rowsRead, watchedCursor } from "./read-helpers";
+import { type GrownRead, grownReads, measuredRead, observedSql, watchedCursor } from "./read-helpers";
 import { community, follow } from "./status-helpers";
 import { numbers, remoteAccountsSql, SUGGESTION_BASE } from "./suggestion-fixtures";
 
@@ -104,10 +104,23 @@ function graph(older: number, sources: number, perSource: number, where: { domai
   };
 }
 
+// The ids suggestions answered, or none for a refusal.
+function suggested(output: unknown): string[] {
+  const answer = output as { status: string; value?: { id: string }[] };
+  return answer.status === "ok" ? (answer.value ?? []).map((a) => a.id) : [];
+}
+
+// The suggestions read of a growth witness, with what it must show.
+const suggesting = (name: string, shows: GrownRead["shows"]): GrownRead => ({
+  name,
+  operation: suggestions,
+  input: INPUT,
+  shows,
+});
+
 async function measure(stub: StoreStub): Promise<{ rows: number; shown: string[] }> {
-  const output = await runInDurableObject(stub, (_instance, state) => suggestions.run(state.storage.sql, INPUT));
-  const shown = output.status === "ok" ? (output.value as { id: string }[]).map((a) => a.id) : [];
-  return { rows: await rowsRead({ store: stub }, suggestions, INPUT), shown };
+  const { output, rows } = await measuredRead({ store: stub }, suggestions, INPUT);
+  return { rows, shown: suggested(output) };
 }
 
 const rowsOf = async (build: (run: Sql) => void) => measure(await store(build));
@@ -192,8 +205,12 @@ describe("suggestions read rows within their windows (RES-7)", () => {
       ],
     ];
     for (const [name, few, many] of grows) {
-      const [a, b] = [await rowsOf(few), await rowsOf(many)];
-      expect([name, b.rows > a.rows, b.shown.length]).toEqual([name, true, SUGGESTIONS_KEPT]);
+      const read = suggesting(name, (output, at) =>
+        at === "few" ? suggested(output).length > 0 : suggested(output).length === SUGGESTIONS_KEPT,
+      );
+      // With no allowance, a read is listed when it reads any row more.
+      const grown = await grownReads(await store(few), await store(many), [read], { allowance: 0 });
+      expect([name, grown.length]).toEqual([name, 1]);
     }
   }, 300_000);
 
@@ -220,11 +237,9 @@ describe("suggestions read rows within their windows (RES-7)", () => {
     ];
     const grown: string[] = [];
     for (const [name, few, many, lookup] of flat) {
-      const [a, b] = [await rowsOf(few), await rowsOf(many)];
-      expect([name, b.shown.length]).toEqual([name, a.shown.length]);
-      if (b.rows > a.rows + lookup + ALLOWANCE) {
-        grown.push(`${name}: ${a.rows} -> ${b.rows}`);
-      }
+      const read = { ...suggesting(name, (output) => suggested(output).length > 0), extra: lookup };
+      const same = (output: unknown) => suggested(output).length;
+      grown.push(...(await grownReads(await store(few), await store(many), [read], { allowance: ALLOWANCE, same })));
     }
     expect(grown).toEqual([]);
   }, 600_000);
