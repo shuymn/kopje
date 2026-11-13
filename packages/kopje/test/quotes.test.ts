@@ -1024,6 +1024,15 @@ describe("relayed revocations (ID-1’s exception)", () => {
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
+  it("refuses a proof whose signed graph is not a Delete, a `type` added under a context that drops it", async () => {
+    const { t, carol, dan, stamp, quote } = await relayWorld();
+    const { type: _type, ...untyped } = deletion(carol, stamp);
+    const signed = await ldSigned(untyped, carol);
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+  });
+
   it("refuses an author proof on any other activity, and applies one on a status as the author's Delete", async () => {
     const { t, carol, dan, target, quote } = await relayWorld();
     const boost = await ldSigned({ ...deletion(carol, target.id), type: "Announce" }, carol);

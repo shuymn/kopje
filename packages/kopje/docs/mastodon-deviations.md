@@ -768,10 +768,11 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   author's own only when it carries the author's proof, verified (an RsaSignature2017 signature or an FEP-8b32 proof),
   and only to a public or unlisted original Kopje holds as that author's, on the author's origin (ID-1). Mastodon
   verifies a relayed `Delete`'s RsaSignature2017 signature by its author (`process_collection_service.rb`
-  `verify_account!`), then applies and forwards it as the author's own (`activity/delete.rb` `delete_status`) to a
-  status of any visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion
-  (`delete_person`). Kopje changes no status for a relay without a proof, nor for a private, direct or limited status
-  or a boost, and refuses a relayed `Delete` of an actor.
+  `verify_account!`) and applies it as the author's own (`activity/delete.rb` `delete_status`) to a status of any
+  visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion (`delete_person`);
+  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Kopje changes
+  no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
+  `Delete` of an actor.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 

@@ -235,6 +235,8 @@ describe("a relayed status Delete that does not meet every condition changes not
     ["a forged signature (another key under the author's key id)", "forged"],
     ["a proof by the relaying server's key", "relayer"],
     ["a proof covering another status", "tampered"],
+    ["a proof covering another activity id, the object unchanged", "id"],
+    ["a proof whose creator key is on another host than the author", "host"],
   ])("refuses %s", async (_name, kind) => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
@@ -244,11 +246,29 @@ describe("a relayed status Delete that does not meet every condition changes not
       body = await ldSigned(deletion(bob, status.uri), { ...bob, privateKey: dan.privateKey });
     } else if (kind === "relayer") {
       body = await ldSigned(deletion(bob, status.uri), dan);
+    } else if (kind === "id") {
+      const signed = await ldSigned(deletion(bob, status.uri), bob);
+      body = { ...signed, id: `${bob.uri}#delete-${nextId()}` };
+    } else if (kind === "host") {
+      body = await ldSigned(deletion(bob, status.uri), { ...bob, keyId: `${RELAY}/users/bob#main-key` });
     } else {
       const signed = await ldSigned(deletion(bob, other.uri), bob);
       body = { ...signed, object: { id: status.uri, type: "Tombstone", atomUri: status.uri } };
     }
     expect(await t.post(dan, body)).toBe(401);
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  });
+
+  it("requires the signed graph to assert Delete", async () => {
+    const { t, bob, dan } = await world();
+    const status = await note(t, bob);
+    // bob signed a document of no type; the relay adds `type: "Delete"` under a context that maps `type` to nothing, so
+    // the graph the signature covers still has no type.
+    const unsigned = deletion(bob, status.uri, "bare");
+    delete unsigned.type;
+    const signed = await ldSigned(unsigned, bob);
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
     expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
   });
 
@@ -292,13 +312,20 @@ describe("a relayed status Delete that does not meet every condition changes not
     expect(await stored(t.store, foreign)).toEqual({ visibility: "public", withdrawn: 0 });
   });
 
-  it("refuses a proven Delete of a private or direct status", async () => {
+  it("refuses a proven Delete of a private, direct or limited status", async () => {
     const { t, bob, dan } = await world();
     const priv = await note(t, bob, FOLLOWERS_ONLY(bob));
-    const direct = await note(t, bob, { to: [ALICE_URI], cc: [] });
-    for (const status of [priv, direct]) {
+    // Addressed to alice and mentioning her: direct; addressed to her without the mention: limited.
+    const mention = { type: "Mention", href: ALICE_URI, name: "@alice@kopje.test" };
+    const direct = await note(t, bob, { to: [ALICE_URI], cc: [], tag: [mention] });
+    const limited = await note(t, bob, { to: [ALICE_URI], cc: [], tag: [] });
+    for (const [status, visibility] of [
+      [priv, "private"],
+      [direct, "direct"],
+      [limited, "limited"],
+    ] as const) {
       const before = await stored(t.store, status.uri);
-      expect(before).toMatchObject({ withdrawn: 0 });
+      expect(before, visibility).toEqual({ visibility, withdrawn: 0 });
       expect(await t.post(dan, await ldSigned(deletion(bob, status.uri), bob))).toBe(202);
       expect(await stored(t.store, status.uri)).toEqual(before);
     }

@@ -1,5 +1,5 @@
 import { type DocumentLoader, verifyJsonLd, verifyObject } from "@fedify/fedify";
-import { Delete } from "@fedify/vocab";
+import { Delete, Object as ApObject } from "@fedify/vocab";
 
 import { isTransientLoadError, loadFailureOf, RefusedFetchError } from "./loader";
 
@@ -11,7 +11,9 @@ import { isTransientLoadError, loadFailureOf, RefusedFetchError } from "./loader
 //     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
 //     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
 //   - The proven activity, as Fedify parses it (JSON-LD expanded), must be a Delete with exactly the id, actor and
-//     object Kopje read from the compacted JSON. Fedify's LD verification refuses @graph, @included and @reverse, and
+//     object Kopje read from the compacted JSON. It is parsed as an untyped object, which Fedify makes a Delete only
+//     when the expanded graph's node carries the as:Delete type: Delete.fromJsonLd accepts a node with no type at all,
+//     so a `type` the signed graph lacks (a context mapping it to null) never passes for one. Fedify's LD verification refuses @graph, @included and @reverse, and
 //     their aliases, before and after compacting the document (the class of bypass Mastodon fixed in 4.5.10,
 //     GHSA-53m7-2wrh-q839), and verifies the compacted form it parses; the comparison keeps any other difference
 //     between the signed graph and the JSON from reaching the Store.
@@ -61,8 +63,8 @@ export async function verifyAuthorProof(
       ? Promise.resolve({ document: actorDocument, documentUrl: expected.actor, contextUrl: null })
       : Promise.reject(new RefusedFetchError(new URL(url), "Not the actor document"));
   const options = { documentLoader, contextLoader };
-  const matches = (proven: Delete | null) =>
-    proven !== null &&
+  const matches = (proven: ApObject | null): boolean =>
+    proven instanceof Delete &&
     proven.id?.href === expected.id &&
     proven.actorIds.length === 1 &&
     proven.actorIds[0]?.href === expected.actor &&
@@ -82,14 +84,16 @@ export async function verifyAuthorProof(
   if (
     json.proof !== undefined &&
     json.proof !== null &&
-    (await attempt(async () => matches(await verifyObject(Delete, json, options))))
+    (await attempt(async () => matches(await verifyObject(ApObject, json, options))))
   ) {
     return true;
   }
   if (
     json.signature !== undefined &&
     json.signature !== null &&
-    (await attempt(async () => (await verifyJsonLd(json, options)) && matches(await Delete.fromJsonLd(json, options))))
+    (await attempt(
+      async () => (await verifyJsonLd(json, options)) && matches(await ApObject.fromJsonLd(json, options)),
+    ))
   ) {
     return true;
   }
