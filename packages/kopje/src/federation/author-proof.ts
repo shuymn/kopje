@@ -2,16 +2,19 @@ import { type DocumentLoader, preloadedContexts, verifyJsonLd, verifyObject } fr
 import { Delete } from "@fedify/vocab";
 
 import { RefusedFetchError } from "./loader";
+import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
 
 // The author's own proof on a Delete (ID-1's exception, domain/inbox.ts relayedDelete, and the forward of an author's
 // own Delete, recordForwards): a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's
 // Delete with always_sign) or an FEP-8b32 Object Integrity Proof, which Fedify verifies. A body is considered only in
-// one of the closed forms below (PROFILES), taken from its sender's source: its @context deep-equal to the profile's,
-// every URL in it preloaded, and every key at every level one the sender writes. In that form the body's JSON-LD
-// meaning is its literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop, alias or
-// redefine a key (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification and
-// parsing. Any other form, a relayed Delete from Misskey or from a Mastodon release with another context included, is
-// refused as without a proof (docs/mastodon-deviations.md).
+// one of the closed forms below (PROFILES), taken from its sender's source: its @context deep-equal to the profile's
+// (or, as Mastodon forwards it, activitystreams, security/v1 and an object of MASTODON_CONTEXT_TERMS alone), every URL
+// in it preloaded, and every key at every level one the sender writes. In that form the body's JSON-LD meaning is its
+// literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop, alias or redefine a key
+// (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification and parsing. Any other
+// form, a relayed Delete from Misskey or from a Mastodon release with another context included, is answered as a proof
+// that does not verify (docs/mastodon-deviations.md): relayed, 401 (inbound.ts relayed, proof-invalid); the author's
+// own Delete applies as unproven and forwards nothing (inbound.ts proveDelete).
 //   - The key must be one the actor's own document embeds: the verifiers load keys through a loader that serves only
 //     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
 //     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
@@ -31,7 +34,8 @@ type Profile = {
   // The proof: an RsaSignature2017 signature as Mastodon's LinkedDataSignature#sign! writes it, or as Fedify's
   // createSignature does (with its own @context, identity/v1), or FEP-8b32 proofs.
   form: "mastodon" | "fedify" | "proof";
-  context: readonly unknown[];
+  // The sender's @context, or "forwarded": as Mastodon compacts a body it forwards (isForwardedContext).
+  context: readonly unknown[] | "forwarded";
   // The top-level keys the sender may write besides @context, id, type, actor, object and its proof.
   extra: readonly string[];
   // The object: an IRI string, or an embedded object with exactly these keys, its `type` this one, every value a string.
@@ -39,6 +43,10 @@ type Profile = {
 };
 
 const TOMBSTONE = { type: "Tombstone", keys: ["id", "type", "atomUri"] } as const;
+const QUOTE_AUTHORIZATION = {
+  type: "QuoteAuthorization",
+  keys: ["id", "type", "attributedTo", "interactingObject", "interactionTarget"],
+} as const;
 
 // The accepted forms, each its sender's @context verbatim and the keys its serializer writes.
 export const PROFILES: Readonly<Record<string, Profile>> = {
@@ -65,10 +73,7 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
       SECURITY,
     ],
     extra: ["to"],
-    object: {
-      type: "QuoteAuthorization",
-      keys: ["id", "type", "attributedTo", "interactingObject", "interactionTarget"],
-    },
+    object: QUOTE_AUTHORIZATION,
   },
   // Kopje's status Delete (domain/activities.ts deleteSigning, SIGNED_DELETE_CONTEXT; federation/ld-sign.ts).
   kopjeStatus: {
@@ -83,6 +88,15 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   },
   // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
   kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
+  // Each of the above with an LD signature, as a Mastodon (4.4 or 4.5) that holds a boost or quote of the status or a
+  // quote with the stamp forwards it: ActivityPub::ProcessCollectionService replaces the body with its compaction
+  // under full_context (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts back the
+  // values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder sends that
+  // copy. The keys of these senders' bodies are all full_context terms, so only the @context changes.
+  mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
+  mastodonForwardedStamp: { form: "mastodon", context: "forwarded", extra: ["to"], object: QUOTE_AUTHORIZATION },
+  kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
+  kopjeForwardedStamp: { form: "fedify", context: "forwarded", extra: ["to"], object: "iri" },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
   // Delete#toJsonLd docContext), which copies that context into the proof.
   fedifyProof: {
@@ -150,10 +164,28 @@ function everyString(value: Json): boolean {
   return Object.values(value).every((v) => typeof v === "string");
 }
 
+// The @context of a body Mastodon forwards: activitystreams, security/v1 and one object, each of whose terms is one
+// MASTODON_CONTEXT_TERMS lists, with a definition a release gave it.
+function isForwardedContext(context: unknown): boolean {
+  return (
+    Array.isArray(context) &&
+    context.length === 3 &&
+    context[0] === AS &&
+    context[1] === SECURITY &&
+    isJson(context[2]) &&
+    Object.entries(context[2]).every(
+      ([term, definition]) =>
+        Object.hasOwn(MASTODON_CONTEXT_TERMS, term) &&
+        MASTODON_CONTEXT_TERMS[term]!.some((allowed) => deepEqual(allowed, definition)),
+    )
+  );
+}
+
 // The profile `json` is in exactly, and its literal object id; null when it is in none.
 function profileOf(json: Json): { profile: Profile; object: string } | null {
   for (const profile of Object.values(PROFILES)) {
-    if (!deepEqual(json["@context"], profile.context)) {
+    const context = json["@context"];
+    if (profile.context === "forwarded" ? !isForwardedContext(context) : !deepEqual(context, profile.context)) {
       continue;
     }
     const base = ["@context", "id", "type", "actor", "object", profile.form === "proof" ? "proof" : "signature"];
@@ -164,11 +196,11 @@ function profileOf(json: Json): { profile: Profile; object: string } | null {
       typeof json.actor !== "string" ||
       !profile.extra.every((k) => json[k] === undefined || isAddress(json[k]))
     ) {
-      return null;
+      continue;
     }
     const object = objectId(json.object, profile.object);
     if (object === null || !(profile.form === "proof" ? isProof(json) : isSignature(json.signature, profile.form))) {
-      return null;
+      continue;
     }
     return { profile, object };
   }

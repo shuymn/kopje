@@ -65,6 +65,61 @@ export async function mastodonSigned(json: Json, signer: TestActor): Promise<Jso
   return { ...signed, signature };
 }
 
+// The @context of a Delete Mastodon 4.5.21 forwarded, as received from it: its full_context
+// (app/helpers/context_helper.rb), which ActivityPub::ProcessCollectionService compacts a signed body under before
+// ActivityPub::Forwarder sends it.
+export const MASTODON_FORWARDED_CONTEXT = [
+  "https://www.w3.org/ns/activitystreams",
+  "https://w3id.org/security/v1",
+  {
+    manuallyApprovesFollowers: "as:manuallyApprovesFollowers",
+    sensitive: "as:sensitive",
+    Hashtag: "as:Hashtag",
+    movedTo: { "@id": "as:movedTo", "@type": "@id" },
+    alsoKnownAs: { "@id": "as:alsoKnownAs", "@type": "@id" },
+    toot: "http://joinmastodon.org/ns#",
+    Emoji: "toot:Emoji",
+    featured: { "@id": "toot:featured", "@type": "@id" },
+    featuredTags: { "@id": "toot:featuredTags", "@type": "@id" },
+    schema: "http://schema.org#",
+    PropertyValue: "schema:PropertyValue",
+    value: "schema:value",
+    ostatus: "http://ostatus.org#",
+    atomUri: "ostatus:atomUri",
+    inReplyToAtomUri: "ostatus:inReplyToAtomUri",
+    conversation: "ostatus:conversation",
+    focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+    blurhash: "toot:blurhash",
+    discoverable: "toot:discoverable",
+    indexable: "toot:indexable",
+    memorial: "toot:memorial",
+    votersCount: "toot:votersCount",
+    suspended: "toot:suspended",
+    attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
+    QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest",
+    quote: { "@id": "https://w3id.org/fep/044f#quote", "@type": "@id" },
+    quoteUri: "http://fedibird.com/ns#quoteUri",
+    _misskey_quote: "https://misskey-hub.net/ns#_misskey_quote",
+    quoteAuthorization: { "@id": "https://w3id.org/fep/044f#quoteAuthorization", "@type": "@id" },
+    gts: "https://gotosocial.org/ns#",
+    interactionPolicy: { "@id": "gts:interactionPolicy", "@type": "@id" },
+    canQuote: { "@id": "gts:canQuote", "@type": "@id" },
+    automaticApproval: { "@id": "gts:automaticApproval", "@type": "@id" },
+    manualApproval: { "@id": "gts:manualApproval", "@type": "@id" },
+    QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
+    interactingObject: { "@id": "gts:interactingObject", "@type": "@id" },
+    interactionTarget: { "@id": "gts:interactionTarget", "@type": "@id" },
+  },
+];
+
+// `signed` as a Mastodon that holds a boost or quote of it forwards it: JsonLdHelper#compact under full_context, the
+// signature kept, and patch_for_forwarding! putting back every value but the @context. Every key of the senders'
+// bodies is a full_context term, so the compaction changes nothing else (checked with jsonld.js on Mastodon's, Kopje's
+// status and stamp Deletes).
+export function mastodonForwarded(signed: Json, context: unknown = MASTODON_FORWARDED_CONTEXT): Json {
+  return { ...signed, "@context": context };
+}
+
 // An actor of mastodon.example with an RSA key (its HTTP signatures) and an Ed25519 assertion method (Multikey, its
 // FEP-8b32 proofs), served on `web`, with two signers by that key:
 //   - fedify: the Delete Fedify's signObject writes (its default Delete context, copied into the proof), as a sender

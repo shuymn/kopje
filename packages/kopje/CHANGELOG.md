@@ -27,12 +27,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or
   of an actor changes no status. An author proof, on a relayed status or stamp `Delete` or on an author's own `Delete`
   to forward, is considered only in one of the sender profiles: Mastodon 4.5's status and stamp `Delete`, Kopje's own,
-  and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI, the body
-  keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof), each with its sender's exact
-  `@context` and keys. A relayed `Delete` in any other form, from Misskey or from a Mastodon release whose context
-  differs, is refused, and an author's own `Delete` in such a form is no longer forwarded
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change; a
-  code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+  each of those four as a Mastodon forwards it, holding a boost or quote of the status or a quote with the stamp (the
+  forwarded profiles: Mastodon compacts the body under its `full_context` and forwards it with that `@context`, so the
+  `@context` is activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a
+  definition some release gave it, the union of `full_context` in `app/helpers/context_helper.rb` at every 4.4 and 4.5
+  release tag, v4.4.0 to v4.5.21, read from each tag's source, none of whose terms is or aliases one the decision
+  reads), and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI,
+  the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof), each with its
+  sender's `@context` and keys. A relayed `Delete` in any other form, from Misskey or forwarded by a Mastodon whose
+  `full_context` holds a term or definition outside 4.4 and 4.5, is refused, and an author's own `Delete` in such a
+  form is no longer forwarded ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
+  `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters

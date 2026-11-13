@@ -4,7 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deleteSigning, stampDeleteActivity } from "../src/domain/activities";
 import { PROFILES, verifyAuthorProof } from "../src/federation/author-proof";
-import { fepActor, mastodonDelete, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
+import { MASTODON_CONTEXT_TERMS } from "../src/federation/mastodon-context";
+import {
+  fepActor,
+  MASTODON_FORWARDED_CONTEXT,
+  mastodonDelete,
+  mastodonForwarded,
+  mastodonSigned,
+  mastodonStampDelete,
+} from "./author-proof-helpers";
 import { mastodonActor, RemoteWeb, type TestActor } from "./inbox-helpers";
 import { AS, PUBLIC } from "./inbox-status-helpers";
 import { contexts } from "./quote-helpers";
@@ -73,10 +81,12 @@ async function fedifySigned(json: Json, signer: TestActor): Promise<Json> {
 }
 
 describe("each sender profile passes as its sender builds it", () => {
-  it("names only preloaded context URLs, a distinct @context per profile", () => {
-    const urls = Object.values(PROFILES).flatMap((p) => p.context.filter((c): c is string => typeof c === "string"));
+  it("names only preloaded context URLs, a distinct form per profile", () => {
+    const urls = Object.values(PROFILES).flatMap((p) =>
+      p.context === "forwarded" ? [AS, SECURITY] : p.context.filter((c): c is string => typeof c === "string"),
+    );
     expect(urls.filter((url) => preloadedContexts[url] === undefined)).toEqual([]);
-    const keys = Object.values(PROFILES).map((p) => JSON.stringify(p.context));
+    const keys = Object.values(PROFILES).map((p) => JSON.stringify([p.context, p.form, p.object]));
     expect(new Set(keys).size).toBe(keys.length);
   });
 
@@ -130,7 +140,6 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
     ["an extra inline term", [AS, { ...ATOM, summary: "as:summary" }, SECURITY]],
     ["a reordered array", [SECURITY, ATOM, AS]],
     ["the inline object before the URLs", [ATOM, AS, SECURITY]],
-    ["the inline object after the URLs", [AS, SECURITY, ATOM]],
     ["an inline term of the same IRI", [AS, { ...ATOM, Delete: "as:Delete" }, SECURITY]],
   ])("a context not a profile's: %s", async (_name, context) => {
     const { bob, status, body } = await variant((b) => ({ ...b, "@context": context }));
@@ -359,5 +368,141 @@ describe("contexts come from the preloaded set alone (ID-1)", () => {
       false,
     );
     expect(fetched).not.toHaveBeenCalled();
+  });
+});
+
+// A Mastodon holding a boost or quote forwards a signed Delete compacted under its full_context
+// (ActivityPub::ProcessCollectionService): the forwarded profiles accept activitystreams, security/v1 and one object of
+// MASTODON_CONTEXT_TERMS (src/federation/mastodon-context.ts), with the senders' keys.
+describe("a Delete a Mastodon forwards (ID-1)", () => {
+  const STAMP = (bob: TestActor, status: string) => ({
+    uri: `${bob.uri}/quote_authorizations/1`,
+    quoting: "https://quoter.example/notes/1",
+    quoted: status,
+  });
+
+  it("passes for Mastodon's and Kopje's status and stamp Deletes, under the context Mastodon 4.5.21 forwarded", async () => {
+    const { bob, status } = await world();
+    const stamp = STAMP(bob, status);
+    const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
+    const kopje = (signing as { activity: Json }).activity;
+    const cases: [string, Json, string][] = [
+      ["Mastodon's status", await mastodonSigned(mastodonDelete(bob, status), bob), status],
+      ["Mastodon's stamp", await mastodonSigned(mastodonStampDelete(bob, stamp), bob), stamp.uri],
+      ["Kopje's status", await fedifySigned(kopje, bob), status],
+      ["Kopje's stamp", await fedifySigned(stampDeleteActivity(bob.uri, stamp.uri), bob), stamp.uri],
+    ];
+    for (const [name, signed, object] of cases) {
+      expect(await proves(mastodonForwarded(signed), bob, object), name).toBe(true);
+    }
+  });
+
+  it("passes with any subset of the allowed terms, the author's own alone included", async () => {
+    const { bob, status } = await world();
+    const signed = await mastodonSigned(mastodonDelete(bob, status), bob);
+    const atom = { ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" };
+    expect(await proves(mastodonForwarded(signed, [AS, SECURITY, atom]), bob, status)).toBe(true);
+  });
+
+  it("passes under each definition any 4.4 or 4.5 release gave a term", async () => {
+    const { bob, status } = await world();
+    const signed = await mastodonSigned(mastodonDelete(bob, status), bob);
+    for (const [term, definitions] of Object.entries(MASTODON_CONTEXT_TERMS)) {
+      for (const definition of definitions) {
+        const object = { ...(MASTODON_FORWARDED_CONTEXT[2] as Json), [term]: definition };
+        const forwarded = mastodonForwarded(signed, [AS, SECURITY, object]);
+        expect(await proves(forwarded, bob, status), `${term} ${JSON.stringify(definition)}`).toBe(true);
+      }
+    }
+  });
+
+  it("refuses a forward whose object id is tampered", async () => {
+    const { bob, status } = await world();
+    const forwarded = mastodonForwarded(await mastodonSigned(mastodonDelete(bob, status), bob));
+    const other = `${status}0`;
+    const tampered = { ...forwarded, object: { id: other, type: "Tombstone", atomUri: other } };
+    expect(await proves(tampered, bob, other)).toBe(false);
+  });
+
+  it.each([
+    ["a term not on the allowlist", [AS, SECURITY, { ...(MASTODON_FORWARDED_CONTEXT[2] as Json), extra: "as:extra" }]],
+    [
+      "an allowed term with another definition",
+      [AS, SECURITY, { ...(MASTODON_FORWARDED_CONTEXT[2] as Json), blurhash: "toot:other" }],
+    ],
+    ["security/v1 before activitystreams", [SECURITY, AS, MASTODON_FORWARDED_CONTEXT[2]]],
+    ["the object first", [MASTODON_FORWARDED_CONTEXT[2], AS, SECURITY]],
+    ["two inline objects", [AS, SECURITY, { ostatus: "http://ostatus.org#" }, { atomUri: "ostatus:atomUri" }]],
+  ])("refuses %s", async (_name, context) => {
+    const { bob, status } = await world();
+    const forwarded = mastodonForwarded(await mastodonSigned(mastodonDelete(bob, status), bob), context);
+    await refused(forwarded, bob, status);
+  });
+
+  it("allows no term that is, or aliases, one the decision reads", () => {
+    // The keys and classes the decision reads, and what they expand to; every keyword.
+    const decision = new Set([
+      "id",
+      "type",
+      "actor",
+      "object",
+      "to",
+      "cc",
+      "signature",
+      "proof",
+      "Delete",
+      "Tombstone",
+    ]);
+    const forbidden = new Set([
+      `${AS}#actor`,
+      `${AS}#object`,
+      `${AS}#to`,
+      `${AS}#cc`,
+      `${AS}#Delete`,
+      `${AS}#Tombstone`,
+      "https://w3id.org/security#signature",
+      "https://w3id.org/security#proof",
+    ]);
+    // Prefixes: the allowlist's own (a term defined as an IRI) and the activitystreams context's.
+    const prefixes: Record<string, string> = { as: `${AS}#`, sec: "https://w3id.org/security#" };
+    for (const [term, definitions] of Object.entries(MASTODON_CONTEXT_TERMS)) {
+      for (const definition of definitions) {
+        if (typeof definition === "string" && /^https?:\/\/.*[#/]$/.test(definition)) {
+          prefixes[term] = definition;
+        }
+      }
+    }
+    const expand = (iri: string) => {
+      const colon = iri.indexOf(":");
+      const prefix = colon === -1 ? undefined : prefixes[iri.slice(0, colon)];
+      return prefix === undefined ? iri : prefix + iri.slice(colon + 1);
+    };
+    const defined = (url: string): Json => {
+      const context = (preloadedContexts[url] as { "@context": unknown })["@context"];
+      const entries: unknown[] = Array.isArray(context) ? context : [context];
+      return Object.assign({}, ...entries.filter((c): c is Json => typeof c === "object" && c !== null)) as Json;
+    };
+    const inherited: Record<string, unknown> = { ...defined(SECURITY), ...defined(AS) };
+    for (const [term, definitions] of Object.entries(MASTODON_CONTEXT_TERMS)) {
+      expect(decision.has(term) || term.startsWith("@") || term.includes(":"), term).toBe(false);
+      for (const definition of definitions) {
+        const id = typeof definition === "string" ? definition : (definition as Json)["@id"];
+        expect(typeof id, term).toBe("string");
+        expect((id as string).startsWith("@") || forbidden.has(expand(id as string)), term).toBe(false);
+        const keywords = typeof definition === "string" ? [] : Object.keys(definition as Json);
+        expect(
+          keywords.every((k) => ["@id", "@type", "@container"].includes(k)),
+          term,
+        ).toBe(true);
+        if (typeof definition === "object") {
+          const { "@type": type, "@container": container } = definition as Json;
+          expect(type === undefined || type === "@id", term).toBe(true);
+          expect(container === undefined || container === "@set" || container === "@list", term).toBe(true);
+        }
+        if (Object.hasOwn(inherited, term)) {
+          expect(definition, `${term}, as activitystreams or security/v1 defines it`).toEqual(inherited[term]);
+        }
+      }
+    }
   });
 });
