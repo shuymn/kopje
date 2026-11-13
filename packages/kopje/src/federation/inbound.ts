@@ -561,8 +561,9 @@ export async function receiveInbound(
     fromStore !== undefined && fromStore.key === key ? fromStore.owner : (key.ownerId?.href ?? actorUri);
   if (signerUri !== actorUri) {
     return activity.type === "Delete"
-      ? relayed(deps, request, {
+      ? relayed(deps, {
           activity,
+          body: parsed.body,
           actorUri,
           signerUri,
           origin,
@@ -670,7 +671,7 @@ async function ownerDocument(
   uri: string,
   key: CryptographicKey,
   pem: string,
-  loaders: RemoteLoaders,
+  loaders: Pick<RemoteLoaders, "document" | "context">,
 ): Promise<{ input: RemoteActorInput } | InboxOutcome> {
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
@@ -691,6 +692,8 @@ async function ownerDocument(
 
 type Relay = {
   activity: Extract<InboundActivity, { type: "Delete" }>;
+  // The activity as received (Parsed's body, of the bytes the signature covers).
+  body: Json;
   actorUri: string;
   signerUri: string;
   origin: string;
@@ -711,8 +714,21 @@ type Relay = {
 // decides again what it may apply to: never an actor or a boost, a status only when proven, public or unlisted.
 // The actor's document is stored under the actor's revision (the gate read it for the envelope's actor, not for the
 // signer, whose document is only checked here).
-async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay): Promise<InboxOutcome> {
-  const { activity, actorUri, signerUri, origin, key, pem, fromStore, loaders, state, budget, revisions } = relay;
+async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
+  const {
+    activity,
+    body: json,
+    actorUri,
+    signerUri,
+    origin,
+    key,
+    pem,
+    fromStore,
+    loaders,
+    state,
+    budget,
+    revisions,
+  } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
     return { status: 401, reason: "not-key-owner" };
   }
@@ -726,7 +742,6 @@ async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay)
       return owned;
     }
   }
-  const json = JSON.parse(new TextDecoder().decode(request.body)) as Json;
   let actor: RemoteActorInput | null = null;
   let proven = false;
   if (hasAuthorProof(json)) {
@@ -1066,16 +1081,9 @@ export async function verifySpooledRequest(
     return { ok: false, transient: false, reason: "not-key-owner" };
   }
   const pem = await exportSpki(key.publicKey);
-  const fetched = await fetchActor(actorUri, documentLoader, contextLoader);
-  if (fetched.kind === "transient") {
-    return { ok: false, transient: true, reason: "actor-unavailable" };
-  }
-  if (fetched.kind !== "ok" || fetched.input === null) {
-    return { ok: false, transient: false, reason: "actor-unusable" };
-  }
-  const keys = withVerifiedReference(fetched.input.keys, fetched.actor.publicKeyIds, key, pem, actorUri);
-  if (!keys.some((listed) => listed.id === key.id?.href && listed.pem === pem)) {
-    return { ok: false, transient: false, reason: "not-key-owner" };
+  const owned = await ownerDocument(actorUri, key, pem, { document: documentLoader, context: contextLoader });
+  if ("status" in owned) {
+    return { ok: false, transient: owned.status === 503, reason: owned.reason };
   }
   return { ok: true, actor: actorUri, activity: json };
 }
