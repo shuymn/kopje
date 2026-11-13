@@ -53,7 +53,7 @@ const SCOPE = "write:follows";
 const NONE: Resolved = { kind: "none" };
 
 function page(c: InteractionContext, status: PageStatus, body: Parameters<InteractionContext["html"]>[0]) {
-  return c.html(body, status, PRIVATE_HEADERS);
+  return c.html(<>{body}</>, status, PRIVATE_HEADERS);
 }
 
 const LOOK_UP_ANOTHER = { href: INTERACTION_PATH, text: STRINGS.interact.lookUpAnother };

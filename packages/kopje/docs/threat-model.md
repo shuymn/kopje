@@ -2105,7 +2105,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with sanitized values").
   The web UI sanitizes again at the sink: bios, status content and field values reach a page only as the sanitizer's
   output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. _Enforced (main):_ `test/web-pages.test.ts`
-  ("sanitizes stored HTML at the sink and drops non-http links").
+  ("sanitizes stored HTML at the sink and drops non-http links"). Only `Rich` (`src/web/components/basics.tsx`) sets
+  `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`, only the doctype
+  (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never a string:
+  _Enforced (main):_ `test-node/raw-html.test.ts`.
   Custom emoji in that HTML are added in the same pass (`sanitizedWithEmoji`): sanitize-html hands each run of text it
   keeps, already escaped, to a filter whose output it writes unescaped, and the filter keeps the text as given and adds
   only an image whose attributes it escapes, for a shortcode within `EMOJI_SHORTCODE` and a url that passes the

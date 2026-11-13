@@ -23,7 +23,7 @@ const Fields: FC<{ fields: FieldView[] }> = ({ fields }) =>
           <dt>
             <InlineText text={field.name} />
           </dt>
-          <dd dangerouslySetInnerHTML={{ __html: field.value.html }} />
+          <Rich as="dd" html={field.value} />
         </div>
       ))}
     </dl>
