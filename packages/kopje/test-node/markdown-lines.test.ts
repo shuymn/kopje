@@ -9,7 +9,8 @@ import { frontMatterLines, type MarkdownNode, parseMarkdown, visit } from "./mar
 // Markdown prose stays within the 120 columns of .oxfmtrc.json's printWidth, which oxfmt does not enforce on prose (it
 // keeps prose wrapping as written). Each file is read through its GFM parse (markdown.ts). A line may be longer only
 // where it cannot be wrapped:
-// - inside a `table`, `code`, `heading`, `definition` or `html` node, or front matter, which a line break would change;
+// - inside a `table`, `code`, `heading` or `definition` node, a block-level `html` node (a child of the root, a list
+//   item or a quote; inline HTML in a paragraph is prose), or front matter, which a line break would change;
 // - when it has no break point: a space after its first word, outside a link or image node (and its reference forms),
 //   whose remainder would not start a block (a list item, a heading, a quote, a table, a fence, HTML or a setext
 //   underline). So a long URL or link stands on its own line, and only text that cannot move off it may follow.
@@ -26,7 +27,9 @@ const MAX = 120;
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const ROOTS = ["packages/kopje", "deploy"];
 const SKIPPED = new Set(["node_modules", ".wrangler", "dist"]);
-const EXEMPT = new Set(["table", "code", "heading", "definition", "html"]);
+const EXEMPT = new Set(["table", "code", "heading", "definition"]);
+// The parents of a block-level `html` node; an `html` node inside a paragraph is inline HTML, which prose wraps around.
+const CONTAINERS = new Set(["root", "listItem", "blockquote"]);
 const LINKS = new Set(["link", "image", "linkReference", "imageReference"]);
 
 // A remainder that would start a block if a break put it at the start of a line.
@@ -44,18 +47,13 @@ function markdownFiles(): string[] {
   return ROOTS.flatMap((dir) => walk(join(ROOT, dir))).toSorted();
 }
 
-// The part of a file the check reads: for the CHANGELOG, its lines before the first level-2 heading node after the
-// `## [Unreleased]` one.
+// The part of a file the check reads: for the CHANGELOG, its lines before the first level-2 heading after the
+// `## [Unreleased]` one, of the headings that are children of the root (not one in a quote or a list).
 function checkedText(path: string, text: string): string {
   if (path !== CHANGELOG) {
     return text;
   }
-  const headings: MarkdownNode[] = [];
-  visit(parseMarkdown(text), (node) => {
-    if (node.type === "heading" && node.depth === 2) {
-      headings.push(node);
-    }
-  });
+  const headings = (parseMarkdown(text).children ?? []).filter((node) => node.type === "heading" && node.depth === 2);
   const source = (node: MarkdownNode) => text.slice(node.position?.start.offset, node.position?.end.offset);
   const unreleased = headings.findIndex((node) => source(node) === "## [Unreleased]");
   if (unreleased === -1) {
@@ -96,12 +94,12 @@ function wrappable(line: string, start: number, links: readonly [number, number]
 function longLines(text: string): string[] {
   const exempt = new Set(frontMatterLines(text));
   const links: [number, number][] = [];
-  visit(parseMarkdown(text), (node) => {
+  visit(parseMarkdown(text), (node, parent) => {
     const position = node.position;
     if (position === undefined) {
       return;
     }
-    if (EXEMPT.has(node.type)) {
+    if (EXEMPT.has(node.type) || (node.type === "html" && CONTAINERS.has(parent?.type ?? ""))) {
       for (let line = position.start.line; line <= position.end.line; line++) {
         exempt.add(line);
       }
@@ -148,12 +146,18 @@ describe("Markdown line length", () => {
       "",
       `- ${long}`,
       "",
+      "> ## Sample",
+      "",
+      "- ## In a list",
+      "",
+      `- ${long}`,
+      "",
       "## [0.1.0] - 2026-01-01",
       "",
       long,
     ].join("\n");
-    expect(lineNumbers(longLines(checkedText(CHANGELOG, changelog)))).toEqual(["5", "11"]);
-    expect(lineNumbers(longLines(checkedText("packages/kopje/docs/a.md", changelog)))).toEqual(["5", "11", "15"]);
+    expect(lineNumbers(longLines(checkedText(CHANGELOG, changelog)))).toEqual(["5", "11", "17"]);
+    expect(lineNumbers(longLines(checkedText("packages/kopje/docs/a.md", changelog)))).toEqual(["5", "11", "17", "21"]);
   });
 
   it("flags prose that can wrap and passes what cannot", () => {
@@ -182,6 +186,9 @@ describe("Markdown line length", () => {
       // Blocks right after a table are not its rows.
       [`| a | b |\n| --- | --- |\n| c | d |\n- ${long} | tail\n\n| a | b |\n| --- | --- |\n> ${long} | tail`, true],
       [`<div>\n${long}\n</div>`, false],
+      [`> <div>\n> ${long}\n> </div>`, false],
+      // Inline HTML in a paragraph is prose.
+      [`Press <kbd>Enter</kbd> to continue. ${long}`, true],
     ];
     const text = blocks.map(([block]) => block).join("\n\n");
     const expected: string[] = [];

@@ -34,11 +34,15 @@ export function parseMarkdown(text: string): MarkdownNode {
   return fromMarkdown(body, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as unknown as MarkdownNode;
 }
 
-/** Visits `node` and every node below it in document order. */
-export function visit(node: MarkdownNode, each: (node: MarkdownNode) => void): void {
-  each(node);
+/** Visits `node` and every node below it in document order, each with its parent (undefined for `node`). */
+export function visit(
+  node: MarkdownNode,
+  each: (node: MarkdownNode, parent: MarkdownNode | undefined) => void,
+  parent?: MarkdownNode,
+): void {
+  each(node, parent);
   for (const child of node.children ?? []) {
-    visit(child, each);
+    visit(child, each, node);
   }
 }
 
