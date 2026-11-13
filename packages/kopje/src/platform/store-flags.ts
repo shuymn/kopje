@@ -19,7 +19,7 @@ import type { OperationKind } from "./store-kernel";
 
 type MaintenanceFlag = { mode: "readonly"; at: number };
 
-export type DumpRecord = {
+type DumpRecord = {
   id: string;
   // The client's own id for this start, so a start whose response was lost can be asked again (and aborted).
   opId?: string | undefined;
@@ -133,6 +133,60 @@ export function readFlags(sql: SqlStorage): OperatorFlags {
   return flags;
 }
 
+// What admission reads of the operator state (StoreKernel, flagRefusal) at the Store's time `now`: whether
+// maintenance, an import and an unpublished import are set, and the ends of the dump's and the media rebuild's leases
+// that have not ended. A completed dump's record stays as its receipt (StoreAdmin.dumpFinish), so admission reads the
+// lease end alone, never the whole record, and nothing of an ended lease.
+export type OperatorGate = {
+  maintenance: boolean;
+  import: boolean;
+  unpublished: boolean;
+  dump: { leaseUntil: number } | null;
+  media_rebuild_lease: { until: number } | null;
+};
+
+type GateName = "maintenance" | "dump" | "import" | "unpublished" | "media_rebuild_lease";
+
+// A row that is not JSON text (a BLOB, or text JSON.parse refuses) throws, as readFlags does. A JSON null is an absent
+// flag, and a lease end is its field's own JSON value (undefined when missing), so each decision is readFlags's; a
+// numeric lease end at or before `now` leaves its row out, as activeDump and rebuildLeaseLive would disregard it.
+const GATE_SQL = `SELECT name, valid, CASE WHEN valid THEN json_type(value) <> 'null' END AS present,
+	CASE WHEN valid AND path IS NOT NULL THEN value -> path END AS lease
+	FROM (SELECT name, value, typeof(value) = 'text' AND json_valid(value) AS valid,
+		CASE name WHEN 'dump' THEN '$.leaseUntil' WHEN 'media_rebuild_lease' THEN '$.until' END AS path
+		FROM kopje_state WHERE name IN ('maintenance', 'dump', 'import', 'unpublished', 'media_rebuild_lease'))
+	WHERE CASE WHEN NOT valid OR path IS NULL THEN 1
+		WHEN json_type(value, path) IN ('integer', 'real') THEN value ->> path > ? ELSE 1 END`;
+
+export function readGate(sql: SqlStorage, now: number): OperatorGate {
+  const gate: OperatorGate = {
+    maintenance: false,
+    import: false,
+    unpublished: false,
+    dump: null,
+    media_rebuild_lease: null,
+  };
+  for (const row of sql
+    .exec<{ name: GateName; valid: number; present: number | null; lease: string | null }>(GATE_SQL, now)
+    .toArray()) {
+    if (row.valid !== 1) {
+      throw new SyntaxError(`kopje_state ${row.name} is not JSON`);
+    }
+    if (row.present !== 1) {
+      continue;
+    }
+    const lease = (row.lease === null ? undefined : JSON.parse(row.lease)) as number;
+    if (row.name === "dump") {
+      gate.dump = { leaseUntil: lease };
+    } else if (row.name === "media_rebuild_lease") {
+      gate.media_rebuild_lease = { until: lease };
+    } else {
+      gate[row.name] = true;
+    }
+  }
+  return gate;
+}
+
 export function writeFlag<N extends FlagName>(sql: SqlStorage, name: N, value: OperatorFlags[N]): void {
   if (value === null) {
     sql.exec("DELETE FROM kopje_state WHERE name = ?", name);
@@ -160,12 +214,12 @@ export const REBUILD_LEASE = "media_rebuild_lease";
 export const PITR_RESTORING = "pitr_restoring";
 export const PITR_RESTORING_MS = 5 * 60 * 1000;
 
-export function rebuildLeaseLive(flags: OperatorFlags, now: number): boolean {
+export function rebuildLeaseLive(flags: Pick<OperatorGate, "media_rebuild_lease">, now: number): boolean {
   return flags.media_rebuild_lease !== null && flags.media_rebuild_lease.until > now;
 }
 
 // A dump freezes the Store only while its lease is valid, so a crashed dump cannot freeze it forever.
-export function activeDump(flags: OperatorFlags, now: number): DumpRecord | null {
+export function activeDump<D extends { leaseUntil: number }>(flags: { dump: D | null }, now: number): D | null {
   return flags.dump !== null && now < flags.dump.leaseUntil ? flags.dump : null;
 }
 
@@ -173,7 +227,7 @@ export function activeDump(flags: OperatorFlags, now: number): DumpRecord | null
 // refuse writes, except 'media-rebuild' (store-kernel.ts), so the served files of restored or moved media can be made
 // before publication; an import or a dump in progress refuses it like any write. A media-deleting write
 // ('media-delete') is also refused while the rebuild's lease is live, whatever the other flags say.
-export function admitFlags(flags: OperatorFlags, kind: OperationKind, now: number): void {
+export function admitFlags(flags: OperatorGate, kind: OperationKind, now: number): void {
   const refused = flagRefusal(flags, kind, now);
   if (refused !== null) {
     throw storeMaintenanceError(refused);
@@ -181,18 +235,18 @@ export function admitFlags(flags: OperatorFlags, kind: OperationKind, now: numbe
 }
 
 // The reason admitFlags refuses an operation of this kind, or null when it admits it.
-export function flagRefusal(flags: OperatorFlags, kind: OperationKind, now: number): MaintenanceReason | null {
-  if (flags.import !== null) {
+export function flagRefusal(flags: OperatorGate, kind: OperationKind, now: number): MaintenanceReason | null {
+  if (flags.import) {
     return "import-in-progress";
   }
   if (kind !== "read" && activeDump(flags, now) !== null) {
     return "dump-in-progress";
   }
   const write = kind === "write" || kind === "media-delete";
-  if (write && flags.maintenance !== null) {
+  if (write && flags.maintenance) {
     return "maintenance";
   }
-  if (write && flags.unpublished !== null) {
+  if (write && flags.unpublished) {
     return "unpublished";
   }
   if (kind === "media-delete" && rebuildLeaseLive(flags, now)) {

@@ -10,6 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- The Store admits each operation, and answers health, from whether maintenance, an import and an unpublished import
+  are set and from the ends of the dump's and the media rebuild's leases, read in SQL, instead of reading and parsing
+  every operator record. A completed dump's receipt, about 60 KB, is no longer handed to every operation. Admission
+  decides as before. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
+
 - `GET /api/v1/instance` no longer counts the remote accounts' domains on every request: `stats.domain_count` is the
   count the 5-minute cron keeps in `kopje_state`, at most 10 minutes old; past that, counted on request (a new or
   upgraded Store before the first cron run, an import or a reset, which clear it, and a skipped refresh, such as during

@@ -1,7 +1,15 @@
 import { errorFields, errorMessage } from "./error-message";
 import { consoleSink, type LogSink } from "./log";
 import { type MaintenanceReason, storeMaintenanceError } from "./store-errors";
-import { activeDump, admitFlags, flagRefusal, PITR_RESTORING, readFlags, rebuildLeaseLive } from "./store-flags";
+import {
+  activeDump,
+  admitFlags,
+  flagRefusal,
+  PITR_RESTORING,
+  readFlags,
+  readGate,
+  rebuildLeaseLive,
+} from "./store-flags";
 
 export type Migration = {
   readonly name: string;
@@ -231,8 +239,8 @@ export class StoreKernel {
     const result = this.#transaction(() => {
       const state = this.#state ?? loaded;
       admit(state, operation.kind);
-      const flags = readFlags(this.#sql);
       const now = this.#now();
+      const flags = readGate(this.#sql, now);
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
       return { output: operation.run(this.#sql, inputOf(refused, now), this.#transaction), refused };
@@ -247,30 +255,28 @@ export class StoreKernel {
   async health(callerBuild: string): Promise<StoreHealth> {
     const expected = await this.#expectedMigrations();
     const { schema, hold, upgrading } = await this.#currentState();
-    const flags = readFlags(this.#sql);
-    const dump = activeDump(flags, this.#now());
+    const now = this.#now();
+    const gate = readGate(this.#sql, now);
+    const frozen = activeDump(gate, now) !== null;
+    // The records themselves only while a dump holds its lease or an import runs, so a completed dump's receipt is
+    // not read.
+    const records = frozen || gate.import ? readFlags(this.#sql) : null;
+    const dump = frozen ? (records?.dump ?? null) : null;
+    const running = records?.import ?? null;
     return {
       build: this.build,
       callerBuild,
       versionMatch: callerBuild === this.build,
       schema: { ...schema, applied: this.#readApplied().map((m) => m.name), expected: expected.map((m) => m.name) },
       readonly:
-        schema.status !== "current" ||
-        hold !== null ||
-        upgrading !== null ||
-        flags.maintenance !== null ||
-        dump !== null ||
-        flags.import !== null,
+        schema.status !== "current" || hold !== null || upgrading !== null || gate.maintenance || frozen || gate.import,
       hold: hold?.reason ?? null,
       upgrading: upgrading !== null,
       lastBookmark: this.#readState("upgrade_bookmark"),
       databaseSize: this.#sql.databaseSize,
-      maintenance: flags.maintenance !== null,
+      maintenance: gate.maintenance,
       dump: dump === null ? null : { id: dump.id, leaseUntil: dump.leaseUntil },
-      import:
-        flags.import === null
-          ? null
-          : { id: flags.import.id, state: flags.import.state, lastSeq: flags.import.lastSeq },
+      import: running === null ? null : { id: running.id, state: running.state, lastSeq: running.lastSeq },
     };
   }
 
@@ -346,7 +352,8 @@ export class StoreKernel {
       throw storeMaintenanceError("version-mismatch");
     }
     this.#transaction(() => {
-      if (rebuildLeaseLive(readFlags(this.#sql), this.#now())) {
+      const now = this.#now();
+      if (rebuildLeaseLive(readGate(this.#sql, now), now)) {
         throw storeMaintenanceError("rebuild-in-progress");
       }
       this.#writeState(PITR_RESTORING, JSON.stringify({ at: this.#now() }));
@@ -477,11 +484,12 @@ export class StoreKernel {
   }
 
   #upgradeBlocker(): UpgradeBlocked | null {
-    const flags = readFlags(this.#sql);
-    if (flags.import !== null) {
+    const now = this.#now();
+    const flags = readGate(this.#sql, now);
+    if (flags.import) {
       return new UpgradeBlocked("import-in-progress", null);
     }
-    const dump = activeDump(flags, this.#now());
+    const dump = activeDump(flags, now);
     return dump === null ? null : new UpgradeBlocked("dump-in-progress", dump.leaseUntil);
   }
 
