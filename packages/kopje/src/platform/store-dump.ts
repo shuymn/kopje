@@ -1,4 +1,4 @@
-import { readCatalog, type ScannedRow, scanTable } from "./dump-catalog";
+import { readCatalog } from "./dump-catalog";
 import {
   DUMP_FORMAT,
   type DumpHeader,
@@ -11,6 +11,7 @@ import {
   type TableSpec,
   utf8Length,
 } from "./dump-format";
+import { type ScannedRow, scanTable } from "./dump-scan";
 import { Sha256 } from "./sha256";
 
 // Where a dump or a verification stands. Rows of table `table` after key `after` are next; `rows` and `hash` cover

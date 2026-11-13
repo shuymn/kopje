@@ -21,11 +21,10 @@ import {
   headerLine,
   type MigrationRecord,
   parseStatements,
-  quoteIdentifier,
   type TableSpec,
   trailerLines,
 } from "./dump-format";
-import { fromHex } from "./dump-literals";
+import { fromHex, quoteIdentifier } from "./dump-literals";
 import { errorFields, errorMessage } from "./error-message";
 import { toHex } from "./hex";
 import { consoleSink, type LogSink } from "./log";
