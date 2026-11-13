@@ -5,26 +5,22 @@ import { type AdminAccountFilter, listAdminAccounts } from "../src/domain/admin-
 import type { StoreStub } from "../src/platform/store-client";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
-import { statementId } from "./plan-audit";
-import { singletonStatistics } from "./plan-audit-store";
-import { type SqlRow, watchedCursor } from "./read-helpers";
+import { expectBeside, expectGrowth, PlanWitness, type Run, STATISTICS, type Statistics } from "./plan-witness";
 
-// RES-7 witnesses of the admin account list's reads that a pin rewrote (each account by its key, each local account
-// row by its key), each run side by side with main's statement (MAIN: main's audited SQL, each guarded by its audit
-// identity) with the same parameters, in a savepoint rolled back before the rewrite runs, under the plan audit's
-// singleton statistics and after ANALYZE. Each case names main's statements its list runs, in order; each rewrite must
-// be its baseline with pins added. Each returns main's rows and reads no more than main after ANALYZE. Its reads stay
-// the same as the remote accounts around its range grow on both sides of its keys; a search walks its own range (the
-// accounts it matches, within ADMIN_ACCOUNT_CANDIDATES), counted by the search's own predicate, and grows by at least
-// one and at most its stated rows per account the range gains. The local accounts stay operator-sized
-// (docs/threat-model.md, "Deployment assumptions"). The import-shaped rows: usernames that differ only in case, one
-// username on many domains, an IDN domain stored as punycode and one stored raw, a display name with NUL; the list's
-// order is by id, so it has no ties.
+// RES-7 witnesses of the admin account list's reads that a pin rewrote (each account by its key, each local account row
+// by its key), each run beside main's statement by test/plan-witness.ts (WITNESS: main's audited SQL, its rewrite the
+// baseline with pins added; every statement of the list's must be one), under the plan audit's singleton statistics and
+// after ANALYZE. Each case names main's statements its list runs, in order. Each returns main's rows and reads no more
+// than main after ANALYZE. Its reads stay the same as the remote accounts around its range grow on both sides of its
+// keys; a search walks its own range (the accounts it matches, within ADMIN_ACCOUNT_CANDIDATES), counted by the
+// search's own predicate, and grows by at least one and at most its stated rows per account the range gains. The local
+// accounts stay operator-sized (docs/threat-model.md, "Deployment assumptions"). The import-shaped rows: usernames that
+// differ only in case, one username on many domains, an IDN domain stored as punycode and one stored raw, a display
+// name with NUL; the list's order is by id, so it has no ties.
 
 const ADMIN = "600000000000000001";
 const ADMIN_TOKEN = "admin-accounts-token";
 const OTHER = "600000000000000002";
-const STATISTICS = ["singleton", "analyzed"] as const;
 const FEW = 150;
 const MANY = 300;
 const PRESENT = { origin: "https://kopje.test" };
@@ -86,13 +82,6 @@ const MAIN: Record<string, string> = {
     "SELECT a.id, a.domain IS NULL AS local, NOT (l.suspended_at IS NULL AND a.deleted_at IS NULL AND NOT (a.suspended_at IS NOT NULL AND a.suspension_source = 'account') AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(a.domain, '.') ELSE rtrim(lower(substr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE a.domain IS NOT NULL), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) AS unavailable FROM accounts a INDEXED BY accounts_active LEFT JOIN local_accounts l ON l.account_id = a.id WHERE a.id < coalesce(?1, char(58)) AND a.id > coalesce(?2, char(47)) AND a.domain IS NOT NULL AND (a.deleted_at IS NULL AND a.suspended_at IS NULL) AND (l.suspended_at IS NULL AND a.deleted_at IS NULL AND NOT (a.suspended_at IS NOT NULL AND a.suspension_source = 'account') AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(a.domain, '.') ELSE rtrim(lower(substr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE a.domain IS NOT NULL), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY a.id DESC LIMIT ?3",
 };
 
-type Side = {
-  query: string;
-  mine: { rows: number; result: SqlRow[] };
-  main: { rows: number; result: SqlRow[] };
-};
-
-const ROLLBACK = new Error("rolled back");
 const normalized = (sql: string) => sql.replace(/\s+/g, " ").trim();
 
 // The rewrite without its pins (each account by its key, each local account by its key): main's statement exactly.
@@ -119,55 +108,10 @@ function unpinned(query: string): string {
 const LISTED =
   /^SELECT a\.id, a\.domain IS NULL AS local,|^SELECT a\.id(?:, a\.domain, l\.email)? FROM json_each\(\?1\) c CROSS JOIN accounts a /;
 
-// A SqlStorage over `real` that, for each of the list's statements in turn, runs the next of `expected` (main's
-// statements, by identity) with the same parameters in a nested transaction it rolls back, then the statement itself,
-// recording both one `Side`. The statement must be that baseline with pins added: one that is main's (no pin), or
-// differs from the expected baseline beyond its pins, or runs past the sequence, fails.
-function sideBySide(
-  real: SqlStorage,
-  transact: <T>(fn: () => T) => T,
-  expected: readonly string[],
-  sides: Side[],
-): SqlStorage {
-  return {
-    exec: (query: string, ...params: SqlStorageValue[]) => {
-      if (!LISTED.test(normalized(query))) {
-        return real.exec(query, ...params);
-      }
-      const id = expected[sides.length];
-      const main = id === undefined ? undefined : MAIN[id];
-      if (main === undefined) {
-        throw new Error(`statement ${sides.length + 1} past the expected sequence: ${normalized(query)}`);
-      }
-      if (normalized(main) !== unpinned(query)) {
-        throw new Error(`statement ${sides.length + 1} is not main's ${id}: ${normalized(query)}`);
-      }
-      if (normalized(main) === normalized(query)) {
-        throw new Error(`main's statement ${id}, unpinned`);
-      }
-      const side: Side = { query, mine: { rows: 0, result: [] }, main: { rows: 0, result: [] } };
-      try {
-        transact(() => {
-          const cursor = real.exec<SqlRow>(main, ...params);
-          side.main.result = cursor.toArray();
-          side.main.rows = cursor.rowsRead;
-          throw ROLLBACK;
-        });
-      } catch (error) {
-        if (error !== ROLLBACK) {
-          throw error;
-        }
-      }
-      sides.push(side);
-      const cursor = real.exec<SqlRow>(query, ...params);
-      return watchedCursor(
-        cursor,
-        () => (side.mine.rows += cursor.rowsRead),
-        (rows) => (side.mine.result = rows),
-      );
-    },
-  } as unknown as SqlStorage;
-}
+const WITNESS = new PlanWitness(
+  Object.fromEntries(Object.entries(MAIN).map(([id, sql]) => [id, { sql, pins: unpinned }])),
+  LISTED,
+);
 
 // A search's own range, grown by `n` accounts on `domain` named `prefix`… (display names likewise).
 type Own = { domain: string; prefix: string };
@@ -325,37 +269,31 @@ const CASES: Record<string, Case> = {
   },
 };
 
-async function sides(statistics: (typeof STATISTICS)[number], c: Case, n: number, own: number) {
+async function sides(statistics: Statistics, c: Case, n: number, own: number): Promise<Run> {
   const store = await world(n, c.own === undefined ? null : { ...c.own, n: own });
-  return runInDurableObject(store, (_instance, state) => {
-    const sql = state.storage.sql;
-    const neighbours = sql.exec<{ n: number }>(NEIGHBOURS).one().n;
-    const range = c.own === undefined ? 0 : sql.exec<{ n: number }>(c.own.count).one().n;
-    if (statistics === "singleton") {
-      singletonStatistics(sql);
-    } else {
-      sql.exec("ANALYZE");
-    }
-    const transact = <T>(fn: () => T): T => state.storage.transactionSync(fn);
-    const out: Side[] = [];
-    const answer = transact(() =>
-      listAdminAccounts.run(sideBySide(sql, transact, c.main, out), {
-        credential: { tokenHash: ADMIN_TOKEN, scope: "admin:read:accounts", now: NOW },
-        filter: { ...NONE, ...c.filter },
-        page: { limit: 20, ...c.page },
-        present: PRESENT,
-      }),
-    );
-    return { sides: out, neighbours, range, answer };
-  });
+  return runInDurableObject(store, (_instance, state) =>
+    WITNESS.measure(state, {
+      statistics,
+      expected: c.main,
+      populations: { neighbours: NEIGHBOURS, ...(c.own === undefined ? {} : { range: c.own.count }) },
+      run: (sql, transact) =>
+        listAdminAccounts.run(
+          sql,
+          {
+            credential: { tokenHash: ADMIN_TOKEN, scope: "admin:read:accounts", now: NOW },
+            filter: { ...NONE, ...c.filter },
+            page: { limit: 20, ...c.page },
+            present: PRESENT,
+          },
+          transact,
+        ),
+    }),
+  );
 }
 
 describe("main's statements", () => {
   it("are main's audited ones", async () => {
-    expect(Object.keys(MAIN).length).toBeGreaterThan(0);
-    for (const [id, sql] of Object.entries(MAIN)) {
-      expect(await statementId(sql), sql).toBe(id);
-    }
+    await WITNESS.expectAudited();
   });
 });
 
@@ -367,7 +305,6 @@ describe("admin account reads beside main's (RES-7)", () => {
       // The neighbours grow (the search's own range at 100 accounts, or none).
       const few = await sides(statistics, c, FEW, 100);
       const many = await sides(statistics, c, MANY, 100);
-      expect(many.neighbours).toBeGreaterThan(few.neighbours);
       const runs = [few, many];
       // The search's own range grows (the neighbours held).
       const ownMany = c.own === undefined ? undefined : await sides(statistics, c, FEW, 200);
@@ -375,27 +312,20 @@ describe("admin account reads beside main's (RES-7)", () => {
         runs.push(ownMany);
       }
       for (const run of runs) {
-        expect(run.answer.status).toBe("ok");
-        expect(run.sides.length, "main's sequence, run whole").toBe(c.main.length);
-        for (const side of run.sides) {
-          expect(side.mine.result, side.query).toEqual(side.main.result);
-          if (statistics === "analyzed") {
-            expect(side.mine.rows, side.query).toBeLessThanOrEqual(side.main.rows);
-          }
-        }
+        expect((run.result as { status: string }).status).toBe("ok");
+        expectBeside(statistics, run);
       }
       // The neighbours: the same rows.
-      expect(many.sides.map((s) => s.mine.rows)).toEqual(few.sides.map((s) => s.mine.rows));
+      expectGrowth(few, many, { populations: ["neighbours"], perSide: {} });
       if (c.own !== undefined && ownMany !== undefined) {
-        // The own range: it grew, and the reads grew by at least one and at most `walks` rows per account it gained.
-        const gained = ownMany.range - few.range;
-        expect(gained).toBe(100);
-        const grown = ownMany.sides.map((side, i) => side.mine.rows - few.sides[i]!.mine.rows);
-        for (const rows of grown) {
-          expect(rows).toBeGreaterThanOrEqual(0);
-          expect(rows).toBeLessThanOrEqual(c.own.walks * gained);
-        }
-        expect(grown.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(gained);
+        // The own range: it grew by 100, and the reads grew by at least one and at most `walks` rows per account it
+        // gained.
+        expect(ownMany.populations.range! - few.populations.range!).toBe(100);
+        expectGrowth(few, ownMany, {
+          populations: ["range"],
+          perSide: { "*": { population: "range", perRun: c.own.walks } },
+          total: { atLeast: "gain" },
+        });
       }
     },
     120_000,
