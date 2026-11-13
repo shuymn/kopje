@@ -3625,9 +3625,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   size of edits. _Enforced (main)_ for scans under stale statistics: every statement the domain code runs in the
   Workers suites is planned under singleton statistics, and a whole-table or whole-index read fails the suite unless
   `test/plan-audit-entries.ts` lists it for that statement (`test/plan-audit.test.ts` ("fails a statement whose pin is
-  removed")); _Gap:_ the listed statements (#1468), statements no test runs, and prefix or range walks the plan shows
-  as a search. _Enforced (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap:
-  untested_); the tag feed's candidates are the hashtags of public statuses (`status_tags.public`, through a partial
+  removed")), or a reviewed fragment allowance (`test/plan-audit-allowances.ts`) stands for it: the suspend-block
+  probe (`SUSPEND_BLOCKS_SQL`) passes in a statement that, with the probe taken out, plans no such scan, and whose
+  plan shows the scan no more often than the statement contains the probe; it reads one entry however many blocks
+  exist (`test/plan-audit.test.ts` ("reads one suspend block however many there are")); _Gap:_ the listed statements
+  (#1468), statements no test runs, statements where the probe is not only a predicate (its text also a name, as an
+  implicit column name a `NATURAL JOIN` or `USING` matches, or its index forced elsewhere with `INDEXED BY`), which
+  the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. _Enforced
+  (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap: untested_); the tag feed's candidates are the hashtags of public statuses (`status_tags.public`, through a partial
   index), so it never reads the tag's unlisted, private, direct or limited statuses, and it reads each requested tag
   (at most five) in id order from the cursor until it has a page, so a page reads the same rows however long the tag's
   history (`test/policy-bounds.test.ts`, `test/tag-timeline.test.ts`). _Enforced (main)_ for read bounds: every paged

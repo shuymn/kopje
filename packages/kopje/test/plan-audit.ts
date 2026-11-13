@@ -1,8 +1,9 @@
 // The plan audit of RES-7 ("Queries" in docs/engineering.md): every statement the domain code runs in a Workers suite
 // is planned with EXPLAIN QUERY PLAN on a Store holding singleton statistics (test/plan-audit-store.ts), and a plan that
 // reads a whole table or index fails the suite unless an entry of test/plan-audit-entries.ts lists that statement and
-// that scan. This module is the audit's pure part (identity, provenance, scope resolution, classification, the
-// decision), shared by the suites' setup (test/sql-depth-setup.ts) and its own tests (test-node/plan-audit.test.ts).
+// that scan, or an allowance of test/plan-audit-allowances.ts stands for it (FragmentAllowance). This module is the
+// audit's pure part (identity, provenance, scope resolution, classification, the decision), shared by the suites' setup
+// (test/sql-depth-setup.ts) and its own tests (test-node/plan-audit.test.ts).
 //
 // Known limits, accepted while no production code has the form: provenance is the first source frame below Db, so a
 // bound Db method that src hands to a test-authored savepoint runner would count as the test's; the tokenizer reads
@@ -40,12 +41,14 @@ export type PlanRow = { id: number; parent: number; detail: string };
 export type PlanSchema = { tables: ReadonlySet<string>; indexes: ReadonlyMap<string, string> };
 
 // One sample of a statement's parameters, as planned on the audit Store: its plan and violations, or why EXPLAIN QUERY
-// PLAN refused it.
+// PLAN refused it. `without`: for each allowance's fragment the statement contains, by the fragment's text, the plan of
+// the statement with that fragment taken out (withoutFragment) and the same parameters, or null when it was refused.
 export type PlannedSample = {
   params: readonly unknown[];
   plan: readonly PlanRow[];
   violations: readonly string[];
   error?: string;
+  without?: Readonly<Record<string, readonly PlanRow[] | null>>;
 };
 
 // A statement a suite executed, with each sample of its parameters as planned.
@@ -541,9 +544,79 @@ export function planTree(plan: readonly PlanRow[]): string {
 
 const typeOf = (p: unknown) => (p === null ? "null" : p instanceof ArrayBuffer ? "blob" : typeof p);
 
-// A statement's violations over all its samples, `unplannable` for a sample EXPLAIN QUERY PLAN refused.
-export function violationsOf(statement: AuditedStatement): string[] {
-  const found = statement.samples.flatMap((sample) => (sample.error === undefined ? sample.violations : [UNPLANNABLE]));
+// A reviewed scan that one shared SQL fragment makes wherever a statement includes it, so no statement that includes it
+// needs an entry for that scan. `fragment` is the fragment's source text (the constant the domain code composes, not a
+// copy); `scan` the signature its plan line has (planSignatures); `reason` why its read is bounded and `witness` the
+// test that shows it.
+export type FragmentAllowance = { fragment: string; scan: string; reason: string; witness: string };
+
+// The source spans of `sql` where it contains `fragment`, as non-overlapping runs of the tokens normalizeSql keeps
+// (spelled as the source spells them), so the fragment's text inside a literal or a quoted name, which is one token, is
+// no occurrence.
+function fragmentSpans(sql: string, fragment: string): { start: number; end: number }[] {
+  const { tokens } = tokenize(sql);
+  const needle = tokenize(fragment).tokens.map((token) => token.text);
+  const spans: { start: number; end: number }[] = [];
+  for (let n = 0; needle.length > 0 && n + needle.length <= tokens.length;) {
+    if (needle.every((token, k) => tokens[n + k]!.text === token)) {
+      spans.push({ start: tokens[n]!.start, end: tokens[n + needle.length - 1]!.end });
+      n += needle.length;
+    } else {
+      n++;
+    }
+  }
+  return spans;
+}
+
+// How often `sql` contains `fragment` (fragmentSpans).
+export function fragmentCount(sql: string, fragment: string): number {
+  return fragmentSpans(sql, fragment).length;
+}
+
+// What stands for a fragment taken out: an integer that is not a constant (random()), so the planner has no value to
+// fold a branch the fragment guarded (`CASE WHEN fragment THEN …`) by, and plans the rest as in the statement.
+export const FRAGMENT_STAND_IN = "(random() IS NULL)";
+
+// `sql` with each occurrence of `fragment` (fragmentSpans) replaced by FRAGMENT_STAND_IN.
+export function withoutFragment(sql: string, fragment: string): string {
+  let out = "";
+  let at = 0;
+  for (const { start, end } of fragmentSpans(sql, fragment)) {
+    out += `${sql.slice(at, start)}${FRAGMENT_STAND_IN}`;
+    at = end;
+  }
+  return out + sql.slice(at);
+}
+
+// One sample's violations less those an allowance stands for. Its scan is the fragment's only when the statement
+// contains the fragment, the plan of the statement without it (`without`, the same parameters) has no line of that
+// detail, so every such line came from the fragment's occurrences, and the plan has no more such lines than the
+// statement contains the fragment. A statement that makes the same scan some other way, besides the fragment or
+// without it, fails, and so does one whose plan without the fragment is missing or refused. The attribution assumes
+// the fragment is used as a predicate (docs/engineering.md, "Queries").
+function sampleViolations(sql: string, sample: PlannedSample, allowances: readonly FragmentAllowance[]): string[] {
+  if (sample.error !== undefined) {
+    return [UNPLANNABLE];
+  }
+  return sample.violations.filter(
+    (scan) =>
+      !allowances.some((allowance) => {
+        if (allowance.scan !== scan) {
+          return false;
+        }
+        const detail = scan.slice(scan.indexOf(": ") + 2);
+        const linesOf = (plan: readonly PlanRow[]) => plan.filter((row) => row.detail === detail).length;
+        const without = sample.without?.[allowance.fragment];
+        const count = fragmentCount(sql, allowance.fragment);
+        return count > 0 && without != null && linesOf(without) === 0 && linesOf(sample.plan) <= count;
+      }),
+  );
+}
+
+// A statement's violations over all its samples, `unplannable` for a sample EXPLAIN QUERY PLAN refused, less those the
+// allowances stand for in each sample.
+export function violationsOf(statement: AuditedStatement, allowances: readonly FragmentAllowance[] = []): string[] {
+  const found = statement.samples.flatMap((sample) => sampleViolations(statement.sql, sample, allowances));
   return [...new Set(found)].toSorted();
 }
 
@@ -552,10 +625,11 @@ export function violationsOf(statement: AuditedStatement): string[] {
 // twice; and, as advice only, each listed scan the suite's samples did not show. A plan can depend on a parameter (a
 // partial index's condition), and another suite may pass the value that scans, so an absent scan is no proof that it
 // is fixed: a sweep removes its entries and shows the audit passes without them. Entries of statements the suite did
-// not execute are not judged.
+// not execute are not judged. A scan a fragment allowance stands for in a sample is no violation (violationsOf).
 export function auditDecision(
   audited: readonly AuditedStatement[],
   entries: readonly PlanAuditEntry[],
+  allowances: readonly FragmentAllowance[] = [],
 ): { failures: string[]; unseen: string[] } {
   const failures: string[] = [];
   const unseen: string[] = [];
@@ -567,7 +641,7 @@ export function auditDecision(
     byId.set(entry.id, entry);
   }
   for (const statement of audited) {
-    const found = violationsOf(statement);
+    const found = violationsOf(statement, allowances);
     const entry = byId.get(statement.id);
     const listed = new Set(entry?.scans ?? []);
     const unlisted = found.filter((scan) => !listed.has(scan));

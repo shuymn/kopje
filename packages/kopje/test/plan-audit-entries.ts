@@ -3,28 +3,9 @@ import type { PlanAuditEntry } from "./plan-audit.js";
 // The reviewed scans of the plan audit (test/plan-audit.ts): one entry per statement identity, by site. Each lists the
 // scans singleton statistics give it and what is known of them (Disposition); a pending or write entry names the
 // #1468 group whose sweep removes it (test/plan-audit-1468.ts maps the issue's rows; group 9 holds the other request
-// reads and writes).
+// reads and writes). A scan a fragment allowance stands for (test/plan-audit-allowances.ts) is listed only for a
+// statement the allowance refuses (FragmentAllowance, test/plan-audit.ts).
 export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
-  {
-    id: "5fba690f30f5621d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/account-actions.ts#followTarget < src/domain/account-actions.ts#followAccount < src/domain/account-actions.ts#<anonymous> in follow < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "3a6b5bdee94135af",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/account-actions.ts#answerPendingFollow < src/domain/account-actions.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
   {
     id: "33f13a83681454ff",
     scans: ["account_invitations: SCAN account_invitations"],
@@ -33,148 +14,36 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "account_invitations holds at most 10 rows (account_invitations_cap, migration 0081_account_invitations)",
   },
   {
-    id: "134cb5b52af22f18",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#<anonymous> in familiarFollowers < src/domain/accounts.ts#<anonymous> in familiarFollowers < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "b2878d3384ff3b83",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#<anonymous> in familiarFollowers < src/domain/accounts.ts#<anonymous> in familiarFollowers < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "867e56731d9847d8",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#<anonymous> in listFollowRequests < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9638abbafa99266e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#listFollowsWithin < src/domain/accounts.ts#<anonymous> in listFollows < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "6ae229b5ef96a280",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#listFollowsWithin < src/domain/web-pages/follows.ts#followsPageWithin < src/domain/web-pages/follows.ts#<anonymous> in webFollowsPage < src/domain/web-pages/site.ts#<anonymous> in pageRead",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "dfff07d570b3c378",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#listFollowsWithin < src/domain/web-pages/follows.ts#followsPageWithin < src/domain/web-pages/follows.ts#<anonymous> in webFollowsPage < src/domain/web-pages/site.ts#<anonymous> in pageRead",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "59da983ebffa7c3b",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#movedOf < src/domain/accounts.ts#relatedOf < src/domain/accounts.ts#accountsOf < src/domain/status-presenter.ts#<anonymous> in hydrate < src/domain/status-presenter.ts#hydrate",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a8cf379931a5eb2c",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#partialAccountsOf < src/domain/notification-groups.ts#admitGroups < src/domain/notification-groups.ts#<anonymous> in listGroupedNotifications < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "2ca8b20d6e4aad61",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#searchAccountIds < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "585f553daa1eac7d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#windowAccountIds < src/domain/lists.ts#ownedAccountsWindow < src/domain/lists.ts#ownedAccountsPage < src/domain/endorsements.ts#endorsedPage < src/domain/endorsements.ts#<anonymous> in listEndorsements",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "1ac3d537002ad41f",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRowsOf < src/domain/accounts.ts#accountsOf < src/domain/status-presenter.ts#<anonymous> < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#present",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
     id: "972ff48c0d07c3be",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRow < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
     id: "dc1ee509b67978f1",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#presentAccountsById < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
     id: "ae5406a1bf9d171c",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
     id: "9d0948565b029046",
@@ -185,93 +54,56 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "d6be7877f4d97fdb",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#relationshipsOf < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "e4bc490c23e81d6f",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
     id: "e10b8e82e5f2de07",
     scans: [
       "accounts: SCAN accounts",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
     ],
     site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
+      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "822ecfa15f846d25",
     scans: [
       "accounts: SCAN accounts",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
     ],
     site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
+      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "458288c71711a582",
     scans: [
       "accounts: SCAN accounts",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
     ],
     site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
+      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "958406ea29be0392",
     scans: [
       "accounts: SCAN accounts",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "local_accounts: SCAN local_accounts USING COVERING INDEX sqlite_autoindex_local_accounts_1",
     ],
     site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
-  },
-  {
-    id: "aa725c8cf76dbd6c",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "b2161e1beef20d75",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/accounts.ts#findAccountIds < src/domain/accounts.ts#searchAccountIds < src/domain/search.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "382565ddce9f80fa",
@@ -308,26 +140,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'the health key check reads every local key (listLocalKeys, src/domain/actors.ts), each account by its key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "f322f9a40a925aa1",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/actors.ts#<anonymous> in getCollection",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "2c0b46cfbc6aa6ca",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/actors.ts#followerKeyOf < src/domain/actors.ts#fetchSignerOf < src/domain/inbox.ts#fetchPreparation < src/domain/inbox.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "cd06801d1dce1dec",
     scans: ["local_accounts: SCAN local_accounts"],
     site: "src/domain/admin-accounts.ts#<anonymous> in setAccountEmail",
@@ -336,146 +148,20 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'no index serves the sign-in\'s email match, which the email repair applies to the other local accounts (setAccountEmail, src/domain/admin-accounts.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "de6d3b5a1224027a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "ae32e9e7e52e3fe0",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "b1634053ef2178eb",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "65f8e047d6a80481",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f2b2b708b192c0ab",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#range < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "0731171ba9e3fe86",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#range < src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "46055d1cecbd8ba4",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f764747402bd7e5a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "1b2d8ffc6b659135",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "7af8312a5d960759",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "cc9de51ed9163874",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "62dac055dbc50dad",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "b3b09989aac94806",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
+    scans: ["local_accounts: SCAN l"],
     site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the admin account list over the local accounts (readMatches, src/domain/admin-accounts.ts), each account read by key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
+      'the admin account list over the local accounts (readMatches, src/domain/admin-accounts.ts), each account read by key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "9224cf8bf25be7f1",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
+    scans: ["local_accounts: SCAN l"],
     site: "src/domain/admin-accounts.ts#readMatches < src/domain/admin-accounts.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'the admin account list over the local accounts (readMatches, src/domain/admin-accounts.ts), each account read by key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)',
+      'the admin account list over the local accounts (readMatches, src/domain/admin-accounts.ts), each account read by key: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "71b67c065fd24966",
@@ -574,43 +260,10 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "0d17e63234debf2b",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN a"],
     site: "src/domain/announcements.ts#resolveMentions < src/domain/announcements.ts#render < src/domain/announcements.ts#presentAnnouncement < src/domain/announcements.ts#entries < src/domain/answer-budget.ts#admit",
     disposition: "pending",
     issue: "#1468 group 7",
-  },
-  {
-    id: "380af9bd36f5456a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#<anonymous> in deleteAudience < src/domain/audience.ts#deleteAudience",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a4fefe1500bc79f4",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#<anonymous> in deleteAudience < src/domain/audience.ts#deleteAudience",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "0f40ed68676f008e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#Object.of in quoteApprovalReads < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#statusStream < src/domain/answer-budget.ts#admit < src/domain/timelines.ts#answerAdmission",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "746ff58fbd066436",
@@ -620,27 +273,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/audience.ts#Object.of in quoteReads < src/domain/status-presenter.ts#statusGraph < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#statusStream < src/domain/answer-budget.ts#admit",
     disposition: "deliberate",
     reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "17e29626ccc61143",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#addresses < src/domain/activities.ts#boostAnnounce < src/domain/statuses.ts#announceOf < src/domain/statuses.ts#<anonymous> in reblog < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9dfa8d77e2b83180",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#canView < src/domain/audience.ts#viewableStatusId < src/domain/remote-statuses.ts#status < src/domain/remote-statuses.ts#<anonymous> in resolveSearch < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) occurs once, but the flattened quote state repeats the expression that holds it, so the plan prints its one scalar subquery three times and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "faf0592983e05942",
@@ -668,61 +301,22 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "1807b174c1308ec9",
-    scans: [
-      "accounts: SCAN ra",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN ra"],
     site: "src/domain/audience.ts#read < src/domain/audience.ts#remoteReportStatusIds",
     disposition: "pending",
     issue: "#1468 group 9",
   },
   {
-    id: "c79c3012ca1ddc9f",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "f51569b711149874",
-    scans: [
-      "?: SCAN ps",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
     disposition: "deliberate",
     reason:
-      "ps is ruledSql's recursive CTE over a follower's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_UTF8_BYTES (1,012) bytes, so of at most 1,012 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "19debcfdc5f0aafb",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.authorShown in statusReads < src/domain/timelines.ts#accountStatusIds < src/domain/reports.ts#<anonymous> in createReport < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "026fcf652de9e66e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.authorShown in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "ps is ruledSql's recursive CTE over a follower's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_UTF8_BYTES (1,012) bytes, so of at most 1,012 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name",
   },
   {
     id: "0ec327b9c8182c79",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
@@ -730,10 +324,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "15b5e5b897b53642",
-    scans: [
-      "?: SCAN s",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
@@ -741,31 +332,15 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "22a7967fb5612cb2",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
-    id: "69670a5037cce46d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "4b02e34fb3082afd",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
@@ -773,10 +348,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "563d70e4e039cfdf",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
@@ -784,623 +356,31 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "635c7e6d558225da",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
     disposition: "deliberate",
     reason:
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
-  },
-  {
-    id: "79600bbfb9512fa2",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "7b14d2ac24d036fe",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/conversations.ts#conversationStream < src/domain/answer-budget.ts#admit < src/domain/conversations.ts#<anonymous> in listConversations",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "08f023fe00cbb59c",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "1d97ca3dd30d0698",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "55f33041f2e5fc1e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "66a3bc900a5d9669",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9477a50d0422cf1e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a1d30009da11b514",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a36f461647d0b46f",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "3ee23084871734d6",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/statuses.ts#<anonymous> in getStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d181412df28c4da6",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/statuses.ts#<anonymous> in statusContext < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "713e25a61e61a6be",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/statuses.ts#contextAncestors < src/domain/web-pages/status.ts#statusPageWithin < src/domain/web-pages/status.ts#<anonymous> in webStatusPage",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "5f8e0ec8499232cc",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/statuses.ts#statusQuotesWithin < src/domain/statuses.ts#<anonymous> in statusQuotes < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "69f7218535a37f4d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/statuses.ts#statusQuotesWithin < src/domain/statuses.ts#<anonymous> in statusQuotes < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "1feaf422d2346435",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusIds < src/domain/reports.ts#<anonymous> in createReport < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "879fa200841e8c4b",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "8a7f9ce9bd5ff6e0",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "2764392c4a83b88a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "6de9e61fe47b6176",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "cf4d22af3002f350",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> in accountStatuses < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "6de9a4051e2b0896",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#accountStatusesWithin < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> in webProfilePage",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9a70663d385d494a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9dbb6a2d91b1fff1",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "ab3a84915de2d712",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "ca0cd069c4404cf1",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "18671a5b3bae7225",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#tagStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "51c6eb3bcd1757d5",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select in statusReads < src/domain/timelines.ts#tagStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous> in fedIn",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "0f8549d1c658c387",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "86a77f60763ddc77",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN s",
-    ],
+    scans: ["statuses: SCAN s"],
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads",
     disposition: "deliberate",
     reason:
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
-    id: "17c3a2c9147a8837",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads < src/domain/timelines.ts#listRows < src/domain/timelines.ts#ownListStatus < src/domain/timelines.ts#listStatus",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "1abaf4f1b660ed81",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads < src/domain/timelines.ts#listRows < src/domain/timelines.ts#ownListStatus < src/domain/timelines.ts#listStatus",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "6b6da83bb1294ec4",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union in statusReads < src/domain/timelines.ts#listRows < src/domain/timelines.ts#ownListStatus < src/domain/timelines.ts#listStatus",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "5058c2235dae928e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#viewableStatusIds < src/domain/web-pages/parents.ts#parentLinks < src/domain/web-pages/parents.ts#parentLink < src/domain/web-pages/status.ts#statusPageWithin < src/domain/web-pages/status.ts#<anonymous> in webStatusPage",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "213dc32e9b748f69",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/web-pages/status.ts#pageStatus < src/domain/web-pages/status.ts#statusPageWithin",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "7fb4e46a877d4081",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/web-pages/status.ts#pageStatus < src/domain/web-pages/status.ts#targetStatus",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "5b649a02c2ddf9a6",
-    scans: [
-      "?: SCAN ps",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/polls.ts#recordPollUpdate",
     disposition: "deliberate",
     reason:
-      "ps is ruledSql's recursive CTE over a voter's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_UTF8_BYTES (1,012) bytes, so of at most 1,012 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name; SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a15f00a754cc8ea0",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f68173791689b176",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "dd53b3f60380a2ba",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "e8ed78d437270153",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9f9c39ceda133cf2",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "ab71ff4dae0b548e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "b0f7a4c432eb9849",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/web-pages/status.ts#pageStatus < src/domain/web-pages/status.ts#statusPageWithin < src/domain/web-pages/status.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "8e5cffd8bf6135fe",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/web-pages/status.ts#pageStatus < src/domain/web-pages/status.ts#targetStatus < src/domain/web-pages/status.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d6a8b6b2e1b1a801",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d8cad5513e49a3e5",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/search.ts#searchStatuses < src/domain/search.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "eaa215a4bb4f503b",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "9c8a20d85844fa31",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/timelines.ts#accountStatusesWithin < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "54b012d0bccf3e04",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "4e35ed6c87cd6bba",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/timelines.ts#publicStatus < src/domain/streaming.ts#feedStatus < src/domain/streaming.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "dbb85abfe90596c8",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#shownWindow < src/domain/notifications.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "5cc738f48c8c8596",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#shownWindow < src/domain/notifications.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "5bee14c7006147a3",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#notificationById < src/domain/notifications.ts#streamedNotification",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d8f8e23bec60cc2f",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#notificationById < src/domain/notifications.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "4df9dd223257f09e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.select < src/domain/notification-requests.ts#requestStream < src/domain/notification-requests.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "580339d350fde9c2",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#notificationById < src/domain/notifications.ts#streamedNotification",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "7c7260b8e262cf1a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notification-groups.ts#shownNotifications < src/domain/notification-groups.ts#firstOfGroup < src/domain/notification-groups.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "87263848bdc39aa9",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#mentionedStatus < src/domain/streaming.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "0ec0d095d0b23b86",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notifications.ts#notificationById < src/domain/notifications.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "67dfd17bf6954421",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.notifications < src/domain/notification-groups.ts#shownNotifications < src/domain/notification-groups.ts#firstOfGroup < src/domain/notification-groups.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "ps is ruledSql's recursive CTE over a voter's domain suffixes (src/domain/audience.ts: its two keys, each walked only within DNS_NAME_UTF8_BYTES (1,012) bytes, so of at most 1,012 rows, a longer one covered unwalked; test/domain-suffix-walk.test.ts), which the classifier cannot bind under byInbox's derived tables, where the fragment's `accounts ps` shares its name",
   },
   {
     id: "31dde5cdf5785684",
-    scans: [
-      "accounts: SCAN ra",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN ra"],
     site: "src/domain/audience.ts#read < src/domain/audience.ts#remoteReportStatusIds < src/domain/reports.ts#<anonymous> in adminReportStream < src/domain/reports.ts#adminReportStream < src/domain/reports.ts#presented",
     disposition: "pending",
     issue: "#1468 group 6",
@@ -1409,7 +389,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "38ef2079b0de598f",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN e_tq",
       "statuses: SCAN e",
       "statuses: SCAN e_tqs",
@@ -1512,26 +491,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "140d182336c23f40",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/deliveries.ts#sendRefused < src/domain/deliveries.ts#<anonymous> in claimDeliveries",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "db03fc43fe6fb808",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/deliveries.ts#sendRefused < src/domain/deliveries.ts#<anonymous> in claimDeliveries",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "e340d1dcebf0f9b2",
     scans: ["retraction_stagings: SCAN retraction_stagings USING COVERING INDEX retraction_stagings_ended"],
     site: "src/domain/deliveries.ts#sweepStagings < src/domain/deliveries.ts#<anonymous> in sweepDeliveries",
@@ -1622,80 +581,42 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "0b29b51f1d1d3bf9",
-    scans: [
-      "deliveries: SCAN d",
-      "deliveries: SCAN e",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "outbound_activities: SCAN o",
-      "outbound_targets: SCAN c",
-    ],
+    scans: ["deliveries: SCAN d", "deliveries: SCAN e", "outbound_activities: SCAN o", "outbound_targets: SCAN c"],
     site: "src/domain/deliveries.ts#personalFallback < src/domain/deliveries.ts#<anonymous> in completeDelivery",
     disposition: "pending",
     issue: "#1468 group 8",
   },
   {
     id: "cacc6c5c1e413ee6",
-    scans: [
-      "accounts: SCAN accounts USING INDEX accounts_directory_new",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN accounts USING INDEX accounts_directory_new"],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51)",
   },
   {
     id: "56fbdb284ae24ea9",
-    scans: [
-      "accounts: SCAN accounts USING INDEX accounts_directory_local_active",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN accounts USING INDEX accounts_directory_local_active"],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51)",
   },
   {
     id: "c8b5781765c9dc40",
-    scans: [
-      "accounts: SCAN accounts USING INDEX accounts_directory_local_new",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN accounts USING INDEX accounts_directory_local_new"],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51)",
   },
   {
     id: "ee420686f7bc1093",
-    scans: [
-      "accounts: SCAN accounts USING COVERING INDEX accounts_directory_active",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN accounts USING COVERING INDEX accounts_directory_active"],
     site: "src/domain/directory.ts#<anonymous> in directory < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
     disposition: "deliberate",
     reason:
-      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
-  },
-  {
-    id: "66b5bbbd8d4addad",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/endorsements.ts#endorsementsShown < src/domain/endorsements.ts#endorsedPage < src/domain/endorsements.ts#<anonymous> in listEndorsements < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "3745283156aa94cd",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/featured-tags.ts#accountFeaturedTagsOf < src/domain/featured-tags.ts#<anonymous> in accountFeaturedTags",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "the directory's window: a partial index of the discoverable accounts in the page's order, read to at most DIRECTORY_WINDOW * (offset + limit) entries, so at most 2 * (MAX_DIRECTORY_OFFSET + DIRECTORY_MAX_LIMIT) = 960 (src/domain/directory.ts:30-33, the LIMIT ?1 at :58 bound at :61; the limit is capped at 80 where the request is read, src/mastodon/accounts.ts:550, and an offset past 400 answers nothing, directory.ts:51)",
   },
   {
     id: "746f7acbaf051934",
@@ -1715,11 +636,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "f05478ccc7013224",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
+    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
     site: "src/domain/field-links.ts#<anonymous> in claimFieldLinks",
     disposition: "background",
     reason:
@@ -1735,11 +652,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "6fae014d62294a77",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
+    scans: ["accounts: SCAN a", "local_accounts: SCAN l"],
     site: "src/domain/field-links.ts#held < src/domain/field-links.ts#<anonymous> in recordFieldLink",
     disposition: "background",
     reason:
@@ -1752,16 +665,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       'localFollower (src/domain/follower-signer.ts) walks the local accounts, each a key lookup of its follow, so the account\'s remote followers are never read: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
-  },
-  {
-    id: "b0194450ec5a0782",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/handshake-replays.ts#replay < src/domain/handshake-replays.ts#<anonymous> in handshakeReplayStep < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "d51500418d49c492",
@@ -1802,16 +705,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "background",
     reason:
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "94039c072d68bb07",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/inbox.ts#moveBatch < src/domain/inbox.ts#<anonymous> in runJobBatch < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "79bfd658ce83ddaf",
@@ -1923,16 +816,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "the active count is of every available local account, in the one scan of local_accounts it needs (INSTANCE_ACTIVE_SQL, src/domain/instance.ts; test/instance-counts.test.ts asserts it)",
-  },
-  {
-    id: "4b49e35df6db769a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/interaction.ts#<anonymous> in resolveInteraction < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "0d98fbbbd2c7af1d",
@@ -2047,16 +930,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "9736a0ab2fda848c",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/handshake-replays.ts#replayReject < src/domain/handshake-replays.ts#<anonymous> in handshakeReplayStep < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "34a11dd79061b053",
     scans: ["inbound_jobs: SCAN inbound_jobs USING INDEX inbound_jobs_fresh"],
     site: "src/domain/job-attempts.ts#fresh < src/domain/job-attempts.ts#nextJob < src/domain/inbox.ts#<anonymous> in runInboundJobs",
@@ -2145,62 +1018,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "f69ff61a5c2e4fcb",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/link-cards.ts#<anonymous> in claimCards",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "64488aee6c8f6b12",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/link-cards.ts#<anonymous> in recordCard",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f54d686d9fda2318",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/link-cards.ts#<anonymous> in recordCard",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "04dd86e5255280f2",
     scans: ["card_oembed_endpoints: SCAN card_oembed_endpoints USING COVERING INDEX card_oembed_endpoints_expiry"],
     site: "src/domain/link-cards.ts#cacheEndpoint < src/domain/link-cards.ts#<anonymous> in recordCard",
     disposition: "background",
     reason:
       'a job or round traversal (link-cards.ts#<anonymous> in recordCard); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "8038f52ebc5bd038",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/link-cards.ts#enqueueCard < src/domain/statuses.ts#writePost < src/domain/statuses.ts#postNow < src/domain/scheduled-statuses.ts#<anonymous> in postStatus < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a48b9a5046bb5c5f",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/lists.ts#<anonymous> in accountLists < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "a2ae66f512e72566",
@@ -2225,16 +1048,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis)",
-  },
-  {
-    id: "c5b6b541bb25507c",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/local-notes.ts#<anonymous> in getOutbox",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "4c8b97dcc2191d66",
@@ -2276,42 +1089,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (auth.ts#<anonymous> in guarded); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "f584c8d416234657",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/notification-requests.ts#summaryOf < src/domain/notification-requests.ts#<anonymous> in getNotificationPolicy < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "3ad5ebdd2b538d0f",
     scans: ["notifications: SCAN notifications"],
     site: "src/domain/notification-requests.ts#startJob < src/domain/notification-requests.ts#accept < src/domain/notification-requests.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
       "startJob reads the newest notification: the table in rowid order from its end, LIMIT 1, NOT INDEXED (src/domain/notification-requests.ts)",
-  },
-  {
-    id: "596e58d25a6bf507",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/notification-requests.ts#jobBatch < src/domain/notification-requests.ts#<anonymous> < src/domain/job-attempts.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d8e5eadce8a58ff8",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/notification-requests.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "01ac9301afe35078",
@@ -2343,26 +1126,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "background",
     reason:
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "b32922276dba79b0",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/notifications.ts#notify < src/domain/statuses.ts#writePost < src/domain/statuses.ts#postNow < src/domain/scheduled-statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f57fc2caf497025d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/notifications.ts#notify < src/domain/remote-statuses.ts#updateRemoteStatus < src/domain/inbox.ts#updateStatus < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "598392e2e4ef590d",
@@ -2411,32 +1174,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (polls.ts#<anonymous> in pollRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "1b89639f50a260d3",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/polls.ts#mayVote < src/domain/polls.ts#<anonymous> in vote < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "c81d9446b4fc1d82",
     scans: ["polls: SCAN polls USING INDEX polls_stale"],
     site: "src/domain/polls.ts#sweepStaleVotes < src/domain/polls.ts#<anonymous> in pollRound",
     disposition: "background",
     reason:
       'a job or round traversal (polls.ts#<anonymous> in pollRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "6eb8ed0fa68f3228",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/push.ts#target < src/domain/push.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "db73259f82c71e2c",
@@ -2455,46 +1198,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "61de90b4a6d1e892",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/quotes.ts#answerQuoteRequest < src/domain/inbox.ts#quoteRequest < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "30bd3d273548c280",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-actors.ts#staleAccount < src/domain/quotes.ts#authorDue < src/domain/quotes.ts#stageOf < src/domain/quotes.ts#<anonymous> in quoteWork",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a3433847dbd84208",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-actors.ts#unavailableRemote < src/domain/remote-actors.ts#upsertRemoteActor < src/domain/remote-statuses.ts#storedActor < src/domain/remote-statuses.ts#storeResolved < src/domain/remote-statuses.ts#<anonymous> in resolveSearch",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "dc5a765b93e3a069",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-collections.ts#<anonymous> in claimCollectionSync",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "d5affa2884b5e300",
     scans: ["featured_tags: SCAN featured_tags"],
     site: "src/domain/remote-collections.ts#replaceFeaturedTags < src/domain/remote-collections.ts#<anonymous> in completeCollectionRead",
@@ -2504,42 +1207,15 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "82beb1e260757671",
-    scans: [
-      "accounts: SCAN a",
-      "collection_syncs: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN a", "collection_syncs: SCAN c"],
     site: "src/domain/remote-collections.ts#roundAccount < src/domain/remote-collections.ts#<anonymous> in completeCollectionRead",
     disposition: "background",
     reason:
       'a job or round traversal (remote-collections.ts#<anonymous> in completeCollectionRead); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "b2078d2a1e2f8c2b",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-field-links.ts#claimRemoteFieldLinks < src/domain/field-links.ts#<anonymous> in claimFieldLinks",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "77a009b5b20b2cee",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-field-links.ts#remoteLinksHeld < src/domain/field-links.ts#held < src/domain/field-links.ts#<anonymous> in recordFieldLink",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "c815159d143e7f09",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "remote_media: SCAN r",
-    ],
+    scans: ["remote_media: SCAN r"],
     site: "src/domain/remote-media.ts#<anonymous> in claimRemoteMedia",
     disposition: "background",
     reason:
@@ -2563,10 +1239,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "936d2274e1dd5f9b",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["accounts: SCAN a"],
     site: "src/domain/remote-media.ts#backfill < src/domain/remote-media.ts#<anonymous> in maintainRemoteMedia",
     disposition: "background",
     reason:
@@ -2574,10 +1247,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "e3baadedab9c6595",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "remote_media: SCAN r USING INDEX remote_media_expiry",
-    ],
+    scans: ["remote_media: SCAN r USING INDEX remote_media_expiry"],
     site: "src/domain/remote-media.ts#fenced < src/domain/remote-media.ts#<anonymous> in admitRemoteMedia",
     disposition: "background",
     reason:
@@ -2593,35 +1263,11 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "05c4e0ad0523a85f",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "remote_media: SCAN r",
-      "remote_media: SCAN remote_media",
-    ],
+    scans: ["remote_media: SCAN r", "remote_media: SCAN remote_media"],
     site: "src/domain/remote-media.ts#validityWalk < src/domain/remote-media.ts#<anonymous> in maintainRemoteMedia",
     disposition: "background",
     reason:
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "3dcb00d8c2cd9958",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-statuses.ts#account < src/domain/remote-statuses.ts#<anonymous> in resolveSearch < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "841e4849b7517078",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-statuses.ts#storeRemoteStatus < src/domain/remote-statuses.ts#storeResolved < src/domain/remote-statuses.ts#<anonymous> in resolveSearch < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "4278d40f9cfbbc75",
@@ -2632,16 +1278,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "an arriving status's post subscribers: the local accounts drive, each one's accepted follow of the author sought by follows_accepted (notifyCreated, src/domain/remote-statuses.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
-    id: "ecb815c73e12125d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/remote-suspension.ts#clearRound < src/domain/remote-suspension.ts#remoteRound < src/domain/remote-suspension.ts#<anonymous> in remoteModerationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "7d72791fccd613d7",
     scans: ["push_deliveries: SCAN push_deliveries"],
     site: "src/domain/remote-suspension.ts#prepared < src/domain/remote-suspension.ts#sever < src/domain/remote-suspension.ts#accountSeverRound < src/domain/remote-suspension.ts#remoteRound < src/domain/remote-suspension.ts#<anonymous> in remoteModerationRound",
@@ -2650,45 +1286,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-suspension.ts#<anonymous> in remoteModerationRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "8cce3a6763f05d42",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/reports.ts#<anonymous> in createReport < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "df262b468ace6d45",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/reports.ts#fileRemoteReports < src/domain/inbox.ts#flag < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "c9c386511d0a563e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/scheduled-statuses.ts#<anonymous> in publishScheduled",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "29d9fa4322758555",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "statuses: SCAN statuses USING INDEX statuses_public",
-    ],
+    scans: ["statuses: SCAN statuses USING INDEX statuses_public"],
     site: "src/domain/search.ts#searchHashtags < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
     disposition: "deliberate",
     reason:
-      "the newest HASHTAG_PUBLIC_WINDOW (2,000) public statuses, read in order from the partial index statuses_public (src/domain/search.ts:41 and :190, migrations/0000_initial.sql:132); instance_domain_blocks is SUSPEND_BLOCKS_SQL's first-entry probe of instance_domain_blocks_suspend",
+      "the newest HASHTAG_PUBLIC_WINDOW (2,000) public statuses, read in order from the partial index statuses_public (src/domain/search.ts:41 and :190, migrations/0000_initial.sql:132)",
   },
   {
     id: "3ae16a72600377c8",
@@ -2736,46 +1339,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:275 and :545), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:51) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:237), one per month it ran",
   },
   {
-    id: "74337db9b1e41efd",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/status-presenter.ts#idRows < src/domain/status-presenter.ts#statusGraph < src/domain/status-presenter.ts#filterTextTargets < src/domain/status-presenter.ts#textLevel < src/domain/status-presenter.ts#presentationOf",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "8b44729707a6c0d5",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/status-presenter.ts#statusRows < src/domain/status-presenter.ts#statusGraph < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#statusStream < src/domain/answer-budget.ts#admit",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "498ac8adb066550d",
-    scans: [
-      "?: SCAN c",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l",
-    ],
+    scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",
     reason:
-      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); the local accounts are OAUTH_ADMIN_HEAP_SQL's bound of oauthAdmin's read (src/domain/admin-authority.ts), and local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"); SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "e659d49c3335176a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/statuses.ts#resolveMentions < src/domain/statuses.ts#mentionedIds < src/domain/statuses.ts#preparePost < src/domain/statuses.ts#postNow < src/domain/scheduled-statuses.ts#<anonymous> in postStatus",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
+      "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts); the local accounts are OAUTH_ADMIN_HEAP_SQL's bound of oauthAdmin's read (src/domain/admin-authority.ts), and local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
     id: "60ce973e773597d7",
@@ -2792,36 +1361,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "background",
     reason:
       'a job or round traversal (inbox.ts#deleteStatusBatch); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "29b9f081a57ea953",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/statuses.ts#interactorsWithin < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "2dbb65a0068ebdb6",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/statuses.ts#interactorsWithin < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "c4e449d9650357ad",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/statuses.ts#quotable < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "2e2b65979d04e6c3",
@@ -2880,16 +1419,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "stream_subscriptions holds the registry of open sockets: at most socketsPerInstance (256) sockets' accounts, keysPerAccount (16) keys each (STREAM_LIMITS, src/stream-hub.ts)",
   },
   {
-    id: "1ff7e061a92c03fe",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/suggestions.ts#<anonymous> in suggestions < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "a7802aa0e24dce31",
     scans: ["push_deliveries: SCAN push_deliveries"],
     site: "src/domain/suspension.ts#tokensRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
@@ -2899,10 +1428,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "c46111791f6ddd31",
-    scans: [
-      "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["follows: SCAN fo USING COVERING INDEX follows_accepted"],
     site: "src/domain/tags.ts#tagHistory < src/domain/tags.ts#<anonymous> in presentTags < src/domain/tags.ts#presentTags < src/domain/search.ts#searchHashtags < src/domain/search.ts#<anonymous> in search",
     disposition: "deliberate",
     reason:
@@ -2911,10 +1437,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "a85388cc8a507b53",
-    scans: [
-      "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["follows: SCAN fo USING COVERING INDEX follows_accepted"],
     site: "src/domain/tags.ts#tagHistory < src/domain/tags.ts#<anonymous> in presentTags < src/domain/tags.ts#presentTags < src/domain/tags.ts#presentTag < src/domain/tags.ts#<anonymous> in tagWrite",
     disposition: "deliberate",
     reason:
@@ -2957,55 +1480,11 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends)",
   },
   {
-    id: "81ae782a1128780d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/trends.ts#linkCandidates < src/domain/trends.ts#roundLinks < src/domain/trends.ts#<anonymous> in trendsRound",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d64e1a3f8e59b29e",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/trends.ts#linkHistory < src/domain/trends.ts#presentTrendLink < src/domain/trends.ts#<anonymous> in trendingLinks < src/domain/trends.ts#<anonymous> in trendingLinks < src/domain/auth.ts#<anonymous> in optionalUserReadOperation",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d3b188bb4dd28bee",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/trends.ts#presentable < src/domain/trends.ts#presentableCopy < src/domain/trends.ts#presentTrendLink < src/domain/trends.ts#<anonymous> in trendingLinks < src/domain/trends.ts#<anonymous> in trendingLinks",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "4390f30bf71ce2e4",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/trends.ts#presentable < src/domain/trends.ts#presentableCopyLanguage < src/domain/trends.ts#shownOf < src/domain/trends.ts#roundLinks < src/domain/trends.ts#<anonymous> in trendsRound",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "18359c3baf3a88b8",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "trend_links: SCAN t",
-    ],
+    scans: ["trend_links: SCAN t"],
     site: "src/domain/trends.ts#roundLinks < src/domain/trends.ts#<anonymous> in trendsRound",
     disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks); trend_links holds at most 250 rows (trend_links_cap, migration 0071_link_trends)",
+    reason: "trend_links holds at most 250 rows (trend_links_cap, migration 0071_link_trends)",
   },
   {
     id: "052fba3357b901bf",
@@ -3032,7 +1511,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "d62c900e0fa17a4a",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN s_tq",
       "statuses: SCAN s",
       "statuses: SCAN s_tqs",
@@ -3046,7 +1524,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     id: "70444f3748ae14d2",
     scans: [
       "follows: SCAN fo USING COVERING INDEX follows_accepted",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
       "quotes: SCAN s_tq",
       "statuses: SCAN s",
       "statuses: SCAN s_tqs",
@@ -3058,11 +1535,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   },
   {
     id: "7c935f1bb9cbd674",
-    scans: [
-      "?: SCAN a",
-      "?: SCAN ps",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
+    scans: ["?: SCAN a", "?: SCAN ps"],
     site: "src/domain/trends.ts#tagGroups < src/domain/trends.ts#candidateTags < src/domain/trends.ts#roundTags < src/domain/trends.ts#<anonymous> in trendsRound",
     disposition: "background",
     reason:
@@ -3105,36 +1578,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the trend lists hold at most 250 rows each (trend_tags_cap, trend_statuses_cap, migration 0057_trends); each status and author is read by key",
   },
   {
-    id: "2bb9d7eb91bcae90",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/unlock-accepts.ts#<anonymous> in unlockAcceptStep",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
     id: "5018c77751eeb712",
-    scans: [
-      "accounts: SCAN a",
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-      "local_accounts: SCAN l USING INDEX sqlite_autoindex_local_accounts_1",
-    ],
+    scans: ["accounts: SCAN a", "local_accounts: SCAN l USING INDEX sqlite_autoindex_local_accounts_1"],
     site: "src/domain/unlock-accepts.ts#<anonymous> in unlockAcceptStep",
     disposition: "background",
     reason:
       'a job or round traversal (unlock-accepts.ts#<anonymous> in unlockAcceptStep); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "011218312cade1e0",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/web-pages/profile.ts#localPageAccount < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> in webProfilePage < src/domain/web-pages/site.ts#<anonymous> in pageRead",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
     id: "ebcd829363705cba",
@@ -3143,125 +1592,5 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "background",
     reason:
       'a job or round traversal (oauth.ts#<anonymous> in sweepOAuth); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "62885c9adc4d3b6d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "90c8ee4bf2eb6581",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "a8fb51b20aee2af5",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "c5debd43be1ec43d",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "d71640cce03180a9",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f62c0ddbdd9c58dd",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#listWindow < src/domain/timelines.ts#<anonymous> in listTimeline < src/domain/auth.ts#<anonymous> in guarded",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "1aac6c8c6a846381",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "2282a73e78bd9d86",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "30fe77d39851010b",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "478a5b428dcde212",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "c08412102eb46881",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
-  },
-  {
-    id: "f154862e6e7b1b9a",
-    scans: [
-      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
-    ],
-    site: "src/domain/windows.ts#mergedWindow < src/domain/timelines.ts#homeWindow < src/domain/timelines.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) tests whether any suspend block exists: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
 ];

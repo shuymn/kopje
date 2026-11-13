@@ -7,6 +7,9 @@ import {
   auditDecision,
   bindsPattern,
   callerFrames,
+  FRAGMENT_STAND_IN,
+  type FragmentAllowance,
+  fragmentCount,
   normalizeSql,
   type PlanAuditEntry,
   type PlanRow,
@@ -14,6 +17,7 @@ import {
   planSignatures,
   sampleKey,
   statementId,
+  withoutFragment,
 } from "../test/plan-audit.js";
 import { sources } from "./source-scan.js";
 import { sqlExecutors } from "./sql-executors.js";
@@ -671,6 +675,124 @@ describe("plan audit decision", () => {
     const decision = auditDecision([statement("aa", ["quotes: SCAN q"])], [listed]);
     expect(decision.failures).toEqual([expect.stringMatching(/offending lines:\n {4}quotes: SCAN q$/m)]);
     expect(decision.unseen).toHaveLength(1);
+  });
+
+  // A fragment allowance as the audit reads it, in the form of the suspend blocks' (test/plan-audit-allowances.ts,
+  // whose own fragment test/plan-audit.test.ts plans): per sample, its scan passes while the plan of the statement
+  // without the fragment shows no line of it and the plan has no more lines of it than the statement contains the
+  // fragment.
+  describe("a fragment allowance", () => {
+    const fragment = `EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
+	WHERE severity = 'suspend')`;
+    const scan =
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend";
+    const allowances: FragmentAllowance[] = [{ fragment, scan, reason: "r", witness: "w" }];
+    const detail = scan.slice(scan.indexOf(": ") + 2);
+    const linesOf = (count: number) => Array.from({ length: count }, () => detail);
+    // A statement whose plan has `lines` lines of the scan besides `others`, and whose plan without the fragment has
+    // `remaining` of them (null: refused; missing: not planned).
+    const planned = (
+      sql: string,
+      lines: number,
+      others: string[] = [],
+      remaining: number | null | "missing" = 0,
+    ): AuditedStatement => ({
+      id: "aa",
+      sql,
+      sites: ["src/domain/x.ts:1 reader"],
+      samples: [
+        {
+          params: [],
+          plan: rows(...linesOf(lines), ...others.map((o) => o.slice(o.indexOf(": ") + 2))),
+          violations: [...(lines > 0 ? [scan] : []), ...others],
+          ...(remaining === "missing"
+            ? {}
+            : { without: { [fragment]: remaining === null ? null : rows(...linesOf(remaining)) } }),
+        },
+      ],
+    });
+    const decide = (statement: AuditedStatement, entries: PlanAuditEntry[] = []) =>
+      auditDecision([statement], entries, allowances).failures;
+
+    it("counts the fragment's tokens, wherever whitespace and comments fall, and not inside a literal", () => {
+      const spaced = fragment.replaceAll(/\s+/g, " /* c */\n ");
+      expect(fragmentCount(`SELECT ${fragment} AS a, ${spaced} AS b`, fragment)).toBe(2);
+      expect(fragmentCount(`SELECT ${fragment.replace("'suspend'", "'noop'")} AS a`, fragment)).toBe(0);
+      expect(fragmentCount(`SELECT 1 AS "${fragment}"`, fragment)).toBe(0);
+      expect(fragmentCount(`SELECT '${fragment.replaceAll("'", "''")}'`, fragment)).toBe(0);
+    });
+
+    it("passes the scan of a statement that contains the fragment, with no entry of its own", () => {
+      expect(decide(planned(`SELECT ${fragment} AS x`, 1))).toEqual([]);
+      expect(decide(planned(`SELECT ${fragment} AS x, ${fragment} AS y`, 2))).toEqual([]);
+      // Fewer lines than occurrences: a predicate the planner evaluated once.
+      expect(decide(planned(`SELECT ${fragment} AS x, ${fragment} AS y`, 1))).toEqual([]);
+      // The statement's other scans are still judged.
+      expect(decide(planned(`SELECT ${fragment} AS x`, 1, ["accounts: SCAN a"]))).toEqual([
+        expect.stringMatching(/offending lines:\n {4}accounts: SCAN a$/m),
+      ]);
+    });
+
+    it("fails a plan with the scan more often than the statement contains the fragment", () => {
+      for (const [sql, lines] of [
+        [`SELECT ${fragment} AS x`, 2],
+        [`SELECT ${fragment} AS x, ${fragment} AS y`, 3],
+      ] as const) {
+        expect(decide(planned(sql, lines)), sql).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+        ]);
+        // An entry for the statement still passes it.
+        expect(decide(planned(sql, lines), [entry("aa", [scan], { disposition: "deliberate", reason: "r" })])).toEqual(
+          [],
+        );
+      }
+    });
+
+    it("fails the same scan in a statement without the fragment", () => {
+      const walk = "SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend";
+      expect(decide(planned(walk, 1))).toEqual([
+        expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+      ]);
+    });
+
+    // A statement that contains the fragment and also reads the same index some other way, where the planner drops the
+    // fragment's line and prints the other walk's (an unused fragment beside an aggregate or a correlated walk).
+    it("fails a scan the plan without the fragment still shows", () => {
+      const sql = `SELECT n FROM (SELECT ${fragment} AS unused, (SELECT count(*) FROM t) AS n)`;
+      for (const [lines, remaining] of [
+        [1, 1],
+        [2, 1],
+        [1, 2],
+      ]) {
+        expect(decide(planned(sql, lines!, [], remaining)), `${lines} ${remaining}`).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+        ]);
+      }
+    });
+
+    it("fails the scan when the plan without the fragment is refused or missing", () => {
+      for (const remaining of [null, "missing"] as const) {
+        expect(decide(planned(`SELECT ${fragment} AS x`, 1, [], remaining)), String(remaining)).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+        ]);
+      }
+    });
+
+    it("takes the fragment out where it occurs, and not from a literal or a quoted name", () => {
+      const spaced = fragment.replaceAll(/\s+/g, " /* c */\n ");
+      expect(withoutFragment(`SELECT ${fragment} AS a, ${spaced} AS "${fragment}"`, fragment)).toBe(
+        `SELECT ${FRAGMENT_STAND_IN} AS a, ${FRAGMENT_STAND_IN} AS "${fragment}"`,
+      );
+      expect(withoutFragment("SELECT 1", fragment)).toBe("SELECT 1");
+    });
+
+    it("judges each sample by its own plan", () => {
+      const statement = planned(`SELECT ${fragment} AS x`, 1);
+      const twice = { ...statement.samples[0]!, plan: rows(detail, detail) };
+      const remains = { ...statement.samples[0]!, without: { [fragment]: rows(detail) } };
+      expect(decide({ ...statement, samples: [statement.samples[0]!, twice] })).toHaveLength(1);
+      expect(decide({ ...statement, samples: [statement.samples[0]!, remains] })).toHaveLength(1);
+    });
   });
 
   it("does not judge an entry whose statement the run did not execute", () => {
