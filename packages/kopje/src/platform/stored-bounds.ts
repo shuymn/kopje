@@ -1,7 +1,7 @@
 // RES-2: the stored bounds of the columns a remote server controls or a converted row may carry. Each column has a
 // projection P, the SQL builder below, and a writer that ingestion, the local write paths, the cutover's conversion and
-// its verification apply. Migration 0048_stored_bounds and its triggers are generated from P, and reads take the
-// columns of STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
+// its verification apply. The triggers of 0048_stored_bounds refuse what is not a fixed point of P
+// (domain/stored-triggers.ts), and reads take the columns of STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
 // output, as SQLite stores it, is a fixed point of the column's P, and P(P(x)) = P(x) for any stored string
 // (test/stored-bounds.test.ts).
 //
@@ -249,50 +249,6 @@ export const STORED_COLUMNS: Readonly<Record<string, readonly StoredColumn[]>> =
   ],
 };
 
-// The BEFORE INSERT and BEFORE UPDATE OF `watched` triggers `<prefix>_insert` and `<prefix>_update` on `table` that
-// abort with `message` when `when` holds of the NEW row.
-function boundTriggers(prefix: string, table: string, watched: string, when: string, message: string): string[] {
-  const body = `BEGIN\n  SELECT RAISE(ABORT, '${message}');\nEND;`;
-  return [
-    `CREATE TRIGGER ${prefix}_insert BEFORE INSERT ON ${table}\nWHEN ${when}\n${body}`,
-    `CREATE TRIGGER ${prefix}_update BEFORE UPDATE OF ${watched} ON ${table}\nWHEN ${when}\n${body}`,
-  ];
-}
-
-// True when `column` is not a fixed point of its projection: P(x) IS NOT x, with JSON-bounded columns short of a sixth
-// of their bound skipped before P.
-function pastBoundSql({ projection, jsonBytes }: StoredColumn, column: string): string {
-  const moved = `(${projection(column)}) IS NOT ${column}`;
-  return jsonBytes === undefined
-    ? moved
-    : `CASE WHEN length(CAST(${column} AS BLOB)) <= ${Math.floor((jsonBytes - 2) / 6)} THEN 0 ELSE ${moved} END`;
-}
-
-// Migration 0048_stored_bounds after its header (test/migrations.test.ts compares them): the tokened media URL check,
-// one rewrite per table, then triggers that refuse a write where P(NEW.x) IS NOT NEW.x.
-export function storedBoundsMigrationSql(): string {
-  const statements = [
-    `CREATE TABLE stored_bounds_check (
-  n INTEGER CONSTRAINT tokened_media_url_within_2048_bytes CHECK (n = 0)
-);`,
-    `INSERT INTO stored_bounds_check
-SELECT count(*) FROM media_attachments
-WHERE file_token IS NOT NULL AND length(CAST(url AS BLOB)) > ${MEDIA_URL_LIMIT};`,
-    "DROP TABLE stored_bounds_check;",
-  ];
-  for (const [table, columns] of Object.entries(STORED_COLUMNS)) {
-    const set = columns.map((c) => `  ${c.column} = ${(c.stored ?? c.projection)(c.column)}`).join(",\n");
-    const where = columns.map((c) => pastBoundSql(c, c.column)).join("\n  OR ");
-    statements.push(`UPDATE ${table} SET\n${set}\nWHERE ${where};`);
-  }
-  for (const [table, columns] of Object.entries(STORED_COLUMNS)) {
-    const when = columns.map((c) => pastBoundSql(c, `NEW.${c.column}`)).join("\n  OR ");
-    const names = columns.map((c) => c.column).join(", ");
-    statements.push(...boundTriggers(`${table}_bounds`, table, names, when, `${table}: a value past its stored bound`));
-  }
-  return `${statements.join("\n\n")}\n`;
-}
-
 // ---- Instance settings: migration 0049_instance_bounds and its triggers
 
 // The instance's public settings (instance_settings rows, data rather than configuration: access-settings.ts
@@ -473,47 +429,6 @@ export function storedInstanceSetting(name: InstanceSettingName, value: string):
   return INSTANCE_SETTING_BOUNDS[name].writer(value);
 }
 
-// True when a row named `name` holding `value` is not a fixed point of its name's P; 0 for an uncovered name.
-function settingPastBoundSql(name: string, value: string): string {
-  const cases = INSTANCE_SETTING_NAMES.map(
-    (n) => `WHEN '${n}' THEN (${INSTANCE_SETTING_BOUNDS[n].projection(value)}) IS NOT ${value}`,
-  );
-  return `CASE ${name}\n  ${cases.join("\n  ")}\n  ELSE 0 END`;
-}
-
-// Migration 0049_instance_bounds after its header (test/migrations.test.ts compares them): the cut names rewritten,
-// then every row whose P is NULL deleted, then triggers that refuse a write where P(NEW.value) IS NOT NEW.value, and
-// the partial index of the public block list (domain/instance-domain-blocks.ts publicDomainBlocks).
-export function instanceBoundsMigrationSql(): string {
-  const statements: string[] = [];
-  const names = INSTANCE_SETTING_NAMES.map((n) => `'${n}'`).join(", ");
-  for (const name of INSTANCE_SETTING_NAMES) {
-    const { cut } = INSTANCE_SETTING_BOUNDS[name] as InstanceSettingBound;
-    if (cut !== undefined) {
-      statements.push(
-        `UPDATE instance_settings SET value = ${cut("value")}\nWHERE name = '${name}' AND (${cut("value")}) IS NOT value;`,
-      );
-    }
-  }
-  statements.push(
-    `DELETE FROM instance_settings\nWHERE name IN (${names}) AND ${settingPastBoundSql("name", "value")};`,
-  );
-  const when = settingPastBoundSql("NEW.name", "NEW.value");
-  statements.push(
-    ...boundTriggers(
-      "instance_settings_bounds",
-      "instance_settings",
-      "name, value",
-      when,
-      "instance_settings: a value past its stored bound",
-    ),
-  );
-  statements.push(
-    "CREATE INDEX instance_domain_blocks_public ON instance_domain_blocks (domain) WHERE severity = 'suspend';",
-  );
-  return `${statements.join("\n\n")}\n`;
-}
-
 // ---- Custom emoji snapshots: migration 0053_custom_emoji_snapshots and its triggers
 
 // statuses.emojis, status_edits.emojis and accounts.emojis (RES-2): NULL, or a JSON array of [shortcode, url] pairs in
@@ -682,19 +597,6 @@ export const EMOJI_COLUMNS: Readonly<Record<"statuses" | "status_edits" | "accou
   accounts: ACCOUNT_EMOJIS_BYTES,
 };
 
-// Migration 0053_custom_emoji_snapshots after its header (test/migrations.test.ts compares them): the three columns,
-// added without a default or CHECK so no row is read, then triggers that refuse a write where emojisPastBoundSql holds.
-export function emojiBoundsMigrationSql(): string {
-  const statements = Object.keys(EMOJI_COLUMNS).map((table) => `ALTER TABLE ${table} ADD COLUMN emojis TEXT;`);
-  for (const [table, bytes] of Object.entries(EMOJI_COLUMNS)) {
-    const when = emojisPastBoundSql("NEW.emojis", bytes);
-    statements.push(
-      ...boundTriggers(`${table}_emojis`, table, "emojis", when, `${table}: emojis past their stored bound`),
-    );
-  }
-  return `${statements.join("\n\n")}\n`;
-}
-
 // ---- Local custom emoji: migration 0055_local_custom_emojis
 
 // custom_emojis.shortcode (RES-2): 2 to 128 ASCII letters, digits and underscores, as Mastodon's SHORTCODE_ONLY_RE,
@@ -811,7 +713,7 @@ export function trendTagNameCheckSql(column: string): string {
 }
 
 // The trends settings (Mastodon's `trends` and `trendable_by_default`, config/settings.yml), 'true' or 'false', bound
-// by the triggers of 0057 rather than 0049's (whose literal stays instanceBoundsMigrationSql's).
+// by the triggers of 0057 rather than 0049's.
 export const TREND_SETTING_BOUNDS = {
   trends: oneOf(["true", "false"]),
   trendable_by_default: oneOf(["true", "false"]),
@@ -876,8 +778,8 @@ export const CONTACT_SETTING_BOUNDS = {
 
 export type ContactSettingName = keyof typeof CONTACT_SETTING_BOUNDS;
 
-// Mastodon's `activity_api_enabled` (config/settings.yml), 'true' or 'false', bound by the triggers of 0072
-// (activityMigrationSql); no row reads as 'true', Mastodon's default.
+// Mastodon's `activity_api_enabled` (config/settings.yml), 'true' or 'false', bound by the triggers of 0072;
+// no row reads as 'true', Mastodon's default.
 export const ACTIVITY_SETTING_BOUNDS = {
   activity_api_enabled: oneOf(["true", "false"]),
 } as const satisfies Record<string, InstanceSettingBound>;
@@ -908,19 +810,8 @@ export function settingProjectionSql(name: StoredSettingName, column: string): s
   return settingBound(name).projection(column);
 }
 
-// local_accounts.active_on: the UTC day of the account's last authenticated request (domain/auth.ts noteActivity),
-// NULL or a calendar date YYYY-MM-DD of 10 bytes, held by a CHECK for imports too.
-export const ACTIVE_ON_CHECK = "active_on_date";
-
-// A UTC day as the CHECKs of 0059 (active_on) and 0072 (the activity tables) hold it: text, exactly 10 bytes, no NUL,
-// then the structure YYYY-MM-DD of a calendar date (date() reads it back as itself). The GLOB pattern is 44 bytes.
-function utcDayCheckSql(column: string): string {
-  return `typeof(${column}) = 'text'
-    AND length(CAST(${column} AS BLOB)) = 10 AND instr(CAST(${column} AS BLOB), x'00') = 0
-    AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(${column}) IS ${column}`;
-}
-
-// The UTC day of `now` as utcDayCheckSql accepts it, or null for a time outside the years 0 to 9999.
+// The UTC day of `now` as the CHECKs of 0059 (active_on) and 0072 (the activity tables) accept it (text of 10 bytes,
+// no NUL, a calendar date YYYY-MM-DD that date() reads back as itself), or null for a time outside the years 0 to 9999.
 export function utcDay(now: number): string | null {
   const date = new Date(now);
   if (Number.isNaN(date.getTime())) {
@@ -928,26 +819,6 @@ export function utcDay(now: number): string | null {
   }
   const day = date.toISOString().slice(0, 10);
   return isCalendarDate(day) ? day : null;
-}
-
-// Migration 0059_contact_and_activity after its header (test/migrations.test.ts compares them): the column, an existing
-// contact_username row that is not a fixed point of P deleted (a dump restored before 0059 may carry one), then the
-// triggers.
-export function contactActivityMigrationSql(): string {
-  const when = `NEW.name = 'contact_username' AND (${contactUsernamePastBoundSql("NEW.value")})`;
-  return `${[
-    `ALTER TABLE local_accounts ADD COLUMN active_on TEXT
-  CONSTRAINT ${ACTIVE_ON_CHECK} CHECK (active_on IS NULL OR (${utcDayCheckSql("active_on")}));`,
-    `DELETE FROM instance_settings\nWHERE name = 'contact_username' AND (${contactUsernamePastBoundSql("value")});`,
-    "-- 0049's triggers end in ELSE 0 and 0057's name only the trends settings; these bound contact_username.",
-    ...boundTriggers(
-      "instance_settings_contact",
-      "instance_settings",
-      "name, value",
-      when,
-      "instance_settings: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // A stored time read as the 24-byte ISO form Kopje writes (hour 00 to 23, read back by strftime as itself), else NULL:
@@ -965,25 +836,6 @@ export function indexablePastBoundSql(column: string): string {
 	WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT IN (0, 1) THEN 1
 	ELSE 0 END`;
-}
-
-// Migration 0058_profile_credentials after its header (test/migrations.test.ts compares them): accounts.indexable,
-// added without a default or CHECK so no row is read, with triggers that refuse a write where indexablePastBoundSql
-// holds; and the unlock acceptance cursor (domain/unlock-accepts.ts), whose CHECK reads the local accounts only.
-export function profileBoundsMigrationSql(): string {
-  return `${[
-    "ALTER TABLE accounts ADD COLUMN indexable INTEGER;",
-    `ALTER TABLE local_accounts ADD COLUMN accept_requests_after INTEGER
-  CONSTRAINT accept_requests_after_cursor CHECK (accept_requests_after IS NULL
-    OR (typeof(accept_requests_after) = 'integer' AND accept_requests_after >= 0));`,
-    ...boundTriggers(
-      "accounts_indexable",
-      "accounts",
-      "indexable",
-      indexablePastBoundSql("NEW.indexable"),
-      "accounts: indexable past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // ---- Account moves: migration 0060_account_moves
@@ -1009,23 +861,6 @@ export function movedToPastBoundSql(row: string): string {
 
 // The partial index the purge's clearing step and completion check seek references through.
 export const MOVED_TO_INDEX = "accounts_moved_to";
-
-// Migration 0060_account_moves after its header (test/migrations.test.ts compares them): the column, added without a
-// default or CHECK so no row is read; its partial index; and triggers that refuse a write where movedToPastBoundSql
-// holds.
-export function accountMovesMigrationSql(): string {
-  return `${[
-    "ALTER TABLE accounts ADD COLUMN moved_to_account_id TEXT;",
-    `CREATE INDEX ${MOVED_TO_INDEX} ON accounts (moved_to_account_id) WHERE moved_to_account_id IS NOT NULL;`,
-    ...boundTriggers(
-      "accounts_moved_to",
-      "accounts",
-      "moved_to_account_id, domain",
-      movedToPastBoundSql("NEW"),
-      "accounts: moved_to_account_id past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
 
 // ---- Account static images: migration 0061_account_static_images
 
@@ -1062,23 +897,6 @@ export function staticImagesPastBoundSql(row: string): string {
 	ELSE 0 END`,
     )
     .join("\n\tOR ");
-}
-
-// Migration 0061_account_static_images after its header (test/migrations.test.ts compares them): the two columns,
-// added without a default or CHECK so no row is read, and triggers that refuse a write where staticImagesPastBoundSql
-// holds. Every existing row holds NULL in both, which is within the bound.
-export function accountStaticImagesMigrationSql(): string {
-  return `${[
-    "ALTER TABLE accounts ADD COLUMN avatar_static_url TEXT;",
-    "ALTER TABLE accounts ADD COLUMN header_static_url TEXT;",
-    ...boundTriggers(
-      "accounts_static_images",
-      "accounts",
-      "avatar_url, header_url, avatar_static_url, header_static_url, domain",
-      staticImagesPastBoundSql("NEW"),
-      "accounts: static image past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // ---- Account warnings: migrations 0062_account_warnings and 0063_account_warning_notifications_key
@@ -1131,19 +949,10 @@ export function storedWarningStatusIds(raw: string | null): string | null {
   return ids === null ? null : JSON.stringify(ids);
 }
 
-// The scalar parts of the status_ids bound, held by a CHECK for imports too: the storage class, the raw bytes (an
-// imported value may be malformed UTF-8, which length counts as fewer characters), NUL, then the JSON structure.
-// json_type and json_array_length run only on valid JSON (AND stops at the first false operand).
-export function warningStatusIdsCheckSql(column: string): string {
-  return `${column} IS NULL OR (typeof(${column}) = 'text'
-      AND length(CAST(${column} AS BLOB)) <= ${WARNING_STATUS_IDS_BYTES} AND instr(CAST(${column} AS BLOB), x'00') = 0
-      AND json_valid(${column}) AND json_type(${column}) = 'array'
-      AND json_array_length(${column}) <= ${WARNING_STATUS_IDS})`;
-}
-
-// True when `column` holds status_ids past the bound, judged in order: the CHECK's scalar parts, then every element an
-// 18-digit decimal id as TEXT, judged on its decoded bytes, then NUL (a JSON escape decodes to a NUL that GLOB stops
-// at), then digits (a CHECK may not read json_each, so triggers judge the elements, as 0053 does).
+// True when `column` holds status_ids past the bound, judged in order: the scalar parts the table's CHECK holds too
+// (the storage class, the raw bytes, NUL, the JSON structure), then every element an 18-digit decimal id as TEXT,
+// judged on its decoded bytes, then NUL (a JSON escape decodes to a NUL that GLOB stops at), then digits (a CHECK may
+// not read json_each, so triggers judge the elements, as 0053 does).
 export function warningStatusIdsPastBoundSql(column: string): string {
   return `CASE WHEN ${column} IS NULL THEN 0
 	WHEN typeof(${column}) <> 'text' THEN 1
@@ -1156,43 +965,6 @@ export function warningStatusIdsPastBoundSql(column: string): string {
 		OR length(CAST(e.value AS BLOB)) <> ${WARNING_STATUS_ID_BYTES} OR instr(CAST(e.value AS BLOB), x'00') > 0
 		OR e.value GLOB '*[^0-9]*') THEN 1
 	ELSE 0 END`;
-}
-
-// The partial unique index of the notification of each warning (LocalNotificationWorker keys it by its activity, the
-// warning); its `account_warning_id = ?` serves the foreign key.
-export const NOTIFICATIONS_WARNING_INDEX = "notifications_account_warning";
-
-// Migration 0062_account_warnings after its header (test/migrations.test.ts compares them): the table with its CHECKs
-// and cascade index, triggers that refuse a write where warningStatusIdsPastBoundSql holds, then the notification's
-// column, added without a default or CHECK so no row is read, and its partial unique index.
-export function accountWarningsMigrationSql(): string {
-  return `${[
-    `CREATE TABLE account_warnings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_account_id TEXT NOT NULL REFERENCES local_accounts (account_id) ON DELETE CASCADE,
-  action TEXT NOT NULL CONSTRAINT account_warning_action CHECK (action = 'none'),
-  text TEXT NOT NULL DEFAULT '' CONSTRAINT account_warning_text_within_${WARNING_TEXT_BYTES}_bytes
-    CHECK (typeof(text) = 'text' AND length(CAST(text AS BLOB)) <= ${WARNING_TEXT_BYTES}
-      AND instr(CAST(text AS BLOB), x'00') = 0),
-  status_ids TEXT
-    CONSTRAINT account_warning_status_ids_within_${WARNING_STATUS_IDS}_ids_and_${WARNING_STATUS_IDS_BYTES}_bytes
-    CHECK (${warningStatusIdsCheckSql("status_ids")}),
-  created_at TEXT NOT NULL CONSTRAINT account_warning_created_at_iso
-    CHECK (typeof(created_at) = 'text' AND length(CAST(created_at AS BLOB)) = 24
-      AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at AND substr(created_at, 12, 2) BETWEEN '00' AND '23')
-);`,
-    "CREATE INDEX account_warnings_target ON account_warnings (target_account_id);",
-    ...boundTriggers(
-      "account_warnings_status_ids",
-      "account_warnings",
-      "status_ids",
-      warningStatusIdsPastBoundSql("NEW.status_ids"),
-      "account_warnings: status_ids past its stored bound",
-    ),
-    "ALTER TABLE notifications ADD COLUMN account_warning_id INTEGER REFERENCES account_warnings (id) ON DELETE CASCADE;",
-    `CREATE UNIQUE INDEX ${NOTIFICATIONS_WARNING_INDEX} ON notifications (account_warning_id)
-  WHERE account_warning_id IS NOT NULL;`,
-  ].join("\n\n")}\n`;
 }
 
 // ---- Status applications: migration 0064_status_applications
@@ -1290,22 +1062,6 @@ export function presentedAppName(name: string | null): string | null {
     : null;
 }
 
-// Migration 0064_status_applications after its header (test/migrations.test.ts compares them): the column, added
-// without a default or CHECK so no row is read, and triggers that refuse a write where applicationIdPastBoundSql holds.
-// Every existing row holds NULL, which is within the bound.
-export function statusApplicationsMigrationSql(): string {
-  return `${[
-    "ALTER TABLE statuses ADD COLUMN application_id TEXT;",
-    ...boundTriggers(
-      "statuses_application",
-      "statuses",
-      "application_id, reblog_of_id, account_id",
-      applicationIdPastBoundSql("NEW"),
-      "statuses: application_id past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
-
 // media_attachments.blurhash: NULL, or a BlurHash Mastodon's MediaAttachmentParser#supported_blurhash? keeps (its
 // parser/media_attachment_parser.rb, the blurhash gem's Blurhash.components): base83 characters, x and y components
 // of 1 to 5 each (the size flag, its first character: x = flag mod 9 + 1, y = floor(flag / 9) + 1), and 4 + 2xy
@@ -1342,22 +1098,6 @@ export function storedBlurhash(value: unknown): string | null {
   const x = (flag % 9) + 1;
   const y = Math.floor(flag / 9) + 1;
   return x <= BLURHASH_COMPONENTS && y <= BLURHASH_COMPONENTS && value.length === 4 + 2 * x * y ? value : null;
-}
-
-// Migration 0065_media_blurhash after its header (test/migrations.test.ts compares them): the column, added without a
-// default or CHECK so no row is read, and triggers that refuse a write where blurhashPastBoundSql holds. Every existing
-// row holds NULL, which is within the bound. No row condition: Mastodon keeps a blurhash on local and remote media.
-export function mediaBlurhashMigrationSql(): string {
-  return `${[
-    "ALTER TABLE media_attachments ADD COLUMN blurhash TEXT;",
-    ...boundTriggers(
-      "media_attachments_blurhash",
-      "media_attachments",
-      "blurhash",
-      blurhashPastBoundSql("NEW.blurhash"),
-      "media_attachments: blurhash past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // ---- Field verification: migration 0066_field_verification
@@ -1434,38 +1174,6 @@ export function verifiedLinksPastBoundSql(column: string): string {
 	ELSE 0 END`;
 }
 
-// A non-negative integer column's CHECK, within `max` when given.
-function countCheck(column: string, nullable: boolean, max?: number): string {
-  const range = max === undefined ? `${column} >= 0` : `${column} BETWEEN 0 AND ${max}`;
-  const bounded = `typeof(${column}) = 'integer' AND ${range}`;
-  return nullable ? `${column} IS NULL OR (${bounded})` : bounded;
-}
-
-// Migration 0066_field_verification after its header (test/migrations.test.ts compares them): the scheduling columns
-// with CHECKs (each ALTER scans the local accounts to check its own), and verified_links, added without a default or
-// CHECK, with triggers that refuse a write where verifiedLinksPastBoundSql holds. Every existing row holds NULL or the
-// default, within the bounds.
-export function fieldVerificationMigrationSql(): string {
-  return `${[
-    `ALTER TABLE local_accounts ADD COLUMN links_due_at INTEGER
-  CONSTRAINT links_due_at_time CHECK (${countCheck("links_due_at", true)});`,
-    `ALTER TABLE local_accounts ADD COLUMN links_hold_until INTEGER
-  CONSTRAINT links_hold_until_time CHECK (${countCheck("links_hold_until", true)});`,
-    `ALTER TABLE local_accounts ADD COLUMN links_claim INTEGER NOT NULL DEFAULT 0
-  CONSTRAINT links_claim_count CHECK (${countCheck("links_claim", false)});`,
-    `ALTER TABLE local_accounts ADD COLUMN links_attempts INTEGER NOT NULL DEFAULT 0
-  CONSTRAINT links_attempts_count CHECK (${countCheck("links_attempts", false, FIELD_LINK_MAX_ATTEMPTS)});`,
-    "ALTER TABLE local_accounts ADD COLUMN verified_links TEXT;",
-    ...boundTriggers(
-      "local_accounts_verified_links",
-      "local_accounts",
-      "verified_links",
-      verifiedLinksPastBoundSql("NEW.verified_links"),
-      "local_accounts: verified_links past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
-
 // ---- Unverified field links: migration 0076_field_link_checks
 
 // local_accounts.unverified_links: NULL, or a JSON array of 1 to UNVERIFIED_LINKS distinct values (texts, each
@@ -1488,22 +1196,6 @@ export function unverifiedLinksPastBoundSql(column: string): string {
 	WHEN EXISTS (SELECT 1 FROM json_each(${column}) e WHERE e.type <> 'text' OR NOT ${fieldLinkValueSql("e.value")}) THEN 1
 	WHEN (SELECT count(DISTINCT e.value) FROM json_each(${column}) e) <> json_array_length(${column}) THEN 1
 	ELSE 0 END`;
-}
-
-// Migration 0076_field_link_checks after its header (test/migrations.test.ts compares them): unverified_links, added
-// without a default or CHECK so no row is read or rewritten, and triggers that refuse a write where
-// unverifiedLinksPastBoundSql holds. Every existing row holds NULL.
-export function fieldLinkChecksMigrationSql(): string {
-  return `${[
-    "ALTER TABLE local_accounts ADD COLUMN unverified_links TEXT;",
-    ...boundTriggers(
-      "local_accounts_unverified_links",
-      "local_accounts",
-      "unverified_links",
-      unverifiedLinksPastBoundSql("NEW.unverified_links"),
-      "local_accounts: unverified_links past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // ---- Status cards: migration 0067_status_cards
@@ -1596,71 +1288,6 @@ function cardCountCase(value: string, nullable: boolean, max: number): string {
   return nullable ? `WHEN ${value} IS NOT NULL AND (${refused}) THEN 1` : `WHEN ${refused} THEN 1`;
 }
 
-// The WHEN condition of migration 0067's triggers, frozen as released: its file is compared by bytes
-// (test/migrations.test.ts), so it reads none of the current bounds or predicates, which later migrations may change.
-const STATUS_CARDS_0067_WHEN = `CASE WHEN typeof(NEW.status_id) <> 'text' THEN 1
-	WHEN length(CAST(NEW.status_id AS BLOB)) <> 18 THEN 1
-	WHEN instr(CAST(NEW.status_id AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.status_id GLOB '*[^0-9]*' THEN 1
-	WHEN CASE WHEN typeof(NEW.url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.url AS BLOB)) > 2048 THEN 1
-	WHEN instr(CAST(NEW.url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.url NOT GLOB 'https://?*' THEN 1
-	WHEN NEW.url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.due_at IS NOT NULL AND (typeof(NEW.due_at) <> 'integer' OR NEW.due_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN typeof(NEW.enqueued_at) <> 'integer' OR NEW.enqueued_at NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.claim) <> 'integer' OR NEW.claim NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.attempts) <> 'integer' OR NEW.attempts NOT BETWEEN 0 AND 2 THEN 1
-	WHEN typeof(NEW.generation) <> 'integer' OR NEW.generation NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN NEW.fetched_at IS NOT NULL AND (typeof(NEW.fetched_at) <> 'integer' OR NEW.fetched_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN CASE WHEN typeof(NEW.title) <> 'text' THEN 1
-	WHEN length(CAST(NEW.title AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.title AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.title) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.description) <> 'text' THEN 1
-	WHEN length(CAST(NEW.description AS BLOB)) > 1022 THEN 1
-	WHEN instr(CAST(NEW.description AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.description) AS BLOB)) > 1024 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.author_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.author_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.provider_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.provider_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.author_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.author_url = '' THEN 0
-	WHEN NOT (NEW.author_url GLOB 'https://?*' OR NEW.author_url GLOB 'http://?*') THEN 1
-	WHEN NEW.author_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.author_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.provider_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.provider_url = '' THEN 0
-	WHEN NOT (NEW.provider_url GLOB 'https://?*' OR NEW.provider_url GLOB 'http://?*') THEN 1
-	WHEN NEW.provider_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.provider_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN NEW.language IS NULL THEN 0
-	WHEN typeof(NEW.language) <> 'text' THEN 1
-	WHEN length(CAST(NEW.language AS BLOB)) NOT BETWEEN 2 AND 7 THEN 1
-	WHEN instr(CAST(NEW.language AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.language GLOB '*[^A-Za-z-]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.published_at IS NOT NULL AND (CASE WHEN length(CAST(NEW.published_at AS BLOB)) = 24 AND substr(NEW.published_at, 12, 2) < '24'
-	AND strftime('%Y-%m-%dT%H:%M:%fZ', NEW.published_at) = NEW.published_at THEN NEW.published_at END) IS NULL THEN 1
-	ELSE 0 END`;
-
 // The WHEN lines that refuse the row `row` by the rules 0067_status_cards introduced, column by column in order:
 // status_id (an 18-digit snowflake as TEXT, as statuses.id), url, the counters and times, the texts, the optional
 // URLs, language and published_at (isoTimeSql), over the current bounds and predicates.
@@ -1734,65 +1361,6 @@ export const CARD_DUE_INDEX = "status_cards_due";
 export const CARD_EXPIRY_INDEX = "status_cards_expiry";
 export const CARD_CLAIMED_INDEX = "status_cards_claimed";
 export const CARD_FRESH_INDEX = "status_cards_fresh";
-
-// The columns 0067's update trigger watches (frozen with it).
-const STATUS_CARDS_0067_COLUMNS = [
-  "status_id",
-  "url",
-  "due_at",
-  "enqueued_at",
-  "claim",
-  "attempts",
-  "generation",
-  "title",
-  "description",
-  "author_name",
-  "author_url",
-  "provider_name",
-  "provider_url",
-  "language",
-  "published_at",
-  "fetched_at",
-];
-
-// Migration 0067_status_cards after its header (test/migrations.test.ts compares them), frozen as released:
-// the empty table with its structural CHECKs, its four partial indexes, and triggers that refuse a write where
-// STATUS_CARDS_0067_WHEN holds.
-export function statusCardsMigrationSql(): string {
-  return `${[
-    `CREATE TABLE status_cards (
-  status_id TEXT NOT NULL PRIMARY KEY REFERENCES statuses (id) ON DELETE CASCADE,
-  url TEXT NOT NULL,
-  due_at INTEGER,
-  enqueued_at INTEGER NOT NULL,
-  claim INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  generation INTEGER NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
-  author_name TEXT NOT NULL DEFAULT '',
-  author_url TEXT NOT NULL DEFAULT '',
-  provider_name TEXT NOT NULL DEFAULT '',
-  provider_url TEXT NOT NULL DEFAULT '',
-  language TEXT,
-  published_at TEXT,
-  fetched_at INTEGER,
-  CONSTRAINT status_card_pending_or_attached CHECK ((fetched_at IS NULL) = (due_at IS NOT NULL)),
-  CONSTRAINT status_card_attached_title CHECK (fetched_at IS NULL OR length(CAST(title AS BLOB)) > 0)
-) WITHOUT ROWID;`,
-    `CREATE INDEX status_cards_due ON status_cards (due_at, status_id) WHERE due_at IS NOT NULL;`,
-    `CREATE INDEX status_cards_expiry ON status_cards (enqueued_at) WHERE due_at IS NOT NULL;`,
-    `CREATE INDEX status_cards_claimed ON status_cards (url, due_at, status_id) WHERE attempts > 0;`,
-    `CREATE INDEX status_cards_fresh ON status_cards (url, fetched_at) WHERE fetched_at IS NOT NULL;`,
-    ...boundTriggers(
-      "status_cards_bounds",
-      "status_cards",
-      STATUS_CARDS_0067_COLUMNS.join(", "),
-      STATUS_CARDS_0067_WHEN,
-      "status_cards: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
 
 // ---- Remote field verification: migration 0068_remote_field_verification
 
@@ -1896,48 +1464,6 @@ export function remoteFieldLinkRowPastBoundSql(row: string): string {
 export const REMOTE_LINK_DUE_INDEX = "remote_field_links_due";
 export const REMOTE_LINK_EXPIRY_INDEX = "remote_field_links_expiry";
 
-const REMOTE_FIELD_LINK_COLUMNS = [
-  "account_id",
-  "link_back",
-  "links",
-  "generation",
-  "claim",
-  "attempts",
-  "due_at",
-  "armed_at",
-  "hold_until",
-  "checked_at",
-];
-
-// Migration 0068_remote_field_verification after its header (test/migrations.test.ts compares them): the empty table
-// with its CHECK, its two partial indexes, and triggers that refuse a write where remoteFieldLinkRowPastBoundSql holds.
-export function remoteFieldLinksMigrationSql(): string {
-  return `${[
-    `CREATE TABLE remote_field_links (
-  account_id TEXT NOT NULL PRIMARY KEY REFERENCES accounts (id) ON DELETE CASCADE,
-  link_back TEXT NOT NULL,
-  links TEXT NOT NULL,
-  generation INTEGER NOT NULL,
-  claim INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  due_at INTEGER,
-  armed_at INTEGER,
-  hold_until INTEGER,
-  checked_at INTEGER,
-  CONSTRAINT remote_field_links_armed CHECK ((due_at IS NULL) = (armed_at IS NULL))
-) WITHOUT ROWID;`,
-    `CREATE INDEX ${REMOTE_LINK_DUE_INDEX} ON remote_field_links (due_at, account_id) WHERE due_at IS NOT NULL;`,
-    `CREATE INDEX ${REMOTE_LINK_EXPIRY_INDEX} ON remote_field_links (armed_at) WHERE due_at IS NOT NULL;`,
-    ...boundTriggers(
-      "remote_field_links_bounds",
-      "remote_field_links",
-      REMOTE_FIELD_LINK_COLUMNS.join(", "),
-      remoteFieldLinkRowPastBoundSql("NEW"),
-      "remote_field_links: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
-
 // ---- Card embeds: migration 0069_card_embeds
 
 // What an oEmbed or twitter:player card adds to status_cards (domain/link-cards.ts), and the cache of oEmbed endpoints
@@ -2022,99 +1548,6 @@ export function cardDimensionSql(value: string, otherwise: "0" | "NULL"): string
   return otherwise === "NULL" ? read : `coalesce(${read}, 0)`;
 }
 
-// The WHEN condition of migration 0069's triggers, frozen as released: 0070_card_images recreates the triggers over the
-// current predicate (statusCardPastBoundSql), so 0069's file reads none of the current bounds.
-const STATUS_CARDS_0069_WHEN = `CASE WHEN typeof(NEW.status_id) <> 'text' THEN 1
-	WHEN length(CAST(NEW.status_id AS BLOB)) <> 18 THEN 1
-	WHEN instr(CAST(NEW.status_id AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.status_id GLOB '*[^0-9]*' THEN 1
-	WHEN CASE WHEN typeof(NEW.url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.url AS BLOB)) > 2048 THEN 1
-	WHEN instr(CAST(NEW.url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.url NOT GLOB 'https://?*' THEN 1
-	WHEN NEW.url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.due_at IS NOT NULL AND (typeof(NEW.due_at) <> 'integer' OR NEW.due_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN typeof(NEW.enqueued_at) <> 'integer' OR NEW.enqueued_at NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.claim) <> 'integer' OR NEW.claim NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.attempts) <> 'integer' OR NEW.attempts NOT BETWEEN 0 AND 2 THEN 1
-	WHEN typeof(NEW.generation) <> 'integer' OR NEW.generation NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN NEW.fetched_at IS NOT NULL AND (typeof(NEW.fetched_at) <> 'integer' OR NEW.fetched_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN CASE WHEN typeof(NEW.title) <> 'text' THEN 1
-	WHEN length(CAST(NEW.title AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.title AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.title) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.description) <> 'text' THEN 1
-	WHEN length(CAST(NEW.description AS BLOB)) > 1022 THEN 1
-	WHEN instr(CAST(NEW.description AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.description) AS BLOB)) > 1024 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.author_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.author_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.provider_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.provider_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.author_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.author_url = '' THEN 0
-	WHEN NOT (NEW.author_url GLOB 'https://?*' OR NEW.author_url GLOB 'http://?*') THEN 1
-	WHEN NEW.author_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.author_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.provider_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.provider_url = '' THEN 0
-	WHEN NOT (NEW.provider_url GLOB 'https://?*' OR NEW.provider_url GLOB 'http://?*') THEN 1
-	WHEN NEW.provider_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.provider_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN NEW.language IS NULL THEN 0
-	WHEN typeof(NEW.language) <> 'text' THEN 1
-	WHEN length(CAST(NEW.language AS BLOB)) NOT BETWEEN 2 AND 7 THEN 1
-	WHEN instr(CAST(NEW.language AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.language GLOB '*[^A-Za-z-]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.published_at IS NOT NULL AND (CASE WHEN length(CAST(NEW.published_at AS BLOB)) = 24 AND substr(NEW.published_at, 12, 2) < '24'
-	AND strftime('%Y-%m-%dT%H:%M:%fZ', NEW.published_at) = NEW.published_at THEN NEW.published_at END) IS NULL THEN 1
-	WHEN typeof(NEW.card_type) <> 'integer' OR NEW.card_type NOT BETWEEN 0 AND 2 THEN 1
-	WHEN typeof(NEW.width) <> 'integer' OR NEW.width NOT BETWEEN 0 AND 65535 THEN 1
-	WHEN typeof(NEW.height) <> 'integer' OR NEW.height NOT BETWEEN 0 AND 65535 THEN 1
-	WHEN CASE WHEN typeof(NEW.embed_src) <> 'text' THEN 1
-	WHEN length(CAST(NEW.embed_src AS BLOB)) > 512 THEN 1
-	WHEN instr(CAST(NEW.embed_src AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.embed_src = '' THEN 0
-	WHEN NOT (NEW.embed_src GLOB 'http://?*' OR NEW.embed_src GLOB 'https://?*') THEN 1
-	WHEN NEW.embed_src GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.embed_src GLOB '*["<>\\^\`{|}]*' THEN 1
-	WHEN length(CAST(NEW.embed_src AS BLOB)) + 4 * (length(NEW.embed_src) - length(replace(NEW.embed_src, '&', '')))
-		> 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.iframe_width IS NOT NULL AND (typeof(NEW.iframe_width) <> 'integer' OR NEW.iframe_width NOT BETWEEN 0 AND 65535) THEN 1
-	WHEN NEW.iframe_height IS NOT NULL AND (typeof(NEW.iframe_height) <> 'integer' OR NEW.iframe_height NOT BETWEEN 0 AND 65535) THEN 1
-	WHEN (NEW.card_type = 2) <> (NEW.embed_src <> '') THEN 1
-	WHEN NEW.embed_src = '' AND (NEW.iframe_width IS NOT NULL OR NEW.iframe_height IS NOT NULL) THEN 1
-	ELSE 0 END`;
-
-// The columns 0069's update trigger watches (frozen with it).
-const STATUS_CARDS_0069_COLUMNS = [
-  ...STATUS_CARDS_0067_COLUMNS,
-  "card_type",
-  "width",
-  "height",
-  "embed_src",
-  "iframe_width",
-  "iframe_height",
-];
-
 // A card image's alt text (status_cards.image_description, Mastodon's og:image:alt), in JSON-escaped UTF-8 bytes with
 // its quotes; RES-3's spares at 4,096 bytes (test/status-bounds.test.ts) set it.
 export const CARD_IMAGE_DESCRIPTION_JSON_BYTES = 256;
@@ -2163,17 +1596,6 @@ export function statusCardPastBoundSql(row: string): string {
 // unknown, or an article (JSON-LD @type NewsArticle, or og:type article), independent of the card's type.
 export const LINK_TYPES = { unknown: 0, article: 1 } as const;
 export type LinkType = keyof typeof LINK_TYPES;
-
-// The columns of status_cards from 0071 on, which its update trigger watches.
-export const CARD_COLUMNS = [
-  ...STATUS_CARDS_0069_COLUMNS,
-  "image_url",
-  "image_id",
-  "image_description",
-  "link_type",
-  "final_url",
-  "public",
-] as const;
 
 // The characters a template holds besides printable ASCII's refused: those that end or split an HTML attribute or a
 // URL, braces apart (OEMBED_PLACEHOLDER's, judged after). One GLOB pattern of 11 bytes.
@@ -2231,44 +1653,6 @@ export function oembedEndpointPastBoundSql(row: string): string {
 
 // The index card_oembed_endpoints' expiry walks (domain/link-cards.ts names it in INDEXED BY).
 export const OEMBED_EXPIRY_INDEX = "card_oembed_endpoints_expiry";
-
-// Migration 0069_card_embeds after its header (test/migrations.test.ts compares them): the six columns of status_cards
-// with defaults every existing row passes (a link of 0 by 0, no embed), its triggers recreated over the frozen
-// STATUS_CARDS_0069_WHEN and STATUS_CARDS_0069_COLUMNS, and the empty card_oembed_endpoints with its expiry index and
-// triggers.
-export function cardEmbedsMigrationSql(): string {
-  return `${[
-    [
-      "ALTER TABLE status_cards ADD COLUMN card_type INTEGER NOT NULL DEFAULT 0;",
-      "ALTER TABLE status_cards ADD COLUMN width INTEGER NOT NULL DEFAULT 0;",
-      "ALTER TABLE status_cards ADD COLUMN height INTEGER NOT NULL DEFAULT 0;",
-      "ALTER TABLE status_cards ADD COLUMN embed_src TEXT NOT NULL DEFAULT '';",
-      "ALTER TABLE status_cards ADD COLUMN iframe_width INTEGER;",
-      "ALTER TABLE status_cards ADD COLUMN iframe_height INTEGER;",
-    ].join("\n"),
-    "DROP TRIGGER status_cards_bounds_insert;\nDROP TRIGGER status_cards_bounds_update;",
-    ...boundTriggers(
-      "status_cards_bounds",
-      "status_cards",
-      STATUS_CARDS_0069_COLUMNS.join(", "),
-      STATUS_CARDS_0069_WHEN,
-      "status_cards: a value past its stored bound",
-    ),
-    `CREATE TABLE card_oembed_endpoints (
-  domain TEXT NOT NULL PRIMARY KEY,
-  template TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-) WITHOUT ROWID;`,
-    `CREATE INDEX ${OEMBED_EXPIRY_INDEX} ON card_oembed_endpoints (expires_at, domain);`,
-    ...boundTriggers(
-      "card_oembed_endpoints_bounds",
-      "card_oembed_endpoints",
-      "domain, template, expires_at",
-      oembedEndpointPastBoundSql("NEW"),
-      "card_oembed_endpoints: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
 
 // ---- Card images: migration 0070_card_images
 
@@ -2351,174 +1735,6 @@ export function cardImagePastBoundSql(row: string): string {
 	ELSE 0 END`;
 }
 
-export const CARD_IMAGE_COLUMNS = [
-  "id",
-  "source_url",
-  "due_at",
-  "enqueued_at",
-  "claim",
-  "attempts",
-  "token",
-  "width",
-  "height",
-  "blurhash",
-  "stored_at",
-] as const;
-
-// The WHEN condition and the watched columns of migration 0070's triggers, frozen as released: 0071_link_trends
-// recreates the triggers over the current predicate (statusCardPastBoundSql), so 0070's file reads none of the current
-// bounds.
-const STATUS_CARDS_0070_WHEN = `CASE WHEN typeof(NEW.status_id) <> 'text' THEN 1
-	WHEN length(CAST(NEW.status_id AS BLOB)) <> 18 THEN 1
-	WHEN instr(CAST(NEW.status_id AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.status_id GLOB '*[^0-9]*' THEN 1
-	WHEN CASE WHEN typeof(NEW.url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.url AS BLOB)) > 2048 THEN 1
-	WHEN instr(CAST(NEW.url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.url NOT GLOB 'https://?*' THEN 1
-	WHEN NEW.url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.due_at IS NOT NULL AND (typeof(NEW.due_at) <> 'integer' OR NEW.due_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN typeof(NEW.enqueued_at) <> 'integer' OR NEW.enqueued_at NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.claim) <> 'integer' OR NEW.claim NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN typeof(NEW.attempts) <> 'integer' OR NEW.attempts NOT BETWEEN 0 AND 2 THEN 1
-	WHEN typeof(NEW.generation) <> 'integer' OR NEW.generation NOT BETWEEN 0 AND 9007199254740991 THEN 1
-	WHEN NEW.fetched_at IS NOT NULL AND (typeof(NEW.fetched_at) <> 'integer' OR NEW.fetched_at NOT BETWEEN 0 AND 9007199254740991) THEN 1
-	WHEN CASE WHEN typeof(NEW.title) <> 'text' THEN 1
-	WHEN length(CAST(NEW.title AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.title AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.title) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.description) <> 'text' THEN 1
-	WHEN length(CAST(NEW.description AS BLOB)) > 1022 THEN 1
-	WHEN instr(CAST(NEW.description AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.description) AS BLOB)) > 1024 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.author_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.author_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_name) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_name AS BLOB)) > 510 THEN 1
-	WHEN instr(CAST(NEW.provider_name AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.provider_name) AS BLOB)) > 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.author_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.author_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.author_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.author_url = '' THEN 0
-	WHEN NOT (NEW.author_url GLOB 'https://?*' OR NEW.author_url GLOB 'http://?*') THEN 1
-	WHEN NEW.author_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.author_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.provider_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.provider_url AS BLOB)) > 1024 THEN 1
-	WHEN instr(CAST(NEW.provider_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.provider_url = '' THEN 0
-	WHEN NOT (NEW.provider_url GLOB 'https://?*' OR NEW.provider_url GLOB 'http://?*') THEN 1
-	WHEN NEW.provider_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.provider_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN NEW.language IS NULL THEN 0
-	WHEN typeof(NEW.language) <> 'text' THEN 1
-	WHEN length(CAST(NEW.language AS BLOB)) NOT BETWEEN 2 AND 7 THEN 1
-	WHEN instr(CAST(NEW.language AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.language GLOB '*[^A-Za-z-]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.published_at IS NOT NULL AND (CASE WHEN length(CAST(NEW.published_at AS BLOB)) = 24 AND substr(NEW.published_at, 12, 2) < '24'
-	AND strftime('%Y-%m-%dT%H:%M:%fZ', NEW.published_at) = NEW.published_at THEN NEW.published_at END) IS NULL THEN 1
-	WHEN typeof(NEW.card_type) <> 'integer' OR NEW.card_type NOT BETWEEN 0 AND 2 THEN 1
-	WHEN typeof(NEW.width) <> 'integer' OR NEW.width NOT BETWEEN 0 AND 65535 THEN 1
-	WHEN typeof(NEW.height) <> 'integer' OR NEW.height NOT BETWEEN 0 AND 65535 THEN 1
-	WHEN CASE WHEN typeof(NEW.embed_src) <> 'text' THEN 1
-	WHEN length(CAST(NEW.embed_src AS BLOB)) > 512 THEN 1
-	WHEN instr(CAST(NEW.embed_src AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.embed_src = '' THEN 0
-	WHEN NOT (NEW.embed_src GLOB 'http://?*' OR NEW.embed_src GLOB 'https://?*') THEN 1
-	WHEN NEW.embed_src GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.embed_src GLOB '*["<>\\^\`{|}]*' THEN 1
-	WHEN length(CAST(NEW.embed_src AS BLOB)) + 4 * (length(NEW.embed_src) - length(replace(NEW.embed_src, '&', '')))
-		> 512 THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.iframe_width IS NOT NULL AND (typeof(NEW.iframe_width) <> 'integer' OR NEW.iframe_width NOT BETWEEN 0 AND 65535) THEN 1
-	WHEN NEW.iframe_height IS NOT NULL AND (typeof(NEW.iframe_height) <> 'integer' OR NEW.iframe_height NOT BETWEEN 0 AND 65535) THEN 1
-	WHEN NEW.image_url IS NOT '' AND CASE WHEN typeof(NEW.image_url) <> 'text' THEN 1
-	WHEN length(CAST(NEW.image_url AS BLOB)) > 2048 THEN 1
-	WHEN instr(CAST(NEW.image_url AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.image_url NOT GLOB 'https://?*' THEN 1
-	WHEN NEW.image_url GLOB '*[^!-~]*' THEN 1
-	WHEN NEW.image_url GLOB '*["<>\\^\`{|}]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN NEW.image_id IS NOT NULL AND CASE WHEN typeof(NEW.image_id) <> 'text' THEN 1
-	WHEN length(CAST(NEW.image_id AS BLOB)) <> 18 THEN 1
-	WHEN instr(CAST(NEW.image_id AS BLOB), x'00') > 0 THEN 1
-	WHEN NEW.image_id GLOB '*[^0-9]*' THEN 1
-	ELSE 0 END THEN 1
-	WHEN CASE WHEN typeof(NEW.image_description) <> 'text' THEN 1
-	WHEN length(CAST(NEW.image_description AS BLOB)) > 254 THEN 1
-	WHEN instr(CAST(NEW.image_description AS BLOB), x'00') > 0 THEN 1
-	WHEN length(CAST(json_quote(NEW.image_description) AS BLOB)) > 256 THEN 1
-	ELSE 0 END THEN 1
-	WHEN (NEW.card_type = 2) <> (NEW.embed_src <> '') THEN 1
-	WHEN NEW.embed_src = '' AND (NEW.iframe_width IS NOT NULL OR NEW.iframe_height IS NOT NULL) THEN 1
-	WHEN NEW.image_url IS '' AND NEW.image_id IS NOT NULL THEN 1
-	ELSE 0 END`;
-
-const STATUS_CARDS_0070_COLUMNS = [...STATUS_CARDS_0069_COLUMNS, "image_url", "image_id", "image_description"];
-
-// Migration 0070_card_images after its header (test/migrations.test.ts compares them): status_cards' three columns
-// with defaults every existing row passes (no image, no alt text), the index of its image link, its triggers
-// recreated over the frozen STATUS_CARDS_0070_WHEN and STATUS_CARDS_0070_COLUMNS, and the empty card_images with its
-// indexes and triggers.
-export function cardImagesMigrationSql(): string {
-  return `${[
-    [
-      "ALTER TABLE status_cards ADD COLUMN image_url TEXT NOT NULL DEFAULT '';",
-      "ALTER TABLE status_cards ADD COLUMN image_id TEXT;",
-      "ALTER TABLE status_cards ADD COLUMN image_description TEXT NOT NULL DEFAULT '';",
-    ].join("\n"),
-    `CREATE INDEX ${CARD_IMAGE_LINK_INDEX} ON status_cards (image_id) WHERE image_id IS NOT NULL;`,
-    "DROP TRIGGER status_cards_bounds_insert;\nDROP TRIGGER status_cards_bounds_update;",
-    ...boundTriggers(
-      "status_cards_bounds",
-      "status_cards",
-      STATUS_CARDS_0070_COLUMNS.join(", "),
-      STATUS_CARDS_0070_WHEN,
-      "status_cards: a value past its stored bound",
-    ),
-    `CREATE TABLE card_images (
-  id TEXT NOT NULL PRIMARY KEY,
-  source_url TEXT NOT NULL,
-  due_at INTEGER,
-  enqueued_at INTEGER NOT NULL,
-  claim INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  token TEXT,
-  width INTEGER,
-  height INTEGER,
-  blurhash TEXT,
-  stored_at INTEGER
-) WITHOUT ROWID;`,
-    [
-      `CREATE INDEX ${CARD_IMAGE_DUE_INDEX} ON card_images (due_at, id) WHERE due_at IS NOT NULL;`,
-      `CREATE INDEX ${CARD_IMAGE_EXPIRY_INDEX} ON card_images (enqueued_at) WHERE due_at IS NOT NULL;`,
-      `CREATE INDEX ${CARD_IMAGE_STORED_INDEX} ON card_images (source_url, stored_at) WHERE stored_at IS NOT NULL;`,
-      `CREATE INDEX ${CARD_IMAGE_PENDING_INDEX} ON card_images (source_url) WHERE due_at IS NOT NULL;`,
-      `CREATE INDEX ${CARD_IMAGE_STORED_ID_INDEX} ON card_images (id) WHERE stored_at IS NOT NULL;`,
-      `CREATE UNIQUE INDEX ${CARD_IMAGE_TOKEN_INDEX} ON card_images (token) WHERE token IS NOT NULL;`,
-    ].join("\n"),
-    ...boundTriggers(
-      "card_images_bounds",
-      "card_images",
-      CARD_IMAGE_COLUMNS.join(", "),
-      cardImagePastBoundSql("NEW"),
-      "card_images: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
-
 // ---- Link trends: migration 0071_link_trends
 
 // trend_links (domain/trends.ts roundLinks): the links the cron scores, by their card's final URL, at most
@@ -2590,76 +1806,6 @@ export function linkReviewPastBoundSql(row: string, key: "url" | "domain"): stri
 	ELSE 0 END`;
 }
 
-// A cap trigger that refuses only a new key when `table` holds `max` rows (0057's shape).
-function capTrigger(table: string, key: string, max: number): string {
-  return `CREATE TRIGGER ${table}_cap BEFORE INSERT ON ${table}
-WHEN NOT EXISTS (SELECT 1 FROM ${table} WHERE ${key} = NEW.${key}) AND (SELECT count(*) FROM ${table}) >= ${max}
-BEGIN
-  SELECT RAISE(ABORT, '${table}: more than ${max}');
-END;`;
-}
-
-// Migration 0071_link_trends after its header (test/migrations.test.ts compares them): status_cards' three columns
-// with defaults every existing row passes (unknown, no final URL, not public), its triggers recreated over
-// statusCardPastBoundSql and CARD_COLUMNS, the two partial indexes, and the three empty tables with their triggers.
-export function linkTrendsMigrationSql(): string {
-  const review = (table: string, key: "url" | "domain") => [
-    `CREATE TABLE ${table} (
-  ${key} TEXT NOT NULL PRIMARY KEY,
-  trendable INTEGER NOT NULL,
-  reviewed_at TEXT NOT NULL
-) WITHOUT ROWID;`,
-    ...boundTriggers(
-      `${table}_bounds`,
-      table,
-      `${key}, trendable, reviewed_at`,
-      linkReviewPastBoundSql("NEW", key),
-      `${table}: a value past its stored bound`,
-    ),
-    capTrigger(table, key, MAX_TREND_REVIEWS),
-  ];
-  return `${[
-    [
-      "ALTER TABLE status_cards ADD COLUMN link_type INTEGER NOT NULL DEFAULT 0;",
-      "ALTER TABLE status_cards ADD COLUMN final_url TEXT NOT NULL DEFAULT '';",
-      "ALTER TABLE status_cards ADD COLUMN public INTEGER NOT NULL DEFAULT 0;",
-    ].join("\n"),
-    "DROP TRIGGER status_cards_bounds_insert;\nDROP TRIGGER status_cards_bounds_update;",
-    ...boundTriggers(
-      "status_cards_bounds",
-      "status_cards",
-      CARD_COLUMNS.join(", "),
-      statusCardPastBoundSql("NEW"),
-      "status_cards: a value past its stored bound",
-    ),
-    [
-      `CREATE INDEX ${CARD_PUBLIC_LINK_INDEX} ON status_cards (final_url, status_id)
-  WHERE public = 1 AND fetched_at IS NOT NULL AND final_url <> '';`,
-      `CREATE INDEX ${PUBLIC_BOOSTS_INDEX} ON statuses (reblog_of_id, id)
-  WHERE reblog_of_id IS NOT NULL AND visibility = 'public';`,
-    ].join("\n"),
-    `CREATE TABLE trend_links (
-  url TEXT NOT NULL PRIMARY KEY,
-  domain TEXT NOT NULL,
-  language TEXT,
-  score REAL NOT NULL,
-  max_score REAL NOT NULL,
-  max_score_at TEXT NOT NULL
-) WITHOUT ROWID;`,
-    `CREATE INDEX ${TREND_LINKS_LISTED_INDEX} ON trend_links (score DESC, url) WHERE score >= 1;`,
-    ...boundTriggers(
-      "trend_links_bounds",
-      "trend_links",
-      "url, domain, language, score, max_score, max_score_at",
-      trendLinkPastBoundSql("NEW"),
-      "trend_links: a value past its stored bound",
-    ),
-    capTrigger("trend_links", "url", MAX_TREND_LINKS),
-    ...review("link_trend_reviews", "url"),
-    ...review("link_provider_reviews", "domain"),
-  ].join("\n\n")}\n`;
-}
-
 // ---- Instance activity: migration 0072_activity_tracking (domain/instance-activity.ts)
 
 // activity_counts: one row per kind and UTC day, value the day's count (1 to ACTIVITY_VALUE_MAX: the writers add 1 and
@@ -2667,47 +1813,10 @@ export function linkTrendsMigrationSql(): string {
 // day and local account with a login that day, account_id an 18-digit id as TEXT (accounts.id's form), no foreign key.
 export const ACTIVITY_KINDS = ["statuses", "registrations"] as const;
 export const ACTIVITY_VALUE_MAX = 1_000_000_000_000;
-const ACTIVITY_ID_BYTES = 18;
 
 // Whether `id` is an account id activity_logins stores (its CHECK's JS twin): 18 ASCII digits.
 export function isActivityAccountId(id: string): boolean {
   return /^[0-9]{18}$/.test(id);
-}
-
-// Migration 0072_activity_tracking after its header (test/migrations.test.ts compares them): the two tables with their
-// CHECKs, an existing activity_api_enabled row that is not 'true' or 'false' deleted (0049's triggers let the name
-// through), then its triggers.
-export function activityMigrationSql(): string {
-  const when = "NEW.name = 'activity_api_enabled' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'";
-  return `${[
-    `CREATE TABLE activity_counts (
-  kind TEXT NOT NULL,
-  day TEXT NOT NULL,
-  value INTEGER NOT NULL,
-  PRIMARY KEY (kind, day),
-  CONSTRAINT activity_counts_kind CHECK (kind IN (${ACTIVITY_KINDS.map((k) => `'${k}'`).join(", ")})),
-  CONSTRAINT activity_counts_day CHECK (${utcDayCheckSql("day")}),
-  CONSTRAINT activity_counts_value CHECK (typeof(value) = 'integer' AND value BETWEEN 1 AND ${ACTIVITY_VALUE_MAX})
-) WITHOUT ROWID;`,
-    `CREATE TABLE activity_logins (
-  day TEXT NOT NULL,
-  account_id TEXT NOT NULL,
-  PRIMARY KEY (day, account_id),
-  CONSTRAINT activity_logins_day CHECK (${utcDayCheckSql("day")}),
-  CONSTRAINT activity_logins_account_id CHECK (typeof(account_id) = 'text'
-    AND length(CAST(account_id AS BLOB)) = ${ACTIVITY_ID_BYTES} AND instr(CAST(account_id AS BLOB), x'00') = 0
-    AND account_id NOT GLOB '*[^0-9]*')
-) WITHOUT ROWID;`,
-    "DELETE FROM instance_settings\nWHERE name = 'activity_api_enabled' AND value IS NOT 'true' AND value IS NOT 'false';",
-    "-- 0049's triggers end in ELSE 0, and 0057's and 0059's name other settings; these bound activity_api_enabled.",
-    ...boundTriggers(
-      "instance_settings_activity",
-      "instance_settings",
-      "name, value",
-      when,
-      "instance_settings: a value past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
 }
 
 // ---- Actor document revisions: migration 0073_actor_document_revision (domain/remote-actors.ts upsertRemoteActor)
@@ -2720,7 +1829,7 @@ export const DOCUMENT_REVISION_MAX = SAFE_INTEGER_MAX;
 
 // True when `row` holds a revision past its stored bound: not an integer (INTEGER affinity has already stored numeric
 // text and an integral REAL as one), or outside 0..DOCUMENT_REVISION_MAX.
-function documentRevisionPastBoundSql(row: string): string {
+export function documentRevisionPastBoundSql(row: string): string {
   const column = `${row}.document_revision`;
   return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT BETWEEN 0 AND ${DOCUMENT_REVISION_MAX} THEN 1
@@ -2740,22 +1849,6 @@ export function nextDocumentRevisionSql(current: string | null): string {
     : `(${current} + 1 + ${draw} % ${DOCUMENT_REVISION_MAX}) % ${DOCUMENT_REVISION_MAX + 1}`;
 }
 
-// Migration 0073_actor_document_revision after its header (test/migrations.test.ts compares them): the column, added
-// with a constant default and no CHECK so no row is read or rewritten, and triggers that refuse a write where
-// documentRevisionPastBoundSql holds.
-export function documentRevisionMigrationSql(): string {
-  return `${[
-    "ALTER TABLE accounts ADD COLUMN document_revision INTEGER NOT NULL DEFAULT 0;",
-    ...boundTriggers(
-      "accounts_document_revision",
-      "accounts",
-      "document_revision",
-      documentRevisionPastBoundSql("NEW"),
-      "accounts: document_revision past its stored bound",
-    ),
-  ].join("\n\n")}\n`;
-}
-
 // ---- Filter text units: migration 0079_filter_text_units (domain/status-presenter.ts measureFilterText)
 
 // statuses.filter_text_units: NULL (not measured), or an integer from 0 to FILTER_TEXT_UNITS_MAX, the UTF-16 code units
@@ -2769,27 +1862,6 @@ export function filterTextUnitsPastBoundSql(column: string): string {
 	WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT BETWEEN 0 AND ${FILTER_TEXT_UNITS_MAX} THEN 1
 	ELSE 0 END`;
-}
-
-// Migration 0079_filter_text_units after its header (test/migrations.test.ts compares them): the column, added without
-// a default or CHECK so no row is read or rewritten, triggers that refuse a write where filterTextUnitsPastBoundSql
-// holds, and one that clears a measure a text change left behind (one row, by key).
-export function filterTextUnitsMigrationSql(): string {
-  return `${[
-    "ALTER TABLE statuses ADD COLUMN filter_text_units INTEGER;",
-    ...boundTriggers(
-      "statuses_filter_text",
-      "statuses",
-      "filter_text_units",
-      filterTextUnitsPastBoundSql("NEW.filter_text_units"),
-      "statuses: filter_text_units past its stored bound",
-    ),
-    `CREATE TRIGGER statuses_filter_text_stale AFTER UPDATE OF content, spoiler_text, source_text ON statuses
-WHEN NEW.filter_text_units IS NOT NULL
-BEGIN
-  UPDATE statuses SET filter_text_units = NULL WHERE id = NEW.id;
-END;`,
-  ].join("\n\n")}\n`;
 }
 
 // ---- Account invitations: migration 0081_account_invitations (domain/account-invitations.ts, AUTH-9)
@@ -2816,44 +1888,6 @@ export function storedInvitationEmail(raw: string): string | null {
   return ENCODER.encode(email).length <= INVITATION_EMAIL_BYTES && /^[^\s@\p{Cc}]+@[^\s@\p{Cc}]+$/u.test(email)
     ? email
     : null;
-}
-
-// Migration 0081_account_invitations after its header (test/migrations.test.ts compares them): the table, its CHECKs
-// (each judging the storage class, then the bytes, then NUL and controls, then the form), the email and the username
-// unique by SQLite's lower() (the sign-in's rule, login-email.ts loginEmailMatchSql), the cap and the rule that an
-// invitation is added or removed, never changed.
-export function accountInvitationsMigrationSql(): string {
-  const iso = (column: string) => `typeof(${column}) = 'text' AND length(CAST(${column} AS BLOB)) = 24
-    AND strftime('%Y-%m-%dT%H:%M:%fZ', ${column}) IS ${column} AND substr(${column}, 12, 2) BETWEEN '00' AND '23'`;
-  return `${[
-    `CREATE TABLE account_invitations (
-  email TEXT NOT NULL,
-  username TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  CONSTRAINT account_invitation_email CHECK (typeof(email) = 'text'
-    AND length(CAST(email AS BLOB)) BETWEEN 3 AND ${INVITATION_EMAIL_BYTES}
-    AND instr(CAST(email AS BLOB), x'00') = 0
-    AND email NOT GLOB ('*[' || char(1) || '-' || char(32) || char(127) || ']*')
-    AND instr(email, '@') > 1 AND instr(substr(email, instr(email, '@') + 1), '@') = 0
-    AND substr(email, -1) <> '@'),
-  CONSTRAINT account_invitation_username CHECK (typeof(username) = 'text'
-    AND length(CAST(username AS BLOB)) BETWEEN 1 AND ${LOCAL_USERNAME_BYTES}
-    AND instr(CAST(username AS BLOB), x'00') = 0
-    AND username NOT GLOB '*[^A-Za-z0-9_]*'),
-  CONSTRAINT account_invitation_created_at_iso CHECK (${iso("created_at")})
-);`,
-    "CREATE UNIQUE INDEX account_invitations_email ON account_invitations (lower(email));",
-    "CREATE UNIQUE INDEX account_invitations_username ON account_invitations (lower(username));",
-    `CREATE TRIGGER account_invitations_cap BEFORE INSERT ON account_invitations
-WHEN (SELECT count(*) FROM account_invitations) >= ${MAX_ACCOUNT_INVITATIONS}
-BEGIN
-  SELECT RAISE(ABORT, 'account_invitations: more than ${MAX_ACCOUNT_INVITATIONS}');
-END;`,
-    `CREATE TRIGGER account_invitations_immutable BEFORE UPDATE ON account_invitations
-BEGIN
-  SELECT RAISE(ABORT, 'account_invitations: an invitation is added or removed, never changed');
-END;`,
-  ].join("\n\n")}\n`;
 }
 
 // ---- Status times (statuses.published_at, edited_at)
@@ -3080,128 +2114,4 @@ export function remoteMediaUsagePastBoundSql(row: string): string {
 	${cardCountCase(c("pending"), false, SAFE_INTEGER_MAX)}
 	WHEN ${c("doomed")} > ${c("bytes")} THEN 1
 	ELSE 0 END`;
-}
-
-export const REMOTE_MEDIA_COLUMNS = [
-  "id",
-  "kind",
-  "owner_id",
-  "account_id",
-  "domain",
-  "url",
-  "host",
-  "category",
-  "lane",
-  "generation",
-  "due_at",
-  "enqueued_at",
-  "claim",
-  "attempts",
-  "token",
-  "ext",
-  "still_ext",
-  "stored_at",
-  "failed_at",
-  "seen_at",
-] as const;
-
-export const REMOTE_MEDIA_OBJECT_COLUMNS = [
-  "token",
-  "slot_id",
-  "state",
-  "charge",
-  "kind",
-  "content_type",
-  "still_type",
-  "hosts",
-  "claimed_at",
-  "stored_at",
-  "due_at",
-  "delete_attempts",
-] as const;
-
-// Migration 0077_remote_media after its header (test/migrations.test.ts compares them): the three empty tables, their
-// indexes and bounds triggers, and the usage row. No existing table changes and none is read.
-export function remoteMediaMigrationSql(): string {
-  return `${[
-    `CREATE TABLE remote_media (
-  id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL,
-  owner_id TEXT,
-  account_id TEXT,
-  domain TEXT,
-  url TEXT NOT NULL,
-  host TEXT NOT NULL,
-  category TEXT NOT NULL,
-  lane INTEGER NOT NULL,
-  generation INTEGER NOT NULL,
-  due_at INTEGER,
-  enqueued_at INTEGER NOT NULL,
-  claim INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  token TEXT,
-  ext TEXT,
-  still_ext TEXT,
-  stored_at INTEGER,
-  failed_at INTEGER,
-  seen_at INTEGER
-);`,
-    [
-      `CREATE UNIQUE INDEX ${REMOTE_MEDIA_OWNER_INDEX} ON remote_media (owner_id, kind) WHERE owner_id IS NOT NULL;`,
-      `CREATE UNIQUE INDEX ${REMOTE_MEDIA_EMOJI_INDEX} ON remote_media (domain, url) WHERE kind = 'emoji';`,
-      `CREATE INDEX ${REMOTE_MEDIA_DUE_INDEX} ON remote_media (lane, due_at, id) WHERE due_at IS NOT NULL;`,
-      `CREATE INDEX ${REMOTE_MEDIA_EXPIRY_INDEX} ON remote_media (enqueued_at) WHERE due_at IS NOT NULL;`,
-      `CREATE INDEX ${REMOTE_MEDIA_ACCOUNT_INDEX} ON remote_media (account_id) WHERE account_id IS NOT NULL;`,
-    ].join("\n"),
-    ...boundTriggers(
-      "remote_media_bounds",
-      "remote_media",
-      REMOTE_MEDIA_COLUMNS.join(", "),
-      remoteMediaSlotPastBoundSql("NEW"),
-      "remote_media: a value past its stored bound",
-    ),
-    `CREATE TABLE remote_media_objects (
-  token TEXT NOT NULL PRIMARY KEY,
-  slot_id INTEGER,
-  state TEXT NOT NULL,
-  charge INTEGER NOT NULL,
-  kind TEXT NOT NULL,
-  content_type TEXT,
-  still_type TEXT,
-  hosts TEXT,
-  claimed_at INTEGER NOT NULL,
-  stored_at INTEGER,
-  due_at INTEGER,
-  delete_attempts INTEGER NOT NULL DEFAULT 0
-) WITHOUT ROWID;`,
-    [
-      `CREATE UNIQUE INDEX ${REMOTE_OBJECTS_SLOT_INDEX} ON remote_media_objects (slot_id) WHERE slot_id IS NOT NULL;`,
-      `CREATE INDEX ${REMOTE_OBJECTS_DUE_INDEX} ON remote_media_objects (due_at) WHERE state = 'doomed' AND delete_attempts = 0;`,
-      `CREATE INDEX ${REMOTE_OBJECTS_RETRY_INDEX} ON remote_media_objects (due_at) WHERE state = 'doomed' AND delete_attempts > 0;`,
-      `CREATE INDEX ${REMOTE_OBJECTS_RESERVED_INDEX} ON remote_media_objects (claimed_at) WHERE state = 'reserved';`,
-      `CREATE INDEX ${REMOTE_OBJECTS_STORED_INDEX} ON remote_media_objects (kind, stored_at) WHERE state = 'stored';`,
-      `CREATE INDEX ${REMOTE_OBJECTS_VALIDATION_INDEX} ON remote_media_objects (token) WHERE state = 'stored';`,
-    ].join("\n"),
-    ...boundTriggers(
-      "remote_media_objects_bounds",
-      "remote_media_objects",
-      REMOTE_MEDIA_OBJECT_COLUMNS.join(", "),
-      remoteMediaObjectPastBoundSql("NEW"),
-      "remote_media_objects: a value past its stored bound",
-    ),
-    `CREATE TABLE remote_media_usage (
-  id INTEGER PRIMARY KEY,
-  bytes INTEGER NOT NULL,
-  doomed INTEGER NOT NULL,
-  pending INTEGER NOT NULL
-);`,
-    ...boundTriggers(
-      "remote_media_usage_bounds",
-      "remote_media_usage",
-      "id, bytes, doomed, pending",
-      remoteMediaUsagePastBoundSql("NEW"),
-      "remote_media_usage: a value past its stored bound",
-    ),
-    "INSERT INTO remote_media_usage (id, bytes, doomed, pending) VALUES (1, 0, 0, 0);",
-  ].join("\n\n")}\n`;
 }
