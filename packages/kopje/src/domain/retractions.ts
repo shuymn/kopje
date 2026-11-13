@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { originOf } from "./remote-actors";
+import { sameOrigin } from "../platform/http-url";
 
 // The tombstone store (ID-7): the ids each actor retracted and the objects stored and then deleted
 // (inbound_retractions). The sweep (inbox.ts) removes expired ones.
@@ -45,7 +45,7 @@ export function recordDeletedObject(db: Db, uri: string, now: number): void {
 }
 
 function recordable(actorUri: string, targetUri: string): boolean {
-  return originOf(targetUri) !== null && originOf(targetUri) === originOf(actorUri);
+  return sameOrigin(targetUri, actorUri);
 }
 
 // Whether every one of targetUris can be recorded as retracted by actorUri now: those not recorded yet fit under the

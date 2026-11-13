@@ -14,7 +14,7 @@ import {
 } from "../domain/inbox";
 import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
-import { fetchableHref } from "../platform/http-url";
+import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
@@ -122,7 +122,7 @@ export function fetchesFirst(parsed: Parsed): string | null {
   const url =
     activity.type === "UpdateActor"
       ? actor
-      : activity.type === "Dereference" && originOf(activity.object) === originOf(actor)
+      : activity.type === "Dereference" && sameOrigin(activity.object, actor)
         ? activity.object
         : activity.type === "Move" && target !== null && target !== actor
           ? target
@@ -576,7 +576,7 @@ export async function receiveInbound(
         })
       : { status: 401, reason: "not-key-owner" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   let actor: RemoteActorInput | null = null;
@@ -648,7 +648,7 @@ async function domainBlocked(
   if (originOf(actorUri) === context.origin) {
     return { status: 401, reason: "local-actor" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   return apply(deps, {
@@ -716,7 +716,7 @@ async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay)
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
     return { status: 401, reason: "not-key-owner" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   if (fromStore?.key !== key) {
@@ -934,7 +934,7 @@ function withVerifiedReference(
     keys.some((k) => k.id === id) ||
     !listed.some((url) => url.href === id) ||
     (key.ownerId !== null && key.ownerId.href !== actorUri) ||
-    originOf(id) !== originOf(actorUri)
+    !sameOrigin(id, actorUri)
   ) {
     return keys;
   }
@@ -953,7 +953,7 @@ async function prepare(
 ): Promise<InboundActivity | InboxOutcome> {
   if (activity.type === "Dereference") {
     // The object of the actor's own activity: only on the actor's origin (Mastodon's permitted_origin).
-    if (originOf(activity.object) !== originOf(actorUri)) {
+    if (!sameOrigin(activity.object, actorUri)) {
       return { status: 202, reason: "foreign-object" };
     }
     const fetched = await fetchRemoteStatus(activity.object, loaders.document, activity.activity);
@@ -1024,7 +1024,7 @@ export async function verifySpooledRequest(
   if (originOf(actorUri) === `https://${domain}`) {
     return { ok: false, transient: false, reason: "invalid-actor" };
   }
-  if (originOf(envelope.id) !== originOf(actorUri)) {
+  if (!sameOrigin(envelope.id, actorUri)) {
     return { ok: false, transient: false, reason: "foreign-id" };
   }
   const deps = { ...loader, budget: requestBudget(Date.now()) };

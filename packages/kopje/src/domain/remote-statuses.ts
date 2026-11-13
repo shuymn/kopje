@@ -1,6 +1,7 @@
 import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
+import { sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
@@ -95,17 +96,6 @@ export type StoreContext = {
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
 
 type Author = { id: string; uri: string };
-
-function originOf(uri: string | null): string | null {
-  if (uri === null) {
-    return null;
-  }
-  try {
-    return new URL(uri).origin;
-  } catch {
-    return null;
-  }
-}
 
 // A remote time as stored: parsed, and never in the future (a future time would pin the status to the top of feeds);
 // one it cannot store (storedTime: unreadable, or before year 0) is the arrival.
@@ -317,7 +307,7 @@ function searchText(input: RemoteStatusInput): string {
 // verified: the actor of the activity, or the fetched author of a fetched object).
 export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   // ID-6: the object is the author's, on the author's origin; ID-3: so it is never a local object.
-  if (originOf(input.uri) === null || originOf(input.uri) !== originOf(author.uri)) {
+  if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
   }
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
@@ -587,7 +577,7 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     boosters are notified; history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last one.
 //   - An Update of an unknown status creates it if it is recent (Create and Update out of order).
 export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
-  if (originOf(input.uri) === null || originOf(input.uri) !== originOf(author.uri)) {
+  if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
   }
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {

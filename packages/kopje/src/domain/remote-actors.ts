@@ -1,6 +1,7 @@
 import { ACCOUNTS_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
+import { sameOrigin } from "../platform/http-url";
 import { ACCOUNT_EMOJIS_BYTES, isoTimeSql, nextDocumentRevisionSql } from "../platform/stored-bounds";
 import { presentedRemoteFields } from "./accounts";
 import { availableSql, deletingSql, domainCoveredSql, individuallySuspendedSql } from "./audience";
@@ -324,7 +325,7 @@ export function upsertRemoteActor(
     // The document lists the actor's current keys; keys it no longer lists are not trusted any more.
     db.run("DELETE FROM remote_keys WHERE account_id = ?", row.id);
     for (const key of actor.keys) {
-      if (originOf(key.id) !== originOf(actor.uri)) {
+      if (!sameOrigin(key.id, actor.uri)) {
         continue;
       }
       db.run(

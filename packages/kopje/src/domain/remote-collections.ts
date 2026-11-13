@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { sameOrigin } from "../platform/http-url";
 import { storedCount } from "../platform/stored-bounds";
 import { availableSql, requiresMention, type Visibility } from "./audience";
 import { actorCollections, type ActorCollections } from "./collection-requests";
@@ -58,17 +59,6 @@ export const PART_NETWORK = 2;
 export const PART_TAGS = 4;
 export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS;
 
-function originOf(uri: string | null): string | null {
-  if (uri === null) {
-    return null;
-  }
-  try {
-    return new URL(uri).origin;
-  } catch {
-    return null;
-  }
-}
-
 // Which of the actor's own collections `target` is (Add#perform and Remove#perform compare it with the account's
 // featured_collection_url): its featured collection, or its featuredTags collection, on its own origin; null for
 // anything else.
@@ -77,7 +67,7 @@ export function collectionOf(db: Db, accountId: string, target: string): "featur
     "SELECT uri, raw FROM accounts WHERE id = ? AND domain IS NOT NULL",
     accountId,
   );
-  if (row === undefined || originOf(target) === null || originOf(target) !== originOf(row.uri)) {
+  if (row === undefined || !sameOrigin(target, row.uri)) {
     return null;
   }
   const collections = actorCollections(row.raw);
@@ -481,11 +471,10 @@ export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, 
 // the time of its position in the collection (the first listed is the newest), so the profile shows the collection's
 // order however its pins were learned and whichever of them phase 2 pins later.
 function replacePins(db: Db, account: { id: string; uri: string }, uris: readonly string[], now: number): void {
-  const origin = originOf(account.uri);
   const pinned: { id: string; at: string }[] = [];
   const pending: { uri: string; at: string }[] = [];
   [...new Set(uris)].slice(0, MAX_REMOTE_PINS).forEach((uri, i) => {
-    if (originOf(uri) !== origin) {
+    if (!sameOrigin(uri, account.uri)) {
       return;
     }
     const at = new Date(now - i).toISOString();

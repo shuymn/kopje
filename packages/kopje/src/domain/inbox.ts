@@ -12,6 +12,7 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import type { MaintenanceReason } from "../platform/store-errors";
 import {
@@ -852,7 +853,7 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   if (ref.id === null) {
     return ignored("unknown-object");
   }
-  if (originOf(ref.id) !== originOf(actor.uri)) {
+  if (!sameOrigin(ref.id, actor.uri)) {
     return ignored("foreign-object");
   }
   // A retracted id that a favourite or boost still holds is undone all the same (a Delete of it may have recorded the
@@ -2151,7 +2152,7 @@ function accountHasRows(db: Db, id: string, filters = true): boolean {
 // written, only while a forward could still be recorded (forwardable), and the round after the verification decides
 // everything again.
 const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
-  if (originOf(activity.object) !== originOf(actor.uri)) {
+  if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
   const status = db.first<{
@@ -2459,7 +2460,7 @@ function hideRemoteStatus(db: Db, statusId: string): void {
 // drops such a relay; Kopje lets the stamp's own server answer).
 const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => {
   const { now } = input;
-  if (originOf(activity.object) !== originOf(actor.uri)) {
+  if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
   const status = db.first<{ reblog_of_id: string | null; visibility: Visibility }>(
@@ -2850,7 +2851,7 @@ function newOriginal(
     return ignored("unfetchable");
   }
   const authorUri = fetched.attributedTo;
-  if (authorUri === null || originOf(authorUri) !== originOf(fetched.uri)) {
+  if (authorUri === null || !sameOrigin(authorUri, fetched.uri)) {
     return ignored("unusable-object");
   }
   // Nothing new of an author whose deletion has started is stored, its stored row or not (ID-7).
@@ -3267,7 +3268,7 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
   if (collection !== "featured") {
     return ignored("not-collection");
   }
-  if (originOf(object.status) !== originOf(actor.uri)) {
+  if (!sameOrigin(object.status, actor.uri)) {
     return ignored("foreign-object");
   }
   let status = statusByUri(db, object.status);
@@ -3378,7 +3379,7 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (originOf(actorUri) === null || originOf(actorUri) === origin) {
     return ignored("local-actor");
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return ignored("foreign-id");
   }
   if (input.actor !== null && input.actor.uri !== actorUri) {
