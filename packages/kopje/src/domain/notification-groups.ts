@@ -46,8 +46,8 @@ import { readWindow, windowOf, windowPage } from "./windows";
 // budget (GROUP_ADMISSION_CANDIDATES, listGroupedNotifications). A page ends early, with the groups found, when its
 // walk meets more than GROUP_WALK notifications of the groups it has already found or hidden (in practice a status
 // favourited by thousands within a few hours); its Link continues from the last one read, so the walk goes on in the
-// next page. A group's count, samples and oldest are of the shown among its newest GROUP_COUNT (oldest: from the page's
-// lower end up).
+// next page. A group's count, samples and newest are of the shown among its newest GROUP_COUNT notifications, shown or
+// hidden, up to the page's upper end; its oldest is the first shown among its GROUP_COUNT oldest from the lower end up.
 //
 // Dismissing a group and clearing remove its notifications, or all of them, as Mastodon's destroy_all and delete_all
 // do: gone from every read at once (R15), and deleted in bounded batches in the request and the job rounds
@@ -65,15 +65,16 @@ const SAMPLE_ACCOUNTS = 8;
 // How many shown notifications a walk reads at most, for a page or an unread count (at most MAX_UNREAD_LIMIT groups).
 export const GROUP_WALK = 2_000;
 
-// How many of a group's shown notifications its count reads at most: a larger group counts this many.
+// How many of a group's notifications, shown or hidden, its count reads at most: a larger group counts at most this
+// many.
 export const GROUP_COUNT = 400;
 
 // The work a page of groups does past its walk (RES-7), shared by its admission passes: the candidates membersOf and
 // oldestOf read (before the rule, those of groups and passes later rejected included) and the groups visited. A pass
-// visits a group only while the visit and the most it may read (VISIT_CANDIDATES for a group with a key, nothing for
-// an `ungrouped-` one) still fit within these; the fallback has a reserve of one more visit and VISIT_CANDIDATES.
-// GROUP_ADMISSION_CANDIDATES is eight visits at their most, about fifteen of groups whose oldest is shown;
-// GROUP_ADMISSION_VISITS one pass over a page of the largest limit (80, pageQuery's maxLimit).
+// visits a group only while one more visit fits, and starts each read only while its LIMIT still fits; the fallback has
+// a reserve of one more visit and VISIT_CANDIDATES, the most one visit reads. GROUP_ADMISSION_CANDIDATES is eight
+// visits at their most, about fifteen of groups of GROUP_COUNT whose oldest is shown; GROUP_ADMISSION_VISITS one pass
+// over a page of the largest limit (80, pageQuery's maxLimit).
 export const GROUP_ADMISSION_CANDIDATES = 6_400;
 export const GROUP_ADMISSION_VISITS = 80;
 
@@ -241,10 +242,21 @@ function walkGroups(db: Db, viewer: UserContext, input: WalkInput): Walk {
 type Range = { lower: string | null; upper: string | null };
 
 // A group's shown notifications among its newest GROUP_COUNT up to the range's upper end, with the walk's first one of
-// it in the last slot when they miss it, newest first; with no grouped key, its first one alone.
-function membersOf(db: Db, viewer: UserContext, group: Found, upper: string | null, work: GroupWork): Shown[] {
+// it in the last slot when they miss it, newest first; with no grouped key, its first one alone. Also the newest of
+// those candidates, shown or not (null for none or no key). Undefined, reading nothing, when the window's GROUP_COUNT
+// does not fit `meter`.
+function membersOf(
+  db: Db,
+  viewer: UserContext,
+  group: Found,
+  upper: string | null,
+  meter: Meter,
+): { rows: Shown[]; newestCandidate: string | null } | undefined {
   if (group.key.startsWith("ungrouped-")) {
-    return [group.first];
+    return { rows: [group.first], newestCandidate: null };
+  }
+  if (!charge(meter, GROUP_COUNT)) {
+    return undefined;
   }
   const { rows, candidates } = shownWindow(
     db,
@@ -256,26 +268,36 @@ function membersOf(db: Db, viewer: UserContext, group: Found, upper: string | nu
     upper,
     GROUP_COUNT,
   );
-  work.candidates += candidates.length;
+  meter.work.candidates += candidates.length;
+  const newestCandidate = candidates[0] ?? null;
   // One slot is kept for the walk's own find, which the rule already passed: a group whose newest are hidden keeps it.
   if (rows.some((row) => row.id === group.first.id)) {
-    return rows;
+    return { rows, newestCandidate };
   }
   const byId = (a: Shown, b: Shown) => (BigInt(b.id) > BigInt(a.id) ? 1 : BigInt(b.id) < BigInt(a.id) ? -1 : 0);
-  return [...rows.slice(0, GROUP_COUNT - 1), group.first].toSorted(byId);
+  return { rows: [...rows.slice(0, GROUP_COUNT - 1), group.first].toSorted(byId), newestCandidate };
 }
 
 // The id of a group's oldest shown notification from the range's lower end up (load_groups_data's min_id), among the
-// GROUP_COUNT oldest there; the group's first one read when none is shown. The candidates are read in windows from
-// OLDEST_WINDOW up, each above the last candidate before it, until one is shown: the same notification as one window of
-// GROUP_COUNT gives.
-function oldestOf(db: Db, viewer: UserContext, group: Found, lower: string | null, work: GroupWork): string {
+// GROUP_COUNT oldest candidates there; the group's first one read when none is shown (`found` false). The candidates
+// are read in windows from OLDEST_WINDOW up, each above the last candidate before it, until one is shown: the same
+// notification as one window of GROUP_COUNT gives. Undefined when a window does not fit `meter`.
+function oldestOf(
+  db: Db,
+  viewer: UserContext,
+  group: Found,
+  lower: string | null,
+  meter: Meter,
+): { id: string; found: boolean } | undefined {
   if (group.key.startsWith("ungrouped-")) {
-    return group.first.id;
+    return { id: group.first.id, found: true };
   }
   let after: string | null = null;
   for (let read = 0; read < GROUP_COUNT;) {
     const window = Math.min(Math.max(OLDEST_WINDOW, read), GROUP_COUNT - read);
+    if (!charge(meter, window)) {
+      return undefined;
+    }
     const { rows, candidates } = shownWindow(
       db,
       viewer,
@@ -291,9 +313,9 @@ function oldestOf(db: Db, viewer: UserContext, group: Found, lower: string | nul
       after,
       window,
     );
-    work.candidates += candidates.length;
+    meter.work.candidates += candidates.length;
     if (rows[0] !== undefined) {
-      return rows[0].id;
+      return { id: rows[0].id, found: true };
     }
     if (candidates.length < window) {
       break;
@@ -301,7 +323,17 @@ function oldestOf(db: Db, viewer: UserContext, group: Found, lower: string | nul
     read += window;
     after = candidates.at(-1) ?? null;
   }
-  return group.first.id;
+  return { id: group.first.id, found: false };
+}
+
+type Limits = { candidates: number; visits: number };
+
+// The work a page has done, and the limits a read is checked against before it starts.
+type Meter = { work: GroupWork; limits: Limits };
+
+// Whether a read of at most `most` candidates fits the meter's limits.
+function charge(meter: Meter, most: number): boolean {
+  return meter.work.candidates + most <= meter.limits.candidates;
 }
 
 function noWork(): GroupWork {
@@ -309,14 +341,25 @@ function noWork(): GroupWork {
 }
 
 // The admission limits of a page's passes, and of its fallback with the reserve.
-const PASS_LIMITS = { candidates: GROUP_ADMISSION_CANDIDATES, visits: GROUP_ADMISSION_VISITS };
-const FALLBACK_LIMITS = {
+const PASS_LIMITS: Limits = { candidates: GROUP_ADMISSION_CANDIDATES, visits: GROUP_ADMISSION_VISITS };
+const FALLBACK_LIMITS: Limits = {
   candidates: GROUP_ADMISSION_CANDIDATES + VISIT_CANDIDATES,
   visits: GROUP_ADMISSION_VISITS + 1,
 };
 
-// A group as the answer holds it: its entity, the ids of its sample accounts that are shown, and its status.
-type PresentedGroup = { group: NotificationGroup; samples: string[]; status: Status | undefined };
+// A group as the answer holds it: its entity, the ids of its sample accounts that are shown, and its status; and what
+// admission needs to keep it in a shorter page: its position among the groups admission visited, the accounts it added
+// (whole, and partial), the newest candidate its members were read from, and whether its oldest was found shown.
+type PresentedGroup = {
+  group: NotificationGroup;
+  samples: string[];
+  status: Status | undefined;
+  index: number;
+  whole: ReadonlyMap<string, Account>;
+  added: readonly (readonly [string, { account: PartialAccount; bytes: number }])[];
+  newestCandidate: string | null;
+  oldestFound: boolean;
+};
 
 // The groups admitted into an answer, with the accounts and statuses they add, each once.
 type AdmittedGroups = {
@@ -348,7 +391,8 @@ function emptyAnswer(expandAccounts: ExpandAccounts): GroupedNotifications {
 // its first sample as an account (a partial account shown so far moves to the accounts), the others as partial
 // accounts unless shown either way. Admission stops at the first group that does not fit `budget`, after the first.
 // A group whose status or accounts the presenter cannot show is left out, as v1 leaves out such a notification. Each
-// visit counts in `work`, and admission stops, exhausted, before a group whose visit could pass `limits`.
+// visit and read counts in `work`; admission stops, exhausted, at a group whose visit or one of whose reads would pass
+// `limits`, that group left out.
 function admitGroups(
   db: Db,
   viewer: UserContext,
@@ -358,7 +402,7 @@ function admitGroups(
   options: { expandAccounts: ExpandAccounts; present: Present },
   budget: number,
   work: GroupWork,
-  limits: { candidates: number; visits: number },
+  limits: Limits,
 ): AdmittedGroups {
   const admitted: AdmittedGroups = {
     groups: [],
@@ -371,16 +415,17 @@ function admitGroups(
     statuses: new Map(),
   };
   const partialMode = options.expandAccounts === "partial_avatars";
+  const meter = { work, limits };
   let bytes = 0;
-  for (const found of groups) {
+  for (const [index, found] of groups.entries()) {
     const { key, first } = found;
-    const most = key.startsWith("ungrouped-") ? 0 : range === null ? GROUP_COUNT : VISIT_CANDIDATES;
-    if (work.visits + 1 > limits.visits || work.candidates + most > limits.candidates) {
+    const members = work.visits < limits.visits ? membersOf(db, viewer, found, range?.upper ?? null, meter) : undefined;
+    if (members === undefined) {
       admitted.exhausted = true;
       return admitted;
     }
     work.visits++;
-    const rows = membersOf(db, viewer, found, range?.upper ?? null, work);
+    const { rows, newestCandidate } = members;
     const newest = rows[0];
     const sampleIds = [...new Set(rows.slice(0, SAMPLE_ACCOUNTS).map((row) => row.from_account_id))];
     // The sample accounts the group would add: whole (all of them, or the first shown with partial_avatars), and
@@ -425,6 +470,11 @@ function admitGroups(
       admitted.consumed++;
       continue;
     }
+    const oldest = range === null ? { id: "", found: true } : oldestOf(db, viewer, found, range.lower, meter);
+    if (oldest === undefined) {
+      admitted.exhausted = true;
+      return admitted;
+    }
     const group: NotificationGroup = {
       group_key: key,
       notifications_count: rows.length,
@@ -433,7 +483,7 @@ function admitGroups(
       ...(range === null
         ? {}
         : {
-            page_min_id: oldestOf(db, viewer, found, range.lower, work),
+            page_min_id: oldest.id,
             page_max_id: newest.id,
             latest_page_notification_at: newest.created_at,
           }),
@@ -463,19 +513,26 @@ function admitGroups(
     if (admitted.groups.length === 0) {
       admitted.leading = admitted.consumed;
     }
-    for (const [id, account] of whole) {
-      admitted.accounts.set(id, account);
-      admitted.partial.delete(id);
-    }
-    for (const [id, entry] of added) {
-      admitted.partial.set(id, entry);
-    }
-    if (status !== undefined) {
-      admitted.statuses.set(status.id, status);
-    }
-    admitted.groups.push({ group, samples, status });
+    const presentedGroup = { group, samples, status, index, whole, added, newestCandidate, oldestFound: oldest.found };
+    addGroup(admitted, presentedGroup);
   }
   return admitted;
+}
+
+// Adds an admitted group to `admitted` with the accounts and status it adds: a partial account it shows whole moves to
+// the accounts.
+function addGroup(admitted: AdmittedGroups, presented: PresentedGroup): void {
+  for (const [id, account] of presented.whole) {
+    admitted.accounts.set(id, account);
+    admitted.partial.delete(id);
+  }
+  for (const [id, entry] of presented.added) {
+    admitted.partial.set(id, entry);
+  }
+  if (presented.status !== undefined) {
+    admitted.statuses.set(presented.status.id, presented.status);
+  }
+  admitted.groups.push(presented);
 }
 
 // The answer of admitted groups, `ordered` (newest first): each array in the groups' order, each item once; with
@@ -533,6 +590,47 @@ function pageRange(walk: Walk, ordered: readonly Found[], ascending: boolean, pa
   return { lower: walk.cut ? walk.last : above, upper: newest };
 }
 
+// How many of the groups a pass over `read` admitted, from the first, its reads show as they would be over the range of
+// a page that ends at the last of them (pageRange, `full`), so that the page needs no read again. A shorter page keeps
+// the upper end of a page walked newest first (its first group), so its counts and samples hold, and only the oldest of
+// each group may change: it holds when the pass found one shown at or above the new lower end, since nothing of the
+// group lies between that end and it. Walked oldest first, the lower end is kept, so the oldest holds, and the members
+// hold when the newest candidate the pass read them from, shown or not, is at or below the new upper end. 0 for none.
+function provenPrefix(read: Walk, admitted: AdmittedGroups, ascending: boolean): number {
+  for (let kept = admitted.groups.length; kept > 0; kept--) {
+    const end = BigInt(read.groups[admitted.groups[kept - 1]!.index]!.first.id);
+    const holds = admitted.groups
+      .slice(0, kept)
+      .every((presented) =>
+        ascending
+          ? presented.newestCandidate === null || BigInt(presented.newestCandidate) <= end
+          : presented.oldestFound && BigInt(presented.group.page_min_id ?? "0") >= end,
+      );
+    if (holds) {
+      return kept;
+    }
+  }
+  return 0;
+}
+
+// The admitted state of `groups` alone, as admission leaves it after them.
+function replay(groups: readonly PresentedGroup[]): AdmittedGroups {
+  const admitted: AdmittedGroups = {
+    groups: [],
+    consumed: 0,
+    leading: 0,
+    cut: false,
+    exhausted: false,
+    accounts: new Map(),
+    partial: new Map(),
+    statuses: new Map(),
+  };
+  for (const presented of groups) {
+    addGroup(admitted, presented);
+  }
+  return admitted;
+}
+
 // Admission passes over a page's groups after the first, each over the range of the groups the one before kept,
 // before the page falls back to its first group alone: at most four passes in all (the first, MAX_READMISSIONS, and the
 // fallback).
@@ -547,13 +645,15 @@ const MAX_READMISSIONS = 2;
 // a group left out, is dropped. Those groups are then admitted again over that range, since sampling below a lower
 // upper end can show other accounts; while they do not all fit, the last ones are dropped the same way, at most
 // MAX_READMISSIONS times. A group left out is found again by the next page.
-// Every pass shares one work budget (RES-7, PASS_LIMITS). When a pass would pass it, or a byte cut follows
-// MAX_READMISSIONS, the page falls back to its groups up to its first admissible one (the first a pass admitted, else
-// the one admission stopped before, which is then visited whether or not it shows), over their own range, with the
-// reserve (FALLBACK_LIMITS). Only that group is visited again: the groups before it showed nothing, and whether a group
-// shows does not depend on the range (its status, report and warning are its first notification's, and R15 shows a
-// notification only from an available sender, whose account is sampled). A page within the budget answers as it would
-// without one; any other holds fewer groups and links on from its last group's discovery position.
+// Every pass shares one work budget (RES-7, PASS_LIMITS): a read starts only while the most it may read still fits. A
+// page none of whose reads would pass it answers as it would without one. When one would, the page is the groups the
+// pass admitted up to the last its reads hold for (provenPrefix), with no read again; failing that, and when a byte cut
+// follows MAX_READMISSIONS, it falls back to its groups up to its first admissible one (the first a pass admitted, else
+// the one admission stopped at, then visited whether or not it shows), over their own range, with the reserve
+// (FALLBACK_LIMITS). Only that group is visited again: the groups before it showed nothing, and whether a group shows
+// does not depend on the range (its status, report and warning are its first notification's, and R15 shows a
+// notification only from an available sender, whose account is sampled). A shorter page links on from its last
+// group's discovery position.
 export const listGroupedNotifications = userReadOperation<ListGroupedInput, GroupedPage>(
   (db, input, _viewer, viewer) => {
     const { page } = input;
@@ -621,6 +721,14 @@ export const listGroupedNotifications = userReadOperation<ListGroupedInput, Grou
         const groups = read.groups.slice(0, admitted.consumed);
         read = { groups, full: true, cut: false, last: groups.at(-1)?.first.id ?? null };
         continue;
+      }
+      if (admitted.exhausted) {
+        const kept = provenPrefix(read, admitted, ascending);
+        if (kept > 0) {
+          const groups = read.groups.slice(0, admitted.groups[kept - 1]!.index + 1);
+          const final = { groups, full: true, cut: false, last: groups.at(-1)!.first.id };
+          return answer(final, replay(admitted.groups.slice(0, kept)));
+        }
       }
       // With no group admitted yet, admission stopped before read.groups[consumed].
       const groups = read.groups.slice(0, leading ?? admitted.consumed + 1);
