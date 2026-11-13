@@ -22,7 +22,7 @@ import { accessAdminRefusal } from "./admin-authority";
 import { availableLocalSql } from "./audience";
 import { forgetActivityAnswer } from "./instance-activity";
 import { logAction } from "./moderation-log";
-import { readOperation, writeOperation } from "./operation";
+import { readOperation, sessionOperation, writeOperation } from "./operation";
 
 // What the instance endpoints show, from instance_settings (the only settings store) and cached counters. The public
 // settings are data, not configuration (platform/access-settings.ts CONFIG_KEYS): dumped and imported, erased by a
@@ -51,17 +51,19 @@ export type InstanceSettings = {
   termsOfService: boolean;
 };
 
-export type InstanceInfo = InstanceSettings & {
-  userCount: number;
+// What /api/v2/instance presents beyond the settings.
+export type InstanceUsage = InstanceSettings & {
   // The available local accounts with an authenticated request on one of the last ACTIVE_DAYS UTC days, today
   // included (local_accounts.active_on, written by auth.ts noteActivity).
   activeMonth: number;
-  statusCount: number;
-  domainCount: number;
   // The account contact_username names, presented (an unavailable one redacted, VIS-30); null when none is set or
   // it names no account.
   contactAccount: Account | null;
 };
+
+// What /api/v1/instance presents beyond the settings. domainCount is the one the cron last kept (refreshDomainCount),
+// so it lags the remote accounts by up to one cron period.
+export type InstanceInfo = InstanceUsage & { userCount: number; statusCount: number; domainCount: number };
 
 // Mastodon's active_month counts the 28 days before today (InstancePresenter#active_user_count); Kopje keeps one day
 // per account, so its 28 days are today and the 27 before it.
@@ -123,23 +125,45 @@ export function aboutSettingsOf(db: Db): AboutSettings {
   };
 }
 
+// The peer domain count, kept in one kopje_state row (never dumped: dump-catalog.ts DUMPED_STATE) as the decimal text of
+// an integer, written only by refreshDomainCount; a row of any other shape reads as none.
+const DOMAIN_COUNT = "domain_count";
+const DOMAIN_COUNT_SQL = "SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL";
+const KEPT_DOMAIN_COUNT_SQL = `SELECT CAST(value AS INTEGER) FROM kopje_state WHERE name = '${DOMAIN_COUNT}'
+	AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) BETWEEN 1 AND 15 AND instr(CAST(value AS BLOB), x'00') = 0
+	AND value NOT GLOB '*[^0-9]*'`;
+
 // The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
 // window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
 // text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
-// (domain IS NULL, pinned: RES-7), never over the remote accounts.
+// (domain IS NULL, pinned: RES-7), never over the remote accounts. The peer domain count is the kept one; only while
+// none is kept (a new, upgraded or freshly imported Store before the cron's first refresh) is it counted here, over
+// every remote account, and not stored: a read writes nothing (COALESCE evaluates its second argument only when the
+// first is NULL).
 export const INSTANCE_COUNTS_SQL = `SELECT u.users, u.active,
 	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
 		WHERE domain IS NULL) AS statuses,
-	(SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains
+	COALESCE((${KEPT_DOMAIN_COUNT_SQL}), (${DOMAIN_COUNT_SQL})) AS domains
 FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
 
+// What /api/v2/instance presents of the counts: the active users alone.
+export const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+	FROM local_accounts l WHERE ${availableLocalSql("l")}`;
+
+// The active window's first day and today, as the two statements bind them.
+function activeWindow(now: number): [string, string] {
+  return [
+    new Date(now - (ACTIVE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10),
+    new Date(now).toISOString().slice(0, 10),
+  ];
+}
+
+// /api/v1/instance: the settings and every count it presents.
 export const instanceInfo = readOperation<{ now: number; present: Present }, InstanceInfo>((db, { now, present }) => {
-  const since = new Date(now - (ACTIVE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
   const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
     INSTANCE_COUNTS_SQL,
-    since,
-    new Date(now).toISOString().slice(0, 10),
+    ...activeWindow(now),
   );
   const settings = settingsOf(db);
   return {
@@ -150,6 +174,27 @@ export const instanceInfo = readOperation<{ now: number; present: Present }, Ins
     domainCount: counts?.domains ?? 0,
     contactAccount: contactAccount(db, settings, present),
   };
+});
+
+// /api/v2/instance: the settings and the one count it presents (usage.users.active_month).
+export const instanceUsage = readOperation<{ now: number; present: Present }, InstanceUsage>((db, { now, present }) => {
+  const settings = settingsOf(db);
+  return {
+    ...settings,
+    activeMonth: db.first<{ active: number }>(INSTANCE_ACTIVE_SQL, ...activeWindow(now))?.active ?? 0,
+    contactAccount: contactAccount(db, settings, present),
+  };
+});
+
+// The cron's refresh of the kept peer domain count (jobs/scheduled.ts): one walk of the remote accounts, written only
+// when the value changed. A session operation, so it runs while the Store is readonly (its maintenance, a verified
+// import before publication) too; a dump's freeze defers it to the next run.
+export const refreshDomainCount = sessionOperation<void, void>((db) => {
+  db.run(
+    `INSERT INTO kopje_state (name, value) SELECT ?1, CAST((${DOMAIN_COUNT_SQL}) AS TEXT) WHERE true
+		ON CONFLICT (name) DO UPDATE SET value = excluded.value WHERE value IS NOT excluded.value`,
+    DOMAIN_COUNT,
+  );
 });
 
 // A contact_username within its bound (read through its projection, or shaped by adminValue) split at its `@`, the

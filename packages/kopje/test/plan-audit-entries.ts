@@ -1901,12 +1901,20 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 6",
   },
   {
-    id: "87ac6fd3852e69b1",
+    id: "d9004060f00da456",
     scans: ["local_accounts: SCAN l"],
     site: "src/domain/instance.ts#<anonymous> in instanceInfo",
     disposition: "deliberate",
     reason:
       "the users and active counts are of every available local account, in the one scan of local_accounts they need (INSTANCE_COUNTS_SQL, src/domain/instance.ts; test/activity.test.ts asserts it)",
+  },
+  {
+    id: "2d0b6b5651861525",
+    scans: ["local_accounts: SCAN l"],
+    site: "src/domain/instance.ts#<anonymous> in instanceUsage",
+    disposition: "deliberate",
+    reason:
+      "the active count is of every available local account, in the one scan of local_accounts it needs (INSTANCE_ACTIVE_SQL, src/domain/instance.ts; test/instance-counts.test.ts asserts it)",
   },
   {
     id: "4b49e35df6db769a",

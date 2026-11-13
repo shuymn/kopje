@@ -54,6 +54,8 @@ import {
   instanceInfo,
   instancePeers,
   instanceRules,
+  instanceUsage,
+  refreshDomainCount,
   searchPeers,
   setInstanceSettings,
 } from "./domain/instance";
@@ -1006,6 +1008,14 @@ export class Store extends DurableObject<Env> {
 
   instanceInfo(callerBuild: string, input: OperationInput<typeof instanceInfo>) {
     return this.#kernel.execute(callerBuild, instanceInfo, input);
+  }
+
+  instanceUsage(callerBuild: string, input: OperationInput<typeof instanceUsage>) {
+    return this.#kernel.execute(callerBuild, instanceUsage, input);
+  }
+
+  refreshDomainCount(callerBuild: string) {
+    return this.#kernel.execute(callerBuild, refreshDomainCount, undefined);
   }
 
   // GET /api/v1/instance/activity: the JSON body, or null when the API is off (instance-activity.ts).

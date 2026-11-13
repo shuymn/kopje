@@ -10,6 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- `GET /api/v1/instance` no longer counts the remote accounts' domains on every request: `stats.domain_count` is the
+  count the 5-minute cron keeps in `kopje_state` (never dumped), so it lags the accounts by up to 5 minutes, and a Store
+  with none kept yet (new, upgraded or restored) counts it per request until the first cron run. `GET /api/v2/instance`
+  reads only what it presents (`usage.users.active_month`) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)).
+  No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+
 - The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
   addressed to Public alone, as Mastodon sends it, so a booster or quoter can forward it with the author's proof, and
   a server that holds the status only through that boost or quote removes its copy when it applies a relayed `Delete`

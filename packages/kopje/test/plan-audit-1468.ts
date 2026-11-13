@@ -755,9 +755,9 @@ export const ROWS_1468: readonly Row1468[] = [
     statement: "the instance's peer domain count (found by the audit)",
     sites: ["src/domain/instance.ts#instanceInfo"],
     status: "outside",
-    why: "COUNT(DISTINCT domain) walks every remote account through accounts_domain_username (a SEARCH, domain > ?)",
+    why: "COUNT(DISTINCT domain) walks every remote account through accounts_domain_username (a SEARCH, domain > ?), now only while the cron has kept no count (refreshDomainCount, src/domain/instance.ts)",
     witness:
-      "needed: a stored or cached peer domain count for the anonymous GET /api/v1/instance (#1502); test/activity.test.ts's address lookups saw the counts read 203 rows at 200 remote accounts of one domain, 4 at one",
+      "test/other-request-rewrites.test.ts, the instance's counts after a refresh (flat as the remote accounts grow, on one domain and on one each) and before it (the walk, as main's)",
   },
   {
     group: 9,

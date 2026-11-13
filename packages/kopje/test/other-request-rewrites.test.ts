@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { leaveConversationsWith } from "../src/domain/conversations";
 import { getFilterStatus } from "../src/domain/filters";
-import { instanceInfo } from "../src/domain/instance";
+import { instanceInfo, refreshDomainCount } from "../src/domain/instance";
 import { accountLists, listLists } from "../src/domain/lists";
 import { DAILY_LIMIT, updateScheduled } from "../src/domain/scheduled-statuses";
 import { NOW } from "./app-helpers";
@@ -68,11 +68,29 @@ const WITNESS = new PlanWitness({
     sql: "SELECT id, title, replies_policy, exclusive FROM lists l WHERE l.account_id = ?1 AND EXISTS (SELECT 1 FROM list_accounts lh WHERE lh.list_id = l.id AND lh.account_id = ?2) AND (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ?2 AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ?2 AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = ?2 AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = ?2), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY l.id",
     pins: (text) => text.replace(" INDEXED BY lists_account", ""),
   },
-  "782bd4dc8403b718": {
-    sql: "SELECT u.users, u.active, (SELECT SUM(CASE WHEN typeof(statuses_count) = 'integer' AND statuses_count BETWEEN 0 AND 9007199254740991 THEN statuses_count ELSE 0 END) FROM accounts WHERE domain IS NULL) AS statuses, (SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active FROM local_accounts l WHERE l.suspended_at IS NULL) u",
-    pins: (text) => text.replace(" INDEXED BY accounts_domain_username", ""),
-  },
 });
+
+// The instance counts (#1502) beside main's statement, which counts the peer domains over every remote account on every
+// request; the rewrite reads the kept count and counts only while none is kept. instanceInfo makes no other statement
+// than the allowed ones.
+const COUNTS_ID = "87ac6fd3852e69b1";
+const COUNTS_WITNESS = new PlanWitness(
+  {
+    [COUNTS_ID]: {
+      sql: "SELECT u.users, u.active, (SELECT SUM(CASE WHEN typeof(statuses_count) = 'integer' AND statuses_count BETWEEN 0 AND 9007199254740991 THEN statuses_count ELSE 0 END) FROM accounts INDEXED BY accounts_domain_username WHERE domain IS NULL) AS statuses, (SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL) AS domains FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active FROM local_accounts l WHERE l.suspended_at IS NULL) u",
+      pins: (text) =>
+        text.replace(
+          /COALESCE\(\(SELECT CAST\(value AS INTEGER\) FROM kopje_state .*?\), (\(SELECT COUNT\(DISTINCT domain\) FROM accounts WHERE domain IS NOT NULL\))\)/,
+          "$1",
+        ),
+    },
+  },
+  undefined,
+  [
+    "SELECT name, CASE name WHEN 'contact_username' THEN CASE WHEN typeof(value) <> 'text' THEN NULL WHEN length(CAST(value AS BLOB)) > 509 THEN NULL WHEN instr(CAST(value AS BLOB), x'00') > 0 THEN NULL WHEN value = '' OR value GLOB '*[^-.0-9@A-Z_a-z]*' OR value GLOB '@*' OR value GLOB '*@' OR value GLOB '*@*@*' OR (instr(value, '@') = 0 AND length(value) > 255) OR instr(value, '@') - 1 > 255 THEN NULL ELSE value END ELSE value END AS value FROM instance_settings WHERE name IN (?, ?, ?, ?, ?, ?)",
+    "SELECT name FROM instance_settings WHERE name IN ('privacy_policy', 'terms_of_service', 'terms_of_service_effective_date')",
+  ],
+);
 
 function local(sql: SqlStorage, id: string, name: string) {
   sql.exec(
@@ -91,7 +109,7 @@ function local(sql: SqlStorage, id: string, name: string) {
 // `n` rows of each kind an owner holds, ids from `base` (two digits): conversations (every other one with TARGET,
 // one naming it twice), filters each with a status of its own, schedules on DAY and the day after, lists (every
 // other one holding TARGET); and, with a `domain`, `n` remote accounts on it.
-function holdings(sql: SqlStorage, owner: string, base: string, n: number, domain: string | null) {
+function holdings(sql: SqlStorage, owner: string, base: string, n: number, domain: string | null, distinct = false) {
   const each = (query: string, ...params: SqlStorageValue[]) =>
     sql.exec(`WITH RECURSIVE i(k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM i WHERE k < ?1 - 1) ${query}`, n, ...params);
   each(
@@ -141,11 +159,13 @@ function holdings(sql: SqlStorage, owner: string, base: string, n: number, domai
   if (domain === null) {
     return;
   }
+  // One domain for all of them, or (distinct) one each.
   each(
     `INSERT INTO accounts (id, uri, username, domain)
-		SELECT ?2 || printf('%016d', k), 'https://' || ?3 || '/u/' || k, 'u' || k, ?3 FROM i`,
+		SELECT ?2 || printf('%016d', k), 'https://' || ?3 || '/u/' || k, 'u' || k, CASE ?4 WHEN 1 THEN ?3 || k ELSE ?3 END FROM i`,
     `${base[0]}${Number(base[1]) + 4}`,
     `${domain}.example`,
+    distinct ? 1 : 0,
   );
 }
 
@@ -208,6 +228,12 @@ function base(sql: SqlStorage) {
 
 type Flow = {
   main: readonly string[];
+  // The witness whose baselines `main` names (WITNESS by default).
+  witness?: PlanWitness;
+  // The remote accounts each have a domain of their own (else the neighbours' accounts share one each).
+  distinct?: boolean;
+  // The cron's refresh of the kept domain count has run, once the world is built.
+  refreshed?: boolean;
   run: (sql: SqlStorage, transact: <T>(fn: () => T) => T) => unknown;
   // The neighbour populations the flow's statements could read, each by its own predicate.
   neighbours: Record<string, string>;
@@ -224,6 +250,21 @@ type Flow = {
 const others = (table: string) => `SELECT count(*) AS n FROM ${table} WHERE account_id <> '${VIEWER}'`;
 const mine = (table: string, where = "1") =>
   `SELECT count(*) AS n FROM ${table} WHERE account_id = '${VIEWER}' AND ${where}`;
+
+// The instance's counts: the local accounts and their statuses, the peer domains.
+const INSTANCE_COUNTS: Flow = {
+  main: [COUNTS_ID],
+  witness: COUNTS_WITNESS,
+  run: (sql, transact) => instanceInfo.run(sql, { now: NOW, present: { origin: "https://kopje.test" } }, transact),
+  neighbours: { remote: "SELECT count(*) AS n FROM accounts WHERE domain IS NOT NULL" },
+  own: {
+    count: {
+      local: "SELECT count(*) AS n FROM local_accounts",
+      accounts: "SELECT count(*) AS n FROM accounts WHERE domain IS NULL",
+    },
+    walks: 1,
+  },
+};
 
 const FLOWS: Record<string, Flow> = {
   // A block of TARGET: the viewer's conversations with it go (one naming it twice among them; not the one naming it
@@ -332,40 +373,41 @@ const FLOWS: Record<string, Flow> = {
       walks: 2,
     },
   },
-  // The instance's counts: the local accounts and their statuses, the peer domains.
-  "the instance's counts": {
-    main: ["782bd4dc8403b718"],
-    run: (sql, transact) => instanceInfo.run(sql, { now: NOW, present: { origin: "https://kopje.test" } }, transact),
-    neighbours: { remote: "SELECT count(*) AS n FROM accounts WHERE domain IS NOT NULL" },
-    // The peer domain count walks the remote accounts (#1502).
-    walks: { "782bd4dc8403b718": { population: "remote", perRun: 1 } },
-    own: {
-      count: {
-        local: "SELECT count(*) AS n FROM local_accounts",
-        accounts: "SELECT count(*) AS n FROM accounts WHERE domain IS NULL",
-      },
-      walks: 1,
-    },
+  // The instance's counts before the cron has kept the peer domain count: counted over the remote accounts, as main.
+  "the instance's counts before a refresh": {
+    ...INSTANCE_COUNTS,
+    walks: { [COUNTS_ID]: { population: "remote", perRun: 1 } },
   },
+  "the instance's counts before a refresh, one domain each": {
+    ...INSTANCE_COUNTS,
+    distinct: true,
+    walks: { [COUNTS_ID]: { population: "remote", perRun: 1 } },
+  },
+  // After it: no walk of the remote accounts, whether they share a domain or each has one (the walks stay empty).
+  "the instance's counts after a refresh": { ...INSTANCE_COUNTS, refreshed: true },
+  "the instance's counts after a refresh, one domain each": { ...INSTANCE_COUNTS, refreshed: true, distinct: true },
 };
 
-function world(n: number, own: number, day: number) {
+function world(flow: Flow, n: number, own: number, day: number) {
   return migratedStore().then(async (store) => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       base(sql);
-      holdings(sql, LOW, "20", n, "a");
+      holdings(sql, LOW, "20", n, "a", flow.distinct);
       subject(sql, own, day);
-      holdings(sql, HIGH, "40", n, "z");
+      holdings(sql, HIGH, "40", n, "z", flow.distinct);
+      if (flow.refreshed === true) {
+        refreshDomainCount.run(sql, undefined);
+      }
     });
     return store;
   });
 }
 
 async function sides(statistics: Statistics, flow: Flow, n: number, own: number) {
-  const store = await world(n, own, flow.day?.(own) ?? Math.floor(own / 12) + 1);
+  const store = await world(flow, n, own, flow.day?.(own) ?? Math.floor(own / 12) + 1);
   return runInDurableObject(store, (_instance, state) => {
-    return WITNESS.measure(state, {
+    return (flow.witness ?? WITNESS).measure(state, {
       statistics,
       expected: flow.main,
       populations: { ...flow.neighbours, ...owned(flow) },
@@ -381,6 +423,7 @@ const owned = (flow: Flow) =>
 describe("main's statements", () => {
   it("are main's audited ones", async () => {
     await WITNESS.expectAudited();
+    await COUNTS_WITNESS.expectAudited();
   });
 });
 
@@ -394,11 +437,16 @@ describe("group 9's pinned reads beside main's (RES-7)", () => {
       const ownMany = await sides(statistics, flow, FEW, OWN_MANY);
       for (const run of [few, many, ownMany]) {
         expectBeside(statistics, run);
-        if (flow.main.some((id) => WITNESS.baselines[id]!.writes !== undefined)) {
+        if (flow.main.some((id) => (flow.witness ?? WITNESS).baselines[id]!.writes !== undefined)) {
           expect(run.sides.reduce((n, side) => n + side.main.removed.length, 0)).toBeGreaterThan(0);
         }
       }
-      expect(many.result).toEqual(few.result);
+      // One domain each: the peer domain count is the one thing that grows with the remote accounts.
+      if (flow.distinct === true) {
+        expect(many.result).not.toEqual(few.result);
+      } else {
+        expect(many.result).toEqual(few.result);
+      }
       if (flow.answer !== undefined) {
         for (const run of [few, many, ownMany]) {
           expect(run.result).toMatchObject({ status: "ok", value: flow.answer });
