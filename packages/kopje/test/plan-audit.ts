@@ -592,7 +592,8 @@ export function withoutFragment(sql: string, fragment: string): string {
 // contains the fragment, the plan of the statement without it (`without`, the same parameters) has no line of that
 // detail, so every such line came from the fragment's occurrences, and the plan has no more such lines than the
 // statement contains the fragment. A statement that makes the same scan some other way, besides the fragment or
-// without it, fails, and so does one whose plan without the fragment is missing or refused.
+// without it, fails, and so does one whose plan without the fragment is missing or refused. The attribution assumes
+// the fragment is used as a predicate (docs/engineering.md, "Queries").
 function sampleViolations(sql: string, sample: PlannedSample, allowances: readonly FragmentAllowance[]): string[] {
   if (sample.error !== undefined) {
     return [UNPLANNABLE];
