@@ -47,19 +47,20 @@ The Client API section prioritizes compatibility with:
 | [Client API](client-api/) | REST API for client applications |
 | [Streaming](streaming/) | WebSocket real-time events |
 | [Admin API](admin-api/) | Administrative endpoints (appendix) |
-| [OpenAPI](openapi/) | Supplemental OpenAPI 3.1 schema |
 
 ## Normative vs Informative
 
 - **Normative sections** use RFC 2119 keywords (MUST, SHOULD, MAY)
 - **Informative sections** provide context and examples
-- The Markdown documents are the **primary source of truth**
-- The OpenAPI document is **supplemental** and non-normative
+- These documents are a reading guide, not the checked description of Mastodon's API. The routes, scopes,
+  parameters and entity fields Kopje is checked against are the fixture extracted from Mastodon's source
+  (`test/fixtures/mastodon-<version>-api-access.json`, written by `scripts/mastodon-scopes.mjs`), and every accepted
+  departure is in [mastodon-deviations.md](../mastodon-deviations.md).
+- The scope hierarchy table in [client-api/auth-oauth.md](client-api/auth-oauth.md) is read by `test/vectors.test.ts`.
 
 ## Contributing
 
 When updating this specification:
 
-1. Update the relevant Markdown document first
-2. Update the OpenAPI schema to match if applicable
-3. Mark new features with version annotations
+1. Name the fixture or the code that holds a list of routes, scopes, parameters or fields rather than restating it
+2. Mark new features with version annotations
