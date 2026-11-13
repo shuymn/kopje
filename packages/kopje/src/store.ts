@@ -1492,6 +1492,10 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, statuses.revokeQuote, input);
   }
 
+  prepareDelete(callerBuild: string, input: OperationInput<typeof statuses.prepareDelete>) {
+    return this.#kernel.execute(callerBuild, statuses.prepareDelete, input);
+  }
+
   deleteStatus(callerBuild: string, input: OperationInput<typeof statuses.deleteStatus>) {
     return this.#kernel.execute(callerBuild, statuses.deleteStatus, input);
   }

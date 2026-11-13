@@ -29,8 +29,8 @@ export type ApiDeps = {
   resolve?: (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
   // Asks the Queue for a round of the Store's jobs (a resolved status's quote to verify); cron runs one regardless.
   requestJobs?: (env: Env) => Promise<unknown>;
-  // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, federation/ld-sign.ts);
-  // none: revokes that need a signature answer 503.
+  // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, the Delete of a public or
+  // unlisted status; federation/ld-sign.ts); none: revokes and DELETEs that need a signature answer 503.
   signAsAuthor?: (env: Env, sign: AuthorSignature) => Promise<Record<string, unknown>>;
   // The isolate's memo of recorded activity (mastodon/activity.ts); none: no activity is recorded.
   activity?: ActivityMemo;

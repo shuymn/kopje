@@ -10,6 +10,7 @@ import { sha256Hex } from "../../src/security/tokens";
 import { STREAM_FAULTS, TURN_BUDGET } from "../../src/stream-hub";
 import { type ApiHarness, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
+import { deleteSignature } from "../delete-job-helpers";
 import { BUILD } from "../helpers";
 import { community } from "../status-helpers";
 import { connect, drained, echo, type Inbox, type StreamMessage, takeAll } from "./stream-helpers";
@@ -571,9 +572,10 @@ const KINDS: Kind[] = [
       ): Promise<Expected> => {
         const credential = { tokenHash: await sha256Hex(token), scope: "write:statuses" as const, now: NOW };
         const present = { origin: "https://kopje.test" };
+        const signed = operation === deleteStatus ? await deleteSignature(h.store, credential, id) : null;
         const result = await runInDurableObject(h.store, (_instance, state) =>
           state.storage.transactionSync(() =>
-            operation.run(state.storage.sql, { credential, id, deleteMedia: false, now: NOW, present }),
+            operation.run(state.storage.sql, { credential, id, deleteMedia: false, signed, now: NOW, present }),
           ),
         );
         expect(result).toMatchObject({ status: "ok", value: { status: "ok" } });

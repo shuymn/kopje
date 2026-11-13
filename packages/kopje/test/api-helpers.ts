@@ -9,8 +9,11 @@ import { expandPending } from "../src/domain/deliveries";
 import { allocateLocalId } from "../src/domain/ids";
 import { writeOperation } from "../src/domain/operation";
 import { accountSearchText } from "../src/domain/search-text";
+import { signAsAuthor } from "../src/federation/ld-sign";
+import type { AuthorSignature } from "../src/mastodon/context";
 import type { StoreStub } from "../src/platform/store-client";
 import { NOW } from "./app-helpers";
+import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { BUILD, migratedStore, runStoreJobs } from "./helpers";
 
 // Test-only seeding: tests insert accounts through this operation, run directly inside the Store.
@@ -215,6 +218,14 @@ export async function apiHarness(
     store: () => (wrapStore === undefined ? store : wrapStore(store)),
     fetch: team.fetch,
     randomToken,
+    // The accounts seedAccount makes hold no usable key: an author's signature (a public status's Delete) is made
+    // with the fixture key instead, which their actor documents do not publish. A test of the proof itself uses
+    // inbox-status-helpers' setup, whose accounts hold the fixture key.
+    signAsAuthor: (_env: Env, sign: AuthorSignature) =>
+      signAsAuthor(LEGACY_EMPTY_KEK.kek, {
+        ...sign,
+        key: { privkey: LEGACY_EMPTY_KEK.privkey, salt: LEGACY_EMPTY_KEK.salt, pubkey: LEGACY_EMPTY_KEK.pubkey },
+      }),
     ...seams,
     doorbell,
     jobs,

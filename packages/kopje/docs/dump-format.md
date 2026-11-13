@@ -138,6 +138,19 @@ are, so a restored Store goes on staging from the same cursor. A `staged` value 
 intent (a key a dump taken before that migration holds, or anything else) starts the staging anew, so a target
 written before may get its retraction twice.
 
+An `outbound_activities.body` is checked as JSON only (`json_valid`). The `Delete` of a public or unlisted status
+(VIS-3 in [threat-model.md](threat-model.md)) is stored signed: `activity` is the body as its author signed it, sent
+byte for byte (`"immutable": true`), and `addressing` holds the `to` and `cc` its unsigned form would have, by which
+its retraction's staging places each addressed account's copy. A dump carries both as they are, and a restored Store
+sends the same bytes, its proof still valid since the key pairs travel too. Staging reads `addressing` only on an
+immutable body, and only when it is two arrays of at most 202 strings, each at most `ACTOR_URI_LIMIT` + 10 bytes and
+each Public, the signer's followers collection or the stored actor id of a mention of the status that is not silent;
+any other value (another type, a silent recipient, an entry nothing stored names) is not refused at import but gives
+every addressed account a copy of its own at its personal inbox, so it never widens a copy nor stops the staging. A
+repeated `to` or `cc` key, which `json_valid` accepts, is read only at the one each path names, the one checked. A
+body without `addressing` (an unsigned `Delete`, every one recorded before the release that signs them) is placed by
+its activity's own `to` and `cc`.
+
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
 that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it

@@ -664,7 +664,12 @@ the cleanup in `blocks.ts`); until the cleanup reaches a follower there, it is s
 a silent recipient of an addressed activity by a copy of its own at its personal inbox (VIS-2), and the recipient of
 an activity without `to` by shared inbox, else personal inbox (R38's severing `Reject` by personal inbox alone, its
 `personalInbox` option). No other SQL turns follows into inboxes or reads an account's shared inbox (the architecture
-test below).
+test below). The signed `Delete` of a public or unlisted status (VIS-3 in [threat-model.md](threat-model.md)) is
+addressed to Public alone, so its `to` and `cc` do not place its copies: its envelope records the `to` and `cc` its
+unsigned form would have (`addressing`), and the targets follow those, so it reaches the same inboxes with the same
+personal copies; each copy, personal ones included, is the signed body unchanged, which names nobody (VIS-2's
+exception). Staging follows `addressing` only as `stagedAddressing` validates it, each entry Public, the followers or
+a mention that is not silent; any other value gives every addressed account a copy of its own.
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
 through each of them (VIS-3 in [threat-model.md](threat-model.md), with its gaps): its audience names only the owner's

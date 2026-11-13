@@ -4,8 +4,10 @@ import type { StoredKey } from "../domain/actors";
 import { createKeyring } from "../security/keyring";
 
 // Linked Data Signatures made by Kopje (RsaSignature2017, the form Mastodon verifies; Fedify's signJsonLd): a quoted
-// author's stamp Delete, which receivers may relay with the author's proof (Mastodon's always_sign). The
-// key is unwrapped for this one call and dropped (DATA-1). Only the preloaded JSON-LD contexts are read: signing never
+// author's stamp Delete (VIS-28) and the Delete of a public or unlisted status (VIS-3), which receivers may relay with
+// the author's proof (Mastodon's always_sign). Fedify hashes the RDFC-1.0 canonical forms (jsonld 9's default) of the
+// signature's options and of the document, so every term the document uses is defined in its context, or
+// canonicalization refuses it. The key is unwrapped for this one call and dropped (DATA-1). Only the preloaded JSON-LD contexts are read: signing never
 // fetches. The signed body is recorded once and delivered unedited to every destination (an immutable envelope).
 
 const preloaded: DocumentLoader = (url) => {
