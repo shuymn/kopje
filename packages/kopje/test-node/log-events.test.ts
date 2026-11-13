@@ -5,6 +5,7 @@ import { RuleTester } from "oxlint/plugins-dev";
 import { describe, expect, it } from "vitest";
 
 import { EXCEPTIONS, LEGACY_NAMES, logCall, logEvents, nameProblem } from "../lint/log-events.js";
+import { codeSpans } from "./code-spans.js";
 import { parse, sources, walk, type Source } from "./source-scan.js";
 
 // The kopje/log-events rule (lint/log-events.js) checks each log call's shape, name and fields. This file checks what
@@ -52,13 +53,17 @@ function scan(files: readonly Source[]): Scan {
 const SCAN = scan(sources("src"));
 const NAMES = SCAN.names;
 
-// Event references in the docs: inline code spans (fenced blocks left out) holding `kopje.` and at least two more
-// segments (`*` counting as one); one ending in `.*` names a family, which some event must start with.
+// Event references in the docs: inline code spans (code-spans.ts; fenced blocks left out, and a span ends with its
+// paragraph) holding `kopje.` and at least two more segments (`*` counting as one); one ending in `.*` names a family,
+// which some event must start with.
 function docReferences(text: string): string[] {
   const prose = text.replace(/^```[^\n]*\n[\s\S]*?^```$/gm, "");
-  return [...prose.matchAll(/`([^`\n]+)`/g)].flatMap((span) =>
-    [...(span[1] ?? "").matchAll(/\bkopje(?:\.[A-Za-z0-9_-]+)+\.\*|\bkopje(?:\.[A-Za-z0-9_-]+){2,}/g)].map((m) => m[0]),
-  );
+  return prose
+    .split(/\n[ \t]*\n/)
+    .flatMap((paragraph) => codeSpans(paragraph))
+    .flatMap(({ content }) =>
+      [...content.matchAll(/\bkopje(?:\.[A-Za-z0-9_-]+)+\.\*|\bkopje(?:\.[A-Za-z0-9_-]+){2,}/g)].map((m) => m[0]),
+    );
 }
 
 function unknownReferences(text: string, names: ReadonlySet<string>): string[] {
@@ -107,8 +112,14 @@ describe("log events", () => {
       "```text",
       "`kopje.not.real.event`",
       "```",
+      "A span of two backticks, ``a ` in kopje.backup.faild``, then `kopje.media.gone.x`.",
     ].join("\n");
-    expect(unknownReferences(text, names)).toEqual(["kopje.store.upgrade.faild", "kopje.backup.succeded"]);
+    expect(unknownReferences(text, names)).toEqual([
+      "kopje.store.upgrade.faild",
+      "kopje.backup.succeded",
+      "kopje.backup.faild",
+      "kopje.media.gone.x",
+    ]);
     expect(unknownReferences("`kopje.media.*`", names)).toEqual(["kopje.media.*"]);
   });
 

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { CallExpression, Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
+import { codeSpans } from "./code-spans.js";
 import { parse, walk } from "./source-scan.js";
 
 // docs/threat-model.md and the code agree, by the contract its "Status of an invariant" states:
@@ -98,9 +99,16 @@ function flatten(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** The text with every code span's content replaced by `x`, so offsets stay and no `_` inside code counts. */
+/** The text with every code span's content (code-spans.ts) replaced by `x`, so offsets stay and no `_` inside code
+ * counts. */
 function masked(text: string): string {
-  return text.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
+  let out = "";
+  let at = 0;
+  for (const { start, end, run } of codeSpans(text)) {
+    out += text.slice(at, start + run) + "x".repeat(end - start - 2 * run) + text.slice(end - run, end);
+    at = end;
+  }
+  return out + text.slice(at);
 }
 
 type Mark = { kind: "enforced" | "planned" | "retired" | "gap" | "unknown"; text: string; start: number; end: number };
@@ -139,9 +147,8 @@ type Citation = { path: string; names: string[]; loose: boolean };
  * name that follows a test file in any other way (`, "name"`, `: "name"`), which the parser would not check. */
 function citations(text: string): Citation[] {
   const found: Citation[] = [];
-  for (const match of text.matchAll(/`([^`]+)`/g)) {
-    const span = match[1] ?? "";
-    const after = text.slice(match.index + match[0].length);
+  for (const { end, content: span } of codeSpans(text)) {
+    const after = text.slice(end);
     if (MIGRATION.test(span)) found.push({ path: `migrations/${span}.sql`, names: [], loose: false });
     if (!PATH.test(span) && !CONFIG.test(span)) continue;
     const test = TEST_FILE.test(span);
@@ -154,15 +161,19 @@ function citations(text: string): Citation[] {
 
 /** The balanced parenthesized group a text starts with, quotes and code spans skipped. */
 function parenthesized(text: string): string {
+  const spans = new Map(codeSpans(text).map(({ start, end }) => [start, end]));
   let depth = 0;
-  let quoted: string | undefined;
+  let quoted = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quoted !== undefined) {
+    const span = quoted ? undefined : spans.get(i);
+    if (span !== undefined) {
+      i = span - 1;
+    } else if (quoted) {
       if (c === "\\") i++;
-      else if (c === quoted) quoted = undefined;
-    } else if (c === '"' || c === "`") {
-      quoted = c;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') {
+      quoted = true;
     } else if (c === "(") {
       depth++;
     } else if (c === ")" && --depth === 0) {
@@ -390,6 +401,8 @@ describe("the threat model's statuses", () => {
       '- **EX-8: names that escape.** _Enforced (main):_ `test/a.test.ts` ("only in a comment", "alpha … omega",',
       '  "", "…", "two … one"). _Enforced (main)_ with no citation at all. _Enforced (main):_ `package.json`',
       "  and `src/gone.json`.",
+      "- **EX-9: a span of two backticks.** _Enforced (main):_ `src/a.ts`, none of ``_`<>``.",
+      '  _Planned (later):_ `src/gone.ts`. _Enforced (main):_ `test/a.test.ts` ("missing after a span").',
       "",
       "## Accepted risks",
       "",
@@ -437,6 +450,7 @@ describe("the threat model's statuses", () => {
       'EX-8: test/a.test.ts has no test "two … one"',
       'EX-8: an enforced part cites no file: "with no citation at all."',
       "EX-8: src/gone.json does not exist",
+      'EX-9: test/a.test.ts has no test "missing after a span"',
       "entry points: src/gone.ts does not exist",
       'entry points: unknown status "branch `kopje/setup`: `src/a.ts`"',
       'entry points: unknown status "main"',
