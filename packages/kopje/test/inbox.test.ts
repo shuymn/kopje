@@ -4,8 +4,9 @@ import { Temporal } from "temporal-polyfill";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { inboxGate, KEY_REFRESH_MS, MAX_RETRACTIONS_PER_ACTOR, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
-import { type RemoteActorInput, RETRACTION_TTL_MS, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
+import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
+import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { handleQueue } from "../src/jobs/queue";
 import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";

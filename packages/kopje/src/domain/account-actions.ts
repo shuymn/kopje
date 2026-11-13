@@ -25,10 +25,10 @@ import { availableSql, followableBySql, type QuotePolicyName } from "./audience"
 import { userMediaDeleteOperation, userWriteOperation } from "./auth";
 import { localEmojiSnapshot } from "./custom-emojis";
 import { armFieldLinks } from "./field-links";
-import { retractFollow } from "./inbox";
 import { applyProfileImage, PROFILE_IMAGES, type ProfileImage, profileUploadReady } from "./media";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { plainTextToHtml } from "./plain-text";
+import { retractFollow } from "./retractions";
 import { accountSearchText } from "./search-text";
 
 // The account operations that federate or notify: following and its answers, and the profile update. They build on

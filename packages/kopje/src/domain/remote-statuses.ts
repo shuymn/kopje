@@ -27,7 +27,6 @@ import { isLocalPoll, receiveVote, remotePollChanges, storeRemotePoll } from "./
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
 import {
   type DocumentRevision,
-  isDeleted,
   remoteAccount,
   type RemoteActorInput,
   type RemoteRow,
@@ -42,6 +41,7 @@ import {
   followersUri,
   type StoredStatus,
 } from "./remote-status-reads";
+import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";

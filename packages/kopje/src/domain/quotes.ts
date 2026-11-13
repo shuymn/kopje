@@ -36,12 +36,10 @@ import {
   actorRevision,
   applyRefresh,
   type DocumentRevision,
-  isDeleted,
   isDeletedActor,
   remoteAccount,
   type RemoteActorInput,
   type RemoteRow,
-  RETRACTION_TTL_MS,
   RetryLater,
   staleAccount,
   SWEEP_BATCH,
@@ -55,6 +53,7 @@ import {
   visibilityOf,
 } from "./remote-status-reads";
 import type { storeRemoteStatus } from "./remote-statuses";
+import { isDeleted, RETRACTION_TTL_MS } from "./retractions";
 import { RowBudget } from "./row-budget";
 
 // How a received status is stored: remote-statuses.ts storeRemoteStatus, which its callers pass. Storing a status

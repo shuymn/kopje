@@ -24,10 +24,10 @@ import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { activeMuteSql, inDomainSql } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { leaveConversationsWith } from "./conversations";
-import { retractFollow } from "./inbox";
 import { DOMAIN_BLOCK_CLEANUPS, nextJob, runJobItem } from "./job-attempts";
 import { END_FOLLOW_NOTIFICATIONS_SQL } from "./notifications";
 import { writeOperation } from "./operation";
+import { retractFollow } from "./retractions";
 import { edgeRangeSql } from "./windows";
 
 // Blocks, mutes and domain blocks of local users (Mastodon 4.5's BlockService, UnblockService, MuteService,

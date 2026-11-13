@@ -13,11 +13,9 @@ import { noteEmojiSnapshot, syncProfileFiles } from "./remote-media";
 import { accountSearchText } from "./search-text";
 
 // Remote actors as the Store keeps them: storing and refreshing one (upsertRemoteActor, applyRefresh), its stored
-// revision, and whether an actor or an object was deleted or retracted. The inbox (inbox.ts), remote statuses and quotes
-// build on it.
+// revision, and whether an actor was deleted. The inbox (inbox.ts), remote statuses and quotes build on it; what an
+// actor retracted is in retractions.ts.
 
-// A retraction (Undo or Delete) is kept this long; an activity it names that arrives later is ignored (ID-7).
-export const RETRACTION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // Expired retractions, finished jobs and expired mutes removed per call (RES-4), so the sweep stays bounded and
 // keeps up.
 export const SWEEP_BATCH = 100;
@@ -405,25 +403,4 @@ export function applyRefresh(
     return current;
   }
   return stored === undefined ? { kind: "refused" } : { kind: "refreshed", author: stored, frozen: stored.frozen };
-}
-
-export function isRetracted(db: Db, actorUri: string, targetUri: string, now: number): boolean {
-  return (
-    db.first(
-      "SELECT 1 AS x FROM inbound_retractions WHERE actor_uri = ? AND target_uri = ? AND expires_at > ?",
-      actorUri,
-      targetUri,
-      now,
-    ) !== undefined
-  );
-}
-
-// The actor_uri of a deletion that holds for every actor: a status or boost that was stored and deleted by its author
-// is not created again under that uri by anyone, its author or another actor of the same origin (ID-6, ID-7). A Delete
-// of an unknown object stays the actor's own (it cannot suppress another actor's objects never seen here).
-export const ANY_ACTOR = "*";
-
-// Whether `uri` may not be created by `actorUri`: the actor retracted it, or it was stored and deleted.
-export function isDeleted(db: Db, actorUri: string, uri: string, now: number): boolean {
-  return isRetracted(db, actorUri, uri, now) || isRetracted(db, ANY_ACTOR, uri, now);
 }

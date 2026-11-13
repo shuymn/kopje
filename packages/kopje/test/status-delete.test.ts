@@ -3,8 +3,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
-import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/inbox";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs } from "./helpers";

@@ -267,8 +267,8 @@ against their own instance. TLS is assumed between all parties.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later. Input that fails ID-1 or ID-6 reserves no key and
-  records no retraction. _Enforced (main):_ natural keys, `retract` in `src/domain/inbox.ts` and `isRetracted` in
-  `src/domain/remote-actors.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
+  records no retraction. _Enforced (main):_ natural keys, `retract` and `isRetracted` in
+  `src/domain/retractions.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
   target_account_id)`, migration `0054_remote_reports`): a redelivery writes nothing, and a Flag id past
   `ACTIVITY_ID_LIMIT` (4,096 JSON-escaped UTF-8 bytes) is ignored by the Worker and by the Store before any write,
   which the column's CHECK holds for dumps too (`test/inbox-flag.test.ts`). Report ids are never reused and remain

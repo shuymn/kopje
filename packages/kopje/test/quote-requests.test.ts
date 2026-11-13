@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_LANE_BACKLOG } from "../src/domain/deliveries";
 import { MAX_QUOTE_REQUESTS_PER_ACTOR } from "../src/domain/quotes";
-import { RETRACTION_TTL_MS } from "../src/domain/remote-actors";
+import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { signAsAuthor } from "../src/federation/ld-sign";
 import { deliveryRound } from "../src/jobs/deliver";
 import { sha256Hex } from "../src/security/tokens";
