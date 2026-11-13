@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { deviationIds } from "../test/mastodon-conformance.js";
+import { textRuns } from "./markdown.js";
 import { lineOf } from "./source-scan.js";
 
 // The ids other documents, code comments and tests cite: each threat-model entry (`- **VIS-17: ...**`), each rule of
@@ -50,6 +51,34 @@ function definedIds(): Set<string> {
   ]);
 }
 
+type Run = { value: string; line: number };
+
+// The texts a range is read from, each with its first line in the file. Markdown: the text a reader sees
+// (markdown.ts), so quote markers and list indentation never sit inside a range. Other files: the file itself, and each
+// comment block with its markers removed, consecutive `//` lines or one `/* ... */` with each line's leading `*`.
+function rangeRuns(path: string, text: string): Run[] {
+  if (path.endsWith(".md")) {
+    return textRuns(text);
+  }
+  const runs: Run[] = [{ value: text, line: 1 }];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const block: string[] = [];
+    while (i + block.length < lines.length && /^\s*\/\//.test(lines[i + block.length] ?? "")) {
+      block.push((lines[i + block.length] ?? "").replace(/^\s*\/\/+/, ""));
+    }
+    if (block.length > 1) {
+      runs.push({ value: block.join("\n"), line: i + 1 });
+      i += block.length - 1;
+    }
+  }
+  for (const match of text.matchAll(/\/\*[\s\S]*?\*\//g)) {
+    const inner = match[0].slice(2, -2).replace(/^[ \t]*\*(?!\/)/gm, "");
+    runs.push({ value: inner, line: lineOf(text, match.index) });
+  }
+  return runs;
+}
+
 // The cited ids `defined` lacks, as `path:line: id`. A range (`VIS-1 to VIS-4`, `R1 to R25`, `through` or an en
 // dash, across a line break too) cites each id in it, so a range over an undefined id fails: cite a list instead.
 function undefinedIds(files: readonly File[], defined: ReadonlySet<string>): string[] {
@@ -60,28 +89,32 @@ function undefinedIds(files: readonly File[], defined: ReadonlySet<string>): str
   const found: string[] = [];
   for (const { path, text } of files) {
     const rules = path.startsWith("packages/kopje/src/") || path.endsWith(".md");
-    const cited: { at: number; id: string }[] = [];
+    const cited = new Map<string, { line: number; id: string }>();
+    const cite = (line: number, id: string) => {
+      if (!defined.has(id)) {
+        cited.set(`${line}:${id}`, { line, id });
+      }
+    };
     for (const match of text.matchAll(hyphenated)) {
-      cited.push({ at: match.index, id: match[0] });
+      cite(lineOf(text, match.index), match[0]);
     }
     if (rules) {
       for (const match of text.matchAll(/\bR\d+\b/g)) {
-        cited.push({ at: match.index, id: match[0] });
+        cite(lineOf(text, match.index), match[0]);
       }
     }
-    for (const match of text.matchAll(ranges)) {
-      const [, family = "", first = "", last = ""] = match;
-      if (family !== "R" || rules) {
-        for (let n = Number(first) + 1; n < Number(last); n++) {
-          cited.push({ at: match.index, id: `${family}${n}` });
+    for (const { value, line } of rangeRuns(path, text)) {
+      for (const match of value.matchAll(ranges)) {
+        const [, family = "", first = "", last = ""] = match;
+        if (family !== "R" || rules) {
+          for (let n = Number(first) + 1; n < Number(last); n++) {
+            cite(line + lineOf(value, match.index) - 1, `${family}${n}`);
+          }
         }
       }
     }
-    for (const { at, id } of cited.toSorted((a, b) => a.at - b.at)) {
-      if (!defined.has(id)) {
-        found.push(`${path}:${lineOf(text, at)}: ${id}`);
-      }
-    }
+    const sorted = [...cited.values()].toSorted((a, b) => a.line - b.line);
+    found.push(...sorted.map(({ line, id }) => `${path}:${line}: ${id}`));
   }
   return found;
 }
@@ -161,6 +194,20 @@ describe("document ids", () => {
       "packages/kopje/docs/b.md:1: VIS-3",
       "packages/kopje/docs/b.md:2: R3",
       "packages/kopje/test/a.test.ts:1: VIS-3",
+    ]);
+  });
+
+  it("reads a range across comment lines and quote markers", () => {
+    const defined = new Set(["VIS-1", "VIS-2", "VIS-4"]);
+    const files = [
+      { path: "packages/kopje/src/a.ts", text: "// a\n// VIS-1 to\n// VIS-4\nf();\n/* b\n * VIS-1 to\n * VIS-4 */\n" },
+      { path: "packages/kopje/docs/a.md", text: "> VIS-1 to\n> VIS-4\n\n- VIS-1 to\n  VIS-4\n" },
+    ];
+    expect(undefinedIds(files, defined)).toEqual([
+      "packages/kopje/src/a.ts:2: VIS-3",
+      "packages/kopje/src/a.ts:6: VIS-3",
+      "packages/kopje/docs/a.md:1: VIS-3",
+      "packages/kopje/docs/a.md:4: VIS-3",
     ]);
   });
 });
