@@ -664,12 +664,10 @@ the cleanup in `blocks.ts`); until the cleanup reaches a follower there, it is s
 a silent recipient of an addressed activity by a copy of its own at its personal inbox (VIS-2), and the recipient of
 an activity without `to` by shared inbox, else personal inbox (R38's severing `Reject` by personal inbox alone, its
 `personalInbox` option). No other SQL turns follows into inboxes or reads an account's shared inbox (the architecture
-test below). The signed `Delete` of a public or unlisted status (VIS-3 in [threat-model.md](threat-model.md)) is
-addressed to Public alone, so its `to` and `cc` do not place its copies: its envelope records the `to` and `cc` its
-unsigned form would have (`addressing`), and the targets follow those, so it reaches the same inboxes with the same
-personal copies; each copy, personal ones included, is the signed body unchanged, which names nobody (VIS-2's
-exception). Staging follows `addressing` only as `stagedAddressing` validates it, each entry Public, the followers or
-a mention that is not silent; any other value gives every addressed account a copy of its own.
+test below). The signed `Delete` of a public or unlisted status is addressed to Public alone, so its targets follow
+the `to` and `cc` its unsigned form would have, which its envelope records (`addressing`) and staging reads as
+`stagedAddressing` validates them: it reaches the same inboxes with the same personal copies, each the signed body
+unchanged, which names nobody (VIS-2's exception and VIS-3 in [threat-model.md](threat-model.md)).
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
 through each of them (VIS-3 in [threat-model.md](threat-model.md), with its gaps): its audience names only the owner's
@@ -764,8 +762,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     purges `FollowRequest`s) and local accounts' follows and requests of it (each with its `Undo`), through
     `severFollow` with the account job's preparation. Before a local follower's follow ends, the preparation removes
     the account from that follower's lists, writing at most the round's room (257 rows,
-    `src/domain/remote-suspension.ts`) a round, so the follow's final delete writes no list row. Its reads are not bounded the same way: each
-    preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all of the follower's
+    `src/domain/remote-suspension.ts`) a round, so the follow's final delete writes no list row. Its reads are not
+    bounded the same way: each preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all of the follower's
     lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always removed in
     one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round,
     one resumed from the round before included. An individually suspended account is skipped, so its local follows

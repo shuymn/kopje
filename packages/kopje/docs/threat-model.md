@@ -144,38 +144,38 @@ against their own instance. TLS is assumed between all parties.
   revision too. _Enforced (main):_ `upsertRemoteActor`, `applyRefresh`, `receive` and `inboxGate` in
   `src/domain/inbox.ts`, `quoteWork` in `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`,
   `src/federation/resolve.ts`; `test/inbox-actor-revision.test.ts`, `test/quotes.test.ts` ("keeps a Move committed
-  during a stale-author stage’s fetch"). A second exception: a `Delete` another server relays (a booster or quoter
-  forwarding the author's `Delete` of a status, or a quoting server forwarding the quoted author's revocation of a
-  quote's stamp, signed with its own key, as Mastodon forwards both). Its HTTP signer must own its key by the same rule;
-  the `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked Data
+  during a stale-author stage’s fetch"). A second exception: a `Delete` another server relays, signed with its own key
+  (a booster or quoter forwarding the author's `Delete` of a status, or a quoting server forwarding the quoted author's
+  revocation of a quote's stamp, as Mastodon forwards both). Its HTTP signer must own its key by the same rule; the
+  `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked Data
   Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key the
-  actor's current document embeds (that document fetched anew in the request, never from a cache, so a key the actor
-  has since replaced proves nothing; no other key is ever loaded). A proof is considered only on a body in one of the
-  sender profiles (`PROFILES` in `src/federation/author-proof.ts`): Mastodon 4.5's status and stamp `Delete`, Kopje's
-  status and stamp `Delete`, Mastodon's and Kopje's status `Delete` as a Mastodon holding a boost or quote of the
-  status forwards it (the forwarded profiles, none for a stamp's `Delete`, which Mastodon 4.5.21 forwards without its
-  signature. Mastodon compacts the body under its `full_context` and forwards it with that `@context`, so the
-  `@context` is activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a
-  definition some release gave it, the union of `full_context` in `app/helpers/context_helper.rb` at every 4.4 and 4.5
-  release tag, v4.4.0 to v4.5.21, read from each tag's source, none of whose terms is or aliases one the decision
-  reads), and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI,
-  the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof). In a profile the
-  `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL in it preloaded, and every key at
-  every level is one the sender writes (`type` the string `Delete`, the object an IRI or the sender's Tombstone or
-  QuoteAuthorization, the signature or the single proof in the sender's shape, a proof's own `@context` the body's),
-  so the body's JSON-LD meaning is its literal JSON: no inline term can nest, drop, alias or redefine a key the
-  decision reads, and no context resolves differently between verification and parsing. Contexts are served from
-  Fedify's preloaded set alone, for the verification and every parse. The proven `Delete` has exactly the literal id,
-  one actor (the author) and one object (the literal object's id). Any other form is answered as a proof that does not
-  verify: a relayed `Delete` from Misskey, or from a Mastodon release whose context differs, is refused, and an
-  author's own `Delete` in such a form applies but forwards nothing.
+  actor's current document embeds, that document fetched anew in the request, never from a cache, so a key the actor
+  has since replaced proves nothing (no other key is ever loaded).
+  A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
+  Mastodon 4.5's and Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a Mastodon holding a
+  boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default
+  `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a
+  single proof). Mastodon forwards a body compacted under its `full_context`, so a forwarded profile's `@context` is
+  activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a definition some
+  release gave it: the union of `full_context` in `app/helpers/context_helper.rb` at every release tag from v4.4.0 to
+  v4.5.21, none of whose terms is or aliases one the decision reads. A stamp's `Delete` has no forwarded profile, since
+  Mastodon 4.5.21 forwards it without its signature. In a profile the `@context` is deep-equal to the sender's (or,
+  forwarded, in that form), every URL in it preloaded, and every key at every level is one the sender writes (`type`
+  the string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single
+  proof in the sender's shape, a proof's own `@context` the body's), so the body's JSON-LD meaning is its literal JSON:
+  no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
+  between verification and parsing. Contexts are served from Fedify's preloaded set alone, for the verification and
+  every parse. The proven `Delete` has exactly the literal id, one actor (the author) and one object (the literal
+  object's id). Any other form is answered as a proof that does not verify: a relayed `Delete` from Misskey, or from a
+  Mastodon release whose context differs, is refused, and an author's own `Delete` in such a form applies but forwards
+  nothing.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
-  (the same handler and effects, its forward included, VIS-3); anything else of the actor's origin as at most a stamp.
-  A relay without a proof is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
-  again, and changes no status; a proof that does not verify answers 401; any other activity signed by a key its actor
-  does not own still answers 401. Fedify 2.4.4 refuses `@graph`, `@included` and `@reverse` (and their aliases) before
+  (VIS-3, its forward included); anything else of the actor's origin as at most a stamp. A relay without a proof
+  changes no status and is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
+  again; a proof that does not verify answers 401; any other activity signed by a key its actor does not own still
+  answers 401. Fedify 2.4.4 refuses `@graph`, `@included` and `@reverse` (and their aliases) before
   and after compacting a signed document and verifies the compacted form it parses, the class of Linked Data Signature
   bypass Mastodon fixed in 4.5.10 (GHSA-53m7-2wrh-q839).
   _Enforced (main):_ `relayed` in `src/federation/inbound.ts`, `src/federation/author-proof.ts`, `relayedDelete` in
@@ -184,13 +184,12 @@ against their own instance. TLS is assumed between all parties.
   activity id or by a key on another host, a signer that does not own its key, another author's status, a uri of
   another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
   proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
-  fixture derived from the sender's source with only the `@context` replaced, Mastodon's Ruby compaction not run, a
-  refusal with a signature Fedify alone accepts for the context, the key sets, the object values, the single proof,
-  the signature's and the proof's context, the proven id and the forwarded context's shape, allowlist and definitions,
-  Mastodon's and Kopje's status `Delete`s forwarded under the context Mastodon 4.5.21 forwarded, and their stamp
-  `Delete`s in that form refused, that no allowed term is or aliases a decision term, every exploit found against the
-  proof, and no network fetch while verifying, with an actor document naming a context that is not preloaded refused;
-  the request's shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s
+  fixture derived from the sender's source with only the `@context` replaced, Mastodon's Ruby compaction not run; a
+  refusal for each profile check above that Fedify alone would pass, and for the JSON-LD type, signature, proof and context confusion cases;
+  stamp `Delete`s in the forwarded form refused; no allowed term that is or aliases a decision term; no network fetch
+  while verifying, and an actor document naming a
+  context that is not preloaded refused; the request's shared context cache is not observed by a test),
+  `test/quotes.test.ts` ("relayed revocations (ID-1’s
   exception)": Mastodon's stamp `Delete`, a missing proof, a forged signature, a proof by another actor's key, a proof
   covering another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed
   `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction
@@ -458,15 +457,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   a silent recipient named) places every addressed account by a copy of its own at its personal inbox, which never
   names or reaches anyone VIS-2 keeps out, and nothing throws. `to` and `cc` are checked and listed at the same path
   (a repeated key is never read past the one checked), and copies are placed by the ids of the accounts the entries
-  match, never by a decoded uri, so two stored ids that decode alike stay apart. When it cannot be signed for a reason that may pass (the
-  key does not unwrap, signing throws, no signer, no key), the DELETE answers 503 and writes nothing: no intent, no
-  job, no streaming delete, no hide, so the status stays and a later DELETE can still send a proven `Delete`. A
-  private, direct or limited status's `Delete` is never signed (a proof would make a portable, authentic record of its
-  addressees), nor is a boost's `Undo`. An imported status whose uri or author's actor id can never be signed (not an
-  http or https URL in the spelling URL serializing gives it, with no fragment, nor an absolute IRI to jsonld: the
-  creator Fedify writes would never match, or safe canonicalization refuses it) is deleted with its `Delete` unsigned
-  and addressed as before, and `kopje.delivery.delete_unsigned` logs the reason (`actor_id`, `status_uri`): a 503
-  there would leave a status its author can never delete. `Delete`s recorded before this release stay unsigned.
+  match, never by a decoded uri, so two stored ids that decode alike stay apart. When it cannot be signed for a reason
+  that may pass (the key does not unwrap, signing throws, no signer, no key), the DELETE answers 503 and writes
+  nothing: no intent, no job, no streaming delete, no hide, so the status stays and a later DELETE can still send a
+  proven `Delete`. A private, direct or limited status's `Delete` is never signed (a proof would make a portable,
+  authentic record of its addressees), nor is a boost's `Undo`. An imported status whose uri or author's actor id can
+  never be signed (not an http or https URL in the spelling URL serializing gives it, with no fragment, nor an absolute
+  IRI to jsonld: the creator Fedify writes would never match, or safe canonicalization refuses it) is deleted with its
+  `Delete` unsigned and addressed as the status was, and `kopje.delivery.delete_unsigned` logs the reason (`actor_id`,
+  `status_uri`): a 503 there would leave a status its author can never delete. A `Delete` recorded unsigned by an
+  earlier release stays unsigned.
   _Enforced (main):_ `deleteSigning` and `signedAs` in `src/domain/activities.ts`, `prepareDelete` and
   `deleteStatus` in `src/domain/statuses.ts`, `stagedAddressing` in `src/domain/deliveries.ts`, `deleteStatus` in
   `src/mastodon/statuses.ts`; `test/signed-delete.test.ts`. _Enforced (main):_
@@ -511,8 +511,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and the staging, and who has no delivery evidence of the boost, misses the `Undo`; so does a server that learned of
   the boost only from the outbox.
   A remote author's `Delete` of its own public or unlisted original, its author proof verified (ID-1), whether it
-  comes from the author's server or another server relays it, is forwarded as received by each local account holding a kept boost of it that is not direct or limited (a converted one, which
-  its booster's followers may not see, forwards nothing) or a local quote of it in any state whose quoting status is
+  comes from the author's server or another server relays it, is forwarded as received by each local account holding a
+  kept boost of it that is not direct or limited (a converted one, which its booster's followers may not see, forwards
+  nothing) or a local quote of it in any state whose quoting status is
   not withdrawn (`quotes.withdrawn`, migration `0091_live_local_quotes`, a copy its triggers keep: a withdrawn one is
   skipped and counts against no cap), for a body of at most `FORWARD_BODY_MAX` (65,536) UTF-8 bytes as serialized
   holding no number JSON cannot carry: one immutable intent per owner, at most `MAX_FORWARD_OWNERS` (16: the boosters
@@ -2896,11 +2897,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   writers keep below it (`pin` counts in its transaction, the remote writers keep a slot below `MAX_REMOTE_PINS`), so
   they are never refused. The pinned read (`GET /api/v1/accounts/:id/statuses?pinned=true` and the profile's first
   page) reads at most an account's limit of pins through the primary key, with no index in pin order. An anonymous read
-  without conditions reads at most 3 + 4 × the limit rows, every pin examined (83 for a remote account), an enforced
-  bound that `test/pin-cap.test.ts` ("reads at most the account's limit of pins, by primary key, at each limit filled")
-  asserts at both limits; a signed-in viewer, the request's conditions and a boost's original add lookups by key for
-  each of those pins, not more pins, for which `test/pin-cap.test.ts` establishes no ceiling. The cap:
-  `test/migrations.test.ts` ("0089_pin_cap"),
+  without conditions reads at most 3 + 4 × the limit rows, every pin examined (83 for a remote account), which
+  `test/pin-cap.test.ts` ("reads at most the account's limit of pins, by primary key, at each limit filled") asserts
+  at both limits; a signed-in viewer, the request's conditions and a boost's original add lookups by key for each of
+  those pins, not more pins, with no ceiling asserted. The cap: `test/migrations.test.ts` ("0089_pin_cap"),
   `test/dump-import.test.ts` ("round-trips an account's pins at its limit"). _Enforced (main)_ for status cards: one
   `status_cards` row per status
   (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
@@ -3414,8 +3414,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
   places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
   takes (VIS-3). A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
-  its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of its at most 202 entries, two
-  seeks by unique key, outside `STAGING_READ`. Its job's batches
+  its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of
+  its at most 202 entries, two seeks by unique key, outside `STAGING_READ`. Its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
   pins, its hashtags with its author's featured hashtags counted again, the forwards of the remote original it quotes
   (staged first, VIS-3), the earlier activities left to supersede, the `Delete`'s staging, its local boosts, the media its answer did not show (with the job's `bound`), then the children
@@ -3863,8 +3863,8 @@ status, and naming the statuses read, so every status carries 50 filter results 
 takes the 1,000 keywords. SQLite bytes are the UTF-8 bytes of every value read (8 per number); nodes are the objects,
 arrays and strings presented. Each measured cell of the table is the most any of the test's five fills gives (the
 four above and the emoji-cache fill), as the test asserts it for each fill; rows read are the rows those reads return.
-Measured shapes are read through the Store operation. No one fill holds a status's emoji
-arrays and its polls' at their bounds at once (the references a poll's choices need displace escaped characters), so the
+Measured shapes are read through the Store operation. No one fill holds a status's emoji arrays and its polls' at
+their bounds at once (the references a poll's choices need displace escaped characters), so the
 conservative JSON of a shape is the escaped fill's plus 12,286 bytes for each poll it shows, at least every fill's
 (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape within 85%, above every fill")); shares are
 of it. Each remote account of the fills carries its actor id (`uri`) at its bound, 2,048 bytes as JSON, the most it
@@ -4079,12 +4079,11 @@ Peaks, as `test/status-bounds.test.ts` ("keeps the peaks of the heap model withi
 column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap
 any fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with
 25% headroom; the largest single row sums each column's largest value the same way (1.20 MB as logged, the escaped
-poll row,
-which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above); the
-admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima,
-whatever runs before it, and asserts the timelines' peaks within half of the Store isolate's 128 MB with at least
-4,096 bytes to spare, and the groups' and reports' within the whole. The figures in the two Store tables below (the
-rows, the rejected items and the answers' peaks) are what that test logs, not what it asserts.
+poll row, which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above);
+the admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima, whatever runs before it, and
+asserts the timelines' peaks within half of the Store isolate's 128 MB with at least 4,096 bytes to spare, and the
+groups' and reports' within the whole. The figures in the two Store tables below (the rows, the rejected items and the
+answers' peaks) are what that test logs, not what it asserts.
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
@@ -4110,8 +4109,7 @@ reports. Normal: the rows are the larger of 1.25 × the target and the item's ro
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
 the isolate's memory even while the dropped chunk remains live, with 10,326 bytes to spare as logged (at least 4,096
-kept and asserted, as
-above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and moved-to account's cached
+asserted, as above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and moved-to account's cached
 profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account row's cached emoji (its
 first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of snapshots at their most
 entries, and a moved-to account counts its at their cap), each account row's remote verification times at their 290-byte
@@ -4381,9 +4379,9 @@ heap).
   accepts that (accepted risk below). A rewrap keeps the key pairs, so a signed `Delete` recorded but not yet
   delivered (VIS-3, VIS-28) still verifies after it, and in a Store restored from a dump, which carries the pairs too.
   Kopje has no key-pair rotation; one that is added must drop or sign again the signed `Delete`s still to be sent,
-  which receivers relaying them would otherwise refuse under the new key. During a rewrap window, keys under the
-  previous KEK cannot sign, and a DELETE of a public or unlisted status answers 503 (the procedure's
-  `MAINTENANCE=readonly` refuses it before that).
+  which receivers relaying them would otherwise refuse under the new key. Until the rewrap has run, a DELETE of a
+  public or unlisted status by an account whose key is under the previous KEK answers 503 (the procedure's
+  `MAINTENANCE=readonly` refuses it first).
 - **DATA-15: the cutover never widens an audience.** A converted status is visible to exactly whom legacy Wildebeest
   let read it (its `isVisible`), from the object's own `to`/`cc` and
   its stored author's followers collection as exported, never from values a bridge migration filled in or rewrote (0002

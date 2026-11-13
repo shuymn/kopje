@@ -143,13 +143,10 @@ An `outbound_activities.body` is checked as JSON only (`json_valid`). The `Delet
 byte for byte (`"immutable": true`), and `addressing` holds the `to` and `cc` its unsigned form would have, by which
 its retraction's staging places each addressed account's copy. A dump carries both as they are, and a restored Store
 sends the same bytes, its proof still valid since the key pairs travel too. Staging reads `addressing` only on an
-immutable body, and only when it is two arrays of at most 202 strings, each at most `ACTOR_URI_LIMIT` + 10 bytes and
-each Public, the signer's followers collection or the stored actor id of a mention of the status that is not silent;
-any other value (another type, a silent recipient, an entry nothing stored names) is not refused at import but gives
+immutable body and only as `stagedAddressing` validates it (VIS-3); any other value is not refused at import but gives
 every addressed account a copy of its own at its personal inbox, so it never widens a copy nor stops the staging. A
 repeated `to` or `cc` key, which `json_valid` accepts, is read only at the one each path names, the one checked. A
-body without `addressing` (an unsigned `Delete`, every one recorded before the release that signs them) is placed by
-its activity's own `to` and `cc`.
+body without `addressing` (an unsigned `Delete`) is placed by its activity's own `to` and `cc`.
 
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
@@ -443,11 +440,11 @@ so a restored Store never gives a report id twice.
    They are ordered like the rows.
 
 `sqlite_sequence` rows (`INSERT INTO "sqlite_sequence" ("name","seq") VALUES ('notifications',9);`) replace the
-counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own. The importer
-refuses a row naming a table the target's schema does not declare AUTOINCREMENT, with `sequence-not-allowed` and its
-chunk unapplied, so `sqlite_sequence` holds one row per such table (RES-6: the inbound jobs read it by name, and it has
-no index). Kopje's own dumps, an upgraded Store's too (SQLite drops a table's counter with the table and renames it
-with the table), hold no other row.
+counter for that name. They come last, after the AUTOINCREMENT inserts that created counters of their own. The
+importer refuses a row naming a table the target's schema does not declare AUTOINCREMENT, with `sequence-not-allowed`
+and its chunk unapplied, so `sqlite_sequence` holds one row per such table (RES-6: the inbound jobs read it by name,
+and it has no index). Kopje's own dumps, an upgraded Store's too (SQLite drops a table's counter with the table and
+renames it with the table), hold no other row.
 
 ### What is not in a dump
 
@@ -542,15 +539,15 @@ bytes it receives:
   values; a longer one is refused with `link-too-large`), and stages the
   link (in `kopje_state`, under names that are never dumped). Verify reads the staged links one at a time and applies them in body order, a step
   per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000 links; the quote count
-  correction (below) starts in the call that applies the last of them. A link that cannot be applied (its value breaks a constraint) is
-  refused at verify; the import then needs a reset.
+  correction (below) starts in the call that applies the last of them. A link that cannot be applied (its value breaks
+  a constraint) is refused at verify; the import then needs a reset.
 - The import inserts every row, so the triggers that write on an insert run. One changes a dumped value: each
   accepted `quotes` row adds 1 to its quoted status's `quotes_count` (`quotes_count_inserted`), which the dumped
   `statuses` row already holds. After the links, verify takes that 1 off again for each accepted quote, the dumped
   value standing: a step per call reads at most 2,000 quotes in `status_id` order and stops after the status row that
-  brings the rewritten bytes to 1 MiB, and the checksums start once a step finds no quote left. A verification
-  that an earlier version began starts its checksums again once the correction starts. The others leave the dumped rows as they are: their writes
-  match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
+  brings the rewritten bytes to 1 MiB, and the checksums start once a step finds no quote left. A verification that an
+  earlier version began starts its checksums again once the correction starts. The other triggers leave the dumped
+  rows as they are: their writes match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
   every stored row (`statuses_thread`) or while the tables a later one fills are still empty
   (`reject_replays_follow_stored`), or they write `stream_events`, which no dump holds. `test/import-triggers.test.ts`
   keeps the list of such triggers with these reasons.
