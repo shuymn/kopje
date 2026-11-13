@@ -3,18 +3,30 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { deleteActivity, signableDeleteActivity } from "../src/domain/activities";
+import { forwardSubject } from "../src/domain/deliveries";
 import { deleteStatus, prepareDelete } from "../src/domain/statuses";
 import { verifyAuthorProof } from "../src/federation/author-proof";
 import { signAsAuthor } from "../src/federation/ld-sign";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, settle, sql } from "./api-helpers";
-import { harness, NOW } from "./app-helpers";
+import { harness, NOW, offline } from "./app-helpers";
 import { deleteSignature, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
-import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
+import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
-import { ALICE, ALICE_URI, announce, AS, localStatus, PUBLIC, setup, type Setup } from "./inbox-status-helpers";
+import {
+  ALICE,
+  ALICE_URI,
+  announce,
+  AS,
+  followed,
+  localStatus,
+  PUBLIC,
+  setup,
+  type Setup,
+  token,
+} from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
 import { contexts } from "./quote-helpers";
 
@@ -504,4 +516,88 @@ describe("an identity a verifier would not match is not signed (A7)", () => {
       expect(JSON.parse(stored!.cc!), spelling).toHaveLength(1);
     }
   });
+});
+
+describe("a Kopje holder of a boost forwards a Kopje author's signed Delete (VIS-3)", () => {
+  it("verifies the author's proof and forwards the body as the author's Kopje sent it", async () => {
+    // The author's Kopje: ann on author.example, followed by alice of kopje.test.
+    const ANN = "300000000000000001";
+    const ANN_URI = "https://author.example/ap/users/ann";
+    const authorStore = await migratedStore();
+    await setDomain(authorStore, "author.example");
+    await seedLocalAccount(authorStore, "author.example", { id: ANN, username: "ann", key: LEGACY_EMPTY_KEK });
+    const author = harness(authorStore, {}, BUILD, offline, () => NOW, "author.example");
+    const annToken = await token(authorStore, ANN);
+    await sql(
+      authorStore,
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+			VALUES ('400000000000000001', ?, 'alice', 'kopje.test', ?, 'https://kopje.test/inbox')`,
+      ALICE_URI,
+      `${ALICE_URI}/inbox`,
+    );
+    await sql(
+      authorStore,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES ('400000000000000001', ?, 'accepted')",
+      ANN,
+    );
+    // The holder: kopje.test, where alice follows ann and carol follows alice.
+    const { t } = await world();
+    const document = (await (await author.request("/ap/users/ann", AP)).json()) as Json;
+    t.web.serve(ANN_URI, document);
+    const ann = {
+      uri: ANN_URI,
+      keyId: `${ANN_URI}#main-key`,
+      privateKey: (await fixtureKeyGen()).privateKey,
+      pem: LEGACY_EMPTY_KEK.pubkey,
+      document,
+    };
+    await followed(t, ann);
+    // Each activity ann's Kopje sends alice's server, POSTed there as sent.
+    const relay = async () => {
+      await settle(authorStore);
+      for (const { inbox, body } of await sent(authorStore)) {
+        expect(inbox).toBe("https://kopje.test/inbox");
+        expect(await t.post(ann, body)).toBe(202);
+      }
+    };
+    const posted = await author.request("/api/v1/statuses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${annToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "boost me" }),
+    });
+    const status = await posted.json<{ id: string; uri: string }>();
+    await relay();
+    const [held] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", status.uri);
+    const boosted = await t.request(`/api/v1/statuses/${held!.id}/reblog`, bearer(t.tokens.alice, { method: "POST" }));
+    expect(boosted.status).toBe(200);
+    await settle(t.store);
+    await sent(t.store);
+    // ann deletes it: alice's server verifies her proof and forwards the Delete to carol's.
+    const deleting = await author.request(`/api/v1/statuses/${status.id}`, bearer(annToken, { method: "DELETE" }));
+    expect(deleting.status).toBe(200);
+    await settle(authorStore);
+    const [delivered, ...more] = await sentDeletes(authorStore);
+    expect(more).toEqual([]);
+    expect(
+      await verifyAuthorProof(
+        JSON.parse(delivered!.body) as Json,
+        { id: `${status.uri}#delete`, actor: ANN_URI, object: status.uri },
+        document,
+        contexts,
+      ),
+    ).toBe(true);
+    expect(await t.post(ann, delivered!.body)).toBe(202);
+    const forwards = await sql<{ account_id: string; immutable: number }>(
+      t.store,
+      "SELECT account_id, json_extract(body, '$.immutable') AS immutable FROM outbound_activities WHERE object_uri = ?",
+      forwardSubject(status.uri),
+    );
+    expect(forwards).toEqual([{ account_id: ALICE, immutable: 1 }]);
+    await settle(t.store);
+    const forwarded = await sentDeletes(t.store);
+    expect(forwarded.map((f) => f.inbox)).toContain(`${FANS}/inbox`);
+    for (const f of forwarded) {
+      expect(JSON.parse(f.body)).toEqual(JSON.parse(delivered!.body));
+    }
+  }, 60_000);
 });
