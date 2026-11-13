@@ -30,9 +30,15 @@ async function witnessed(
   entries: Record<string, Baseline>,
   expected: (ids: string[]) => string[],
   statements: [string, ...SqlStorageValue[]][],
-  options: { statistics?: "singleton" | "analyzed"; keys?: number; family?: RegExp; catching?: boolean } = {},
+  options: {
+    statistics?: "singleton" | "analyzed";
+    keys?: number;
+    family?: RegExp;
+    allowed?: readonly string[];
+    catching?: boolean;
+  } = {},
 ): Promise<Run> {
-  const witness = new PlanWitness(entries, options.family);
+  const witness = new PlanWitness(entries, options.family, options.allowed);
   const ids = Object.keys(entries);
   const store = await migratedStore();
   return runInDurableObject(store, (_instance, state) => {
@@ -155,6 +161,22 @@ describe("the sequence", () => {
     });
     expect(run.sides.map((side) => side.fault)).toEqual(["no baseline's"]);
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
+  });
+
+  it("fails a statement outside the family that the witness does not allow, and passes an allowed one", async () => {
+    const id = await statementId(SELECT);
+    const count = "SELECT count(*) AS n FROM t WHERE k = ?";
+    const statements: [string, ...SqlStorageValue[]][] = [
+      [PINNED, 3],
+      [count, 3],
+    ];
+    // Without `allowed` the stray read runs unmeasured and the witness cannot see it.
+    expectBeside("analyzed", await witnessed(await baselines(), () => [id], statements));
+    const allowed = await witnessed(await baselines(), () => [id], statements, { allowed: [`  ${count}\n`] });
+    expectBeside("analyzed", allowed);
+    const strict = await witnessed(await baselines(), () => [id], statements, { allowed: [] });
+    expect(strict.sides.map((side) => side.fault)).toEqual([undefined, "not allowed"]);
+    expect(() => expectBeside("analyzed", strict)).toThrow(/main's statements, every one in order/);
   });
 });
 

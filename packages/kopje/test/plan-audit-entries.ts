@@ -282,14 +282,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'NodeInfo counts the available local accounts (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "e087e97290cf7451",
-    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    id: "3be2de1ba3e95caa",
+    scans: ["local_accounts: SCAN l"],
     site: "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'NodeInfo\'s active users walk the local accounts, each probed newest first by statuses_account (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+      'NodeInfo\'s active users walk the local accounts, each available one probed newest first by statuses_account (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
     witness:
-      'test/nodeinfo-usage.test.ts ("counts an active account without reading its older history, with stale statistics")',
+      'test/nodeinfo-usage.test.ts ("counts an active account without reading its older history, with stale statistics"; "NodeInfo\'s active probe beside main\'s (RES-7)")',
   },
   {
     id: "a22117d33a2816a7",

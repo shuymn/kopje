@@ -396,18 +396,24 @@ export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Usage for NodeInfo. Active means "posted in the window", the only activity the Store records for local users. Each
-// count walks the local rows (operator-sized, a deployment assumption of the threat model) and reads only local
-// statuses (RES-7). An active account is probed newest first through statuses_account and stops at its first status in
-// the window, so its older history is not read; no index orders an account's statuses by published_at, so an account
-// with none in the window is walked to its first status. localPosts walks each account's statuses_account_originals
-// prefix: statuses_count is no substitute, as it counts boosts and leaves direct and limited statuses out.
+// Usage for NodeInfo. users and the active counts are the available local accounts (availableLocalSql), so neither
+// active count exceeds users; an account is active when it posted in the window. Posting is NodeInfo's signal, not
+// local_accounts.active_on (an account's last authenticated request, migration 0059), which /api/v2/instance counts.
+// localPosts counts every local account's original statuses, of every visibility, a suspended account's included, as
+// Mastodon's local_posts and /api/v1/instance's status count include them. Each count walks the local rows
+// (operator-sized, a deployment assumption of the threat model) and reads only local statuses (RES-7). Each available
+// account is probed newest first by id through statuses_account and stops at its first status in the window, so when
+// the account's highest-id status is in the window its older history is not read. No index orders an account's
+// statuses by published_at, and imported ids need not follow it, so the probe walks every status with a higher id than
+// the account's first in the window, and the whole history of an account with none in it (#1479). localPosts walks
+// each account's statuses_account_originals prefix: statuses_count is no substitute, as it counts boosts and leaves
+// direct and limited statuses out.
 export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
   const since = (days: number) => new Date(now - days * DAY_MS).toISOString();
   const active = (days: number) =>
     db.first<{ n: number }>(
       `SELECT count(*) AS n FROM local_accounts l
-			WHERE (SELECT 1 FROM statuses s INDEXED BY statuses_account
+			WHERE ${availableLocalSql("l")} AND (SELECT 1 FROM statuses s INDEXED BY statuses_account
 				WHERE s.account_id = l.account_id AND s.published_at >= ? ORDER BY s.id DESC LIMIT 1) IS NOT NULL`,
       since(days),
     )?.n ?? 0;

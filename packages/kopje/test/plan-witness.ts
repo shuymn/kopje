@@ -32,8 +32,8 @@ export type Baseline = {
 type Measure = { rows: number; written: number; result: SqlRow[]; removed: string[]; added: string[] };
 
 // One production statement: `id` the baseline it is the rewrite of; `fault` set when it did not pair (out of order,
-// past the sequence, main's own statement unchanged, a statement of the family no baseline names) or did not finish
-// (`incomplete`: main's statement or the rewrite threw), with nothing compared.
+// past the sequence, main's own statement unchanged, a statement of the family no baseline names, one the witness does
+// not allow) or did not finish (`incomplete`: main's statement or the rewrite threw), with nothing compared.
 export type Side = { id: string; query: string; fault?: string; mine: Measure; main: Measure };
 
 export type Run = { expected: readonly string[]; sides: Side[]; populations: Record<string, number>; result: unknown };
@@ -42,12 +42,19 @@ const ROLLBACK = new Error("rolled back");
 const empty = (): Measure => ({ rows: 0, written: 0, result: [], removed: [], added: [] });
 
 // `family`, when given: the statements the rewritten code writes, each of which must be some baseline's rewrite (one
-// that is no baseline's is recorded as a fault, so the case fails).
+// that is no baseline's is recorded as a fault, so the case fails). `allowed`, when given: every other statement the
+// run may make, each literally (whitespace collapsed); any statement that is neither a baseline's nor allowed is
+// recorded as a fault, so no read the witness does not measure can grow unseen.
 export class PlanWitness {
+  readonly #allowed: ReadonlySet<string> | undefined;
+
   constructor(
     readonly baselines: Readonly<Record<string, Baseline>>,
     readonly family?: RegExp,
-  ) {}
+    allowed?: readonly string[],
+  ) {
+    this.#allowed = allowed === undefined ? undefined : new Set(allowed.map(normalized));
+  }
 
   // Each baseline is main's audited statement, with exactly one way its rewrite reads.
   async expectAudited(): Promise<void> {
@@ -87,6 +94,8 @@ export class PlanWitness {
         if (kind === undefined) {
           if (this.family?.test(text) === true) {
             sides.push({ id: text, query, fault: "no baseline's", mine: empty(), main: empty() });
+          } else if (this.#allowed !== undefined && !this.#allowed.has(text)) {
+            sides.push({ id: text, query, fault: "not allowed", mine: empty(), main: empty() });
           }
           return real.exec(query, ...params);
         }
