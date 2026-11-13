@@ -1196,20 +1196,10 @@ export const reviewTrendTag = writeOperation.atStoreTime("now")<
   if (name === null) {
     return { ok: false, code: "invalid-tag", message: `${JSON.stringify(raw)} is not a hashtag name` };
   }
-  const stored = db.first("SELECT 1 AS x FROM tag_trend_reviews WHERE name = ?", name) !== undefined;
-  if (
-    !stored &&
-    (db.first<{ n: number }>("SELECT count(*) AS n FROM tag_trend_reviews")?.n ?? 0) >= MAX_TREND_REVIEWS
-  ) {
-    return { ok: false, code: "review-limit", message: `at most ${MAX_TREND_REVIEWS} hashtag reviews are kept` };
+  const limited = writeReview(db, "tag_trend_reviews", name, trendable, now);
+  if (limited !== null) {
+    return limited;
   }
-  db.run(
-    `INSERT INTO tag_trend_reviews (name, trendable, reviewed_at) VALUES (?1, ?2, ?3)
-		ON CONFLICT (name) DO UPDATE SET trendable = excluded.trendable, reviewed_at = excluded.reviewed_at`,
-    name,
-    trendable ? 1 : 0,
-    iso(now),
-  );
   logAction(db, admin.actor, trendable ? "approve" : "reject", { type: "Tag", id: tagId(name) }, { name }, now);
   const row = db.first<TagReviewRow>(
     `SELECT hex(t.name) AS key, (SELECT score FROM trend_tags WHERE name = t.name) AS score, ${TAG_REVIEW_COLUMNS}
@@ -1233,20 +1223,13 @@ export const reviewTrendStatus = writeOperation.atStoreTime("now")<
   if (status === undefined) {
     return { ok: false, code: "trend-status-not-found", message: `no status has id ${id}` };
   }
-  const [table, column, key, type] = author
-    ? (["account_trend_reviews", "account_id", status.account_id, "Account"] as const)
-    : (["status_trend_reviews", "status_id", id, "Status"] as const);
-  const stored = db.first(`SELECT 1 AS x FROM ${table} WHERE ${column} = ?`, key) !== undefined;
-  if (!stored && (db.first<{ n: number }>(`SELECT count(*) AS n FROM ${table}`)?.n ?? 0) >= MAX_TREND_REVIEWS) {
-    return { ok: false, code: "review-limit", message: `at most ${MAX_TREND_REVIEWS} reviews of each kind are kept` };
+  const [table, key, type] = author
+    ? (["account_trend_reviews", status.account_id, "Account"] as const)
+    : (["status_trend_reviews", id, "Status"] as const);
+  const limited = writeReview(db, table, key, trendable, now);
+  if (limited !== null) {
+    return limited;
   }
-  db.run(
-    `INSERT INTO ${table} (${column}, trendable, reviewed_at) VALUES (?1, ?2, ?3)
-		ON CONFLICT (${column}) DO UPDATE SET trendable = excluded.trendable, reviewed_at = excluded.reviewed_at`,
-    key,
-    trendable ? 1 : 0,
-    iso(now),
-  );
   logAction(db, admin.actor, trendable ? "approve" : "reject", { type, id: key }, author ? { status: id } : {}, now);
   const [row] = adminStatusRows(db, "t.status_id = ?2", "", id);
   return { ok: true, id, trendable, status: row === undefined ? null : adminStatus(row, trendSettings(db)) };
@@ -1349,18 +1332,27 @@ export const adminTrendPublishers = readOperation<
   return { ok: true, publishers: rows.map((row) => publisherOf(row)!) };
 });
 
+// Each review table's key column, and what its refusal at MAX_TREND_REVIEWS says is kept.
+const REVIEW_TABLES = {
+  tag_trend_reviews: { column: "name", kept: "hashtag reviews" },
+  status_trend_reviews: { column: "status_id", kept: "reviews of each kind" },
+  account_trend_reviews: { column: "account_id", kept: "reviews of each kind" },
+  link_trend_reviews: { column: "url", kept: "reviews of each kind" },
+  link_provider_reviews: { column: "domain", kept: "reviews of each kind" },
+} as const;
+
 // A review written: upserted, a new key refused at MAX_TREND_REVIEWS, at once (no e-mail, MD-5).
 function writeReview(
   db: Db,
-  table: "link_trend_reviews" | "link_provider_reviews",
+  table: keyof typeof REVIEW_TABLES,
   key: string,
   trendable: boolean,
   now: number,
 ): TrendRefusal | null {
-  const column = table === "link_trend_reviews" ? "url" : "domain";
+  const { column, kept } = REVIEW_TABLES[table];
   const stored = db.first(`SELECT 1 AS x FROM ${table} WHERE ${column} = ?`, key) !== undefined;
   if (!stored && (db.first<{ n: number }>(`SELECT count(*) AS n FROM ${table}`)?.n ?? 0) >= MAX_TREND_REVIEWS) {
-    return { ok: false, code: "review-limit", message: `at most ${MAX_TREND_REVIEWS} reviews of each kind are kept` };
+    return { ok: false, code: "review-limit", message: `at most ${MAX_TREND_REVIEWS} ${kept} are kept` };
   }
   db.run(
     `INSERT INTO ${table} (${column}, trendable, reviewed_at) VALUES (?1, ?2, ?3)
