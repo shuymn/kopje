@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
@@ -19,6 +19,17 @@ const OPERATOR_DOCS = [
   "docs/observability.md",
   "docs/cutover-runbook.md",
   "docs/cutover.md",
+];
+
+// Every `kopje-admin` command the documents name is one the CLI's usage (USAGE in cli/lib/main.js) lists: the package's
+// and the template's Markdown, except the CHANGELOG, whose entries keep the commands of the release they describe.
+const COMMAND_DOCS = [
+  "README.md",
+  "RELEASING.md",
+  "../../deploy/README.md",
+  ...readdirSync(new URL("../docs/", import.meta.url))
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => `docs/${name}`),
 ];
 
 function read(path: string): Source {
@@ -76,6 +87,76 @@ function backupSettings(source: Source): string[] {
   return [...found];
 }
 
+// The text of the usage: the template literal `USAGE` is declared with.
+function usageText(source: Source): string {
+  const usage = parse(source).literals.find((literal) => literal.constant === "USAGE");
+  if (usage === undefined) {
+    throw new Error(`${source.path}: no USAGE`);
+  }
+  return usage.parts.map((part) => ("text" in part ? part.text : "")).join("");
+}
+
+const WORD = /^[a-z][a-z0-9-]*$/;
+
+// The commands the usage lists, as `name` and `name subcommand`: each line indented by exactly two spaces up to its
+// description (two or more spaces), split at ` | ` into forms, with `a|b` and `[a|b]` read as alternatives.
+function usageCommands(usage: string): Set<string> {
+  const commands = new Set<string>();
+  for (const line of usage.split("\n")) {
+    const form = /^ {2}([a-z].*?)(?: {2,}|$)/.exec(line)?.[1];
+    for (const part of form?.split(" | ") ?? []) {
+      const [name = "", second = ""] = part.trim().split(/\s+/);
+      const optional = second.startsWith("[");
+      const subs = second
+        .replace(/^\[(.*)\]$/, "$1")
+        .split("|")
+        .filter((sub) => WORD.test(sub));
+      for (const sub of subs) {
+        commands.add(`${name} ${sub}`);
+      }
+      if (optional || subs.length === 0) {
+        commands.add(name);
+      }
+    }
+  }
+  return commands;
+}
+
+// The commands a text names that the usage does not list, as `line: command`. A mention is `kopje-admin` and the plain
+// lowercase words after it, up to the first that is not one (an option, a value, `name=value`) or that punctuation
+// ends. Its first word must be a command; when that command has subcommands, a second word must be one of them.
+function unlistedCommands(text: string, commands: ReadonlySet<string>): string[] {
+  const found: string[] = [];
+  text.split("\n").forEach((line, i) => {
+    for (const match of line.matchAll(/\bkopje-admin(?= )/g)) {
+      const words: string[] = [];
+      for (const raw of line
+        .slice(match.index + match[0].length)
+        .trim()
+        .split(/ +/)
+        .slice(0, 2)) {
+        const word = raw.replace(/[`'".,;:)]+$/, "");
+        if (!WORD.test(word)) {
+          break;
+        }
+        words.push(word);
+        if (word !== raw) {
+          break;
+        }
+      }
+      const [name, sub] = words;
+      const listed =
+        name === undefined ||
+        (sub !== undefined && commands.has(`${name} ${sub}`)) ||
+        (commands.has(name) && (sub === undefined || ![...commands].some((c) => c.startsWith(`${name} `))));
+      if (!listed) {
+        found.push(`${i + 1}: kopje-admin ${words.join(" ")}`);
+      }
+    }
+  });
+  return found;
+}
+
 function undocumented(settings: readonly string[], docs: readonly string[]): string[] {
   return settings.filter((name) => !docs.some((text) => new RegExp(`\\b${name}\\b`).test(text)));
 }
@@ -91,6 +172,68 @@ describe("operator documents", () => {
     expect(settings).toEqual(expect.arrayContaining(["MAINTENANCE", "VAPID_JWK", "BACKUP_HOUR_UTC"]));
     expect(settings).not.toContain("STORE");
     expect(undocumented(settings, docs)).toEqual([]);
+  });
+
+  it("name only kopje-admin commands the CLI's usage lists", () => {
+    const commands = usageCommands(usageText(read("cli/lib/main.js")));
+    expect(commands).toEqual(
+      new Set([
+        ...commands,
+        "health",
+        "jobs retry",
+        "trends links",
+        "maintenance off",
+        "emoji enable",
+        "fingerprint export",
+      ]),
+    );
+    expect(
+      COMMAND_DOCS.flatMap((path) => unlistedCommands(read(path).text, commands).map((m) => `${path}:${m}`)),
+    ).toEqual([]);
+  });
+
+  it("finds a command the usage does not list", () => {
+    const usage = [
+      "Usage: kopje-admin <command>",
+      "",
+      "Commands",
+      "  health                        a report",
+      "  jobs retry                    retry",
+      "  trends [tags|links] [--offset <n>]",
+      "                                a list | not a form",
+      "  emoji disable <id> | emoji enable <id>",
+      "      --flag                    an option",
+      "  maintenance on|off            enter or leave",
+      "",
+      "Environment",
+      "  KOPJE_ADMIN_URL               the URL",
+    ].join("\n");
+    const commands = usageCommands(usage);
+    expect([...commands].toSorted()).toEqual(
+      [
+        "emoji disable",
+        "emoji enable",
+        "health",
+        "jobs retry",
+        "maintenance off",
+        "maintenance on",
+        "trends",
+        "trends links",
+        "trends tags",
+      ].toSorted(),
+    );
+    const text = [
+      "Run `kopje-admin health`, then kopje-admin jobs retry. `kopje-admin trends links`, `kopje-admin trends --offset 2`",
+      "`kopje-admin emoji enable 3`; kopje-admin health and more; `kopje-admin maintenance on`.",
+      "`kopje-admin jobs retry-all`, `kopje-admin trends statuses`, kopje-admin frobnicate, `kopje-admin jobs`",
+      "The `kopje-admin` CLI, kopje-admin.",
+    ].join("\n");
+    expect(unlistedCommands(text, commands)).toEqual([
+      "3: kopje-admin jobs retry-all",
+      "3: kopje-admin trends statuses",
+      "3: kopje-admin frobnicate",
+      "3: kopje-admin jobs",
+    ]);
   });
 
   it("finds a setting no document names, and leaves bindings out", () => {
