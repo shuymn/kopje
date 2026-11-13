@@ -1,8 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { deleteActivity, signableDeleteActivity } from "../src/domain/activities";
+import { deleteActivity } from "../src/domain/activities";
 import { forwardSubject } from "../src/domain/deliveries";
 import { deleteStatus, prepareDelete } from "../src/domain/statuses";
 import { verifyAuthorProof } from "../src/federation/author-proof";
@@ -11,7 +11,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, settle, sql } from "./api-helpers";
 import { harness, NOW, offline } from "./app-helpers";
-import { deleteSignature, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
+import { deleteSignature, remoteAccountsAt, retractionInboxes, signedActivity } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
@@ -28,7 +28,7 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
-import { contexts } from "./quote-helpers";
+import { contexts, deferred } from "./quote-helpers";
 
 // VIS-3, ID-1, RES-6: the Delete of a local public or unlisted original carries its author's RsaSignature2017
 // signature (statuses.ts prepareDelete and deleteStatus, mastodon/statuses.ts deleteStatus, federation/ld-sign.ts),
@@ -228,14 +228,7 @@ describe("the Delete of a local status carries its author's proof when it is pub
       expect(await sign(status.id)).toMatchObject({
         sign: {
           keyId: `${ALICE_URI}#main-key`,
-          activity: signableDeleteActivity({
-            id: status.id,
-            uri: status.uri,
-            actorUri: ALICE_URI,
-            visibility,
-            named: [],
-            poll: false,
-          }),
+          activity: signedActivity({ uri: status.uri, actorUri: ALICE_URI, visibility }),
         },
       });
     }
@@ -544,14 +537,152 @@ describe("the signed Delete is sent as recorded (VIS-2's exception)", () => {
   });
 });
 
-describe("an identity a verifier would not match is not signed (A7)", () => {
-  it("records the Delete unsigned for an imported actor id or status uri not in its canonical spelling", async () => {
-    for (const [column, spelling] of [
-      ["accounts", "https://KOPJE.test/ap/users/alice"],
-      ["accounts", "https://kopje.test:443/ap/users/alice"],
-      ["statuses", "https://kopje.test/ap/o/\u0000x"],
-      ["statuses", "https://kopje.test/ap/o/\u{1F600}"],
-    ] as const) {
+describe("staging trusts a signed Delete's addressing only as the status's own (VIS-2)", () => {
+  // alice's public status, mentioning m1 (named) and s1 (silent), followed by carol; its DELETE recorded, then its
+  // stored addressing replaced as an import may hold it, before the job stages it. The targets: inbox and addressee.
+  async function staged(addressing: unknown, edit?: (t: Setup) => Promise<void>) {
+    const { t } = await world();
+    const [named, silent] = await remoteAccountsAt(t.store, "6", "m", 2);
+    const status = await localStatus(t, { status: "crafted" });
+    await sql(
+      t.store,
+      "INSERT INTO status_mentions (status_id, account_id, silent) VALUES (?1, ?2, 0), (?1, ?3, 1)",
+      status.id,
+      named!,
+      silent!,
+    );
+    expect((await deleteRequest(t, status.id)).status).toBe(200);
+    if (addressing !== undefined) {
+      await sql(
+        t.store,
+        "UPDATE outbound_activities SET body = json_set(body, '$.addressing', json(?)) WHERE retracts = 1",
+        JSON.stringify(addressing),
+      );
+    }
+    await edit?.(t);
+    await settle(t.store);
+    const parked = await sql(t.store, "SELECT 1 AS x FROM inbound_jobs WHERE attempts > 0");
+    expect(parked).toEqual([]);
+    const targets = await sql<{ target: string }>(
+      t.store,
+      `SELECT json_extract(t.value, '$.inbox') || ' ' || ifnull(json_extract(t.value, '$.addressee'), '-') AS target
+			FROM outbound_targets c, json_each(c.targets) t WHERE t.key >= c.next
+			UNION SELECT d.inbox_url || ' ' || ifnull(d.addressee, '-') FROM deliveries d
+				JOIN outbound_activities o ON o.id = d.activity_id WHERE o.retracts = 1`,
+    );
+    return new Set(targets.map((r) => r.target));
+  }
+
+  const NEUTRAL_M1 = "https://m1.example/inbox -";
+  const OWN_M1 = "https://m1.example/users/u/inbox https://m1.example/users/u";
+  const OWN_M2 = "https://m2.example/users/u/inbox https://m2.example/users/u";
+  const SHARED_M2 = "https://m2.example/inbox -";
+  const CAROL = `${FANS}/inbox -`;
+
+  it("places the named mention neutral and the silent one by its own copy, as the recorded addressing says", async () => {
+    expect(await staged(undefined)).toEqual(new Set([NEUTRAL_M1, OWN_M2, CAROL]));
+  });
+
+  it("gives every addressed account its own copy when the addressing names a silent recipient", async () => {
+    const crafted = {
+      to: [PUBLIC],
+      cc: [`${ALICE_URI}/followers`, "https://m1.example/users/u", "https://m2.example/users/u"],
+    };
+    const targets = await staged(crafted);
+    expect(targets).toEqual(new Set([OWN_M1, OWN_M2, CAROL]));
+    expect(targets.has(SHARED_M2)).toBe(false);
+  });
+
+  it("gives every addressed account its own copy, and stages to the end, when the addressing is malformed", async () => {
+    for (const addressing of [
+      "null",
+      null,
+      [],
+      { to: "x", cc: [] },
+      { to: [PUBLIC], cc: [1] },
+      // Valid entries, but more than ADDRESSING_ENTRIES.
+      { to: [PUBLIC], cc: Array.from({ length: 202 }, () => "https://m1.example/users/u") },
+      { to: [PUBLIC], cc: [`https://m1.example/users/u${"a".repeat(2048)}`] },
+    ]) {
+      expect(await staged(addressing), JSON.stringify(addressing).slice(0, 40)).toEqual(
+        new Set([OWN_M1, OWN_M2, CAROL]),
+      );
+    }
+  }, 120_000);
+
+  it("refuses an entry past its byte bound, even one a stored mention's actor id matches", async () => {
+    const long = `https://m1.example/users/u${"a".repeat(2048)}`;
+    const targets = await staged({ to: [PUBLIC], cc: [`${ALICE_URI}/followers`, long] }, async (t) => {
+      await sql(t.store, "UPDATE accounts SET uri = ? WHERE uri = 'https://m1.example/users/u'", long);
+    });
+    expect(targets).toEqual(new Set([`https://m1.example/users/u/inbox ${long}`, OWN_M2, CAROL]));
+  });
+
+  it("leaves the addressing of a body that is not immutable unread, placing it by its own to and cc", async () => {
+    const targets = await staged(undefined, async (t) => {
+      await sql(t.store, "UPDATE outbound_activities SET body = json_remove(body, '$.immutable') WHERE retracts = 1");
+    });
+    // Its own to is Public alone: nobody is named, so each addressed account gets a copy of its own.
+    expect(targets).toEqual(new Set([OWN_M1, OWN_M2, CAROL]));
+  });
+});
+
+describe("a DELETE's token is checked at each Store call (docs/engineering.md)", () => {
+  it("records nothing when the token expires while the Delete is signed", async () => {
+    const clock = { now: NOW };
+    const { t } = await world();
+    await listen(t);
+    const status = await localStatus(t, { status: "kept" });
+    await sql(
+      t.store,
+      "UPDATE oauth_tokens SET expires_at = ? WHERE token_hash = ?",
+      new Date(NOW + 60_000).toISOString(),
+      await sha256Hex(t.tokens.alice),
+    );
+    const reached = deferred();
+    const release = deferred();
+    const gated = harness(
+      t.store,
+      {},
+      BUILD,
+      { keygen: fixtureKeyGen, loader: t.web.loader },
+      () => clock.now,
+      "kopje.test",
+      {
+        signAsAuthor: async (_env, sign) => {
+          reached.resolve();
+          await release.promise;
+          return signAsAuthor(LEGACY_EMPTY_KEK.kek, sign);
+        },
+      },
+    );
+    const pending = gated.request(`/api/v1/statuses/${status.id}`, bearer(t.tokens.alice, { method: "DELETE" }));
+    await reached.promise;
+    clock.now = NOW + 120_000;
+    release.resolve();
+    expect((await pending).status).toBe(401);
+    expect(await counts(t.store, status.id)).toEqual({ intents: 0, events: 0, jobs: 0, withdrawn: 0 });
+  });
+});
+
+describe("an imported identity that can never be signed is deleted unsigned (A7)", () => {
+  // An import's actor ids and status uris, each spelled so that its Delete can never be signed: a URL that does not
+  // serialize as stored (the creator Fedify writes would never be the one the Store expects), or an id jsonld does not
+  // take as an absolute IRI (its canonicalization refuses it in safe mode), or no http(s) URL.
+  const UNSIGNABLE = [
+    ["accounts", "https://KOPJE.test/ap/users/alice", "actor_id"],
+    ["accounts", "https://kopje.test:443/ap/users/alice", "actor_id"],
+    ["accounts", "https://kopje.test/ap/users/alice#me", "actor_id"],
+    ["accounts", "urn:example:alice b", "actor_id"],
+    ["statuses", "urn:example:a b", "status_uri"],
+    ["statuses", "https://kopje.test/ap/o/a b", "status_uri"],
+    ["statuses", "https://kopje.test/ap/o/\u0000x", "status_uri"],
+    ["statuses", "https://kopje.test/ap/o/\u{1F600}", "status_uri"],
+    ["statuses", "as:Public", "status_uri"],
+  ] as const;
+
+  it("records it unsigned and as before, answering 200, and logs the reason once", async () => {
+    for (const [column, spelling, reason] of UNSIGNABLE) {
       const { t } = await world();
       const status = await localStatus(t, { status: "imported" });
       if (column === "accounts") {
@@ -560,7 +691,14 @@ describe("an identity a verifier would not match is not signed (A7)", () => {
         await sql(t.store, "UPDATE statuses SET uri = ? WHERE id = ?", spelling, status.id);
       }
       expect(await deleteSignature(t.store, await credential(t), status.id), spelling).toBeNull();
-      expect((await deleteRequest(t, status.id)).status, spelling).toBe(200);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        expect((await deleteRequest(t, status.id)).status, spelling).toBe(200);
+        const logged = warn.mock.calls.filter(([entry]) => (entry as Json).event === "kopje.delivery.delete_unsigned");
+        expect(logged, spelling).toEqual([[{ event: "kopje.delivery.delete_unsigned", reason }]]);
+      } finally {
+        warn.mockRestore();
+      }
       const [stored] = await sql<{ signature: string | null; cc: string | null }>(
         t.store,
         `SELECT json_extract(body, '$.activity.signature') AS signature, json_extract(body, '$.activity.cc') AS cc
@@ -569,6 +707,43 @@ describe("an identity a verifier would not match is not signed (A7)", () => {
       // The unsigned form, which names the followers in cc.
       expect(stored!.signature, spelling).toBeNull();
       expect(JSON.parse(stored!.cc!), spelling).toHaveLength(1);
+    }
+  });
+
+  it("keeps such ids from signing, which canonicalization would refuse or the record find stale every time", async () => {
+    const { t } = await world();
+    const status = await localStatus(t, { status: "probe" });
+    const input = { credential: await credential(t), id: status.id };
+    const prepared = await runInDurableObject(t.store, (_instance, state) =>
+      prepareDelete.run(state.storage.sql, input),
+    );
+    const sign = prepared.status === "ok" && prepared.value.status === "ok" ? prepared.value.value.sign! : null;
+    const activity = (uri: string) => ({
+      ...sign!.activity,
+      id: `${uri}#delete`,
+      object: { id: uri, type: "Tombstone", atomUri: uri },
+    });
+    // A uri with whitespace: jsonld drops it, so safe mode refuses the whole document.
+    await expect(
+      signAsAuthor(LEGACY_EMPTY_KEK.kek, { ...sign!, activity: activity("urn:example:a b") }),
+    ).rejects.toThrow("Safe mode validation error");
+    // An actor id URL serializing changes: the creator Fedify writes is not the one the record expects.
+    const upper = "https://KOPJE.test/ap/users/alice";
+    const signed = await signAsAuthor(LEGACY_EMPTY_KEK.kek, { ...sign!, keyId: `${upper}#main-key` });
+    expect((signed.signature as Json).creator).toBe("https://kopje.test/ap/users/alice#main-key");
+  });
+
+  it("is told apart from a Delete unsigned by its visibility, which logs nothing", async () => {
+    const { t } = await world();
+    const status = await localStatus(t, { status: "private", visibility: "private" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect((await deleteRequest(t, status.id)).status).toBe(200);
+      expect(warn.mock.calls.filter(([entry]) => (entry as Json).event === "kopje.delivery.delete_unsigned")).toEqual(
+        [],
+      );
+    } finally {
+      warn.mockRestore();
     }
   });
 });
