@@ -4,13 +4,15 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { frontMatterLines, type MarkdownNode, parseMarkdown, visit } from "./markdown.js";
+
 // Markdown prose stays within the 120 columns of .oxfmtrc.json's printWidth, which oxfmt does not enforce on prose (it
-// keeps prose wrapping as written). A line may be longer only where it cannot be wrapped:
-// - inside a fenced code block, a GFM table (header, delimiter row and rows; tableLines), an ATX heading, a link
-//   reference definition or front matter, which a line break would change;
-// - when it has no break point: a space after its first word, outside a link (`[text](url)`, images included), whose
-//   remainder would not start a block (a list item, a heading, a quote, a table, a fence, HTML or a setext underline).
-//   So a long URL or link stands on its own line, and only text that cannot move off it may follow.
+// keeps prose wrapping as written). Each file is read through its GFM parse (markdown.ts). A line may be longer only
+// where it cannot be wrapped:
+// - inside a `table`, `code`, `heading`, `definition` or `html` node, or front matter, which a line break would change;
+// - when it has no break point: a space after its first word, outside a link or image node (and its reference forms),
+//   whose remainder would not start a block (a list item, a heading, a quote, a table, a fence, HTML or a setext
+//   underline). So a long URL or link stands on its own line, and only text that cannot move off it may follow.
 // Columns are code points; a line's indentation, quote markers and list marker count.
 //
 // The files are the Markdown under packages/kopje and deploy/, the paths whose changes run this suite
@@ -20,26 +22,12 @@ import { describe, expect, it } from "vitest";
 // published.
 const CHANGELOG = "packages/kopje/CHANGELOG.md";
 
-// The part of a file the check reads: for the CHANGELOG, its text up to the first level-2 heading after
-// `## [Unreleased]` that is outside a code fence.
-function checkedText(path: string, text: string): string {
-  if (path !== CHANGELOG) {
-    return text;
-  }
-  const lines = text.split("\n");
-  const code = codeLines(lines);
-  const unreleased = lines.findIndex((line, i) => !code[i] && line === "## [Unreleased]");
-  if (unreleased === -1) {
-    throw new Error(`${path}: no [Unreleased] section`);
-  }
-  const next = lines.findIndex((line, i) => i > unreleased && !code[i] && line.startsWith("## "));
-  return next === -1 ? text : lines.slice(0, next).join("\n");
-}
-
 const MAX = 120;
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const ROOTS = ["packages/kopje", "deploy"];
 const SKIPPED = new Set(["node_modules", ".wrangler", "dist"]);
+const EXEMPT = new Set(["table", "code", "heading", "definition", "html"]);
+const LINKS = new Set(["link", "image", "linkReference", "imageReference"]);
 
 // A remainder that would start a block if a break put it at the start of a line.
 const BLOCK = /^(?:[-*+](?:\s|$)|\d+[.)](?:\s|$)|#{1,6}(?:\s|$)|>|\||=+\s*$|-+\s*$|`{3}|~{3}|<)/;
@@ -56,104 +44,83 @@ function markdownFiles(): string[] {
   return ROOTS.flatMap((dir) => walk(join(ROOT, dir))).toSorted();
 }
 
-const width = (text: string) => [...text].length;
-
-// Whether offset `at` of `text` is inside a link's text or destination.
-function inLink(text: string, at: number): boolean {
-  let brackets = 0;
-  let destination = false;
-  for (let i = 0; i < at; i++) {
-    const c = text[i];
-    if (destination) {
-      destination = c !== ")";
-    } else if (c === "[") {
-      brackets++;
-    } else if (c === "]" && brackets > 0) {
-      brackets--;
-      destination = text[i + 1] === "(";
-    }
+// The part of a file the check reads: for the CHANGELOG, its lines before the first level-2 heading node after the
+// `## [Unreleased]` one.
+function checkedText(path: string, text: string): string {
+  if (path !== CHANGELOG) {
+    return text;
   }
-  return brackets > 0 || destination;
+  const headings: MarkdownNode[] = [];
+  visit(parseMarkdown(text), (node) => {
+    if (node.type === "heading" && node.depth === 2) {
+      headings.push(node);
+    }
+  });
+  const source = (node: MarkdownNode) => text.slice(node.position?.start.offset, node.position?.end.offset);
+  const unreleased = headings.findIndex((node) => source(node) === "## [Unreleased]");
+  if (unreleased === -1) {
+    throw new Error(`${path}: no [Unreleased] section`);
+  }
+  const next = headings[unreleased + 1]?.position?.start.line;
+  return next === undefined
+    ? text
+    : text
+        .split("\n")
+        .slice(0, next - 1)
+        .join("\n");
 }
 
-function wrappable(line: string): boolean {
+const width = (text: string) => [...text].length;
+
+// Whether a line holding offsets [start, start + line.length) has a break point outside `links` (offset ranges).
+function wrappable(line: string, start: number, links: readonly [number, number][]): boolean {
   const prefix = /^\s*(?:>\s?)*(?:(?:[-*+]|\d+[.)])\s+)?/.exec(line)?.[0] ?? "";
-  const body = line.slice(prefix.length);
-  const first = body.search(/ /);
+  const first = line.indexOf(" ", prefix.length);
   if (first === -1) {
     return false;
   }
-  for (let i = first; i < body.length; i++) {
-    if (body[i] === " " && body[i + 1] !== " " && !inLink(body, i)) {
-      const rest = body.slice(i + 1);
-      if (rest !== "" && !BLOCK.test(rest)) {
-        return true;
-      }
+  for (let i = first; i < line.length; i++) {
+    const at = start + i;
+    if (line[i] !== " " || line[i + 1] === " " || links.some(([from, to]) => at >= from && at < to)) {
+      continue;
+    }
+    const rest = line.slice(i + 1);
+    if (rest !== "" && !BLOCK.test(rest)) {
+      return true;
     }
   }
   return false;
 }
 
-// Which lines are front matter or belong to a fenced code block, its fences included.
-function codeLines(lines: readonly string[]): boolean[] {
-  let fence: string | null = null;
-  let front = lines[0] === "---";
-  return lines.map((line, i) => {
-    if (front) {
-      front = i === 0 || line !== "---";
-      return true;
-    }
-    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker === undefined) {
-      return fence !== null;
-    }
-    if (fence === null) {
-      fence = marker;
-    } else if (line.trim().startsWith(fence)) {
-      fence = null;
-    }
-    return true;
-  });
-}
-
-// A GFM table's delimiter row: cells of dashes, each optionally colon-aligned, with at least one pipe.
-const DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
-
-// Which lines belong to a GFM table: a header row with a pipe, the delimiter row under it, and the rows that follow
-// up to a blank line or a line without a pipe. A line of pipes without a delimiter row is a paragraph, which can wrap.
-function tableLines(lines: readonly string[], code: readonly boolean[]): boolean[] {
-  const table = lines.map(() => false);
-  lines.forEach((line, i) => {
-    const delimiter = lines[i + 1];
-    if (table[i] || code[i] || code[i + 1] || delimiter === undefined || !line.includes("|")) {
-      return;
-    }
-    if (!delimiter.includes("|") || !DELIMITER.test(delimiter)) {
-      return;
-    }
-    for (let j = i; j < lines.length && !code[j] && lines[j]?.trim() !== "" && lines[j]?.includes("|"); j++) {
-      table[j] = true;
-    }
-  });
-  return table;
-}
-
 // The over-long prose lines of a Markdown text, as `line: text`.
 function longLines(text: string): string[] {
-  const lines = text.split("\n");
-  const code = codeLines(lines);
-  const table = tableLines(lines, code);
-  return lines.flatMap((line, i) =>
-    code[i] ||
-    table[i] ||
-    width(line) <= MAX ||
-    /^#{1,6}\s/.test(line) ||
-    /^\s*\[[^\]]+\]:\s/.test(line) ||
-    !wrappable(line)
-      ? []
-      : [`${i + 1}: ${line}`],
-  );
+  const exempt = new Set(frontMatterLines(text));
+  const links: [number, number][] = [];
+  visit(parseMarkdown(text), (node) => {
+    const position = node.position;
+    if (position === undefined) {
+      return;
+    }
+    if (EXEMPT.has(node.type)) {
+      for (let line = position.start.line; line <= position.end.line; line++) {
+        exempt.add(line);
+      }
+    } else if (LINKS.has(node.type)) {
+      links.push([position.start.offset, position.end.offset]);
+    }
+  });
+  const found: string[] = [];
+  let start = 0;
+  text.split("\n").forEach((line, i) => {
+    if (!exempt.has(i + 1) && width(line) > MAX && wrappable(line, start, links)) {
+      found.push(`${i + 1}: ${line}`);
+    }
+    start += line.length + 1;
+  });
+  return found;
 }
+
+const lineNumbers = (found: readonly string[]) => found.map((line) => line.split(":")[0]);
 
 describe("Markdown line length", () => {
   const files = markdownFiles();
@@ -185,47 +152,49 @@ describe("Markdown line length", () => {
       "",
       long,
     ].join("\n");
-    expect(longLines(checkedText(CHANGELOG, changelog)).map((line) => line.split(":")[0])).toEqual(["5", "11"]);
-    expect(longLines(checkedText("packages/kopje/docs/a.md", changelog)).map((line) => line.split(":")[0])).toEqual([
-      "5",
-      "11",
-      "15",
-    ]);
+    expect(lineNumbers(longLines(checkedText(CHANGELOG, changelog)))).toEqual(["5", "11"]);
+    expect(lineNumbers(longLines(checkedText("packages/kopje/docs/a.md", changelog)))).toEqual(["5", "11", "15"]);
   });
 
   it("flags prose that can wrap and passes what cannot", () => {
     const long = "word ".repeat(30).trim();
     const url = `https://example.com/${"a".repeat(120)}`;
-    const text = [
-      "---",
-      `description: ${long}`,
-      "---",
-      long,
-      `- ${long}`,
-      `  > ${long}`,
-      `[a link to it](${url}) and more`,
-      `# ${long}`,
-      `| ${long} |`,
-      `[ref]: ${url} "${long}"`,
-      "```",
-      long,
-      "```",
-      url,
-      `  [a link to it](${url})`,
-      `[![an image](${url})](${url})`,
-      `[a link to it](${url}) -`,
-      "~~~~",
-      long,
-      "~~~~",
-      "",
-      `| ${long} | b |`,
-      "| --- | :-: |",
-      `| ${long} | b |`,
-      `${long} | b`,
-      "",
-      `| ${long} |`,
-      `| ${long} |`,
-    ].join("\n");
-    expect(longLines(text).map((line) => line.split(":")[0])).toEqual(["4", "5", "6", "7", "9", "27", "28"]);
+    // Blocks separated by blank lines, so that each is the node it shows; the flagged ones are marked.
+    const blocks: [string, boolean][] = [
+      ["---\ndescription: " + long + "\n---", false],
+      [long, true],
+      [`- ${long}`, true],
+      [`  > ${long}`, true],
+      [`[a link to it](${url}) and more`, true],
+      [`# ${long}`, false],
+      [`| ${long} |`, true],
+      [`[ref]: ${url} "${long}"`, false],
+      ["```\n" + long + "\n```", false],
+      [url, false],
+      [`  [a link to it](${url})`, false],
+      [`[![an image](${url})](${url})`, false],
+      [`[a link to it](${url}) -`, false],
+      ["~~~~\n" + long + "\n~~~~", false],
+      [`| ${long} | b |\n| --- | :-: |\n| ${long} | b |\n${long} | b`, false],
+      [`| ${long} |\n| ${long} |`, true],
+      // A delimiter row whose cells do not match the header's: a paragraph, not a table.
+      [`| ${long} | B |\n| --- |`, true],
+      // Blocks right after a table are not its rows.
+      [`| a | b |\n| --- | --- |\n| c | d |\n- ${long} | tail\n\n| a | b |\n| --- | --- |\n> ${long} | tail`, true],
+      [`<div>\n${long}\n</div>`, false],
+    ];
+    const text = blocks.map(([block]) => block).join("\n\n");
+    const expected: string[] = [];
+    let line = 1;
+    for (const [block, flagged] of blocks) {
+      block.split("\n").forEach((content, i) => {
+        if (flagged && width(content) > MAX) {
+          expected.push(String(line + i));
+        }
+      });
+      line += block.split("\n").length + 1;
+    }
+    expect(expected.length).toBeGreaterThan(8);
+    expect(lineNumbers(longLines(text))).toEqual(expected);
   });
 });
