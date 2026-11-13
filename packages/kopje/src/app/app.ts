@@ -57,6 +57,8 @@ export type AppDeps = {
   fetch?: typeof fetch;
   randomToken?: TokenGenerator;
   images?: (env: Env) => ImageCodec;
+  // LD-signs as a local author (default: federation/ld-sign.ts under USER_KEK); tests wrap it to fail or alter it.
+  signAsAuthor?: (env: Env, sign: AuthorSignature) => Promise<Record<string, unknown>>;
   // Rings the delivery doorbell after an API write (default: a message on env.QUEUE).
   doorbell?: (env: Env) => Promise<void>;
   // Asks for a round of the Store's jobs (default: a message on env.QUEUE): after an admin suspension or unsuspension,
@@ -243,10 +245,12 @@ export function createApp({
     resolve: createResolver({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,
-    signAsAuthor: (env: Env, sign: AuthorSignature) => {
-      const config = readConfig(env);
-      return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
-    },
+    signAsAuthor:
+      seams.signAsAuthor ??
+      ((env: Env, sign: AuthorSignature) => {
+        const config = readConfig(env);
+        return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
+      }),
   };
   // Media reads no Store (web/media.ts): its capability URLs answer on any host.
   app.get(REMOTE_MEDIA_ROUTE, decidesHost(serveRemoteMedia));

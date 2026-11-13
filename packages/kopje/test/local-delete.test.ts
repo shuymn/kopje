@@ -17,7 +17,14 @@ import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { batch, batches, remoteAccountsAt, retractionInboxes, seedStagingRetractions } from "./delete-job-helpers";
+import {
+  batch,
+  batches,
+  deleteSignature,
+  remoteAccountsAt,
+  retractionInboxes,
+  seedStagingRetractions,
+} from "./delete-job-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
@@ -76,8 +83,21 @@ async function credential(t: Setup, as: "alice" | "dave" = "alice") {
 
 // alice's DELETE of `id` as a Store operation in its own transaction: its answer, the rows it wrote (total_changes())
 // and its time.
-async function deleted(t: Setup, id: string, deleteMedia = false) {
-  const input = { credential: await credential(t), id, deleteMedia, now: NOW, present: PRESENT };
+async function deleted(
+  t: Setup,
+  id: string,
+  deleteMedia = false,
+  signed?: (prepared: Record<string, unknown> | null) => Record<string, unknown> | null,
+) {
+  const prepared = await deleteSignature(t.store, await credential(t), id);
+  const input = {
+    credential: await credential(t),
+    id,
+    deleteMedia,
+    signed: signed === undefined ? prepared : signed(prepared),
+    now: NOW,
+    present: PRESENT,
+  };
   return runInDurableObject(t.store, (_instance, state) => {
     const db = new Db(state.storage.sql);
     const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
@@ -185,12 +205,16 @@ describe("the Delete of a local status (VIS-3, RES-6)", () => {
       short!,
     );
     expect((await deleted(t, mentioning.id)).answer).toBe("ok");
-    const [named] = await sql<{ cc: string }>(
+    // The status is public: its signed Delete names Public alone, and its copies are placed by the addressing it
+    // records.
+    const [named] = await sql<{ cc: string; to: string }>(
       t.store,
-      "SELECT json_extract(body, '$.activity.cc') AS cc FROM outbound_activities WHERE object_uri = ?",
+      `SELECT json_extract(body, '$.addressing.cc') AS cc, json_extract(body, '$.activity.to') AS "to"
+			FROM outbound_activities WHERE object_uri = ?`,
       mentioning.uri,
     );
     expect(JSON.parse(named!.cc)).toEqual([`${ALICE_URI}/followers`, "https://m2.example/users/u"]);
+    expect(JSON.parse(named!.to)).toEqual([PUBLIC]);
     await settle(t.store);
     expect(await retractionInboxes(t.store, mentioning.uri, "Delete")).toEqual(
       new Set(["https://m1.example/users/u/inbox", "https://m2.example/inbox"]),
@@ -954,6 +978,7 @@ describe("the job’s rounds (RES-5, RES-6)", () => {
         await rowsRead(t, deleteStatus, {
           credential: await credential(t),
           id: status.id,
+          signed: await deleteSignature(t.store, await credential(t), status.id),
           deleteMedia: false,
           now: NOW,
           present: PRESENT,
@@ -1041,6 +1066,7 @@ describe("reads bounded by the inputs at their worst (RES-6, RES-7)", () => {
       reads[name] = await rowsRead(t, deleteStatus, {
         credential: await credential(t),
         id: status.id,
+        signed: await deleteSignature(t.store, await credential(t), status.id),
         deleteMedia: false,
         now: NOW,
         present: PRESENT,
@@ -1127,6 +1153,7 @@ describe("reads bounded by the inputs at their worst (RES-6, RES-7)", () => {
       const request = await rowsRead(t, deleteStatus, {
         credential: await credential(t),
         id,
+        signed: await deleteSignature(t.store, await credential(t), id),
         deleteMedia: false,
         now: NOW,
         present: PRESENT,

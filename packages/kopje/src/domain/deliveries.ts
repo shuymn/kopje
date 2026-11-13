@@ -245,12 +245,15 @@ export type ReachOf = { owner: string; object: string; audience: DeliveryAudienc
 // selecting inboxes: the signer, its lanes and the subject stay the envelope's own. followPair: the remote follower a
 // local account's Accept or Reject of a Follow answers (outbound_activities.follow_pair, cancelFollowAnswers); kept in
 // its column, not in the body. An immutable envelope whose audience has shares is a forward (FORWARD_SUBJECT): a
-// remote author's proven Delete, sent as received.
+// remote author's proven Delete, sent as received. addressing: the to and cc by which each addressed account's copy is
+// placed (placement) when they are not the activity's own: a local status's signed Delete (activities.ts
+// signedDeleteEnvelope), addressed to Public alone, reaches the inboxes its unsigned form would.
 export type DeliveryEnvelope = {
   activity: Activity;
   audience: DeliveryAudience;
   signedBy?: "instance";
   immutable?: true;
+  addressing?: { to: string[]; cc: string[] };
   reachOf?: ReachOf[];
   followPair?: string;
 };
@@ -328,7 +331,7 @@ function provenanceOf(b: Behind): Provenance {
 // How an activity reaches the addressed account with this uri (audienceTargets): true for a copy of its own at its
 // personal inbox, addressed to it (one the addressed activity does not name in to/cc); false for a neutral copy at its
 // shared inbox, else its personal inbox. A staged retraction applies the same rule (planOf, takeAccount).
-function placement(activity: Activity): (uri: string) => boolean {
+function placement(activity: { to?: unknown; cc?: unknown }): (uri: string) => boolean {
   const named = new Set([...uris(activity.to), ...uris(activity.cc)]);
   const addressedActivity = Array.isArray(activity.to);
   return (uri) => addressedActivity && !named.has(uri);
@@ -346,6 +349,7 @@ function targetsOf(
   reachOf: readonly ReachOf[],
   earlierReceivers = true,
   personalInbox = false,
+  addressing: { to?: unknown; cc?: unknown } = activity,
 ): { targets: Target[]; voters: Set<string> } {
   // Neutral copies by inbox; personal copies by recipient, kept apart so one never replaces the other.
   const neutral = new Map<string, Behind>();
@@ -372,7 +376,7 @@ function targetsOf(
       addCapped(into.domains, recipient.host);
     }
   };
-  const place = placement(activity);
+  const place = placement(addressing);
   const reach = (recipients: ReturnType<typeof recipientsFor>) => {
     for (const follower of [...recipients.followers, ...recipients.voters]) {
       add(follower.inbox, null, follower);
@@ -508,6 +512,7 @@ export function enqueueActivity(
     envelope.reachOf ?? [],
     options.audienceOnly !== true,
     options.personalInbox === true,
+    envelope.addressing,
   );
   const { voters } = found;
   let targets = found.targets;
@@ -788,6 +793,7 @@ type IntentRow = {
   id: string;
   staged: string;
   activity: string;
+  addressing: string | null;
   followers_type: string | null;
   followers: SqlStorageValue;
   status_type: string | null;
@@ -799,6 +805,7 @@ type IntentRow = {
 };
 
 const INTENT_COLUMNS = `CAST(id AS TEXT) AS id, staged, json_extract(body, '$.activity') AS activity,
+	json_extract(body, '$.addressing') AS addressing,
 	json_type(body, '$.audience.followers') AS followers_type, json_extract(body, '$.audience.followers') AS followers,
 	json_type(body, '$.audience.status') AS status_type, json_extract(body, '$.audience.status') AS status,
 	json_type(body, '$.audience.distributable') IS 'true' AS distributable,
@@ -849,12 +856,14 @@ function planOf(db: Db, signerId: string, intent: IntentRow): Plan {
   const activity = JSON.parse(intent.activity) as Activity;
   const { object, retracts } = subjectOf(activity, false);
   const forward = intent.shares_type !== null;
-  const named = [...uris(activity.to), ...uris(activity.cc)];
+  const addressing =
+    intent.addressing === null ? activity : (JSON.parse(intent.addressing) as { to?: unknown; cc?: unknown });
+  const named = [...uris(addressing.to), ...uris(addressing.cc)];
   return {
     signerId,
     intentId: intent.id,
     kind: outboundKind(activity, false),
-    addressed: Array.isArray(activity.to),
+    addressed: Array.isArray(addressing.to),
     named: new Set(named),
     namedPast: Math.max(0, ...named.map((uri) => utf8.encode(uri).byteLength).filter((n) => n > BOUND)),
     status: intent.status_type === null ? undefined : intent.status,

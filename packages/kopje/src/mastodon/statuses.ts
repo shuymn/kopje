@@ -334,18 +334,57 @@ export const updateInteractionPolicy: ApiHandler = async (c, deps) => {
   return viewedResponse(c, authorized(result));
 };
 
+// Prepare-and-record rounds one DELETE takes at most: another round only when the Delete signed in a round is not the
+// one the Store builds when it records it, which an edit of the status cannot cause (the signed Delete names its
+// status and author alone), so a client cannot cause it in a loop.
+const DELETE_ROUNDS = 3;
+
+// The Delete of a public or unlisted original is LD-signed here, once, with its author's key (VIS-3), before the Store
+// records it with the status's removal in one transaction, which first checks it is the Delete of the status as it is
+// then (statuses.ts deleteStatus). When it cannot be signed, nothing is written and the DELETE answers 503: the status
+// stays, so a later DELETE can still send its proven Delete.
+async function deletion(c: ApiContext, deps: Parameters<ApiHandler>[1], deleteMedia: boolean) {
+  const credential = userCredential(c, deps);
+  const id = statusId(c);
+  for (let round = 0; round < DELETE_ROUNDS; round++) {
+    const prepared = authorized(await storeCall(c, deps, (s, b) => s.prepareDelete(b, { credential, id })));
+    if (prepared.status !== "ok") {
+      return prepared;
+    }
+    const { sign } = prepared.value;
+    if ("unsignable" in prepared.value || (sign !== null && deps.signAsAuthor === undefined)) {
+      return mastodonError(503, "This status's deletion cannot be signed here");
+    }
+    let signed: Record<string, unknown> | null = null;
+    if (sign !== null) {
+      try {
+        signed = await deps.signAsAuthor!(c.env, sign);
+      } catch {
+        return mastodonError(503, "This status's deletion could not be signed; try again");
+      }
+    }
+    const result = authorized(
+      await storeCall(c, deps, (s, b) =>
+        s.deleteStatus(b, { credential, id, deleteMedia, signed, now: deps.now(), present: present(c) }),
+      ),
+    );
+    if (result.status !== "stale") {
+      return result;
+    }
+  }
+  return mastodonError(503, "The status changed while it was being deleted; try again");
+}
+
 export const deleteStatus: ApiHandler = async (c, deps) => {
   const p = await requestParams(c, deps);
   if (p instanceof Response) {
     return p;
   }
-  const credential = userCredential(c, deps);
   const deleteMedia = parseBoolean(p.get("delete_media")) ?? false;
-  const result = authorized(
-    await storeCall(c, deps, (s, b) =>
-      s.deleteStatus(b, { credential, id: statusId(c), deleteMedia, now: deps.now(), present: present(c) }),
-    ),
-  );
+  const result = await deletion(c, deps, deleteMedia);
+  if (result instanceof Response) {
+    return result;
+  }
   // delete_media doomed the status's media in the Store; its R2 objects are deleted after the response. The rest of
   // an original's removal is its job's, whose round is asked for (the cron runs one regardless).
   if (deleteMedia && result.status === "ok") {

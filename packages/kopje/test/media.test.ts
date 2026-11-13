@@ -10,6 +10,7 @@ import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { deleteSignature } from "./delete-job-helpers";
 import {
   GIF,
   JPEG_WITH_GPS,
@@ -615,6 +616,7 @@ describe("explicit deletion", () => {
       credential,
       id: status.id,
       deleteMedia: true,
+      signed: await deleteSignature(h.store, credential, status.id),
       now: later,
       present: { origin: "https://kopje.test" },
     });

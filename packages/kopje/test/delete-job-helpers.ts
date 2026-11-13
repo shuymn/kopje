@@ -1,10 +1,52 @@
+import { runInDurableObject } from "cloudflare:test";
 import { expect } from "vitest";
 
+import type { UserCredential } from "../src/domain/auth";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
+import { prepareDelete } from "../src/domain/statuses";
+import { signAsAuthor } from "../src/federation/ld-sign";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { writtenBy } from "./inbox-store-helpers";
+
+// The signed Delete a DELETE of `id` records, as the API's handler makes it (mastodon/statuses.ts deleteStatus):
+// prepareDelete, then signAsAuthor under the fixture accounts' KEK; null when the status's Delete is recorded unsigned.
+export async function deleteSignature(
+  store: StoreStub,
+  credential: UserCredential,
+  id: string,
+): Promise<Record<string, unknown> | null> {
+  const prepared = await runInDurableObject(store, (_instance, state) =>
+    prepareDelete.run(state.storage.sql, { credential, id }),
+  );
+  const sign = prepared.status === "ok" && prepared.value.status === "ok" ? prepared.value.value.sign : null;
+  return sign === null ? null : signAsAuthor(LEGACY_EMPTY_KEK.kek, sign);
+}
+
+// deleteSignature inside a synchronous Store call, for a test that judges what a DELETE reaches rather than its proof:
+// the prepared Delete with a signature of the form signAsAuthor writes that no key made.
+export function unprovenDeleteSignature(
+  sql: SqlStorage,
+  credential: UserCredential,
+  id: string,
+): Record<string, unknown> | null {
+  const prepared = prepareDelete.run(sql, { credential, id });
+  const sign = prepared.status === "ok" && prepared.value.status === "ok" ? prepared.value.value.sign : null;
+  return sign === null
+    ? null
+    : {
+        ...sign.activity,
+        signature: {
+          "@context": "https://w3id.org/identity/v1",
+          creator: sign.keyId,
+          created: new Date(NOW).toISOString(),
+          type: "RsaSignature2017",
+          signatureValue: "A".repeat(684),
+        },
+      };
+}
 
 // The status-delete job of a local status or boost (inbox.ts deleteStatusBatch), driven a batch at a time, and what
 // its retraction reaches: shared by test/local-delete.test.ts and test/unboost.test.ts.

@@ -22,6 +22,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, form, login, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { deleteSignature } from "./delete-job-helpers";
 import { blockDomain, blockDomainIn } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
 import { BUILD, freshStore, runStoreJobs, testKernel } from "./helpers";
@@ -855,12 +856,23 @@ describe("delivery reads with stale statistics (RES-7)", () => {
         now: NOW,
         present: PRESENT,
       }),
-      delete: await runInDurableObject(h.store, (_instance, state) =>
-        deleteStatus.run(state.storage.sql, { credential, id, deleteMedia: false, now: NOW, present: PRESENT }),
-      ).then(async (deleted) => ({
-        ...(await plannedRun(h, RECIPIENTS, runInboundJobs, { now: NOW })),
-        result: deleted,
-      })),
+      delete: await deleteSignature(h.store, credential, id)
+        .then(async (signed) =>
+          runInDurableObject(h.store, (_instance, state) =>
+            deleteStatus.run(state.storage.sql, {
+              credential,
+              id,
+              deleteMedia: false,
+              signed,
+              now: NOW,
+              present: PRESENT,
+            }),
+          ),
+        )
+        .then(async (deleted) => ({
+          ...(await plannedRun(h, RECIPIENTS, runInboundJobs, { now: NOW })),
+          result: deleted,
+        })),
     });
     const { before, after } = await staleStatistics(h, {
       capture: (phase) => retract(statuses[phase === "before" ? 0 : 1]!.id),

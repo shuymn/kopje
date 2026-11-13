@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Db, type Savepoint } from "../src/db/sql";
 import { updateCredentials } from "../src/domain/account-actions";
 import { API_VISIBILITIES, type ApiVisibility } from "../src/domain/audience";
+import type { UserCredential } from "../src/domain/auth";
 import { backfillConversations } from "../src/domain/conversation-rows";
 import {
   type Claim,
@@ -23,6 +24,7 @@ import { postStatus } from "../src/domain/scheduled-statuses";
 import { deleteStatus, editStatus, favourite, reblog, unfavourite, unreblog } from "../src/domain/statuses";
 import type { StoreStub } from "../src/platform/store-client";
 import type { StoreOperation } from "../src/platform/store-kernel";
+import { unprovenDeleteSignature } from "./delete-job-helpers";
 import { migratedStore } from "./helpers";
 import { type ModelSubscription, NOTIFICATION_TYPES, outboundKindOf, PolicyModel } from "./policy-model";
 import {
@@ -1005,7 +1007,8 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
         const status = pick([...own.filter((s) => delivered.has(s.uri)), ...own], action.target);
         if (status !== undefined) {
           withdrawn = status.uri;
-          run(deleteStatus, { ...credential(author), id: status.id, deleteMedia: false, present: PRESENT });
+          const signed = unprovenDeleteSignature(sql, credential(author).credential as UserCredential, status.id);
+          run(deleteStatus, { ...credential(author), id: status.id, deleteMedia: false, signed, present: PRESENT });
           settleRemoval();
         }
         break;

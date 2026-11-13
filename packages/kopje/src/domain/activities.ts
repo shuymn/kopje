@@ -495,8 +495,7 @@ export type DeletedStatus = {
 // keeps their rows (inbox.ts deleteStatusBatch): so the recorded envelope stays within its byte bound (RES-6) whatever
 // the status's fan-in.
 export function deleteActivity(deleted: DeletedStatus): OutboundEnvelope {
-  const named = deleted.named.map((uri) => ({ accountId: "", uri, silent: false }));
-  const { to, cc } = addressingOf(deleted.visibility, followersUri(deleted.actorUri), named);
+  const { to, cc } = deleteAddressing(deleted);
   const distributable = isDistributable(deleted.visibility);
   return {
     activity: {
@@ -516,6 +515,93 @@ export function deleteActivity(deleted: DeletedStatus): OutboundEnvelope {
       ...(distributable ? { distributable: true } : {}),
     },
   };
+}
+
+function deleteAddressing(deleted: DeletedStatus): { to: string[]; cc: string[] } {
+  const named = deleted.named.map((uri) => ({ accountId: "", uri, silent: false }));
+  return addressingOf(deleted.visibility, followersUri(deleted.actorUri), named);
+}
+
+// The context of a signed status Delete: every term its body uses is defined (the Tombstone's atomUri, as Mastodon's
+// context_helper.rb:18 defines it), so jsonld's safe canonicalization can sign it and Mastodon's safe_for_forwarding?
+// keeps the signature (app/helpers/json_ld_helper.rb), and security/v1 defines the signature's terms.
+const SIGNED_DELETE_CONTEXT = [
+  AS_CONTEXT,
+  { sensitive: "as:sensitive", Hashtag: "as:Hashtag", ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" },
+  "https://w3id.org/security/v1",
+] as const;
+
+// The key a local author's LD signature names (Mastodon's ActivityPub::TagManager key_uri_for).
+export function mainKeyId(actorUri: string): string {
+  return `${actorUri}#main-key`;
+}
+
+// Whether `uri` is an absolute URL in its canonical spelling without a fragment: one a signature's creator and a
+// verifier's parse (Fedify's URL, Mastodon's) leave unchanged. Kopje's own ids are; an imported one may not be.
+function canonicalId(uri: string): boolean {
+  return URL.canParse(uri) && new URL(uri).href === uri && !uri.includes("#");
+}
+
+// The Delete of a public or unlisted status as its author LD-signs it (VIS-3; ActivityPub::DeleteSerializer under
+// RemoveStatusService's always_sign, Status#sign?): addressed to Public alone, so it names no recipient and stays
+// within FORWARD_BODY_MAX whatever the status mentioned. Null for any other visibility, whose Delete is never signed,
+// and for an imported identity not in its canonical spelling (canonicalId), whose proof no receiver would match to the
+// actor: their Delete is recorded unsigned (deleteActivity). The Worker signs it between prepareDelete and deleteStatus
+// (statuses.ts), which records it only if, without its signature, it is this activity of the Store's own snapshot.
+export function signableDeleteActivity(deleted: DeletedStatus): Record<string, unknown> | null {
+  if (!isDistributable(deleted.visibility) || !canonicalId(deleted.actorUri) || !canonicalId(deleted.uri)) {
+    return null;
+  }
+  return {
+    "@context": SIGNED_DELETE_CONTEXT,
+    id: `${deleted.uri}#delete`,
+    type: "Delete",
+    actor: deleted.actorUri,
+    to: [PUBLIC_COLLECTION],
+    object: { id: deleted.uri, type: "Tombstone", atomUri: deleted.uri },
+  };
+}
+
+// The most characters of a signature's signatureValue: the base64 of an RSA-16384 signature (2,048 bytes). Kopje's
+// keys are RSA-4096 (684 characters, security/key-wrap.ts); an imported key's size is checked nowhere else, so this
+// bounds the recorded body (RES-6), and a larger key cannot sign a Delete (its DELETE answers 503).
+export const SIGNATURE_VALUE_MAX = 2732;
+
+// The ISO time Fedify's createSignature writes as created (Date#toISOString, 24 characters).
+const CREATED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+// Whether `signed` is `signable` with an RsaSignature2017 signature by `keyId` as federation/ld-sign.ts writes it
+// (Fedify's createSignature: the identity context, creator, created, type and signatureValue, nothing else): the
+// activity compared in full, its signature alone removed, so what is recorded is what the snapshot says and stays
+// within its derived bound (RES-6).
+export function signedAs(signed: Record<string, unknown>, signable: Record<string, unknown>, keyId: string): boolean {
+  const { signature, ...activity } = signed;
+  if (JSON.stringify(activity) !== JSON.stringify(signable)) {
+    return false;
+  }
+  if (typeof signature !== "object" || signature === null || Array.isArray(signature)) {
+    return false;
+  }
+  const s = signature as Record<string, unknown>;
+  return (
+    Object.keys(s).toSorted().join() === "@context,created,creator,signatureValue,type" &&
+    s["@context"] === "https://w3id.org/identity/v1" &&
+    s.type === "RsaSignature2017" &&
+    s.creator === keyId &&
+    typeof s.created === "string" &&
+    CREATED.test(s.created) &&
+    typeof s.signatureValue === "string" &&
+    s.signatureValue.length <= SIGNATURE_VALUE_MAX &&
+    BASE64.test(s.signatureValue)
+  );
+}
+
+// The envelope of a signed status Delete: the signed activity, immutable (sent byte for byte to every target, a
+// personal copy included, VIS-2), with the audience of deleteActivity and its addressing, by which staging still
+// places each copy (deliveries.ts planOf), as the unsigned form would be placed.
+export function signedDeleteEnvelope(deleted: DeletedStatus, signed: Record<string, unknown>): OutboundEnvelope {
+  return { ...deleteActivity(deleted), activity: signed, immutable: true, addressing: deleteAddressing(deleted) };
 }
 
 // A favourite goes to the status's author only.

@@ -11,6 +11,7 @@ import { writeOperation } from "../src/domain/operation";
 import { accountSearchText } from "../src/domain/search-text";
 import type { StoreStub } from "../src/platform/store-client";
 import { NOW } from "./app-helpers";
+import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { BUILD, migratedStore, runStoreJobs } from "./helpers";
 
 // Test-only seeding: tests insert accounts through this operation, run directly inside the Store.
@@ -49,11 +50,16 @@ const seedAccountOperation = writeOperation<SeedAccount & { now: number }, strin
     domain === null ? null : `${uri}/inbox`,
     domain === null ? null : `https://${domain}/inbox`,
   );
+  // A local account holds the fixture key wrapped under the tests' empty USER_KEK, so its DELETE of a public status can
+  // sign the Delete (mastodon/statuses.ts deleteStatus).
   if (domain === null) {
     db.run(
-      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'test')",
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, ?, ?, ?)",
       id,
       input.email ?? `${input.username}@example.com`,
+      new Uint8Array(LEGACY_EMPTY_KEK.privkey).buffer,
+      new Uint8Array(LEGACY_EMPTY_KEK.salt).buffer,
+      LEGACY_EMPTY_KEK.pubkey,
     );
   }
   return id;
