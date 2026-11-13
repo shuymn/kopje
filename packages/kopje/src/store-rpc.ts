@@ -103,7 +103,7 @@ import type { OperationInput, StoreOperation } from "./platform/store-kernel";
 // operation's input (OperationInput: less the field the Store's clock fills), none for an operation that takes none.
 // A method with logic of its own (streams, rescue RPCs, backups, gates, retries) is written in store.ts; a name in both
 // places refuses to load (defineRpc). How a request talks to the Store, and when a call stays separate for its timing,
-// is said at the Store (store.ts).
+// is said in docs/engineering.md, "How a request talks to the Store".
 export const STORE_RPC = {
   // The OAuth admin's state for GET /admin/health, which shows it to Access only.
   oauthAdmin: oauthAdminStatus,
