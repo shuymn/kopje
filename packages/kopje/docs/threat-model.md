@@ -3866,32 +3866,36 @@ longest an actor id of 2,048 holds), hashtag names of four-byte characters, and 
 filters in every context, each with a 256-character title and 20 keywords of 512 characters, the first held by the
 status, and naming the statuses read, so every status carries 50 filter results (about 0.24 MB each set) and every read
 takes the 1,000 keywords. SQLite bytes are the UTF-8 bytes of every value read (8 per number); nodes are the objects,
-arrays and strings presented. Each measured cell of the table is the most any of the test's five fills gives (the
-four above and the emoji-cache fill), as the test asserts it for each fill; rows read are the rows those reads return.
-Measured shapes are read through the Store operation. No one fill holds a status's emoji arrays and its polls' at
-their bounds at once (the references a poll's choices need displace escaped characters), so the
-conservative JSON of a shape is the escaped fill's plus 12,286 bytes for each poll it shows, at least every fill's
-(`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape within 85%, above every fill")); shares are
-of it. Each remote account of the fills carries its actor id (`uri`) at its bound, 2,048 bytes as JSON, the most it
-presents. A local account also shows `noindex` and `roles`, at most the Owner's badge: the account occurrence's
-conservative JSON adds those keys (63 bytes) to the remote one measured, and what a local account's four fields at
-their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and verified) present past the remote
-one's fields. Every presented account but the viewer's moved to an account of its own at the nested caps (a display
-name referencing emojis that fill 2,048 bytes, URLs at 512 bytes, a 253-byte domain), and each nested account counts at
-its derived 11,021 bytes in the conservative JSON (14 in the conversation, 10 in the group). The fills' statuses are
-remote, which show no `application`; each status a shape shows counts one at its derived 2,399 bytes (a name of 60 code
-points escaped to six bytes each and a website of 2,000 bytes, which JSON writes unescaped, with the key), witnessed by
-a local original and a local quote whose apps are at those bounds, escaped, raw and as malformed imported bytes
-(`test/status-bounds.test.ts` ("status applications")). Each status and boosted original of the fills holds a card at
-its stored bounds (texts escaped, or ASCII in the raw fill; the boost's own row one too, which is not read), and each
-status a shape shows that may show one (not a boost, and not a quoted status, which shows none) counts it at its
-derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image URL at 342 bytes, its blurhash at 54 and its
-alt text at 256 JSON bytes included). Through the real Store RPC, a public timeline page, a context and a search answer
-of statuses of about 0.98 MB each, each cut at the budget, return 7.82 MB of JSON each
-(`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost of a quote above, alone or as
-the one status a lookup of it, the quote and the quoted status admits, returns within `ANSWER_BYTES` (8 MiB), well
-under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and the raw fill; the sizes it
-logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
+arrays and strings presented; rows read are the rows those reads return. The fills measure the account occurrence and
+the ten status and notification shapes (`FILL_SHAPES`), and each of their measured cells is the most any of the test's
+five fills gives (the four above and the emoji-cache fill), each column taking it from one fill: the SQLite bytes and
+the rows read from the raw fill, the JSON from the emoji-poll fill and the nodes from the emoji-cache fill
+(`COLUMN_FILL`). The moved-to account is derived from its caps, and the Note is measured on a fixture of its own with
+text escaped (below). The figures are `test/presented-maxima.ts`, which the test asserts and
+`test-node/presented-maxima.test.ts` compares with this table cell by cell. Measured shapes are read through the Store
+operation. No one fill holds a status's emoji arrays and its polls' at their bounds at once (the references a poll's
+choices need displace escaped characters), so the conservative JSON of a shape is the escaped fill's plus 12,286 bytes
+for each poll it shows, at least every fill's (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape
+within 85%, above every fill")); shares are of it. Each remote account of the fills carries its actor id (`uri`) at its
+bound, 2,048 bytes as JSON, the most it presents. A local account also shows `noindex` and `roles`, at most the Owner's
+badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
+local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
+verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
+at the nested caps (a display name referencing emojis that fill 2,048 bytes, URLs at 512 bytes, a 253-byte domain), and
+each nested account counts at the conservative JSON its caps derive, the table's moved-to row (14 in the conversation,
+10 in the group). The fills' statuses are remote, which show no `application`; each status a shape shows counts one at
+its derived 2,399 bytes (a name of 60 code points escaped to six bytes each and a website of 2,000 bytes, which JSON
+writes unescaped, with the key), witnessed by a local original and a local quote whose apps are at those bounds,
+escaped, raw and as malformed imported bytes (`test/status-bounds.test.ts` ("status applications")). Each status and
+boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill; the boost's
+own row one too, which is not read), and each status a shape shows that may show one (not a boost, and not a quoted
+status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image
+URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). Through the real Store RPC, a public
+timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget, return 7.82 MB
+of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost of a quote above,
+alone or as the one status a lookup of it, the quote and the quoted status admits, returns within `ANSWER_BYTES` (8
+MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and the raw fill; the
+sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
@@ -3925,14 +3929,12 @@ four local fields at their limits, each value a verified 255-character link whos
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, encoded again as a string, it is at most
 332,952 bytes measured and 415,032 conservative (the encoding at most doubles a byte), under the hub's 512 KiB. The
-most JSON is the emoji-poll fill's, the most SQLite bytes the raw fill's; the escaped fill presents the
-conversation in 7,046,302 bytes, and its conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above
-the 4,096 bytes a change may not cross without a review (#1142).
-Every remote account shown but the account occurrence counts its fields at 33,485 JSON bytes, derived from the
-constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31 bytes and 12 nulls:
-565 bytes past the fill's 8 fields); the account occurrence keeps the larger of the local and remote fields' maxima.
-Each account row reads its remote verification times (`remote_verified`) at most 129 bytes, counted at its 290-byte
-heap whatever the fills hold (`test/status-bounds.test.ts`, "remote field verification (RES-3)").
+conversation's conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above the 4,096 bytes a change may not
+cross without a review (#1142). Every remote account shown but the account occurrence counts its fields at 33,485 JSON
+bytes, derived from the constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31
+bytes and 12 nulls: 565 bytes past the fill's 8 fields); the account occurrence keeps the larger of the local and remote
+fields' maxima. Each account row reads its remote verification times (`remote_verified`) at most 129 bytes, counted at
+its 290-byte heap whatever the fills hold (`test/status-bounds.test.ts`, "remote field verification (RES-3)").
 The Note's local emoji snapshot is at its 12,288-byte bound with as many entries as fit
 (61, every url at its shortest), resolved to 14,850 bytes of `Emoji` tags (at most 64 × 44 bytes past the
 snapshot); an actor's at 6,144 bytes resolves to 30 tags of 7,404 bytes (`test/local-emoji-api.test.ts`).
@@ -3973,7 +3975,7 @@ rows at their widest columns); past the cap an announcement is shown escaped wit
 derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
 most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
-Mentions whose url is derived read and present less (the conversation: 5,492,118 and 6,119,672 bytes): a derived url
+Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
 within the bound is at most the stored bound, and a longer one presents as ''.
 
 A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections and
@@ -4083,12 +4085,13 @@ short mentions and 70 hashtags, and 1.15 at the maxima.
 Peaks, as `test/status-bounds.test.ts` ("keeps the peaks of the heap model within their bounds, from the maxima per
 column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap
 any fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with
-25% headroom; the largest single row sums each column's largest value the same way (1.20 MB as logged, the escaped
+25% headroom; the largest single row sums each column's largest value the same way (1.20 MB, the escaped
 poll row, which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above);
 the admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima, whatever runs before it, and
 asserts the timelines' peaks within half of the Store isolate's 128 MB with at least 4,096 bytes to spare, and the
-groups' and reports' within the whole. The figures in the two Store tables below (the rows, the rejected items and the
-answers' peaks) are what that test logs, not what it asserts.
+groups' and reports' within the whole. The peaks follow from the fills and the constants, which the test pins, so it
+asserts them exactly too (`HEAP_PEAKS` in `test/presented-maxima.ts`): `test-node/presented-maxima.test.ts` compares the
+two Store tables below (the rows, the rejected items and the answers' peaks) and the phases' Store peaks with them.
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
@@ -4105,7 +4108,7 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.95 MB | 63.99 MB (63,989,675 bytes)                  | 61.95 MB      |
+| Timelines (largest item a boost of a quote) | 61.95 MB | 63.99 MB                                     | 61.95 MB      |
 | Groups                                      | 76.29 MB | 79.11 MB                                     | 76.29 MB      |
 | Reports                                     | 75.24 MB | 78.05 MB                                     | 75.24 MB      |
 
@@ -4113,24 +4116,24 @@ A chunk of several takes at most its target of heap: 416 KiB (0.43 MB) for timel
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
-the isolate's memory even while the dropped chunk remains live, with 10,326 bytes to spare as logged (at least 4,096
-asserted, as above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and moved-to account's cached
-profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account row's cached emoji (its
-first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of snapshots at their most
-entries, and a moved-to account counts its at their cap), each account row's remote verification times at their 290-byte
-heap, each status row's card at its stored bounds, its embed's src and dimensions and its stored image's token, size,
-blurhash and alt text included (a quoted status's is not read), each account row's static images count at their stored
-bound (1,056 bytes of heap each, whatever the fills hold), each status row's app name and website at their raw bounds
-(4,544 bytes of heap), each attachment row's blurhash at 140 bytes, whether it is remote at 32 and its cached file and
-icon (two slots at the packed cap, read with the row: `mediaCacheSql`; the raw fill caches both of every remote
-attachment), each presented attachment's four URLs at 4,098 JSON bytes and its blurhash at 56, each moved-to account's
-row at its 25,536-byte heap cap and its JSON at 11,021 bytes, and its emojis' presentation holds one entry past those it
-admits at a time (18,060 bytes at three times its literals, decoded strings and the larger of its entity and an href
-normalization makes before rejecting it:
-`referencedEmojis` in `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the
-peak test rejects growth past that boundary. The backstop-fired figures bound the fallback whenever the dropped rows are
-collected. A boost that showed a quote, attachments, mentions, hashtags or a poll of its own (a legacy row may hold
-them) would make a timeline's largest item pass half at a chunk of one; it shows none.
+the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to
+spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 7,459 under its
+ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
+each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
+the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their
+cap), each account row's remote verification times at their 290-byte heap, each status row's card at its stored bounds,
+its embed's src and dimensions and its stored image's token, size, blurhash and alt text included (a quoted status's is
+not read), each account row's static images count at their stored bound (1,056 bytes of heap each, whatever the fills
+hold), each status row's app name and website at their raw bounds (4,544 bytes of heap), each attachment row's blurhash
+at 140 bytes, whether it is remote at 32 and its cached file and icon (two slots at the packed cap, read with the row:
+`mediaCacheSql`; the raw fill caches both of every remote attachment), each presented attachment's four URLs at 4,098
+JSON bytes and its blurhash at 56, each moved-to account's row at its 25,536-byte heap cap and its JSON at 11,021 bytes,
+and its emojis' presentation holds one entry past those it admits at a time (18,060 bytes at three times its literals,
+decoded strings and the larger of its entity and an href normalization makes before rejecting it: `referencedEmojis` in
+`src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the peak test rejects
+growth past that boundary. The backstop-fired figures bound the fallback whenever the dropped rows are collected. A
+boost that showed a quote, attachments, mentions, hashtags or a poll of its own (a legacy row may hold them) would make
+a timeline's largest item pass half at a chunk of one; it shows none.
 
 | Phase                                             | Store isolate | Worker isolate |
 | ------------------------------------------------- | ------------- | -------------- |
