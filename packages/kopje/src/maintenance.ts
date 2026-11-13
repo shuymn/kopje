@@ -19,7 +19,7 @@ import type { Snapshot } from "./platform/store-kernel";
 //     is the spool message.
 //
 // The bundle runs on the legacy Pages project's own compatibility settings, so it imports no Node.js module and none
-// of the federation stack (test-node/maintenance-worker.test.ts checks the bundle).
+// of the federation stack (test/maintenance-worker.test.ts checks the bundle).
 
 export const MAINTENANCE_SNAPSHOT_FORMAT = 1;
 export { MAINTENANCE_RETRY_AFTER_SECONDS } from "./mastodon/errors";

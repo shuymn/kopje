@@ -194,7 +194,7 @@ against their own instance. TLS is assumed between all parties.
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
   no key pair. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently cased path",
   "another host, an unknown user, and the request host"), `test/signed-fetch.test.ts` ("no key pairs for a spelling").
-- **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.7.3's table, pinned by one negative test per
+- **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require
   the object's current author, and an update never changes the author. A same-origin but different actor is refused like
@@ -233,8 +233,8 @@ against their own instance. TLS is assumed between all parties.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later. Input that fails ID-1 or ID-6 reserves no key and
-  records no retraction. _Enforced (main):_ natural keys and `retract` and `isRetracted` in
-  `src/domain/inbox.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
+  records no retraction. _Enforced (main):_ natural keys, `retract` in `src/domain/inbox.ts` and `isRetracted` in
+  `src/domain/remote-actors.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
   target_account_id)`, migration `0054_remote_reports`): a redelivery writes nothing, and a Flag id past
   `ACTIVITY_ID_LIMIT` (4,096 JSON-escaped UTF-8 bytes) is ignored by the Worker and by the Store before any write,
   which the column's CHECK holds for dumps too (`test/inbox-flag.test.ts`). Report ids are never reused and remain
@@ -1274,13 +1274,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ids, no content, as in Mastodon); a copy the stored bound would refuse is dropped to `NULL`. The text is plain text,
   never rendered as HTML. Clearing or dismissing the notification leaves the warning, which nothing reads afterwards.
   Bounds: the text at most 10,000 UTF-8 bytes with no NUL, and `status_ids` NULL or at most 100 18-digit ids in
-  2,101 bytes, held by CHECKs and triggers for imports too (RES-2); the presenter reads one row by key per notification
-  and reuses the presented sender for `target_account` (RES-7). _Enforced (main):_ `src/domain/account-warnings.ts`,
-  `warningOf` in `src/domain/notifications.ts`, the groups in `src/domain/notification-groups.ts`, `shownSql` in
-  `src/domain/audience.ts`, `storedWarningText` and `storedWarningStatusIds` in `src/platform/stored-bounds.ts`,
-  migrations `0062_account_warnings` and `0063_account_warning_notifications_key`; `test/moderation-warnings.test.ts`,
-  `test/admin-suspension.test.ts`, `test/migrations.test.ts`, `test/policy-oracle.test.ts` (against `shown` in
-  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`, `test/status-bounds.test.ts` (the table of maxima),
+  2,101 bytes, held by CHECKs and triggers for imports too (RES-2, stored values); the presenter reads one row by key
+  per notification and reuses the presented sender for `target_account` (RES-7). _Enforced (main):_
+  `src/domain/account-warnings.ts`, `warningOf` in `src/domain/notifications.ts`, the groups in
+  `src/domain/notification-groups.ts`, `shownSql` in `src/domain/audience.ts`, `storedWarningText` and
+  `storedWarningStatusIds` in `src/platform/stored-bounds.ts`, migrations `0062_account_warnings` and
+  `0063_account_warning_notifications_key`; `test/moderation-warnings.test.ts`, `test/admin-suspension.test.ts`,
+  `test/migrations.test.ts`, `test/policy-oracle.test.ts` (against `shown` in `test/policy-model.ts`),
+  `test-node/policy-boundary.test.ts`, `test/status-bounds.test.ts` (the table of maxima),
   `test/account-warning-dump.test.ts`.
 
 - **VIS-32: a link card is fetched and held only for a public or unlisted original.** A status's card (R43,
@@ -2070,7 +2071,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   allowlist with h2 to h4 kept as headings, without attributes ([mastodon-deviations.md](mastodon-deviations.md),
   Instance and apps): in the Store for the API (`instanceDocument` in `src/domain/instance.ts`), at the page for the
   web (`webDocument`, then `SafeHtml`). A link that is not absolute http(s) loses its href and stays as text (HTML-3).
-  At most 50,000 UTF-8 bytes each (RES-2), so the sanitizer's raw cap never cuts one, however sanitizing lengthens it.
+  At most 50,000 UTF-8 bytes each (RES-2, the instance's public settings), so the sanitizer's raw cap never cuts one,
+  however sanitizing lengthens it.
   _Enforced (main):_ `test/html.test.ts` (the vector suites through it too, "keeps headings as h2 to h4, without
   attributes, under the page’s own h1"), `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
   pages show them", "serves the privacy policy sanitized", "keeps the end of a document that sanitizing lengthens past
@@ -2112,7 +2114,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main)_ for custom emoji: an emoji's `url` and `static_url` pass `emojiHref` (http(s), serialized, within
   512 bytes and `EMOJI_URL_ALPHABET`) when an `Emoji` tag is read and again whenever a snapshot is presented, so an
   imported row is normalized too and an entry whose URL does not pass is dropped (`src/domain/custom-emojis.ts`,
-  `src/federation/remote-emoji.ts`); the stored-bound triggers refuse any other scheme (RES-2);
+  `src/federation/remote-emoji.ts`); the stored-bound triggers refuse any other scheme (RES-2, emoji snapshots);
   `test/custom-emojis.test.ts` ("drops what the trigger would refuse and still stores the status", "normalizes stored
   urls again, drops one that does not pass, and cuts at the presented bound"), `test/emoji-bounds.test.ts`.
   _Enforced (main)_ for local emoji: their URLs pass `emojiHref` when a snapshot is taken
@@ -2761,7 +2763,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`test/account-answer-bytes.test.ts`, `test/admin-accounts.test.ts`). _Enforced (main)_ for answers of many accounts
   (a list's members and endorsements with `limit=0`, familiar followers): the whole response body is at most
   `ANSWER_BYTES` (8 MiB, `src/domain/answer-budget.ts`), its own JSON reserved first, only an answer's first account
-  standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.78 MB
+  standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.84 MB
   with their static images, their remote verification times and the accounts they moved to) is read past it. A
   `limit=0` answer cut there links `next` to the rest with `max_id`, a deliberate deviation (Mastodon ignores `max_id`
   with `limit=0`). Familiar followers share the bytes among the requested accounts with followers to show, in rounds
@@ -2789,22 +2791,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   over 512 KiB is skipped whole. The raw presenters (`present` and `hydrate` in status-presenter.ts,
   `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the compiler refuses direct use
   outside their module; the exported paths present one unit or admit within a budget.
-  _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds (RES-2)
-  and are read as stored: content and source text within 128 KiB as a JSON string, a content warning within 16 KiB, a
-  status url within 4,096 bytes, attachment URLs within 2,048, descriptions within 10,000 code points and meta within
-  1 KiB, a blurhash within 54 bytes, and an edit's content, warning and choices the same. Columns that keep a read-time
-  projection are read through their helper in `src/domain/status-bounds.ts` (accounts and actor ids through
-  `src/domain/profile-bounds.ts`): a uri over 4,096 bytes reads as ''; at most 4 attachments per status; at most 200
-  mentions and 70 hashtags (of the 100 stored) per status, the first by account id and by name; at most 100 poll choices
-  of 1,000 code points; each edit-history snapshot's first 4 attachments rebuilt through the attachment bounds and '[]'
-  over 308 KiB (four entries at their caps, at the worst escaping, `EDIT_MEDIA_BYTES`); a conversation presents its
-  first 12 participants in stored order, cut in SQL. Every presented URL stays within its bound as serialized, derived
-  or stored: a profile URL, avatar or header within 2,048 (a profile URL falls back from the stored one to the actor's
-  origin and to this instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs within 2,048
-  (4,098 JSON bytes; a remote attachment's `remote_url` and `preview_remote_url` are its `url` and its icon, read with
-  whether its account is remote by key through `sqlite_autoindex_accounts_1`), live or in an edit's snapshot. A local
-  status's `application` reads its app's name and website as stored, within 240 and 2,000 bytes and only as text
-  (`appNameSql` and `appWebsiteSql` in `src/platform/stored-bounds.ts`, by key through
+  _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds (RES-2,
+  stored values) and are read as stored: content and source text within 128 KiB as a JSON string, a content warning
+  within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048, descriptions within 10,000 code points
+  and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content, warning and choices the same. Columns that
+  keep a read-time projection are read through their helper in `src/domain/status-bounds.ts` (accounts and actor ids
+  through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes reads as ''; at most 4 attachments per status; at most
+  200 mentions and 70 hashtags (of the 100 stored) per status, the first by account id and by name; at most 100 poll
+  choices of 1,000 code points; each edit-history snapshot's first 4 attachments rebuilt through the attachment bounds
+  and '[]' over 308 KiB (four entries at their caps, at the worst escaping, `EDIT_MEDIA_BYTES`); a conversation presents
+  its first 12 participants in stored order, cut in SQL. Every presented URL stays within its bound as serialized,
+  derived or stored: a profile URL, avatar or header within 2,048 (a profile URL falls back from the stored one to the
+  actor's origin and to this instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs
+  within 2,048 (4,098 JSON bytes; a remote attachment's `remote_url` and `preview_remote_url` are its `url` and its
+  icon, read with whether its account is remote by key through `sqlite_autoindex_accounts_1`), live or in an edit's
+  snapshot. A local status's `application` reads its app's name and website as stored, within 240 and 2,000 bytes and
+  only as text (`appNameSql` and `appWebsiteSql` in `src/platform/stored-bounds.ts`, by key through
   `sqlite_autoindex_oauth_clients_1`), and presents them as decoded: a name of at most 60 code points within 240 bytes
   and 362 JSON bytes, else `application: null`; a website that is well-formed, holds none of the characters that end
   or split an HTML attribute or a URL (listed in [mastodon-deviations.md](mastodon-deviations.md), Posting), is within
@@ -2857,16 +2859,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   each account's pins past it, the oldest in pin order (`created_at`, then `status_id`) first, cascading nothing. The
   writers keep below it (`pin` counts in its transaction, the remote writers keep a slot below `MAX_REMOTE_PINS`), so
   they are never refused. The pinned read (`GET /api/v1/accounts/:id/statuses?pinned=true` and the profile's first
-  page) reads at most an account's limit of pins through the primary key, with no index in pin order; an anonymous read
-  without conditions read at most 3 + 4 × the limit rows with every pin examined (83 for a remote account), and a
-  signed-in viewer, the request's conditions and a boost's original add lookups by key for each of those pins, not more
-  pins (`test/pin-cap.test.ts`, `test/migrations.test.ts` ("0089_pin_cap"), `test/dump-import.test.ts`
-  ("round-trips an account's pins at its limit")). _Enforced (main)_ for status cards: one `status_cards` row per status
-  (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
-  delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an open hold kept until it ends),
-  and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
-  ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
-  defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
+  page) reads at most an account's limit of pins through the primary key, with no index in pin order. An anonymous read
+  without conditions reads at most 3 + 4 × the limit rows, every pin examined (83 for a remote account), an enforced
+  bound that `test/pin-cap.test.ts` ("reads at most the account's limit of pins, by primary key, at each limit filled")
+  asserts at both limits; a signed-in viewer, the request's conditions and a boost's original add lookups by key for
+  each of those pins, not more pins, which no test measures. The cap: `test/migrations.test.ts` ("0089_pin_cap"),
+  `test/dump-import.test.ts` ("round-trips an account's pins at its limit"). _Enforced (main)_ for status cards: one
+  `status_cards` row per status (its primary key), deleted with the status inside its final delete's reservation and
+  by the hide step of a remote delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an
+  open hold kept until it ends), and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`;
+  `test/link-card-rounds.test.ts` ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the
+  expiry, so a later round still defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
   `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). Card images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
@@ -3820,7 +3823,9 @@ longest an actor id of 2,048 holds), hashtag names of four-byte characters, and 
 filters in every context, each with a 256-character title and 20 keywords of 512 characters, the first held by the
 status, and naming the statuses read, so every status carries 50 filter results (about 0.24 MB each set) and every read
 takes the 1,000 keywords. SQLite bytes are the UTF-8 bytes of every value read (8 per number); nodes are the objects,
-arrays and strings presented. Measured shapes are read through the Store operation. No one fill holds a status's emoji
+arrays and strings presented. Each measured cell of the table is the most any of the test's five fills gives (the
+four above and the emoji-cache fill), as the test asserts it for each fill; rows read are the rows those reads return.
+Measured shapes are read through the Store operation. No one fill holds a status's emoji
 arrays and its polls' at their bounds at once (the references a poll's choices need displace escaped characters), so the
 conservative JSON of a shape is the escaped fill's plus 12,286 bytes for each poll it shows, at least every fill's
 (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape within 85%, above every fill")); shares are
@@ -3841,23 +3846,24 @@ derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image URL a
 alt text at 256 JSON bytes included). Through the real Store RPC, a public timeline page, a context and a search answer
 of statuses of about 0.98 MB each, each cut at the budget, return 7.82 MB of JSON each
 (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost of a quote above, alone or as
-the one status a lookup of it, the quote and the quoted status admits, returns 5.77 MB (escaped fill) and 4.66 MB (raw
-fill, the largest SQLite read) (`test/status-bounds.test.ts`), well under the 32 MiB RPC limit.
+the one status a lookup of it, the quote and the quoted status admits, returns within `ANSWER_BYTES` (8 MiB), well
+under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and the raw fill; the sizes it
+logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 123,265           | 140,430         | 147,990           | 1         | 92    | 1.8%           |
-| Moved-to account (nested), derived from its caps                 | 11,118            | 8,331           | 11,021            | 1         |       | 0.1%           |
-| Status                                                           | 4,452,203         | 2,697,094       | 2,703,319         | 1,486     | 2,449 | 32.2%          |
-| Quote (the status and its quoted status)                         | 6,826,200         | 5,384,972       | 5,397,422         | 1,919     | 4,882 | 64.3%          |
-| Boost of a quote                                                 | 7,120,791         | 5,793,906       | 5,812,060         | 1,976     | 5,841 | 69.3%          |
-| Conversation: 12 participants presented, its last status a quote | 8,503,596         | 7,070,101       | 7,122,211         | 1,945     | 5,977 | 84.9%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,887,914         | 6,508,836       | 6,547,726         | 1,954     | 5,630 | 78.1%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,206,138         | 5,981,405       | 6,000,465         | 1,934     | 5,197 | 71.5%          |
-| An admin.report notification of that report                      | 2,360,557         | 403,264         | 409,874           | 1,061     | 294   | 4.9%           |
-| A moderation_warning notification, its local account at bounds   | 133,543           | 290,370         | 332,194           | 9         | 223   | 4.0%           |
-| Its notification group                                           | 133,543           | 290,559         | 332,383           | 9         | 230   | 4.0%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,960,200         | 5,525,528       | 5,541,283         | 1,942     | 4,978 | 66.1%          |
+| Account occurrence, with the account it moved to                 | 123,267           | 140,430         | 147,990           | 1         | 204   | 1.8%           |
+| Moved-to account (nested), derived from its caps                 | 12,432            |                 | 11,021            | 1         |       | 0.1%           |
+| Status                                                           | 4,453,581         | 2,697,497       | 2,703,965         | 1,490     | 2,723 | 32.2%          |
+| Quote (the status and its quoted status)                         | 6,828,568         | 5,385,375       | 5,398,068         | 1,927     | 5,428 | 64.3%          |
+| Boost of a quote                                                 | 7,123,563         | 5,794,309       | 5,812,706         | 1,988     | 6,499 | 69.3%          |
+| Conversation: 12 participants presented, its last status a quote | 8,510,724         | 7,070,504       | 7,122,857         | 2,001     | 7,867 | 84.9%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,893,450         | 6,509,239       | 6,548,372         | 1,994     | 7,072 | 78.1%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,209,180         | 5,981,808       | 6,001,111         | 1,948     | 6,423 | 71.5%          |
+| An admin.report notification of that report                      | 2,361,286         | 403,264         | 409,874           | 1,068     | 518   | 4.9%           |
+| A moderation_warning notification, its local account at bounds   | 133,178           | 290,370         | 332,194           | 7         | 679   | 4.0%           |
+| Its notification group                                           | 133,178           | 290,559         | 332,383           | 7         | 686   | 4.0%           |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
@@ -3875,8 +3881,9 @@ four local fields at their limits, each value a verified 255-character link whos
 (U+0001, or malformed bytes read back as U+FFFD) and 100 status ids. Its conservative JSON counts each of the eight
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, encoded again as a string, it is at most
-331,384 bytes measured and 415,032 conservative (the encoding at most doubles a byte), under the hub's 512 KiB. The most JSON is the emoji-poll fill's, the most SQLite bytes the raw fill's; the escaped fill presents the
-conversation in 7,046,599 bytes, and its conservative JSON is 8,105 bytes within 85% of 8 MiB (7,130,316), above
+332,952 bytes measured and 415,032 conservative (the encoding at most doubles a byte), under the hub's 512 KiB. The
+most JSON is the emoji-poll fill's, the most SQLite bytes the raw fill's; the escaped fill presents the
+conversation in 7,046,302 bytes, and its conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above
 the 4,096 bytes a change may not cross without a review (#1142).
 Every remote account shown but the account occurrence counts its fields at 33,485 JSON bytes, derived from the
 constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31 bytes and 12 nulls:
@@ -4036,8 +4043,9 @@ any fill gives that column under the model, summed (so poll choices count as esc
 25% headroom; the largest single row sums each column's largest value the same way (1.20 MB, the escaped poll row,
 which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above); the
 admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima,
-whatever runs before it, and asserts the timelines' peaks within half of the Store isolate's 128 MB, and the groups'
-and reports' within the whole.
+whatever runs before it, and asserts the timelines' peaks within half of the Store isolate's 128 MB with at least
+4,096 bytes to spare, and the groups' and reports' within the whole. The figures in megabytes below (the rows, the
+rejected items and the peaks) are what that test logs, not what it asserts.
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
@@ -4062,20 +4070,20 @@ A chunk of several takes at most its target of heap: 416 KiB (0.43 MB) for timel
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
-the isolate's memory even while the dropped chunk remains live, with 10,326 bytes to spare (at least 4,096 kept, as
-above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and moved-to account's cached
-profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account row's cached emoji (its
-first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of snapshots at their most
-entries, and a moved-to account counts its at their cap), each account row's remote verification times at their 290-byte
-heap, each status row's card at its stored bounds, its embed's src and dimensions and its stored image's token, size,
-blurhash and alt text included (a quoted status's is not read), each account row's static images count at their stored
-bound (1,056 bytes of heap each, whatever the fills hold), each status row's app name and website at their raw bounds
-(4,544 bytes of heap), each attachment row's blurhash at 140 bytes, whether it is remote at 32 and its cached file and
-icon (two slots at the packed cap, read with the row: `mediaCacheSql`; the raw fill caches both of every remote
-attachment), each presented attachment's four URLs at 4,098 JSON bytes and its blurhash at 56, each moved-to account's
-row at its 25,536-byte heap cap and its JSON at 11,021 bytes, and its emojis' presentation holds one entry past those it
-admits at a time (18,060 bytes at three times its literals, decoded strings and the larger of its entity and an href
-normalization makes before rejecting it:
+the isolate's memory even while the dropped chunk remains live, with 10,326 bytes to spare as logged (at least 4,096
+kept and asserted, as above; the conversation's JSON keeps 7,459 under its ceiling): each remote account row's and
+moved-to account's cached profile images (two rows at their caps, MEDIA-7), each status, account and moved-to account
+row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`; the emoji-cache fill caches every entry of
+snapshots at their most entries, and a moved-to account counts its at their cap), each account row's remote verification
+times at their 290-byte heap, each status row's card at its stored bounds, its embed's src and dimensions and its stored
+image's token, size, blurhash and alt text included (a quoted status's is not read), each account row's static images
+count at their stored bound (1,056 bytes of heap each, whatever the fills hold), each status row's app name and website
+at their raw bounds (4,544 bytes of heap), each attachment row's blurhash at 140 bytes, whether it is remote at 32 and
+its cached file and icon (two slots at the packed cap, read with the row: `mediaCacheSql`; the raw fill caches both of
+every remote attachment), each presented attachment's four URLs at 4,098 JSON bytes and its blurhash at 56, each
+moved-to account's row at its 25,536-byte heap cap and its JSON at 11,021 bytes, and its emojis' presentation holds one
+entry past those it admits at a time (18,060 bytes at three times its literals, decoded strings and the larger of its
+entity and an href normalization makes before rejecting it:
 `referencedEmojis` in `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the
 peak test rejects growth past that boundary. The backstop-fired figures bound the fallback whenever the dropped rows are
 collected. A boost that showed a quote, attachments, mentions, hashtags or a poll of its own (a legacy row may hold
@@ -4085,7 +4093,7 @@ them) would make a timeline's largest item pass half at a chunk of one; it shows
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.90 MB      | 50 MB          |
+| Peak, normal                                      | 61.95 MB      | 50 MB          |
 | Peak, the backstop fired                          | 63.99 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk
@@ -4602,7 +4610,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | Spam can fill the 50-row review pool and hide newer candidates from review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | It cannot push out allowed trends (separate pools)                                                                                                                                                                                                                                                                                                                                                                                                       | the review pool stays full of spam                                                                                       |
 | A listed hashtag's `history` counts at most its newest public entries of the 7 days, before the rule: 20 in v2 search, `followed_tags` and `featured_tags/suggestions`, 200 in the trends lists (MD-5); newer boosts and unavailable authors' posts can make it undercount                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | It bounds the lists' reads (RES-7); `GET /api/v1/tags/:id` keeps the full history                                                                                                                                                                                                                                                                                                                                                                        | a client needs the full counts in a list                                                                                 |
 | A trending link's `history` counts at most its newest 200 public copies of the 7 days and 200 of their public boosts (20 of each), before the rule (MD-5); a link is identified by its card's final URL, and a card fetched before 0071, or one whose final URL the stored rule refuses, never trends                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | It bounds the round's and the list's reads (RES-7), and an identity that cannot be stored fails closed                                                                                                                                                                                                                                                                                                                                                   | a client needs the full counts, or an instance relies on older cards trending                                            |
-| A link whose cards' texts were imported malformed (they pass the stored bounds and decode past the presented ones) can take one of the 400 candidate places, cut before presentation is judged, and is then not shown                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Only an imported dump holds such text (every writer stores well-formed text, RES-2); the round's candidate read stays one bounded statement (RES-7)                                                                                                                                                                                                                                                                                                      | an import with malformed card texts is seen to starve link trends                                                        |
+| A link whose cards' texts were imported malformed (they pass the stored bounds and decode past the presented ones) can take one of the 400 candidate places, cut before presentation is judged, and is then not shown                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Only an imported dump holds such text (every writer stores well-formed text, RES-2, stored values); the round's candidate read stays one bounded statement (RES-7)                                                                                                                                                                                                                                                                                       | an import with malformed card texts is seen to starve link trends                                                        |
 | An announcement taken down by its end time sends no `announcement.delete`, and a scheduled one is published up to 5 minutes late                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Mastodon's scheduler does the same (MD-4); REST is authoritative                                                                                                                                                                                                                                                                                                                                                                                         | clients rely on the event                                                                                                |
 | Duplicate keys in a JSON OAuth body are not rejected; the last one wins                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC 6749 defines form bodies only, and Doorkeeper behaves the same                                                                                                                                                                                                                                                                                                                                                                                       | a client depends on JSON bodies                                                                                          |
 | Fedify 2.4.2 signs draft-cavage `(request-target)` without the query string                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Mastodon accepts it; reported upstream                                                                                                                                                                                                                                                                                                                                                                                                                   | a peer rejects signed GETs to URLs with a query                                                                          |
@@ -4660,7 +4668,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | Past `HELD_REJECTS_PER_ACCOUNT` (100) held `Reject`s, a local account's further refused `Reject`s of new pairs are dropped and logged (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated; a slot a replay frees may go to any pair                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Storage and recheck load bound the table (docs/visibility.md, "Held handshakes"); no per-domain cap, eviction or reserve for the owner's own `Reject`s                                                                                                                                                                                                                                                                                                   | the log line is seen                                                                                                     |
 | A pair keeps one held `Reject`, the newest: an older one of the pair is not sent. A newer `Reject` delivered while an older one is held (a refused `Follow` of a blocked account) leaves both to be sent; both reject                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | The receiver applies a `Reject` by its pair when its id names nothing it holds (Mastodon's `reject_embedded_follow`; Misskey by the pair alone), so the newest is enough and a second is harmless                                                                                                                                                                                                                                                        | a peer is seen to treat a second `Reject` otherwise                                                                      |
 | A held `Reject` whose stored `Follow` id or actor uri is not valid UTF-8 (only an import can store one) is never sent: its item fails and parks (`kopje.jobs.reject_replay.invalid_identity`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Hashing or signing a decoded identity would name another `Follow`; the operator repairs the uri and runs `kopje-admin jobs retry`                                                                                                                                                                                                                                                                                                                        | the log line is seen                                                                                                     |
-| Clients, and browsers viewing a public page or the embed, load from the hosts that name them, which see the viewer's address (a page sends them no referrer): a custom emoji image not yet cached, that the cache refuses (by type, size, host or a policy), or past a snapshot's first 16 entries (edit history included); a remote attachment's file or icon not yet cached, that the cache refuses (Ogg, HEIF, QuickTime, a size past its cap, a host or a policy), that arrived before the retention or was stored longer, and every attachment of the edit history; posters; avatars and headers not yet cached or that the cache refuses; a page's video and audio only once played                                                                                                                                 | The remote URL is the fallback Mastodon's media proxy replaces; the cache takes attachments within `MEDIA_CACHE_RETENTION_DAYS` (NET-3, MEDIA-7); the Store's memory bound (RES-3) holds the emoji cache read with each row to 16 entries; the URLs are http(s) and bounded (HTML-3, RES-2); a page's players ask for nothing before play (`preload="none"`, no autoplay, WEB-2)                                                                         | more cached emoji entries fit the memory bound, the edit history shows cached files, or a remote URL must never be shown |
+| Clients, and browsers viewing a public page or the embed, load from the hosts that name them, which see the viewer's address (a page sends them no referrer): a custom emoji image not yet cached, that the cache refuses (by type, size, host or a policy), or past a snapshot's first 16 entries (edit history included); a remote attachment's file or icon not yet cached, that the cache refuses (Ogg, HEIF, QuickTime, a size past its cap, a host or a policy), that arrived before the retention or was stored longer, and every attachment of the edit history; posters; avatars and headers not yet cached or that the cache refuses; a page's video and audio only once played                                                                                                                                 | The remote URL is the fallback Mastodon's media proxy replaces; the cache takes attachments within `MEDIA_CACHE_RETENTION_DAYS` (NET-3, MEDIA-7); the Store's memory bound (RES-3) holds the emoji cache read with each row to 16 entries; the URLs are http(s) and bounded (HTML-3; RES-2, stored values); a page's players ask for nothing before play (`preload="none"`, no autoplay, WEB-2)                                                          | more cached emoji entries fit the memory bound, the edit history shows cached files, or a remote URL must never be shown |
 | An emoji snapshot goes stale until its object is delivered again: an emoji the author's server changes or removes keeps its old URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Each object keeps what it tagged; a global (shortcode, domain) registry, as Mastodon keeps, is not stored                                                                                                                                                                                                                                                                                                                                                | emoji are kept in a registry                                                                                             |
 | An uncached emoji's `static_url` is the same as `url`, and so is a cached one's when no still could be remuxed within 256 KiB, so such an animated emoji stays animated where a client asked for still images                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Mastodon serves a still image it generates; stills are remuxed, never decoded (MEDIA-6)                                                                                                                                                                                                                                                                                                                                                                  | clients need stills of every emoji                                                                                       |
 | Rows stored before migration `0053_custom_emoji_snapshots`, and converted ones, show no emoji: an account until its next refresh, a status until its next Update                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Backfilling from the stored documents would put the upgrade's time budget at risk                                                                                                                                                                                                                                                                                                                                                                        | a backfill fits the upgrade budget                                                                                       |

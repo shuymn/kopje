@@ -3,6 +3,9 @@
 Kopje follows the Mastodon API as Mastodon v4.5.11 serves it. The conformance checks compare it with Mastodon's
 source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
 (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`).
+Federation follows the later Mastodon v4.7.3 in two cases, where the code and the threat model cite it: remote
+statuses are stored as its `ActivityPub::Activity::Create` and `ProcessStatusUpdateService` store them, and a remote
+account's canonical address is decided as its `ActivityPub::ProcessAccountService#check_webfinger!` decides it.
 
 A difference those checks find is either a gap, tracked by an issue until it is fixed, or a departure that has been
 decided. This page lists the decided ones. Each has an id (`MD-n`) that the checks' exceptions cite as

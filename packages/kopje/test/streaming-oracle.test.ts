@@ -26,7 +26,7 @@ import { accountId, listId, runs, statusId, type World, worldArb, writeWorld } f
 //     the hashtag's timeline positioned at the status, less a status that mentions (not silently) an account the
 //     viewer blocks or mutes (the streams' per-connection filter, read here from the world's own rows).
 // Then the window cases: what positioned membership means for home's followed-hashtag windows, which a page read from
-// the top cuts at tagCandidates candidates (the documented difference).
+// the top cuts at streamWindow candidates (the documented difference).
 
 const CASES = 40;
 const PRESENT = { origin: "https://kopje.test" };
@@ -346,9 +346,10 @@ describe("R33: the streamed statuses agree with their references (user, lists, p
   }, 240_000);
 });
 
-// Home's followed-hashtag windows (timelines.ts tagCandidates): a page from the top inspects 40 of a hashtag's public
-// statuses from its cursor (for a page of 20), so a status behind 40 or more newer ones the viewer's home hides is left
-// out of it; positioned at the status, it heads its window and is sent, as max_id paging shows it.
+// Home's followed-hashtag windows (timelines.ts homeWindow, windows.ts streamWindow): a page from the top inspects 40
+// of a hashtag's public statuses from its cursor (for a page of 20), so a status behind 40 or more newer ones the
+// viewer's home hides is left out of it; positioned at the status, it heads its window and is sent, as max_id paging
+// shows it.
 describe("R33: positioned membership and the followed-hashtag windows", () => {
   const VIEWER = "100000000000000001";
   const AUTHOR = "100000000000000002";

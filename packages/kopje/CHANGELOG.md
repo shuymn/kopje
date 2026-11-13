@@ -47,6 +47,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   still counts a suspended account's statuses, as `/api/v1/instance` does. No Store migration and no `wrangler.jsonc`
   change.
 
+- [docs/setup.md](docs/setup.md) documents `IMAGES_ACCOUNT_MONTHLY_TRANSFORMS`, each local account's monthly share of
+  the Images transformations (a tenth of `IMAGES_MONTHLY_TRANSFORMS` when unset), and the instance template's settings
+  table points there for the settings it does not list.
+
 ## [0.5.0] - 2026-11-13
 
 A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now

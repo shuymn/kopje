@@ -139,7 +139,9 @@ import { edgeRangeSql, readWindow, singleWindow, statusCursor, windowJson, windo
 
 // Statuses: posting, editing and deleting local statuses, the per-status reads, and favourite, reblog and
 // bookmark. Every read goes through the audience rule (audience.ts); every write recomputes the counters it changes
-// from the rows, writes its notifications, and records its outbound intent (activities.ts), all in its transaction.
+// from the rows, except a delete and an unboost, which subtract 1 on purpose (what the recount would give after the
+// hide, without reading the rows: deleteStatus, removeReblog); each writes its notifications and records its outbound
+// intent (activities.ts), all in its transaction.
 
 export type Viewed<T> = { status: "ok"; value: T } | { status: "not_found" };
 
