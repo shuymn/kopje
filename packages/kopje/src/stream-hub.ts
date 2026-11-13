@@ -30,7 +30,7 @@ import {
   streamRegister,
   type StreamSubject,
   streamTokens,
-  streamUnit,
+  streamUnitAdvance,
   type StreamUnitAfter,
 } from "./domain/streaming";
 import { normalizeTag } from "./domain/tag-name";
@@ -750,9 +750,9 @@ export class StreamHub {
     );
   }
 
-  // One unit: made in its own transaction (tokens checked, the reference reads, the presentation), the position moved
-  // past it (and, for a conversation, the convSeq of the sockets it goes to raised to its change), then sent. Returns
-  // false when another turn moved the position first.
+  // One unit: made (tokens checked, the reference reads, the presentation) and the position moved past it in one
+  // transaction, then, for a conversation, the convSeq of the sockets it goes to raised to its change, then sent.
+  // Returns false, having sent nothing, when another turn moved the position first.
   async #unit(
     event: StreamEvent,
     unit: Unit,
@@ -762,7 +762,9 @@ export class StreamHub {
   ): Promise<boolean> {
     const { kind } = event;
     const tokenHashes = [...new Set(unit.sockets.map(({ at }) => at.tokenHash))];
-    const made = await this.#run(streamUnit, {
+    const made = await this.#run(streamUnitAdvance, {
+      from,
+      to,
       kind,
       subject: unit.subject.id,
       accountId: unit.viewer,
@@ -772,6 +774,9 @@ export class StreamHub {
       eventId: event.id,
       now: Date.now(),
     });
+    if (made === null) {
+      return false;
+    }
     budget.charge({ checks: tokenHashes.length + made.checks });
     let payload: string | null = null;
     if (made.streams.length > 0) {
@@ -808,9 +813,6 @@ export class StreamHub {
           }
         }
       }
-    }
-    if (!(await this.#run(streamAdvance, { from, to }))) {
-      return false;
     }
     if (kind === "conversation") {
       for (const { ws } of unit.sockets) {
