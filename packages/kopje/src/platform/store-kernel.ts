@@ -239,8 +239,8 @@ export class StoreKernel {
     const result = this.#transaction(() => {
       const state = this.#state ?? loaded;
       admit(state, operation.kind);
+      const flags = readGate(this.#sql);
       const now = this.#now();
-      const flags = readGate(this.#sql, now);
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
       return { output: operation.run(this.#sql, inputOf(refused, now), this.#transaction), refused };
@@ -256,7 +256,7 @@ export class StoreKernel {
     const expected = await this.#expectedMigrations();
     const { schema, hold, upgrading } = await this.#currentState();
     const now = this.#now();
-    const gate = readGate(this.#sql, now);
+    const gate = readGate(this.#sql);
     const frozen = activeDump(gate, now) !== null;
     // The records themselves only while a dump holds its lease or an import runs, so a completed dump's receipt is
     // not read.
@@ -352,8 +352,7 @@ export class StoreKernel {
       throw storeMaintenanceError("version-mismatch");
     }
     this.#transaction(() => {
-      const now = this.#now();
-      if (rebuildLeaseLive(readGate(this.#sql, now), now)) {
+      if (rebuildLeaseLive(readGate(this.#sql), this.#now())) {
         throw storeMaintenanceError("rebuild-in-progress");
       }
       this.#writeState(PITR_RESTORING, JSON.stringify({ at: this.#now() }));
@@ -484,12 +483,11 @@ export class StoreKernel {
   }
 
   #upgradeBlocker(): UpgradeBlocked | null {
-    const now = this.#now();
-    const flags = readGate(this.#sql, now);
+    const flags = readGate(this.#sql);
     if (flags.import) {
       return new UpgradeBlocked("import-in-progress", null);
     }
-    const dump = activeDump(flags, now);
+    const dump = activeDump(flags, this.#now());
     return dump === null ? null : new UpgradeBlocked("dump-in-progress", dump.leaseUntil);
   }
 

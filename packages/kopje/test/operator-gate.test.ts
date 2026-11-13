@@ -6,20 +6,28 @@ import type { MaintenanceReason } from "../src/platform/store-errors";
 import { flagRefusal, type OperatorFlags, readFlags, readGate } from "../src/platform/store-flags";
 import type { OperationKind, StoreOperation } from "../src/platform/store-kernel";
 import { NOW } from "./app-helpers";
-import { BUILD, migratedStore, testKernel } from "./helpers";
+import { BUILD, migratedStore, rejectionOf, testKernel } from "./helpers";
+import { copyConfig, dumpViaRpc, ensureAdmin, ACCESS, splitDump } from "./ops-helpers";
 import { queryPlan } from "./plan-audit-store";
 import { observedSql, type SqlRow } from "./read-helpers";
 
 // Admission reads the operator gate (store-flags.ts readGate), not the operator records (readFlags).
 
-// The decision admission made over the full records (store-flags.ts flagRefusal and activeDump before the gate),
-// kept literally as the baseline the gate is compared with.
+// The decision admission made over the full records: store-flags.ts flagRefusal, activeDump and rebuildLeaseLive as
+// they read OperatorFlags before the gate, kept literally as the baseline the gate is compared with.
+function recordsActiveDump(flags: OperatorFlags, now: number) {
+  return flags.dump !== null && now < flags.dump.leaseUntil ? flags.dump : null;
+}
+
+function recordsRebuildLeaseLive(flags: OperatorFlags, now: number): boolean {
+  return flags.media_rebuild_lease !== null && flags.media_rebuild_lease.until > now;
+}
+
 function recordsRefusal(flags: OperatorFlags, kind: OperationKind, now: number): MaintenanceReason | null {
-  const activeDump = flags.dump !== null && now < flags.dump.leaseUntil ? flags.dump : null;
   if (flags.import !== null) {
     return "import-in-progress";
   }
-  if (kind !== "read" && activeDump !== null) {
+  if (kind !== "read" && recordsActiveDump(flags, now) !== null) {
     return "dump-in-progress";
   }
   const write = kind === "write" || kind === "media-delete";
@@ -29,7 +37,7 @@ function recordsRefusal(flags: OperatorFlags, kind: OperationKind, now: number):
   if (write && flags.unpublished !== null) {
     return "unpublished";
   }
-  if (kind === "media-delete" && flags.media_rebuild_lease !== null && flags.media_rebuild_lease.until > now) {
+  if (kind === "media-delete" && recordsRebuildLeaseLive(flags, now)) {
     return "rebuild-in-progress";
   }
   return null;
@@ -40,38 +48,47 @@ const KINDS: readonly OperationKind[] = ["read", "session", "write", "media-dele
 // A stored value: JSON text, other text, or a BLOB; undefined is an absent row.
 type Stored = string | Uint8Array | undefined;
 
-// Values every flag can hold, well-formed or not: absent, a JSON null, JSON of the wrong shape, text that is not JSON
-// (JSON5 too, which SQLite's JSON functions accept and JSON.parse refuses) and a BLOB holding JSON bytes.
-const MALFORMED: readonly Stored[] = [
-  undefined,
-  " null ",
-  "1",
-  '"x"',
-  "{",
-  "{mode: 'readonly'}",
-  new TextEncoder().encode("{}"),
-];
+// JSON.parse reads nesting of any depth; SQLite's JSON functions refuse more than 1,000 levels.
+const DEEP = "[".repeat(1001) + "]".repeat(1001);
 
-// A lease end (`field` of dump and media_rebuild_lease) live, ended, missing, and of every other JSON type.
+// Values JSON.parse refuses: text that is not JSON, JSON5 (which SQLite's JSON functions accept), JSON followed by a
+// NUL, a raw control character in a string, and a BLOB holding JSON bytes.
+const NOT_JSON: readonly Stored[] = ["{", "{mode: 'readonly'}", "{}\u0000", '"a\tb"', new TextEncoder().encode("{}")];
+
+// Values every flag can hold, well-formed or not: absent, a JSON null, JSON of the wrong shape or too deep for SQLite,
+// and NOT_JSON.
+const MALFORMED: readonly Stored[] = [undefined, " null ", "1", DEEP, ...NOT_JSON];
+
+// A lease end (`field` of dump and media_rebuild_lease) live, ended, missing, of every other JSON type, spelled twice,
+// and in records SQLite's JSON functions read otherwise than JSON.parse.
 function leases(field: string): Stored[] {
   const at = (value: string) => `{"id":"d","${field}":${value}}`;
+  const escaped = `${field.slice(0, -1)}\\u${field
+    .charCodeAt(field.length - 1)
+    .toString(16)
+    .padStart(4, "0")}`;
   return [
     at(String(NOW + 1)),
     at(String(NOW)),
     at(String(NOW - 1)),
-    at(`${NOW}.5`),
+    // Above NOW as a double, at NOW in SQLite's conversion.
+    at(`${NOW}.00012208`),
     at("0"),
-    at("-1e400"),
+    at("-0"),
+    at("0.0"),
     at("1e400"),
-    at("9007199254740993"),
     at(`"${NOW + 1}"`),
-    at(`"\\u0039${NOW}"`),
-    at('"later"'),
     at("true"),
     at("null"),
     at(`[${NOW + 1}]`),
-    at(`{"at":${NOW + 1}}`),
+    at('{"toString":null}'),
     `{"id":"d"}`,
+    `{"${field}":0,"${field}":${NOW + 1}}`,
+    `{"${field}":0,"${escaped}":${NOW + 1}}`,
+    `{"${field}":0}\u0000`,
+    `{"${field}":0,"x":"a\tb"}`,
+    `{"${field}":0,"h":${DEEP}}`,
+    `{"h":${DEEP},"${field}":${NOW + 1}}`,
     ...MALFORMED,
   ];
 }
@@ -84,16 +101,23 @@ const VALUES: Record<"maintenance" | "import" | "unpublished" | "dump" | "media_
   media_rebuild_lease: leases("until"),
 };
 
-type Decision = { threw: true } | { refused: MaintenanceReason | null }[];
+// What one operation kind meets: admitted, refused for a reason, or a thrown error.
+type Outcome = MaintenanceReason | "admitted" | "threw";
 
-function decide(read: () => (kind: OperationKind) => MaintenanceReason | null): Decision {
-  let refusal: (kind: OperationKind) => MaintenanceReason | null;
+function outcomes<F>(read: () => F, refusal: (flags: F, kind: OperationKind) => MaintenanceReason | null): Outcome[] {
+  let flags: F;
   try {
-    refusal = read();
+    flags = read();
   } catch {
-    return { threw: true };
+    return KINDS.map(() => "threw");
   }
-  return KINDS.map((kind) => ({ refused: refusal(kind) }));
+  return KINDS.map((kind) => {
+    try {
+      return refusal(flags, kind) ?? "admitted";
+    } catch {
+      return "threw";
+    }
+  });
 }
 
 function* combinations(): Generator<[keyof typeof VALUES, Stored][]> {
@@ -166,12 +190,15 @@ async function admissionBytes<I>(state: DurableObjectState, operation: StoreOper
 }
 
 describe("operator gate", () => {
+  // The gate decides as the records do for each operation kind, except that an import record JSON.parse refuses
+  // refuses every operation as an import in progress, where reading the records threw.
   it("decides admission as the full records do, for every flag state, malformed values included", async () => {
     const store = await migratedStore();
     const differences = await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
-      const out: { stored: [string, Stored][]; records: Decision; gate: Decision }[] = [];
+      const out: { stored: [string, Stored][]; records: Outcome[]; gate: Outcome[] }[] = [];
       let compared = 0;
+      let refusedWhereThrew = 0;
       // Each combination rewrites only the rows that differ from the previous one.
       const current = new Map<string, Stored>();
       for (const stored of combinations()) {
@@ -186,28 +213,59 @@ describe("operator gate", () => {
             sql.exec("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, value);
           }
         }
-        const records = decide(() => {
-          const flags = readFlags(sql);
-          return (kind) => recordsRefusal(flags, kind, NOW);
-        });
-        const gate = decide(() => {
-          const flags = readGate(sql, NOW);
-          return (kind) => flagRefusal(flags, kind, NOW);
-        });
+        const records = outcomes(
+          () => readFlags(sql),
+          (flags, kind) => recordsRefusal(flags, kind, NOW),
+        );
+        const gate = outcomes(
+          () => readGate(sql),
+          (flags, kind) => flagRefusal(flags, kind, NOW),
+        );
         compared++;
-        if (JSON.stringify(records) !== JSON.stringify(gate) && out.length < 5) {
+        const importNotJson = NOT_JSON.includes(current.get("import"));
+        const same = records.every((outcome, i) => {
+          if (outcome === gate[i]) {
+            return true;
+          }
+          const refused = importNotJson && outcome === "threw" && gate[i] === "import-in-progress";
+          refusedWhereThrew += refused ? 1 : 0;
+          return refused;
+        });
+        if (!same && out.length < 5) {
           out.push({ stored, records, gate });
         }
       }
       sql.exec(
         "DELETE FROM kopje_state WHERE name IN ('maintenance', 'import', 'unpublished', 'dump', 'media_rebuild_lease')",
       );
-      return { compared, out };
+      return { compared, out, refusedWhereThrew };
     });
     expect(differences.out).toEqual([]);
     const expected = Object.values(VALUES).reduce((n, values) => n * values.length, 1);
     expect(differences.compared).toBe(expected);
-  }, 120_000);
+    expect(differences.refusedWhereThrew).toBeGreaterThan(0);
+  }, 300_000);
+
+  it("refuses operations during an import whose header nests deeper than SQLite's JSON functions read", async () => {
+    const source = await migratedStore();
+    const header = splitDump((await dumpViaRpc(source)).text).header as { source: Record<string, unknown> };
+    header.source.extra = JSON.parse(DEEP) as unknown;
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    await ensureAdmin(target);
+    const begun = await target.importBegin(BUILD, ACCESS, header);
+    if (!begun.ok) {
+      throw new Error(begun.message);
+    }
+    const refusal = await runInDurableObject(target, async (_instance, state) =>
+      String(await rejectionOf(testKernel(state).execute(BUILD, look, "a"))),
+    );
+    expect(refusal).toMatch(/import-in-progress/);
+    expect(await target.health(BUILD)).toMatchObject({
+      readonly: true,
+      import: { id: begun.progress.id, state: "receiving" },
+    });
+  });
 
   it("reads one primary-key lookup per name", async () => {
     const store = await migratedStore();
@@ -217,9 +275,8 @@ describe("operator gate", () => {
         observedSql(state.storage.sql, (_rows, query) => {
           gateSql = query;
         }),
-        NOW,
       );
-      return queryPlan(state.storage.sql, gateSql, [NOW]).map((row) => row.detail);
+      return queryPlan(state.storage.sql, gateSql, []).map((row) => row.detail);
     });
     expect(plan).toEqual(["SEARCH kopje_state USING PRIMARY KEY (name=?)"]);
   });

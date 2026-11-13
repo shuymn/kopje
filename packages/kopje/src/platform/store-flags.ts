@@ -133,10 +133,10 @@ export function readFlags(sql: SqlStorage): OperatorFlags {
   return flags;
 }
 
-// What admission reads of the operator state (StoreKernel, flagRefusal) at the Store's time `now`: whether
-// maintenance, an import and an unpublished import are set, and the ends of the dump's and the media rebuild's leases
-// that have not ended. A completed dump's record stays as its receipt (StoreAdmin.dumpFinish), so admission reads the
-// lease end alone, never the whole record, and nothing of an ended lease.
+// What admission reads of the operator state (StoreKernel, flagRefusal): whether maintenance, an import and an
+// unpublished import are set, and the dump's and the media rebuild's leases. A completed dump's record stays as its
+// receipt (StoreAdmin.dumpFinish), so the gate never reads a record whose lease end is 0 (the receipt's), nor the
+// import's record, only that it exists.
 export type OperatorGate = {
   maintenance: boolean;
   import: boolean;
@@ -147,18 +147,24 @@ export type OperatorGate = {
 
 type GateName = "maintenance" | "dump" | "import" | "unpublished" | "media_rebuild_lease";
 
-// A row that is not JSON text (a BLOB, or text JSON.parse refuses) throws, as readFlags does. A JSON null is an absent
-// flag, and a lease end is its field's own JSON value (undefined when missing), so each decision is readFlags's; a
-// numeric lease end at or before `now` leaves its row out, as activeDump and rebuildLeaseLive would disregard it.
-const GATE_SQL = `SELECT name, valid, CASE WHEN valid THEN json_type(value) <> 'null' END AS present,
-	CASE WHEN valid AND path IS NOT NULL THEN value -> path END AS lease
-	FROM (SELECT name, value, typeof(value) = 'text' AND json_valid(value) AS valid,
-		CASE name WHEN 'dump' THEN '$.leaseUntil' WHEN 'media_rebuild_lease' THEN '$.until' END AS path
+// The other records are parsed in JS as readFlags parses them. The import's record is read as JSON null (an absent
+// flag, as readFlags reads it) or as present: a record JSON.parse refuses refuses every operation as an import in
+// progress, where readFlags threw. A lease record is left out only when SQLite reads its lease end as JSON.parse does
+// and that end is the JSON integer 0, a lease that has ended for any Store time: it is text with no NUL in
+// json_valid's RFC 8259 form, it names its lease end's key once and holds no \u escape (so no other spelling of that
+// key can follow, which JSON.parse would take and SQLite would not). No JSON function reads any other record, so
+// nothing SQLite's JSON parser refuses (nesting deeper than its limit) fails the read.
+const GATE_SQL = `SELECT name, CASE WHEN name <> 'import' THEN value
+		WHEN typeof(value) = 'text' AND trim(value, ' ' || char(9, 10, 13)) = 'null' THEN 'null' END AS value
+	FROM (SELECT name, value, CASE name WHEN 'dump' THEN 'leaseUntil' WHEN 'media_rebuild_lease' THEN 'until' END AS lease
 		FROM kopje_state WHERE name IN ('maintenance', 'dump', 'import', 'unpublished', 'media_rebuild_lease'))
-	WHERE CASE WHEN NOT valid OR path IS NULL THEN 1
-		WHEN json_type(value, path) IN ('integer', 'real') THEN value ->> path > ? ELSE 1 END`;
+	WHERE CASE WHEN lease IS NULL OR typeof(value) <> 'text' OR instr(value, char(0)) > 0 OR instr(value, '\\u') > 0
+		OR instr(value, '"' || lease || '"') = 0
+		OR instr(substr(value, instr(value, '"' || lease || '"') + 1), '"' || lease || '"') > 0
+		OR NOT json_valid(value) THEN 1
+		ELSE coalesce(value -> ('$.' || lease), '') <> '0' END`;
 
-export function readGate(sql: SqlStorage, now: number): OperatorGate {
+export function readGate(sql: SqlStorage): OperatorGate {
   const gate: OperatorGate = {
     maintenance: false,
     import: false,
@@ -166,22 +172,18 @@ export function readGate(sql: SqlStorage, now: number): OperatorGate {
     dump: null,
     media_rebuild_lease: null,
   };
-  for (const row of sql
-    .exec<{ name: GateName; valid: number; present: number | null; lease: string | null }>(GATE_SQL, now)
-    .toArray()) {
-    if (row.valid !== 1) {
-      throw new SyntaxError(`kopje_state ${row.name} is not JSON`);
-    }
-    if (row.present !== 1) {
+  for (const row of sql.exec<{ name: GateName; value: string | null }>(GATE_SQL).toArray()) {
+    if (row.name === "import") {
+      gate.import = row.value === null;
       continue;
     }
-    const lease = (row.lease === null ? undefined : JSON.parse(row.lease)) as number;
+    const value = JSON.parse(row.value as string) as unknown;
     if (row.name === "dump") {
-      gate.dump = { leaseUntil: lease };
+      gate.dump = value as OperatorGate["dump"];
     } else if (row.name === "media_rebuild_lease") {
-      gate.media_rebuild_lease = { until: lease };
+      gate.media_rebuild_lease = value as OperatorGate["media_rebuild_lease"];
     } else {
-      gate[row.name] = true;
+      gate[row.name] = value !== null;
     }
   }
   return gate;
