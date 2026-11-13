@@ -208,10 +208,20 @@ export class StoreKernel {
     return (await this.#run(callerBuild, operation, (refused) => ({ ...input, refused }), probe)).output;
   }
 
+  // Runs an operation as execute does, with the Store's own time in its input as `storeNow`: the time the transaction
+  // admitted it by, never the caller's, for state the Store both writes and judges by its age.
+  async executeTimed<I, O>(
+    callerBuild: string,
+    operation: StoreOperation<I & { storeNow: number }, O>,
+    input: I,
+  ): Promise<O> {
+    return (await this.#run(callerBuild, operation, (_refused, storeNow) => ({ ...input, storeNow }), null)).output;
+  }
+
   async #run<I, O>(
     callerBuild: string,
     operation: StoreOperation<I, O>,
-    inputOf: (refused: MaintenanceReason | null) => I,
+    inputOf: (refused: MaintenanceReason | null, now: number) => I,
     probe: OperationKind | null,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
     if (callerBuild !== this.build) {
@@ -225,7 +235,7 @@ export class StoreKernel {
       const now = this.#now();
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
-      return { output: operation.run(this.#sql, inputOf(refused), this.#transaction), refused };
+      return { output: operation.run(this.#sql, inputOf(refused, now), this.#transaction), refused };
     });
     if (operation.kind !== "read") {
       this.#afterCommit(operation);

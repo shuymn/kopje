@@ -21,18 +21,31 @@ const MINUTE_MS = 60_000;
 const MAIN_COUNT = "SELECT COUNT(DISTINCT domain) AS n FROM accounts WHERE domain IS NOT NULL";
 const kept = (store: StoreStub) =>
   sql<{ value: string }>(store, "SELECT value FROM kopje_state WHERE name = 'domain_count'");
-const keptAs = (n: number, at = NOW) => [{ value: JSON.stringify({ n, at }) }];
-const mainCount = async (h: Pick<ApiHarness, "store">) => (await sql<{ n: number }>(h.store, MAIN_COUNT))[0]!.n;
-// The count /api/v1/instance presents at `at`.
-const domainCount = async (h: ApiHarness, at = NOW) => {
-  h.now.mockReturnValue(at);
-  return (await (await h.request("/api/v1/instance")).json<{ stats: { domain_count: number } }>()).stats.domain_count;
+// The kept count, its refresh time checked to be the Store's own clock (Date.now in the test pool), not the caller's.
+const keptCount = async (store: StoreStub, before: number): Promise<number | null> => {
+  const [row] = await kept(store);
+  if (row === undefined) return null;
+  const { n, at } = JSON.parse(row.value) as { n: number; at: number };
+  expect(at).toBeGreaterThanOrEqual(before);
+  expect(at).toBeLessThanOrEqual(Date.now());
+  return n;
 };
+// Sets the kept count's refresh time to `ago` ms before the Store's clock: the time passed since the refresh.
+const age = (store: StoreStub, ago: number) =>
+  sql(
+    store,
+    "UPDATE kopje_state SET value = json_set(value, '$.at', CAST(? AS INTEGER)) WHERE name = 'domain_count'",
+    Date.now() - ago,
+  );
+const mainCount = async (h: Pick<ApiHarness, "store">) => (await sql<{ n: number }>(h.store, MAIN_COUNT))[0]!.n;
+const domainCount = async (h: ApiHarness) =>
+  (await (await h.request("/api/v1/instance")).json<{ stats: { domain_count: number } }>()).stats.domain_count;
 
-const cron = (h: ApiHarness, at = NOW, maintenance = "off") =>
+// The cron, its callers' clock NOW, which the refresh does not use.
+const cron = (h: ApiHarness, maintenance = "off") =>
   handleScheduled({ ...h.env, MAINTENANCE: maintenance } as unknown as Env, {
     build: () => BUILD,
-    now: () => at,
+    now: () => NOW,
     store: () => h.store,
   });
 
@@ -71,8 +84,9 @@ describe("the kept peer domain count", () => {
     expect(await domainCount(h)).toBe(3);
     // A read writes nothing: the request did not keep what it counted.
     expect(await kept(h.store)).toEqual([]);
+    const before = Date.now();
     await cron(h);
-    expect(await kept(h.store)).toEqual(keptAs(3));
+    expect(await keptCount(h.store, before)).toBe(3);
     expect(await domainCount(h)).toBe(await mainCount(h));
   });
 
@@ -82,56 +96,72 @@ describe("the kept peer domain count", () => {
     await newDomain(h, 1);
     await newDomain(h, 2);
     expect(await mainCount(h)).toBe(5);
-    expect(await domainCount(h, NOW + MINUTE_MS)).toBe(3);
-    await cron(h, NOW + 5 * MINUTE_MS);
-    expect(await domainCount(h, NOW + 6 * MINUTE_MS)).toBe(5);
+    expect(await domainCount(h)).toBe(3);
+    await cron(h);
+    expect(await domainCount(h)).toBe(5);
   });
 
-  it("serves a count at most DOMAIN_COUNT_FRESH_MS old, and counts on request past that", async () => {
+  it("serves a count refreshed at most DOMAIN_COUNT_FRESH_MS before the request, and counts on request otherwise", async () => {
     const h = await world();
     await cron(h);
     await newDomain(h, 1);
-    expect(await domainCount(h, NOW + DOMAIN_COUNT_FRESH_MS)).toBe(3);
-    expect(await domainCount(h, NOW + DOMAIN_COUNT_FRESH_MS + 1)).toBe(4);
-    // A refresh time after the request by more than the same (a clock gone back) is not served either.
-    expect(await domainCount(h, NOW - DOMAIN_COUNT_FRESH_MS)).toBe(3);
-    expect(await domainCount(h, NOW - DOMAIN_COUNT_FRESH_MS - 1)).toBe(4);
+    // Within the window (a margin for the time the request takes): the kept count.
+    await age(h.store, DOMAIN_COUNT_FRESH_MS - 30_000);
+    expect(await domainCount(h)).toBe(3);
+    await age(h.store, DOMAIN_COUNT_FRESH_MS + 1);
+    expect(await domainCount(h)).toBe(4);
+  });
+
+  it("ignores a refresh time after the request", async () => {
+    const h = await world();
+    await cron(h);
+    await newDomain(h, 1);
+    for (const ahead of [60_000, 9 * MINUTE_MS, 60 * MINUTE_MS]) {
+      await age(h.store, -ahead);
+      expect(await domainCount(h)).toBe(4);
+    }
   });
 
   it("answers the count after a dump's lease made the cron skip its refresh", async () => {
     const h = await world();
     await cron(h);
     await newDomain(h, 1);
-    h.now.mockReturnValue(NOW + 4 * MINUTE_MS);
+    await age(h.store, 4 * MINUTE_MS);
     const started = await h.store.dumpStart(BUILD);
     if (!started.ok) throw new Error(started.message);
-    await cron(h, NOW + 5 * MINUTE_MS);
-    // The refresh was refused: the row is still the one of NOW.
-    expect(await kept(h.store)).toEqual(keptAs(3));
-    expect(await domainCount(h, NOW + 11 * MINUTE_MS)).toBe(4);
+    const [before] = await kept(h.store);
+    await cron(h);
+    // The refresh was refused: the row is as it was; past the window, the request counts.
+    expect(await kept(h.store)).toEqual([before]);
+    await age(h.store, 11 * MINUTE_MS);
+    expect(await domainCount(h)).toBe(4);
   });
 
   it("counts on request while the env's MAINTENANCE stops the cron", async () => {
     const h = await world();
     await cron(h);
     await newDomain(h, 1);
-    await cron(h, NOW + 5 * MINUTE_MS, "readonly");
-    expect(await kept(h.store)).toEqual(keptAs(3));
-    expect(await domainCount(h, NOW + 11 * MINUTE_MS)).toBe(4);
+    await age(h.store, 5 * MINUTE_MS);
+    const [before] = await kept(h.store);
+    await cron(h, "readonly");
+    expect(await kept(h.store)).toEqual([before]);
+    await age(h.store, 11 * MINUTE_MS);
+    expect(await domainCount(h)).toBe(4);
   });
 
   it("is refreshed while the Store is readonly", async () => {
     const h = await world();
     expect(await h.store.setMaintenance(BUILD, true)).toMatchObject({ maintenance: true });
+    const before = Date.now();
     await cron(h);
-    expect(await kept(h.store)).toEqual(keptAs(3));
+    expect(await keptCount(h.store, before)).toBe(3);
   });
 
   it("is not dumped, and is cleared when an import begins and when a reset ends", async () => {
     const source = await migratedStore();
     await setAccess(source);
     await remoteAccounts({ store: source }, 1, 1);
-    await source.refreshDomainCount(BUILD, { now: NOW });
+    await source.refreshDomainCount(BUILD);
     const { text } = await dumpViaRpc(source);
     expect(text).not.toContain("domain_count");
     const target = await migratedStore();
@@ -145,8 +175,8 @@ describe("the kept peer domain count", () => {
     const { id } = await importViaRpc(target, text);
     expect(await kept(target)).toEqual([]);
     // Kept again while the import is unpublished, then the reset ends: cleared.
-    await target.refreshDomainCount(BUILD, { now: NOW });
-    expect(await kept(target)).toEqual(keptAs(1));
+    await target.refreshDomainCount(BUILD);
+    expect(await keptCount(target, 0)).toBe(1);
     for (;;) {
       const step = await target.cutoverReset(BUILD, ACCESS);
       expect(step, JSON.stringify(step)).toMatchObject({ ok: true });
@@ -158,6 +188,20 @@ describe("the kept peer domain count", () => {
     expect(await kept(target)).toEqual([]);
   }, 60_000);
 
+  it("is cleared by the cutover reset of a Store the import left empty", async () => {
+    const source = await migratedStore();
+    await setAccess(source);
+    const { text } = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await setAccess(target);
+    await importViaRpc(target, text);
+    await target.refreshDomainCount(BUILD);
+    expect(await keptCount(target, 0)).toBe(0);
+    // The empty Store's branch: done at once, with no reset record.
+    expect(await target.cutoverReset(BUILD, ACCESS)).toMatchObject({ ok: true, id: null, done: true });
+    expect(await kept(target)).toEqual([]);
+  }, 60_000);
+
   it("is cleared when an import in progress is reset", async () => {
     const source = await migratedStore();
     await setAccess(source);
@@ -166,9 +210,7 @@ describe("the kept peer domain count", () => {
     await setAccess(target);
     const id = await beginImport(target, text);
     // No refresh runs while an import is in progress; a row there (one written around the gate) still goes.
-    expect(await target.refreshDomainCount(BUILD, { now: NOW }).catch((error: unknown) => String(error))).toMatch(
-      /import/,
-    );
+    expect(await target.refreshDomainCount(BUILD).catch((error: unknown) => String(error))).toMatch(/import/);
     await sql(
       target,
       "INSERT INTO kopje_state (name, value) VALUES ('domain_count', ?)",
@@ -178,33 +220,35 @@ describe("the kept peer domain count", () => {
     expect(await kept(target)).toEqual([]);
   }, 60_000);
 
+  // Each value made at the Store's current time, so only its shape can make it ignored; the well-formed one is served.
   it.each([
-    ["a number", 7],
-    ["a decimal text", "3"],
-    ["without its time", JSON.stringify({ n: 7 })],
-    ["with a text time", JSON.stringify({ n: 7, at: String(NOW) })],
-    ["a negative count", JSON.stringify({ n: -1, at: NOW })],
-    ["a fractional count", JSON.stringify({ n: 2.5, at: NOW })],
-    ["a text count", JSON.stringify({ n: "7", at: NOW })],
-    ["not JSON", `{"n": 7, "at": ${NOW}`],
-    ["with a NUL", `${JSON.stringify({ n: 7, at: NOW })}\u0000`],
-    ["over 64 bytes", JSON.stringify({ n: 7, at: NOW, pad: "x".repeat(40) })],
-    ["a blob", new TextEncoder().encode(JSON.stringify({ n: 7, at: NOW })).buffer],
-  ] as [string, SqlStorageValue][])("is ignored when the stored value is %s", async (_name, value) => {
+    ["a number", () => 7],
+    ["a decimal text", () => "7"],
+    ["without its time", () => JSON.stringify({ n: 7 })],
+    ["with a text time", (at: number) => JSON.stringify({ n: 7, at: String(at) })],
+    ["a negative count", (at: number) => JSON.stringify({ n: -1, at })],
+    ["a fractional count", (at: number) => JSON.stringify({ n: 2.5, at })],
+    ["a text count", (at: number) => JSON.stringify({ n: "7", at })],
+    ["not JSON", (at: number) => `{"n": 7, "at": ${at}`],
+    ["with a NUL", (at: number) => `${JSON.stringify({ n: 7, at })}\u0000`],
+    ["over 64 bytes", (at: number) => JSON.stringify({ n: 7, at, pad: "x".repeat(40) })],
+    ["a blob", (at: number) => new TextEncoder().encode(JSON.stringify({ n: 7, at })).buffer],
+    ["well formed", (at: number) => JSON.stringify({ n: 7, at })],
+  ] as [string, (at: number) => SqlStorageValue][])("is ignored when the stored value is %s", async (name, value) => {
     const h = await world();
-    await sql(h.store, "INSERT INTO kopje_state (name, value) VALUES ('domain_count', ?)", value);
-    expect(await domainCount(h)).toBe(3);
+    await sql(h.store, "INSERT INTO kopje_state (name, value) VALUES ('domain_count', ?)", value(Date.now() - 1000));
+    expect(await domainCount(h)).toBe(name === "well formed" ? 7 : 3);
     await cron(h);
-    expect(await kept(h.store)).toEqual(keptAs(3));
+    expect(await keptCount(h.store, 0)).toBe(3);
   });
 
   it("reads one row of kopje_state and no remote account once kept, however many accounts and domains", async () => {
     const h = await world();
     await cron(h);
-    const small = await rowsRead(h, instanceInfo, { now: NOW, present });
+    const small = await rowsRead(h, instanceInfo, { now: NOW, storeNow: Date.now(), present });
     await more(h, 300, 30);
     await cron(h);
-    expect(await rowsRead(h, instanceInfo, { now: NOW, present })).toBe(small);
+    expect(await rowsRead(h, instanceInfo, { now: NOW, storeNow: Date.now(), present })).toBe(small);
   }, 60_000);
 
   it("counts in the refresh as main does, with one row written", async () => {
@@ -220,12 +264,12 @@ describe("the kept peer domain count", () => {
             return { rowsWritten: (rows += cursor.rowsWritten) };
           },
         } as unknown as SqlStorage,
-        { now: NOW },
+        { storeNow: NOW },
       );
       return rows;
     });
     expect(written).toBe(1);
-    expect(await kept(h.store)).toEqual(keptAs(await mainCount(h)));
+    expect(await kept(h.store)).toEqual([{ value: JSON.stringify({ n: await mainCount(h), at: NOW }) }]);
   });
 });
 

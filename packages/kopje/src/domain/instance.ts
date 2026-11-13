@@ -128,12 +128,12 @@ export function aboutSettingsOf(db: Db): AboutSettings {
 
 // The peer domain count, kept in one kopje_state row (DOMAIN_COUNT_STATE: never dumped, cleared when an import begins
 // and when a reset ends, store-admin.ts) as JSON {"n": the count, "at": the refresh's ms}, written only by
-// refreshDomainCount. It serves a request only while fresh, refreshed within DOMAIN_COUNT_FRESH_MS of the request
-// (two cron periods), so whatever skips a refresh (a dump's freeze, the env's MAINTENANCE, a failed round) leaves it
-// stale by at most that. A row of any other shape reads as none.
+// refreshDomainCount. It serves a request only while fresh: refreshed at most DOMAIN_COUNT_FRESH_MS (two cron periods)
+// before the request and not after it, both by the Store's own clock, so whatever skips a refresh (a dump's freeze,
+// the env's MAINTENANCE, a failed round) leaves it stale by at most that. A row of any other shape reads as none.
 export const DOMAIN_COUNT_FRESH_MS = 2 * 5 * 60 * 1000;
 const DOMAIN_COUNT_SQL = "SELECT COUNT(DISTINCT domain) FROM accounts WHERE domain IS NOT NULL";
-// The kept count when it is fresh (refreshed between ?1 and ?2): one primary-key lookup.
+// The kept count when it is fresh (refreshed between ?1, DOMAIN_COUNT_FRESH_MS ago, and ?2, now): a primary-key lookup.
 export const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopje_state
 	WHERE name = '${DOMAIN_COUNT_STATE}' AND typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 64
 	AND instr(CAST(value AS BLOB), x'00') = 0 AND json_valid(value) AND json_type(value, '$.n') = 'integer'
@@ -171,26 +171,25 @@ function activeWindow(now: number): [string, string] {
 }
 
 // /api/v1/instance: the settings and every count it presents.
-export const instanceInfo = readOperation<{ now: number; present: Present }, InstanceInfo>((db, { now, present }) => {
-  const fresh = db.first<{ n: number }>(
-    FRESH_DOMAIN_COUNT_SQL,
-    now - DOMAIN_COUNT_FRESH_MS,
-    now + DOMAIN_COUNT_FRESH_MS,
-  );
-  const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
-    fresh === undefined ? INSTANCE_COUNTS_SQL : INSTANCE_COUNTS_KEPT_SQL,
-    ...activeWindow(now),
-  );
-  const settings = settingsOf(db);
-  return {
-    ...settings,
-    userCount: counts?.users ?? 0,
-    activeMonth: counts?.active ?? 0,
-    statusCount: counts?.statuses ?? 0,
-    domainCount: counts?.domains ?? 0,
-    contactAccount: contactAccount(db, settings, present),
-  };
-});
+// storeNow is the Store's own time (StoreKernel.executeTimed), the clock refreshDomainCount stamps the kept count with.
+export const instanceInfo = readOperation<{ now: number; storeNow: number; present: Present }, InstanceInfo>(
+  (db, { now, storeNow, present }) => {
+    const fresh = db.first<{ n: number }>(FRESH_DOMAIN_COUNT_SQL, storeNow - DOMAIN_COUNT_FRESH_MS, storeNow);
+    const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
+      fresh === undefined ? INSTANCE_COUNTS_SQL : INSTANCE_COUNTS_KEPT_SQL,
+      ...activeWindow(now),
+    );
+    const settings = settingsOf(db);
+    return {
+      ...settings,
+      userCount: counts?.users ?? 0,
+      activeMonth: counts?.active ?? 0,
+      statusCount: counts?.statuses ?? 0,
+      domainCount: counts?.domains ?? 0,
+      contactAccount: contactAccount(db, settings, present),
+    };
+  },
+);
 
 // /api/v2/instance: the settings and the one count it presents (usage.users.active_month).
 export const instanceUsage = readOperation<{ now: number; present: Present }, InstanceUsage>((db, { now, present }) => {
@@ -205,11 +204,12 @@ export const instanceUsage = readOperation<{ now: number; present: Present }, In
 // The cron's refresh of the kept peer domain count (jobs/scheduled.ts): one walk of the remote accounts and one row
 // written. A session operation, so it runs while the Store is readonly (its maintenance, a verified import before
 // publication) too; a dump's freeze refuses it, and the kept count then ages out (DOMAIN_COUNT_FRESH_MS).
-export const refreshDomainCount = sessionOperation<{ now: number }, void>((db, { now }) => {
+// Stamped with the Store's own time (storeNow, StoreKernel.executeTimed), the clock instanceInfo judges it by.
+export const refreshDomainCount = sessionOperation<{ storeNow: number }, void>((db, { storeNow }) => {
   db.run(
     `INSERT OR REPLACE INTO kopje_state (name, value) SELECT ?1, json_object('n', (${DOMAIN_COUNT_SQL}), 'at', CAST(?2 AS INTEGER))`,
     DOMAIN_COUNT_STATE,
-    now,
+    storeNow,
   );
 });
 

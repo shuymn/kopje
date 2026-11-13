@@ -108,7 +108,7 @@ export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<vo
     }
   }
   try {
-    await callStore(() => deps.store(env).refreshDomainCount(deps.build(env), { now: deps.now() }));
+    await callStore(() => deps.store(env).refreshDomainCount(deps.build(env)));
   } catch (error) {
     if (!(error instanceof StoreUnavailableError)) {
       console.error({ event: "kopje.scheduled.domain_count_failed", ...errorFields(error) });

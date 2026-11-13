@@ -1580,6 +1580,8 @@ export class StoreAdmin {
           throw new ImportError("journal-not-empty", "drain the rollback journal (or discard what failed) first");
         }
         if (this.#emptyOfData()) {
+          // Nothing to delete, so no reset step ends it: the reset's end is here.
+          forgetDomainCount(this.#sql);
           return null;
         }
         const now = this.#now();

@@ -257,7 +257,8 @@ const mine = (table: string, where = "1") =>
 const INSTANCE_COUNTS: Flow = {
   main: [COUNTS_ID],
   witness: COUNTS_WITNESS,
-  run: (sql, transact) => instanceInfo.run(sql, { now: NOW, present: { origin: "https://kopje.test" } }, transact),
+  run: (sql, transact) =>
+    instanceInfo.run(sql, { now: NOW, storeNow: NOW, present: { origin: "https://kopje.test" } }, transact),
   neighbours: { remote: "SELECT count(*) AS n FROM accounts WHERE domain IS NOT NULL" },
   own: {
     count: {
@@ -413,7 +414,7 @@ function world(flow: Flow, n: number, own: number, day: number) {
       holdings(sql, HIGH, "40", n, "z", flow.distinct);
       if (flow.refreshed === true) {
         importShapedDomains(sql);
-        refreshDomainCount.run(sql, { now: NOW });
+        refreshDomainCount.run(sql, { storeNow: NOW });
       }
     });
     return store;
