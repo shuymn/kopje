@@ -297,6 +297,7 @@ export function followAccount(db: Db, input: FollowInput, viewerId: string): Fol
       db.run("UPDATE follows SET uri = ? WHERE id = CAST(? AS INTEGER)", activity.followUri, edge.id);
       recordOutbound(db, viewerId, followActivity(activity), input.now);
     }
+    recountFollows(db, viewerId, target);
   } else {
     db.run(
       `UPDATE follows SET show_reblogs = COALESCE(?, show_reblogs), notify = COALESCE(?, notify),
@@ -310,7 +311,6 @@ export function followAccount(db: Db, input: FollowInput, viewerId: string): Fol
       target.id,
     );
   }
-  recountFollows(db, viewerId, target);
   return relationshipResult(db, viewerId, target.id, input.now);
 }
 
@@ -329,18 +329,20 @@ export const unfollow = userWriteOperation<{ target: string; now: number }, Rela
       viewerId,
       target.id,
     );
-    // A remote follow, accepted or still requested, is undone there too (UnfollowService).
-    if (removed !== undefined && target.domain !== null) {
-      recordOutbound(
-        db,
-        viewerId,
-        undoFollowActivity(remoteFollow(db, viewerId, target, removed.id, removed.uri)),
-        now,
-      );
+    if (removed !== undefined) {
+      // A remote follow, accepted or still requested, is undone there too (UnfollowService).
+      if (target.domain !== null) {
+        recordOutbound(
+          db,
+          viewerId,
+          undoFollowActivity(remoteFollow(db, viewerId, target, removed.id, removed.uri)),
+          now,
+        );
+      }
+      recountFollows(db, viewerId, target);
     }
     // The follow's notification goes with it, as Mastodon destroys a notification with its activity.
     db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
-    recountFollows(db, viewerId, target);
     return relationshipResult(db, viewerId, target.id, now);
   },
 );
@@ -353,8 +355,9 @@ function remoteFollow(db: Db, viewerId: string, target: TargetRow, edgeId: strin
   return { followUri: uri ?? followUri(actorUri, edgeId), actorUri, targetUri, targetId: target.id };
 }
 
-// Counts are recomputed from the edges in the transaction that changed them. A remote account's counts are the ones
-// its collections report (remote-collections.ts completeCollectionRead) and are left alone.
+// Counts are recomputed from the edges in the transaction that changed them, and only when an edge changed. A remote
+// account's counts are the ones its collections report (remote-collections.ts completeCollectionRead) and are left
+// alone.
 function recountFollows(db: Db, viewerId: string, target: Pick<TargetRow, "id" | "domain">): void {
   db.run(
     `UPDATE accounts SET following_count =
