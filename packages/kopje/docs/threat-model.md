@@ -3729,7 +3729,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   work budget")). Accepted: a group of more than 400 counts at most 400; a page whose walk meets more than 2,000
   notifications of the groups it found (one group that large, in practice) ends with those groups, its Link going on
   from the last notification read; and a page whose reads would pass its budget holds the groups its last pass
-  admitted as far as those reads hold for a page that ends there (`provenPrefix`), or else its first group alone, its
+  admitted as far as those reads hold for a page that ends there (`provenPrefix`; its statuses are matched within the
+  filter text allowance of the requested page, `MAX_FILTER_REQUEST_TEXT`), or else its first group alone, its
   Link going on from its last group's discovery position (mastodon-deviations.md, "Grouped notifications"). Clearing
   notifications and dismissing a group hide what they remove from every read at once and delete it in bounded
   batches: the request records the highest id removed (migration `0023_notification_clears`) and deletes at most

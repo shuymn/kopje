@@ -47,7 +47,8 @@ import { readWindow, windowOf, windowPage } from "./windows";
 // walk meets more than GROUP_WALK notifications of the groups it has already found or hidden (in practice a status
 // favourited by thousands within a few hours); its Link continues from the last one read, so the walk goes on in the
 // next page. A group's count, samples and newest are of the shown among its newest GROUP_COUNT notifications, shown or
-// hidden, up to the page's upper end; its oldest is the first shown among its GROUP_COUNT oldest from the lower end up.
+// hidden, up to the page's upper end, with the walk's find of it when they leave it out (membersOf); its oldest is the
+// first shown among its GROUP_COUNT oldest from the lower end up, else the walk's find of it (oldestOf).
 //
 // Dismissing a group and clearing remove its notifications, or all of them, as Mastodon's destroy_all and delete_all
 // do: gone from every read at once (R15), and deleted in bounded batches in the request and the job rounds
@@ -596,6 +597,8 @@ function pageRange(walk: Walk, ordered: readonly Found[], ascending: boolean, pa
 // each group may change: it holds when the pass found one shown at or above the new lower end, since nothing of the
 // group lies between that end and it. Walked oldest first, the lower end is kept, so the oldest holds, and the members
 // hold when the newest candidate the pass read them from, shown or not, is at or below the new upper end. 0 for none.
+// The statuses stay as the pass presented them: matched against the viewer's keyword filters within the text allowance
+// of the requested page's candidates (presentation), which a page asked for with fewer groups may exceed.
 function provenPrefix(read: Walk, admitted: AdmittedGroups, ascending: boolean): number {
   for (let kept = admitted.groups.length; kept > 0; kept--) {
     const end = BigInt(read.groups[admitted.groups[kept - 1]!.index]!.first.id);
