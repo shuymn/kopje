@@ -24,7 +24,7 @@ export function isRetracted(db: Db, actorUri: string, targetUri: string, now: nu
 // The actor_uri of a deletion that holds for every actor: a status or boost that was stored and deleted by its author
 // is not created again under that uri by anyone, its author or another actor of the same origin (ID-6, ID-7). A Delete
 // of an unknown object stays the actor's own (it cannot suppress another actor's objects never seen here).
-export const ANY_ACTOR = "*";
+const ANY_ACTOR = "*";
 
 // Whether `uri` may not be created by `actorUri`: the actor retracted it, or it was stored and deleted.
 export function isDeleted(db: Db, actorUri: string, uri: string, now: number): boolean {
