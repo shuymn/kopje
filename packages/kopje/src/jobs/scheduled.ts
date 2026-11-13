@@ -46,135 +46,89 @@ export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<vo
   if (envInMaintenance(env)) {
     return;
   }
+  const store = () => deps.store(env);
   // The marker /setup's cron check reads (domain/setup.ts).
-  try {
-    await callStore(() => deps.store(env).recordCronRun(deps.build(env), { now: deps.now() }));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.cron_marker_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await publishScheduled(env, deps);
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.publish_round_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await callStore(() => deps.store(env).announcementRound(deps.build(env), { now: deps.now() }));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.announcement_round_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await callStore(() => deps.store(env).trendsRound(deps.build(env), { now: deps.now() }));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.trends_round_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await endPolls(env, deps);
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.poll_round_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await sweepMedia(env, deps);
-  } catch (error) {
-    console.error({ event: "kopje.scheduled.media_sweep_failed", ...errorFields(error) });
-  }
-  try {
-    await reconcileMedia(env, deps);
-  } catch (error) {
-    console.error({ event: "kopje.scheduled.media_reconcile_failed", ...errorFields(error) });
-  }
-  try {
-    await callStore(() => deps.store(env).sweepOAuth(deps.build(env), { now: deps.now() }));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.oauth_sweep_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await callStore(() => deps.store(env).pruneActivity(deps.build(env), { now: deps.now() }));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.activity_prune_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    await callStore(() => deps.store(env).refreshDomainCount(deps.build(env)));
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.scheduled.domain_count_failed", ...errorFields(error) });
-    }
-  }
+  await cronStep(
+    () => callStore(() => store().recordCronRun(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.cron_marker_failed",
+  );
+  await cronStep(() => publishScheduled(env, deps), "kopje.scheduled.publish_round_failed");
+  await cronStep(
+    () => callStore(() => store().announcementRound(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.announcement_round_failed",
+  );
+  await cronStep(
+    () => callStore(() => store().trendsRound(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.trends_round_failed",
+  );
+  await cronStep(() => endPolls(env, deps), "kopje.scheduled.poll_round_failed");
+  await cronStep(() => sweepMedia(env, deps), "kopje.scheduled.media_sweep_failed", false);
+  await cronStep(() => reconcileMedia(env, deps), "kopje.scheduled.media_reconcile_failed", false);
+  await cronStep(
+    () => callStore(() => store().sweepOAuth(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.oauth_sweep_failed",
+  );
+  await cronStep(
+    () => callStore(() => store().pruneActivity(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.activity_prune_failed",
+  );
+  await cronStep(
+    () => callStore(() => store().refreshDomainCount(deps.build(env))),
+    "kopje.scheduled.domain_count_failed",
+  );
 }
 
 // The cron's field link round (federation/field-links.ts), run first and on its own (worker.ts), so that no other
 // scheduled work's failure skips it and its failure skips none: one claimed account per tick, outside the env's
 // maintenance; in the Store's, the claim is refused before any request and the check waits for a later tick.
 export async function scheduledFieldLinks(env: Env, deps: FieldLinksDeps): Promise<void> {
-  if (envInMaintenance(env)) {
-    return;
-  }
-  try {
-    await fieldLinksRound(env, deps);
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError) && !(error instanceof DeadlinePassed)) {
-      console.error({ event: "kopje.scheduled.field_links_failed", ...errorFields(error) });
-    }
-  }
+  await cronRound(env, () => fieldLinksRound(env, deps), "kopje.scheduled.field_links_failed");
 }
 
 // The cron's link card round (federation/link-cards.ts), on its own as the field link round is: at most
 // CARD_ROUND_CLAIMS cards per tick, outside the env's maintenance; in the Store's, the claim is refused before any
 // request and the cards wait for a later tick.
 export async function scheduledLinkCards(env: Env, deps: LinkCardsDeps): Promise<void> {
-  if (envInMaintenance(env)) {
-    return;
-  }
-  try {
-    await linkCardsRound(env, deps);
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError) && !(error instanceof DeadlinePassed)) {
-      console.error({ event: "kopje.scheduled.link_cards_failed", ...errorFields(error) });
-    }
-  }
+  await cronRound(env, () => linkCardsRound(env, deps), "kopje.scheduled.link_cards_failed");
 }
 
 // The cron's card image round (federation/card-images.ts), on its own as the link card round is: at most
 // CARD_IMAGE_ROUND_CLAIMS images per tick, outside the env's maintenance; in the Store's, the claim is refused before
 // any request and the images wait for a later tick.
 export async function scheduledCardImages(env: Env, deps: CardImagesDeps): Promise<void> {
-  if (envInMaintenance(env)) {
-    return;
-  }
-  try {
-    await cardImagesRound(env, deps);
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError) && !(error instanceof DeadlinePassed)) {
-      console.error({ event: "kopje.scheduled.card_images_failed", ...errorFields(error) });
-    }
-  }
+  await cronRound(env, () => cardImagesRound(env, deps), "kopje.scheduled.card_images_failed");
 }
 
 // The cron's remote media round (federation/remote-media.ts), on its own as the card image round is: the cache's
 // maintenance and at most LANE0_CLAIMS files per tick, outside the env's maintenance; in the Store's, the maintenance
 // call is refused before any R2 operation or request, and the files wait for a later tick.
 export async function scheduledRemoteMedia(env: Env, deps: RemoteMediaDeps): Promise<void> {
+  await cronRound(env, () => remoteMediaRound(env, deps), "kopje.scheduled.remote_media_failed");
+}
+
+// One step of the cron, its own error boundary: a failure is logged as `event` and stops no later step. A Store
+// refusal, which the step waits out until the next run, is logged only when `quietRefusal` is false.
+async function cronStep(step: () => Promise<unknown>, event: string, quietRefusal = true): Promise<void> {
+  try {
+    await step();
+  } catch (error) {
+    if (!(quietRefusal && error instanceof StoreUnavailableError)) {
+      console.error({ event, ...errorFields(error) });
+    }
+  }
+}
+
+// A Worker round run on its own outside the env's maintenance: a Store refusal or a passed deadline ends it unlogged,
+// and its items wait for a later tick.
+async function cronRound(env: Env, round: () => Promise<unknown>, event: string): Promise<void> {
   if (envInMaintenance(env)) {
     return;
   }
   try {
-    await remoteMediaRound(env, deps);
+    await round();
   } catch (error) {
     if (!(error instanceof StoreUnavailableError) && !(error instanceof DeadlinePassed)) {
-      console.error({ event: "kopje.scheduled.remote_media_failed", ...errorFields(error) });
+      console.error({ event, ...errorFields(error) });
     }
   }
 }
