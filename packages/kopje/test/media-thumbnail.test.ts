@@ -326,13 +326,13 @@ describe("media_attributes[][thumbnail] on a status edit", () => {
     }
   });
 
-  it("answers authentication first, and the thumbnail before the status lookup", async () => {
+  it("answers authentication first, then the status lookup, then the thumbnail", async () => {
     const { h, media, editJson } = await withMedia();
     const attributes = [{ id: media.id, thumbnail: DATA_URI }];
     expect((await editJson(attributes, "not-a-token")).status).toBe(401);
     const reader = await userToken(h, "alice@example.com", "read");
     expect((await editJson(attributes, reader)).status).toBe(403);
     const foreign = await editJson(attributes, h.users.bob.token);
-    expect([foreign.status, await foreign.json()]).toEqual([422, REFUSED]);
+    expect([foreign.status, await foreign.json()]).toEqual([404, { error: "Record not found" }]);
   });
 });

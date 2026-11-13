@@ -939,6 +939,19 @@ export function recordEdit(db: Db, statusId: string, at: string): string {
   return row.id;
 }
 
+// The status an edit changes: the viewer's own, not withdrawn, and not a boost.
+function editable(db: Db, accountId: string, id: string): OwnStatus | null {
+  const current = ownStatus(db, accountId, id);
+  return current === null || current.reblog_of_id !== null ? null : current;
+}
+
+// Api::V1::StatusesController#update finds the status among the caller's own before UpdateStatusService validates
+// anything: editable as a read, for an edit the Worker refuses, so its 404 comes before the Worker's 422, also in
+// readonly maintenance, where editStatus is refused. editStatus finds it again where it writes, and alone authorizes.
+export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">((db, { id }, { accountId }) =>
+  editable(db, accountId, id) === null ? "not_found" : "ok",
+);
+
 // PUT /statuses/:id replaces the text, the spoiler, the sensitive flag, the media and their descriptions as Mastodon's
 // UpdateStatusService does (absent media_ids removes the media); an absent language keeps the current one.
 // Visibility cannot change. An edit that changes nothing is not recorded. The first edit also records the original
@@ -953,8 +966,8 @@ export function recordEdit(db: Db, statusId: string, at: string): string {
 // mention is a mention and is notified. Either way, a mention removed by an edit stays as a silent mention.
 export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db, input, { accountId }, viewer) => {
   const options = { ...input.present, viewer };
-  const current = ownStatus(db, accountId, input.id);
-  if (current === null || current.reblog_of_id !== null) {
+  const current = editable(db, accountId, input.id);
+  if (current === null) {
     return { status: "not_found" };
   }
   const text = storedText(input.text);

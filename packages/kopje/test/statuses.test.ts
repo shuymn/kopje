@@ -784,6 +784,71 @@ describe("editing", () => {
     const { body } = await getJson<{ type: string; status: Status }[]>(h, "/api/v1/notifications", bob.token);
     expect(body.map((n) => [n.type, n.status.content])).toEqual([["update", "<p>v3</p>"]]);
   });
+
+  // Api::V1::StatusesController#update finds the status among the caller's own before UpdateStatusService validates
+  // anything: a status that is missing or not the caller's own answers 404 before any 422.
+  describe("the edited status comes first (StatusesController#update)", () => {
+    const NOT_FOUND = { status: 404, body: { error: "Record not found" } };
+    // One body for each 422 the Worker answers before calling the Store.
+    const REFUSED: Record<string, unknown>[] = [
+      { status: "x".repeat(501) },
+      { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
+      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
+      { status: "x", poll: { options: ["a"], expires_in: 3600 } },
+      { status: "x", quote_approval_policy: "everyone" },
+      { status: "x", media_attributes: [{ id: "1", description: "x".repeat(1501) }] },
+      { status: "x", media_attributes: [{ id: "1", thumbnail: "data:image/png;base64,AA==" }] },
+    ];
+    const editing = (h: ApiHarness, token: string, id: string, body: Record<string, unknown>) =>
+      posting(h, token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
+
+    it("answers a missing status, someone else's or a boost 404 for each of the Worker's 422s", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      const theirs = await post(h, bob, { status: "theirs" });
+      const boost = await (await act(h, alice, `/api/v1/statuses/${theirs.id}/reblog`)).json<Status>();
+      for (const body of REFUSED) {
+        const refused = await editing(h, alice.token, own.id, body);
+        expect(refused.status, JSON.stringify(body)).toBe(422);
+        for (const id of ["123", theirs.id, boost.id]) {
+          expect(await editing(h, alice.token, id, body), `${id} ${JSON.stringify(body)}`).toEqual(NOT_FOUND);
+        }
+      }
+      expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
+    });
+
+    it("makes one Store call for an edit, and reads the status only for an edit it refuses", async () => {
+      let counting: ReturnType<typeof countingStore> | undefined;
+      const h = await community(["alice"], "read write follow", {
+        wrapStore: (store) => (counting ??= countingStore(store)).stub,
+      });
+      const { alice } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      const calls = async (id: string, body: Record<string, unknown>) => {
+        const start = counting!.calls.length;
+        const answer = await editing(h, alice.token, id, body);
+        return { status: answer.status, calls: counting!.calls.slice(start).filter((n) => n.startsWith("edit")) };
+      };
+      expect(await calls(own.id, { status: "edited" })).toEqual({ status: 200, calls: ["editStatus"] });
+      expect(await calls("123", { status: "edited" })).toEqual({ status: 404, calls: ["editStatus"] });
+      expect(await calls(own.id, { status: "x".repeat(501) })).toEqual({ status: 422, calls: ["editTarget"] });
+      expect(await calls("123", { status: "x".repeat(501) })).toEqual({ status: 404, calls: ["editTarget"] });
+    });
+
+    // The Store's readonly maintenance refuses a write operation (503) and serves a read: an edit the Worker refuses
+    // still answers its 404 or 422, as Mastodon would; an edit it would accept is refused.
+    it("answers the status of a refused edit in the Store's readonly maintenance", async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      expect(await h.store.setMaintenance(BUILD, true)).toEqual({ maintenance: true });
+      const tooLong = { status: "x".repeat(501) };
+      expect(await editing(h, alice.token, "123", tooLong)).toEqual(NOT_FOUND);
+      expect((await editing(h, alice.token, own.id, tooLong)).status).toBe(422);
+      expect((await editing(h, alice.token, own.id, { status: "x" })).status).toBe(503);
+    });
+  });
 });
 
 describe("deleting", () => {
