@@ -1,5 +1,5 @@
 import { type BackupConfig, readBackupConfig } from "../platform/backup-config";
-import { encryptBytes, encryptStream, sha256Of, toHex } from "../platform/backup-crypto";
+import { encryptBytes, encryptStream, sha256Of } from "../platform/backup-crypto";
 import {
   type BackupRun,
   type BackupState,
@@ -12,6 +12,7 @@ import {
 } from "../platform/backup-state";
 import { envInMaintenance } from "../platform/config";
 import { errorFields } from "../platform/error-message";
+import { toHex } from "../platform/hex";
 import { consoleSink, type LogSink } from "../platform/log";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { S3Client, S3Error, type S3Fetch } from "../platform/s3";

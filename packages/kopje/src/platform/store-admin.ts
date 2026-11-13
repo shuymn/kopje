@@ -27,6 +27,7 @@ import {
 } from "./dump-format";
 import { fromHex } from "./dump-literals";
 import { errorFields, errorMessage } from "./error-message";
+import { toHex } from "./hex";
 import { consoleSink, type LogSink } from "./log";
 import { readOnlyProblem } from "./readonly-sql";
 import { Sha256, sha256Hex } from "./sha256";
@@ -1957,7 +1958,7 @@ function asRefusal(error: unknown): Refusal {
 
 function encodeValue(value: unknown): unknown {
   if (value instanceof ArrayBuffer) {
-    return { blob: Array.from(new Uint8Array(value), (b) => b.toString(16).padStart(2, "0")).join("") };
+    return { blob: toHex(value) };
   }
   return value;
 }
