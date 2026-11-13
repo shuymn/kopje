@@ -25,8 +25,8 @@ import { NOW } from "./app-helpers";
 import { deleteSignature } from "./delete-job-helpers";
 import { blockDomain, blockDomainIn } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
-import { BUILD, freshStore, runStoreJobs, testKernel } from "./helpers";
-import { deferred, deliveryDeps, gatedHost } from "./quote-helpers";
+import { BUILD, freshStore, runStoreJobs, testKernel, deferred } from "./helpers";
+import { deliveryDeps, gatedHost } from "./quote-helpers";
 import { plannedRun, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import { community, post, remoteAccount, remoteFollows, type User } from "./status-helpers";
 

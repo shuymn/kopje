@@ -32,6 +32,7 @@ import {
 } from "../src/federation/web-page";
 import { createScanner } from "../src/platform/html-scan";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES } from "../src/platform/json-bounds";
+import { deferred } from "./helpers";
 import { trackedStream } from "./stream-helpers";
 
 const PAGE = "https://site.example/profile";
@@ -39,14 +40,6 @@ const HTML = { "content-type": "text/html; charset=utf-8" };
 const BODY = '<title>Site</title><a rel="me" href="https://actor.example/u/a">me</a>';
 
 type Route = (request: Request) => Response | Promise<Response>;
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 // Deps over a route table that log every step in order: the domain policy, the DNS check and each request.
 function fakeDeps(routes: Record<string, Route>, extra: Partial<WebPageDeps> = {}) {

@@ -13,7 +13,7 @@ import { bearer, settle, sql } from "./api-helpers";
 import { harness, NOW, offline } from "./app-helpers";
 import { deleteSignature, remoteAccountsAt, retractionInboxes, signedActivity } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
-import { BUILD, claimAndSettle, migratedStore } from "./helpers";
+import { BUILD, claimAndSettle, migratedStore, deferred } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -28,7 +28,6 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
-import { deferred } from "./quote-helpers";
 
 // VIS-3, ID-1, RES-6: the Delete of a local public or unlisted original carries its author's RsaSignature2017
 // signature (statuses.ts prepareDelete and deleteStatus, mastodon/statuses.ts deleteStatus, federation/ld-sign.ts),

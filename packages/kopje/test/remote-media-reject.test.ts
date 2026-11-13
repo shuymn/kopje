@@ -11,11 +11,11 @@ import {
 } from "../src/domain/remote-media";
 import { sql } from "./api-helpers";
 import { blockDomain, setRejectMedia } from "./domain-block-helpers";
+import { deferred } from "./helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import {
   backfillDone,
   claimWith,
-  deferred,
   fence,
   maintain,
   mediaWorld,

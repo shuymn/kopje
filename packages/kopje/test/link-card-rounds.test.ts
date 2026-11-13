@@ -44,7 +44,7 @@ import {
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { linkCardRoundMemory } from "./memory-model";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { community, post } from "./status-helpers";
@@ -72,14 +72,6 @@ const HTML = { "content-type": "text/html; charset=utf-8" };
 const PAGE = '<html lang="en"><head><title> Site title </title><meta name="description" content="About"></head></html>';
 
 type Route = (request: Request) => Response | Promise<Response>;
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 const page =
   (body = PAGE) =>

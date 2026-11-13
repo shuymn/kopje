@@ -28,11 +28,10 @@ import { ACTIVITY_VALUE_MAX, isActivityAccountId, utcDay } from "../src/platform
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, apiHarness, bearer, json, setSetting, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, completeSetup, migratedStore, testKernel } from "./helpers";
+import { BUILD, completeSetup, migratedStore, testKernel, deferred } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
 import { create, followed, mastodonNote, setup } from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
-import { deferred } from "./quote-helpers";
 import { appToken, DAY_MS, observedSql, plannedRun, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 import { community } from "./status-helpers";

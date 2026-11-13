@@ -14,6 +14,11 @@ export const BUILD = env.CF_VERSION_METADATA.id;
 export const MIGRATION_NAMES = MIGRATIONS.map((m) => m.name);
 export const LATEST_MIGRATION = MIGRATION_NAMES.at(-1);
 
+// A promise and its resolvers, for holding one actor at an explicit await point (docs/engineering.md, "Tests").
+export function deferred<T = void>(): PromiseWithResolvers<T> {
+  return Promise.withResolvers<T>();
+}
+
 // Each test gets its own Store object, so test files can run in parallel without sharing state.
 export function freshStore(): StoreStub {
   return env.STORE.getByName(crypto.randomUUID());

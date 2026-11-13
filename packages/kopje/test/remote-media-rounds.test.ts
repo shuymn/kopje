@@ -15,8 +15,8 @@ import {
 } from "../src/federation/remote-media";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
-import { BUILD } from "./helpers";
-import { bucketWith, deferred, GIF, mediaWorld, PNG, settle } from "./remote-media-helpers";
+import { BUILD, deferred } from "./helpers";
+import { bucketWith, GIF, mediaWorld, PNG, settle } from "./remote-media-helpers";
 
 // The round (federation/remote-media.ts) over the production paths: the Store's calls, the sink, the bucket, with
 // explicit barriers where an actor is held while another commits.

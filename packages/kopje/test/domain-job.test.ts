@@ -18,9 +18,8 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, form, seedFollows, settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain, setSeverity, unblockDomain } from "./domain-block-helpers";
-import { BUILD, runStoreJobs } from "./helpers";
+import { BUILD, runStoreJobs, deferred } from "./helpers";
 import { QueueSim } from "./queue-sim";
-import { deferred } from "./quote-helpers";
 import { plannedRun, type PlannedStatement, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import {
   act,

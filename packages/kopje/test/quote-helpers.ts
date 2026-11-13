@@ -3,7 +3,7 @@ import { vi } from "vitest";
 
 import type { deliveryRound } from "../src/jobs/deliver";
 import type { StoreStub } from "../src/platform/store-client";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import type { RemoteWeb, TestActor } from "./inbox-helpers";
 import { AS, mastodonNote, nextId, type Note } from "./inbox-status-helpers";
 
@@ -99,14 +99,6 @@ export function quoteReject(actor: TestActor, quoting: string, extra: Record<str
 }
 
 // A promise and the function that resolves it: a gate, or the point a gated call reports reaching.
-export function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
-
 // A host check that holds every delivery of the round (after the claim, before confirmation) until released.
 export function gatedHost() {
   const reached = deferred();

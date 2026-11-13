@@ -32,9 +32,8 @@ import {
   userToken,
 } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, claimSent, migratedStore } from "./helpers";
+import { BUILD, claimSent, migratedStore, deferred } from "./helpers";
 import { newClient, VAPID } from "./push-helpers";
-import { deferred } from "./quote-helpers";
 import { byText } from "./sort";
 import { community, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 import { signIn } from "./web-helpers";

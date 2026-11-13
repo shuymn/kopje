@@ -23,7 +23,7 @@ import { WEB_MEDIA_TIMEOUT_MS } from "../src/federation/web-page";
 import { MEDIA_SLOT_WINDOW } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import { create, followed, mastodonNote, remove, update } from "./inbox-status-helpers";
 import { writtenBy } from "./inbox-store-helpers";
@@ -32,7 +32,6 @@ import { mp4 } from "./remote-media-fixtures";
 import {
   backfillDone,
   bucketWith,
-  deferred,
   GIF,
   maintain,
   type MediaWorld,

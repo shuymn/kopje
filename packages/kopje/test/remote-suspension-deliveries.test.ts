@@ -9,9 +9,9 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settle, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
-import { BUILD, claimAndSettle } from "./helpers";
+import { BUILD, claimAndSettle, deferred } from "./helpers";
 import { newClient, VAPID } from "./push-helpers";
-import { deferred, deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
+import { deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
 import { act, receive, unsuspend, uriOf, world, type World } from "./remote-suspension-helpers";
 import { follow, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 

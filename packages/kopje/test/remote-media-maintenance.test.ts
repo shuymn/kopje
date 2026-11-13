@@ -14,7 +14,8 @@ import { outstandingRemoteMediaCalls, PUT_MS, R2_DELETE_MS } from "../src/federa
 import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
-import { bucketWith, deferred, GIF, mediaWorld, type MediaWorld, settle } from "./remote-media-helpers";
+import { deferred } from "./helpers";
+import { bucketWith, GIF, mediaWorld, type MediaWorld, settle } from "./remote-media-helpers";
 
 // The cache's maintenance through the production round (federation/remote-media.ts): the Store's calls, the media
 // bucket and the sink, on one clock the Store reads too (Date, faked; timers stay real), with explicit barriers where

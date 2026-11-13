@@ -30,7 +30,7 @@ import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import {
   actorDefaults,
   LOCAL,
@@ -61,7 +61,7 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
-import { contexts, deferred, QUOTE_CONTEXT, quoting, serveStamp } from "./quote-helpers";
+import { contexts, QUOTE_CONTEXT, quoting, serveStamp } from "./quote-helpers";
 import { rowsRead, watchedCursor } from "./read-helpers";
 
 // Quotes received from remote servers (Mastodon 4.5's Quote, StatusParser's quote properties, VerifyQuoteService and the
