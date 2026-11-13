@@ -7,8 +7,9 @@ import { packagePath } from "./paths.js";
 //
 // A relayed revocation is applied on the author's proof (federation/author-proof.ts): Fedify's LD-signature and object
 // proof verifiers run there only, against a key the author's own document embeds, and nowhere else decides on them.
-// Kopje's own LD signatures (a stamp's Delete) are made in ld-sign.ts only, with the preloaded contexts and a key
-// unwrapped for the call (DATA-1). test-node/fedify-usage.test.ts shows that those two files still name them.
+// Kopje's own LD signatures (a stamp's Delete, a public or unlisted status's Delete) are made in ld-sign.ts only, with
+// the preloaded contexts and a key unwrapped for the call (DATA-1). test-node/fedify-usage.test.ts shows that those
+// two files still name them.
 const NAMES = {
   sendActivity: "uses sendActivity",
   forwardActivity: "uses forwardActivity",

@@ -1224,9 +1224,12 @@ export const prepareDelete = userReadOperation<{ id: string }, Acted<DeletePrepa
 // DELETE /api/v1/statuses/:id (StatusesController#destroy, RemoveStatusService): deletes an own status or boost and
 // answers with it as it was, source text included, for redrafting; only the deleted status itself carries its source,
 // and a boost's original is shown only if the viewer may still see it (presentOwnStatus). A boost is withdrawn as an
-// unboost withdraws it (removeReblog). An original is withdrawn in this transaction, each write bounded (RES-6):
-//   - its Delete is recorded first (deleteActivity, over a snapshot read before anything changes the status), after
-//     DELETE_SUPERSEDES earlier activities about it are superseded;
+// unboost withdraws it (removeReblog). Before anything is written, a public or unlisted original's Delete signed by
+// the Worker (`signed`, prepareDelete) must be the one its snapshot makes now (signedAs), and any other status takes
+// none; otherwise the answer is stale and the Worker prepares again. An original is withdrawn in this transaction, each
+// write bounded (RES-6):
+//   - its Delete is recorded first (signed, or deleteActivity, over a snapshot read before anything changes the
+//     status), after DELETE_SUPERSEDES earlier activities about it are superseded;
 //   - it is hidden in one compare-and-set (statuses.withdrawn, R2: nobody sees it, its author included, and a second
 //     DELETE is not found), its content, source and audience cleared;
 //   - what it alone shows goes by key: its card, trend row and review, its author's pin, its poll's due rounds, its

@@ -156,6 +156,29 @@ describe("the Delete of a local status carries its author's proof when it is pub
     }
   });
 
+  it("defines every term it signs: the unsigned form's undefined atomUri is refused by canonicalization", async () => {
+    const { t } = await world();
+    const status = await localStatus(t, { status: "terms" });
+    const input = { credential: await credential(t), id: status.id };
+    const prepared = await runInDurableObject(t.store, (_instance, state) =>
+      prepareDelete.run(state.storage.sql, input),
+    );
+    const sign = prepared.status === "ok" && prepared.value.status === "ok" ? prepared.value.value.sign : null;
+    expect(sign).not.toBeNull();
+    expect(await signAsAuthor(LEGACY_EMPTY_KEK.kek, sign!)).toHaveProperty("signature");
+    const unsigned = deleteActivity({
+      id: status.id,
+      uri: status.uri,
+      actorUri: ALICE_URI,
+      visibility: "public",
+      named: [],
+      poll: false,
+    }).activity;
+    await expect(signAsAuthor(LEGACY_EMPTY_KEK.kek, { ...sign!, activity: unsigned })).rejects.toThrow(
+      "Safe mode validation error",
+    );
+  });
+
   it("leaves the Delete of a private, direct or limited status unsigned and as deleteActivity makes it", async () => {
     for (const visibility of ["private", "direct", "limited"] as const) {
       const { t, carol } = await world();

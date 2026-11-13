@@ -97,7 +97,8 @@ export function contextOf(facts: StatusFacts): readonly [string, Record<string, 
 }
 
 // signedBy 'instance': signed by the instance actor rather than the lane's account (a report's Flag, deliveries.ts);
-// immutable and reachOf: a stamp's signed Delete (deliveries.ts DeliveryEnvelope).
+// immutable and reachOf: a stamp's signed Delete; immutable and addressing: a status's signed Delete (deliveries.ts
+// DeliveryEnvelope).
 export type OutboundEnvelope = Omit<DeliveryEnvelope, "audience"> & { audience: Audience };
 
 // Records the intent and its target inboxes (domain/deliveries.ts), or nothing if no remote inbox needs it. As in
@@ -488,8 +489,10 @@ export type DeletedStatus = {
   poll: boolean;
 };
 
-// RemoveStatusService's Delete (ActivityPub::DeleteSerializer), addressed as the status was (to and cc of its Note, over
-// the accounts it names). Its audience is the status's followers, if it reached them, and the status itself, whose
+// RemoveStatusService's Delete (ActivityPub::DeleteSerializer), unsigned, addressed as the status was (to and cc of its
+// Note, over the accounts it names): the Delete of a private, direct or limited status, and of a public or unlisted one
+// whose identities are not canonical (signableDeleteActivity); a signed one keeps this addressing to place its copies
+// (signedDeleteEnvelope). Its audience is the status's followers, if it reached them, and the status itself, whose
 // accounts (every mention, and for a public or unlisted status its boosters, quoters and parent's author) and, for a
 // public or unlisted poll, its voters, are read when its targets are staged (audience.ts recipientsFor), while the job
 // keeps their rows (inbox.ts deleteStatusBatch): so the recorded envelope stays within its byte bound (RES-6) whatever
