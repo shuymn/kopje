@@ -9,10 +9,14 @@ import { L1Context } from "./layout";
 
 // The small parts every page shares.
 
-// Stored HTML, sanitized at its sink (SafeHtml, HTML-1), with the content's language when known.
-export const Rich: FC<{ html: SafeHtml; class: string; lang?: string }> = ({ html, class: className, lang }) => (
-  <div class={className} lang={lang} dangerouslySetInnerHTML={{ __html: html.html }} />
-);
+// Stored HTML, sanitized at its sink (SafeHtml, HTML-1), with the content's language when known: the one element that
+// writes HTML unescaped (test-node/raw-html.test.ts). `as`: a profile field's value is its list's dd.
+export const Rich: FC<{ html: SafeHtml; as?: "div" | "dd"; class?: string; lang?: string }> = ({
+  html,
+  as = "div",
+  class: className,
+  lang,
+}) => jsx(as, { class: className, lang, dangerouslySetInnerHTML: { __html: html.html } });
 
 // An instant carries data-local (rewritten to the viewer's zone by the L1 bundle) only on a page that
 // loads the bundle (L1Context); elsewhere it keeps the server's full UTC text unmarked, since nothing rewrites it. A
