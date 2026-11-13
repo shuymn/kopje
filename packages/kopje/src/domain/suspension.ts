@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { moderationUpdate } from "./actor-update";
 import { forgetAdminAccountId } from "./admin-authority";
 import { type ReachedAccount, reachFollowers, reachFollowing, reachMentioned } from "./audience";
@@ -100,8 +101,6 @@ type JobState = {
   accepted?: number;
   pending?: number;
 };
-
-const iso = (ms: number) => new Date(ms).toISOString();
 
 // The newest follow, which bounds the followers and follows a job reads, as TEXT (DATA-6).
 function followBound(db: Db): string {

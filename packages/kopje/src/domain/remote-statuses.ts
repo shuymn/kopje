@@ -1,6 +1,7 @@
 import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
+import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
 import {
@@ -104,10 +105,6 @@ function originOf(uri: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
 }
 
 // A remote time as stored: parsed, and never in the future (a future time would pin the status to the top of feeds);

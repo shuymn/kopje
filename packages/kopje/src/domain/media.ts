@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import {
   staticUrlPastBoundSql,
@@ -98,10 +99,6 @@ function setState(db: Db, name: string, value: string): void {
 
 // At most this many uploads are swept per run; each is three R2 keys.
 export const SWEEP_BATCH = 100;
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 // The gc_at of media an explicit deletion dooms (DELETE /api/v1/media/:id, delete_media, a replaced or removed profile
 // image): the epoch, which every request reads as past whatever its own time, so a request that started before the

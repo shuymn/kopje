@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, OAUTH_CLIENTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { loginEmailMatchSql } from "../platform/login-email";
 import { withinScopes } from "../security/scopes";
 import { constantTimeEqual } from "../security/tokens";
@@ -145,10 +146,6 @@ export const registerApp = sessionOperation<RegisterAppInput, Registered>((db, i
   );
   return { status: "ok", client: toClient(clientRow(db, input.clientId)!) };
 });
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 // GET /api/v1/apps/verify_credentials: the client a valid credential (AUTH-1) was issued to, read by its key.
 export const appOfCredential = readOperation<Credential, Authorized<Client>>((db, credential) => {

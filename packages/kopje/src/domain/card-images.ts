@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { FILE_TOKEN } from "../platform/media-files";
 import {
   blurhashPastBoundSql,
@@ -56,10 +57,6 @@ const GC_CURSOR = "card_images_gc_cursor";
 const CARD_TRANSFORMS = "images_card_transforms:";
 const DOMAIN = /^[a-z0-9.-]{1,253}$/;
 const SNOWFLAKE = /^\d{18}$/;
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 function state(db: Db, name: string): string | undefined {
   return db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name)?.value;

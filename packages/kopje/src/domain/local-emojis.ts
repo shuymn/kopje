@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, CUSTOM_EMOJIS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import type { ImportAuthority } from "../platform/store-admin";
 import { MAX_ENABLED_EMOJIS, presentedCategory, storedMediaMeta } from "../platform/stored-bounds";
@@ -60,10 +61,6 @@ export type EmojiRefusal = {
 
 function refusal(code: EmojiRefusal["code"], message: string): EmojiRefusal {
   return { ok: false, code, message };
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
 }
 
 const ACCESS_ONLY = "only an Access admin manages custom emoji";

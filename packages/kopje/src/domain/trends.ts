@@ -4,6 +4,7 @@ import { type Db, ROW_OBJECT_BYTES, RowMeter, VALUE_BYTES } from "../db/sql";
 import { blockedDomain, normalizeDomain } from "../platform/domain-name";
 import { fromHex } from "../platform/dump-literals";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
+import { iso } from "../platform/iso-time";
 import { railsBlank, railsBlankSql } from "../platform/rails-blank";
 import type { ImportAuthority } from "../platform/store-admin";
 import {
@@ -136,10 +137,6 @@ export const TREND_LINKS_MAX_LIMIT = 20;
 // The id of a time (domain/ids.ts: the milliseconds in the high bits), as TEXT; never a JavaScript number.
 function idOf(ms: number): string {
   return (BigInt(ms) << 16n).toString();
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
 }
 
 function day(ms: number): string {
