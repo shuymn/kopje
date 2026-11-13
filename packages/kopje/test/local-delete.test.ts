@@ -2,9 +2,15 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { deleteActivity } from "../src/domain/activities";
-import { claimDeliveries, completeDelivery, TARGET_CHUNK_SIZE } from "../src/domain/deliveries";
-import { deleteStatusBatch, PURGE_BATCH, runInboundJobs } from "../src/domain/inbox";
+import {
+  deleteActivity,
+  mainKeyId,
+  SIGNATURE_VALUE_MAX,
+  signableDeleteActivity,
+  signedDeleteEnvelope,
+} from "../src/domain/activities";
+import { audienceTargets, claimDeliveries, completeDelivery, TARGET_CHUNK_SIZE } from "../src/domain/deliveries";
+import { deleteStatusBatch, FORWARD_BODY_MAX, PURGE_BATCH, runInboundJobs } from "../src/domain/inbox";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { DETACHED_GRACE_MS } from "../src/domain/media";
 import { MAX_PUSH_BACKLOG } from "../src/domain/notifications";
@@ -134,6 +140,54 @@ const ENVELOPE_BYTES =
 // intent, the hide and the account's last status (its trigger), the card, trend row, review, author's pin and poll,
 // its own quote (the quote, its withdrawn copy written by the hide's trigger, migration 0091_live_local_quotes, its
 // target's count and Kopje's revocation), MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA media, the two counts and the job.
+// The signed Delete of a public or unlisted status as stored (activities.ts signedDeleteEnvelope), at its maxima, over
+// a skeleton whose status uri and actor id are the short canonical U and A: its status's uri three times (the activity
+// id, the Tombstone and its atomUri), its author's actor id three times (actor, the signature's creator and the
+// followers collection in the addressing's cc), MAX_DELETE_NAMED actor ids in the addressing's cc, and a signatureValue
+// of SIGNATURE_VALUE_MAX characters; a canonical id's JSON-escaped bytes are its raw ones (URL serializing
+// percent-encodes the rest). The activity alone is what a forwarder's FORWARD_BODY_MAX judges.
+const U = "https://u.test/";
+const A = "https://a.test/";
+const SIGNED_SKELETON = (() => {
+  const deleted = {
+    id: "1".repeat(18),
+    uri: U,
+    actorUri: A,
+    visibility: "public" as const,
+    named: Array.from({ length: MAX_DELETE_NAMED }, () => ""),
+    poll: true,
+  };
+  const signed = {
+    ...signableDeleteActivity(deleted)!,
+    signature: {
+      "@context": "https://w3id.org/identity/v1",
+      creator: mainKeyId(A),
+      created: new Date(NOW).toISOString(),
+      type: "RsaSignature2017",
+      signatureValue: "",
+    },
+  };
+  return { activity: signed, envelope: signedDeleteEnvelope(deleted, signed) };
+})();
+const SIGNED_ACTIVITY_BYTES = (signatureValue: number) =>
+  ENCODER.encode(JSON.stringify(SIGNED_SKELETON.activity)).length +
+  3 * (STATUS_URI_LIMIT - U.length) +
+  2 * (ACTOR_URI_LIMIT - A.length) +
+  signatureValue;
+const SIGNED_ENVELOPE_BYTES = (signatureValue: number) =>
+  ENCODER.encode(JSON.stringify(SIGNED_SKELETON.envelope)).length +
+  3 * (STATUS_URI_LIMIT - U.length) +
+  3 * (ACTOR_URI_LIMIT - A.length) +
+  MAX_DELETE_NAMED * ACTOR_URI_LIMIT +
+  signatureValue;
+
+// A canonical URL of exactly `limit` bytes: `prefix`, then ASCII letters.
+function canonicalUri(prefix: string, limit: number): string {
+  const uri = prefix + "a".repeat(limit - prefix.length);
+  expect(new URL(uri).href).toBe(uri);
+  return uri;
+}
+
 const SUPERSEDE_ROWS = 3 * DELETE_SUPERSEDES;
 const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 4 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
 
@@ -142,7 +196,8 @@ describe("the Delete of a local status (VIS-3, RES-6)", () => {
     const t = await setup();
     const status = await localStatus(t, { status: "bounded", poll: { options: ["a", "b"], expires_in: 600 } });
     // alice's actor id, the status's uri and MAX_DELETE_NAMED mentioned accounts' actor ids at their bound, with NUL
-    // and astral characters, as an import may store them; more mentions than it names, silent ones among them.
+    // and astral characters, as an import may store them; more mentions than it names, silent ones among them. Such
+    // an actor id is not canonical, so the Delete is unsigned (activities.ts signableDeleteActivity).
     await sql(
       t.store,
       "UPDATE accounts SET uri = ? WHERE id = ?",
@@ -186,6 +241,85 @@ describe("the Delete of a local status (VIS-3, RES-6)", () => {
     );
     expect(personal).toHaveLength(20);
   });
+
+  it("stores a signed Delete within its derived bound, sent within FORWARD_BODY_MAX to the inboxes its unsigned form reaches", async () => {
+    const t = await setup();
+    const status = await localStatus(t, { status: "bounded", poll: { options: ["a", "b"], expires_in: 600 } });
+    // At their caps: alice's actor id (ACTOR_URI_LIMIT) and the status's uri (STATUS_URI_LIMIT), canonical so that the
+    // Delete is signed; MAX_DELETE_NAMED named mentions whose actor ids are at ACTOR_URI_LIMIT at the worst escaping,
+    // 10 more not named, 10 silent; a poll; the fixture key's signature (RSA-4096, 684 characters).
+    const actorUri = canonicalUri("https://kopje.test/", ACTOR_URI_LIMIT);
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", actorUri, ALICE);
+    const uri = canonicalUri("https://kopje.test/ap/o/", STATUS_URI_LIMIT);
+    await sql(t.store, "UPDATE statuses SET uri = ? WHERE id = ?", uri, status.id);
+    const mentioned = await remoteAccountsAt(t.store, "6", "m", MAX_DELETE_NAMED + 20);
+    for (const id of mentioned.slice(0, MAX_DELETE_NAMED)) {
+      await sql(
+        t.store,
+        "UPDATE accounts SET uri = ? WHERE id = ?",
+        boundedUri(`https://m.example/${id}/`, ACTOR_URI_LIMIT),
+        id,
+      );
+    }
+    await sql(
+      t.store,
+      `INSERT INTO status_mentions (status_id, account_id, silent)
+			SELECT ?, id, CASE WHEN id > ? THEN 1 ELSE 0 END FROM accounts WHERE id GLOB '6*'`,
+      status.id,
+      mentioned[MAX_DELETE_NAMED + 9]!,
+    );
+    const silent = await sql<{ uri: string }>(
+      t.store,
+      "SELECT a.uri FROM status_mentions m JOIN accounts a ON a.id = m.account_id WHERE m.status_id = ? AND m.silent = 1",
+      status.id,
+    );
+    expect(silent).toHaveLength(10);
+    // The targets of the unsigned Delete, as audienceTargets finds them over the same snapshot.
+    const named = mentioned.slice(0, MAX_DELETE_NAMED);
+    const unsigned = await runInDurableObject(t.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const names = named.map((id) => db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", id)!.uri);
+      const envelope = deleteActivity({ id: status.id, uri, actorUri, visibility: "public", named: names, poll: true });
+      return audienceTargets(db, ALICE, envelope.activity, envelope.audience).map((t) => `${t.inbox} ${t.addressee}`);
+    });
+    const { answer, wrote } = await deleted(t, status.id);
+    expect(answer).toBe("ok");
+    expect(wrote).toBeLessThanOrEqual(REQUEST_ROWS);
+    const [body] = await sql<{ bytes: number; activity: number; signature: number; immutable: number }>(
+      t.store,
+      `SELECT length(CAST(body AS BLOB)) AS bytes, length(CAST(json_extract(body, '$.activity') AS BLOB)) AS activity,
+				length(json_extract(body, '$.activity.signature.signatureValue')) AS signature,
+				json_extract(body, '$.immutable') AS immutable
+			FROM outbound_activities WHERE json_extract(body, '$.activity.type') = 'Delete'`,
+    );
+    // The derived figures, exactly, at the fixture's signature; and their maxima within FORWARD_BODY_MAX.
+    expect(body).toEqual({
+      bytes: SIGNED_ENVELOPE_BYTES(684),
+      activity: SIGNED_ACTIVITY_BYTES(684),
+      signature: 684,
+      immutable: 1,
+    });
+    expect(SIGNED_ACTIVITY_BYTES(SIGNATURE_VALUE_MAX)).toBeLessThanOrEqual(FORWARD_BODY_MAX);
+    // It names no recipient: no mention's actor id, a silent one or not.
+    const [stored] = await sql<{ activity: string }>(
+      t.store,
+      "SELECT json_extract(body, '$.activity') AS activity FROM outbound_activities WHERE retracts = 1",
+    );
+    for (const { uri: mention } of silent) {
+      expect(stored!.activity.includes(JSON.stringify(mention).slice(1, -1))).toBe(false);
+    }
+    expect(JSON.parse(stored!.activity)).toMatchObject({ to: [PUBLIC] });
+    expect(JSON.parse(stored!.activity)).not.toHaveProperty("cc");
+    await settle(t.store);
+    const staged = await sql<{ target: string }>(
+      t.store,
+      `SELECT json_extract(t.value, '$.inbox') || ' ' || ifnull(json_extract(t.value, '$.addressee'), 'null') AS target
+			FROM outbound_targets c, json_each(c.targets) t WHERE t.key >= c.next
+			UNION SELECT d.inbox_url || ' ' || ifnull(d.addressee, 'null') FROM deliveries d`,
+    );
+    expect(new Set(staged.map((s) => s.target))).toEqual(new Set(unsigned));
+    expect(unsigned.filter((t) => !t.endsWith(" null"))).toHaveLength(20);
+  }, 60_000);
 
   it("names no mention past its bound, and records no Delete of a status whose uri is past its bound", async () => {
     const t = await setup();
