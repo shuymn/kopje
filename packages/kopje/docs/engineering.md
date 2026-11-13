@@ -47,13 +47,12 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   separate only when its timing is the guarantee: a policy read after an awaited remote response (`fetchRefused` before
   a redirect hop or a later request, `webHopRefused`), a confirmation under lease right before a send
   (`confirmDelivery`), a one-time write (`ensureInstanceActorKey`).
-- **A fetch's preparation is read in the answer that decides the fetch** (`fetchPreparation` in
-  `src/domain/inbox.ts`: the signer and the policy verdict for its first request): `inboxGate`, a `receiveActivity`
-  need and `resolutionGate` produce it, and nothing else does. It is optional, and the Worker reads what is missing
-  (`fetchSigner`, `fetchRefused`) as it would without it. A search resolution's actor revision read (`actorRevision`)
-  carries the verdict for the actor's fetch, its next request, the same way.
-- **A federation GET is one read**, the setup check included (`src/domain/federation-reads.ts`; the routes not yet
-  moved there read the domain in the setup gate first, `src/federation/setup-gate.ts`).
+- **A fetch's preparation (its signer and the policy verdict for its first request) is read in the answer that decides
+  the fetch** (`FetchPreparation` in `src/domain/inbox.ts`, which names those answers), and a search resolution's
+  actor revision read (`actorRevision`) carries the verdict for the actor's fetch the same way. It is optional: the
+  Worker reads what is missing (`fetchSigner`, `fetchRefused`) as it would without it.
+- **A federation GET is one read**, the setup check included (`src/domain/federation-reads.ts`; a route that does not
+  read there reads the domain in the setup gate first, `src/federation/setup-gate.ts`).
 
 ## Bounds
 
@@ -102,10 +101,9 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   under singleton statistics with up to three samples of the parameters the domain code passed, a plan that reads a
   whole table or index (a scan, an automatic index, a Bloom filter, a skip-scan) fails its suite unless
   `test/plan-audit-entries.ts` lists that scan of that statement. A reviewed fragment allowance
-  (`test/plan-audit-allowances.ts`) stands for the entries of every statement that includes one shared fragment: it
-  passes the fragment's scan in a sample's plan only while the same statement with the fragment taken out plans no
-  such scan and the plan shows it no more often than the statement contains the fragment, and a witness shows the
-  fragment's read stays flat as its table grows. The attribution assumes the fragment is used as a predicate: a
+  (`test/plan-audit-allowances.ts`) stands for the entries of every statement that includes one shared fragment, with
+  a witness that the fragment's read stays flat as its table grows; `sampleViolations` in `test/plan-audit.ts` decides
+  when a scan is the fragment's. The attribution assumes the fragment is used as a predicate: a
   statement where the fragment's text is also a name (an implicit column name, a `NATURAL JOIN` or `USING` over it), or
   that forces the fragment's index with `INDEXED BY`, is outside what it proves. A listed scan a suite did not show is
   only reported, since another suite may pass the value that scans: a change that fixes listed
