@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { CallExpression, Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
-import { codeSpans } from "./code-spans.js";
+import { blocks, codeSpans, spanAt } from "./code-spans.js";
 import { parse, walk } from "./source-scan.js";
 
 // docs/threat-model.md and the code agree, by the contract its "Status of an invariant" states:
@@ -159,19 +159,21 @@ function citations(text: string): Citation[] {
   return found;
 }
 
-/** The balanced parenthesized group a text starts with, quotes and code spans skipped. */
+/** The balanced parenthesized group a text starts with, quotes and code spans skipped in one walk, so a backtick inside
+ * quotes never pairs with one outside them. */
 function parenthesized(text: string): string {
-  const spans = new Map(codeSpans(text).map(({ start, end }) => [start, end]));
   let depth = 0;
   let quoted = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    const span = quoted ? undefined : spans.get(i);
-    if (span !== undefined) {
-      i = span - 1;
-    } else if (quoted) {
+    if (quoted) {
       if (c === "\\") i++;
       else if (c === '"') quoted = false;
+    } else if (c === "`") {
+      // A span is skipped whole; a run that no span closes is literal.
+      const span = spanAt(text, i);
+      if (span !== undefined) i = span.end - 1;
+      else while (text[i + 1] === "`") i++;
     } else if (c === '"') {
       quoted = true;
     } else if (c === "(") {
@@ -298,7 +300,7 @@ function problems(document: string, files: Files): string[] {
     return declared;
   };
   const flat = flatten(document);
-  for (const mark of marks(flat)) {
+  for (const mark of blocks(document).flatMap((block) => marks(flatten(block)))) {
     if (mark.kind === "unknown") found.push(`unknown mark _${mark.text}_`);
   }
   for (const match of flat.matchAll(BRANCH)) found.push(`a branch: "${match[0]}"`);
@@ -403,6 +405,7 @@ describe("the threat model's statuses", () => {
       "  and `src/gone.json`.",
       "- **EX-9: a span of two backticks.** _Enforced (main):_ `src/a.ts`, none of ``_`<>``.",
       '  _Planned (later):_ `src/gone.ts`. _Enforced (main):_ `test/a.test.ts` ("missing after a span").',
+      '- **EX-10: a backtick in a title.** _Enforced (main):_ `test/a.test.ts` ("literal `", `)`, "missing").',
       "",
       "## Accepted risks",
       "",
@@ -423,6 +426,7 @@ describe("the threat model's statuses", () => {
         "it('the first half of a title')",
         "it('alpha')",
         "it('omega')",
+        "it('literal `')",
       ].join("\n"),
     };
     const fake: Files = {
@@ -451,6 +455,7 @@ describe("the threat model's statuses", () => {
       'EX-8: an enforced part cites no file: "with no citation at all."',
       "EX-8: src/gone.json does not exist",
       'EX-9: test/a.test.ts has no test "missing after a span"',
+      'EX-10: test/a.test.ts has no test "missing"',
       "entry points: src/gone.ts does not exist",
       'entry points: unknown status "branch `kopje/setup`: `src/a.ts`"',
       'entry points: unknown status "main"',
