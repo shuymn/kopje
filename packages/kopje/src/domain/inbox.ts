@@ -131,7 +131,7 @@ import { streamDelete } from "./streaming";
 // (HTML-1, HTML-3) and checked the shape of the activity; here the authorization table (ID-6) is applied against the
 // stored state, and every effect is keyed so that a replay changes nothing twice (ID-7).
 //
-// ID-6, Mastodon 4.7.3's rules for the types handled here (one negative test each in test/inbox.test.ts):
+// ID-6, Mastodon 4.5.11's rules for the types handled here (one negative test each in test/inbox.test.ts):
 //   Follow       the object is a local account (exact actor URI); the actor is the follower; refused while either
 //                side blocks the other
 //   Accept       the actor is the target of our matching Follow (see ourFollow); of our QuoteRequest, the quoted

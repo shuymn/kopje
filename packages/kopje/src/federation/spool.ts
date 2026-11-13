@@ -55,7 +55,7 @@ export type SpoolMessage = {
   spooledAt: number;
 };
 
-// The body was already read within INBOX_BODY_LIMIT (app/body.ts).
+// The body was already read within INBOX_BODY_LIMIT (platform/body.ts).
 export async function spoolInbox(request: Request, body: Uint8Array, queue: Queue, now: number): Promise<Response> {
   const deflated = await deflate(body);
   const message: SpoolMessage = {

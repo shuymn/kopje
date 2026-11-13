@@ -54,7 +54,8 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   witnesses at or below the derived figure. Each endpoint's maximum comes from its own bounds (RES-3, "Maxima of
   presented units", is the table they feed).
 - **A memory bound that rests on an estimate has a runtime backstop** that counts bytes as they are read. Memory peaks
-  are computed by a test from per-column maxima, never by arithmetic in prose.
+  are computed by a test from per-column maxima, never by arithmetic in prose; the test asserts each peak within its
+  bound, and a figure the documents quote from its log is a measurement, labelled as one.
 
 ## Stored values
 

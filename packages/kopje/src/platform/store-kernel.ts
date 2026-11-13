@@ -48,7 +48,8 @@ const READONLY_ADMITS: Record<OperationKind, boolean> = {
 };
 
 // One domain operation = one RPC = one transactionSync. It runs synchronously over the Store's SQLite and must not
-// do external I/O. Timestamps and IDs come from the caller (Date.now() does not advance inside one DO request).
+// do external I/O. Timestamps come from the caller (Date.now() does not advance inside one DO request); local IDs are
+// minted in the Store, inside the operation (domain/ids.ts allocateLocalId).
 // savepoint is a nested transactionSync of the same storage (a named savepoint inside the operation's transaction),
 // absent where the caller has none.
 export type StoreOperation<I, O> = {

@@ -44,6 +44,11 @@ Some things cannot be done from the wizard. Do these in the Cloudflare dashboard
    the preview and the preview's pixels its blurhash is computed from, which Images may bill as one with the preview);
    a custom emoji uses two. If you buy more, raise `IMAGES_MONTHLY_TRANSFORMS`.
 
+   `IMAGES_ACCOUNT_MONTHLY_TRANSFORMS` (a plain-text variable) is each local account's share of
+   `IMAGES_MONTHLY_TRANSFORMS` per UTC month, so one account cannot use up the instance's transformations for the
+   others; an upload past it is refused with 429. Unset, it is a tenth of `IMAGES_MONTHLY_TRANSFORMS`, rounded
+   down (400 at the default 4,000).
+
    Link card images are off by default. To store them, set `IMAGES_CARD_MONTHLY_TRANSFORMS` (a plain-text variable)
    to the transformations they may start each UTC month: up to two each (one before the stored WebP, one before the
    pixels its blurhash is computed from; Images may bill the two as one transformation), counted when each starts, so a

@@ -43,7 +43,9 @@ Then attach your domain to the Worker (Settings, Domains & Routes, as a custom d
 ## Settings after setup
 
 Set these on the Worker in the dashboard (Settings, Variables and Secrets) or with `npx wrangler secret put <NAME>`.
-`wrangler.jsonc` keeps variables set in the dashboard across deploys (`keep_vars`).
+`wrangler.jsonc` keeps variables set in the dashboard across deploys (`keep_vars`). The table lists the common ones;
+[setup.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/setup.md), "Before you start", documents the
+rest (the Images limits, `REMOTE_MEDIA_CACHE_BYTES` and `MEDIA_CACHE_RETENTION_DAYS`).
 
 Kopje's log events are kept in Workers Logs for 7 days; invocation logs and traces are off:
 [observability.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/observability.md) says where to

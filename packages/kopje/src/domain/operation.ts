@@ -2,7 +2,8 @@ import { Db } from "../db/sql";
 import type { OperationKind, StoreOperation } from "../platform/store-kernel";
 
 // Declares a domain operation. The Store runs it as one RPC inside one transactionSync, so "read, decide, write"
-// is atomic. Operations are synchronous and do no external I/O; time and IDs arrive in the input. The kernel also passes
+// is atomic. Operations are synchronous and do no external I/O; time arrives in the input, and local IDs are minted in
+// the Store, inside the operation that uses them (allocateLocalId in ids.ts). The kernel also passes
 // a nested transactionSync, so a step can run in a savepoint of that transaction (Db.savepoint).
 function declare(kind: OperationKind) {
   return <I, O>(run: (db: Db, input: I) => O): StoreOperation<I, O> => ({

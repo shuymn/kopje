@@ -12,7 +12,7 @@ import { DNS_NAME_UTF8_BYTES } from "../platform/domain-name";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
-// Audience and visibility (Mastodon 4.7.3; docs/visibility.md). One module decides
+// Audience and visibility (Mastodon 4.5.11; docs/visibility.md). One module decides
 // who may see a status or an account, for every read path, who is notified, whom an author may address, and how an
 // audience is written to and read from ActivityPub addressing:
 //
