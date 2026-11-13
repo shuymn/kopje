@@ -38,6 +38,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   bounded steps before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work"). An import whose
   verification began before the upgrade starts its checksums again.
 
+- NodeInfo's `activeMonth` and `activeHalfyear` count only local accounts that are not suspended, as `total` does, so
+  a suspended account that posted in the window no longer makes them exceed `total`. `localPosts` is unchanged and
+  still counts a suspended account's statuses, as `/api/v1/instance` does. No Store migration and no `wrangler.jsonc`
+  change.
+
 ## [0.5.0] - 2026-11-13
 
 A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now
