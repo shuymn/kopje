@@ -108,7 +108,7 @@ import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
 import { PolicyModel } from "./policy-model";
 import { accountId, REMOTE_DOMAINS, statusId, statusUri, type World, worldArb, writeWorld } from "./policy-world";
-import { rowsRead, watchedCursor } from "./read-helpers";
+import { type GrownRead, grownReads, rowsRead, watchedCursor } from "./read-helpers";
 
 // The bounds harness (docs/visibility.md, "The oracle and the bounds harness"): each read endpoint that takes a viewer
 // runs over a generated world twice, once alone and once with many unrelated rows, and must read about the same number
@@ -881,6 +881,9 @@ function shown(output: unknown): number {
   return MARKER_TIMELINES.filter((timeline) => timeline in value).length;
 }
 
+// What a growth witness's paged read must answer: a full page.
+const fullPage = (output: unknown) => shown(output) === PAGE.limit;
+
 type Entity = Record<string, unknown>;
 
 // What an endpoint showed, by identity and in order: statuses by id (and a boost's original), accounts by id,
@@ -953,28 +956,17 @@ function identities(output: unknown): unknown {
 
 describe("read endpoints do not read more rows as unrelated data grows (RES-7)", () => {
   it("reads the same rows with or without unrelated accounts, statuses and edges", async () => {
-    const alone = await worldWith(0);
-    const crowded = await worldWith(UNRELATED);
     // Every endpoint shows the viewer something, so a refused credential or an empty read cannot pass, and shows the
     // same with the unrelated rows as without.
-    const outputs = async (store: StoreStub) =>
-      runInDurableObject(store, (_instance, state) =>
-        ENDPOINTS.map(([name, operation, input]) => [name, operation.run(state.storage.sql, input as never)] as const),
-      );
-    const withoutUnrelated = await outputs(alone);
-    expect(withoutUnrelated.filter(([, output]) => shown(output) === 0).map(([name]) => name)).toEqual([]);
-    const named = (results: (readonly [string, unknown])[]) =>
-      Object.fromEntries(results.map(([name, output]) => [name, identities(output)]));
-    expect(named(await outputs(crowded))).toEqual(named(withoutUnrelated));
-    const grown: string[] = [];
-    for (const [name, operation, input] of ENDPOINTS) {
-      const few = await rowsRead({ store: alone }, operation, input as never);
-      const many = await rowsRead({ store: crowded }, operation, input as never);
-      if (many > few + ALLOWANCE + (UNRELATED_EXTRA[name]?.rows ?? 0)) {
-        grown.push(`${name}: ${few} -> ${many}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = ENDPOINTS.map(([name, operation, input]): GrownRead => ({
+      name,
+      operation,
+      input,
+      shows: (output) => shown(output) > 0,
+      extra: UNRELATED_EXTRA[name]?.rows ?? 0,
+    }));
+    const [alone, crowded] = [await worldWith(0), await worldWith(UNRELATED)];
+    expect(await grownReads(alone, crowded, reads, { allowance: ALLOWANCE, same: identities })).toEqual([]);
   }, 60_000);
 });
 
@@ -999,11 +991,9 @@ describe("read endpoints read the same rows however long the world's history (RE
     "featured tag suggestions",
   ]);
 
-  type Measured = { endpoint: string; page: string; rows: number; shown: number; output: unknown };
-
   // Each endpoint's newest page, a page from the middle of the replicated history and the oldest page, or its one read
-  // if it does not page the history.
-  async function measure(factor: number): Promise<Measured[]> {
+  // if it does not page the history; each shows the viewer something.
+  async function measure(factor: number): Promise<{ store: StoreStub; reads: (GrownRead & { page: string })[] }> {
     const store = await replicated(factor);
     const viewer = accountId(VIEWER);
     const middle = await runInDurableObject(store, (_instance, state) => {
@@ -1029,8 +1019,7 @@ describe("read endpoints read the same rows however long the world's history (RE
       };
       return cursors;
     });
-    const measured: Measured[] = [];
-    for (const [endpoint, operation, input, paging] of ENDPOINTS) {
+    const reads = ENDPOINTS.flatMap(([endpoint, operation, input, paging]) => {
       const maxId = paging === undefined ? undefined : middle[paging];
       const pages: [string, unknown][] =
         paging === undefined
@@ -1040,39 +1029,33 @@ describe("read endpoints read the same rows however long the world's history (RE
               ["middle", { ...(input as object), page: maxId === undefined ? PAGE : { ...PAGE, maxId } }],
               ["oldest", { ...(input as object), page: { ...PAGE, minId: "1" } }],
             ];
-      for (const [page, paged] of pages) {
-        const output = await runInDurableObject(store, (_instance, state) =>
-          operation.run(state.storage.sql, paged as never),
-        );
-        const rows = await rowsRead({ store }, operation, paged as never);
-        measured.push({ endpoint, page, rows, shown: shown(output), output });
-      }
-    }
-    return measured;
+      // A growing endpoint's rows are not compared.
+      const extra = GROWING.has(endpoint) ? Infinity : 0;
+      return pages.map(([page, paged]) => ({
+        name: `${endpoint} ${page}`,
+        page,
+        operation,
+        input: paged,
+        shows: (output: unknown) => shown(output) > 0,
+        extra,
+      }));
+    });
+    return { store, reads };
   }
 
   it(`reads the same rows with the world's history replicated ${FEW} or ${MANY} times`, async () => {
     const few = await measure(FEW);
     const many = await measure(MANY);
-    // Every endpoint shows the viewer something on every page at either factor, and the same newest page (or one read).
-    const empty = [...few, ...many].flatMap(({ endpoint, page, shown }) =>
-      shown === 0 ? [`${endpoint} ${page}`] : [],
-    );
-    expect(empty).toEqual([]);
-    const newest = (measured: Measured[]) =>
-      Object.fromEntries(
-        measured
-          .filter(({ page }) => page === "newest" || page === "once")
-          .map(({ endpoint, output }) => [endpoint, identities(output)]),
+    // The cursors of the middle pages are the grown Store's own; the newest page (or one read) is the same in both.
+    const reads = (newest: boolean) =>
+      few.reads.flatMap((read, i) =>
+        (read.page === "newest" || read.page === "once") === newest
+          ? [{ ...read, manyInput: many.reads[i]?.input }]
+          : [],
       );
-    expect(newest(many)).toEqual(newest(few));
-    const grown = few.flatMap(({ endpoint, page, rows }, i) => {
-      const manyRows = many[i]?.rows ?? Infinity;
-      return GROWING.has(endpoint) || manyRows <= rows + ALLOWANCE
-        ? []
-        : [`${endpoint} ${page}: ${rows} -> ${manyRows}`];
-    });
-    expect(grown).toEqual([]);
+    const options = { allowance: ALLOWANCE };
+    expect(await grownReads(few.store, many.store, reads(true), { ...options, same: identities })).toEqual([]);
+    expect(await grownReads(few.store, many.store, reads(false), options)).toEqual([]);
   }, 60_000);
 });
 
@@ -1151,8 +1134,13 @@ describe("the author's domain block costs a local viewer nothing per status (R2,
     const many = await publicStatuses(600);
     const credential = { tokenHash: PUBLIC_TOKEN, scope: "read", now: NOW } as const;
     const input = { credential, now: NOW, page: PAGE, present: PRESENT, local: false, remote: false, onlyMedia: false };
-    const page = async (store: StoreStub) => rowsRead({ store }, publicTimeline, input as never);
-    expect(await page(many)).toBeLessThanOrEqual((await page(few)) + ALLOWANCE);
+    const read = {
+      name: "public",
+      operation: publicTimeline,
+      input,
+      shows: (output: unknown) => shown(output) === PAGE.limit,
+    };
+    expect(await grownReads(few, many, [read], { allowance: ALLOWANCE })).toEqual([]);
     // Over every stored status, a local viewer reads at most one row more than the anonymous viewer: the check that
     // it is not remote, once per query.
     for (const store of [few, many]) {
@@ -1297,27 +1285,24 @@ describe("home and list timelines read a page per author, not each author's hist
     const few = await histories(60);
     const many = await histories(2000);
     const credential = { tokenHash: HISTORY_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
     // The newest page; a page from the middle of the longer histories (above every status of the shorter ones, so
-    // their newest page); the oldest page.
+    // their newest page); the oldest page. A full page from either store.
     const middle = status((2000 * (AUTHORS + 2)) / 2);
-    for (const page of [PAGE, { ...PAGE, maxId: middle }, { ...PAGE, minId: "1" }]) {
-      for (const [name, operation, input] of [
-        ["home", homeTimeline, { credential, page, present: PRESENT }],
-        ["list", listTimeline, { credential, id: LIST_ID, page, present: PRESENT }],
-      ] as const) {
-        // A full page from either store.
-        const shownBy = async (store: StoreStub) =>
-          runInDurableObject(store, (_instance, state) => shown(operation.run(state.storage.sql, input as never)));
-        expect([await shownBy(few), await shownBy(many)]).toEqual([PAGE.limit, PAGE.limit]);
-        const fewRows = await rowsRead({ store: few }, operation as StoreOperation<never, unknown>, input as never);
-        const manyRows = await rowsRead({ store: many }, operation as StoreOperation<never, unknown>, input as never);
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${name} ${JSON.stringify(page)}: ${fewRows} -> ${manyRows}`);
-        }
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = [PAGE, { ...PAGE, maxId: middle }, { ...PAGE, minId: "1" }].flatMap((page): GrownRead[] =>
+      [
+        {
+          name: `home ${JSON.stringify(page)}`,
+          operation: homeTimeline,
+          input: { credential, page, present: PRESENT },
+        },
+        {
+          name: `list ${JSON.stringify(page)}`,
+          operation: listTimeline,
+          input: { credential, id: LIST_ID, page, present: PRESENT },
+        },
+      ].map((read) => ({ ...read, shows: fullPage })),
+    );
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -1403,21 +1388,15 @@ describe("the conversation list reads a page, not the history (RES-7)", () => {
     const few = await conversations(20);
     const many = await conversations(2000);
     const credential = { tokenHash: HISTORY_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
     // A page from the middle of the longer history is above every conversation of the shorter one.
     const middle = status(3 * 1000 + 2);
-    for (const page of [PAGE, { ...PAGE, maxId: middle }, { ...PAGE, minId: "1" }]) {
-      const input = { credential, page, present: PRESENT };
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => shown(listConversations.run(state.storage.sql, input)));
-      expect([await shownBy(few), await shownBy(many)]).toEqual([PAGE.limit, PAGE.limit]);
-      const fewRows = await rowsRead({ store: few }, listConversations, input);
-      const manyRows = await rowsRead({ store: many }, listConversations, input);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${JSON.stringify(page)}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = [PAGE, { ...PAGE, maxId: middle }, { ...PAGE, minId: "1" }].map((page): GrownRead => ({
+      name: JSON.stringify(page),
+      operation: listConversations,
+      input: { credential, page, present: PRESENT },
+      shows: fullPage,
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -1520,42 +1499,29 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
     const few = await histories(60);
     const many = await histories(2000);
     const credential = { tokenHash: SKIP_TOKEN, scope: "read", now: NOW } as const;
-    const reads: [string, StoreOperation<never, unknown>, unknown, number][] = [
+    const reads: GrownRead[] = [
       // A full page of the friend's statuses, none of the stranger's.
-      ["home", homeTimeline, { credential, page: PAGE, present: PRESENT }, PAGE.limit],
-      ...Object.entries(HIDDEN_AUTHORS).map(
-        ([name, account]) =>
-          [
-            `account statuses of ${name}`,
-            accountStatuses,
-            {
-              credential,
-              now: NOW,
-              account,
-              page: PAGE,
-              onlyMedia: false,
-              excludeReplies: false,
-              excludeReblogs: false,
-              pinned: false,
-              tagged: null,
-              present: PRESENT,
-            },
-            0,
-          ] as [string, StoreOperation<never, unknown>, unknown, number],
-      ),
+      { name: "home", operation: homeTimeline, input: { credential, page: PAGE, present: PRESENT }, shows: fullPage },
+      // An empty page, answered to the viewer.
+      ...Object.entries(HIDDEN_AUTHORS).map(([name, account]): GrownRead => ({
+        name: `account statuses of ${name}`,
+        operation: accountStatuses,
+        input: {
+          credential,
+          now: NOW,
+          account,
+          page: PAGE,
+          onlyMedia: false,
+          excludeReplies: false,
+          excludeReblogs: false,
+          pinned: false,
+          tagged: null,
+          present: PRESENT,
+        },
+        shows: (output) => (output as { status: string }).status === "ok" && shown(output) === 0,
+      })),
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input, expected] of reads) {
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => shown(operation.run(state.storage.sql, input as never)));
-      expect([name, await shownBy(few), await shownBy(many)]).toEqual([name, expected, expected]);
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -1605,14 +1571,15 @@ describe("userinfo reads the account, not the account's history (RES-7)", () => 
 
   it("reads the same rows with 20 or 2,000 statuses", async () => {
     const input = { credential: { tokenHash: OWNER_TOKEN, scope: "profile", now: NOW }, present: PRESENT } as const;
-    const counts: number[] = [];
-    for (const store of [await history(20), await history(2000)]) {
-      const output = await runInDurableObject(store, (_instance, state) => userinfo.run(state.storage.sql, input));
-      expect(output).toMatchObject({ status: "ok", value: { sub: "https://kopje.test/ap/users/owner" } });
-      counts.push(await rowsRead({ store }, userinfo, input));
-    }
-    const [few = 0, many = 0] = counts;
-    expect(many).toBeLessThanOrEqual(few + ALLOWANCE);
+    const read: GrownRead = {
+      name: "userinfo",
+      operation: userinfo,
+      input,
+      shows: (output) =>
+        (output as { status: string; value: { sub: string } }).status === "ok" &&
+        (output as { value: { sub: string } }).value.sub === "https://kopje.test/ap/users/owner",
+    };
+    expect(await grownReads(await history(20), await history(2000), [read], { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -1732,37 +1699,17 @@ describe("filters cost a page their own rows, up to the caps, not the history (R
     ],
   ];
 
-  async function measure(perAuthor: number, filters: number): Promise<Record<string, number>> {
-    const stub = await store(perAuthor, filters);
-    const rows: Record<string, number> = {};
-    for (const [name, operation, input] of reads) {
-      const output = await runInDurableObject(stub, (_instance, state) =>
-        operation.run(state.storage.sql, input as never),
-      );
-      expect([name, shown(output)]).toEqual([name, PAGE.limit]);
-      rows[name] = await rowsRead({ store: stub }, operation, input as never);
-    }
-    return rows;
-  }
-
   // The fewer statuses fill the reads' windows (readWindow: 60 for a page of 20).
   it("reads the same rows with 60 or 2,000 statuses at the caps, and at most the filter rows more than with none", async () => {
-    const none = await measure(60, 0);
-    const few = await measure(60, MAX_FILTERS);
-    const many = await measure(2000, MAX_FILTERS);
-    const grown: string[] = [];
-    for (const [name] of reads) {
-      const [base = 0, capped = 0, longer = 0] = [none[name], few[name], many[name]];
-      // Per filter: its row, its contexts, its keywords (each through a json_each list of the filters), whether it
-      // names statuses, and a seek per status of the page (and its json_each entry).
-      if (capped > base + MAX_FILTERS * (2 * MAX_FILTER_KEYWORDS + 2 * PAGE.limit + 10) + ALLOWANCE) {
-        grown.push(`${name} with filters: ${base} -> ${capped}`);
-      }
-      if (longer > capped + ALLOWANCE) {
-        grown.push(`${name} with history: ${capped} -> ${longer}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const none = await store(60, 0);
+    const capped = await store(60, MAX_FILTERS);
+    const longer = await store(2000, MAX_FILTERS);
+    const growth = reads.map(([name, operation, input]): GrownRead => ({ name, operation, input, shows: fullPage }));
+    // Per filter: its row, its contexts, its keywords (each through a json_each list of the filters), whether it
+    // names statuses, and a seek per status of the page (and its json_each entry).
+    const filterRows = MAX_FILTERS * (2 * MAX_FILTER_KEYWORDS + 2 * PAGE.limit + 10);
+    expect(await grownReads(none, capped, growth, { allowance: filterRows + ALLOWANCE })).toEqual([]);
+    expect(await grownReads(capped, longer, growth, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -1808,13 +1755,14 @@ describe("markers read the viewer's rows, not every account's (RES-7)", () => {
   it("reads the same rows with 10 or 2,000 accounts that have markers", async () => {
     const credential = { tokenHash: MARKERS_TOKEN, scope: "read", now: NOW } as const;
     const input = { credential, timelines: [...MARKER_TIMELINES] };
-    const few = await accountsWithMarkers(10);
-    const many = await accountsWithMarkers(2000);
-    const shownBy = async (store: StoreStub) =>
-      runInDurableObject(store, (_instance, state) => shown(getMarkers.run(state.storage.sql, input)));
-    expect([await shownBy(few), await shownBy(many)]).toEqual([2, 2]);
-    const fewRows = await rowsRead({ store: few }, getMarkers, input);
-    expect(await rowsRead({ store: many }, getMarkers, input)).toBeLessThanOrEqual(fewRows + ALLOWANCE);
+    const read: GrownRead = {
+      name: "markers",
+      operation: getMarkers,
+      input,
+      shows: (output) => shown(output) === MARKER_TIMELINES.length,
+    };
+    const [few, many] = [await accountsWithMarkers(10), await accountsWithMarkers(2000)];
+    expect(await grownReads(few, many, [read], { allowance: ALLOWANCE })).toEqual([]);
   });
 });
 
@@ -1875,7 +1823,6 @@ describe("endorsements and notes read a page, however many an account has (RES-7
     const few = await endorsing(60);
     const many = await endorsing(2000);
     const credential = { tokenHash: ENDORSING_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
     // The newest page; a page from the middle of the longer list (above every account of the shorter one, so its
     // newest page); the oldest page.
     const pages = [PAGE, { ...PAGE, maxId: target(1000) }, { ...PAGE, minId: "1" }];
@@ -1895,17 +1842,8 @@ describe("endorsements and notes read a page, however many an account has (RES-7
         { credential, ids: Array.from({ length: 20 }, (_, i) => target(i)), withSuspended: true },
       ],
     ];
-    for (const [name, operation, input] of reads) {
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => shown(operation.run(state.storage.sql, input as never)));
-      expect([name, await shownBy(few), await shownBy(many)]).toEqual([name, PAGE.limit, PAGE.limit]);
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const growth = reads.map(([name, operation, input]): GrownRead => ({ name, operation, input, shows: fullPage }));
+    expect(await grownReads(few, many, growth, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -1962,21 +1900,15 @@ describe("a list's members read a page, however many it holds (RES-7)", () => {
     const few = await holding(60);
     const many = await holding(2000);
     const credential = { tokenHash: OWNER_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
     // The newest page; a page from the middle of the longer list (above every member of the shorter one, so its
     // newest page); the oldest page.
-    for (const page of [PAGE, { ...PAGE, maxId: member(1000) }, { ...PAGE, minId: "1" }]) {
-      const input = { credential, id: LIST_ID, page, present: PRESENT };
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => shown(listAccounts.run(state.storage.sql, input)));
-      expect([page, await shownBy(few), await shownBy(many)]).toEqual([page, PAGE.limit, PAGE.limit]);
-      const fewRows = await rowsRead({ store: few }, listAccounts, input);
-      const manyRows = await rowsRead({ store: many }, listAccounts, input);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${JSON.stringify(page)}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = [PAGE, { ...PAGE, maxId: member(1000) }, { ...PAGE, minId: "1" }].map((page): GrownRead => ({
+      name: JSON.stringify(page),
+      operation: listAccounts,
+      input: { credential, id: LIST_ID, page, present: PRESENT },
+      shows: fullPage,
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -2010,20 +1942,28 @@ describe("a local account is found by username, however many local accounts ther
   it("reads the same rows with 20 or 2,000 local accounts", async () => {
     const few = await knowing(20);
     const many = await knowing(2000);
-    const reads: [string, StoreOperation<never, unknown>, unknown][] = [
-      ["inbox owner", inboxOwnerExists, { username: "alice" }],
-      ["inbox gate", inboxGate, GATE_INPUT],
-      ["outbox", getOutbox, { username: "alice", before: null }],
+    // Each finds alice.
+    const reads: GrownRead[] = [
+      {
+        name: "inbox owner",
+        operation: inboxOwnerExists,
+        input: { username: "alice" },
+        shows: (found) => found === true,
+      },
+      {
+        name: "inbox gate",
+        operation: inboxGate,
+        input: GATE_INPUT,
+        shows: (gate) => (gate as { ownerExists: boolean }).ownerExists,
+      },
+      {
+        name: "outbox",
+        operation: getOutbox,
+        input: { username: "alice", before: null },
+        shows: (outbox) => typeof (outbox as { total?: unknown } | null)?.total === "number",
+      },
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input] of reads) {
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   });
 });
 
@@ -2080,10 +2020,7 @@ describe("the inbox gate reads the same rows however many keys and domain blocks
   ])(
     "reads the same rows with 20 or 2,000 %s",
     async (_name, small, large) => {
-      const few = await holding(small);
-      const many = await holding(large);
-      const gate = await runInDurableObject(few, (_instance, state) => inboxGate.run(state.storage.sql, GATE_INPUT));
-      expect(gate).toEqual({
+      const expected = {
         domain: "kopje.test",
         ownerExists: true,
         domainBlocked: false,
@@ -2097,10 +2034,19 @@ describe("the inbox gate reads the same rows however many keys and domain blocks
           ticket: { host: "x.example", refused: false },
         },
         revisions: { actor: 0, target: null },
-      });
-      const fewRows = await rowsRead({ store: few }, inboxGate, GATE_INPUT);
-      const manyRows = await rowsRead({ store: many }, inboxGate, GATE_INPUT);
-      expect(manyRows).toBeLessThanOrEqual(fewRows + ALLOWANCE);
+      };
+      const read: GrownRead = {
+        name: "inbox gate",
+        operation: inboxGate,
+        input: GATE_INPUT,
+        shows: (gate) => {
+          expect(gate).toEqual(expected);
+          return true;
+        },
+      };
+      expect(await grownReads(await holding(small), await holding(large), [read], { allowance: ALLOWANCE })).toEqual(
+        [],
+      );
     },
     60_000,
   );
@@ -2413,38 +2359,28 @@ describe("followed hashtags cost home a window each, up to the cap, not their hi
     ["oldest", { ...PAGE, minId: "1" }],
   ];
 
-  async function measure(perTag: number, followed: number): Promise<Record<string, number>> {
-    const stub = await store(perTag, followed);
-    const rows: Record<string, number> = {};
-    for (const [name, page] of pages) {
-      const input = { credential, page, present: PRESENT };
-      const output = await runInDurableObject(stub, (_instance, state) =>
-        homeTimeline.run(state.storage.sql, input as never),
-      );
-      expect([name, shown(output)]).toEqual([name, followed === 0 ? 0 : PAGE.limit]);
-      rows[name] = await rowsRead({ store: stub }, homeTimeline, input as never);
-    }
-    return rows;
-  }
+  // Home's pages: empty with no followed hashtags (`unfollowed`), full otherwise.
+  const homes = (unfollowed: boolean): GrownRead[] =>
+    pages.map(([name, page]) => ({
+      name,
+      operation: homeTimeline,
+      input: { credential, page, present: PRESENT },
+      shows: (output, at) =>
+        unfollowed && at === "few"
+          ? (output as { status: string }).status === "ok" && shown(output) === 0
+          : fullPage(output),
+    }));
 
   it(`reads the same rows with 40 or 400 statuses per hashtag at the cap, and at most a window per hashtag more than with none`, async () => {
-    const none = await measure(40, 0);
-    const few = await measure(40, MAX_FOLLOWED_TAGS);
-    const many = await measure(400, MAX_FOLLOWED_TAGS);
-    const grown: string[] = [];
-    for (const [name] of pages) {
-      const [base = 0, capped = 0, longer = 0] = [none[name], few[name], many[name]];
-      // Per hashtag: its tag_follows entry, and a stream of streamWindow(limit) candidates, each with its status_tags
-      // entry, the probe of its status's visibility, its status and the merge's reads of it (about seven); the rule
-      // reads a window of them, once.
-      if (capped > base + MAX_FOLLOWED_TAGS * (8 * streamWindow(PAGE.limit) + 10) + ALLOWANCE) {
-        grown.push(`${name} with hashtags: ${base} -> ${capped}`);
-      }
-      if (longer > capped + ALLOWANCE) {
-        grown.push(`${name} with history: ${capped} -> ${longer}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const none = await store(40, 0);
+    const capped = await store(40, MAX_FOLLOWED_TAGS);
+    const longer = await store(400, MAX_FOLLOWED_TAGS);
+    // Per hashtag: its tag_follows entry, and a stream of streamWindow(limit) candidates, each with its status_tags
+    // entry, the probe of its status's visibility, its status and the merge's reads of it (about seven); the rule
+    // reads a window of them, once.
+    const hashtagRows = MAX_FOLLOWED_TAGS * (8 * streamWindow(PAGE.limit) + 10);
+    expect(await grownReads(none, capped, homes(true), { allowance: hashtagRows + ALLOWANCE })).toEqual([]);
+    expect(await grownReads(capped, longer, homes(false), { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -2499,23 +2435,17 @@ describe("followed hashtags read the viewer's rows, not every account's (RES-7)"
 
   it("reads the same rows with 10 or 2,000 accounts that follow hashtags", async () => {
     const credential = { tokenHash: TAGS_TOKEN, scope: "read", now: NOW } as const;
-    const reads: [string, StoreOperation<never, unknown>, unknown, number][] = [
-      ["home", homeTimeline, { credential, page: PAGE, present: PRESENT }, PAGE.limit],
-      ["followed tags", followedTags, { credential, page: PAGE, present: PRESENT }, 3],
+    const reads: GrownRead[] = [
+      { name: "home", operation: homeTimeline, input: { credential, page: PAGE, present: PRESENT }, shows: fullPage },
+      {
+        name: "followed tags",
+        operation: followedTags,
+        input: { credential, page: PAGE, present: PRESENT },
+        shows: (output) => shown(output) === 3,
+      },
     ];
-    const few = await accountsFollowingTags(10);
-    const many = await accountsFollowingTags(2000);
-    for (const [name, operation, input, expected] of reads) {
-      for (const stub of [few, many]) {
-        const output = await runInDurableObject(stub, (_instance, state) =>
-          operation.run(state.storage.sql, input as never),
-        );
-        expect([name, shown(output)]).toEqual([name, expected]);
-      }
-      const small = await rowsRead({ store: few }, operation, input as never);
-      const large = await rowsRead({ store: many }, operation, input as never);
-      expect(large, name).toBeLessThanOrEqual(small + ALLOWANCE);
-    }
+    const [few, many] = [await accountsFollowingTags(10), await accountsFollowingTags(2000)];
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -2601,24 +2531,14 @@ describe("statuses cost the media they show, not the media their edits dropped (
         },
       ],
     ];
-    const [few, many] = [await store(4), await store(396)];
-    const grown: string[] = [];
-    for (const [name, operation, input] of reads) {
-      const output = await runInDurableObject(many, (_instance, state) =>
-        operation.run(state.storage.sql, input as never),
-      );
-      // The newest status shows its one image, and none it dropped.
-      expect(JSON.stringify(output)).toContain(media(STATUSES - 1, 396));
-      expect(JSON.stringify(output)).not.toContain(media(STATUSES - 1, 395));
-      const counts = [
-        await rowsRead({ store: few }, operation, input as never),
-        await rowsRead({ store: many }, operation, input as never),
-      ];
-      if ((counts[1] ?? Infinity) > (counts[0] ?? 0) + ALLOWANCE) {
-        grown.push(`${name}: ${counts[0]} -> ${counts[1]}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // The newest status shows its one image, and none it dropped.
+    const showsOne = (output: unknown, at: "few" | "many") => {
+      const dropped = at === "few" ? 4 : 396;
+      const json = JSON.stringify(output);
+      return json.includes(media(STATUSES - 1, dropped)) && !json.includes(media(STATUSES - 1, dropped - 1));
+    };
+    const growth = reads.map(([name, operation, input]): GrownRead => ({ name, operation, input, shows: showsOne }));
+    expect(await grownReads(await store(4), await store(396), growth, { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -2693,14 +2613,14 @@ describe("conversation mutes cost a lookup, however many an account has (RES-7)"
     const many = await muting(2000);
     const read = { tokenHash: TOKENS.viewer, scope: "read", now: NOW } as const;
     const byId = { credential: read, now: NOW, ids: Array.from({ length: 20 }, (_, i) => status(i)), present: PRESENT };
-    const muted = async (store: StoreStub) =>
-      runInDurableObject(store, (_instance, state) => {
-        const output = getStatuses.run(state.storage.sql, byId) as { status: string; value: { muted?: boolean }[] };
-        return output.value.filter((s) => s.muted === true).length;
-      });
-    expect([await muted(few), await muted(many)]).toEqual([10, 10]);
-    const fewRows = await rowsRead({ store: few }, getStatuses, byId);
-    expect(await rowsRead({ store: many }, getStatuses, byId)).toBeLessThanOrEqual(fewRows + ALLOWANCE);
+    const statuses: GrownRead = {
+      name: "statuses",
+      operation: getStatuses,
+      input: byId,
+      shows: (output) =>
+        (output as { value: { muted?: boolean }[] }).value.filter((s) => s.muted === true).length === 10,
+    };
+    expect(await grownReads(few, many, [statuses], { allowance: ALLOWANCE })).toEqual([]);
     // A favourite of a status in a muted conversation, and of one elsewhere, notifies through notifiedSql.
     for (const target of [status(0), status(1)]) {
       const input = {
@@ -2770,28 +2690,22 @@ describe("served Notes read their statuses, not their boosts (RES-7)", () => {
   }
 
   it("reads the same rows with 20 or 2,000 remote boosts of a public, pinned status", async () => {
-    const few = await boosted(20);
-    const many = await boosted(2000);
     const reads: [string, StoreOperation<never, unknown>, unknown][] = [
       ["featured", getFeatured, { username: "owner" }],
       ["object", getLocalNote, { uri: "https://kopje.test/ap/o/pinned" }],
       ["outbox", getOutbox, { username: "owner", before: "~" }],
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input] of reads) {
-      const served = (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => operation.run(state.storage.sql, input as never));
-      const output = await served(few);
-      expect([name, output]).not.toEqual([name, null]);
-      expect(JSON.stringify(output)).toContain("<p>pinned</p>");
-      expect([name, await served(many)]).toEqual([name, output]);
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // Each serves the pinned Note, the same at either size.
+    const growth = reads.map(([name, operation, input]): GrownRead => ({
+      name,
+      operation,
+      input,
+      shows: (output) => output !== null && JSON.stringify(output).includes("<p>pinned</p>"),
+    }));
+    const same = (output: unknown) => output;
+    expect(await grownReads(await boosted(20), await boosted(2000), growth, { allowance: ALLOWANCE, same })).toEqual(
+      [],
+    );
   });
 });
 
@@ -2902,21 +2816,14 @@ describe("grouped notifications read a walk, however many notifications a group 
       ["unread count", unreadCount, counts],
       ["unread group count", unreadGroupCount, counts],
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input] of reads) {
-      // Each shows as much at either size (the newest notifications differ by size).
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => shown(operation.run(state.storage.sql, input as never)));
-      const fewShown = await shownBy(few);
-      expect([name, fewShown > 0]).toEqual([name, true]);
-      expect([name, await shownBy(many)]).toEqual([name, fewShown]);
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // Each shows as much at either size (the newest notifications differ by size).
+    const growth = reads.map(([name, operation, input]): GrownRead => ({
+      name,
+      operation,
+      input,
+      shows: (output) => shown(output) > 0,
+    }));
+    expect(await grownReads(few, many, growth, { allowance: ALLOWANCE, same: shown })).toEqual([]);
     // The newest page reads the follow requests and the group up to the walk's limit, at either size.
     for (const store of [few, many]) {
       const newest = await runInDurableObject(store, (_instance, state) =>
@@ -2998,19 +2905,23 @@ describe("a followed hashtag's hidden statuses cost home a bounded window (RES-7
   it("reads the same rows with 100 or 2,000 newer statuses of a blocked author with the hashtag", async () => {
     const credential = { tokenHash: HIDDEN_TOKEN, scope: "read", now: NOW } as const;
     const input = { credential, page: PAGE, present: PRESENT };
-    const measure = async (hidden: number) => {
-      const stub = await store(hidden);
-      const output = await runInDurableObject(stub, (_instance, state) =>
-        homeTimeline.run(state.storage.sql, input as never),
+    const shownBy = async (hidden: number) =>
+      shown(
+        await runInDurableObject(await store(hidden), (_instance, state) => homeTimeline.run(state.storage.sql, input)),
       );
-      return { shown: shown(output), rows: await rowsRead({ store: stub }, homeTimeline, input as never) };
-    };
     // With fewer hidden statuses than the window inspects, the shown ones below them fill the page.
-    expect((await measure(20)).shown).toBe(PAGE.limit);
-    const few = await measure(100);
-    const many = await measure(2000);
-    expect(many.shown).toBe(few.shown);
-    expect(many.rows).toBeLessThanOrEqual(few.rows + ALLOWANCE);
+    expect(await shownBy(20)).toBe(PAGE.limit);
+    // With more, the page is empty and cut at the window.
+    const home: GrownRead = {
+      name: "home",
+      operation: homeTimeline,
+      input,
+      shows: (output) => {
+        const answer = output as { status: string; value: { items: unknown[]; cut?: boolean } };
+        return answer.status === "ok" && answer.value.items.length === 0 && answer.value.cut === true;
+      },
+    };
+    expect(await grownReads(await store(100), await store(2000), [home], { allowance: ALLOWANCE })).toEqual([]);
   }, 60_000);
 });
 
@@ -3179,23 +3090,12 @@ describe("filtered notifications and requests cost a read nothing (RES-7)", () =
         ["policy", getNotificationPolicy, () => Promise.resolve({ credential })],
         ["merged", notificationRequestsMerged, () => Promise.resolve({ credential })],
       ];
-      const grown: string[] = [];
+      const growth: GrownRead[] = [];
       for (const [name, operation, inputOf] of reads) {
-        const shownBy = async (store: StoreStub) => {
-          const input = await inputOf(store);
-          return runInDurableObject(store, (_instance, state) =>
-            showing(operation.run(state.storage.sql, input as never)),
-          );
-        };
-        const fewShown = await shownBy(few);
-        expect([name, fewShown !== 0]).toEqual([name, true]);
-        expect([name, await shownBy(many)]).toEqual([name, fewShown]);
-        const fewRows = await rowsRead({ store: few }, operation, (await inputOf(few)) as never);
-        const manyRows = await rowsRead({ store: many }, operation, (await inputOf(many)) as never);
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-        }
+        const [input, manyInput] = [await inputOf(few), await inputOf(many)];
+        growth.push({ name, operation, input, manyInput, shows: (output) => showing(output) !== 0 });
       }
+      const grown = await grownReads(few, many, growth, { allowance: ALLOWANCE, same: showing });
       // Answering the newest request, on a store of its own each: the request's batches, whatever the sender holds.
       const write = { credential: { tokenHash: FILTER_TOKEN, scope: "write", now: NOW }, now: NOW };
       for (const [name, operation] of [
@@ -3292,18 +3192,22 @@ describe("pending request jobs cost merged and a round a bounded read (RES-7)", 
     const few = await backlog(1000);
     const many = await backlog(5000);
     const credential = { tokenHash: JOB_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
-    for (const [name, operation, input] of [
-      ["merged", notificationRequestsMerged, { credential }],
-      ["round", runNotificationRequestJobs, { now: NOW }],
-    ] as [string, StoreOperation<never, unknown>, unknown][]) {
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // Jobs are still pending at either size, so neither read stopped at an empty backlog.
+    const reads: GrownRead[] = [
+      {
+        name: "merged",
+        operation: notificationRequestsMerged,
+        input: { credential },
+        shows: (output) => JSON.stringify(output) === JSON.stringify({ status: "ok", value: { merged: false } }),
+      },
+      {
+        name: "round",
+        operation: runNotificationRequestJobs,
+        input: { now: NOW },
+        shows: (output) => (output as { pending: boolean }).pending,
+      },
+    ];
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
     const merged = await runInDurableObject(many, (_instance, state) =>
       notificationRequestsMerged.run(state.storage.sql, { credential }),
     );
@@ -3388,23 +3292,18 @@ describe("a request's last status costs a read nothing else (RES-7)", () => {
     const few = await hidden(1000);
     const many = await hidden(5000);
     const credential = { tokenHash: REQUEST_TOKEN, scope: "read", now: NOW } as const;
-    const grown: string[] = [];
-    for (const [name, operation, input] of [
-      ["requests", listNotificationRequests, { credential, page: PAGE, present: PRESENT }],
-      ["request", getNotificationRequest, { credential, id: "1", present: PRESENT }],
-    ] as [string, StoreOperation<never, unknown>, unknown][]) {
-      const shownBy = async (store: StoreStub) =>
-        runInDurableObject(store, (_instance, state) => operation.run(state.storage.sql, input as never));
-      const output = JSON.stringify(await shownBy(few));
-      // The request shows its last status at either size.
-      expect([name, output.includes('"last_status":{')]).toEqual([name, true]);
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // The request shows its last status at either size.
+    const shows = (output: unknown) => JSON.stringify(output).includes('"last_status":{');
+    const reads: GrownRead[] = [
+      {
+        name: "requests",
+        operation: listNotificationRequests,
+        input: { credential, page: PAGE, present: PRESENT },
+        shows,
+      },
+      { name: "request", operation: getNotificationRequest, input: { credential, id: "1", present: PRESENT }, shows },
+    ];
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -3515,55 +3414,45 @@ describe("the profile directory reads a window, however many accounts the instan
     ),
   );
 
-  const measure = async (stub: StoreStub) => {
-    const out: Record<string, { shown: string[]; rows: number }> = {};
-    for (const { name, input } of inputs) {
-      const accounts = await runInDurableObject(stub, (_instance, state) => directory.run(state.storage.sql, input));
-      out[name] = {
-        shown: (accounts.status === "ok" ? accounts.value : []).map((account) => account.id),
-        rows: await rowsRead({ store: stub }, directory, input),
-      };
-    }
-    return out;
+  // The ids of the accounts a page lists, or none for a refusal.
+  const listed = (output: unknown) => {
+    const accounts = output as { status: string; value: { id: string }[] };
+    return (accounts.status === "ok" ? accounts.value : []).map((account) => account.id);
   };
 
   it("reads the same rows with 20 or 2,000 accounts of each kind behind the page", async () => {
-    const few = await measure(await store(20));
-    const many = await measure(await store(2000));
-    const grown: string[] = [];
-    for (const { name } of inputs) {
-      const a = few[name]!;
-      const b = many[name]!;
-      // Not vacuous: the signed-in page is the shown accounts in front, the newest first.
-      if (name === "active") {
-        expect(a.shown).toEqual(
-          Array.from({ length: FRONT }, (_, i) => String(880000000000000000n + BigInt(FRONT - 1 - i))),
-        );
-      }
-      expect(a.shown.length).toBeGreaterThan(0);
-      expect(b.shown).toEqual(a.shown);
-      if (b.rows > a.rows + ALLOWANCE) {
-        grown.push(`${name}: ${a.rows} -> ${b.rows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // Not vacuous: the signed-in page is the shown accounts in front, the newest first.
+    const front = JSON.stringify(
+      Array.from({ length: FRONT }, (_, i) => String(880000000000000000n + BigInt(FRONT - 1 - i))),
+    );
+    const reads = inputs.map(({ name, input }): GrownRead => ({
+      name,
+      operation: directory,
+      input,
+      shows: (output) => (name === "active" ? JSON.stringify(listed(output)) === front : listed(output).length > 0),
+    }));
+    const [few, many] = [await store(20), await store(2000)];
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE, same: listed })).toEqual([]);
   }, 120_000);
 
   it("reads its window and no further, however many hidden accounts are in front", async () => {
     const window = DIRECTORY_WINDOW * FRONT;
     const input = inputs.find(({ name }) => name === "active")!.input;
-    const rowsWith = async (hidden: number) => {
-      const stub = await store(20, hidden);
-      const accounts = await runInDurableObject(stub, (_instance, state) => directory.run(state.storage.sql, input));
-      return { shown: shown(accounts), rows: await rowsRead({ store: stub }, directory, input) };
-    };
     // Half the window hidden: the shown accounts behind them fill the page.
-    expect((await rowsWith(FRONT)).shown).toBe(FRONT);
-    const few = await rowsWith(window);
-    const many = await rowsWith(2000);
-    expect(few.shown).toBe(0);
-    expect(many.shown).toBe(0);
-    expect(many.rows).toBeLessThanOrEqual(few.rows + ALLOWANCE);
+    const half = await store(20, FRONT);
+    expect(shown(await runInDurableObject(half, (_instance, state) => directory.run(state.storage.sql, input)))).toBe(
+      FRONT,
+    );
+    // A window hidden or more: an empty page.
+    const read: GrownRead = {
+      name: "active",
+      operation: directory,
+      input,
+      shows: (output) => (output as { status: string }).status === "ok" && shown(output) === 0,
+    };
+    expect(await grownReads(await store(20, window), await store(20, 2000), [read], { allowance: ALLOWANCE })).toEqual(
+      [],
+    );
   }, 120_000);
 });
 
@@ -3890,25 +3779,22 @@ describe("clearing and dismissing touch a bounded batch, and reads skip what the
     for (const removal of ["clear", "dismissal"] as const) {
       const few = await removing(2500, removal);
       const many = await removing(5000, removal);
-      const grown: string[] = [];
-      const shownAt = (store: StoreStub, operation: StoreOperation<never, unknown>, input: unknown) =>
-        runInDurableObject(store, (_instance, state) => showing(operation.run(state.storage.sql, input as never)));
-      const fewReads = reads(2500);
       const manyReads = reads(5000);
-      for (const [i, [name, operation, fewInput]] of fewReads.entries()) {
-        if (removal === "dismissal" && !groupReads.has(name)) {
-          continue;
-        }
-        const manyInput = manyReads[i]![2];
-        const fewShown = await shownAt(few, operation, fewInput);
-        expect([removal, name, await shownAt(many, operation, manyInput)]).toEqual([removal, name, fewShown]);
-        const fewRows = await rowsRead({ store: few }, operation, fewInput as never);
-        const manyRows = await rowsRead({ store: many }, operation, manyInput as never);
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-        }
-      }
-      expect([removal, grown]).toEqual([removal, []]);
+      const growth = reads(2500).flatMap(([name, operation, input], i): GrownRead[] =>
+        removal === "dismissal" && !groupReads.has(name)
+          ? []
+          : [
+              {
+                name: `${removal}: ${name}`,
+                operation,
+                input,
+                manyInput: manyReads[i]![2],
+                // Answered to the viewer: the reads into what the removal hides answer an empty page or no group.
+                shows: (output) => (output as { status: string }).status === "ok",
+              },
+            ],
+      );
+      expect(await grownReads(few, many, growth, { allowance: ALLOWANCE, same: showing })).toEqual([]);
       // Not vacuous: the newest page shows the follow requests and the follows, and nothing of the favourites.
       const newest = await runInDurableObject(few, (_instance, state) =>
         listNotifications.run(state.storage.sql, { ...list, page: { limit: 80 } } as never),
@@ -4058,20 +3944,17 @@ describe("a remote account's learned collections cost a bounded read (RES-7)", (
         (output) => expect(output).toMatchObject({ accountUri: OWNER_URI, pending: true }),
       ],
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input, check] of reads) {
-      for (const store of [few, many]) {
-        check(await runInDurableObject(store, (_instance, state) => operation.run(state.storage.sql, input as never)));
-      }
-      // The claim was taken above: measured on fresh copies.
-      const [a, b] = name === "claim" ? [await learned(20), await learned(2000)] : [few, many];
-      const fewRows = await rowsRead({ store: a }, operation, input as never);
-      const manyRows = await rowsRead({ store: b }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    // Each read runs once in each Store, so the claim is measured as it is taken.
+    const growth = reads.map(([name, operation, input, check]): GrownRead => ({
+      name,
+      operation,
+      input,
+      shows: (output) => {
+        check(output);
+        return true;
+      },
+    }));
+    expect(await grownReads(few, many, growth, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -4258,25 +4141,19 @@ describe("a streamed notification reads its item, however many notifications the
       tokenHashes: [TOKEN],
       now: NOW,
     });
-    const grown: string[] = [];
     const fewTargets = await targets(few);
     const manyTargets = await targets(many);
-    for (const [i, name] of ["newest", "middle", "oldest", "filtered"].entries()) {
-      const fewInput = unit(fewTargets[i]!);
-      const manyInput = unit(manyTargets[i]!);
+    const reads = ["newest", "middle", "oldest", "filtered"].map((name, i): GrownRead => ({
+      name,
+      operation: streamUnit,
+      input: unit(fewTargets[i]!),
+      manyInput: unit(manyTargets[i]!),
       // Not vacuous: the shown ones are presented, the filtered one is not.
-      const made = await runInDurableObject(many, (_instance, state) => streamUnit.run(state.storage.sql, manyInput));
-      expect([name, (made.payload as { type: string } | null)?.type ?? null]).toEqual([
-        name,
-        name === "filtered" ? null : "follow",
-      ]);
-      const fewRows = await rowsRead({ store: few }, streamUnit, fewInput);
-      const manyRows = await rowsRead({ store: many }, streamUnit, manyInput);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+      shows: (made) =>
+        ((made as { payload: { type: string } | null }).payload?.type ?? null) ===
+        (name === "filtered" ? null : "follow"),
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 
   it("reads a window of the journal, however long it is and whatever the viewer's history", async () => {
@@ -4293,23 +4170,28 @@ describe("a streamed notification reads its item, however many notifications the
     const few = await journal(100);
     const many = await journal(2000);
     const scan = { limit: 64 };
-    const events = await runInDurableObject(many, (_instance, state) => streamEvents.run(state.storage.sql, scan));
-    expect(events.events).toHaveLength(64);
-    // The scan, and the upgrade's and the turn's token checks, which read the journal's head.
-    const reads: [string, StoreOperation<never, unknown>, unknown][] = [
-      ["scan", streamEvents, scan],
-      ["accept", streamAccept, { tokenHash: TOKEN, now: NOW }],
-      ["tokens", streamTokens, { sockets: [{ tokenHash: TOKEN, accountId: VIEWER_ID }], now: NOW }],
+    // The scan, and the upgrade's and the turn's token checks, which read the journal's head: each accepts the token.
+    const reads: GrownRead[] = [
+      {
+        name: "scan",
+        operation: streamEvents,
+        input: scan,
+        shows: (output) => (output as { events: unknown[] }).events.length === 64,
+      },
+      {
+        name: "accept",
+        operation: streamAccept,
+        input: { tokenHash: TOKEN, now: NOW },
+        shows: (output) => (output as { status: string; accountId: string }).accountId === VIEWER_ID,
+      },
+      {
+        name: "tokens",
+        operation: streamTokens,
+        input: { sockets: [{ tokenHash: TOKEN, accountId: VIEWER_ID }], now: NOW },
+        shows: (output) => JSON.stringify(output) === JSON.stringify([TOKEN]),
+      },
     ];
-    const grown: string[] = [];
-    for (const [name, operation, input] of reads) {
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -4534,21 +4416,19 @@ describe("a streamed status reads its item, however large the viewer's home and 
       tokenHashes: [TOKEN],
       now: NOW,
     });
-    const grown: string[] = [];
     const fewChecks = checks(small);
-    for (const [i, [name, kind, subject, event, streams]] of checks(large).entries()) {
-      // Not vacuous: each check in the grown world makes what it must.
-      const made = await runInDurableObject(many, (_instance, state) =>
-        streamUnit.run(state.storage.sql, unit(kind, subject)),
-      );
-      expect([name, made.event, made.streams.map((s) => s.stream)]).toEqual([name, event, streams]);
-      const fewRows = await rowsRead({ store: few }, streamUnit, unit(kind, fewChecks[i]![2]));
-      const manyRows = await rowsRead({ store: many }, streamUnit, unit(kind, subject));
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = checks(large).map(([name, kind, subject, event, streams], i): GrownRead => ({
+      name,
+      operation: streamUnit,
+      input: unit(kind, fewChecks[i]![2]),
+      manyInput: unit(kind, subject),
+      // Not vacuous: each check makes what it must.
+      shows: (output) => {
+        const made = output as { event: string | null; streams: { stream: string }[] };
+        return JSON.stringify([made.event, made.streams.map((s) => s.stream)]) === JSON.stringify([event, streams]);
+      },
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -4679,17 +4559,27 @@ describe("R32: a delete's capture reads the smaller of the status's boosts and e
     const few = await journal(1);
     const many = await journal(256);
     const page = { eventId: "1", statusId: STATUS_ID, after: null, rows: 8 };
-    const made = await runInDurableObject(many, (_instance, state) => streamDeleteUnits.run(state.storage.sql, page));
-    expect([made.units.length, made.next?.account]).toEqual([8 * 41, String(LISTENERS + 8n)]);
-    const reads: [string, StoreOperation<never, unknown>, unknown][] = [
-      ["scan", streamEvents, { limit: 64 }],
-      ["page", streamDeleteUnits, page],
+    const reads: GrownRead[] = [
+      {
+        name: "scan",
+        operation: streamEvents,
+        input: { limit: 64 },
+        shows: (output) => (output as { events: unknown[] }).events.length === 64,
+      },
+      {
+        name: "page",
+        operation: streamDeleteUnits,
+        input: page,
+        // A page of 8 viewers, each with its 40 boosts, then the next; the one viewer alone.
+        shows: (output, at) => {
+          const made = output as { units: unknown[]; next: { account: string } | null };
+          return at === "few"
+            ? made.units.length === 41 && made.next === null
+            : made.units.length === 8 * 41 && made.next?.account === String(LISTENERS + 8n);
+        },
+      },
     ];
-    for (const [name, operation, input] of reads) {
-      const fewRows = await rowsRead({ store: few }, operation, input as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      expect(manyRows, name).toBeLessThanOrEqual(fewRows + ALLOWANCE);
-    }
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 
   it("reads a bounded scan, then each listener’s follows, however many unfollowed accounts boosted the status", async () => {
@@ -4884,20 +4774,16 @@ describe("streamed lists and conversations read their items, however large the l
     const few = await world(small);
     const many = await world(large);
     const fewReads = await reads(few, small);
-    const grown: string[] = [];
-    for (const [i, [name, operation, input, expected]] of (await reads(many, large)).entries()) {
-      // Not vacuous: each read in the grown world returns what it must.
-      const result = await runInDurableObject(many, (_instance, state) =>
-        operation.run(state.storage.sql, input as never),
-      );
-      expect([name, summary(result)]).toEqual([name, expected]);
-      const fewRows = await rowsRead({ store: few }, operation, fewReads[i]![2] as never);
-      const manyRows = await rowsRead({ store: many }, operation, input as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const growth = (await reads(many, large)).map(([name, operation, manyInput, expected], i): GrownRead => ({
+      name,
+      operation,
+      input: fewReads[i]![2],
+      manyInput,
+      // Not vacuous: each read returns what it must.
+      shows: (output, at) =>
+        JSON.stringify(summary(output)) === JSON.stringify(at === "few" ? fewReads[i]![3] : expected),
+    }));
+    expect(await grownReads(few, many, growth, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 
   it("captures a delete's lists in the same rows, however large the list and the author's history", async () => {
@@ -5090,21 +4976,19 @@ describe("streamed public and hashtag statuses read their items, however large t
       feeds: FEEDS,
       now: NOW,
     });
-    const grown: string[] = [];
     const fewChecks = checks(small);
-    for (const [i, [name, kind, subject, event, streams]] of checks(large).entries()) {
-      // Not vacuous: each check in the grown world makes what it must.
-      const made = await runInDurableObject(many, (_instance, state) =>
-        streamUnit.run(state.storage.sql, unit(kind, subject)),
-      );
-      expect([name, made.event, made.streams.map((s) => s.stream)]).toEqual([name, event, streams]);
-      const fewRows = await rowsRead({ store: few }, streamUnit, unit(kind, fewChecks[i]![2]));
-      const manyRows = await rowsRead({ store: many }, streamUnit, unit(kind, subject));
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${name}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = checks(large).map(([name, kind, subject, event, streams], i): GrownRead => ({
+      name,
+      operation: streamUnit,
+      input: unit(kind, fewChecks[i]![2]),
+      manyInput: unit(kind, subject),
+      // Not vacuous: each check makes what it must.
+      shows: (output) => {
+        const made = output as { event: string | null; streams: { stream: string }[] };
+        return JSON.stringify([made.event, made.streams.map((s) => s.stream)]) === JSON.stringify([event, streams]);
+      },
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 
   it("captures a public status's tombstone in the same rows, however large its hashtag's timeline", async () => {
@@ -5310,13 +5194,14 @@ describe("the admin's report list reads a page, however many reports do not matc
       const fewPages = await walk(few);
       const manyPages = await walk(many);
       expect(fewPages.length, c.name).toBe(FEW / LIMIT);
-      for (const [i, input] of manyPages.entries()) {
-        const fewRows = await rowsRead({ store: few }, listAdminReports, fewPages[i] as never);
-        const manyRows = await rowsRead({ store: many }, listAdminReports, input as never);
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${c.name}, page ${i + 1}: ${fewRows} -> ${manyRows}`);
-        }
-      }
+      const growth = manyPages.map((input, i): GrownRead => ({
+        name: `${c.name}, page ${i + 1}`,
+        operation: listAdminReports,
+        input: fewPages[i],
+        manyInput: input,
+        shows: (output) => (output as { value?: { items: unknown[] } }).value?.items.length === LIMIT,
+      }));
+      grown.push(...(await grownReads(few, many, growth, { allowance: ALLOWANCE })));
     }
     expect(grown).toEqual([]);
   }, 300_000);
@@ -5584,28 +5469,27 @@ describe("the admin's account list reads a page, however many accounts do not ma
       }
       expect(walked, c.name).toEqual(all);
       // The newest, a middle and the final page of each store: the expected accounts, and the same rows read.
-      const read: number[][] = [];
-      for (const store of [few, many]) {
-        const ids = store === few ? all : await matchIds(many, c.matching);
-        const cursors = ids.length < 5 ? [undefined] : [undefined, ids[Math.floor(ids.length / 2)], ids.at(-5)];
-        const rows: number[] = [];
-        for (const cursor of cursors) {
-          const from = cursor === undefined ? 0 : ids.indexOf(cursor) + 1;
-          const page = await list(store, c.filter, cursor);
-          expect(page, c.name).toMatchObject({ status: "ok", more: from + LIMIT < ids.length });
-          expect(page.status === "ok" ? page.items.map((account) => account.id) : page.status, c.name).toEqual(
-            ids.slice(from, from + LIMIT),
+      const ids = { few: all, many: await matchIds(many, c.matching) };
+      const cursorsOf = (of: string[]) =>
+        of.length < 5 ? [undefined] : [undefined, of[Math.floor(of.length / 2)], of.at(-5)];
+      const cursors = { few: cursorsOf(ids.few), many: cursorsOf(ids.many) };
+      const growth = cursors.few.map((cursor, n): GrownRead => ({
+        name: `${c.name}, cursor ${n}`,
+        operation: listAdminAccounts,
+        input: inputOf(c.filter, cursor),
+        manyInput: inputOf(c.filter, cursors.many[n]),
+        shows: (output, at) => {
+          const [of, from] = [ids[at], cursors[at][n]];
+          const start = from === undefined ? 0 : of.indexOf(from) + 1;
+          const page = (output as { value: AdminAccountList }).value;
+          return (
+            page.status === "ok" &&
+            page.more === start + LIMIT < of.length &&
+            JSON.stringify(page.items.map((account) => account.id)) === JSON.stringify(of.slice(start, start + LIMIT))
           );
-          rows.push(await rowsRead({ store }, listAdminAccounts, inputOf(c.filter, cursor)));
-        }
-        read.push(rows);
-      }
-      for (const [n, manyRows] of read[1]!.entries()) {
-        const fewRows = read[0]![n]!;
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${c.name}, cursor ${n}: ${fewRows} -> ${manyRows}`);
-        }
-      }
+        },
+      }));
+      grown.push(...(await grownReads(few, many, growth, { allowance: ALLOWANCE })));
     }
     expect(grown).toEqual([]);
   }, 600_000);
@@ -5887,31 +5771,40 @@ describe("statuses with quotes are presented from their quote rows (RES-7)", () 
       present: PRESENT,
     };
     const one = { credential, id: page(0), now: NOW, present: PRESENT };
-    const measured: number[][] = [];
-    for (const [quoted, depth] of [
-      [20, 2],
-      [2000, 200],
-    ] as const) {
-      const store = await quoting(quoted, depth);
-      const output = await runInDurableObject(store, (_instance, state) =>
-        accountStatuses.run(state.storage.sql, list),
-      );
-      const items = output.status === "ok" ? (output.value?.items ?? []) : [];
-      // Not vacuous: every status shows the quoted status with its count and, as a ShallowQuote, the chain's first.
-      expect(items).toHaveLength(20);
-      for (const status of items) {
-        expect(status.quote).toMatchObject({
-          state: "accepted",
-          quoted_status: { id: TARGET, quotes_count: quoted, quote: { state: "accepted", quoted_status_id: chain(0) } },
-        });
-      }
-      measured.push([await rowsRead({ store }, accountStatuses, list), await rowsRead({ store }, getStatus, one)]);
-    }
-    const [few = [], many = []] = measured;
-    const grown = ["page", "status"].flatMap((name, k) =>
-      (many[k] ?? Infinity) <= (few[k] ?? 0) + ALLOWANCE ? [] : [`${name}: ${few[k]} -> ${many[k]}`],
-    );
-    expect(grown).toEqual([]);
+    // Not vacuous: each status shows the quoted status with its count and, as a ShallowQuote, the chain's first.
+    const showsQuote = (status: { quote?: unknown }, at: "few" | "many") => {
+      expect(status.quote).toMatchObject({
+        state: "accepted",
+        quoted_status: {
+          id: TARGET,
+          quotes_count: at === "few" ? 20 : 2000,
+          quote: { state: "accepted", quoted_status_id: chain(0) },
+        },
+      });
+      return true;
+    };
+    const reads: GrownRead[] = [
+      {
+        name: "page",
+        operation: accountStatuses,
+        input: list,
+        shows: (output, at) => {
+          const items = (output as { value: { items: { quote?: unknown }[] } }).value.items;
+          return items.length === 20 && items.every((status) => showsQuote(status, at));
+        },
+      },
+      {
+        name: "status",
+        operation: getStatus,
+        input: one,
+        shows: (output, at) => {
+          const viewed = (output as { value: { status: string; value?: { quote?: unknown } } }).value;
+          return viewed.status === "ok" && showsQuote(viewed.value ?? {}, at);
+        },
+      },
+    ];
+    const [few, many] = [await quoting(20, 2), await quoting(2000, 200)];
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 
@@ -5981,19 +5874,16 @@ describe("the quotes list reads a window, however many quotes a status has (RES-
     const few = await quoted(layout(20));
     const many = await quoted(layout(2000));
     const pages: PageQuery[] = [PAGE, { ...PAGE, maxId: quoting(3000) }, { ...PAGE, minId: "1" }];
-    const grown: string[] = [];
-    for (const page of pages) {
-      for (const store of [few, many]) {
-        const shownPage = await list(store, page);
-        expect([JSON.stringify(page), shownPage.items.length]).toEqual([JSON.stringify(page), 20]);
-      }
-      const fewRows = await rowsRead({ store: few }, statusQuotes, input(page));
-      const manyRows = await rowsRead({ store: many }, statusQuotes, input(page));
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${JSON.stringify(page)}: ${fewRows} -> ${manyRows}`);
-      }
-    }
-    expect(grown).toEqual([]);
+    const reads = pages.map((page): GrownRead => ({
+      name: JSON.stringify(page),
+      operation: statusQuotes,
+      input: input(page),
+      shows: (output) => {
+        const answer = output as { status: string; value: { status: string; value: Listed } };
+        return answer.status === "ok" && answer.value.status === "ok" && answer.value.value.items.length === 20;
+      },
+    }));
+    expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 
   it("answers empty pages whose next link moves on by the window when 2,000 quotes are hidden", async () => {
