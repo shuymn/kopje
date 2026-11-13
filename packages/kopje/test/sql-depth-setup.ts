@@ -14,6 +14,7 @@ import {
   sampleKey,
   statementId,
 } from "./plan-audit";
+import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { PLAN_AUDIT_ENTRIES } from "./plan-audit-entries";
 import { auditStore, type PlannedOrRefused } from "./plan-audit-store";
 
@@ -218,7 +219,7 @@ export async function auditPlans(
     sites: seen.sites,
     samples: seen.samples.map((params) => cache.plans.get(keyOf(sql, params))!),
   }));
-  const decision = auditDecision(audited, PLAN_AUDIT_ENTRIES);
+  const decision = auditDecision(audited, PLAN_AUDIT_ENTRIES, PLAN_AUDIT_ALLOWANCES);
   return { failures: [...failures, ...decision.failures], unseen: decision.unseen };
 }
 

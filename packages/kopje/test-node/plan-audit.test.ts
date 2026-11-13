@@ -7,6 +7,8 @@ import {
   auditDecision,
   bindsPattern,
   callerFrames,
+  type FragmentAllowance,
+  fragmentCount,
   normalizeSql,
   type PlanAuditEntry,
   type PlanRow,
@@ -671,6 +673,82 @@ describe("plan audit decision", () => {
     const decision = auditDecision([statement("aa", ["quotes: SCAN q"])], [listed]);
     expect(decision.failures).toEqual([expect.stringMatching(/offending lines:\n {4}quotes: SCAN q$/m)]);
     expect(decision.unseen).toHaveLength(1);
+  });
+
+  // A fragment allowance as the audit reads it, in the form of the suspend blocks' (test/plan-audit-allowances.ts,
+  // whose own fragment test/plan-audit.test.ts plans): per sample, its scan passes while the plan has no more lines of
+  // it than the statement contains the fragment.
+  describe("a fragment allowance", () => {
+    const fragment = `EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
+	WHERE severity = 'suspend')`;
+    const scan =
+      "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend";
+    const allowances: FragmentAllowance[] = [{ fragment, scan, reason: "r", witness: "w" }];
+    const detail = scan.slice(scan.indexOf(": ") + 2);
+    const planned = (sql: string, lines: number, others: string[] = []): AuditedStatement => ({
+      id: "aa",
+      sql,
+      sites: ["src/domain/x.ts:1 reader"],
+      samples: [
+        {
+          params: [],
+          plan: rows(
+            ...Array.from({ length: lines }, () => detail),
+            ...others.map((o) => o.slice(o.indexOf(": ") + 2)),
+          ),
+          violations: [...(lines > 0 ? [scan] : []), ...others],
+        },
+      ],
+    });
+    const decide = (statement: AuditedStatement, entries: PlanAuditEntry[] = []) =>
+      auditDecision([statement], entries, allowances).failures;
+
+    it("counts the fragment's tokens, wherever whitespace and comments fall, and not inside a literal", () => {
+      const spaced = fragment.replaceAll(/\s+/g, " /* c */\n ");
+      expect(fragmentCount(`SELECT ${fragment} AS a, ${spaced} AS b`, fragment)).toBe(2);
+      expect(fragmentCount(`SELECT ${fragment.replace("'suspend'", "'noop'")} AS a`, fragment)).toBe(0);
+      expect(fragmentCount(`SELECT 1 AS "${fragment}"`, fragment)).toBe(0);
+      expect(fragmentCount(`SELECT '${fragment.replaceAll("'", "''")}'`, fragment)).toBe(0);
+    });
+
+    it("passes the scan of a statement that contains the fragment, with no entry of its own", () => {
+      expect(decide(planned(`SELECT ${fragment} AS x`, 1))).toEqual([]);
+      expect(decide(planned(`SELECT ${fragment} AS x, ${fragment} AS y`, 2))).toEqual([]);
+      // Fewer lines than occurrences: a predicate the planner evaluated once.
+      expect(decide(planned(`SELECT ${fragment} AS x, ${fragment} AS y`, 1))).toEqual([]);
+      // The statement's other scans are still judged.
+      expect(decide(planned(`SELECT ${fragment} AS x`, 1, ["accounts: SCAN a"]))).toEqual([
+        expect.stringMatching(/offending lines:\n {4}accounts: SCAN a$/m),
+      ]);
+    });
+
+    it("fails a plan with the scan more often than the statement contains the fragment", () => {
+      for (const [sql, lines] of [
+        [`SELECT ${fragment} AS x`, 2],
+        [`SELECT ${fragment} AS x, ${fragment} AS y`, 3],
+      ] as const) {
+        expect(decide(planned(sql, lines)), sql).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+        ]);
+        // An entry for the statement still passes it.
+        expect(decide(planned(sql, lines), [entry("aa", [scan], { disposition: "deliberate", reason: "r" })])).toEqual(
+          [],
+        );
+      }
+    });
+
+    it("fails the same scan in a statement without the fragment", () => {
+      const walk = "SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend";
+      expect(decide(planned(walk, 1))).toEqual([
+        expect.stringMatching(new RegExp(`offending lines:\\n {4}${scan}$`, "m")),
+      ]);
+    });
+
+    it("judges each sample by its own plan", () => {
+      const statement = planned(`SELECT ${fragment} AS x`, 1);
+      const twice = { ...statement.samples[0]!, plan: rows(detail, detail) };
+      expect(decide({ ...statement, samples: [statement.samples[0]!, twice] })).toHaveLength(1);
+    });
   });
 
   it("does not judge an entry whose statement the run did not execute", () => {

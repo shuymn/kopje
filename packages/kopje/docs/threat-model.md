@@ -3625,8 +3625,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   size of edits. _Enforced (main)_ for scans under stale statistics: every statement the domain code runs in the
   Workers suites is planned under singleton statistics, and a whole-table or whole-index read fails the suite unless
   `test/plan-audit-entries.ts` lists it for that statement (`test/plan-audit.test.ts` ("fails a statement whose pin is
-  removed")); _Gap:_ the listed statements (#1468), statements no test runs, and prefix or range walks the plan shows
-  as a search. _Enforced (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap:
+  removed")), or a reviewed fragment allowance (`test/plan-audit-allowances.ts`) stands for it: the suspend-block
+  probe (`SUSPEND_BLOCKS_SQL`) passes in a statement whose plan shows its scan no more often than the statement
+  contains it, and reads one entry however many blocks exist (`test/plan-audit.test.ts` ("reads one suspend block
+  however many there are")); _Gap:_ the listed statements (#1468), statements no test runs, and prefix or range walks
+  the plan shows as a search. _Enforced (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap:
   untested_); the tag feed's candidates are the hashtags of public statuses (`status_tags.public`, through a partial
   index), so it never reads the tag's unlisted, private, direct or limited statuses, and it reads each requested tag
   (at most five) in id order from the cursor until it has a page, so a page reads the same rows however long the tag's
