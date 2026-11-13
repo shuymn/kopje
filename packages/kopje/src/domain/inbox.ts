@@ -23,7 +23,7 @@ import {
   statusMediaWindowSql,
   storedTime,
 } from "../platform/stored-bounds";
-import { followActivity, followAnswerActivity, followUri, recordOutbound, undoFollowActivity } from "./activities";
+import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { type FetchSigner, fetchSignerOf, instanceDomainOf } from "./actors";
 import {
   activeMuteSql,
@@ -130,6 +130,7 @@ import {
 import { RowBudget, totalChanges } from "./row-budget";
 import { recountStatus, recountStatuses, UNTAG_WINDOW_SQL, withdrawLocalBoost } from "./statuses";
 import { streamDelete } from "./streaming";
+import { unfollowRemote } from "./unfollow";
 
 // Inbound activities about actors and relationships, applied in one Store transaction each. The Worker has
 // already verified the HTTP signature, bound the signer to the actor (ID-1), fetched and sanitized what it needed
@@ -505,36 +506,6 @@ function removeFollow(db: Db, followerId: string, targetId: string): boolean {
   const removed = db.run("DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", followerId, targetId);
   db.run(END_FOLLOW_NOTIFICATIONS_SQL, targetId, followerId);
   return removed > 0;
-}
-
-// Ends a local account's follow of a remote account and records its Undo (Mastodon's UnfollowService), as the
-// unfollow API does. A migrated edge without a uri is named as this instance would have named it.
-function unfollowRemote(
-  db: Db,
-  local: { id: string; uri: string },
-  remote: { id: string; uri: string },
-  now: number,
-): void {
-  const removed = db.first<{ id: string; uri: string | null }>(
-    "SELECT CAST(id AS TEXT) AS id, uri FROM follows WHERE account_id = ? AND target_account_id = ?",
-    local.id,
-    remote.id,
-  );
-  if (removed === undefined) {
-    return;
-  }
-  removeFollow(db, local.id, remote.id);
-  recordOutbound(
-    db,
-    local.id,
-    undoFollowActivity({
-      followUri: removed.uri ?? followUri(local.uri, removed.id),
-      actorUri: local.uri,
-      targetUri: remote.uri,
-      targetId: remote.id,
-    }),
-    now,
-  );
 }
 
 // Accept or Reject of a remote Follow, as an outbound intent delivered to the follower's shared inbox, or its personal
