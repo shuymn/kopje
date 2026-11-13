@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { expect } from "vitest";
 
+import { type DeletedStatus, deleteSigning } from "../src/domain/activities";
 import type { UserCredential } from "../src/domain/auth";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
 import { prepareDelete } from "../src/domain/statuses";
@@ -10,6 +11,15 @@ import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { writtenBy } from "./inbox-store-helpers";
+
+// The Delete deleteSigning gives a status to sign, which the test expects it to.
+export function signedActivity(deleted: Pick<DeletedStatus, "uri" | "actorUri" | "visibility">) {
+  const signing = deleteSigning(deleted);
+  if (signing.kind !== "signed") {
+    throw new Error(`not signed: ${signing.kind}`);
+  }
+  return signing.activity;
+}
 
 // The signed Delete a DELETE of `id` records, as the API's handler makes it (mastodon/statuses.ts deleteStatus):
 // prepareDelete, then signAsAuthor with the fixture key; null when the status's Delete is recorded unsigned.

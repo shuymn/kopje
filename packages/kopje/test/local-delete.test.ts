@@ -2,13 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
-import {
-  deleteActivity,
-  mainKeyId,
-  SIGNATURE_VALUE_MAX,
-  signableDeleteActivity,
-  signedDeleteEnvelope,
-} from "../src/domain/activities";
+import { deleteActivity, mainKeyId, SIGNATURE_VALUE_MAX, signedDeleteEnvelope } from "../src/domain/activities";
 import { audienceTargets, claimDeliveries, completeDelivery, TARGET_CHUNK_SIZE } from "../src/domain/deliveries";
 import { deleteStatusBatch, FORWARD_BODY_MAX, PURGE_BATCH, runInboundJobs } from "../src/domain/inbox";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
@@ -27,6 +21,7 @@ import {
   batch,
   batches,
   deleteSignature,
+  signedActivity,
   remoteAccountsAt,
   retractionInboxes,
   seedStagingRetractions,
@@ -158,7 +153,7 @@ const SIGNED_SKELETON = (() => {
     poll: true,
   };
   const signed = {
-    ...signableDeleteActivity(deleted)!,
+    ...signedActivity(deleted),
     signature: {
       "@context": "https://w3id.org/identity/v1",
       creator: mainKeyId(A),
@@ -197,7 +192,7 @@ describe("the Delete of a local status (VIS-3, RES-6)", () => {
     const status = await localStatus(t, { status: "bounded", poll: { options: ["a", "b"], expires_in: 600 } });
     // alice's actor id, the status's uri and MAX_DELETE_NAMED mentioned accounts' actor ids at their bound, with NUL
     // and astral characters, as an import may store them; more mentions than it names, silent ones among them. Such
-    // an actor id is not canonical, so the Delete is unsigned (activities.ts signableDeleteActivity).
+    // an actor id is not canonical, so the Delete is unsigned (activities.ts deleteSigning).
     await sql(
       t.store,
       "UPDATE accounts SET uri = ? WHERE id = ?",

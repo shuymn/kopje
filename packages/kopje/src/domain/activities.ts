@@ -491,14 +491,15 @@ export type DeletedStatus = {
 
 // RemoveStatusService's Delete (ActivityPub::DeleteSerializer), unsigned, addressed as the status was (to and cc of its
 // Note, over the accounts it names): the Delete of a private, direct or limited status, and of a public or unlisted one
-// whose identities are not canonical (signableDeleteActivity); a signed one keeps this addressing to place its copies
+// whose identity cannot be signed (deleteSigning); a signed one keeps this addressing to place its copies
 // (signedDeleteEnvelope). Its audience is the status's followers, if it reached them, and the status itself, whose
 // accounts (every mention, and for a public or unlisted status its boosters, quoters and parent's author) and, for a
 // public or unlisted poll, its voters, are read when its targets are staged (audience.ts recipientsFor), while the job
 // keeps their rows (inbox.ts deleteStatusBatch): so the recorded envelope stays within its byte bound (RES-6) whatever
 // the status's fan-in.
 export function deleteActivity(deleted: DeletedStatus): OutboundEnvelope {
-  const { to, cc } = deleteAddressing(deleted);
+  const named = deleted.named.map((uri) => ({ accountId: "", uri, silent: false }));
+  const { to, cc } = addressingOf(deleted.visibility, followersUri(deleted.actorUri), named);
   const distributable = isDistributable(deleted.visibility);
   return {
     activity: {
@@ -520,11 +521,6 @@ export function deleteActivity(deleted: DeletedStatus): OutboundEnvelope {
   };
 }
 
-function deleteAddressing(deleted: DeletedStatus): { to: string[]; cc: string[] } {
-  const named = deleted.named.map((uri) => ({ accountId: "", uri, silent: false }));
-  return addressingOf(deleted.visibility, followersUri(deleted.actorUri), named);
-}
-
 // The context of a signed status Delete: every term its body uses is defined (the Tombstone's atomUri, as Mastodon's
 // context_helper.rb:18 defines it), so jsonld's safe canonicalization can sign it and Mastodon's safe_for_forwarding?
 // keeps the signature (app/helpers/json_ld_helper.rb), and security/v1 defines the signature's terms.
@@ -539,29 +535,55 @@ export function mainKeyId(actorUri: string): string {
   return `${actorUri}#main-key`;
 }
 
-// Whether `uri` is an absolute URL in its canonical spelling without a fragment: one a signature's creator and a
-// verifier's parse (Fedify's URL, Mastodon's) leave unchanged. Kopje's own ids are; an imported one may not be.
-function canonicalId(uri: string): boolean {
-  return URL.canParse(uri) && new URL(uri).href === uri && !uri.includes("#");
+// Whether `uri` can be named in a signed Delete, every time: an http or https URL in the spelling URL serializing
+// gives it, with no fragment. Fedify writes the creator as new URL(keyId).href, which must be the one the record
+// expects, and verifiers compare parsed ids. Such a URL is ASCII with no whitespace (serializing percent-encodes it),
+// so it is also an absolute IRI to jsonld 9 (lib/url.js isAbsoluteRegex), whose toRdf drops any other IRI and whose
+// safe mode, Fedify's, then refuses the document; any other scheme might be a compact IRI (`as:x`) the context expands.
+// The creator adds `#main-key` and the Delete's id `#delete`, which verifiers strip or compare as written.
+function signableId(uri: string): boolean {
+  if (!URL.canParse(uri) || uri.includes("#")) {
+    return false;
+  }
+  const url = new URL(uri);
+  return (url.protocol === "https:" || url.protocol === "http:") && url.href === uri;
 }
+
+// How a status's Delete is recorded: signed (`activity`, the Delete the Worker signs), unsigned because its
+// visibility is never signed (private, direct, limited), or unsigned because an imported identity can never be signed
+// (`reason`: the status uri or the author's actor id fails signableId), which deleteStatus logs. A boost's Undo is
+// never signed and never reaches this.
+export type DeleteSigning =
+  | { kind: "signed"; activity: Record<string, unknown> }
+  | { kind: "visibility" }
+  | { kind: "identity"; reason: "status_uri" | "actor_id" };
 
 // The Delete of a public or unlisted status as its author LD-signs it (VIS-3; ActivityPub::DeleteSerializer under
 // RemoveStatusService's always_sign, Status#sign?): addressed to Public alone, so it names no recipient and stays
-// within FORWARD_BODY_MAX whatever the status mentioned. Null for any other visibility, whose Delete is never signed,
-// and for an imported identity not in its canonical spelling (canonicalId), whose proof no receiver would match to the
-// actor: their Delete is recorded unsigned (deleteActivity). The Worker signs it between prepareDelete and deleteStatus
-// (statuses.ts), which records it only if, without its signature, it is this activity of the Store's own snapshot.
-export function signableDeleteActivity(deleted: DeletedStatus): Record<string, unknown> | null {
-  if (!isDistributable(deleted.visibility) || !canonicalId(deleted.actorUri) || !canonicalId(deleted.uri)) {
-    return null;
+// within FORWARD_BODY_MAX whatever the status mentioned. Any other visibility's Delete, and one whose identity an import
+// stored in a spelling that cannot be signed, is recorded unsigned (deleteActivity): a 503 there would leave a status
+// its author can never delete. The Worker signs it between prepareDelete and deleteStatus (statuses.ts), which records
+// it only if, without its signature, it is this activity of the Store's own snapshot.
+export function deleteSigning(deleted: Pick<DeletedStatus, "uri" | "actorUri" | "visibility">): DeleteSigning {
+  if (!isDistributable(deleted.visibility)) {
+    return { kind: "visibility" };
+  }
+  if (!signableId(deleted.actorUri)) {
+    return { kind: "identity", reason: "actor_id" };
+  }
+  if (!signableId(deleted.uri)) {
+    return { kind: "identity", reason: "status_uri" };
   }
   return {
-    "@context": SIGNED_DELETE_CONTEXT,
-    id: `${deleted.uri}#delete`,
-    type: "Delete",
-    actor: deleted.actorUri,
-    to: [PUBLIC_COLLECTION],
-    object: { id: deleted.uri, type: "Tombstone", atomUri: deleted.uri },
+    kind: "signed",
+    activity: {
+      "@context": SIGNED_DELETE_CONTEXT,
+      id: `${deleted.uri}#delete`,
+      type: "Delete",
+      actor: deleted.actorUri,
+      to: [PUBLIC_COLLECTION],
+      object: { id: deleted.uri, type: "Tombstone", atomUri: deleted.uri },
+    },
   };
 }
 
@@ -604,7 +626,9 @@ export function signedAs(signed: Record<string, unknown>, signable: Record<strin
 // personal copy included, VIS-2), with the audience of deleteActivity and its addressing, by which staging still
 // places each copy (deliveries.ts planOf), as the unsigned form would be placed.
 export function signedDeleteEnvelope(deleted: DeletedStatus, signed: Record<string, unknown>): OutboundEnvelope {
-  return { ...deleteActivity(deleted), activity: signed, immutable: true, addressing: deleteAddressing(deleted) };
+  const unsigned = deleteActivity(deleted);
+  const { to, cc } = unsigned.activity as { to: string[]; cc: string[] };
+  return { ...unsigned, activity: signed, immutable: true, addressing: { to, cc } };
 }
 
 // A favourite goes to the status's author only.

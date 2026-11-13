@@ -36,7 +36,7 @@ import {
   quoteRequestActivity,
   recordOutbound,
   revocationRejectActivity,
-  signableDeleteActivity,
+  deleteSigning,
   signedAs,
   signedDeleteEnvelope,
   stampDeleteActivity,
@@ -1205,9 +1205,9 @@ export const prepareDelete = userReadOperation<{ id: string }, Acted<DeletePrepa
     if (current === null) {
       return { status: "not_found" };
     }
-    const deleted = current.reblog_of_id === null ? deletedStatus(db, current) : null;
-    const activity = deleted === null ? null : signableDeleteActivity(deleted);
-    if (deleted === null || activity === null) {
+    const identity = current.reblog_of_id === null ? deletedIdentity(db, current) : null;
+    const signing = identity === null ? null : deleteSigning(identity);
+    if (identity === null || signing?.kind !== "signed") {
       return { status: "ok", value: { sign: null } };
     }
     const key = accountKey(db, accountId);
@@ -1216,7 +1216,7 @@ export const prepareDelete = userReadOperation<{ id: string }, Acted<DeletePrepa
       value:
         key === null
           ? { sign: null, unsignable: true }
-          : { sign: { activity, keyId: mainKeyId(deleted.actorUri), key } },
+          : { sign: { activity: signing.activity, keyId: mainKeyId(identity.actorUri), key } },
     };
   },
 );
@@ -1259,13 +1259,13 @@ export const deleteStatus = userMediaDeleteOperation<
     return { status: "not_found" };
   }
   const deleted = current.reblog_of_id === null ? deletedStatus(db, current) : null;
-  const signable = deleted === null ? null : signableDeleteActivity(deleted);
+  const signing = deleted === null ? null : deleteSigning(deleted);
   // The signed Delete is recorded only if it is the one this snapshot makes (prepareDelete), checked before anything
   // is written: a returned answer does not roll the transaction back.
   if (
-    signable === null
+    signing?.kind !== "signed"
       ? input.signed !== null
-      : input.signed === null || !signedAs(input.signed, signable, mainKeyId(deleted!.actorUri))
+      : input.signed === null || !signedAs(input.signed, signing.activity, mainKeyId(deleted!.actorUri))
   ) {
     return { status: "stale" };
   }
@@ -1282,6 +1282,10 @@ export const deleteStatus = userMediaDeleteOperation<
   // boosts its request discarded, so its race is narrower (VIS-3).
   if (deleted !== null) {
     supersedeEarlier(db, accountId, deleted.uri, DELETE_SUPERSEDES);
+    // DATA-5: the reason alone, no identity. A public or unlisted status whose imported identity cannot be signed.
+    if (signing?.kind === "identity") {
+      console.warn({ event: "kopje.delivery.delete_unsigned", reason: signing.reason });
+    }
     const envelope = input.signed === null ? deleteActivity(deleted) : signedDeleteEnvelope(deleted, input.signed);
     beginRetraction(db, accountId, envelope, input.now, 1, "bounded");
   }
@@ -1332,14 +1336,8 @@ export const deleteStatus = userMediaDeleteOperation<
 // received the status under such an id keeps it (VIS-3). A mention whose actor id is past ACTOR_URI_LIMIT is not
 // named: it gets a copy of its own when the Delete is staged.
 function deletedStatus(db: Db, current: OwnStatus): DeletedStatus | null {
-  const row = db.first<{ uri: string; actor_uri: string; poll: number }>(
-    `SELECT ${statusUriSql("s.uri")} AS uri, ${actorUriSql("a.uri")} AS actor_uri,
-			EXISTS (SELECT 1 FROM polls p WHERE p.status_id = s.id) AS poll
-		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
-    current.id,
-  );
-  const usable = (value: string, limit: number) => value !== "" && withinIdentityBound(value, limit);
-  if (row === undefined || !usable(row.uri, STATUS_URI_LIMIT) || !usable(row.actor_uri, ACTOR_URI_LIMIT)) {
+  const identity = deletedIdentity(db, current);
+  if (identity === null) {
     return null;
   }
   const named = db
@@ -1350,13 +1348,35 @@ function deletedStatus(db: Db, current: OwnStatus): DeletedStatus | null {
       current.id,
     )
     .map((m) => m.uri)
-    .filter((uri) => usable(uri, ACTOR_URI_LIMIT));
+    .filter((uri) => usableIdentity(uri, ACTOR_URI_LIMIT));
+  return { ...identity, named };
+}
+
+function usableIdentity(value: string, limit: number): boolean {
+  return value !== "" && withinIdentityBound(value, limit);
+}
+
+// What a Delete of the status says of it but its named mentions (deletedStatus): its id, uri, author's actor id,
+// visibility and whether it has a poll; null as deletedStatus is. All a signature needs (prepareDelete).
+function deletedIdentity(db: Db, current: OwnStatus): Omit<DeletedStatus, "named"> | null {
+  const row = db.first<{ uri: string; actor_uri: string; poll: number }>(
+    `SELECT ${statusUriSql("s.uri")} AS uri, ${actorUriSql("a.uri")} AS actor_uri,
+			EXISTS (SELECT 1 FROM polls p WHERE p.status_id = s.id) AS poll
+		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
+    current.id,
+  );
+  if (
+    row === undefined ||
+    !usableIdentity(row.uri, STATUS_URI_LIMIT) ||
+    !usableIdentity(row.actor_uri, ACTOR_URI_LIMIT)
+  ) {
+    return null;
+  }
   return {
     id: current.id,
     uri: row.uri,
     actorUri: row.actor_uri,
     visibility: current.visibility,
-    named,
     poll: row.poll === 1,
   };
 }

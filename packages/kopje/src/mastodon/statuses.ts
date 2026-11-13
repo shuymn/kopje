@@ -344,10 +344,13 @@ const DELETE_ROUNDS = 3;
 // then (statuses.ts deleteStatus). When it cannot be signed, nothing is written and the DELETE answers 503: the status
 // stays, so a later DELETE can still send its proven Delete.
 async function deletion(c: ApiContext, deps: Parameters<ApiHandler>[1], deleteMedia: boolean) {
-  const credential = userCredential(c, deps);
   const id = statusId(c);
+  // The credential and its time are taken anew for each Store call, after the awaits before it (the signing included),
+  // so a token that expires while the Delete is signed records nothing (docs/engineering.md).
   for (let round = 0; round < DELETE_ROUNDS; round++) {
-    const prepared = authorized(await storeCall(c, deps, (s, b) => s.prepareDelete(b, { credential, id })));
+    const prepared = authorized(
+      await storeCall(c, deps, (s, b) => s.prepareDelete(b, { credential: userCredential(c, deps), id })),
+    );
     if (prepared.status !== "ok") {
       return prepared;
     }
@@ -365,7 +368,14 @@ async function deletion(c: ApiContext, deps: Parameters<ApiHandler>[1], deleteMe
     }
     const result = authorized(
       await storeCall(c, deps, (s, b) =>
-        s.deleteStatus(b, { credential, id, deleteMedia, signed, now: deps.now(), present: present(c) }),
+        s.deleteStatus(b, {
+          credential: userCredential(c, deps),
+          id,
+          deleteMedia,
+          signed,
+          now: deps.now(),
+          present: present(c),
+        }),
       ),
     );
     if (result.status !== "stale") {
