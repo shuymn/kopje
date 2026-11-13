@@ -1,4 +1,4 @@
-import { type DocumentLoader, exportSpki, signJsonLd, signObject, verifyJsonLd } from "@fedify/fedify";
+import { type DocumentLoader, exportSpki, signObject, verifyJsonLd } from "@fedify/fedify";
 import { CryptographicKey, Delete, Multikey, Person } from "@fedify/vocab";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
@@ -35,6 +35,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
+import { mastodonDelete, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
 import { batch, batches, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
@@ -67,7 +68,6 @@ import { seedReceipts } from "./status-helpers";
 
 const FANS = "https://fans.example";
 const RECEIPTS = "https://receipts.example/inbox";
-const SECURITY = "https://w3id.org/security/v1";
 
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -114,24 +114,13 @@ async function original(w: World, extra: Record<string, unknown> = {}): Promise<
   return { uri: note.id, id: await statusId(w.t.store, note.id) };
 }
 
-// bob's Delete of `uri` as Mastodon writes it (a Tombstone), unsigned.
+// bob's Delete of `uri` as Mastodon writes it (ActivityPub::DeleteSerializer), unsigned, its id made distinct.
 function deletion(actor: TestActor, uri: string): Record<string, unknown> {
-  return {
-    "@context": [AS, SECURITY],
-    id: `${uri}#delete-${nextId()}`,
-    type: "Delete",
-    actor: actor.uri,
-    to: [PUBLIC],
-    object: { id: uri, type: "Tombstone" },
-  };
+  return mastodonDelete(actor, uri, `${uri}#delete-${nextId()}`);
 }
 
 // The Delete as Mastodon's always_sign writes it: RsaSignature2017 by `signer`'s key.
-function ldSigned(json: Record<string, unknown>, signer: TestActor) {
-  return signJsonLd(json, signer.privateKey, new URL(signer.keyId), { contextLoader: contexts }) as Promise<
-    Record<string, unknown>
-  >;
-}
+const ldSigned = mastodonSigned;
 
 // The answers the Store gave receiveActivity, as the counting Store saw them.
 function answers(w: World): ReceiveResult[] {
@@ -227,7 +216,7 @@ describe("the forward of a proven Delete through a local boost", () => {
     const w = await world();
     const { o, b } = await boosted(w);
     // Neither reaches anyone: an activity of alice's keyed by O's own uri, retained with a row at an inbox the boost
-    // never reached, and an account the foreign Delete names.
+    // never reached, and an account no one names.
     await sql(
       w.t.store,
       `INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url) VALUES ('860000000000000001',
@@ -249,7 +238,7 @@ describe("the forward of a proven Delete through a local boost", () => {
       retained!.id,
       ALICE,
     );
-    const body = await ldSigned({ ...deletion(w.bob, o.uri), cc: ["https://named.example/users/n"] }, w.bob);
+    const body = await ldSigned(deletion(w.bob, o.uri), w.bob);
     expect(await w.post(w.bob, body)).toBe(202);
     expect(proofRounds(w)).toBe(1);
     // The first transaction: hidden, one intent with no targets yet, its id in the job's bound.
@@ -347,12 +336,7 @@ describe("the proof round (need proof)", () => {
     for (const s of sent) {
       expect(s.body).toBe(JSON.stringify(json));
       expect(
-        await verifyAuthorProof(
-          s.json,
-          { id: `${note.id}#delete`, actor: erin.uri, object: note.id },
-          erin.document,
-          contexts,
-        ),
+        await verifyAuthorProof(s.json, { id: `${note.id}#delete`, actor: erin.uri, object: note.id }, erin.document),
       ).toBe(true);
     }
   });
@@ -1061,14 +1045,15 @@ describe("the body from the request to the POST", () => {
     const w = await world();
     const personal = await loner(w);
     const { o } = await boosted(w);
-    // Inside the signed graph (known terms only, as the LD signature requires): the strings, and 1e20, sent as
-    // written and serialized by the Store as JSON.stringify does.
-    const unsigned = JSON.parse(
-      `${JSON.stringify(deletion(w.bob, o.uri)).slice(0, -1)},"summary":${ADVERSARIAL},"startIndex":1e20}`,
-    ) as Record<string, unknown>;
-    const signed = await ldSigned(unsigned, w.bob);
-    const raw = JSON.stringify(signed).replace('"startIndex":100000000000000000000', '"startIndex":1e20');
-    expect(raw).toContain('"startIndex":1e20');
+    // Inside the signed graph, in the one string a Mastodon Delete leaves free (its Tombstone's atomUri): the strings,
+    // sent with their escapes as written and serialized by the Store as JSON.stringify does. (A number cannot be in a
+    // proven body: author-proof.ts PROFILES; the RPC test below carries 1e20.)
+    const unsigned = deletion(w.bob, o.uri);
+    const tombstone = unsigned.object as Record<string, unknown>;
+    const adversarial = JSON.parse(ADVERSARIAL) as string;
+    const signed = await ldSigned({ ...unsigned, object: { ...tombstone, atomUri: adversarial } }, w.bob);
+    const raw = JSON.stringify(signed).replace(JSON.stringify(adversarial), ADVERSARIAL);
+    expect(raw).toContain(ADVERSARIAL);
     const s = JSON.stringify(JSON.parse(raw));
     expect(await w.post(w.bob, raw)).toBe(202);
     expect(proofRounds(w)).toBe(1);
@@ -1081,7 +1066,7 @@ describe("the body from the request to the POST", () => {
     for (const d of sent) {
       expect(d.body).toBe(s);
       const expected = { id: signed.id as string, actor: w.bob.uri, object: o.uri };
-      expect(await verifyAuthorProof(d.json, expected, w.bob.document, contexts)).toBe(true);
+      expect(await verifyAuthorProof(d.json, expected, w.bob.document)).toBe(true);
     }
   });
 
@@ -1133,7 +1118,7 @@ describe("the body from the request to the POST", () => {
     const stamp = `${w.bob.uri}/quote_authorizations/${nextId()}`;
     expect(await w.post(w.bob, quoteAccept(w.bob, mine, stamp))).toBe(202);
     await deliver(w);
-    const body = await ldSigned({ ...deletion(w.bob, stamp), object: stamp }, w.bob);
+    const body = await ldSigned(mastodonStampDelete(w.bob, { uri: stamp, quoting: mine, quoted: theirs.id }), w.bob);
     expect(await w.post(w.bob, body)).toBe(202);
     const sent = (await deliver(w)).filter((d) => d.json.type === "Delete");
     expect(sent.map((d) => d.inbox)).toContain(`${MASTODON}/users/bob/inbox`);

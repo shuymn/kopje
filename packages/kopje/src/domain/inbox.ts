@@ -151,10 +151,12 @@ import { streamDelete } from "./streaming";
 //                quote holding it is forwarded the Delete only when the actor's own proof verifies; of a public or
 //                unlisted status, forwarded through its kept local boosts and live local quotes likewise
 //                (recordForwards; test/forward-delete.test.ts)
-//   Delete       relayed by another server (its HTTP signer is not the actor, ID-1's one exception): only of what is
-//                neither an actor, a status nor a boost, so of a stamp at most; with the actor's own proof
-//                (RsaSignature2017 or FEP-8b32, federation/author-proof.ts) applied as the actor's revocation, without
-//                one only a reason to verify the accepted quote naming it again (relayedDelete; test/quotes.test.ts)
+//   Delete       relayed by another server (its HTTP signer is not the actor, ID-1's exception): never of an actor;
+//                of a stored status only with the actor's own proof (RsaSignature2017 or FEP-8b32,
+//                federation/author-proof.ts), of a public or unlisted original, applied as the actor's Delete of it
+//                (test/relayed-delete.test.ts); of anything else, a stamp at most: with the proof applied as the
+//                actor's revocation, without one only a reason to verify the accepted quote naming it again
+//                (relayedDelete; test/quotes.test.ts)
 //   QuoteRequest the object is a local original of an available author, public or unlisted (else no answer); the
 //                actor may quote it (R36, mayQuoteSql, else a Reject); the instrument is the actor's own status, on its
 //                origin, and its stored quote names the object (else no answer); one answer per request id
@@ -2544,20 +2546,36 @@ function hideRemoteStatus(db: Db, statusId: string): void {
   deleteCard(db, statusId);
 }
 
-// A Delete relayed by another server (federation/inbound.ts, ID-1's one exception): applied only to what can be a
-// stamp, never to an actor, a status or a boost. With the actor's own proof it revokes as the actor's Delete does;
-// without one it changes no state and only has the accepted quote naming the stamp verified again (Mastodon drops such
-// a relay; Kopje lets the stamp's own server answer).
-const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, { now }) => {
+// A Delete relayed by another server (federation/inbound.ts, ID-1's exception), never applied to an actor. Of a stored
+// status: only with the actor's own proof, of a public or unlisted original (never a boost), applied as the actor's own
+// Delete (deleteObject, which also requires the status's author to be the actor and its uri the actor's origin); all
+// read in this transaction, whatever the Worker saw when it verified the proof (Mastodon's verify_account! and
+// Activity::Delete#delete_status). Of anything else, at most a stamp: with the proof it revokes as the actor's Delete
+// does; without one it changes no state and only has the accepted quote naming the stamp verified again (Mastodon
+// drops such a relay; Kopje lets the stamp's own server answer).
+const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => {
+  const { now } = input;
   if (originOf(activity.object) !== originOf(actor.uri)) {
     return ignored("foreign-object");
   }
-  if (
-    db.first(
-      "SELECT 1 AS x FROM statuses WHERE uri = ?1 UNION ALL SELECT 1 FROM accounts WHERE uri = ?1 LIMIT 1",
-      activity.object,
-    ) !== undefined
-  ) {
+  const status = db.first<{ reblog_of_id: string | null; visibility: Visibility }>(
+    "SELECT reblog_of_id, visibility FROM statuses WHERE uri = ?",
+    activity.object,
+  );
+  if (status !== undefined) {
+    if (!activity.proven || activity.body === undefined) {
+      return ignored("unproven-status");
+    }
+    if (status.reblog_of_id !== null) {
+      return ignored("relayed-boost");
+    }
+    if (!isDistributable(status.visibility)) {
+      return ignored("not-distributable");
+    }
+    const proven = activity.body;
+    return deleteObject(db, actor, { type: "Delete", id: activity.id, object: activity.object, proven }, input);
+  }
+  if (db.first("SELECT 1 AS x FROM accounts WHERE uri = ?", activity.object) !== undefined) {
     return ignored("not-a-stamp");
   }
   if (!activity.proven) {

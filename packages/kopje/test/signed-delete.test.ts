@@ -28,7 +28,7 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
-import { contexts, deferred } from "./quote-helpers";
+import { deferred } from "./quote-helpers";
 
 // VIS-3, ID-1, RES-6: the Delete of a local public or unlisted original carries its author's RsaSignature2017
 // signature (statuses.ts prepareDelete and deleteStatus, mastodon/statuses.ts deleteStatus, federation/ld-sign.ts),
@@ -118,7 +118,7 @@ async function actorDocument(t: Setup): Promise<unknown> {
 }
 
 function proof(json: Json, uri: string, actorDocument: unknown, object = uri) {
-  return verifyAuthorProof(json, { id: `${uri}#delete`, actor: ALICE_URI, object }, actorDocument, contexts);
+  return verifyAuthorProof(json, { id: `${uri}#delete`, actor: ALICE_URI, object }, actorDocument);
 }
 
 describe("the Delete of a local status carries its author's proof when it is public or unlisted (VIS-3)", () => {
@@ -876,7 +876,6 @@ describe("a Kopje holder of a boost forwards a Kopje author's signed Delete (VIS
         JSON.parse(delivered!.body) as Json,
         { id: `${status.uri}#delete`, actor: ANN_URI, object: status.uri },
         document,
-        contexts,
       ),
     ).toBe(true);
     expect(await t.post(ann, delivered!.body)).toBe(202);
