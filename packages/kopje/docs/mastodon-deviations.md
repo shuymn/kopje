@@ -543,9 +543,9 @@ Request parameters:
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is
-  found and before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media). Mastodon
-  may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger than
+  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is found and
+  before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger than
   1 MiB plus 16 KiB answers 413.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
   empty file field): empty, it reads as absent; with bytes, a profile image answers 400.
@@ -782,21 +782,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
   `Delete` of an actor.
 - An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
-  profiles (`PROFILES` in `src/federation/author-proof.ts`): Mastodon 4.5's status `Delete` (`DeleteSerializer`) and
-  stamp `Delete` (`DeleteQuoteAuthorizationSerializer`), each with the `@context` Mastodon 4.5 writes and the keys its
-  serializer and `LinkedDataSignature#sign!` write; Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon
-  holding a boost or quote of the status forwards it (the forwarded profiles, none for a stamp's `Delete`, which
-  Mastodon 4.5.21 forwards without its signature. Mastodon compacts the body under its `full_context` and forwards it
-  with that `@context`, so the `@context` is activitystreams, security/v1 and one object whose every term is in
-  `MASTODON_CONTEXT_TERMS` with a definition some release gave it, the union of `full_context` in
-  `app/helpers/context_helper.rb` at every 4.4 and 4.5 release tag, v4.4.0 to v4.5.21, read from each tag's source,
-  none of whose terms is or aliases one the decision reads); and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof
-  (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to`
-  and `cc`, and a single proof). Mastodon verifies a signature whatever the body's context and keys, refusing only
-  JSON-LD features it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete`
-  from Misskey, or forwarded by a Mastodon whose `full_context` holds a term or definition outside 4.4 and 4.5, is
-  refused, and an author's own `Delete` in such a form applies but is not forwarded. Adding a profile is a change of
-  its own. Accepted, 2026-11-13.
+  profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
+  Mastodon 4.5's status `Delete` (`DeleteSerializer`) and stamp `Delete` (`DeleteQuoteAuthorizationSerializer`), each
+  with the `@context` Mastodon 4.5 writes and the keys its serializer and `LinkedDataSignature#sign!` write; Kopje's
+  own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 or 4.5 forwards it, compacted under its
+  `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof. Mastodon
+  verifies a signature whatever the body's context and keys, refusing only JSON-LD features it does not support
+  (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or forwarded by a Mastodon
+  whose `full_context` holds a term or definition outside 4.4 and 4.5, is refused, and an author's own `Delete` in such
+  a form applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
@@ -816,8 +810,7 @@ Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStat
 - An imported public or unlisted status whose uri or author's actor id can never be signed (not an http or https URL
   in the spelling URL serializing gives it, with no fragment, nor an absolute IRI to jsonld) is deleted with its
   `Delete` unsigned and addressed as the status was, and the reason is logged (`kopje.delivery.delete_unsigned`);
-  Mastodon's ids are always its own URLs. `Delete`s recorded before the release that signs them stay unsigned.
-  Accepted, 2026-11-13.
+  Mastodon's ids are always its own URLs. Accepted, 2026-11-13.
 - The `Undo(Announce)` of a public or unlisted boost is unsigned; Mastodon signs it through the same path. No receiver
   forwards an `Undo`. Accepted, 2026-11-13.
 - The signed body goes unchanged to every target, a silent recipient's own copy included, and an inbox that is a
