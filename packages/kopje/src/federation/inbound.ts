@@ -163,7 +163,7 @@ function refOf(value: unknown): ActivityRef {
   };
 }
 
-export function originOf(uri: string | null): string | null {
+function originOf(uri: string | null): string | null {
   if (uri === null) {
     return null;
   }
