@@ -1,10 +1,12 @@
 # NodeInfo Discovery and Schema
 
-This document specifies the NodeInfo endpoints for Mastodon-compatible servers, implementing the [NodeInfo protocol](http://nodeinfo.diaspora.software/protocol) version 2.0.
+This document specifies the NodeInfo endpoints for Mastodon-compatible servers, implementing the
+[NodeInfo protocol](http://nodeinfo.diaspora.software/protocol) version 2.0.
 
 ## Overview
 
-NodeInfo provides a standardized way to expose server metadata for federated social networks. The protocol consists of two endpoints:
+NodeInfo provides a standardized way to expose server metadata for federated social networks. The protocol consists of
+two endpoints:
 
 1. **Discovery endpoint**: Points clients to the schema document
 2. **Schema endpoint**: Contains the actual server metadata
@@ -17,7 +19,8 @@ GET /.well-known/nodeinfo
 
 ### Purpose
 
-The discovery endpoint provides a JSON document containing links to available NodeInfo schema versions supported by the server.
+The discovery endpoint provides a JSON document containing links to available NodeInfo schema versions supported by the
+server.
 
 ### Response
 
@@ -71,7 +74,8 @@ GET /nodeinfo/2.0
 
 ### Purpose
 
-The schema endpoint returns detailed metadata about the server, including software information, protocols supported, usage statistics, and server configuration.
+The schema endpoint returns detailed metadata about the server, including software information, protocols supported,
+usage statistics, and server configuration.
 
 ### Response
 
@@ -196,7 +200,8 @@ Cache-Control: max-age=1800, public
 
 ## Key Transformation
 
-All response keys use **camelCase** formatting. This is implemented via the `NodeInfo::Adapter` which applies a `:camel_lower` key transformation:
+All response keys use **camelCase** formatting. This is implemented via the `NodeInfo::Adapter` which applies a
+`:camel_lower` key transformation:
 
 | Internal Key | JSON Key |
 |--------------|----------|

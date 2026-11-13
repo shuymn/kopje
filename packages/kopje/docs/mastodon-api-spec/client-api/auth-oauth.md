@@ -4,7 +4,8 @@ This document specifies the OAuth 2.0 authentication flow for Mastodon client ap
 
 ## Overview
 
-Mastodon implements OAuth 2.0 for client authentication. Clients MUST register an application before initiating the OAuth flow.
+Mastodon implements OAuth 2.0 for client authentication. Clients MUST register an application before initiating the
+OAuth flow.
 
 ## App Registration
 
@@ -50,7 +51,8 @@ client_name=My+Application&redirect_uris=https://app.example.com/callback&scopes
 
 The `client_secret_expires_at` value of `0` indicates the secret never expires.
 
-**Implementation Reference:** [app/controllers/api/v1/apps_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/apps_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps_controller.rb)
 
 ### Redirect URI Requirements
 
@@ -143,7 +145,8 @@ grant_type=authorization_code&code=AUTH_CODE&client_id=abc123&client_secret=secr
 
 Access tokens do not expire by default (`access_token_expires_in nil` in configuration).
 
-**Implementation Reference:** [app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
+**Implementation Reference:**
+[app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
 
 ## PKCE Support
 
@@ -176,7 +179,9 @@ const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
   .replace(/=+$/, '');
 ```
 
-**Configuration Reference:** [config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb) - `pkce_code_challenge_methods ['S256']`
+**Configuration Reference:**
+[config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb) -
+`pkce_code_challenge_methods ['S256']`
 
 ## Scopes
 
@@ -203,7 +208,8 @@ Mastodon uses a hierarchical scope system. Parent scopes grant access to all chi
 
 If no scope is specified, `read` is used as the default.
 
-**Configuration Reference:** [config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb)
+**Configuration Reference:**
+[config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb)
 
 ## Grant Types
 
@@ -238,7 +244,9 @@ grant_type=client_credentials&client_id=abc123&client_secret=secret123&scope=rea
 
 **Account Registration:**
 
-Creating user accounts via `POST /api/v1/accounts` requires an OAuth token **without a resource owner** (i.e., no user context). This is typically obtained via the `client_credentials` grant. Tokens obtained via `authorization_code` grant (which have a resource owner) are explicitly rejected for account registration.
+Creating user accounts via `POST /api/v1/accounts` requires an OAuth token **without a resource owner** (i.e., no user
+context). This is typically obtained via the `client_credentials` grant. Tokens obtained via `authorization_code` grant
+(which have a resource owner) are explicitly rejected for account registration.
 
 ### Unsupported Grant Types
 
@@ -276,7 +284,8 @@ Returns 200 OK with empty body on success.
 
 Token revocation also removes any associated push subscriptions.
 
-**Implementation Reference:** [app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
+**Implementation Reference:**
+[app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
 
 ---
 
@@ -300,7 +309,8 @@ Retrieve basic account information for the authenticated user.
 | `profile` | String | Profile URL |
 | `picture` | String | Avatar URL |
 
-**Implementation Reference:** [app/controllers/oauth/userinfo_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/userinfo_controller.rb)
+**Implementation Reference:**
+[app/controllers/oauth/userinfo_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/userinfo_controller.rb)
 
 ### POST /oauth/userinfo
 
@@ -336,7 +346,8 @@ Verify the current application token.
 
 Note: `client_id` and `client_secret` are NOT included in this response.
 
-**Implementation Reference:** [app/controllers/api/v1/apps/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps/credentials_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/apps/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps/credentials_controller.rb)
 
 ## Security Considerations
 
@@ -363,9 +374,15 @@ Clients MUST:
 
 ## File References
 
-- App registration: [app/controllers/api/v1/apps_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps_controller.rb)
-- App credentials: [app/controllers/api/v1/apps/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps/credentials_controller.rb)
-- Authorization: [app/controllers/oauth/authorizations_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/authorizations_controller.rb)
-- Tokens: [app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
-- Scopes configuration: [config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb)
-- Serializers: [app/serializers/rest/credential_application_serializer.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/credential_application_serializer.rb)
+- App registration:
+  [app/controllers/api/v1/apps_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps_controller.rb)
+- App credentials:
+  [app/controllers/api/v1/apps/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/apps/credentials_controller.rb)
+- Authorization:
+  [app/controllers/oauth/authorizations_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/authorizations_controller.rb)
+- Tokens:
+  [app/controllers/oauth/tokens_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/oauth/tokens_controller.rb)
+- Scopes configuration:
+  [config/initializers/doorkeeper.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/config/initializers/doorkeeper.rb)
+- Serializers:
+  [app/serializers/rest/credential_application_serializer.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/credential_application_serializer.rb)

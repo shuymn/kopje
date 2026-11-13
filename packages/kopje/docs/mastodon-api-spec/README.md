@@ -1,6 +1,7 @@
 # Mastodon-Compatible API Specification
 
-This specification defines the requirements for implementing a Mastodon-compatible server. It targets ActivityPub federation interoperability and broad client compatibility.
+This specification defines the requirements for implementing a Mastodon-compatible server. It targets ActivityPub
+federation interoperability and broad client compatibility.
 
 ## Scope
 
@@ -14,11 +15,14 @@ This specification covers:
 
 ## Baseline Version
 
-This specification targets **Mastodon v4.5.11** (pinned reference release). Features introduced in newer versions are marked as optional extensions.
+This specification targets **Mastodon v4.5.11** (pinned reference release). Features introduced in newer versions are
+marked as optional extensions.
 
 Implementation references link to [`mastodon/mastodon@v4.5.11`](https://github.com/mastodon/mastodon/tree/v4.5.11).
 
-Official API documentation source: [`mastodon/documentation@960eeb05`](https://github.com/mastodon/documentation/commit/960eeb05f61209f2f7e8e97456239a3a8e143c6f) ([docs.joinmastodon.org](https://docs.joinmastodon.org/)).
+Official API documentation source:
+[`mastodon/documentation@960eeb05`](https://github.com/mastodon/documentation/commit/960eeb05f61209f2f7e8e97456239a3a8e143c6f)
+([docs.joinmastodon.org](https://docs.joinmastodon.org/)).
 
 Reference sources:
 

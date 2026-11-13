@@ -4,10 +4,10 @@ A [Kopje](https://github.com/shuymn/kopje/tree/main/packages/kopje) instance: a 
 server for one person or a small group, running as one Cloudflare Worker with one Durable Object on your own Cloudflare
 account.
 
-This repository holds only the instance's configuration. The server is the [`kopje`](https://www.npmjs.com/package/kopje)
-npm package, pinned in `package.json`; `src/index.ts` re-exports it. `wrangler.jsonc` is the same for every install:
-your domain, your Access applications and your admin account are kept in the instance's Store and set in the browser,
-through the `/setup` wizard.
+This repository holds only the instance's configuration. The server is the
+[`kopje`](https://www.npmjs.com/package/kopje) npm package, pinned in `package.json`; `src/index.ts` re-exports it.
+`wrangler.jsonc` is the same for every install: your domain, your Access applications and your admin account are kept in
+the instance's Store and set in the browser, through the `/setup` wizard.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuymn/kopje/tree/main/deploy)
 
@@ -35,10 +35,12 @@ Builds, and deploys it. On its form:
   - `USER_KEK`: a long random value, for example from `openssl rand -base64 33`. It wraps the private keys of local
     accounts. Keep a copy somewhere safe: keys wrapped with it cannot be read with any other value.
 - **Build and deploy commands.** Leave the build command empty and the deploy command `npm run deploy`
-  (`wrangler deploy`). `wrangler deploy` copies the static assets from the installed package first (`scripts/assets.mjs`).
+  (`wrangler deploy`). `wrangler deploy` copies the static assets from the installed package first
+  (`scripts/assets.mjs`).
 
 Then attach your domain to the Worker (Settings, Domains & Routes, as a custom domain or a route on your zone), open
-`https://example.com/setup` (your domain), and follow [setup.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/setup.md).
+`https://example.com/setup` (your domain), and follow
+[setup.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/setup.md).
 
 ## Settings after setup
 

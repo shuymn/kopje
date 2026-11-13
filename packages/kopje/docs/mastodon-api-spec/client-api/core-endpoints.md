@@ -14,7 +14,8 @@ Retrieve instance information (deprecated, use v2).
 
 **Response:** See [Instance entity (v1)](entities.md#instance-v1).
 
-**Implementation Reference:** [app/controllers/api/v1/instances_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/instances_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/instances_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/instances_controller.rb)
 
 ---
 
@@ -98,7 +99,8 @@ Retrieve instance information.
 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v2/instances_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/instances_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/instances_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/instances_controller.rb)
 
 ---
 
@@ -141,7 +143,8 @@ Verify and retrieve the authenticated user's account.
 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/credentials_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/credentials_controller.rb)
 
 ---
 
@@ -160,7 +163,8 @@ Retrieve an account by ID.
 
 **Response:** [Account entity](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -185,7 +189,8 @@ Look up an account by username.
 |------|-----------|
 | 404 | Account not found |
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/lookup_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/lookup_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/lookup_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/lookup_controller.rb)
 
 ---
 
@@ -229,7 +234,8 @@ Check relationships with accounts.
 ]
 ```
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/relationships_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/relationships_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/relationships_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/relationships_controller.rb)
 
 ---
 
@@ -248,7 +254,8 @@ Retrieve multiple accounts by ID.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -271,7 +278,8 @@ Search for accounts.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/search_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/search_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/search_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/search_controller.rb)
 
 ---
 
@@ -290,7 +298,8 @@ Get familiar followers for a list of accounts.
 
 **Response:** Array of [FamiliarFollowers entities](entities.md#familiarfollowers)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/familiar_followers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/familiar_followers_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/familiar_followers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/familiar_followers_controller.rb)
 
 ---
 
@@ -323,7 +332,8 @@ Update the authenticated user's account settings.
 
 **Response:** [CredentialAccount entity](entities.md#account) with additional `source` field.
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/credentials_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/credentials_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/credentials_controller.rb)
 
 ---
 
@@ -350,7 +360,8 @@ Retrieve statuses for an account.
 
 **Response:** Array of [Status entities](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/statuses_controller.rb)
 
 ---
 
@@ -371,7 +382,8 @@ Retrieve followers of an account.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/follower_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/follower_accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/follower_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/follower_accounts_controller.rb)
 
 ---
 
@@ -392,7 +404,8 @@ Retrieve accounts followed by an account.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/following_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/following_accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/following_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/following_accounts_controller.rb)
 
 ---
 
@@ -405,7 +418,8 @@ Retrieve lists that include the given account.
 
 **Response:** Array of [List entities](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/lists_controller.rb)
 
 ---
 
@@ -417,7 +431,8 @@ Retrieve featured tags for an account.
 
 **Response:** Array of [FeaturedTag entities](entities.md#featuredtag)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/featured_tags_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/featured_tags_controller.rb)
 
 ---
 
@@ -438,7 +453,8 @@ Retrieve endorsed accounts for an account.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
 
 ---
 
@@ -450,7 +466,8 @@ Retrieve identity proofs for an account.
 
 **Response:** Array (currently empty)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/identity_proofs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/identity_proofs_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/identity_proofs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/identity_proofs_controller.rb)
 
 ---
 
@@ -471,7 +488,8 @@ Follow an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -484,7 +502,8 @@ Unfollow an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -497,7 +516,8 @@ Remove an account from your followers.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -510,7 +530,8 @@ Block an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -523,7 +544,8 @@ Unblock an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -543,7 +565,8 @@ Mute an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -556,7 +579,8 @@ Unmute an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts_controller.rb)
 
 ---
 
@@ -575,7 +599,8 @@ Set a private note about an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/notes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/notes_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/notes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/notes_controller.rb)
 
 ---
 
@@ -588,7 +613,8 @@ Endorse (pin) an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
 
 ---
 
@@ -601,7 +627,8 @@ Remove an endorsement (unpin) from an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
 
 ---
 
@@ -614,7 +641,8 @@ Endorse (pin) an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
 
 ---
 
@@ -627,7 +655,8 @@ Remove an endorsement from an account.
 
 **Response:** [Relationship entity](entities.md#relationship)
 
-**Implementation Reference:** [app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/accounts/endorsements_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/accounts/endorsements_controller.rb)
 
 ---
 
@@ -642,7 +671,8 @@ List your lists.
 
 **Response:** Array of [List entities](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -663,7 +693,8 @@ Create a new list.
 
 **Response:** [List entity](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -676,7 +707,8 @@ Retrieve a list.
 
 **Response:** [List entity](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -691,7 +723,8 @@ Update a list.
 
 **Response:** [List entity](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -706,7 +739,8 @@ Update a list.
 
 **Response:** [List entity](entities.md#list)
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -719,7 +753,8 @@ Delete a list.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists_controller.rb)
 
 ---
 
@@ -740,7 +775,8 @@ List accounts in a list.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
 
 ---
 
@@ -759,7 +795,8 @@ Add accounts to a list.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
 
 ---
 
@@ -778,7 +815,8 @@ Remove accounts from a list.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/lists/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/lists/accounts_controller.rb)
 
 ---
 
@@ -793,7 +831,8 @@ List your featured tags.
 
 **Response:** Array of [FeaturedTag entities](entities.md#featuredtag)
 
-**Implementation Reference:** [app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
 
 ---
 
@@ -812,7 +851,8 @@ Feature a hashtag on your profile.
 
 **Response:** [FeaturedTag entity](entities.md#featuredtag)
 
-**Implementation Reference:** [app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
 
 ---
 
@@ -825,7 +865,8 @@ Remove a featured tag.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/featured_tags_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags_controller.rb)
 
 ---
 
@@ -838,7 +879,8 @@ List recently used tags that may be suggested for featuring.
 
 **Response:** Array of Tag objects
 
-**Implementation Reference:** [app/controllers/api/v1/featured_tags/suggestions_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags/suggestions_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/featured_tags/suggestions_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/featured_tags/suggestions_controller.rb)
 ## Filters
 
 ### GET /api/v1/filters
@@ -852,7 +894,8 @@ List v1 filters.
 
 **Response:** Array of [Filter (v1) entities](entities.md#filter-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -877,7 +920,8 @@ Create a v1 filter.
 
 **Response:** [Filter (v1) entity](entities.md#filter-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -892,7 +936,8 @@ Retrieve a v1 filter.
 
 **Response:** [Filter (v1) entity](entities.md#filter-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -909,7 +954,8 @@ Update a v1 filter.
 
 **Response:** [Filter (v1) entity](entities.md#filter-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -926,7 +972,8 @@ Update a v1 filter.
 
 **Response:** [Filter (v1) entity](entities.md#filter-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -941,7 +988,8 @@ Delete a v1 filter.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/filters_controller.rb)
 
 ---
 
@@ -954,7 +1002,8 @@ List v2 filters.
 
 **Response:** Array of [Filter entities](entities.md#filter)
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -980,7 +1029,8 @@ Create a v2 filter.
 
 **Response:** [Filter entity](entities.md#filter)
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -993,7 +1043,8 @@ Retrieve a v2 filter.
 
 **Response:** [Filter entity](entities.md#filter)
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -1008,7 +1059,8 @@ Update a v2 filter.
 
 **Response:** [Filter entity](entities.md#filter)
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -1023,7 +1075,8 @@ Update a v2 filter.
 
 **Response:** [Filter entity](entities.md#filter)
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -1036,7 +1089,8 @@ Delete a v2 filter.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters_controller.rb)
 
 ---
 
@@ -1049,7 +1103,8 @@ List keyword rules for a filter.
 
 **Response:** Array of [FilterKeyword entities](entities.md#filterkeyword)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1069,7 +1124,8 @@ Create a keyword rule for a filter.
 
 **Response:** [FilterKeyword entity](entities.md#filterkeyword)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1082,7 +1138,8 @@ Retrieve a keyword rule.
 
 **Response:** [FilterKeyword entity](entities.md#filterkeyword)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1097,7 +1154,8 @@ Update a keyword rule.
 
 **Response:** [FilterKeyword entity](entities.md#filterkeyword)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1112,7 +1170,8 @@ Update a keyword rule.
 
 **Response:** [FilterKeyword entity](entities.md#filterkeyword)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1125,7 +1184,8 @@ Delete a keyword rule.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/keywords_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/keywords_controller.rb)
 
 ---
 
@@ -1138,7 +1198,8 @@ List status rules for a filter.
 
 **Response:** Array of [FilterStatus entities](entities.md#filterstatus)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
 
 ---
 
@@ -1157,7 +1218,8 @@ Create a status rule for a filter.
 
 **Response:** [FilterStatus entity](entities.md#filterstatus)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
 
 ---
 
@@ -1170,7 +1232,8 @@ Retrieve a status rule.
 
 **Response:** [FilterStatus entity](entities.md#filterstatus)
 
-**Implementation Reference:** [app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
 
 ---
 
@@ -1183,7 +1246,8 @@ Delete a status rule.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/filters/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/filters/statuses_controller.rb)
 
 ---
 
@@ -1204,7 +1268,8 @@ Retrieve multiple statuses by ID.
 
 **Response:** Array of [Status entities](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1252,11 +1317,13 @@ Content-Type: application/json
 }
 ```
 
-**Response:** [Status entity](entities.md#status) or [ScheduledStatus entity](entities.md#scheduledstatus) if `scheduled_at` is provided.
+**Response:** [Status entity](entities.md#status) or [ScheduledStatus entity](entities.md#scheduledstatus) if
+`scheduled_at` is provided.
 
 **Rate Limiting:** This endpoint has enhanced rate limiting under the `statuses` family.
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1275,7 +1342,8 @@ Retrieve a status by ID.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1304,7 +1372,8 @@ Edit an existing status.
 
 **Authorization:** User MUST own the status.
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1319,7 +1388,8 @@ Edit an existing status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1346,7 +1416,8 @@ Delete a status.
 
 **Authorization:** User MUST own the status.
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1370,7 +1441,8 @@ Retrieve ancestors and descendants of a status.
 - Unauthenticated: 40 ancestors, 60 descendants (depth 20)
 - Authenticated: 4096 each
 
-**Implementation Reference:** [app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses_controller.rb)
 
 ---
 
@@ -1383,7 +1455,8 @@ List accounts that boosted a status.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/reblogged_by_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogged_by_accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/reblogged_by_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogged_by_accounts_controller.rb)
 
 ---
 
@@ -1396,7 +1469,8 @@ List accounts that favourited a status.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/favourited_by_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourited_by_accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/favourited_by_accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourited_by_accounts_controller.rb)
 
 ---
 
@@ -1415,7 +1489,8 @@ Boost a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/reblogs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogs_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/reblogs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogs_controller.rb)
 
 ---
 
@@ -1428,7 +1503,8 @@ Remove your boost of a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/reblogs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogs_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/reblogs_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/reblogs_controller.rb)
 
 ---
 
@@ -1441,7 +1517,8 @@ Favourite a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/favourites_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourites_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/favourites_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourites_controller.rb)
 
 ---
 
@@ -1454,7 +1531,8 @@ Unfavourite a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/favourites_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourites_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/favourites_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/favourites_controller.rb)
 
 ---
 
@@ -1467,7 +1545,8 @@ Bookmark a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/bookmarks_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/bookmarks_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/bookmarks_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/bookmarks_controller.rb)
 
 ---
 
@@ -1480,7 +1559,8 @@ Remove bookmark from a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/bookmarks_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/bookmarks_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/bookmarks_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/bookmarks_controller.rb)
 
 ---
 
@@ -1493,7 +1573,8 @@ Mute notifications from a conversation.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/mutes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/mutes_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/mutes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/mutes_controller.rb)
 
 ---
 
@@ -1506,7 +1587,8 @@ Unmute notifications from a conversation.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/mutes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/mutes_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/mutes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/mutes_controller.rb)
 
 ---
 
@@ -1519,7 +1601,8 @@ Pin a status to your profile.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/pins_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/pins_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/pins_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/pins_controller.rb)
 
 ---
 
@@ -1532,7 +1615,8 @@ Unpin a status from your profile.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/pins_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/pins_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/pins_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/pins_controller.rb)
 
 ---
 
@@ -1545,7 +1629,8 @@ Retrieve edit history for a status.
 
 **Response:** [StatusEdit entity](entities.md#statusedit)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/histories_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/histories_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/histories_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/histories_controller.rb)
 
 ---
 
@@ -1558,7 +1643,8 @@ Retrieve the source text of a status.
 
 **Response:** [StatusSource entity](entities.md#statussource)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/sources_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/sources_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/sources_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/sources_controller.rb)
 
 ---
 
@@ -1571,7 +1657,8 @@ Update interaction policy for a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/interaction_policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/interaction_policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/interaction_policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/interaction_policies_controller.rb)
 
 ---
 
@@ -1584,7 +1671,8 @@ Update interaction policy for a status.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/interaction_policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/interaction_policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/interaction_policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/interaction_policies_controller.rb)
 
 ---
 
@@ -1597,7 +1685,8 @@ Translate a status into the current locale.
 
 **Response:** [Translation entity](entities.md#translation)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/translations_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/translations_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/translations_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/translations_controller.rb)
 
 ---
 
@@ -1610,7 +1699,8 @@ List statuses that quote a status.
 
 **Response:** Array of [Status entities](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/quotes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/quotes_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/quotes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/quotes_controller.rb)
 
 ---
 
@@ -1623,7 +1713,8 @@ Revoke a quote authorization.
 
 **Response:** [Status entity](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/statuses/quotes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/quotes_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/statuses/quotes_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/statuses/quotes_controller.rb)
 
 ---
 
@@ -1655,7 +1746,8 @@ Retrieve home timeline.
 | 200 | Success |
 | 206 | Feed is regenerating, partial results |
 
-**Implementation Reference:** [app/controllers/api/v1/timelines/home_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/home_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/timelines/home_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/home_controller.rb)
 
 ---
 
@@ -1680,7 +1772,8 @@ Retrieve public timeline.
 
 **Response:** Array of [Status entities](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/timelines/public_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/public_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/timelines/public_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/public_controller.rb)
 
 ---
 
@@ -1714,7 +1807,8 @@ Retrieve hashtag timeline.
 
 **Response:** Array of [Status entities](entities.md#status)
 
-**Implementation Reference:** [app/controllers/api/v1/timelines/tag_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/tag_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/timelines/tag_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/timelines/tag_controller.rb)
 
 ---
 
@@ -1759,7 +1853,8 @@ Retrieve notifications.
 
 **Response:** Array of [Notification entities](entities.md#notification)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
 
 ---
 
@@ -1784,7 +1879,8 @@ Get unread notification count.
 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
 
 ---
 
@@ -1797,7 +1893,8 @@ Retrieve a notification by ID.
 
 **Response:** [Notification entity](entities.md#notification)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
 
 ---
 
@@ -1810,7 +1907,8 @@ Clear all notifications.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
 
 ---
 
@@ -1823,7 +1921,8 @@ Dismiss a notification by ID.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications_controller.rb)
 
 ---
 
@@ -1836,7 +1935,8 @@ Retrieve notification policy (v1 format).
 
 **Response:** [NotificationPolicy (v1) entity](entities.md#notificationpolicy-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/policies_controller.rb)
 
 ---
 
@@ -1858,7 +1958,8 @@ Update notification policy (v1 format).
 
 **Response:** [NotificationPolicy (v1) entity](entities.md#notificationpolicy-v1)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/policies_controller.rb)
 
 ---
 
@@ -1871,7 +1972,8 @@ List notification requests.
 
 **Response:** Array of [NotificationRequest entities](entities.md#notificationrequest)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1888,7 +1990,8 @@ Return whether notification request unfilter jobs are merged.
 { "merged": true }
 ```
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1901,7 +2004,8 @@ Retrieve a notification request.
 
 **Response:** [NotificationRequest entity](entities.md#notificationrequest)
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1914,7 +2018,8 @@ Accept a notification request.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1927,7 +2032,8 @@ Dismiss a notification request.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1946,7 +2052,8 @@ Accept multiple notification requests.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1965,7 +2072,8 @@ Dismiss multiple notification requests.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/notifications/requests_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/notifications/requests_controller.rb)
 
 ---
 
@@ -1992,7 +2100,8 @@ Retrieve grouped notifications (v2).
 
 **Response:** [DedupNotificationGroupResponse entity](entities.md#dedupnotificationgroupresponse)
 
-**Implementation Reference:** [app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
 
 ---
 
@@ -2009,7 +2118,8 @@ Get unread notification count (v2).
 { "count": 42 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
 
 ---
 
@@ -2022,7 +2132,8 @@ Retrieve a single grouped notification entry.
 
 **Response:** [DedupNotificationGroupResponse entity](entities.md#dedupnotificationgroupresponse)
 
-**Implementation Reference:** [app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
 
 ---
 
@@ -2035,7 +2146,8 @@ Clear all notifications (v2).
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
 
 ---
 
@@ -2048,7 +2160,8 @@ Dismiss a grouped notification entry.
 
 **Response:** Empty object
 
-**Implementation Reference:** [app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications_controller.rb)
 
 ---
 
@@ -2069,7 +2182,8 @@ List accounts involved in a notification group.
 
 **Response:** Array of [Account entities](entities.md#account)
 
-**Implementation Reference:** [app/controllers/api/v2/notifications/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/accounts_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications/accounts_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/accounts_controller.rb)
 
 ---
 
@@ -2082,7 +2196,8 @@ Retrieve notification policy (v2 format).
 
 **Response:** [NotificationPolicy entity](entities.md#notificationpolicy)
 
-**Implementation Reference:** [app/controllers/api/v2/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/policies_controller.rb)
 
 ---
 
@@ -2105,7 +2220,8 @@ Update notification policy (v2 format).
 
 **Response:** [NotificationPolicy entity](entities.md#notificationpolicy)
 
-**Implementation Reference:** [app/controllers/api/v2/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/policies_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/notifications/policies_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/notifications/policies_controller.rb)
 
 ---
 
@@ -2143,7 +2259,8 @@ Search for accounts, statuses, or hashtags.
 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v2/search_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/search_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/search_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/search_controller.rb)
 
 ---
 
@@ -2167,7 +2284,8 @@ Upload media attachment (synchronous).
 
 **Response:** [MediaAttachment entity](entities.md#mediaattachment)
 
-**Implementation Reference:** [app/controllers/api/v1/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/media_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/media_controller.rb)
 
 ---
 
@@ -2189,7 +2307,8 @@ Same parameters as v1, but returns immediately with 202 status while processing.
 
 Poll `GET /api/v1/media/:id` until `url` is non-null.
 
-**Implementation Reference:** [app/controllers/api/v2/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/media_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v2/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v2/media_controller.rb)
 
 ---
 
@@ -2208,7 +2327,8 @@ Get media attachment.
 | 206 | Still processing (`url` may be null) |
 | 422 | Processing failed |
 
-**Implementation Reference:** [app/controllers/api/v1/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/media_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/media_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/media_controller.rb)
 
 ---
 
@@ -2244,7 +2364,8 @@ Retrieve timeline markers.
 }
 ```
 
-**Implementation Reference:** [app/controllers/api/v1/markers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/markers_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/markers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/markers_controller.rb)
 
 ---
 
@@ -2276,7 +2397,8 @@ Save timeline markers.
 |------|-----------|
 | 409 | Conflict (concurrent update, retry) |
 
-**Implementation Reference:** [app/controllers/api/v1/markers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/markers_controller.rb)
+**Implementation Reference:**
+[app/controllers/api/v1/markers_controller.rb](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/v1/markers_controller.rb)
 
 ---
 
@@ -2289,7 +2411,8 @@ Save timeline markers.
 | Notifications | 40 | 80 |
 | Search results | 20 | 40 |
 
-**Base Controller Reference:** [`app/controllers/api/base_controller.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/base_controller.rb)
+**Base Controller Reference:**
+[`app/controllers/api/base_controller.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/base_controller.rb)
 
 ```ruby
 DEFAULT_STATUSES_LIMIT = 20

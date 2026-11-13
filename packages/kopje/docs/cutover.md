@@ -31,8 +31,8 @@ Export every table except the full-text index (`search_fts` and its shadow table
 converter takes either a directory of such files (every `*.sql` file in it) or one file of them concatenated, as the
 legacy backup job writes it. A `sqlite_sequence` export is optional; when present, the notification counter continues
 from it instead of from the largest notification id. `wrangler d1 export --table sqlite_sequence` writes no
-`CREATE TABLE` for it, but a `DELETE FROM sqlite_sequence;` before its rows; that statement is accepted as it is (below),
-so the file needs no editing.
+`CREATE TABLE` for it, but a `DELETE FROM sqlite_sequence;` before its rows; that statement is accepted as it is
+(below), so the file needs no editing.
 
 The export is only read, by a strict grammar, and nothing from it runs:
 
@@ -53,8 +53,8 @@ The export is only read, by a strict grammar, and nothing from it runs:
   literal may hold at most 16 Mi UTF-16 units and all literals of one pass over the export at most 1 Gi
   (`decoded-data-too-large`).
 - Anything else (`INSERT ... SELECT`, a function or expression in `VALUES`, `UPDATE`, any other `DELETE`, `DROP`,
-  `ATTACH`, other pragmas) stops the conversion with a fixed code (`invalid-insert`, `invalid-literal`, `invalid-create-table`,
-  `unexpected-statement`).
+  `ATTACH`, other pragmas) stops the conversion with a fixed code (`invalid-insert`, `invalid-literal`,
+  `invalid-create-table`, `unexpected-statement`).
 
 **Limits.** One file may hold at most 512 MiB (a JavaScript string's limit) and the whole export 1 GiB. The converter
 reads one file at a time, twice (schema, then rows), and keeps the legacy and the Kopje databases in memory, about three
@@ -81,9 +81,10 @@ legacy instance reaches.
 2. **Bridge.** The rows are loaded into a local database with the canonical schema at that level, and the remaining
    canonical migrations bring it to 0039, one at a time. `randomblob()` is replaced by a fixed stream, and rows a bridge
    migration creates with the current time (0010's web UI client) get the base time, so the result is the same on every
-   run. Before the bridge runs, the addressing of every object and outbox row is captured as exported (below). Some migrations remove rows (0007 drops push subscriptions, 0017 keeps one reblog per
-   outbox row, 0021 removes duplicate remote objects, 0034 duplicate favourites, 0038 duplicate reply links). Every
-   removal is counted per migration and table, and the converter stops unless `--accept-deletions` is given.
+   run. Before the bridge runs, the addressing of every object and outbox row is captured as exported (below). Some
+   migrations remove rows (0007 drops push subscriptions, 0017 keeps one reblog per outbox row, 0021 removes duplicate
+   remote objects, 0034 duplicate favourites, 0038 duplicate reply links). Every removal is counted per migration and
+   table, and the converter stops unless `--accept-deletions` is given.
 3. **Convert** into a local database with the Store schema (below).
 4. **Check keys.** One KEK must unwrap every local user's key (DATA-14).
 5. **Write** `<out>/kopje.dump` and `<out>/manifest.json`. Each is written under a fresh temporary name created
@@ -133,13 +134,14 @@ a second version being written in the converter. `verify-conversion` derives the
 sharing only the HTML sanitizer (see Verification); it does not compare search text.
 
 **Ids.** Accounts, statuses, media and lists get 18-digit TEXT ids. A legacy API id that already has 18 digits stays
-the id; all of them are reserved before any new id is drawn, so a drawn id never takes one. Any other (a UUID) becomes `legacy_id`, which the API and `/@user/<id>` resolve, and the row gets a new id:
-local rows from their creation time, remote rows from `published` truncated to the second plus 0 to 999 ms; the low
-bits come from the base time and the row's URI, never from a random source. Account ids that 0020 generated during the
-bridge, and acct-shaped ids of the upstream era, are not kept as legacy ids. A local status whose URL still ends with
-the UUID it was created with keeps that UUID as `legacy_id`. Notifications keep their INTEGER ids; duplicates by
-(recipient, type, sender, status) keep the smallest. The counter continues past the larger of the exported
-`sqlite_sequence` value and the largest id, as an exact integer.
+the id; all of them are reserved before any new id is drawn, so a drawn id never takes one. Any other (a UUID) becomes
+`legacy_id`, which the API and `/@user/<id>` resolve, and the row gets a new id: local rows from their creation time,
+remote rows from `published` truncated to the second plus 0 to 999 ms; the low bits come from the base time and the
+row's URI, never from a random source. Account ids that 0020 generated during the bridge, and acct-shaped ids of the
+upstream era, are not kept as legacy ids. A local status whose URL still ends with the UUID it was created with keeps
+that UUID as `legacy_id`. Notifications keep their INTEGER ids; duplicates by (recipient, type, sender, status) keep the
+smallest. The counter continues past the larger of the exported `sqlite_sequence` value and the largest id, as an exact
+integer.
 
 **URIs.** Local actors and statuses keep their URIs (`https://<domain>/ap/users/<name>`, `/ap/o/<uuid>`). A remote
 status takes its original URI, and the uuid of its legacy proxy id `/ap/o/<uuid>` is kept in `statuses.legacy_ap_o`. A
@@ -179,22 +181,22 @@ non-public object whose author a bridge migration changed stops the conversion (
   stored value with an upper-case host or `:443`, say), the conversion stops (`statuses:followers-spelling-ambiguous`)
   rather than choose between a direct and a followers-only audience.
 
-- Visibility is legacy's: public with Public in `to`; with the author's followers in `to`, unlisted when Public is also in
-  `cc`, else followers-only; otherwise direct. Only the full Public URI counts, as in legacy.
+- Visibility is legacy's: public with Public in `to`; with the author's followers in `to`, unlisted when Public is also
+  in `cc`, else followers-only; otherwise direct. Only the full Public URI counts, as in legacy.
 - Recipients (`status_mentions`): for public and unlisted statuses, the tagged known accounts, and the other addressed
   known accounts as silent ones. For a followers-only status, none: legacy let a follower read it only while the follow
   was accepted, and a recipient row would be a grant that outlives an unfollow, so in Kopje only an accepted follow,
   checked when the status is read, lets anyone read it. The API therefore shows no mentions on a migrated followers-only
-  status (they stay in `raw`). For a direct status, exactly the known accounts in `to` (silent unless tagged; a direct status with
-  a silent recipient is stored as `limited`, the same audience). A Mention tag or `cc` entry outside that set is no
-  recipient: it stays in `raw` and is counted as `mentionsNotRecipients`.
+  status (they stay in `raw`). For a direct status, exactly the known accounts in `to` (silent unless tagged; a direct
+  status with a silent recipient is stored as `limited`, the same audience). A Mention tag or `cc` entry outside that
+  set is no recipient: it stays in `raw` and is counted as `mentionsNotRecipients`.
 - A local status whose exported outbox row disagrees with its own addressing (`statuses:addressing-conflict`), and a
   boost whose outbox row has no exported audience (levels below 0002, `reblogs:audience-unknown`), stop the conversion
   instead of being guessed. An outbox row written before 0016 was applied (by `d1_migrations.applied_at`) holds only
   the single target it was written with, which 0016 copied into `to` with an empty `cc`, so it agrees when that target
   is within the status's own `to` or `cc`; the status keeps its own audience either way. Without a usable `applied_at`
-  for 0016, every row is compared as written. A boost's visibility is its outbox row's, by the same rule; a boost has recipients only when
-  it is direct (the known accounts in its `to`).
+  for 0016, every row is compared as written. A boost's visibility is its outbox row's, by the same rule; a boost has
+  recipients only when it is direct (the known accounts in its `to`).
 - A local status that addresses more than `MAX_LOCAL_ADDRESSED` (1,000) accounts that are not silent stops the
   conversion as `statuses:local-addressing-over-bound:<object id>`; no recipient is dropped. Edit or delete the status
   in legacy, then export again. `src/platform/identity-bounds.ts` (`MAX_LOCAL_ADDRESSED`, RES-3) says why its Create
@@ -216,14 +218,14 @@ are kept without a status either way. To move the images into Kopje's own media 
    is read from the environment only, sent only to the API, never with a redirect, and redacted from what is printed.
    Each file is checked as Kopje checks an upload: its type from its signature (JPEG, PNG, GIF or WebP; AVIF, SVG and
    HEIC are refused), at most 16 MiB and 16,777,216 pixels, with dimensions read from its header. It is written to
-   `<images dir>/originals/<image id>` with mode 0600, and `<images dir>/images.json` records, per image id, its SHA-256,
-   type, size and source, and a secret (32 random bytes, base64url, as Kopje makes file tokens) from which the converter
-   derives the file token of every media row that shows the image. An image Cloudflare answers 404 for, or one that
-   fails a check, is recorded as `missing` with its reason. A rerun, on the same or a later export of the same instance,
-   keeps every image whose file still has its digest and fetches only the rest; an image keeps its secret through every
-   state, so one that comes back after being missing gets the same URLs. `images.json` is refused when it was written for
-   another account hash or domain (`images-file-differs`). Any other error answer stops the run (`images-fetch-failed`,
-   exit 1) after saving what it downloaded. It prints counts only.
+   `<images dir>/originals/<image id>` with mode 0600, and `<images dir>/images.json` records, per image id, its
+   SHA-256, type, size and source, and a secret (32 random bytes, base64url, as Kopje makes file tokens) from which the
+   converter derives the file token of every media row that shows the image. An image Cloudflare answers 404 for, or one
+   that fails a check, is recorded as `missing` with its reason. A rerun, on the same or a later export of the same
+   instance, keeps every image whose file still has its digest and fetches only the rest; an image keeps its secret
+   through every state, so one that comes back after being missing gets the same URLs. `images.json` is refused when it
+   was written for another account hash or domain (`images-file-differs`). Any other error answer stops the run
+   (`images-fetch-failed`, exit 1) after saving what it downloaded. It prints counts only.
 2. `convert --images <images dir>` maps each local reference under the operator's account (profiles of local accounts,
    attachments of local statuses and of their earlier versions, unattached local images) to local media as Kopje's
    upload path makes it: a media row with a file token of its own, the served type (PNG stays PNG; JPEG, GIF and WebP
@@ -233,17 +235,17 @@ are kept without a status either way. To move the images into Kopje's own media 
    `avatar_url` or `header_url` holds. An image that only earlier versions of a status show gets a row of that status
    that it does not show (`shown` 0, as an edit that drops media leaves it), one per status, so its files are kept and
    go with the status. An earlier version that shows an image the status still shows names that
-   row's files, with the description that version had. Every row, also when several show the same image, has its own token,
-   files and original, so Kopje's per-row lifecycle (the sweep after a deletion, backups, the rebuild) needs nothing
-   else. The token is HMAC-SHA256 under the image's secret of the row's key, base64url (43 characters, the shape of
-   Kopje's tokens): `profile\n<actor URI>\n<avatar|header>`, `attachment\n<status URI>\n<position>`,
+   row's files, with the description that version had. Every row, also when several show the same image, has its own
+   token, files and original, so Kopje's per-row lifecycle (the sweep after a deletion, backups, the rebuild) needs
+   nothing else. The token is HMAC-SHA256 under the image's secret of the row's key, base64url (43 characters, the shape
+   of Kopje's tokens): `profile\n<actor URI>\n<avatar|header>`, `attachment\n<status URI>\n<position>`,
    `image\n<Image object id>` for an unattached image, `edit\n<status URI>\n<image id>`. A token so depends only on
    `images.json` and the legacy data, and cannot be derived from public URIs without the secret. A local profile image
    that is one of legacy's defaults, an image under cloudflare/wildebeest's default account
    (`NkfPDviynOyTAOI79ar_GQ`) or Mastodon's `missing.png` that legacy hotlinked as its default avatar, becomes `NULL`,
-   so Kopje's own default applies (counted as `upstream`). URLs of other accounts stay as they are (`foreign`), and so does
-   everything of remote accounts. A `missing` image's reference is left out: the avatar or header becomes `NULL`, the
-   attachment is removed. A URL under the operator's account that `images.json` does not map stops the conversion
+   so Kopje's own default applies (counted as `upstream`). URLs of other accounts stay as they are (`foreign`), and so
+   does everything of remote accounts. A `missing` image's reference is left out: the avatar or header becomes `NULL`,
+   the attachment is removed. A URL under the operator's account that `images.json` does not map stops the conversion
    (`images-unmapped`): run `images-export` on this export first. The ids depend only on the base time and the tokens
    on `images.json`, so the same inputs give the same dump.
 3. The originals go to R2 under the key Kopje keeps an original at, `originals/<media id>`: `convert` writes one per
@@ -260,12 +262,13 @@ are kept without a status either way. To move the images into Kopje's own media 
    `kopje_state` row `profile_updates` (a JSON array of account ids; [dump-format.md](dump-format.md)), and writes no
    such row when nothing changed or without `--images`. Publication records the list in one transaction, so it is
    bounded: more than 100 changed local profiles, far beyond the single-user or small instances Kopje is for, stop
-   the conversion (`profile-updates-over-limit`), and the importer refuses a list with a repeated id or more than 100. Publication (`kopje-admin publish --yes`) records, in the
-   transaction that makes the Store writable, one `Update(Person)` per listed account, the one a profile edit sends: to
-   the account's followers, with the new `icon` and `image` (none where the profile now uses Kopje's default). It
-   deletes the row in the same transaction, so a repeated `publish` records nothing more and a dump of the published
-   Store never holds the row. `publish` reports the count as `profileUpdates`. A suspended account is skipped.
-   `publish` is refused while a dump holds its freeze (`dump-in-progress`), so a dump is of one state.
+   the conversion (`profile-updates-over-limit`), and the importer refuses a list with a repeated id or more than 100.
+   Publication (`kopje-admin publish --yes`) records, in the transaction that makes the Store writable, one
+   `Update(Person)` per listed account, the one a profile edit sends: to the account's followers, with the new `icon`
+   and `image` (none where the profile now uses Kopje's default). It deletes the row in the same transaction, so a
+   repeated `publish` records nothing more and a dump of the published Store never holds the row. `publish` reports the
+   count as `profileUpdates`. A suspended account is skipped. `publish` is refused while a dump holds its freeze
+   (`dump-in-progress`), so a dump is of one state.
 
 **Relationships.** Follows, favourites, boosts, bookmarks, blocks, mutes, domain blocks and lists carry over. A
 remote account's favourite keeps no Like id, so it tracks none (`favourite_likes`, [dump-format.md](dump-format.md)):
@@ -337,7 +340,8 @@ Read `conversion.dropped` in the manifest before passing the flag: every code th
 
 `verify-conversion` computes expected records from the legacy data by its own code path, which shares no mapping with
 the converter (only Kopje's HTML sanitizer, a runtime transformation of the Store, whose output a test pins by hand),
-taking every audience from the addressing captured before the bridge, and reads actual records from a dump. Records are keyed by AP URIs, never by assigned ids, and compared as exact values:
+taking every audience from the addressing captured before the bridge, and reads actual records from a dump. Records are
+keyed by AP URIs, never by assigned ids, and compared as exact values:
 
 | Category                                                                                                                                                           | Record                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -393,7 +397,8 @@ object type) appears only as a 12-hex-digit SHA-256 prefix, and a parser or data
 | `result`, `stop` | `converted`, or `stopped` with a fixed `code`, a fixed `message` and `detail` (counts, levels, digests)                                                                                                      |
 
 `verify-conversion` prints `{ "result": "PASS" | "FAIL", "categories": { <name>: { expected, actual, missing, extra,
-changed, expectedSha256, actualSha256 } }, "emojis": { accounts, statuses, status_edits }, "truncation": { overLimit, accepted }, "dropped": { <code>: count, accepted } }`.
-`emojis` counts the rows holding a custom emoji snapshot, boosts included; legacy has none, so any is a FAIL (the
-category `emojis`). The digests are SHA-256 over the sorted records of each side, so two runs
-can be compared without seeing any record.
+changed, expectedSha256, actualSha256 } }, "emojis": { accounts, statuses, status_edits }, "truncation": { overLimit,
+accepted }, "dropped": { <code>: count, accepted }
+}`. `emojis` counts the rows holding a custom emoji snapshot, boosts included; legacy has none, so any is a FAIL (the
+category `emojis`). The digests are SHA-256 over the sorted records of each side, so two runs can be compared without
+seeing any record.

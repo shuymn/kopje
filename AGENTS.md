@@ -18,8 +18,8 @@ The code is in `packages/kopje`, and `deploy/` is the instance template operator
   (`test-node/migration-sequence.test.ts`). A migration never recreates a parent table, because that cascades deletes
   into its child tables.
 - `cli/` is the `kopje-admin` operations CLI.
-- `test/` runs in workerd (`vitest.config.ts`, plus `vitest.streaming.config.ts` for `test/streaming/`), and `test-node/`
-  runs in Node (`vitest.node.config.ts`), including the checks that read the source tree and the docs.
+- `test/` runs in workerd (`vitest.config.ts`, plus `vitest.streaming.config.ts` for `test/streaming/`), and
+  `test-node/` runs in Node (`vitest.node.config.ts`), including the checks that read the source tree and the docs.
 - `docs/` is the design and operator documentation.
 
 ## Commands

@@ -4,7 +4,8 @@ This document specifies the HTTP signature requirements for ActivityPub federati
 
 ## Overview
 
-All POST requests to federation endpoints MUST be signed. GET requests MAY require signatures when [Authorized Fetch](authorized-fetch.md) mode is enabled.
+All POST requests to federation endpoints MUST be signed. GET requests MAY require signatures when
+[Authorized Fetch](authorized-fetch.md) mode is enabled.
 
 Mastodon supports two signature schemes:
 
@@ -251,7 +252,8 @@ Returned when the requesting domain is blocked:
 
 ### Backward Compatibility
 
-Some older Mastodon versions incorrectly omit the query string from `(request-target)`. Servers SHOULD verify signatures both with and without the query string for compatibility.
+Some older Mastodon versions incorrectly omit the query string from `(request-target)`. Servers SHOULD verify signatures
+both with and without the query string for compatibility.
 
 ### RSA Key Requirements
 
