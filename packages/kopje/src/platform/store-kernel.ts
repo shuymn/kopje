@@ -56,14 +56,39 @@ const READONLY_ADMITS: Record<OperationKind, boolean> = {
 };
 
 // One domain operation = one RPC = one transactionSync. It runs synchronously over the Store's SQLite and must not
-// do external I/O. Timestamps come from the caller (Date.now() does not advance inside one DO request); local IDs are
-// minted in the Store, inside the operation (domain/ids.ts allocateLocalId).
+// do external I/O. Timestamps come from the caller (Date.now() does not advance inside one DO request), except the
+// Store's own time (clock); local IDs are minted in the Store, inside the operation (domain/ids.ts allocateLocalId).
 // savepoint is a nested transactionSync of the same storage (a named savepoint inside the operation's transaction),
 // absent where the caller has none.
 export type StoreOperation<I, O> = {
   readonly kind: OperationKind;
+  // The input field that takes the Store's own time (TimedOperation), absent when the caller's time is enough.
+  readonly clock?: StoreClock;
   run(sql: SqlStorage, input: I, savepoint?: <T>(fn: () => T) => T): O;
 };
+
+// The input fields an operation may take the Store's own time in.
+export type StoreClock = "now" | "storeNow";
+
+// An operation that takes the Store's own time in its input's `clock` field (domain/operation.ts atStoreTime), for
+// state the Store both writes and judges by its age, or a lease and the fences that read it: the kernel fills the field
+// with the time the transaction admitted the operation by, whatever the caller sends in it.
+export type TimedOperation<I, O, C extends StoreClock> = StoreOperation<I, O> & { readonly clock: C };
+
+// The input less the field the Store's clock fills; undefined when nothing else is left.
+type WithoutClock<I, C extends StoreClock> = I extends unknown
+  ? [Exclude<keyof I, C>] extends [never]
+    ? undefined
+    : Omit<I, C>
+  : never;
+
+// What a caller passes to run an operation: its input, less the field the Store's clock fills.
+export type OperationInput<T> =
+  T extends TimedOperation<infer I, unknown, infer C>
+    ? WithoutClock<I, C>
+    : T extends StoreOperation<infer I, unknown>
+      ? I
+      : never;
 
 export type SchemaState =
   | { status: "current" }
@@ -178,7 +203,8 @@ export class StoreKernel {
     this.#ctx = ctx;
     this.#sql = ctx.storage.sql;
     this.#migrations = options.migrations;
-    this.#now = options.now ?? Date.now;
+    // Read at each call, so a clock a test fakes after the Store is built is the one the Store keeps.
+    this.#now = options.now ?? (() => Date.now());
     this.#transaction = options.transaction ?? ((fn) => ctx.storage.transactionSync(fn));
     this.#inject = options.inject ?? (() => {});
     this.#log = options.log ?? consoleSink;
@@ -187,8 +213,15 @@ export class StoreKernel {
 
   // Runs a domain operation if this Store can serve its kind: same build as the caller, schema current, and the
   // readonly table for a held or upgrading Store. Otherwise throws a maintenance error that the Worker maps to spool
-  // or 503. The state is checked inside the same transaction that runs the operation.
-  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: I): Promise<O> {
+  // or 503. The state is checked inside the same transaction that runs the operation, and a TimedOperation's clock
+  // field is filled from the time it is admitted by.
+  async execute<I, O, C extends StoreClock>(
+    callerBuild: string,
+    operation: TimedOperation<I, O, C>,
+    input: WithoutClock<I, C>,
+  ): Promise<O>;
+  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: I): Promise<O>;
+  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: unknown): Promise<O> {
     return (await this.#run(callerBuild, operation, () => input, null)).output;
   }
 
@@ -216,20 +249,10 @@ export class StoreKernel {
     return (await this.#run(callerBuild, operation, (refused) => ({ ...input, refused }), probe)).output;
   }
 
-  // Runs an operation as execute does, with the Store's own time in its input as `storeNow`: the time the transaction
-  // admitted it by, never the caller's, for state the Store both writes and judges by its age.
-  async executeTimed<I, O>(
-    callerBuild: string,
-    operation: StoreOperation<I & { storeNow: number }, O>,
-    input: I,
-  ): Promise<O> {
-    return (await this.#run(callerBuild, operation, (_refused, storeNow) => ({ ...input, storeNow }), null)).output;
-  }
-
   async #run<I, O>(
     callerBuild: string,
     operation: StoreOperation<I, O>,
-    inputOf: (refused: MaintenanceReason | null, now: number) => I,
+    inputOf: (refused: MaintenanceReason | null) => unknown,
     probe: OperationKind | null,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
     if (callerBuild !== this.build) {
@@ -243,7 +266,11 @@ export class StoreKernel {
       const now = this.#now();
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
-      return { output: operation.run(this.#sql, inputOf(refused, now), this.#transaction), refused };
+      const given = inputOf(refused);
+      const input = (
+        operation.clock === undefined ? given : { ...(given as object | undefined), [operation.clock]: now }
+      ) as I;
+      return { output: operation.run(this.#sql, input, this.#transaction), refused };
     });
     if (operation.kind !== "read") {
       this.#afterCommit(operation);

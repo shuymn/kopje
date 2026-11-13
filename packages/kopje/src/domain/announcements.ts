@@ -557,7 +557,7 @@ export function streamedAnnouncementReaction(db: Db, subject: string): StreamedR
 }
 
 // ---- The Access admin (app/admin.ts): every write checks the admin in its transaction (AUTH-5) and is logged
-// (moderation-log.ts, Announcement targets), at the Store's own time (store.ts).
+// (moderation-log.ts, Announcement targets), at the Store's own time (atStoreTime).
 
 export type AnnouncementRefusal = {
   ok: false;
@@ -657,7 +657,7 @@ export type AnnouncementInput = {
 // POST /admin/announcements (Admin::AnnouncementsController#create): published now unless scheduledAt is after `now`
 // (Announcement#set_published; a past one is cleared), at most MAX_ANNOUNCEMENTS in all and MAX_LIVE_ANNOUNCEMENTS
 // live.
-export const createAnnouncement = writeOperation<
+export const createAnnouncement = writeOperation.atStoreTime("now")<
   AnnouncementInput & { authority: ImportAuthority; now: number },
   AnnouncementWritten
 >((db, input) => {
@@ -713,7 +713,7 @@ export type AnnouncementChanges = Partial<AnnouncementInput>;
 // POST /admin/announcements/:id (Admin::AnnouncementsController#update): the text, the range (judged as it results),
 // all-day and, while unpublished, the schedule (a row that becomes scheduled is counted live). published_at is kept;
 // updated_at is set. Changing nothing answers the row and logs nothing. A published row's change is streamed.
-export const updateAnnouncement = writeOperation<
+export const updateAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: AnnouncementChanges; now: number },
   AnnouncementWritten
 >((db, { authority, id, changes, now }) => {
@@ -788,7 +788,7 @@ export const updateAnnouncement = writeOperation<
 
 // POST /admin/announcements/:id/publish (Announcement#publish!): published now, its schedule cleared, even when it
 // was published already; counted live when it was not.
-export const publishAnnouncement = writeOperation<
+export const publishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
@@ -817,7 +817,7 @@ export const publishAnnouncement = writeOperation<
 
 // POST /admin/announcements/:id/unpublish (Announcement#unpublish!): unpublished, its schedule cleared; streamed as
 // announcement.delete when it was published.
-export const unpublishAnnouncement = writeOperation<
+export const unpublishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
@@ -850,7 +850,7 @@ const DELETE_ANCILLARY = 1 + 1 + MODERATION_LOG_PRUNE + 1;
 
 // POST /admin/announcements/:id/delete (Admin::AnnouncementsController#destroy): the row with its reactions and
 // dismissals; the log keeps the text's first 200 code units. Streamed as announcement.delete when it was published.
-export const deleteAnnouncement = writeOperation<
+export const deleteAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementDeleted
 >((db, { authority, id, now }) => {

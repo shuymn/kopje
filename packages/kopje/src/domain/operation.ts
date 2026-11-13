@@ -1,15 +1,24 @@
 import { Db } from "../db/sql";
-import type { OperationKind, StoreOperation } from "../platform/store-kernel";
+import type { OperationKind, StoreClock, StoreOperation, TimedOperation } from "../platform/store-kernel";
 
 // Declares a domain operation. The Store runs it as one RPC inside one transactionSync, so "read, decide, write"
 // is atomic. Operations are synchronous and do no external I/O; time arrives in the input, and local IDs are minted in
 // the Store, inside the operation that uses them (allocateLocalId in ids.ts). The kernel also passes
 // a nested transactionSync, so a step can run in a savepoint of that transaction (Db.savepoint).
+// `.atStoreTime(field)` declares one that takes the Store's own time in `field` (TimedOperation): the kernel fills it,
+// and a caller through the Store passes the rest.
 function declare(kind: OperationKind) {
-  return <I, O>(run: (db: Db, input: I) => O): StoreOperation<I, O> => ({
+  const operation = <I, O>(run: (db: Db, input: I) => O): StoreOperation<I, O> => ({
     kind,
     run: (sql, input, savepoint) => run(new Db(sql, savepoint), input),
   });
+  const atStoreTime =
+    <C extends StoreClock>(clock: C) =>
+    <I extends Record<C, number>, O>(run: (db: Db, input: I) => O): TimedOperation<I, O, C> => ({
+      ...operation(run),
+      clock,
+    });
+  return Object.assign(operation, { atStoreTime });
 }
 
 export const readOperation = declare("read");
