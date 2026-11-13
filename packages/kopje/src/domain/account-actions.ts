@@ -19,17 +19,18 @@ import {
   fieldSources,
   credentialAccount,
 } from "./accounts";
-import { followActivity, followAnswerActivity, followUri, recordOutbound, undoFollowActivity } from "./activities";
+import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { availableSql, followableBySql, type QuotePolicyName } from "./audience";
 import { userMediaDeleteOperation, userWriteOperation } from "./auth";
 import { localEmojiSnapshot } from "./custom-emojis";
 import { armFieldLinks } from "./field-links";
-import { retractFollow } from "./inbox";
 import { applyProfileImage, PROFILE_IMAGES, type ProfileImage, profileUploadReady } from "./media";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { plainTextToHtml } from "./plain-text";
+import { retractFollow } from "./retractions";
 import { accountSearchText } from "./search-text";
+import { unfollowRemote } from "./unfollow";
 
 // The account operations that federate or notify: following and its answers, and the profile update. They build on
 // the presenter and reads of accounts.ts, which import none of them.
@@ -293,7 +294,7 @@ export function followAccount(db: Db, input: FollowInput, viewerId: string): Fol
       const type = state === "accepted" ? "follow" : "follow_request";
       notify(db, { recipientId: target.id, type, fromId: viewerId, statusId: null, now: input.now });
     } else if (edge !== undefined) {
-      const activity = remoteFollow(db, viewerId, target, edge.id, null);
+      const activity = remoteFollow(db, viewerId, target, edge.id);
       db.run("UPDATE follows SET uri = ? WHERE id = CAST(? AS INTEGER)", activity.followUri, edge.id);
       recordOutbound(db, viewerId, followActivity(activity), input.now);
     }
@@ -324,35 +325,36 @@ export const unfollow = userWriteOperation<{ target: string; now: number }, Rela
     if (target === null) {
       return { status: "not_found" };
     }
-    const removed = db.first<{ id: string; uri: string | null }>(
-      "DELETE FROM follows WHERE account_id = ? AND target_account_id = ? RETURNING CAST(id AS TEXT) AS id, uri",
-      viewerId,
-      target.id,
-    );
+    // A remote follow, accepted or still requested, is undone there too (UnfollowService).
+    const removed =
+      target.domain === null
+        ? db.first<{ id: string; uri: string | null }>(
+            "DELETE FROM follows WHERE account_id = ? AND target_account_id = ? RETURNING CAST(id AS TEXT) AS id, uri",
+            viewerId,
+            target.id,
+          )
+        : unfollowRemote(db, accountRef(db, viewerId), accountRef(db, target.id), now);
     if (removed !== undefined) {
-      // A remote follow, accepted or still requested, is undone there too (UnfollowService).
-      if (target.domain !== null) {
-        recordOutbound(
-          db,
-          viewerId,
-          undoFollowActivity(remoteFollow(db, viewerId, target, removed.id, removed.uri)),
-          now,
-        );
-      }
       recountFollows(db, viewerId, target);
     }
-    // The follow's notification goes with it, as Mastodon destroys a notification with its activity.
-    db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
+    // The follow's notification goes with it, as Mastodon destroys a notification with its activity, also without an
+    // edge; unfollowRemote has already removed it with a remote edge.
+    if (target.domain === null || removed === undefined) {
+      db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, viewerId);
+    }
     return relationshipResult(db, viewerId, target.id, now);
   },
 );
 
-// The Follow of a remote follow edge. Migrated edges may have no stored uri; they get the id this instance would
-// have given them (a remote server matches an Undo by actor and object as well).
-function remoteFollow(db: Db, viewerId: string, target: TargetRow, edgeId: string, uri: string | null) {
-  const actorUri = db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", viewerId)?.uri ?? "";
-  const targetUri = db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", target.id)?.uri ?? "";
-  return { followUri: uri ?? followUri(actorUri, edgeId), actorUri, targetUri, targetId: target.id };
+// The Follow of a new remote follow edge, named after the edge (followUri).
+function remoteFollow(db: Db, viewerId: string, target: TargetRow, edgeId: string) {
+  const actorUri = accountRef(db, viewerId).uri;
+  const targetUri = accountRef(db, target.id).uri;
+  return { followUri: followUri(actorUri, edgeId), actorUri, targetUri, targetId: target.id };
+}
+
+function accountRef(db: Db, id: string): { id: string; uri: string } {
+  return { id, uri: db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", id)?.uri ?? "" };
 }
 
 // Counts are recomputed from the edges in the transaction that changed them, and only when an edge changed. A remote

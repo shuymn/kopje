@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_LANE_BACKLOG } from "../src/domain/deliveries";
-import { MAX_RETRACTIONS_PER_ACTOR, PURGE_BATCH } from "../src/domain/inbox";
+import { PURGE_BATCH } from "../src/domain/inbox";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { handleQueue, runScheduledJobs } from "../src/jobs/queue";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, login, registerApp, sql } from "./api-helpers";

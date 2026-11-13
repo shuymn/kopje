@@ -18,7 +18,8 @@ import {
   type QuoteWork,
   REVOCATION_BATCHES,
 } from "../src/domain/quotes";
-import { ACCOUNT_STALE_MS, RETRACTION_TTL_MS } from "../src/domain/remote-actors";
+import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
+import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { syncCollections } from "../src/federation/collections";
 import { REQUEST_DEADLINE_MS } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";

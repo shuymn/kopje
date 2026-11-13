@@ -5,6 +5,7 @@ import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors
 import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
 import { readConfig, userKek } from "../platform/config";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
+import { sameOrigin } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import {
@@ -14,7 +15,6 @@ import {
   type FederationState,
   type RemoteLoaders,
 } from "./federation";
-import { originOf } from "./inbound";
 import { typeIs } from "./json-shapes";
 import { requestBudget } from "./loader";
 import { fetchActor } from "./remote-actor";
@@ -251,7 +251,7 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   if (status === null || status.attributedTo === null) {
     return NONE;
   }
-  if (originOf(status.attributedTo) !== originOf(status.uri)) {
+  if (!sameOrigin(status.attributedTo, status.uri)) {
     return NONE;
   }
   const { fetched: author, revision } = await actorAfterRevision(loaders, status.attributedTo);

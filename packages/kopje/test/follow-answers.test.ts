@@ -14,8 +14,9 @@ import {
   LEASE_MS,
   MAX_ATTEMPTS,
 } from "../src/domain/deliveries";
-import { MAX_RETRACTIONS_PER_ACTOR, UNDONE_ANSWER_SIGNERS_SQL } from "../src/domain/inbox";
+import { UNDONE_ANSWER_SIGNERS_SQL } from "../src/domain/inbox";
 import { readOperation } from "../src/domain/operation";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { deliveryRound } from "../src/jobs/deliver";
 import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";

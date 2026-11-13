@@ -11,23 +11,16 @@ import {
   type RelationshipResult,
   resolveAccountId,
 } from "./accounts";
-import {
-  blockActivity,
-  blockUri,
-  followAnswerActivity,
-  followUri,
-  recordOutbound,
-  undoBlockActivity,
-  undoFollowActivity,
-} from "./activities";
+import { blockActivity, blockUri, followAnswerActivity, recordOutbound, undoBlockActivity } from "./activities";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { activeMuteSql, inDomainSql } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { leaveConversationsWith } from "./conversations";
-import { retractFollow } from "./inbox";
 import { DOMAIN_BLOCK_CLEANUPS, nextJob, runJobItem } from "./job-attempts";
 import { END_FOLLOW_NOTIFICATIONS_SQL } from "./notifications";
 import { writeOperation } from "./operation";
+import { retractFollow } from "./retractions";
+import { type EndedFollow, unfollowRemote } from "./unfollow";
 import { edgeRangeSql } from "./windows";
 
 // Blocks, mutes and domain blocks of local users (Mastodon 4.5's BlockService, UnblockService, MuteService,
@@ -72,16 +65,21 @@ function party(db: Db, id: string): Party | undefined {
 // Mastodon's reject_remote_follows! sends it to inbox_url, never to the earlier receivers of the Accepts it withdraws,
 // so recording it costs a constant.
 function endFollow(db: Db, follower: Party, target: Party, now: number, severing = false): boolean {
-  const edge = db.first<{ id: string; uri: string | null; state: string }>(
-    `DELETE FROM follows WHERE account_id = ? AND target_account_id = ?
+  const undone = follower.local === 1 && target.local === 0;
+  const edge = undone
+    ? unfollowRemote(db, follower, target, now)
+    : db.first<EndedFollow>(
+        `DELETE FROM follows WHERE account_id = ? AND target_account_id = ?
 		RETURNING CAST(id AS TEXT) AS id, uri, state`,
-    follower.id,
-    target.id,
-  );
+        follower.id,
+        target.id,
+      );
   if (edge === undefined) {
     return false;
   }
-  db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, follower.id);
+  if (!undone) {
+    db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, follower.id);
+  }
   if (edge.state === "accepted") {
     db.run(
       "UPDATE accounts SET following_count = max(following_count - 1, 0) WHERE id = ? AND domain IS NULL",
@@ -92,18 +90,7 @@ function endFollow(db: Db, follower: Party, target: Party, now: number, severing
       target.id,
     );
   }
-  if (follower.local === 1 && target.local === 0) {
-    recordOutbound(
-      db,
-      follower.id,
-      undoFollowActivity({
-        followUri: edge.uri ?? followUri(follower.uri, edge.id),
-        actorUri: follower.uri,
-        targetUri: target.uri,
-        targetId: target.id,
-      }),
-      now,
-    );
+  if (undone) {
     return true;
   }
   if (follower.local === 0 && target.local === 1) {

@@ -12,6 +12,7 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import type { MaintenanceReason } from "../platform/store-errors";
 import {
@@ -23,7 +24,7 @@ import {
   statusMediaWindowSql,
   storedTime,
 } from "../platform/stored-bounds";
-import { followActivity, followAnswerActivity, followUri, recordOutbound, undoFollowActivity } from "./activities";
+import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { type FetchSigner, fetchSignerOf, instanceDomainOf } from "./actors";
 import {
   activeMuteSql,
@@ -93,17 +94,13 @@ import {
   RetryLater,
   actorRevision,
   upsertRemoteActor,
-  ANY_ACTOR,
-  RETRACTION_TTL_MS,
   originOf,
-  isRetracted,
   SWEEP_BATCH,
   type RemoteRow,
   remoteAccount,
   isDeletedActor,
   applyRefresh,
   staleAccount,
-  isDeleted,
   unavailableRemote,
   revisionHolds,
   refreshRouting,
@@ -122,9 +119,19 @@ import {
   updateRemoteStatus,
 } from "./remote-statuses";
 import { fileRemoteReports } from "./reports";
+import {
+  canRetract,
+  isDeleted,
+  isMisskeyPairId,
+  isRetracted,
+  recordDeletedObject,
+  retract,
+  retractFollow,
+} from "./retractions";
 import { RowBudget, totalChanges } from "./row-budget";
 import { recountStatus, recountStatuses, UNTAG_WINDOW_SQL, withdrawLocalBoost } from "./statuses";
 import { streamDelete } from "./streaming";
+import { unfollowRemote } from "./unfollow";
 
 // Inbound activities about actors and relationships, applied in one Store transaction each. The Worker has
 // already verified the HTTP signature, bound the signer to the actor (ID-1), fetched and sanitized what it needed
@@ -179,9 +186,6 @@ import { streamDelete } from "./streaming";
 // An Undo, Accept or Reject naming a superseded or unknown id never reaches the current edge, except through the
 // narrow pair fallbacks documented at ourFollow and undo.
 
-// At most this many live retractions per actor (RES-4): a remote can name any number of ids of its own origin. An
-// actor's own deletion does not depend on it (inbound_jobs).
-export const MAX_RETRACTIONS_PER_ACTOR = 10_000;
 // A stored key is trusted this long after its actor document was fetched; after that the Worker fetches it again.
 // A deleted actor's own Delete is the one exception (federation/inbound.ts).
 export const KEY_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -440,67 +444,8 @@ export const getRemoteKey = readOperation<{ keyId: string; now: number }, Stored
 );
 
 // ---------------------------------------------------------------------------------------------------------------
-// Retractions (ID-7)
+// Sweep of expired retractions, jobs and mutes (RES-4)
 // ---------------------------------------------------------------------------------------------------------------
-
-// Records that the stored object `uri` was deleted. Bounded by the authors' caps: it is written only together with
-// the author's own retraction of the same uri, which counts against MAX_RETRACTIONS_PER_ACTOR, and expires and is
-// swept with it.
-function recordDeletedObject(db: Db, uri: string, now: number): void {
-  db.run(
-    `INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) VALUES (?, ?, ?)
-		ON CONFLICT DO UPDATE SET expires_at = excluded.expires_at`,
-    ANY_ACTOR,
-    uri,
-    now + RETRACTION_TTL_MS,
-  );
-}
-
-function recordable(actorUri: string, targetUri: string): boolean {
-  return originOf(targetUri) !== null && originOf(targetUri) === originOf(actorUri);
-}
-
-// Whether every one of targetUris can be recorded as retracted by actorUri now: those not recorded yet fit under the
-// cap. A change whose generation could not be recorded is not made (ID-7: it could come back).
-function canRetract(db: Db, actorUri: string, targetUris: readonly string[], now: number): boolean {
-  const missing = new Set(targetUris.filter((uri) => recordable(actorUri, uri) && !isRetracted(db, actorUri, uri, now)))
-    .size;
-  if (missing === 0) {
-    return true;
-  }
-  const live =
-    db.first<{ n: number }>(
-      "SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND expires_at > ?",
-      actorUri,
-      now,
-    )?.n ?? 0;
-  return live + missing <= MAX_RETRACTIONS_PER_ACTOR;
-}
-
-// Records that actorUri retracted targetUri, and reports whether it is recorded. Only an id of the actor's own origin
-// is recorded (another origin's activity could never be the actor's to retract), and at most
-// MAX_RETRACTIONS_PER_ACTOR live ones per actor.
-function retract(db: Db, actorUri: string, targetUri: string, now: number): boolean {
-  if (!recordable(actorUri, targetUri) || !canRetract(db, actorUri, [targetUri], now)) {
-    return false;
-  }
-  db.run(
-    `INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) VALUES (?, ?, ?)
-		ON CONFLICT DO UPDATE SET expires_at = excluded.expires_at`,
-    actorUri,
-    targetUri,
-    now + RETRACTION_TTL_MS,
-  );
-  return true;
-}
-
-// Records a Follow id as retracted: the one way every path (Undo, Block, a refused or superseded Follow, a local
-// reject) records a Follow generation. A Misskey pair id (`/follows/<follower>/<followee>`) names every generation of a
-// follow, so it is never recorded: true without writing anything. Its limit, on every path: a pair activity delivered
-// again after a new Follow cannot be told from a new one.
-export function retractFollow(db: Db, actorUri: string, followUri: string, now: number): boolean {
-  return isMisskeyPairId(followUri) || retract(db, actorUri, followUri, now);
-}
 
 function sweep(db: Db, now: number): void {
   db.run(
@@ -562,36 +507,6 @@ function removeFollow(db: Db, followerId: string, targetId: string): boolean {
   const removed = db.run("DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", followerId, targetId);
   db.run(END_FOLLOW_NOTIFICATIONS_SQL, targetId, followerId);
   return removed > 0;
-}
-
-// Ends a local account's follow of a remote account and records its Undo (Mastodon's UnfollowService), as the
-// unfollow API does. A migrated edge without a uri is named as this instance would have named it.
-function unfollowRemote(
-  db: Db,
-  local: { id: string; uri: string },
-  remote: { id: string; uri: string },
-  now: number,
-): void {
-  const removed = db.first<{ id: string; uri: string | null }>(
-    "SELECT CAST(id AS TEXT) AS id, uri FROM follows WHERE account_id = ? AND target_account_id = ?",
-    local.id,
-    remote.id,
-  );
-  if (removed === undefined) {
-    return;
-  }
-  removeFollow(db, local.id, remote.id);
-  recordOutbound(
-    db,
-    local.id,
-    undoFollowActivity({
-      followUri: removed.uri ?? followUri(local.uri, removed.id),
-      actorUri: local.uri,
-      targetUri: remote.uri,
-      targetId: remote.id,
-    }),
-    now,
-  );
 }
 
 // Accept or Reject of a remote Follow, as an outbound intent delivered to the follower's shared inbox, or its personal
@@ -923,16 +838,6 @@ function quoteAnswerRef(ref: ActivityRef): QuoteAnswerRef {
   return { id: ref.id, type: ref.type, object: ref.object, instrument: ref.instrument ?? null };
 }
 
-// Misskey's Undo of a Follow names the follow by its pair (ApRendererService#renderFollow without a request id:
-// <origin>/follows/<follower id>/<followee id>), not by the id of the Follow it sent.
-function isMisskeyPairId(id: string): boolean {
-  try {
-    return /^\/follows\/[^/]+\/[^/]+$/.test(new URL(id).pathname);
-  } catch {
-    return false;
-  }
-}
-
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,
 // only Misskey's pair-shaped Follow id falls back to the actor's current follow of the embedded local target.
 //
@@ -948,7 +853,7 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   if (ref.id === null) {
     return ignored("unknown-object");
   }
-  if (originOf(ref.id) !== originOf(actor.uri)) {
+  if (!sameOrigin(ref.id, actor.uri)) {
     return ignored("foreign-object");
   }
   // A retracted id that a favourite or boost still holds is undone all the same (a Delete of it may have recorded the
@@ -2247,7 +2152,7 @@ function accountHasRows(db: Db, id: string, filters = true): boolean {
 // written, only while a forward could still be recorded (forwardable), and the round after the verification decides
 // everything again.
 const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
-  if (originOf(activity.object) !== originOf(actor.uri)) {
+  if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
   const status = db.first<{
@@ -2555,7 +2460,7 @@ function hideRemoteStatus(db: Db, statusId: string): void {
 // drops such a relay; Kopje lets the stamp's own server answer).
 const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => {
   const { now } = input;
-  if (originOf(activity.object) !== originOf(actor.uri)) {
+  if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
   const status = db.first<{ reblog_of_id: string | null; visibility: Visibility }>(
@@ -2946,7 +2851,7 @@ function newOriginal(
     return ignored("unfetchable");
   }
   const authorUri = fetched.attributedTo;
-  if (authorUri === null || originOf(authorUri) !== originOf(fetched.uri)) {
+  if (authorUri === null || !sameOrigin(authorUri, fetched.uri)) {
     return ignored("unusable-object");
   }
   // Nothing new of an author whose deletion has started is stored, its stored row or not (ID-7).
@@ -3363,7 +3268,7 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
   if (collection !== "featured") {
     return ignored("not-collection");
   }
-  if (originOf(object.status) !== originOf(actor.uri)) {
+  if (!sameOrigin(object.status, actor.uri)) {
     return ignored("foreign-object");
   }
   let status = statusByUri(db, object.status);
@@ -3474,7 +3379,7 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (originOf(actorUri) === null || originOf(actorUri) === origin) {
     return ignored("local-actor");
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return ignored("foreign-id");
   }
   if (input.actor !== null && input.actor.uri !== actorUri) {
