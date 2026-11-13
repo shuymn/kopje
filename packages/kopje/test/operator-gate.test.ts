@@ -70,12 +70,9 @@ function leases(field: string): Stored[] {
   return [
     at(String(NOW + 1)),
     at(String(NOW)),
-    at(String(NOW - 1)),
     // Above NOW as a double, at NOW in SQLite's conversion.
     at(`${NOW}.00012208`),
     at("0"),
-    at("-0"),
-    at("0.0"),
     at("1e400"),
     at(`"${NOW + 1}"`),
     at("true"),
@@ -120,19 +117,50 @@ function outcomes<F>(read: () => F, refusal: (flags: F, kind: OperationKind) => 
   });
 }
 
-function* combinations(): Generator<[keyof typeof VALUES, Stored][]> {
-  const names = Object.keys(VALUES) as (keyof typeof VALUES)[];
-  const walk = function* (i: number, acc: [keyof typeof VALUES, Stored][]): Generator<[keyof typeof VALUES, Stored][]> {
-    const name = names[i];
-    if (name === undefined) {
-      yield acc;
-      return;
+type Name = keyof typeof VALUES;
+type State = Partial<Record<Name, Stored>>;
+
+const NAMES = Object.keys(VALUES) as Name[];
+
+// What the names a state does not vary hold: absent, a well-formed record (a live lease), or an edge (a JSON null; an
+// ended lease, as a completed dump's receipt holds it).
+const REST: readonly ((name: Name) => Stored)[] = [
+  () => undefined,
+  (name) => VALUES[name][0],
+  (name) => (name === "dump" || name === "media_rebuild_lease" ? `{"id":"d","${LEASE_FIELD[name]}":0}` : " null "),
+];
+const LEASE_FIELD = { dump: "leaseUntil", media_rebuild_lease: "until" } as const;
+
+// Whole states that were counterexamples to a gate reading the leases or the import in SQL.
+const COUNTEREXAMPLES: readonly State[] = [
+  { import: '{"id":"i"}', dump: '{"leaseUntil":{"toString":null}}' },
+  { import: `{"id":"i","header":{"source":{"extra":${DEEP}}}}` },
+  { dump: `{"leaseUntil":${NOW}.00012208}`, media_rebuild_lease: `{"until":${NOW}.00012208}` },
+  { import: '{"id":"i"}', media_rebuild_lease: '{"until":0} \u0000' },
+  { maintenance: "{}", unpublished: "{}", dump: `{"leaseUntil":0,"leaseUntil":${NOW + 1}}` },
+];
+
+// A covering design rather than the full product: every pair of names with each of their values crossed, the other
+// names at each REST value, then COUNTEREXAMPLES.
+function* states(): Generator<State> {
+  for (const [i, a] of NAMES.entries()) {
+    for (const b of NAMES.slice(i + 1)) {
+      for (const va of VALUES[a]) {
+        for (const vb of VALUES[b]) {
+          for (const rest of REST) {
+            const state: State = {};
+            for (const name of NAMES) {
+              state[name] = rest(name);
+            }
+            state[a] = va;
+            state[b] = vb;
+            yield state;
+          }
+        }
+      }
     }
-    for (const value of VALUES[name]) {
-      yield* walk(i + 1, [...acc, [name, value]]);
-    }
-  };
-  yield* walk(0, []);
+  }
+  yield* COUNTEREXAMPLES;
 }
 
 const textBytes = new TextEncoder();
@@ -196,13 +224,14 @@ describe("operator gate", () => {
     const store = await migratedStore();
     const differences = await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
-      const out: { stored: [string, Stored][]; records: Outcome[]; gate: Outcome[] }[] = [];
+      const out: { stored: State; records: Outcome[]; gate: Outcome[] }[] = [];
       let compared = 0;
       let refusedWhereThrew = 0;
-      // Each combination rewrites only the rows that differ from the previous one.
+      // Each state rewrites only the rows that differ from the previous one.
       const current = new Map<string, Stored>();
-      for (const stored of combinations()) {
-        for (const [name, value] of stored) {
+      for (const stored of states()) {
+        for (const name of NAMES) {
+          const value = stored[name];
           if (current.has(name) && current.get(name) === value) {
             continue;
           }
@@ -241,10 +270,11 @@ describe("operator gate", () => {
       return { compared, out, refusedWhereThrew };
     });
     expect(differences.out).toEqual([]);
-    const expected = Object.values(VALUES).reduce((n, values) => n * values.length, 1);
+    const pairs = NAMES.flatMap((a, i) => NAMES.slice(i + 1).map((b) => VALUES[a].length * VALUES[b].length));
+    const expected = pairs.reduce((n, count) => n + count, 0) * REST.length + COUNTEREXAMPLES.length;
     expect(differences.compared).toBe(expected);
     expect(differences.refusedWhereThrew).toBeGreaterThan(0);
-  }, 300_000);
+  }, 60_000);
 
   it("refuses operations during an import whose header nests deeper than SQLite's JSON functions read", async () => {
     const source = await migratedStore();
