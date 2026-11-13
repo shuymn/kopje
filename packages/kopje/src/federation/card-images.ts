@@ -8,7 +8,7 @@ import {
 } from "../domain/card-images";
 import { imageBlurhash } from "../platform/blurhash";
 import { envInMaintenance, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, withinKept } from "../platform/deadline";
+import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { webpSize, sniffImageType } from "../platform/image-bytes";
 import {
@@ -474,17 +474,10 @@ export async function cardImagesRound(env: Env, deps: CardImagesDeps): Promise<C
       }
     }
   }
-  for (const claim of queue) {
-    try {
-      if ((await record(claim, { kind: "unattempted" })).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.card_images.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queue,
+    (claim) => record(claim, { kind: "unattempted" }),
+    "kopje.card_images.release_failed",
+  );
   return round;
 }

@@ -9,7 +9,7 @@ import {
   type RemoteMediaOutcome,
 } from "../domain/remote-media";
 import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, withinKept } from "../platform/deadline";
+import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { type StoreStub, storeRpc } from "../platform/store-client";
 import { randomToken } from "../security/tokens";
@@ -497,17 +497,10 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     ...Array.from({ length: LANE0_CONCURRENCY }, () => worker(queues[0]!)),
     ...Array.from({ length: LANE1_CONCURRENCY }, () => worker(queues[1]!)),
   ]);
-  for (const claim of queues.flat()) {
-    try {
-      if ((await record(claim, { kind: "unattempted" })).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.remote_media.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queues.flat(),
+    (claim) => record(claim, { kind: "unattempted" }),
+    "kopje.remote_media.release_failed",
+  );
   return round;
 }

@@ -91,9 +91,11 @@ export const EXCEPTIONS = {
   "src/jobs/deliver.ts: console.error({ event, ...errorFields(error) })": "an event name passed as a parameter",
   // The event names are the literals passed to cronStep and cronRound (NAME_ARGUMENTS).
   "src/jobs/scheduled.ts: console.error({ event, ...errorFields(error) })": "an event name passed as a parameter",
+  // The event names are the literals passed to releaseUnstarted (NAME_ARGUMENTS).
+  "src/platform/deadline.ts: console.error({ event, ...errorFields(error) })": "an event name passed as a parameter",
 };
 // Calls whose argument at the given index is an event name for an excepted site.
-const NAME_ARGUMENTS = { nextDueOf: 1, cronStep: 1, cronRound: 2 };
+const NAME_ARGUMENTS = { nextDueOf: 1, cronStep: 1, cronRound: 2, releaseUnstarted: 2 };
 
 const LEVELS = new Set(["warn", "error"]);
 const DIRECT = new Set(["log", "warn", "error", "info", "debug"]);

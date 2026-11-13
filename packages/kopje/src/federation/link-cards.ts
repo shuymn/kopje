@@ -9,7 +9,7 @@ import {
   cardHost,
   storedCardText,
 } from "../domain/link-cards";
-import { DeadlinePassed, inTime } from "../platform/deadline";
+import { DeadlinePassed, inTime, releaseUnstarted } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
@@ -325,17 +325,10 @@ export async function linkCardsRound(env: Env, deps: LinkCardsDeps): Promise<Lin
     }
   };
   await Promise.all(Array.from({ length: CARD_CONCURRENCY }, worker));
-  for (const claim of queue) {
-    try {
-      if ((await record(claim, { kind: "unattempted" }, end)).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.link_cards.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queue,
+    (claim) => record(claim, { kind: "unattempted" }, end),
+    "kopje.link_cards.release_failed",
+  );
   return round;
 }
