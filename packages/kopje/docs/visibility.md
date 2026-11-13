@@ -2,8 +2,9 @@
 
 Who may see a status or an account, what a viewer filters out, who is notified and whom an author may address are
 decided in one module: `src/domain/audience.ts`. It is plain SQL fragments, spliced into the queries that read and
-write. No read path, notification path or delivery path keeps its own copy of a rule. The threat model states the
-invariants (VIS-1 to VIS-32, NET-2, PUSH-3); this page describes how the code applies them.
+write. No read path, notification path or delivery path keeps its own copy of a rule.
+The threat model states the invariants (VIS-1 to VIS-20, VIS-22, VIS-23, VIS-25 to VIS-32, NET-2, PUSH-3); this page
+describes how the code applies them.
 
 ## The viewer context
 

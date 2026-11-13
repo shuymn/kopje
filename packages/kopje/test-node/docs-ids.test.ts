@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { deviationIds } from "../test/mastodon-conformance.js";
+import { lineOf } from "./source-scan.js";
 
 // The ids other documents, code comments and tests cite: each threat-model entry (`- **VIS-17: ...**`), each rule of
 // docs/visibility.md's rule table (`| R18 reblog, R19 favourite |`) and each accepted Mastodon departure
@@ -49,22 +50,38 @@ function definedIds(): Set<string> {
   ]);
 }
 
-// The cited ids `defined` lacks, as `path:line: id`.
+// The cited ids `defined` lacks, as `path:line: id`. A range (`VIS-1 to VIS-4`, `R1 to R25`, `through` or an en
+// dash, across a line break too) cites each id in it, so a range over an undefined id fails: cite a list instead.
 function undefinedIds(files: readonly File[], defined: ReadonlySet<string>): string[] {
   const families = [...new Set([...defined].filter((id) => id.includes("-")).map((id) => id.split("-")[0]))];
-  const hyphenated = new RegExp(`\\b(?:${families.join("|")})-\\d+[a-z]?\\b`, "g");
+  const prefix = `(?:${families.join("|")})-`;
+  const hyphenated = new RegExp(`\\b${prefix}\\d+[a-z]?\\b`, "g");
+  const ranges = new RegExp(`\\b(${prefix}|R)(\\d+)\\s*(?:\\bto\\b|\\bthrough\\b|–)\\s*\\1(\\d+)\\b`, "g");
   const found: string[] = [];
   for (const { path, text } of files) {
     const rules = path.startsWith("packages/kopje/src/") || path.endsWith(".md");
-    text.split("\n").forEach((line, i) => {
-      const ids = [...line.matchAll(hyphenated)].map((m) => m[0]);
-      if (rules) {
-        ids.push(...(line.match(/\bR\d+\b/g) ?? []));
+    const cited: { at: number; id: string }[] = [];
+    for (const match of text.matchAll(hyphenated)) {
+      cited.push({ at: match.index, id: match[0] });
+    }
+    if (rules) {
+      for (const match of text.matchAll(/\bR\d+\b/g)) {
+        cited.push({ at: match.index, id: match[0] });
       }
-      for (const id of ids.filter((cited) => !defined.has(cited))) {
-        found.push(`${path}:${i + 1}: ${id}`);
+    }
+    for (const match of text.matchAll(ranges)) {
+      const [, family = "", first = "", last = ""] = match;
+      if (family !== "R" || rules) {
+        for (let n = Number(first) + 1; n < Number(last); n++) {
+          cited.push({ at: match.index, id: `${family}${n}` });
+        }
       }
-    });
+    }
+    for (const { at, id } of cited.toSorted((a, b) => a.at - b.at)) {
+      if (!defined.has(id)) {
+        found.push(`${path}:${lineOf(text, at)}: ${id}`);
+      }
+    }
   }
   return found;
 }
@@ -129,6 +146,21 @@ describe("document ids", () => {
       "packages/kopje/src/a.ts:2: R2",
       `packages/kopje/test/a.test.ts:1: ${["MD-", "9"].join("")}`,
       "deploy/README.md:1: R7",
+    ]);
+  });
+
+  it("reads a range as each id in it", () => {
+    const defined = new Set(["VIS-1", "VIS-2", "VIS-4", "MD-1", "MD-2", "MD-3", "R1", "R2", "R4"]);
+    const range = (a: string, b: string) => `${a} to ${b}`;
+    const files = [
+      { path: "packages/kopje/docs/a.md", text: `(${range("VIS-1", "VIS-2")}; MD-1 through\nMD-3)\n` },
+      { path: "packages/kopje/docs/b.md", text: `(VIS-1 to\nVIS-4, R1–R4)\n` },
+      { path: "packages/kopje/test/a.test.ts", text: `// R1 to R4, ${range("VIS-1", "VIS-4")}\n` },
+    ];
+    expect(undefinedIds(files, defined)).toEqual([
+      "packages/kopje/docs/b.md:1: VIS-3",
+      "packages/kopje/docs/b.md:2: R3",
+      "packages/kopje/test/a.test.ts:1: VIS-3",
     ]);
   });
 });
