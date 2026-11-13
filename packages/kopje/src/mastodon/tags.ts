@@ -11,18 +11,12 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound, validationFailed } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 
 // Hashtags (Mastodon 4.5's Api::V1::TagsController and FollowedTagsController) and featured hashtags
 // (FeaturedTagsController, FeaturedTags::SuggestionsController and Accounts::FeaturedTagsController); the Store does the
 // work (domain/tags.ts, domain/featured-tags.ts). A name that is not a hashtag answers 404, as Mastodon's.
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
-
-function validationError(errors: string[]): Response {
-  return mastodonError(422, `Validation failed: ${errors.join(", ")}`);
-}
 
 // GET /api/v1/tags/:id.
 export const getTag: ApiHandler = async (c, deps) => {
@@ -31,7 +25,7 @@ export const getTag: ApiHandler = async (c, deps) => {
   const tag = authorized(
     await storeCall(c, deps, (s, b) => s.tag(b, { credential, name, now: deps.now(), present: present(c) })),
   );
-  return tag === null ? NOT_FOUND() : c.json(tag);
+  return tag === null ? recordNotFound() : c.json(tag);
 };
 
 function tagResponse(c: ApiContext, result: TagResult | FeatureResult): Response {
@@ -39,9 +33,9 @@ function tagResponse(c: ApiContext, result: TagResult | FeatureResult): Response
     case "ok":
       return c.json(result.value);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "invalid":
-      return validationError(result.errors);
+      return validationFailed(result.errors);
   }
 }
 
@@ -108,12 +102,12 @@ export const deleteFeaturedTag: ApiHandler = async (c, deps) => {
     now: deps.now(),
   };
   const deleted = authorized(await storeCall(c, deps, (s, b) => s.deleteFeaturedTag(b, input)));
-  return deleted ? c.json({}) : NOT_FOUND();
+  return deleted ? c.json({}) : recordNotFound();
 };
 
 // GET /api/v1/accounts/:id/featured_tags: public; 404 for an unknown account.
 export const accountFeaturedTags: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
   const tags = await storeCall(c, deps, (s, b) => s.accountFeaturedTags(b, { id, present: present(c) }));
-  return tags === null ? NOT_FOUND() : c.json(tags);
+  return tags === null ? recordNotFound() : c.json(tags);
 };

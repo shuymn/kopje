@@ -1,6 +1,6 @@
 import { grantsAny } from "../security/scopes";
 import { type ApiContext, type ApiDeps, type ApiHandler, authorized, credential, present, storeCall } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 
 // Features Kopje has no data for (annual reports, translation, e-mail confirmation, async refreshes), answered as
 // Mastodon answers when the feature has nothing to show or is not configured, because clients call them and a missing
@@ -8,7 +8,6 @@ import { mastodonError } from "./errors";
 // follows a Mastodon release that generates them (4.6 adds a user-triggered generation). The writes act on records
 // that never exist, so they change nothing.
 
-const RECORD_NOT_FOUND = () => mastodonError(404, "Record not found");
 // Mastodon's not_found (ApplicationController#not_found, Api::BaseController#respond_with_error), as opposed to the
 // "Record not found" of an ActiveRecord::RecordNotFound.
 const NOT_FOUND = () => mastodonError(404, "Not Found");
@@ -39,7 +38,7 @@ export const annualReports = forUser((c) => c.json({ annual_reports: [], account
 
 // GET /api/v1/annual_reports/:id and POST /api/v1/annual_reports/:id/read: AnnualReportsController#set_annual_report
 // raises RecordNotFound (find_by!) for a year without a report.
-export const annualReport = forUser(RECORD_NOT_FOUND);
+export const annualReport = forUser(recordNotFound);
 
 // POST /api/v1/statuses/:id/translate: Api::V1::Statuses::TranslationsController rescues
 // TranslationService::NotConfiguredError with not_found. Kopje has no translation service; a status the viewer cannot
@@ -71,7 +70,7 @@ export const checkConfirmation = forUser((c) => c.json(true));
 const emptyAccountList: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
   const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
-  return account === null ? mastodonError(404, "Record not found") : c.json([]);
+  return account === null ? recordNotFound() : c.json([]);
 };
 
 // GET /api/v1/accounts/:id/identity_proofs: [] for an account that exists, as Mastodon's deprecated

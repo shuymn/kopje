@@ -1,12 +1,10 @@
 import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { parseBoolean } from "./params";
 
 // /api/v1/notifications (Mastodon 4.0.2 v1): the list with types[], exclude_types[], account_id and
 // include_filtered (Mastodon 4.5), one notification, dismiss and clear.
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
@@ -34,14 +32,14 @@ export const getNotification: ApiHandler = async (c, deps) => {
   const notification = authorized(
     await storeCall(c, deps, (s, b) => s.getNotification(b, { credential, id, present: present(c) })),
   );
-  return notification === null ? NOT_FOUND() : c.json(notification);
+  return notification === null ? recordNotFound() : c.json(notification);
 };
 
 export const dismissNotification: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
   const credential = userCredential(c, deps);
   const dismissed = authorized(await storeCall(c, deps, (s, b) => s.dismissNotification(b, { credential, id })));
-  return dismissed ? c.json({}) : NOT_FOUND();
+  return dismissed ? c.json({}) : recordNotFound();
 };
 
 export const clearNotifications: ApiHandler = async (c, deps) => {

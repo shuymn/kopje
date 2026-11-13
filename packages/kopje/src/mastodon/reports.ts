@@ -7,7 +7,7 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound, validationFailed } from "./errors";
 import { parseBoolean } from "./params";
 
 // Reports (Mastodon 4.5's Api::V1::ReportsController, app/controllers/api/v1/reports_controller.rb); the Store does
@@ -42,8 +42,8 @@ export function reportResponse(result: ReportAnswer, c: ApiContext): Response {
     case "ok":
       return c.json(result.report);
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return recordNotFound();
     case "invalid":
-      return mastodonError(422, `Validation failed: ${result.errors.join(", ")}`);
+      return validationFailed(result.errors);
   }
 }

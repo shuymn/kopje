@@ -1,6 +1,6 @@
 import { MARKER_TIMELINES, type MarkerTimeline, type MarkerUpdate } from "../domain/markers";
 import { type ApiHandler, authorized, storeCall, userCredential, withParams } from "./context";
-import { mastodonError } from "./errors";
+import { validationFailed } from "./errors";
 
 // Timeline markers (Mastodon 4.5's Api::V1::MarkersController); the Store does the work (domain/markers.ts).
 
@@ -27,7 +27,5 @@ export const saveMarkers: ApiHandler = withParams(async (c, deps, p) => {
   }));
   const input = { credential: userCredential(c, deps), updates };
   const result = authorized(await storeCall(c, deps, (s, b) => s.saveMarkers(b, input)));
-  return result.status === "ok"
-    ? c.json(result.markers)
-    : mastodonError(422, `Validation failed: ${result.errors.join(", ")}`);
+  return result.status === "ok" ? c.json(result.markers) : validationFailed(result.errors);
 });

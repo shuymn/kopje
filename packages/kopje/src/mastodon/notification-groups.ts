@@ -8,7 +8,7 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { linkHeader, pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 
@@ -81,7 +81,7 @@ export const getNotificationGroup: ApiHandler = async (c, deps) => {
   const group = authorized(
     await storeCall(c, deps, (s, b) => s.getNotificationGroup(b, { credential, groupKey, present: present(c) })),
   );
-  return group === null ? mastodonError(404, "Record not found") : c.json(group);
+  return group === null ? recordNotFound() : c.json(group);
 };
 
 // GET /api/v2/notifications/:group_key/accounts: 40 by default, at most 80, by max_id and since_id.

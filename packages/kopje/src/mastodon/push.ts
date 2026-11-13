@@ -14,7 +14,7 @@ import {
   vapidKey,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { type Params, parseBoolean } from "./params";
 
 // /api/v1/push/subscription (Mastodon 4.5): the subscription of the request's own token (PUSH-1), under the push
@@ -22,7 +22,6 @@ import { type Params, parseBoolean } from "./params";
 // updating a subscription answers 404, as on a server without the endpoint; deleting still works. The endpoint is an
 // outbound sink (PUSH-2): it must pass NET-3's host rules here, and passes them again with a DNS check at every send.
 
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 const MISSING = () => mastodonError(400, "param is missing or the value is empty or invalid: subscription");
 const invalid = (what: string) => mastodonError(422, `Validation failed: ${what}`);
 
@@ -91,7 +90,7 @@ async function subscriptionParams(p: Params): Promise<Keys | Response> {
 export const createSubscription: ApiHandler = withParams(async (c, deps, p) => {
   const jwk = vapidJwk(c.env);
   if (jwk === null) {
-    return refuseAfterAuth(c, deps, NOT_FOUND());
+    return refuseAfterAuth(c, deps, recordNotFound());
   }
   const keys = await subscriptionParams(p);
   if (keys instanceof Response) {
@@ -116,16 +115,16 @@ export const createSubscription: ApiHandler = withParams(async (c, deps, p) => {
 
 export const getSubscription: ApiHandler = async (c, deps) => {
   if (vapidJwk(c.env) === null) {
-    return refuseAfterAuth(c, deps, NOT_FOUND());
+    return refuseAfterAuth(c, deps, recordNotFound());
   }
   const credential = userCredential(c, deps);
   const subscription = authorized(await storeCall(c, deps, (s, b) => s.getPushSubscription(b, { credential })));
-  return subscription === null ? NOT_FOUND() : c.json(present(subscription, c.env));
+  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
 };
 
 export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   if (vapidJwk(c.env) === null) {
-    return refuseAfterAuth(c, deps, NOT_FOUND());
+    return refuseAfterAuth(c, deps, recordNotFound());
   }
   const data = dataParams(p);
   if (data instanceof Response) {
@@ -135,7 +134,7 @@ export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   const subscription = authorized(
     await storeCall(c, deps, (s, b) => s.updatePushSubscription(b, { credential, ...data })),
   );
-  return subscription === null ? NOT_FOUND() : c.json(present(subscription, c.env));
+  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
 });
 
 export const deleteSubscription: ApiHandler = async (c, deps) => {

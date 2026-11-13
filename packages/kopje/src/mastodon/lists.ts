@@ -8,14 +8,12 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound, validationFailed } from "./errors";
 import { pageQuery, pageResponse, unlimitedResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 
 // Lists (Mastodon 4.5's Api::V1::ListsController, Lists::AccountsController and Accounts::ListsController); the Store
 // does the work (domain/lists.ts). A list that is not the viewer's is not found. The list timeline is in timelines.ts.
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 // What a create or an update sets: title, replies_policy and exclusive, each when sent (list_params). A blank
 // exclusive is not sent.
@@ -28,18 +26,14 @@ function accountIds(p: Params): string[] {
   return p.getAll("account_ids").filter((id) => id !== "");
 }
 
-function validationError(errors: string[]): Response {
-  return mastodonError(422, `Validation failed: ${errors.join(", ")}`);
-}
-
 function listResponse(c: ApiContext, result: ListResult): Response {
   switch (result.status) {
     case "ok":
       return c.json(result.list);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "invalid":
-      return validationError(result.errors);
+      return validationFailed(result.errors);
   }
 }
 
@@ -51,7 +45,7 @@ export const lists: ApiHandler = async (c, deps) => {
 export const getList: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "" };
   const list = authorized(await storeCall(c, deps, (s, b) => s.getList(b, input)));
-  return list === null ? NOT_FOUND() : c.json(list);
+  return list === null ? recordNotFound() : c.json(list);
 };
 
 export const createList: ApiHandler = withParams(async (c, deps, p) => {
@@ -67,7 +61,7 @@ export const updateList: ApiHandler = withParams(async (c, deps, p) => {
 export const deleteList: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "" };
   const deleted = authorized(await storeCall(c, deps, (s, b) => s.deleteList(b, input)));
-  return deleted ? c.json({}) : NOT_FOUND();
+  return deleted ? c.json({}) : recordNotFound();
 };
 
 // Lists::AccountsController pages 40 accounts by default and at most 80 (pageQuery's defaults); limit=0 answers every
@@ -87,7 +81,7 @@ export const listAccounts: ApiHandler = withParams(async (c, deps, p) => {
   };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listAccounts(b, input)));
   if (result === null) {
-    return NOT_FOUND();
+    return recordNotFound();
   }
   return page === null ? unlimitedResponse(c, result) : pageResponse(c, result, page.limit);
 });
@@ -97,9 +91,9 @@ function membersResponse(c: ApiContext, result: MembersResult): Response {
     case "ok":
       return c.json({});
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "invalid":
-      return validationError(result.errors);
+      return validationFailed(result.errors);
   }
 }
 
@@ -111,11 +105,11 @@ export const addListAccounts: ApiHandler = withParams(async (c, deps, p) => {
 export const removeListAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", accounts: accountIds(p) };
   const removed = authorized(await storeCall(c, deps, (s, b) => s.removeListAccounts(b, input)));
-  return removed ? c.json({}) : NOT_FOUND();
+  return removed ? c.json({}) : recordNotFound();
 });
 
 export const accountLists: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), account: c.req.param("id") ?? "" };
   const result = authorized(await storeCall(c, deps, (s, b) => s.accountLists(b, input)));
-  return result === null ? NOT_FOUND() : c.json(result);
+  return result === null ? recordNotFound() : c.json(result);
 };

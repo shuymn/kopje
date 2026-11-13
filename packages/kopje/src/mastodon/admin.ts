@@ -43,7 +43,7 @@ import {
   storeCall,
   withParams,
 } from "./context";
-import { mastodonError, moderatingError } from "./errors";
+import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { type Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 
@@ -75,7 +75,7 @@ export const notAllowed = afterToken(() => mastodonError(403, NOT_ALLOWED));
 // A route whose before_action finds the record by id before the policy runs (set_domain_allow,
 // set_ip_block, set_email_domain_block, set_canonical_email_block): RecordNotFound, since Kopje stores no domain
 // allows, IP blocks, email domain blocks or canonical email blocks.
-export const recordNotFound = afterToken(() => mastodonError(404, "Record not found"));
+export const recordNotFound = afterToken(notFound);
 
 // ---- Reports (Api::V1::Admin::ReportsController, app/controllers/api/v1/admin/reports_controller.rb;
 // domain/reports.ts). Mastodon's set_report precedes manage_reports policy (404/403 leaks existence). Kopje authorizes
@@ -363,7 +363,7 @@ function accountResponse(result: AccountAnswer, c: ApiContext): Response {
     case "ok":
       return c.json(result.account);
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return notFound();
     case "not_allowed":
       return mastodonError(403, NOT_ALLOWED);
   }
@@ -455,7 +455,7 @@ async function domainBlockResponse(result: DomainBlockResult, c: ApiContext, bod
     case "ok":
       return c.json(body ?? (await domainBlockEntity(result.block)));
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return notFound();
     case "invalid":
       return mastodonError(422, result.error);
     case "exists":

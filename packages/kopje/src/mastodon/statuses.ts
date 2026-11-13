@@ -22,7 +22,7 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { descriptionProblem, parseFocus, sweepSoon, THUMBNAIL_MUST_BE_BLANK, thumbnailSent } from "./media";
 import { pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
@@ -31,7 +31,6 @@ import { type Params, parseBoolean } from "./params";
 // conversation mutes.
 // Requests are checked here as Mastodon's controllers and validators do; the Store authorizes and decides.
 
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 const FORBIDDEN = () => mastodonError(403, "This action is not allowed");
 const REPLY_NOT_FOUND = () => mastodonError(404, "The post you are trying to reply to does not appear to exist.");
 // StatusesController#set_quoted_status: any failure, a status R36 refuses included.
@@ -57,7 +56,7 @@ function viewedResponse<T>(c: ApiContext, result: Viewed<T> | Acted<T>): Respons
     case "ok":
       return c.json(result.value as object);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "forbidden":
       return FORBIDDEN();
     case "invalid":
@@ -293,7 +292,7 @@ export const editStatus: ApiHandler = withParams(async (c, deps, p) => {
     // read, so it is answered in readonly maintenance too. It authenticates as refuseAfterAuth would.
     const credential = userCredential(c, deps);
     const found = authorized(await storeCall(c, deps, (s, b) => s.editTarget(b, { credential, id: statusId(c) })));
-    return found === "ok" ? mastodonError(422, problem ?? "Validation failed") : NOT_FOUND();
+    return found === "ok" ? mastodonError(422, problem ?? "Validation failed") : recordNotFound();
   }
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
@@ -502,7 +501,7 @@ function interactors(kind: "favourited_by" | "reblogged_by"): ApiHandler {
       ),
     );
     if (result.status !== "ok") {
-      return NOT_FOUND();
+      return recordNotFound();
     }
     return pageResponse(c, result.value, page.limit);
   });

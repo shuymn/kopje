@@ -6,34 +6,32 @@ import type {
   KeywordChanges,
 } from "../domain/filters";
 import { type ApiContext, type ApiHandler, authorized, storeCall, userCredential, withParams } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound, validationFailed } from "./errors";
 import type { Params } from "./params";
 
 // Filters (Mastodon 4.5's Api::V2::FiltersController, Filters::KeywordsController and Filters::StatusesController, and
 // the v1 layer Api::V1::FiltersController); the Store does the work (domain/filters.ts). A filter, keyword or filter
 // status that is not the viewer's is not found.
 
-const NOT_FOUND = () => mastodonError(404, "Record not found");
-
 function outcome<T>(c: ApiContext, result: FilterOutcome<T>): Response {
   switch (result.status) {
     case "ok":
       return c.json(result.value);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "invalid":
-      return mastodonError(422, `Validation failed: ${result.errors.join(", ")}`);
+      return validationFailed(result.errors);
     case "refused":
       return mastodonError(422, result.error);
   }
 }
 
 function found<T>(c: ApiContext, value: T | null): Response {
-  return value === null ? NOT_FOUND() : c.json(value);
+  return value === null ? recordNotFound() : c.json(value);
 }
 
 function deleted(c: ApiContext, done: boolean): Response {
-  return done ? c.json({}) : NOT_FOUND();
+  return done ? c.json({}) : recordNotFound();
 }
 
 // context[] when sent (a form's empty list included), else undefined.

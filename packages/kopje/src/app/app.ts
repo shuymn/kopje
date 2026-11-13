@@ -20,7 +20,7 @@ import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
 import { ActivityMemo } from "../mastodon/activity";
 import type { AuthorSignature } from "../mastodon/context";
-import { maintenanceError, mastodonError } from "../mastodon/errors";
+import { maintenanceError, mastodonError, recordNotFound } from "../mastodon/errors";
 import { mastodonApi } from "../mastodon/routes";
 import { streamingRoutes } from "../mastodon/streaming";
 import { readBackupConfig } from "../platform/backup-config";
@@ -286,7 +286,7 @@ export function createApp({
 
   app.notFound((c) => {
     if (c.req.path.startsWith("/api/")) {
-      return mastodonError(404, "Record not found");
+      return recordNotFound();
     }
     const plain = c.text("Not Found", 404);
     return isRead(c.req.method) && !documentPath(c.req.path) ? negotiate(c, 404, plain, PLAIN_TEXT) : plain;

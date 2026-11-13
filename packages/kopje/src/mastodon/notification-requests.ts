@@ -11,14 +11,12 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 
 // The notification policy (Mastodon 4.5's /api/v1 and /api/v2/notifications/policy) and notification requests
 // (/api/v1/notifications/requests); the Store does the work (domain/notification-requests.ts).
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 const COLUMNS = Object.keys(POLICY_DEFAULTS) as PolicyColumn[];
 
@@ -110,19 +108,19 @@ export const getRequest: ApiHandler = async (c, deps) => {
   const request = authorized(
     await storeCall(c, deps, (s, b) => s.getNotificationRequest(b, { credential, id, present: present(c) })),
   );
-  return request === null ? NOT_FOUND() : c.json(request);
+  return request === null ? recordNotFound() : c.json(request);
 };
 
 export const acceptRequest: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", now: deps.now() };
   const found = authorized(await storeCall(c, deps, (s, b) => s.acceptNotificationRequest(b, input)));
-  return found ? c.json({}) : NOT_FOUND();
+  return found ? c.json({}) : recordNotFound();
 };
 
 export const dismissRequest: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", now: deps.now() };
   const found = authorized(await storeCall(c, deps, (s, b) => s.dismissNotificationRequest(b, input)));
-  return found ? c.json({}) : NOT_FOUND();
+  return found ? c.json({}) : recordNotFound();
 };
 
 // id[] of the bulk forms (set_requests: Array(params[:id]).uniq), at most MAX_BULK_REQUESTS.

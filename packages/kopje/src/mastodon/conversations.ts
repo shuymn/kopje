@@ -1,11 +1,9 @@
 import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 
 // Conversations (Mastodon 4.5's Api::V1::ConversationsController); the Store does the work (domain/conversations.ts).
 // A conversation that is not the viewer's is not found.
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 // ConversationsController::LIMIT: 20 by default, and at most twice that (limit_param).
 export const conversations: ApiHandler = withParams(async (c, deps, p) => {
@@ -18,7 +16,7 @@ function mark(unread: boolean): ApiHandler {
   return async (c, deps) => {
     const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", unread, present: present(c) };
     const conversation = authorized(await storeCall(c, deps, (s, b) => s.markConversation(b, input)));
-    return conversation === null ? NOT_FOUND() : c.json(conversation);
+    return conversation === null ? recordNotFound() : c.json(conversation);
   };
 }
 
@@ -28,5 +26,5 @@ export const unreadConversation = mark(true);
 export const deleteConversation: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "" };
   const deleted = authorized(await storeCall(c, deps, (s, b) => s.deleteConversation(b, input)));
-  return deleted ? c.json({}) : NOT_FOUND();
+  return deleted ? c.json({}) : recordNotFound();
 };

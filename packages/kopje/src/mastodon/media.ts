@@ -23,7 +23,7 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { type FileRule, type Params, parseBody } from "./params";
 
 // /api/v1/media and /api/v2/media: upload, read and describe own unattached media.
@@ -42,8 +42,6 @@ import { type FileRule, type Params, parseBody } from "./params";
 // monthly Images budgets, RES-6) before the body is read, and revalidates it and charges the budgets right before
 // Images is called (domain/media.ts), so an unauthenticated, over-budget or expired request costs no transformation. Processing is synchronous, so v2 answers 200 like v1 (Mastodon answers 200 when
 // processing finished in the request).
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 // MediaAttachment::MAX_DESCRIPTION_LENGTH.
 export const MAX_DESCRIPTION = 1500;
@@ -489,7 +487,7 @@ export const getMedia: ApiHandler = async (c, deps) => {
   const media = authorized(
     await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c), now: deps.now() })),
   );
-  return media === null ? NOT_FOUND() : c.json(media);
+  return media === null ? recordNotFound() : c.json(media);
 };
 
 // PUT and PATCH /api/v1/media/:id: description and focus of own unattached media. Attached media is described through
@@ -506,7 +504,7 @@ export const updateMedia: ApiHandler = withParams(
     const media = authorized(
       await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
     );
-    return media === null ? NOT_FOUND() : c.json(media);
+    return media === null ? recordNotFound() : c.json(media);
   },
   { files: THUMBNAIL_FILE },
 );
@@ -518,7 +516,7 @@ export const deleteMedia: ApiHandler = async (c, deps) => {
     await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential, id: mediaId(c), now: deps.now() })),
   );
   if (outcome === "not_found") {
-    return NOT_FOUND();
+    return recordNotFound();
   }
   if (outcome === "in_use") {
     return mastodonError(422, "Media attachment is currently used by a status");

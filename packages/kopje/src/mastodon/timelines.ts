@@ -9,7 +9,7 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { limitParam, type Params, parseBoolean } from "./params";
 
@@ -34,7 +34,7 @@ export const listTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", page, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listTimeline(b, input)));
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   return pageResponse(c, result, page.limit);
 });
@@ -98,7 +98,7 @@ export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
     ),
   );
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   linkTimelineLinks(c, p, result);
   return credential === null
@@ -155,7 +155,7 @@ export const accountStatuses: ApiHandler = withParams(async (c, deps, p) => {
     ),
   );
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   return pageResponse(c, result, page.limit);
 });
