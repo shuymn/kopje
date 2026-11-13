@@ -141,21 +141,23 @@ export async function checkOptionalToken(c: ApiContext, deps: ApiDeps): Promise<
   }
 }
 
-// The request's parameters, or the error answer for an unreadable body (after authentication, as Mastodon orders it).
-export async function requestParams(
-  c: ApiContext,
-  deps: ApiDeps,
+// A handler given the request's parameters, or the error answer for an unreadable body (after authentication, as
+// Mastodon orders it). The handler still takes its credential in its body, right before the Store call.
+export function withParams(
+  handler: (c: ApiContext, deps: ApiDeps, p: Params) => Promise<Response>,
   options: ReadOptions = {},
-): Promise<Params | Response> {
-  const result = await readParams(c.req.raw, options);
-  if (!result.ok) {
-    return refuseAfterAuth(
-      c,
-      deps,
-      mastodonError(result.status, result.status === 413 ? "Request body is too large" : "Malformed request body"),
-    );
-  }
-  return result.params;
+): ApiHandler {
+  return async (c, deps) => {
+    const result = await readParams(c.req.raw, options);
+    if (!result.ok) {
+      return refuseAfterAuth(
+        c,
+        deps,
+        mastodonError(result.status, result.status === 413 ? "Request body is too large" : "Malformed request body"),
+      );
+    }
+    return handler(c, deps, result.params);
+  };
 }
 
 // The Web Push application server key clients subscribe with; empty until VAPID_JWK is set.

@@ -3,6 +3,16 @@ export function mastodonError(status: number, error: string): Response {
   return Response.json({ error }, { status });
 }
 
+// ActiveRecord::RecordNotFound, as Api::ErrorHandling answers it.
+export function recordNotFound(): Response {
+  return mastodonError(404, "Record not found");
+}
+
+// ActiveRecord::RecordInvalid: the model's error messages, joined as Rails joins them.
+export function validationFailed(errors: readonly string[]): Response {
+  return mastodonError(422, `Validation failed: ${errors.join(", ")}`);
+}
+
 export const INVALID_TOKEN = "The access token is invalid";
 
 // A missing, unknown or expired bearer token, answered as Mastodon's Doorkeeper answers it: 401 with an RFC 6750 §3

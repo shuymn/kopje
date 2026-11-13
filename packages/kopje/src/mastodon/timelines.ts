@@ -5,11 +5,11 @@ import {
   authorized,
   optionalCredential,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { limitParam, type Params, parseBoolean } from "./params";
 
@@ -21,37 +21,25 @@ const MAX_STATUS_LIMIT = 40;
 // Mastodon reads at most 4 extra tags each for any[], all[] and none[].
 const MAX_EXTRA_TAGS = 4;
 
-export const home: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const home: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) => s.homeTimeline(b, { credential, page, present: present(c) }));
   return pageResponse(c, authorized(result), page.limit);
-};
+});
 
 // A list that is not the viewer's is not found (Timelines::ListController#set_list).
-export const listTimeline: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const listTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", page, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listTimeline(b, input)));
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   return pageResponse(c, result, page.limit);
-};
+});
 
-export const publicTimeline: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const publicTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const credential = optionalCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
@@ -66,13 +54,9 @@ export const publicTimeline: ApiHandler = async (c, deps) => {
     }),
   );
   return pageResponse(c, authorized(result), page.limit);
-};
+});
 
-export const tagTimeline: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const tagTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const tags = (name: string) =>
     p
@@ -96,16 +80,12 @@ export const tagTimeline: ApiHandler = async (c, deps) => {
     }),
   );
   return pageResponse(c, authorized(result), page.limit);
-};
+});
 
 // GET /api/v1/timelines/link (Api::V1::Timelines::LinkController): a link that has no timeline now, or trends off, is
 // not found (MD-5). `limit` as limit_param reads it, so 0 answers no statuses and no Link header. Without a token the
 // answer may be cached by anyone for 15 seconds (cache_if_unauthenticated!), varying by Authorization.
-export const linkTimeline: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const page = {
     ...pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT),
     limit: limitParam(p, STATUS_LIMIT, MAX_STATUS_LIMIT),
@@ -118,7 +98,7 @@ export const linkTimeline: ApiHandler = async (c, deps) => {
     ),
   );
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   linkTimelineLinks(c, p, result);
   return credential === null
@@ -127,7 +107,7 @@ export const linkTimeline: ApiHandler = async (c, deps) => {
         vary: "Authorization",
       })
     : c.json(result.items);
-};
+});
 
 // The Link header of a link timeline page (Api::V1::Timelines::BaseController#insert_pagination_headers): next at
 // max_id its oldest status and prev at min_id its newest, on every page that shows a status, keeping only `url` and
@@ -154,11 +134,7 @@ function linkTimelineLinks(c: ApiContext, p: Params, page: Page<unknown>): void 
   }
 }
 
-export const accountStatuses: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const accountStatuses: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const tagged = p.get("tagged");
   const credential = optionalCredential(c, deps);
@@ -179,22 +155,18 @@ export const accountStatuses: ApiHandler = async (c, deps) => {
     ),
   );
   if (result === null) {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   return pageResponse(c, result, page.limit);
-};
+});
 
 function edgeList(rpc: "bookmarksList" | "favouritesList"): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
     const credential = userCredential(c, deps);
     const result = await storeCall(c, deps, (s, b) => s[rpc](b, { credential, page, present: present(c) }));
     return pageResponse(c, authorized(result), page.limit);
-  };
+  });
 }
 
 export const bookmarks = edgeList("bookmarksList");

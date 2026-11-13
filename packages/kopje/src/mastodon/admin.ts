@@ -40,10 +40,10 @@ import {
   checkOptionalToken,
   optionalCredential,
   present,
-  requestParams,
   storeCall,
+  withParams,
 } from "./context";
-import { mastodonError, moderatingError } from "./errors";
+import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { type Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 
@@ -75,7 +75,7 @@ export const notAllowed = afterToken(() => mastodonError(403, NOT_ALLOWED));
 // A route whose before_action finds the record by id before the policy runs (set_domain_allow,
 // set_ip_block, set_email_domain_block, set_canonical_email_block): RecordNotFound, since Kopje stores no domain
 // allows, IP blocks, email domain blocks or canonical email blocks.
-export const recordNotFound = afterToken(() => mastodonError(404, "Record not found"));
+export const recordNotFound = afterToken(notFound);
 
 // ---- Reports (Api::V1::Admin::ReportsController, app/controllers/api/v1/admin/reports_controller.rb;
 // domain/reports.ts). Mastodon's set_report precedes manage_reports policy (404/403 leaks existence). Kopje authorizes
@@ -160,11 +160,7 @@ function reportsUrl(c: ApiContext, p: Params, cursor: Record<string, string>): s
 }
 
 // GET /api/v1/admin/reports (reports_controller.rb:92-98 next_path/prev_path); paging: listLinks and listAdminReports.
-export const reports: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const reports: ApiHandler = withParams(async (c, deps, p) => {
   const page = adminPage(p);
   const input = {
     credential: optionalCredential(c, deps),
@@ -179,7 +175,7 @@ export const reports: ApiHandler = async (c, deps) => {
   const result = authorized(await storeCall(c, deps, (s, b) => s.adminReports(b, input)));
   listLinks(c, (cursor) => reportsUrl(c, p, cursor), result);
   return c.json(result.items);
-};
+});
 
 // GET /api/v1/admin/reports/:id.
 export const report: ApiHandler = async (c, deps) => {
@@ -188,11 +184,7 @@ export const report: ApiHandler = async (c, deps) => {
 };
 
 // PUT and PATCH /api/v1/admin/reports/:id: category and rule_ids[].
-export const updateReport: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateReport: ApiHandler = withParams(async (c, deps, p) => {
   const input = {
     id: c.req.param("id") ?? "",
     category: p.get("category"),
@@ -202,7 +194,7 @@ export const updateReport: ApiHandler = async (c, deps) => {
     credential: optionalCredential(c, deps),
   };
   return reportResponse(authorized(await storeCall(c, deps, (s, b) => s.updateAdminReport(b, input))), c);
-};
+});
 
 // POST /api/v1/admin/reports/:id/assign_to_self, unassign, resolve and reopen.
 export function actOnReport(action: ReportAction): ApiHandler {
@@ -339,11 +331,7 @@ function accountFilter(version: 1 | 2, p: Params): ParsedAccountFilter {
 // GET /api/v1/admin/accounts and /api/v2/admin/accounts. An unknown origin or status is answered 400 after the token
 // is checked and before the policy (set_accounts runs before index's authorize), so to every caller.
 export function adminAccounts(version: 1 | 2): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const parsed = accountFilter(version, p);
     if ("error" in parsed) {
       await checkOptionalToken(c, deps);
@@ -365,7 +353,7 @@ export function adminAccounts(version: 1 | 2): ApiHandler {
     const path = `/api/v${version}/admin/accounts`;
     listLinks(c, (cursor) => listUrl(c, path, ["limit", ...parsed.names], p, cursor), result);
     return c.json(result.items);
-  };
+  });
 }
 
 type AccountAnswer = { status: "ok"; account: object } | Exclude<AdminAccountResult, { status: "ok" }>;
@@ -375,7 +363,7 @@ function accountResponse(result: AccountAnswer, c: ApiContext): Response {
     case "ok":
       return c.json(result.account);
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return notFound();
     case "not_allowed":
       return mastodonError(403, NOT_ALLOWED);
   }
@@ -410,11 +398,7 @@ const ACTION_NOTIFICATION_OFF: readonly string[] = ["", "0", "f", "F", "false", 
 // warning_preset_id sent blank is not sent (`present?`); text is as sent, empty when absent (text_for_warning's
 // compact.join). No email is sent: send_email_notification decides whether a local target is warned
 // (domain/admin-accounts.ts). Answers an empty object (render_empty) once the action is done.
-export const accountAction: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const accountAction: ApiHandler = withParams(async (c, deps, p) => {
   const sent = (name: string) => {
     const value = p.get(name);
     return value === undefined || value.trim() === "" ? null : value;
@@ -437,7 +421,7 @@ export const accountAction: ApiHandler = async (c, deps) => {
     default:
       return accountResponse(result, c);
   }
-};
+});
 
 // POST /api/v1/admin/accounts/:id/unsuspend.
 export const unsuspendAccount: ApiHandler = async (c, deps) => {
@@ -471,7 +455,7 @@ async function domainBlockResponse(result: DomainBlockResult, c: ApiContext, bod
     case "ok":
       return c.json(body ?? (await domainBlockEntity(result.block)));
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return notFound();
     case "invalid":
       return mastodonError(422, result.error);
     case "exists":
@@ -500,11 +484,7 @@ function blockRequest(p: Params): BlockRequest {
 
 // GET /api/v1/admin/domain_blocks: newest first, limit 100 by default and at most 500 (LIMIT, MAX_LIMIT); Link next
 // while a page is full (records_continue?) and prev whenever it has items, carrying only limit (PAGINATION_PARAMS).
-export const domainBlocks: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const domainBlocks: ApiHandler = withParams(async (c, deps, p) => {
   const page = adminPage(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
   const input = { credential: optionalCredential(c, deps), page };
   const blocks = authorized(await storeCall(c, deps, (s, b) => s.adminDomainBlocks(b, input)));
@@ -514,7 +494,7 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
     oldest: blocks.at(-1)?.id ?? null,
   });
   return c.json(await Promise.all(blocks.map(domainBlockEntity)));
-};
+});
 
 // GET /api/v1/admin/domain_blocks/:id.
 export const domainBlock: ApiHandler = async (c, deps) => {
@@ -523,11 +503,7 @@ export const domainBlock: ApiHandler = async (c, deps) => {
 };
 
 // POST /api/v1/admin/domain_blocks: as a form (Fedilab) or JSON (Fediblockhole's add_block, __init__.py:627-649).
-export const createDomainBlock: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
   const domain = p.get("domain");
   const input = {
     credential: optionalCredential(c, deps),
@@ -535,18 +511,14 @@ export const createDomainBlock: ApiHandler = async (c, deps) => {
     ...blockRequest(p),
   };
   return domainBlockResponse(authorized(await storeCall(c, deps, (s, b) => s.createAdminDomainBlock(b, input))), c);
-};
+});
 
 // PUT and PATCH /api/v1/admin/domain_blocks/:id. Fediblockhole's update_known_block sends the whole block, its domain
 // included (__init__.py:606-624), which, as in Mastodon, does not change.
-export const updateDomainBlock: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: optionalCredential(c, deps), id: c.req.param("id") ?? "", ...blockRequest(p) };
   return domainBlockResponse(authorized(await storeCall(c, deps, (s, b) => s.updateAdminDomainBlock(b, input))), c);
-};
+});
 
 // DELETE /api/v1/admin/domain_blocks/:id: an empty object (render_empty).
 export const deleteDomainBlock: ApiHandler = async (c, deps) => {
@@ -672,11 +644,7 @@ function presentMeasure(key: ServedMeasure, measure: MeasureValue) {
 //   stored time answers 422.
 // Fediblockhole sends instance_follows with no dates (fetch_instance_follows, __init__.py:529-567), so its data is
 // empty, as generate_series of NULLs is.
-export const measures: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const measures: ApiHandler = withParams(async (c, deps, p) => {
   const keys = p.getAll("keys").filter((key) => MEASURE_KEYS.has(key));
   const credential = optionalCredential(c, deps);
   const granted = async () =>
@@ -735,4 +703,4 @@ export const measures: ApiHandler = async (c, deps) => {
     values.set(key, result.measure);
   }
   return c.json(served.map((key) => presentMeasure(key, values.get(key)!)));
-};
+});

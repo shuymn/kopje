@@ -2448,8 +2448,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Web Push and polls (PUSH, POLL)
 
 - **PUSH-1: a subscription belongs to its token.** Subscription operations require the `push` scope and select the
-  subscription by the authenticated token, never by an id from the request. _Enforced (main):_ the four routes declare
-  `{ scope: 'push' }` (`src/mastodon/routes.ts`), and every operation selects by the viewer's `tokenHash`
+  subscription by the authenticated token, never by an id from the request. _Enforced (main):_ the five routes declare
+  `{ scope: "push" }` (`src/mastodon/routes.ts`), and every operation selects by the viewer's `tokenHash`
   (`src/domain/push.ts`); `test/push.test.ts` ("PUSH-1: another token, of another user or the same one, cannot read,
   change or delete a subscription", "requires the push scope and a user").
 - **PUSH-2: endpoints are outbound sinks.** A push endpoint passes NET-3 at registration and at every send. At

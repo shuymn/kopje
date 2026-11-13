@@ -14,7 +14,7 @@ import {
   userCredential,
   vapidKey,
 } from "./context";
-import { bearerChallenge, INVALID_TOKEN, mastodonError } from "./errors";
+import { bearerChallenge, INVALID_TOKEN, mastodonError, validationFailed } from "./errors";
 import { type Params, type ReadOptions, readParams } from "./params";
 
 // App registration, the OAuth token, revocation, token info, introspection and userinfo endpoints, and the
@@ -91,7 +91,7 @@ export const registerApp: ApiHandler = async (c, deps) => {
     problems.push("Website is invalid");
   }
   if (problems.length > 0 || scopes === null) {
-    return mastodonError(422, `Validation failed: ${problems.join(", ")}`);
+    return validationFailed(problems);
   }
   const clientId = deps.randomToken();
   const secret = deps.randomToken();

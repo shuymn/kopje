@@ -3,16 +3,14 @@ import {
   authorized,
   optionalCredential,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 
 // Polls (Mastodon 4.5's Api::V1::PollsController and Api::V1::Polls::VotesController); the Store decides who may see
 // and vote (domain/polls.ts).
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 // At most this many choices are read from a request (RES-1): a poll has at most 100, and a vote is refused at its
 // first choice that fails, so more are never needed.
@@ -26,16 +24,12 @@ export const showPoll: ApiHandler = async (c, deps) => {
       s.getPoll(b, { credential, id: c.req.param("id") ?? "", now: deps.now(), present: present(c) }),
     ),
   );
-  return poll === null ? NOT_FOUND() : c.json(poll);
+  return poll === null ? recordNotFound() : c.json(poll);
 };
 
 // POST /api/v1/polls/:id/votes: choices[] are the indexes of the choices voted for. None (an absent or empty list) is
 // refused as params.require refuses it.
-export const votePoll: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const votePoll: ApiHandler = withParams(async (c, deps, p) => {
   const choices = p
     .getAll("choices")
     .filter((choice) => choice !== "")
@@ -52,7 +46,7 @@ export const votePoll: ApiHandler = async (c, deps) => {
     case "ok":
       return c.json(result.value);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "forbidden":
       return mastodonError(403, "This action is not allowed");
     case "missing":
@@ -60,4 +54,4 @@ export const votePoll: ApiHandler = async (c, deps) => {
     case "invalid":
       return mastodonError(422, result.error);
   }
-};
+});
