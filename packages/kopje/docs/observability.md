@@ -85,6 +85,9 @@ the cause is fixed and the job retried. A held `Reject` whose stored `Follow` id
 import) fails each attempt with `kopje.jobs.reject_replay.invalid_identity` (warn, no fields) and parks: repair the
 uri, then `kopje-admin jobs retry`. `kopje.delivery.reject_hold_capped` (warn, no fields) records a refused `Reject` of
 a request dropped because its local account already holds 100 (docs/visibility.md, "Held handshakes").
+`kopje.delivery.delete_unsigned` (warn) records the `Delete` of a public or unlisted status recorded unsigned because
+an import stored its uri (`reason` `status_uri`) or its author's actor id (`actor_id`) in a spelling that can never be
+signed (VIS-3 in [threat-model.md](threat-model.md)); it carries no identity.
 
 `kopje.delivery.stale_follow_answer` (level warn) records a follow answer (`type`: `Accept`, `Reject`, or `other` for an
 imported answer without either) that a newer `Follow` of its pair, the follower's `Undo` of its generation or a block

@@ -94,7 +94,13 @@ code only:
 - in the dashboard: Workers & Pages, your Worker, Deployments, then Rollback on the previous version; or
 - `npx wrangler deployments list` and `npx wrangler rollback <version-id>`.
 
-The Store runs the older code from then on, and its schema still matches. Then pin the older `kopje` version in
+The Store runs the older code from then on, and its schema still matches. Rows the newer code wrote keep their
+meaning where the older code reads them. The signed `Delete` of a public or unlisted status (VIS-3 in
+[threat-model.md](threat-model.md)) is one: a release before it ignores the envelope's `addressing` and places that
+`Delete`'s copies by its own `to`, Public alone, so a mentioned account still staging gets a copy of its own at its
+personal inbox rather than its server's shared one. The body goes unchanged to each (it is immutable, which those
+releases honor), names nobody, and reaches no inbox the audience does not hold: more POSTs, never a wider reach. Then
+pin the older `kopje` version in
 `package.json` (and close or postpone the update pull request), or the next build deploys the newer one again.
 
 ### A version that changed the schema

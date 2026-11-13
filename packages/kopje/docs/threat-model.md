@@ -413,17 +413,26 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   prepares it (`prepareDelete`) and the record (`deleteStatus`), which takes it only if, without its `signature`, it
   is exactly the activity the Store builds from its own snapshot then, with an RsaSignature2017 signature by
   `<actor>#main-key` of the form `ld-sign.ts` writes; otherwise nothing is written and the Worker prepares again, at
-  most three times, then answers 503. It is recorded immutable and sent byte for byte on every attempt (VIS-2's
-  exception); its targets are chosen as the unsigned `Delete`'s would be, from the addressing the status had (the
-  envelope's `addressing`, which `planOf` and `targetsOf` place copies by), never from the signed body. When it cannot
-  be signed (the key does not unwrap, signing throws, no signer), the DELETE answers 503 and writes nothing: no intent,
-  no job, no streaming delete, no hide, so the status stays and a later DELETE can still send a proven `Delete`. A
+  most three times, then answers 503. Each Store call takes the credential and its time anew, so a token that expires
+  while the `Delete` is signed records nothing. It is recorded immutable and sent byte for byte on every attempt
+  (VIS-2's exception); its targets are chosen as the unsigned `Delete`'s would be, from the addressing the status had
+  (the envelope's `addressing`), never from the signed body. Staging reads that `addressing` only on an immutable
+  intent and only as `stagedAddressing` validates it: two arrays of strings, at most 202 entries of at most
+  `ACTOR_URI_LIMIT` + 10 bytes, each Public, the signer's followers collection or the stored actor id of a mention of
+  the status that is not silent, exactly what the unsigned `Delete` may name; anything else (an import's, a wrong type,
+  a silent recipient named) places every addressed account by a copy of its own at its personal inbox, which never
+  names or reaches anyone VIS-2 keeps out, and nothing throws. When it cannot be signed for a reason that may pass (the
+  key does not unwrap, signing throws, no signer, no key), the DELETE answers 503 and writes nothing: no intent, no
+  job, no streaming delete, no hide, so the status stays and a later DELETE can still send a proven `Delete`. A
   private, direct or limited status's `Delete` is never signed (a proof would make a portable, authentic record of its
-  addressees), nor is a boost's `Undo`, nor the `Delete` of a status whose uri or author's actor id an import stored
-  in a spelling a verifier would not match (not its canonical URL, or with a fragment): those are recorded unsigned,
-  as before. `Delete`s recorded before this release stay unsigned. _Enforced (main):_ `signableDeleteActivity` and
-  `signedAs` in `src/domain/activities.ts`, `prepareDelete` and `deleteStatus` in `src/domain/statuses.ts`,
-  `deleteStatus` in `src/mastodon/statuses.ts`; `test/signed-delete.test.ts`. _Enforced (main):_
+  addressees), nor is a boost's `Undo`. An imported status whose uri or author's actor id can never be signed (not an
+  http or https URL in the spelling URL serializing gives it, with no fragment, nor an absolute IRI to jsonld: the
+  creator Fedify writes would never match, or safe canonicalization refuses it) is deleted with its `Delete` unsigned
+  and addressed as before, and `kopje.delivery.delete_unsigned` logs the reason (`actor_id`, `status_uri`): a 503
+  there would leave a status its author can never delete. `Delete`s recorded before this release stay unsigned.
+  _Enforced (main):_ `deleteSigning` and `signedAs` in `src/domain/activities.ts`, `prepareDelete` and
+  `deleteStatus` in `src/domain/statuses.ts`, `stagedAddressing` in `src/domain/deliveries.ts`, `deleteStatus` in
+  `src/mastodon/statuses.ts`; `test/signed-delete.test.ts`. _Enforced (main):_
   `src/domain/activities.ts`; `test/statuses.test.ts` ("records Create, Update and Delete for the original audience
   only"). Delivery: _Enforced (main):_ silent recipients get the activity as VIS-2 says and
   are never named in the shared copy; a `Delete` or `Undo` also reaches every inbox that received the object or may
@@ -3360,7 +3369,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at
   `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
   places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
-  takes (VIS-3); its job's batches
+  takes (VIS-3). A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
+  its `addressing` (`stagedAddressing`): two reads of the intent's row and, for each of its at most 202 entries, two
+  seeks by unique key, outside `STAGING_READ`. Its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
   pins, its hashtags with its author's featured hashtags counted again, the forwards of the remote original it quotes
   (staged first, VIS-3), the earlier activities left to supersede, the `Delete`'s staging, its local boosts, the media its answer did not show (with the job's `bound`), then the children

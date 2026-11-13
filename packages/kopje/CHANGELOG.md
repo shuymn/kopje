@@ -11,11 +11,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 ### Changed
 
 - The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
-  addressed to Public alone, as Mastodon sends it, so a server that holds the status only through a boost or a quote
-  receives it forwarded with the author's proof and removes its copy (VIS-3, ID-1). It reaches the same inboxes as
-  before and is sent byte for byte on every attempt. When the author's key cannot sign it, the DELETE answers 503 and
-  the status stays. Private, direct and limited `Delete`s are unchanged, and `Delete`s recorded before the upgrade stay
-  unsigned. No Store migration and no `wrangler.jsonc` change.
+  addressed to Public alone, as Mastodon sends it, so a booster or quoter can forward it with the author's proof, and
+  a server that holds the status only through that boost or quote removes its copy when it applies a relayed `Delete`
+  (Mastodon and Misskey do; a Kopje server still refuses a relayed status `Delete`, #1506) (VIS-3, ID-1). It reaches
+  the same inboxes as before and is sent byte for byte on every attempt. When the author's key cannot sign it, the
+  DELETE answers 503 and the status stays; an imported status whose uri or actor id can never be signed is deleted
+  with an unsigned `Delete`, logged as `kopje.delivery.delete_unsigned`. Private, direct and limited `Delete`s are
+  unchanged, and `Delete`s recorded before the upgrade stay unsigned. No Store migration and no `wrangler.jsonc`
+  change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters

@@ -668,7 +668,8 @@ test below). The signed `Delete` of a public or unlisted status (VIS-3 in [threa
 addressed to Public alone, so its `to` and `cc` do not place its copies: its envelope records the `to` and `cc` its
 unsigned form would have (`addressing`), and the targets follow those, so it reaches the same inboxes with the same
 personal copies; each copy, personal ones included, is the signed body unchanged, which names nobody (VIS-2's
-exception).
+exception). Staging follows `addressing` only as `stagedAddressing` validates it, each entry Public, the followers or
+a mention that is not silent; any other value gives every addressed account a copy of its own.
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
 through each of them (VIS-3 in [threat-model.md](threat-model.md), with its gaps): its audience names only the owner's

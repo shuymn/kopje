@@ -776,15 +776,18 @@ Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStat
 - The `Delete` of a public or unlisted status is LD-signed (RsaSignature2017) by its author and addressed to Public
   alone, as Mastodon signs it (`always_sign`, `Status#sign?`) and addresses it; its context defines `atomUri`, so a
   Mastodon booster or quoter keeps the signature when it forwards it (`safe_for_forwarding?`). This matches Mastodon.
-- The `Delete` of a private, direct or limited status is unsigned, as in Mastodon, but addressed as the status was
-  (`to` and `cc` of its Note, its named mentions in `cc`); Mastodon's `DeleteSerializer` addresses every `Delete` to
-  Public. A receiver applies either by its object. Accepted, 2026-11-13.
-- When the author's key cannot sign the `Delete` (it does not unwrap, or signing fails), the DELETE answers 503 and
-  nothing changes: the status stays, so a later DELETE can send a proven `Delete`. Mastodon removes the status in the
-  request and signs in its job, which raises and is retried. Accepted, 2026-11-13.
-- The `Delete` of a status whose uri or author's actor id an import stored in a spelling a verifier would not match
-  (not its canonical URL, or with a fragment) is unsigned and addressed as the status was; Mastodon's ids are always
-  its own URLs. `Delete`s recorded before the release that signs them stay unsigned. Accepted, 2026-11-13.
+- The `Delete` of a private, direct or limited status is unsigned, as in Mastodon, but addressed as the status was:
+  a private one `to` its author's followers with its named mentions in `cc`, a direct or limited one `to` its named
+  mentions with no `cc`; Mastodon's `DeleteSerializer` addresses every `Delete` to Public. A receiver applies either by
+  its object. Accepted, 2026-11-13.
+- When the author's key cannot sign the `Delete` (no key, it does not unwrap, or signing fails), the DELETE answers
+  503 and nothing changes: the status stays, so a later DELETE can send a proven `Delete`. Mastodon removes the status
+  in the request and signs in its job, which raises and is retried. Accepted, 2026-11-13.
+- An imported public or unlisted status whose uri or author's actor id can never be signed (not an http or https URL
+  in the spelling URL serializing gives it, with no fragment, nor an absolute IRI to jsonld) is deleted with its
+  `Delete` unsigned and addressed as the status was, and the reason is logged (`kopje.delivery.delete_unsigned`);
+  Mastodon's ids are always its own URLs. `Delete`s recorded before the release that signs them stay unsigned.
+  Accepted, 2026-11-13.
 - The `Undo(Announce)` of a public or unlisted boost is unsigned; Mastodon signs it through the same path. No receiver
   forwards an `Undo`. Accepted, 2026-11-13.
 - The signed body goes unchanged to every target, a silent recipient's own copy included, and an inbox that is a
