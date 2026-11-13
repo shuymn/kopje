@@ -518,12 +518,14 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
   return { author, parent, media, visibility, quoted };
 }
 
-// StatusesController#set_thread then #set_quoted_status return 404 before create validation. This read preserves
-// error precedence only; preparePost rechecks both in the writing transaction and alone authorizes.
-export const postTargets = userReadOperation<
-  { inReplyToId?: string | undefined; quotedStatusId?: string },
-  "ok" | "reply_not_found" | "quote_not_found"
->((db, input, { accountId }) => {
+type PostTargets = { inReplyToId?: string | undefined; quotedStatusId?: string | undefined };
+
+type PostTargetsFound = "ok" | "reply_not_found" | "quote_not_found";
+
+// StatusesController#set_thread then #set_quoted_status: a status replied to or quoted that the poster may not see or
+// quote answers 404 before the create action validates anything and before PostStatusService looks up the
+// Idempotency-Key. preparePost rechecks both where it writes, and alone authorizes.
+export function postTargetsOf(db: Db, accountId: string, input: PostTargets): PostTargetsFound {
   if (input.inReplyToId !== undefined && replyParent(db, accountId, input.inReplyToId) === null) {
     return "reply_not_found";
   }
@@ -531,7 +533,13 @@ export const postTargets = userReadOperation<
     return "quote_not_found";
   }
   return "ok";
-});
+}
+
+// postTargetsOf as a read, for a post the Worker refuses: its 404 comes before the Worker's 422, also in readonly
+// maintenance, where postStatus is refused.
+export const postTargets = userReadOperation<PostTargets, PostTargetsFound>((db, input, { accountId }) =>
+  postTargetsOf(db, accountId, input),
+);
 
 // A status a post may quote, as R36 found it.
 type Quotable = QuotedForPost & { visibility: Visibility };

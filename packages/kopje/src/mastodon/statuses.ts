@@ -193,18 +193,8 @@ export const createStatus: ApiHandler = async (c, deps) => {
   if (p instanceof Response) {
     return p;
   }
-  // Mastodon's 404 precedence over 422, including R36 refusals and scheduled quotes: domain/statuses.ts postTargets.
   const inReplyToId = emptyToUndefined(p.get("in_reply_to_id"));
   const quotedStatusId = emptyToUndefined(p.get("quoted_status_id"));
-  if (quotedStatusId !== undefined) {
-    const credential = userCredential(c, deps);
-    const found = authorized(
-      await storeCall(c, deps, (s, b) => s.postTargets(b, { credential, inReplyToId, quotedStatusId })),
-    );
-    if (found !== "ok") {
-      return found === "reply_not_found" ? REPLY_NOT_FOUND() : QUOTE_NOT_FOUND();
-    }
-  }
   const composed = composition(p);
   const visibility = emptyToUndefined(p.get("visibility"));
   const scheduledRaw = emptyToUndefined(p.get("scheduled_at"));
@@ -222,7 +212,17 @@ export const createStatus: ApiHandler = async (c, deps) => {
             ? "Validation failed: Visibility is not included in the list"
             : undefined;
   if (typeof composed === "string" || scheduledAt === null || quotePolicy === null || problem !== undefined) {
-    return refuseAfterAuth(c, deps, mastodonError(422, problem ?? "Validation failed"));
+    const refused = mastodonError(422, problem ?? "Validation failed");
+    if (inReplyToId === undefined && quotedStatusId === undefined) {
+      return refuseAfterAuth(c, deps, refused);
+    }
+    // Mastodon's 404 for the status replied to or quoted comes before any 422 (domain/statuses.ts postTargetsOf); a
+    // read, so it is answered in readonly maintenance too. It authenticates as refuseAfterAuth would.
+    const credential = userCredential(c, deps);
+    const found = authorized(
+      await storeCall(c, deps, (s, b) => s.postTargets(b, { credential, inReplyToId, quotedStatusId })),
+    );
+    return found === "ok" ? refused : found === "reply_not_found" ? REPLY_NOT_FOUND() : QUOTE_NOT_FOUND();
   }
   // The key is stored as the sha256 of all of it, so keys of any length stay distinct (never truncated). It is
   // unique per account (statuses_client_key), and among the account's scheduled statuses.
