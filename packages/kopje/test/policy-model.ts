@@ -982,6 +982,14 @@ export class PolicyModel {
     return kind !== "content" || !this.blocked(signer, x);
   }
 
+  // VIS-3: the Delete of the local status s carries its author's proof and names no one but Public when s is public or
+  // unlisted (Mastodon's Status#sign?); any other visibility's Delete is unsigned. Its copies still go where its
+  // unsigned addressing would place them (VIS-2's exception: unchanged, naming nobody).
+  signsDelete(s: number): boolean {
+    const { visibility } = this.status(s);
+    return visibility === "public" || visibility === "unlisted";
+  }
+
   // VIS-30, the send-time check (deliveries.ts sendRefused, at the claim and at confirmation): a delivery that is not
   // a retraction is sent only while its signer is available (but for the suspension's own Update of the actor, R1)
   // and, when the recipients behind it are known (`recipients`; 'many' above PROVENANCE_MAX, "not all unavailable"),

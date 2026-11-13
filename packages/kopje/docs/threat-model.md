@@ -158,7 +158,10 @@ against their own instance. TLS is assumed between all parties.
   `relayedDelete` in `src/domain/inbox.ts`; `test/quotes.test.ts` ("relayed revocations (ID-1’s one exception)": a
   missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a valid proof on
   another activity type and on the `Delete` of a status), `test/inbox.test.ts` ("records no retraction for input that
-  fails ID-1"). Kopje's own stamp `Delete`s carry such a proof (VIS-28), so a server relaying one can be believed.
+  fails ID-1"). Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry
+  such a proof, an RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
+  This exception still covers stamps alone on the receiving side: a Kopje receiver refuses a relayed status `Delete`,
+  proof or not (`relayedDelete`, "not-a-stamp").
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that
   proof verifies the same way; a proof that is present but does not verify, or none, forwards nothing, and the `Delete`
   applies as its actor's (`test/forward-delete.test.ts` ("an invalid proof deletes and forwards nothing", "an FEP-8b32
@@ -393,12 +396,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   addressed, and nothing about other silent recipients. A personal copy goes only to its recipient's personal inbox:
   if there is none, nothing is sent to them, never a substitute at a shared inbox, and the copy is kept as `gave_up`
   `no personal inbox` for the operator (it cannot be retried) and logged without identifiers. A personal copy never
-  replaces the neutral copy for an inbox. _Enforced (main):_ `audienceTargets` and `bodyFor`
+  replaces the neutral copy for an inbox. The exception is an immutable activity, whose body its author's proof covers:
+  the signed `Delete` of a public or unlisted status (VIS-3) is sent neutral, byte for byte, to every target, a personal
+  copy included, and it names no recipient at all (`to` is Public alone), so a silent recipient is still never named
+  where anyone else reads it; such an inbox may get the same bytes more than once (one POST per personal copy and one
+  for the neutral copy), which a receiver applies once. _Enforced (main):_ `audienceTargets` and `bodyFor`
   in `src/domain/deliveries.ts`; `test/delivery-regressions.test.ts` ("sends each silent recipient a copy addressed to
   them alone", "never names a silent recipient in the copy for the followers"), `test/delivery-verify.test.ts` ("sends
-  nothing to a silent recipient without a personal inbox", "POSTs each silent recipient a copy naming only them").
+  nothing to a silent recipient without a personal inbox", "POSTs each silent recipient a copy naming only them"),
+  `test/signed-delete.test.ts` ("sends the stored bytes to every target, a silent recipient's own copy included").
 - **VIS-3: changes reach only the original audience.** `Update` and `Delete` are addressed to the audience the status
-  already had; `Delete` carries a `Tombstone`, not the content. _Enforced (main):_
+  already had; `Delete` carries a `Tombstone`, not the content. The `Delete` of a local public or unlisted original
+  is LD-signed with its author's key (RsaSignature2017, `#main-key`; Mastodon's `always_sign` with `Status#sign?`) and
+  addressed as Mastodon's `DeleteSerializer` addresses it, `to` Public alone with no `cc`, so it names no recipient and
+  a booster or quoter may forward it with the author's proof. It is signed once, in the Worker, between a read that
+  prepares it (`prepareDelete`) and the record (`deleteStatus`), which takes it only if, without its `signature`, it
+  is exactly the activity the Store builds from its own snapshot then, with an RsaSignature2017 signature by
+  `<actor>#main-key` of the form `ld-sign.ts` writes; otherwise nothing is written and the Worker prepares again, at
+  most three times, then answers 503. It is recorded immutable and sent byte for byte on every attempt (VIS-2's
+  exception); its targets are chosen as the unsigned `Delete`'s would be, from the addressing the status had (the
+  envelope's `addressing`, which `planOf` and `targetsOf` place copies by), never from the signed body. When it cannot
+  be signed (the key does not unwrap, signing throws, no signer), the DELETE answers 503 and writes nothing: no intent,
+  no job, no streaming delete, no hide, so the status stays and a later DELETE can still send a proven `Delete`. A
+  private, direct or limited status's `Delete` is never signed (a proof would make a portable, authentic record of its
+  addressees), nor is a boost's `Undo`, nor the `Delete` of a status whose uri or author's actor id an import stored
+  in a spelling a verifier would not match (not its canonical URL, or with a fragment): those are recorded unsigned,
+  as before. `Delete`s recorded before this release stay unsigned. _Enforced (main):_ `signableDeleteActivity` and
+  `signedAs` in `src/domain/activities.ts`, `prepareDelete` and `deleteStatus` in `src/domain/statuses.ts`,
+  `deleteStatus` in `src/mastodon/statuses.ts`; `test/signed-delete.test.ts`. _Enforced (main):_
   `src/domain/activities.ts`; `test/statuses.test.ts` ("records Create, Update and Delete for the original audience
   only"). Delivery: _Enforced (main):_ silent recipients get the activity as VIS-2 says and
   are never named in the shared copy; a `Delete` or `Undo` also reaches every inbox that received the object or may
@@ -3331,7 +3356,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of each one still staging, which only an import holds (`outbound_activities_staging_ended`), the intent, the hide, its
   card, trend row, review, pin and poll, its own quote with the copy of its withdrawn (migration
   `0091_live_local_quotes`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA` media, two counts
-  and the job), and stores a `Delete` envelope within its derived JSON-escaped byte bound; its job's batches
+  and the job; signing writes none), and stores a `Delete` envelope within its derived JSON-escaped byte bound: 426,999
+  bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at
+  `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
+  places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
+  takes (VIS-3); its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
   pins, its hashtags with its author's featured hashtags counted again, the forwards of the remote original it quotes
   (staged first, VIS-3), the earlier activities left to supersede, the `Delete`'s staging, its local boosts, the media its answer did not show (with the job's `bound`), then the children
@@ -4287,7 +4316,12 @@ heap).
   `MAINTENANCE=readonly`). _Enforced (main):_ `src/app/key-rewrap.ts`, `src/domain/actors.ts`
   (`listRewrapKeys`, `rewrapLocalKey`), `cli/lib/main.js`; `test/key-rewrap.test.ts`. Backups, dumps and
   cutover exports made before the rewrap still hold the keys under the previous KEK; the operator deletes them or
-  accepts that (accepted risk below).
+  accepts that (accepted risk below). A rewrap keeps the key pairs, so a signed `Delete` recorded but not yet
+  delivered (VIS-3, VIS-28) still verifies after it, and in a Store restored from a dump, which carries the pairs too.
+  Kopje has no key-pair rotation; one that is added must drop or sign again the signed `Delete`s still to be sent,
+  which receivers relaying them would otherwise refuse under the new key. During a rewrap window, keys under the
+  previous KEK cannot sign, and a DELETE of a public or unlisted status answers 503 (the procedure's
+  `MAINTENANCE=readonly` refuses it before that).
 - **DATA-15: the cutover never widens an audience.** A converted status is visible to exactly whom legacy Wildebeest
   let read it (its `isVisible`), from the object's own `to`/`cc` and
   its stored author's followers collection as exported, never from values a bridge migration filled in or rewrote (0002

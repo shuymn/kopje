@@ -705,7 +705,7 @@ function readWorld(sql: SqlStorage, base: World): Snapshot {
   return snapshot;
 }
 
-type Activity = { id?: unknown; type?: unknown; to?: unknown; cc?: unknown; object?: unknown };
+type Activity = { id?: unknown; type?: unknown; to?: unknown; cc?: unknown; object?: unknown; signature?: unknown };
 
 function uris(value: unknown): string[] {
   if (typeof value === "string") {
@@ -1262,6 +1262,15 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
         for (const mention of snapshot.world.statuses[s]!.mentions) {
           if (!mention.silent && m.names(kind, signer, mention.account)) {
             mayName.add(mention.account);
+          }
+        }
+        // VIS-3: a public or unlisted status's Delete is signed and names Public alone; any other is unsigned.
+        if (activity.type === "Delete") {
+          const signed = typeof activity.signature === "object" && activity.signature !== null;
+          if (signed !== m.signsDelete(s)) {
+            problems.push(`${what}: ${signed ? "signed" : "unsigned"} for a ${status.visibility} status`);
+          } else if (signed && [...named].some((uri) => uri !== PUBLIC)) {
+            problems.push(`${what}: a signed Delete names ${[...named].join(" ")}`);
           }
         }
       }

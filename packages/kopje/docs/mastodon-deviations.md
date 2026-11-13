@@ -770,6 +770,29 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
+Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
+`ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):
+
+- The `Delete` of a public or unlisted status is LD-signed (RsaSignature2017) by its author and addressed to Public
+  alone, as Mastodon signs it (`always_sign`, `Status#sign?`) and addresses it; its context defines `atomUri`, so a
+  Mastodon booster or quoter keeps the signature when it forwards it (`safe_for_forwarding?`). This matches Mastodon.
+- The `Delete` of a private, direct or limited status is unsigned, as in Mastodon, but addressed as the status was
+  (`to` and `cc` of its Note, its named mentions in `cc`); Mastodon's `DeleteSerializer` addresses every `Delete` to
+  Public. A receiver applies either by its object. Accepted, 2026-11-13.
+- When the author's key cannot sign the `Delete` (it does not unwrap, or signing fails), the DELETE answers 503 and
+  nothing changes: the status stays, so a later DELETE can send a proven `Delete`. Mastodon removes the status in the
+  request and signs in its job, which raises and is retried. Accepted, 2026-11-13.
+- The `Delete` of a status whose uri or author's actor id an import stored in a spelling a verifier would not match
+  (not its canonical URL, or with a fragment) is unsigned and addressed as the status was; Mastodon's ids are always
+  its own URLs. `Delete`s recorded before the release that signs them stay unsigned. Accepted, 2026-11-13.
+- The `Undo(Announce)` of a public or unlisted boost is unsigned; Mastodon signs it through the same path. No receiver
+  forwards an `Undo`. Accepted, 2026-11-13.
+- The signed body goes unchanged to every target, a silent recipient's own copy included, and an inbox that is a
+  target of the neutral copy and of one or more personal copies gets the same bytes once for each; Mastodon delivers
+  one copy per inbox. Each is applied once. Accepted, 2026-11-13.
+- A Kopje receiver refuses a `Delete` of a status another server relays, proof or not (Forwarded deletes above), so a
+  Kopje author's `Delete` forwarded by a booster or quoter reaches a Kopje server only from the author's own server.
+
 Outboxes (`/ap/users/:username/outbox` and the instance actor's `/actor/outbox`; Mastodon's
 `ActivityPub::OutboxesController`, which serves the instance actor's for `Account.representative`, empty):
 

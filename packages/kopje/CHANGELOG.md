@@ -10,6 +10,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
+  addressed to Public alone, as Mastodon sends it, so a server that holds the status only through a boost or a quote
+  receives it forwarded with the author's proof and removes its copy (VIS-3, ID-1). It reaches the same inboxes as
+  before and is sent byte for byte on every attempt. When the author's key cannot sign it, the DELETE answers 503 and
+  the status stays. Private, direct and limited `Delete`s are unchanged, and `Delete`s recorded before the upgrade stay
+  unsigned. No Store migration and no `wrangler.jsonc` change.
+
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters
   of those tables only, so only a crafted or corrupted dump is refused. The inbound jobs read the counters by name on
