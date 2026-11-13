@@ -51,7 +51,7 @@ const STATUS_ID = "(?:[0-9]{1,19}|[0-9a-f-]{36})";
 type PageStatus = 200 | 404 | 410;
 
 function publicPage(c: PublicContext, status: PageStatus, body: Parameters<PublicContext["html"]>[0]) {
-  return c.html(body, status, PUBLIC_HEADERS);
+  return c.html(<>{body}</>, status, PUBLIC_HEADERS);
 }
 
 // The 200 answer of a public page that loads the L1 bundle (its route calls this; every other page does not): the
