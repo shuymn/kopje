@@ -40,35 +40,50 @@ const OWN_MANY = 120;
 const id18 = (prefix: string, i: number) => `${prefix}${String(i).padStart(18 - prefix.length, "0")}`;
 const credential = (scope: "read" | "write") => ({ tokenHash: "viewer", scope, now: NOW });
 
+// Every other statement the flows make, literally: PlanWitness's allowed list, so a statement the witness does not
+// measure fails the case.
+const OTHER_STATEMENTS = [
+  "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.id IS NOT ?2 LIMIT ?3)",
+  "SELECT id FROM accounts WHERE id = ?",
+  "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, m.focus_x AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position",
+  "SELECT ss.id, ss.scheduled_at, ss.params FROM scheduled_statuses ss WHERE ss.id = ?1 AND ss.account_id = ?2",
+  "SELECT t.scopes, t.account_id, t.expires_at, c.id AS client_id, c.name, c.website, l.suspended_at, coalesce(t.epoch <> l.credential_epoch, 0) AS stale FROM oauth_tokens t CROSS JOIN oauth_clients c INDEXED BY sqlite_autoindex_oauth_clients_1 ON c.id = t.client_id LEFT JOIN local_accounts l INDEXED BY sqlite_autoindex_local_accounts_1 ON l.account_id = t.account_id WHERE t.token_hash = ? AND t.kind = 'access'",
+  "UPDATE scheduled_statuses SET scheduled_at = ?, attempts = 0, next_attempt_at = NULL WHERE id = ?",
+];
+
 // main's audited statements, as main's code wrote them, the pins each rewrite adds, and the rows the conversations'
 // DELETE removes, read on both sides as the ids there before it and not after it.
-const WITNESS = new PlanWitness({
-  "483bcfadf028a776": {
-    sql: "DELETE FROM conversations WHERE account_id = ?1 AND EXISTS (SELECT 1 FROM json_each(conversations.participants) WHERE value = ?2)",
-    pins: (text) => text.replace(" INDEXED BY conversations_account", ""),
-    writes: "SELECT CAST(id AS TEXT) AS id FROM conversations ORDER BY id",
+const WITNESS = new PlanWitness(
+  {
+    "483bcfadf028a776": {
+      sql: "DELETE FROM conversations WHERE account_id = ?1 AND EXISTS (SELECT 1 FROM json_each(conversations.participants) WHERE value = ?2)",
+      pins: (text) => text.replace(" INDEXED BY conversations_account", ""),
+      writes: "SELECT CAST(id AS TEXT) AS id FROM conversations ORDER BY id",
+    },
+    "6e80489968ad0885": {
+      sql: "SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs JOIN filters f ON f.id = fs.filter_id WHERE fs.id = ? AND f.account_id = ?",
+      pins: (text) =>
+        text.replace(
+          " INDEXED BY sqlite_autoindex_filter_statuses_1 CROSS JOIN filters f INDEXED BY filters_account ON",
+          " JOIN filters f ON",
+        ),
+    },
+    d634d9244eae5d1e: {
+      sql: "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4 LIMIT ?5)",
+      pins: (text) => text.replace(" INDEXED BY scheduled_statuses_account_time", ""),
+    },
+    c062eb1780f68065: {
+      sql: "SELECT id, title, replies_policy, exclusive FROM lists WHERE account_id = ? ORDER BY id",
+      pins: (text) => text.replace(" INDEXED BY lists_account", ""),
+    },
+    "28567507fc2af2e0": {
+      sql: "SELECT id, title, replies_policy, exclusive FROM lists l WHERE l.account_id = ?1 AND EXISTS (SELECT 1 FROM list_accounts lh WHERE lh.list_id = l.id AND lh.account_id = ?2) AND (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ?2 AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ?2 AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = ?2 AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = ?2), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY l.id",
+      pins: (text) => text.replace(" INDEXED BY lists_account", ""),
+    },
   },
-  "6e80489968ad0885": {
-    sql: "SELECT fs.id, fs.filter_id, fs.status_id FROM filter_statuses fs JOIN filters f ON f.id = fs.filter_id WHERE fs.id = ? AND f.account_id = ?",
-    pins: (text) =>
-      text.replace(
-        " INDEXED BY sqlite_autoindex_filter_statuses_1 CROSS JOIN filters f INDEXED BY filters_account ON",
-        " JOIN filters f ON",
-      ),
-  },
-  d634d9244eae5d1e: {
-    sql: "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4 LIMIT ?5)",
-    pins: (text) => text.replace(" INDEXED BY scheduled_statuses_account_time", ""),
-  },
-  c062eb1780f68065: {
-    sql: "SELECT id, title, replies_policy, exclusive FROM lists WHERE account_id = ? ORDER BY id",
-    pins: (text) => text.replace(" INDEXED BY lists_account", ""),
-  },
-  "28567507fc2af2e0": {
-    sql: "SELECT id, title, replies_policy, exclusive FROM lists l WHERE l.account_id = ?1 AND EXISTS (SELECT 1 FROM list_accounts lh WHERE lh.list_id = l.id AND lh.account_id = ?2) AND (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ?2 AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ?2 AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = ?2 AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = ?2), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) ORDER BY l.id",
-    pins: (text) => text.replace(" INDEXED BY lists_account", ""),
-  },
-});
+  undefined,
+  OTHER_STATEMENTS,
+);
 
 // The instance counts (#1502) beside main's statement, which counts the peer domains over every remote account on
 // every request; the rewrite reads the count the cron kept, once a primary-key lookup (allowed) has found it fresh.
