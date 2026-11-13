@@ -25,6 +25,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   of those tables only, so only a crafted or corrupted dump is refused. The inbound jobs read the counters by name on
   every round, and an import could otherwise grow them without limit ([docs/dump-format.md](docs/dump-format.md)).
 
+### Fixed
+
+- An import of a dump that holds an accepted quote, a backup restore included, no longer fails its verification: the
+  insert of each accepted quote counted it on its quoted status a second time. Verify now takes that count off again,
+  in bounded steps, before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work").
+
 ## [0.5.0] - 2026-11-13
 
 A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now

@@ -293,6 +293,54 @@ export function applyStagedLinks(
   return hasStagedLinks(sql);
 }
 
+// The trigger quotes_count_inserted (migration 0033) adds 1 to the quoted status's quotes_count for each accepted quote
+// a chunk inserts, and that statuses row already holds its dumped count: statuses precede quotes in the catalog
+// (quotes.quoted_status_id references statuses), and an import begins only in a Store without quotes. No other write
+// of an import changes a quote's state or quoted status, so the triggers that would move the count again never run.
+// correctQuoteCounts takes the same 1 off again for each accepted quote, before the checksums start, so the dumped
+// value stands. It reads at most maxRows quotes by rowid after `after` (a rowid read as TEXT, DATA-6), whatever their
+// state, and stops after the statuses row that brings the bytes it rewrote to maxBytes (one always goes in, as in
+// applyStagedLinks). The quoted status is named in SQL through the quote's rowid, so its stored bytes are never
+// decoded. Returns the rowid the next step continues after, or QUOTE_COUNTS_DONE once every quote is read. The other
+// triggers that write on an insert leave the dumped rows as they are (docs/dump-format.md, "Bounded work").
+export function correctQuoteCounts(
+  sql: SqlStorage,
+  tables: readonly TableSpec[],
+  after: string | null,
+  maxBytes: number,
+  maxRows: number,
+): string {
+  const statuses = tables.find((t) => t.name === "statuses");
+  if (statuses === undefined || !tables.some((t) => t.name === "quotes")) {
+    return QUOTE_COUNTS_DONE;
+  }
+  const quotes = sql
+    .exec<{ at: string; counted: number }>(
+      `SELECT CAST(rowid AS TEXT) AS at, (state = 'accepted' AND quoted_status_id IS NOT NULL) AS counted FROM quotes` +
+        (after === null ? "" : " WHERE rowid > CAST(? AS INTEGER)") +
+        " ORDER BY rowid LIMIT ?",
+      ...(after === null ? [maxRows] : [after, maxRows]),
+    )
+    .toArray();
+  const update =
+    "UPDATE statuses SET quotes_count = quotes_count - 1" +
+    " WHERE id = (SELECT quoted_status_id FROM quotes WHERE rowid = CAST(? AS INTEGER))" +
+    ` RETURNING ${rowBytes(statuses)} AS size`;
+  let rewritten = 0;
+  for (const [index, quote] of quotes.entries()) {
+    if (quote.counted === 1) {
+      rewritten += sql.exec<{ size: number }>(update, quote.at).toArray()[0]?.size ?? 0;
+    }
+    if (rewritten >= maxBytes && index < quotes.length - 1) {
+      return quote.at;
+    }
+  }
+  return quotes.length < maxRows ? QUOTE_COUNTS_DONE : (quotes.at(-1)?.at ?? QUOTE_COUNTS_DONE);
+}
+
+// Where correctQuoteCounts stands once every quote is read (a rowid is never empty).
+export const QUOTE_COUNTS_DONE = "";
+
 function nextStagedLink(sql: SqlStorage, after: string | null): { name: string; value: string } | null {
   const query = `SELECT name, value FROM kopje_state WHERE ${LINK_RANGE} AND name > ? ORDER BY name LIMIT 1`;
   return sql.exec<{ name: string; value: string }>(query, after ?? "").toArray()[0] ?? null;

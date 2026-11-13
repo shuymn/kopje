@@ -34,7 +34,9 @@ export type DumpRecord = {
   completed?: { trailer: DumpTrailer; trailerText: string };
 };
 
-type VerifyProgress = { position: ScanPosition; results: TableResult[] };
+// quoteCounts: where the quote count correction stands (store-import.ts correctQuoteCounts): absent before it starts
+// (a record written by an earlier version too), the rowid it continues after, or QUOTE_COUNTS_DONE.
+type VerifyProgress = { position: ScanPosition; results: TableResult[]; quoteCounts?: string | undefined };
 
 // resetting: the imported rows are being deleted (StoreAdmin.importReset); nothing else continues the import.
 type ImportState = "receiving" | "finished" | "failed" | "resetting";

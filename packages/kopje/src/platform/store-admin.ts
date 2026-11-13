@@ -58,6 +58,7 @@ import {
   BoostChainCheck,
   catalogDifference,
   compareResults,
+  correctQuoteCounts,
   dropStagedLinks,
   hasStagedLinks,
   ImportError,
@@ -65,6 +66,7 @@ import {
   migrationDifference,
   parseHeader,
   parseTrailer,
+  QUOTE_COUNTS_DONE,
   rowBytes,
   type VerifyReport,
 } from "./store-import";
@@ -863,14 +865,31 @@ export class StoreAdmin {
           const next = this.#touch(record);
           return { ok: true as const, done: false, report: null, progress: progressOf(next) };
         }
+        // Then the quote counts the insert triggers raised go back to their dumped values, bounded the same way.
+        let verify = record.verify;
+        if (verify.quoteCounts !== QUOTE_COUNTS_DONE) {
+          const quoteCounts = correctQuoteCounts(
+            this.#sql,
+            record.header.tables,
+            verify.quoteCounts ?? null,
+            Math.min(budget, LINK_STEP_BYTES),
+            MAX_IMPORT_CHUNK_STATEMENTS,
+          );
+          verify = { ...verify, quoteCounts };
+          if (quoteCounts !== QUOTE_COUNTS_DONE) {
+            const next: ImportRecord = { ...record, verify, updatedAt: this.#now() };
+            writeFlag(this.#sql, "import", next);
+            return { ok: true as const, done: false, report: null, progress: progressOf(next) };
+          }
+        }
         const step = checksumStep(
           this.#sql,
           record.header.tables,
-          record.verify.position,
+          verify.position,
           budget,
           new BoostChainCheck(this.#sql).check,
         );
-        const results = [...record.verify.results, ...step.finished];
+        const results = [...verify.results, ...step.finished];
         if (step.refused !== null) {
           // A row the Store cannot hold (BoostChainCheck): the import fails and needs a reset.
           const report: VerifyReport = { ok: false, tables: [], foreignKeyViolations: 0, problems: [step.refused] };
@@ -879,7 +898,7 @@ export class StoreAdmin {
         if (step.position.phase !== "done") {
           const next: ImportRecord = {
             ...record,
-            verify: { position: step.position, results },
+            verify: { ...verify, position: step.position, results },
             updatedAt: this.#now(),
           };
           writeFlag(this.#sql, "import", next);

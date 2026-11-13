@@ -544,6 +544,15 @@ bytes it receives:
   per call that stops after the row that brings the rewritten bytes to 1 MiB or after 2,000 links; the checksums
   start in the call that applies the last of them. A link that cannot be applied (its value breaks a constraint) is
   refused at verify; the import then needs a reset.
+- The import inserts every row, so the triggers that write on an insert run. One changes a dumped value: each
+  accepted `quotes` row adds 1 to its quoted status's `quotes_count` (`quotes_count_inserted`), which the dumped
+  `statuses` row already holds. After the links, verify takes that 1 off again for each accepted quote, the dumped
+  value standing, before the checksums start: a step per call reads at most 2,000 quotes by rowid and stops after the
+  status row that brings the rewritten bytes to 1 MiB. The others leave the dumped rows as they are: their writes
+  match the values a Store keeps (`quotes_withdrawn_inserted`, `statuses_last_status_stored`), their WHEN is false for
+  every stored row (`statuses_thread`) or while the tables a later one fills are still empty
+  (`reject_replays_follow_stored`), or they write `stream_events`, which no dump holds. `test/import-triggers.test.ts`
+  keeps the list of such triggers with these reasons.
 - Verify refuses a boost of a boost: a status whose `reblog_of_id` names a status that has a `reblog_of_id` itself.
   No Kopje writer starts such a chain, and a deletion or purge that meets one cannot remove it (its job parks: RES-6
   in [threat-model.md](threat-model.md)). The check runs on each `statuses` row the checksum scan reads, once every
