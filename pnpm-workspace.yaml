@@ -23,6 +23,7 @@ catalog:
   "@fedify/fedify": 2.4.5
   "@fedify/testing": 2.4.5
   "@fedify/vocab": 2.4.5
+  "@fedify/vocab-runtime": 2.4.5
 
   # Cloudflare Workers: the bundler and dev server, the runtime types and the workerd test pool. deploy/package.json
   # pins the same wrangler.

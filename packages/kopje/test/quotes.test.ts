@@ -1033,6 +1033,17 @@ describe("relayed revocations (ID-1’s exception)", () => {
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
+  it("refuses a signed Update of the stamp relayed as a Delete through a context that nests the signature", async () => {
+    const { t, carol, dan, stamp, quote } = await relayWorld();
+    const update = { ...deletion(carol, stamp), id: `${stamp}#updates/${nextId()}`, type: "Update" };
+    const signed = await ldSigned(update, carol);
+    // `type` read as Update, and the signature, nested into the activity, adding its own type read as Delete.
+    const nest = { Delete: "as:Update", signature: "@nest", RsaSignature2017: "as:Delete" };
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), nest], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+  });
+
   it("refuses an author proof on any other activity, and applies one on a status as the author's Delete", async () => {
     const { t, carol, dan, target, quote } = await relayWorld();
     const boost = await ldSigned({ ...deletion(carol, target.id), type: "Announce" }, carol);

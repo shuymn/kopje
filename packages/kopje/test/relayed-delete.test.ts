@@ -1,12 +1,15 @@
-import { signJsonLd } from "@fedify/fedify";
+import { exportSpki, signJsonLd } from "@fedify/fedify";
+import { CryptographicKey, Multikey, Person } from "@fedify/vocab";
 import { describe, expect, it } from "vitest";
 
+import { verifyAuthorProof } from "../src/federation/author-proof";
 import type { StoreStub } from "../src/platform/store-client";
+import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { bearer, settle, sql } from "./api-helpers";
 import { harness, NOW, offline } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
-import { mastodonActor, type TestActor } from "./inbox-helpers";
+import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -425,3 +428,164 @@ describe("a relayed status Delete replayed (ID-1, ID-7)", () => {
     expect(await stored(t.store, unseen.id)).toBeNull();
   });
 });
+
+// What a proof covers is read from the document its verifier hashed, never from the body as relayed: a context entry
+// the proof does not cover cannot make the body read as another activity (federation/author-proof.ts signedDocument).
+describe("a relayed Delete is read as its proof covers it (ID-1)", () => {
+  // bob's edit of the status `uri` as Mastodon signs it: an Update whose object is the Note under the status's uri.
+  function edit(bob: TestActor, uri: string): Json {
+    return {
+      "@context": [AS, SECURITY],
+      id: `${uri}#updates/${nextId()}`,
+      type: "Update",
+      actor: bob.uri,
+      to: [PUBLIC],
+      object: { id: uri, type: "Note", attributedTo: bob.uri, content: "<p>edited</p>", to: [PUBLIC] },
+    };
+  }
+
+  it("refuses a signed Update relayed as a Delete through a context that nests the signature", async () => {
+    const { t, bob, dan } = await world();
+    const status = await note(t, bob);
+    const signed = await ldSigned(edit(bob, status.uri), bob);
+    // `type` read as Update, and the signature, nested into the activity, adding its own type read as Delete.
+    const nest = { Delete: "as:Update", signature: "@nest", RsaSignature2017: "as:Delete" };
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), nest], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  });
+
+  it("refuses a signed graph typed Delete and something else", async () => {
+    const { bob } = await world();
+    const uri = `${bob.uri}/statuses/${nextId()}`;
+    const body: Json = { ...deletion(bob, uri), type: ["Delete", "Update"] };
+    const signed = await ldSigned(body, bob);
+    const expected = { id: body.id as string, actor: bob.uri, object: uri };
+    expect(await verifyAuthorProof(signed, expected, bob.document, contexts)).toBe(false);
+    // The same Delete typed Delete alone verifies.
+    const single = await ldSigned({ ...body, type: "Delete" }, bob);
+    expect(await verifyAuthorProof(single, expected, bob.document, contexts)).toBe(true);
+  });
+
+  it("refuses a proof whose signed id is not the id read from the body", async () => {
+    const { bob } = await world();
+    const uri = `${bob.uri}/statuses/${nextId()}`;
+    const body = deletion(bob, uri);
+    const signed = await ldSigned(body, bob);
+    // The signature verifies; only the comparison with the id the Worker read from the body refuses it.
+    const read = { id: `${bob.uri}#delete-${nextId()}`, actor: bob.uri, object: uri };
+    expect(await verifyAuthorProof(signed, read, bob.document, contexts)).toBe(false);
+    expect(await verifyAuthorProof(signed, { ...read, id: body.id as string }, bob.document, contexts)).toBe(true);
+  });
+
+  it("applies an FEP-8b32 proof whose context is the body's, and refuses one the body's context extends", async () => {
+    const { t, dan } = await world();
+    const { actor: erin, sign } = await fepActor(t, "erin8b32");
+    await followed(t, erin);
+    const kept = await note(t, erin);
+    const deleted = await note(t, erin);
+    // Signed as a Like (its context maps `Delete` to as:Like); the relay appends a context entry reading it as a Delete.
+    const like = await sign({
+      "@context": [AS, DATA_INTEGRITY, { Delete: "as:Like" }],
+      id: `${erin.uri}#likes/${nextId()}`,
+      type: "Delete",
+      actor: erin.uri,
+      object: kept.uri,
+    });
+    const appended = { ...like, "@context": [...(like["@context"] as unknown[]), { Delete: "as:Delete" }] };
+    expect(await t.post(dan, appended)).toBe(401);
+    expect(await stored(t.store, kept.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    // The same signer's Delete, as signed: applied.
+    const honest = await sign({
+      "@context": [AS, DATA_INTEGRITY],
+      id: `${deleted.uri}#delete`,
+      type: "Delete",
+      actor: erin.uri,
+      object: deleted.uri,
+    });
+    expect(await t.post(dan, honest)).toBe(202);
+    await settle(t.store);
+    expect(await stored(t.store, deleted.uri)).toBeNull();
+  });
+});
+
+const DATA_INTEGRITY = "https://w3id.org/security/data-integrity/v1";
+
+// An actor of mastodon.example with an RSA key (its HTTP signatures) and an Ed25519 assertion method (Multikey, its
+// FEP-8b32 proofs), and `sign`, which adds an eddsa-jcs-2022 proof by that key to a document (vc-di-eddsa §3.3: the
+// SHA-256 of the JCS of the proof configuration, its @context the document's, then of the document).
+async function fepActor(t: Setup, username: string) {
+  const rsa = (await crypto.subtle.generateKey(
+    { ...RSA_ALGORITHM, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
+    true,
+    ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const ed = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+  const uri = `${MASTODON}/users/${username}`;
+  const person = new Person({
+    id: new URL(uri),
+    preferredUsername: username,
+    inbox: new URL(`${uri}/inbox`),
+    publicKey: new CryptographicKey({ id: new URL(`${uri}#main-key`), owner: new URL(uri), publicKey: rsa.publicKey }),
+    assertionMethods: [
+      new Multikey({ id: new URL(`${uri}#ed25519-key`), controller: new URL(uri), publicKey: ed.publicKey }),
+    ],
+  });
+  const document = (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Json;
+  t.web.serve(uri, document);
+  const actor: TestActor = {
+    uri,
+    keyId: `${uri}#main-key`,
+    privateKey: rsa.privateKey,
+    pem: await exportSpki(rsa.publicKey),
+    document,
+  };
+  const sign = async (body: Json): Promise<Json> => {
+    const options = {
+      "@context": body["@context"],
+      type: "DataIntegrityProof",
+      cryptosuite: "eddsa-jcs-2022",
+      verificationMethod: `${uri}#ed25519-key`,
+      proofPurpose: "assertionMethod",
+      created: "2026-11-13T00:00:00Z",
+    };
+    const digest = async (value: unknown) =>
+      new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical(value))));
+    const message = new Uint8Array([...(await digest(options)), ...(await digest(body))]);
+    const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", ed.privateKey, message));
+    return { ...body, proof: { ...options, proofValue: `z${base58btc(signature)}` } };
+  };
+  return { actor, sign };
+}
+
+// JCS (RFC 8785) of JSON made of strings, arrays, objects, booleans and null: members sorted by their UTF-16 names.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function base58btc(bytes: Uint8Array): string {
+  let n = 0n;
+  for (const byte of bytes) {
+    n = n * 256n + BigInt(byte);
+  }
+  let out = "";
+  while (n > 0n) {
+    out = BASE58[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) {
+      break;
+    }
+    out = `1${out}`;
+  }
+  return out;
+}

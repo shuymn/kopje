@@ -82,6 +82,7 @@
     "@fedify/fedify": "catalog:",
     "@fedify/testing": "catalog:",
     "@fedify/vocab": "catalog:",
+    "@fedify/vocab-runtime": "catalog:",
     "@jsquash/webp": "catalog:",
     "@playwright/test": "catalog:",
     "@types/css-tree": "catalog:",

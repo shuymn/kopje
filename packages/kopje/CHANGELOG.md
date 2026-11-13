@@ -24,10 +24,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   as the author's own, with the same effects and forwards, when it carries the author's proof, verified against the
   author's current key, and the status is a public or unlisted original Kopje holds as that author's, on the author's
   origin (ID-1, #1506). So a status its author deletes leaves a Kopje server that holds it only through another
-  server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or of
-  an actor changes no status. An author proof, on a relayed status or stamp `Delete`, now counts only when the graph
-  it signs is itself typed `Delete`. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
-  ([docs/upgrade.md](docs/upgrade.md)).
+  server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or
+  of an actor changes no status. An author proof, on a relayed status or stamp `Delete`, counts only for the document
+  its verifier hashed (the body without its signature, or, for an FEP-8b32 proof, without its proof, the body's
+  context being the proof's), whose single node is typed `Delete` alone; a context entry the proof does not cover
+  cannot make a signed `Update`, `Like` or untyped document read as a `Delete`. No Store migration and no
+  `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters
