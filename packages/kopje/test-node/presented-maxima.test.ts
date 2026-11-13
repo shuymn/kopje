@@ -24,22 +24,52 @@ const ANSWER_BYTES = 8 * 1024 * 1024;
 
 type Row = { label: string; cells: string[] };
 
-/** The table whose header row starts with `| <first>`, its separator left out; the header must be unique. */
-function table(first: string): Row[] {
+const cellsOf = (line: string) =>
+  line
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim());
+
+/** The rows of the one table whose first heading is `header[0]`, after checking every heading (names, order, units)
+ * and that each row has a cell for each heading. */
+function table(header: readonly string[]): Row[] {
   const lines = DOCUMENT.split("\n");
-  const starts = lines.flatMap((line, i) => (line.startsWith(`| ${first} `) ? [i] : []));
-  expect(starts, `one table headed "${first}"`).toHaveLength(1);
+  const starts = lines.flatMap((line, i) => (line.startsWith(`| ${header[0]} `) ? [i] : []));
+  expect(starts, `one table headed "${header[0]}"`).toHaveLength(1);
+  expect(cellsOf(lines[starts[0]!]!), `the headings of "${header[0]}"`).toEqual(header);
   const rows: Row[] = [];
   for (const line of lines.slice(starts[0]! + 2)) {
     if (!line.startsWith("|")) break;
-    const [label = "", ...cells] = line
-      .slice(1, -1)
-      .split("|")
-      .map((cell) => cell.trim());
+    const [label = "", ...cells] = cellsOf(line);
+    expect(cells, `the cells of "${label}"`).toHaveLength(header.length - 1);
     rows.push({ label, cells });
   }
   return rows;
 }
+
+const MAXIMA_HEADER = [
+  "Shape",
+  "Most SQLite bytes",
+  "Most JSON bytes",
+  "Conservative JSON",
+  "Rows read",
+  "Nodes",
+  "Share of 8 MiB",
+];
+const ITEM_HEADER = ["Item", "Rows, with 25% headroom", "Rejected-item objects"];
+const ANSWER_HEADER = [
+  "Answer (Store isolate)",
+  "Normal",
+  "Backstop fired, the dropped chunk still live",
+  "A single item",
+];
+const PHASE_HEADER = ["Phase", "Store isolate", "Worker isolate"];
+const PHASES = [
+  "RPC copy (serialized; deserialized in the Worker)",
+  "The Worker's JSON string and the body",
+  "Peak, normal",
+  "Peak, the backstop fired",
+];
 
 const count = (n: number | undefined) => (n === undefined ? "" : n.toLocaleString("en-US"));
 const share = (n: number) => `${((100 * n) / ANSWER_BYTES).toFixed(1)}%`;
@@ -152,7 +182,7 @@ describe("the table of maxima (RES-3)", () => {
   });
 
   it("states every figure the status bounds test asserts, and only rows it classifies", () => {
-    const rows = table("Shape");
+    const rows = table(MAXIMA_HEADER);
     const expected = maximaRows();
     expect(rows.map((row) => row.label)).toEqual([...expected.keys(), ...OTHER_ROWS]);
     compare(rows, expected);
@@ -164,7 +194,7 @@ describe("the heap tables (RES-3)", () => {
     new Map(rows.map(([label, name]) => [label, cells(HEAP_PEAKS[name])]));
 
   it("states the item rows and the rejected items' objects the peaks test asserts", () => {
-    const rows = table("Item");
+    const rows = table(ITEM_HEADER);
     expect(rows.map((row) => row.label)).toEqual(ITEMS.map(([label]) => label));
     compare(
       rows,
@@ -173,19 +203,18 @@ describe("the heap tables (RES-3)", () => {
   });
 
   it("states the answers' peaks the peaks test asserts", () => {
-    const rows = table("Answer (Store isolate)");
+    const rows = table(ANSWER_HEADER);
     expect(rows.map((row) => row.label)).toEqual(ANSWERS.map(([label]) => label));
     compare(
       rows,
       peaks(ANSWERS, (p) => [mb(p.normal), mb(p.backstop), mb(p.single)]),
     );
-    // The phases' Store peak is the timelines'.
-    const phases = table("Phase");
-    for (const [label, peak] of [
-      ["Peak, normal", HEAP_PEAKS.timelines.normal],
-      ["Peak, the backstop fired", HEAP_PEAKS.timelines.backstop],
-    ] as const) {
-      expect(phases.find((row) => row.label === label)?.cells[0], label).toBe(mb(peak));
-    }
+    // The phases' Store peaks are the timelines'; the other cells are not the module's.
+    const phases = table(PHASE_HEADER);
+    expect(phases.map((row) => row.label)).toEqual(PHASES);
+    expect(phases.slice(2).map((row) => row.cells[0])).toEqual([
+      mb(HEAP_PEAKS.timelines.normal),
+      mb(HEAP_PEAKS.timelines.backstop),
+    ]);
   });
 });
