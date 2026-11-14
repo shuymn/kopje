@@ -438,7 +438,7 @@ Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD
   whose statuses of the year hold more than 200,000 hashtag uses (`REPORT_HASHTAG_USES`) or more than 8 MiB of hashtag
   names (`REPORT_HASHTAG_BYTES`), or that has more than 200,000 followers (`REPORT_FOLLOWERS`) gets no report: `state`
   answers `ineligible`, `generate` makes none, and Kopje logs `kopje.annual_reports.capped`
-  ([observability.md](observability.md)). Mastodon reads any number. The backlog tracks reports past the caps.
+  ([observability.md](observability.md)). Mastodon reads any number. Reports past the caps are tracked by #1601.
 - The year is the UTC year exactly; Mastodon's bounds fall at random within its first and last second. Accepted,
   2026-11-15.
 - The top status is chosen among public or unlisted originals with a reply, boost or favourite, ties to the oldest;
