@@ -23,7 +23,7 @@ import { guardFixtures, parse, sources, type Source } from "./source-scan.js";
 // type is right but whose value is wrong is out of reach: Instance, Preferences, the annual report state and donation
 // campaigns are not entities of the fixture, so their values (usage.users.active_month, languages,
 // reading:autoplay:gifs, the report state) are guarded by their contract tests (test/instance.test.ts,
-// test/account-reads.test.ts, test/placeholders.test.ts) alone.
+// test/account-reads.test.ts, test/annual-reports.test.ts, test/placeholders.test.ts) alone.
 // Departures are exceptions of the same shape as the parameter check's (test/mastodon-conformance.ts).
 
 type Target = { file: string; typeName: string; property?: string };
@@ -63,6 +63,7 @@ const MAPPING: Record<string, Mapping> = {
   "REST::RoleSerializer": { file: "src/domain/auth.ts", typeName: "Role" },
   "REST::SearchSerializer": { file: "src/domain/search.ts", typeName: "SearchResults" },
   "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
+  "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
   // No Kopje type yet. PartialAccount is a Pick<...> the reader cannot follow; #1583 writes it as a literal.
   "REST::ProfileSerializer": { deferred: 1583 },
   "REST::PartialAccountSerializer": { deferred: 1583 },
@@ -73,8 +74,6 @@ const MAPPING: Record<string, Mapping> = {
   // Their response types are inferred over Record<...>, which the reader cannot follow.
   "REST::NotificationPolicySerializer": { deferred: 1582 },
   "REST::V1::NotificationPolicySerializer": { deferred: 1582 },
-  // No report is made until #1590 builds generation.
-  "REST::AnnualReportSerializer": { deferred: 1590 },
 };
 
 const ACCOUNT: Record<string, Exception> = {
@@ -112,14 +111,16 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {
     ...NOTIFICATION,
-    // No annual report is made, so no notification carries one.
-    ...accepted("MD-3", "annual_report"),
+    // Mastodon 4.7.5 writes no annual_report notification, and Kopje has none from earlier versions.
+    ...accepted("MD-9", "annual_report"),
   },
   "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
   "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
   "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
   "REST::SearchSerializer": open(1589, "collections", "collections"),
   "REST::CustomEmojiSerializer": open(1585, "no category has a featured emoji", "featured"),
+  // No share page.
+  "REST::AnnualReportSerializer": accepted("MD-9", "share_url"),
 };
 
 // Entities whose fixture entry has unresolved extraction, with exactly the reasons acknowledged.

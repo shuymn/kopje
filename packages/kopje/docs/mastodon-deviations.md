@@ -98,13 +98,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
   never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Annual reports
-  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Donation
+  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
-  `email_subscriptions`. Accepted, 2026-10-20; annual reports, donation campaigns and e-mail subscriptions,
-  2026-11-15.
+  `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
   the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
   16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
@@ -164,6 +162,9 @@ A pull request that fixes a gap removes the exceptions that cite it.
   sees. No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are
   enabled without query-string redaction; the shipped configuration records neither (DATA-5 in
   [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
+- **MD-9: Annual reports have no share page.** An annual report's `share_url` is always null, and Kopje serves no
+  `/@:username/wrapstodon/:year/:share_key` page. No notification carries an `annual_report`: Mastodon 4.7.5 writes
+  none, and Kopje has none from earlier versions. Accepted, 2026-11-15.
 
 ## Differences the checks cannot see
 
@@ -429,14 +430,28 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
-Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-3):
+Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
-- Kopje answers as Mastodon 4.7.5 does with Wrapstodon off (its admin setting, on by default). No report is made:
-  the list is `{"annual_reports": [], "accounts": [], "statuses": []}`, a year's report and its `read` answer 404,
-  `state` answers `ineligible` for any year, `generate` answers 200 `{}` and starts nothing, and `wrapstodon` is
-  null. With Wrapstodon on, Mastodon lets a user generate the year's report from December 10 to 31 (UTC). A
-  Mastodon admin can also generate one by hand from a console, which its owner then reads and marks read; Kopje
-  has no such path.
+- Kopje makes the report within the `generate` request and answers 200 `{}`; Mastodon answers 202 with
+  `Mastodon-Async-Refresh` and makes it in a job. `state` never answers `generating`. Accepted, 2026-11-15.
+- An account whose year holds more than 200,000 statuses (`REPORT_YEAR_STATUSES`, boosts and withdrawn ones included),
+  whose statuses of the year hold more than 200,000 hashtag uses (`REPORT_HASHTAG_USES`) or more than 8 MiB of hashtag
+  names (`REPORT_HASHTAG_BYTES`), or that has more than 200,000 followers (`REPORT_FOLLOWERS`) gets no report: `state`
+  answers `ineligible`, `generate` makes none, and Kopje logs `kopje.annual_reports.capped`
+  ([observability.md](observability.md)). Mastodon reads any number. The backlog tracks reports past the caps.
+- The year is the UTC year exactly; Mastodon's bounds fall at random within its first and last second. Accepted,
+  2026-11-15.
+- The top status is chosen among public or unlisted originals with a reply, boost or favourite, ties to the oldest;
+  Mastodon chooses among those with a stats row, which stays when the counts fall back to 0, and leaves ties
+  unordered. The top hashtag is counted by its normalized name, ties by name; a name the hashtag bound leaves out (only
+  an imported one can be) is passed over among the 32 most used, and none is shown when all 32 are left out. Accepted,
+  2026-11-15.
+- A follow counts in the year its request was made; Mastodon counts the year it was accepted. Accepted, 2026-11-15.
+- `index` lists at most 40 pending reports, newest year first, and the top statuses within the answer budget; Mastodon
+  lists every pending report, unordered. Accepted, 2026-11-15.
+- The campaign runs from December 10 to 31 (UTC) by the Store's clock, and is switched off with
+  `kopje-admin instance wrapstodon=false` (Mastodon's admin setting, on by default). A Mastodon admin can also generate
+  a report by hand from a console, which its owner then reads; Kopje has no such path. Accepted, 2026-11-15.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

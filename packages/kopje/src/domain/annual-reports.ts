@@ -369,7 +369,7 @@ export const generateAnnualReport = userWriteOperation.atStoreTime("storeNow")<
 
 // ---- Presentation
 
-// REST::AnnualReportSerializer: `data` of schema 2 in Mastodon's key order, `share_url` null (no share page),
+// REST::AnnualReportSerializer: `data` of schema 2 in Mastodon's key order, `share_url` null (no share page, MD-9),
 // `account_id` the owner's id.
 type AnnualReport = {
   year: number;
