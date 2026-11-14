@@ -1276,7 +1276,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   inbox host, none of its listed accounts exists and is available (R1: a recipient the instance suspended, or one being
   deleted or purged), or a block covers every listed host. The check runs at the claim and again in `confirmDelivery`,
   which the Worker calls under the claim's lease after the signer is loaded and the host checked, right before signing
-  and the POST; the body sent is read there, never from the claim. A change that commits after confirmation does not
+  and the POST, and again before the RFC 9421 retry of a POST answered 400 or 401 (NET-2); the body sent is read there,
+  never from the claim (`test/delivery-post.test.ts` ("sends no retry for a row its second confirmation drops")). A
+  change that commits after confirmation does not
   stop that POST; a confirmation that fails, or finds the lease taken over, sends nothing, and the lease expires.
   Accepted residuals: a shared inbox serving an available recipient besides unavailable ones is sent (content expansion
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
@@ -1824,16 +1826,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the same origin (same lane, within the row's attempts) if the shared inbox answers 404, 405 or 410; targets pass
   NET-3; a non-public activity is never sent to a redirect target. Claims serialize each lane; the POST timeout (30 s)
   is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
-  a later claim. A lane is `(actor, inbox origin)`: everything an actor sends one server, to shared and personal inboxes
+  a later claim. A POST answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
+  (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform` does, after the deadline and host
+  checks and the Store's confirmation again, within the same 30 s; its answer settles the delivery, and a retry the
+  deadline leaves no room for fails as transient, never as the first answer. A lane is `(actor, inbox origin)`:
+  everything an actor sends one server, to shared and personal inboxes
   alike, arrives in order, so a later `Update` or `Delete` cannot overtake the `Create`. A forwarded `Delete` (VIS-3) is
   one intent per local booster or quoter, signed by it in its own lanes, never by one owner for another's audience,
   behind the `Create` of its quoting statuses in each lane; its
   shared-inbox fallback moves a row in place, keeping its place in the lane, for a single recipient behind the inbox
-  only. The whole path from claim to POST (key loading, DNS, signing, the POST) runs under one absolute deadline, the
+  only. The whole path from claim to POST (key loading, DNS, signing, each POST) runs under one absolute deadline, the
   earlier of 30 s and 10 s before the lease ends; the clock is checked against it after the key is loaded and right
-  before the POST, so a late timer cannot let a POST through. _Enforced (main):_
+  before each POST, so a late timer cannot let a POST through. _Enforced (main):_
   `src/domain/deliveries.ts` (expansion, lanes, claims, completions), `src/federation/delivery.ts` (the POST);
-  `test/deliveries.test.ts` ("NET-2: delivers a public status once per shared inbox", "NET-2: a recipient outside the
+  `test/delivery-post.test.ts` ("the RFC 9421 retry", "sends no retry past the deadline"), `test/deliveries.test.ts`
+  ("NET-2: delivers a public status once per shared inbox", "NET-2: a recipient outside the
   audience gets nothing", "NET-2: an expired lease is claimed again", "moves a Follow and its Undo to the personal
   inbox once when the shared inbox answers 404"), `test/delivery-post.test.ts` ("NET-2: never
   follows a redirect", "NET-2: times out the POST before the lease ends"), `test/delivery-regressions.test.ts` ("keeps a
@@ -1891,9 +1898,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Credentials and signatures never follow a redirect to another origin. Fedify's sending and queueing are not used.
   _Enforced (main)_ for documents and the Fedify rule: the fedify-usage lint rule
   (`packages/kopje/lint/fedify-usage.js`), which refuses sending or queueing through Fedify. Deliveries: _Enforced
-  (main):_ `assertPublicShape` and the DNS check before every POST, no redirects, 30 s (`postActivity` in
-  `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3: refuses inboxes that fail the public-host
-  rules"). Web Push: _Enforced (main):_ the same sink before every POST (`sendPush` in `src/jobs/push.ts`), and the
+  (main):_ `assertPublicShape` and the DNS check before every POST, the RFC 9421 retry's included, no redirects, 30 s
+  (`postActivity` in `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3: refuses inboxes that fail the
+  public-host rules", "runs the host check again before the retry"). Web Push: _Enforced (main):_ the same sink before
+  every POST (`sendPush` in `src/jobs/push.ts`), and the
   rules that need no lookup at registration (`publicShapeRefusal` in `src/platform/http-url.ts`, shared with
   `assertPublicShape`); `test/push.test.ts` ("NET-3: refuses endpoints that are not public https URLs"),
   `test/push-send.test.ts` ("PUSH-2: the endpoint is an outbound sink at every send", "never follows a redirect, and
@@ -3040,7 +3048,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
-  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501), and are listed and retried through
+  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501) to the RFC 9421 retry when the draft-cavage
+  POST is answered 400 or 401 (NET-2; `test/delivery-post.test.ts` ("settles by the second answer", "knocks again on
+  the next attempt")), and are listed and retried through
   `/admin/deliveries` and `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
   activity a later one about the same object follows (an `Undo`, `Delete` or `Update`) is superseded and never sent
   again: naming it answers 409 `superseded`, and `--all` skips it, choosing eligible rows before its batch limit and
@@ -4365,9 +4375,11 @@ heap).
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
   signs is a forwarded report's `Flag`, whose actor is the instance actor (Mastodon's `Account.representative`).
   _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches").
-  Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, unwrapped once per round
-  (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author key"). _Enforced (main):_
-  an intent recorded with `signedBy: 'instance'` (only `flagActivity` in `src/domain/activities.ts` makes one, with the
+  Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, its RFC 9421 retry included,
+  unwrapped once per round (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author
+  key", "confirms the row again right before the retry and sends the body it returns, signed by the author").
+  _Enforced (main):_ an intent recorded with `signedBy: 'instance'` (only `flagActivity` in `src/domain/activities.ts`
+  makes one, with the
   instance actor as its actor) is signed with the instance key, which the delivery round loads through
   `instanceActorKey` (`src/federation/federation.ts`, the race-safe initialization signed fetches and `/actor` use),
   creating it if nothing has yet (`deliveryRound` in `src/jobs/deliver.ts`); `test/reports.test.ts` ("posts the Flag

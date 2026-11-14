@@ -2,7 +2,7 @@ import { type DocumentLoader, verifyRequestDetailed } from "@fedify/fedify";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
-import { LEASE_MS } from "../src/domain/deliveries";
+import { LEASE_MS, retryDelay } from "../src/domain/deliveries";
 import type { DeliveryOutcome } from "../src/domain/deliveries";
 import {
   ACTIVITY_CONTENT_TYPE,
@@ -18,6 +18,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { createKeyring } from "../src/security/keyring";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { blockDomain } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
 import { QueueSim } from "./queue-sim";
 import { community, post, remoteAccount, remoteFollows } from "./status-helpers";
@@ -45,7 +46,11 @@ function aliceLoader(pubkey: string): DocumentLoader {
 }
 
 async function aliceSigner() {
-  return (await createKeyring(LEGACY.kek).signerFor({ ...LEGACY, keyId: KEY_ID })).sign;
+  return (await aliceSigning()).sign;
+}
+
+function aliceSigning() {
+  return createKeyring(LEGACY.kek).signerFor({ ...LEGACY, keyId: KEY_ID });
 }
 
 type Sent = { url: string; request: Request };
@@ -190,8 +195,8 @@ describe("the POST (NET-2, NET-3)", () => {
   });
 });
 
-// A community whose alice signs with the legacy fixture key, and remote followers on two servers.
-async function signedCommunity() {
+// A community whose alice signs with the legacy fixture key, and remote followers on two servers (or the first only).
+async function signedCommunity(servers = 2) {
   const h = await community(["alice"]);
   const { alice } = h.users;
   await sql(
@@ -202,10 +207,12 @@ async function signedCommunity() {
     LEGACY.pubkey,
     alice.id,
   );
-  for (const [name, domain] of [
-    ["fan", "fans.example"],
-    ["other", "other.example"],
-  ] as const) {
+  for (const [name, domain] of (
+    [
+      ["fan", "fans.example"],
+      ["other", "other.example"],
+    ] as const
+  ).slice(0, servers)) {
     await remoteFollows(h.store, await remoteAccount(h.store, name, domain), alice.id);
   }
   return h;
@@ -367,5 +374,283 @@ describe("the doorbell (RES-5, RES-6)", () => {
     expect(h.doorbell).toHaveBeenCalledTimes(1);
     await h.request("/api/v1/timelines/home", { headers: { authorization: `Bearer ${h.users.alice.token}` } });
     expect(h.doorbell).toHaveBeenCalledTimes(1);
+  });
+});
+
+const formOf = (request: Request) =>
+  request.headers.has("signature-input") ? "rfc9421" : request.headers.has("signature") ? "cavage" : "unsigned";
+
+// An inbox that answers a draft-cavage POST with `cavage` and an RFC 9421 one with `rfc9421`, as one that accepts
+// only RFC 9421 answers 401 (or 400) to the first.
+function byForm(cavage: number, rfc9421: number | ((request: Request) => Response | Promise<Response>) = 202) {
+  return (request: Request) =>
+    formOf(request) === "cavage"
+      ? new Response(null, { status: cavage })
+      : typeof rfc9421 === "number"
+        ? new Response(null, { status: rfc9421 })
+        : rfc9421(request);
+}
+
+// Mastodon 4.7's RFC 9421 signature of a POST (request.rb perform_rfc9421_signed_request): exactly @method,
+// @target-uri and content-digest, bare, by alice's key.
+const MASTODON_47_POST = new RegExp(
+  `^sig1=\\("@method" "@target-uri" "content-digest"\\);alg="rsa-v1_5-sha256";keyid="${KEY_ID.href}";created=\\d+$`,
+);
+
+const INBOX = "https://remote.example/inbox";
+
+// One POST with the keyring's pair and a full budget, the clock at `now`; `loads` records each signer loaded.
+async function knock(
+  deps: Omit<PostDeps, "now">,
+  now: () => number = () => NOW,
+  loads: string[] = [],
+): Promise<DeliveryOutcome> {
+  const { sign, retry } = await aliceSigning();
+  return postActivity(
+    { ...deps, now },
+    {
+      inbox: INBOX,
+      body: BODY,
+      signer: () => {
+        loads.push("sign");
+        return Promise.resolve(sign);
+      },
+      retry: () => {
+        loads.push("retry");
+        return Promise.resolve(retry);
+      },
+      deadline: NOW + 50_000,
+    },
+  );
+}
+
+// Mastodon 4.7's double knock for deliveries (D8): a POST answered 400 or 401 to its draft-cavage signature is sent
+// once more, signed with RFC 9421 by the same key, after the deadline and host checks and the Store's confirmation
+// again; its answer settles the delivery.
+describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
+  it.each([401, 400])(
+    "sends a POST answered %i once more, signed with RFC 9421 by the same key, which Fedify verifies",
+    async (status) => {
+      const { fetch, sent } = recordingFetch(byForm(status));
+      const deps = { fetch, checkHost: publicHost, userAgent: "Kopje/test" };
+      expect(await knock(deps)).toEqual({ kind: "delivered", status: 202 });
+      const [cavage, rfc9421, ...rest] = sent.map((s) => s.request);
+      expect(rest).toEqual([]);
+      expect(cavage?.headers.get("signature")).toContain(`keyId="${KEY_ID.href}"`);
+      expect(cavage?.headers.has("signature-input")).toBe(false);
+      expect(rfc9421?.url).toBe(INBOX);
+      expect(rfc9421?.method).toBe("POST");
+      expect(rfc9421?.redirect).toBe("manual");
+      expect(rfc9421?.headers.get("content-type")).toBe(ACTIVITY_CONTENT_TYPE);
+      expect(rfc9421?.headers.get("signature-input")).toMatch(MASTODON_47_POST);
+      expect(await rfc9421?.clone().text()).toBe(BODY);
+      expect(
+        await verifyRequestDetailed(rfc9421 as Request, { documentLoader: aliceLoader(LEGACY.pubkey) }),
+      ).toMatchObject({ verified: true, signatureLabel: "sig1", key: { id: KEY_ID } });
+    },
+  );
+
+  it.each([202, 403, 404, 410, 500, 302])("sends a POST answered %i once", async (status) => {
+    const { fetch, sent } = recordingFetch(
+      () => new Response(null, { status, headers: status === 302 ? { location: "https://elsewhere.example/" } : {} }),
+    );
+    const outcome = await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" });
+    expect(outcome).toEqual(classifyStatus(status));
+    expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
+  });
+
+  it.each<[string, number, number | ((request: Request) => Response | Promise<Response>), Partial<DeliveryOutcome>]>([
+    ["400 twice: permanent", 400, 400, { status: 400, error: "HTTP 400", permanent: true }],
+    ["401 twice: retried later", 401, 401, { status: 401, error: "HTTP 401", permanent: false }],
+    ["400 then 401: retried later", 400, 401, { status: 401, error: "HTTP 401", permanent: false }],
+    ["401 then 400: permanent", 401, 400, { status: 400, error: "HTTP 400", permanent: true }],
+    [
+      "401 then a network error: retried later",
+      401,
+      () => Promise.reject(new TypeError("connection reset")),
+      { status: null, error: "network error (TypeError)", permanent: false },
+    ],
+    [
+      "401 then 302: retried later, the redirect not followed",
+      401,
+      () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example/collect" } }),
+      { status: 302, error: "redirect not followed (HTTP 302)", permanent: false },
+    ],
+  ])("settles by the second answer: %s", async (_, cavage, rfc9421, outcome) => {
+    const { fetch, sent } = recordingFetch(byForm(cavage, rfc9421));
+    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" })).toEqual({
+      kind: "failed",
+      ...outcome,
+    });
+    expect(sent.map((s) => [s.url, formOf(s.request)])).toEqual([
+      [INBOX, "cavage"],
+      [INBOX, "rfc9421"],
+    ]);
+  });
+
+  it("runs the host check again before the retry, and sends nothing more once it refuses (NET-3)", async () => {
+    const { fetch, sent } = recordingFetch(byForm(401));
+    const checked: string[] = [];
+    const checkHost = (url: URL) => {
+      checked.push(url.href);
+      return checked.length > 1 ? Promise.reject(new Error("private address")) : Promise.resolve();
+    };
+    expect(await knock({ fetch, checkHost, userAgent: "Kopje/test" })).toEqual({
+      kind: "failed",
+      status: null,
+      error: "refused or unresolved host",
+      permanent: false,
+    });
+    expect(checked).toEqual([INBOX, INBOX]);
+    expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
+  });
+
+  // The first answer may have refused only the signature's form, so a retry the deadline leaves no room for is
+  // transient, never the first answer's permanent 400.
+  it("sends no retry past the deadline, and fails as transient", async () => {
+    let clock = NOW;
+    const { fetch, sent } = recordingFetch(() => {
+      clock = NOW + 50_000;
+      return new Response(null, { status: 400 });
+    });
+    const loads: string[] = [];
+    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" }, () => clock, loads)).toEqual({
+      kind: "failed",
+      status: null,
+      error: "lease budget exhausted",
+      permanent: false,
+    });
+    expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
+    // The retry's signer (a delivery's second confirmation) is not even loaded.
+    expect(loads).toEqual(["sign"]);
+  });
+
+  it("holds both POSTs to one timeout", async () => {
+    const { fetch, sent } = recordingFetch(byForm(401, () => new Promise<Response>(() => {})));
+    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test", timeoutMs: 20 })).toEqual({
+      kind: "failed",
+      status: null,
+      error: "timed out after 20 ms",
+      permanent: false,
+    });
+    expect(sent.map((s) => formOf(s.request))).toEqual(["cavage", "rfc9421"]);
+  });
+
+  it("sends once a target without a retry (Web Push's), and keeps the first answer when the retry's signer is null", async () => {
+    const { sign } = await aliceSigning();
+    const once = (retry?: () => Promise<null>) => {
+      const recorded = recordingFetch(() => new Response(null, { status: 401 }));
+      const deps = { fetch: recorded.fetch, checkHost: publicHost, userAgent: "Kopje/test", now: () => NOW };
+      const target = { inbox: INBOX, body: BODY, signer: () => Promise.resolve(sign), retry, deadline: NOW + 50_000 };
+      return { sent: recorded.sent, outcome: postActivity(deps, target) };
+    };
+    const without = once();
+    expect(await without.outcome).toEqual(classifyStatus(401));
+    expect(without.sent).toHaveLength(1);
+    const withheld = once(() => Promise.resolve(null));
+    expect(await withheld.outcome).toEqual(classifyStatus(401));
+    expect(withheld.sent).toHaveLength(1);
+  });
+});
+
+// The delivery round's retry: the Store confirms the row again right before it (VIS-30, confirmDelivery), and the body
+// it returns is the one signed and sent.
+describe("the RFC 9421 retry in delivery rounds (VIS-30, RES-5, RES-6)", () => {
+  // Every Store call and every POST, in order.
+  function recording(store: StoreStub, events: string[]): StoreStub {
+    return new Proxy(store, {
+      get: (target, name) => {
+        const value = Reflect.get(target, name) as unknown;
+        return typeof value === "function"
+          ? (...args: unknown[]) => {
+              events.push(String(name));
+              return (target as unknown as Record<string, (...a: unknown[]) => unknown>)[String(name)]!(...args);
+            }
+          : value;
+      },
+    });
+  }
+
+  it("confirms the row again right before the retry and sends the body it returns, signed by the author", async () => {
+    const h = await signedCommunity(1);
+    const status = await post(h, h.users.alice, { status: "knock knock" });
+    const events: string[] = [];
+    const { fetch, sent } = recordingFetch((request) => {
+      events.push(`POST ${formOf(request)}`);
+      return byForm(401)(request);
+    });
+    const deps = { ...roundDeps(h.store, fetch), store: () => recording(h.store, events) };
+    expect(await deliveryRound(testEnv(new QueueSim()), deps)).toEqual({
+      claimed: 1,
+      settled: ["delivered"],
+      nextDueAt: null,
+    });
+    expect(events).toEqual([
+      "claimDeliveries",
+      "confirmDelivery",
+      "POST cavage",
+      "confirmDelivery",
+      "POST rfc9421",
+      "completeDelivery",
+    ]);
+    expect(sent.map((s) => s.url)).toEqual(["https://fans.example/inbox", "https://fans.example/inbox"]);
+    for (const { request } of sent.filter((s) => formOf(s.request) === "rfc9421")) {
+      expect(request.headers.get("signature-input")).toMatch(MASTODON_47_POST);
+      expect(await verifyRequestDetailed(request, { documentLoader: aliceLoader(LEGACY.pubkey) })).toMatchObject({
+        verified: true,
+      });
+      expect(JSON.parse(await request.text())).toMatchObject({ type: "Create", object: { id: status.uri } });
+    }
+    expect(await sql(h.store, "SELECT id FROM deliveries")).toEqual([]);
+
+    // RES-6: a POST answered at once costs one confirmation.
+    await post(h, h.users.alice, { status: "once" });
+    const once: string[] = [];
+    const accepted = recordingFetch(() => new Response(null, { status: 202 }));
+    await deliveryRound(testEnv(new QueueSim()), {
+      ...roundDeps(h.store, accepted.fetch),
+      store: () => recording(h.store, once),
+    });
+    expect(once).toEqual(["claimDeliveries", "confirmDelivery", "completeDelivery"]);
+    expect(accepted.sent).toHaveLength(1);
+  });
+
+  it("sends no retry for a row its second confirmation drops (a block committed between the POSTs)", async () => {
+    const h = await signedCommunity();
+    await post(h, h.users.alice, { status: "blocked meanwhile" });
+    const { fetch, sent } = recordingFetch(async (request) => {
+      if (new URL(request.url).host === "fans.example" && formOf(request) === "cavage") {
+        await blockDomain(h.store, "fans.example");
+        return new Response(null, { status: 401 });
+      }
+      return new Response(null, { status: 202 });
+    });
+    const result = await deliveryRound(testEnv(new QueueSim()), roundDeps(h.store, fetch));
+    expect(result.settled.toSorted()).toEqual(["delivered", "dropped"]);
+    expect(sent.map((s) => [s.url, formOf(s.request)]).toSorted(([a], [b]) => a!.localeCompare(b!))).toEqual([
+      ["https://fans.example/inbox", "cavage"],
+      ["https://other.example/inbox", "cavage"],
+    ]);
+    expect(await sql(h.store, "SELECT id FROM deliveries")).toEqual([]);
+  });
+
+  it("knocks again on the next attempt after both forms are answered 401 (RES-5)", async () => {
+    const h = await signedCommunity();
+    await post(h, h.users.alice, { status: "refused twice" });
+    const { fetch, sent } = recordingFetch(() => new Response(null, { status: 401 }));
+    expect(await deliveryRound(testEnv(new QueueSim()), roundDeps(h.store, fetch))).toMatchObject({
+      settled: ["retry", "retry"],
+      nextDueAt: NOW + retryDelay(1),
+    });
+    expect(await sql(h.store, "SELECT attempts, state, last_status FROM deliveries")).toEqual([
+      { attempts: 1, state: "pending", last_status: 401 },
+      { attempts: 1, state: "pending", last_status: 401 },
+    ]);
+    expect(sent.map((s) => formOf(s.request))).toEqual(["cavage", "cavage", "rfc9421", "rfc9421"]);
+    const later = () => NOW + retryDelay(1);
+    expect(await deliveryRound(testEnv(new QueueSim()), roundDeps(h.store, fetch, later))).toMatchObject({
+      settled: ["retry", "retry"],
+    });
+    expect(sent.slice(4).map((s) => formOf(s.request))).toEqual(["cavage", "cavage", "rfc9421", "rfc9421"]);
   });
 });
