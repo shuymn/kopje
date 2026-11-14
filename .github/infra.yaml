@@ -6,6 +6,15 @@ metadata:
   owner: shuymn
 spec:
   description: A Mastodon-compatible ActivityPub server for one person or a small group, on one Cloudflare Worker
+  topics:
+    - activitypub
+    - fediverse
+    - mastodon
+    - mastodon-api
+    - cloudflare-workers
+    - durable-objects
+    - self-hosted
+    - typescript
   visibility: public
   archived: false
   labels:
