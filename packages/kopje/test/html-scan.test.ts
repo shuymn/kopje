@@ -596,14 +596,15 @@ describe("scanHtml on hostile 1 MiB pages", () => {
   const fill = (unit: string, prefix = "", suffix = "") =>
     prefix + unit.repeat(Math.floor((MiB - prefix.length - suffix.length) / unit.length)) + suffix;
 
-  // Unclosed elements stay on lol-html's stack of open elements: past its memory limit the scan fails, whole.
+  // Unclosed elements stay on lol-html's stack of open elements, and a start tag's attributes are charged to the same
+  // memory budget (test/html-rewriter-facts.test.ts): past it the scan fails, whole.
   it.each([
     ["deep nesting", fill("<div>", "", "<a rel=me href=deep>"), "memory"],
     ["150k unclosed rel=me anchors", fill("<a rel=me>"), "memory"],
     ["70k closed rel=me anchors", fill("<a rel=me></a>"), "scanned"],
     ["a 1 MiB attribute", fill("x", '<a rel=me href="', '">'), "scanned"],
-    ["10k attributes on one tag", fill(" a=b", "<a rel=me href=x", ">"), "scanned"],
-    ["an unterminated tag", fill(" x", "<a rel=me href=y"), "scanned"],
+    ["262k attributes on one tag", fill(" a=b", "<a rel=me href=x", ">"), "memory"],
+    ["an unterminated tag", fill(" x", "<a rel=me href=y"), "memory"],
     ["an unterminated quote", fill("x", '<a rel=me href="'), "scanned"],
     ["an unterminated comment", fill("x", "<!--<a rel=me href=c>"), "scanned"],
     ["an unterminated script", fill("<a rel=me href=s>", "<script>"), "scanned"],
@@ -631,6 +632,13 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     // A matched start tag is at least 6 bytes ("<link>"), and a text chunk at least one.
     expect(result.work.elements).toBeLessThanOrEqual(bytes.byteLength / 6);
     expect(result.work.textChunks).toBeLessThanOrEqual(bytes.byteLength);
+  });
+
+  // A tag within the attribute budget observed on this runtime: 32,766 extra attributes plus rel and href (32,768 in
+  // all) are scanned, its rel=me collected.
+  it("scans a tag of 32,768 attributes and collects its rel=me", { timeout: 60_000 }, async () => {
+    const result = await scanOrFailure(`<a rel=me href=z${" a=b".repeat(32_766)}>`);
+    expect(result).toMatchObject({ relMe: ["z"] });
   });
 
   it("reads invalid UTF-8 as replacement characters without failing", async () => {

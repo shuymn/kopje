@@ -24,7 +24,9 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML. lol-html reports an integration point element itself (an SVG <title>, <desc> or
 //     <foreignObject>, a MathML <mi>) as XHTML, so no <title> after the first <svg> or <math> start tag is taken.
-//   - lol-html keeps a stack of open elements within its 3 MiB: some 50,000 unclosed elements fail the scan (memory).
+//   - lol-html keeps a stack of open elements, and each start tag's attributes, within one shared 3 MiB budget: some
+//     50,000 unclosed elements, or a start tag of tens of thousands of attributes, fail the scan (memory). The budget is
+//     shared, so no attribute count is guaranteed to pass.
 //   - a capture (title, JSON-LD) cut by the end of the input is dropped; a start tag cut by it is never emitted.
 //   - a rel attribute past REL_CHARS decoded units is not tokenized: no rel=me at or after it is collected
 //     (relMeAfterLongRel), so a later anchor never stands first where Mastodon would find an earlier one.

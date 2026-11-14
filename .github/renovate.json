@@ -29,6 +29,19 @@
       "matchPackageNames": ["vitest", "@vitest/**"]
     },
     {
+      "description": "Keep the Cloudflare Workers toolchain apart from the other updates: it moves workerd, the runtime the Store's SQL runs on, and a runtime change that fails the tests must not hold back the rest",
+      "groupName": "cloudflare workers",
+      "matchPackageNames": ["wrangler", "miniflare", "@cloudflare/vitest-plugin", "@cloudflare/workers-types"]
+    },
+    {
+      "description": "mise.toml is outside Renovate (mise-update.yml advances it within each major), so a Node.js major must move it too",
+      "matchDepNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": [
+        "Before merging, move `node` in mise.toml to the same major and run `mise lock node`, then update the Node.js version named in packages/kopje/RELEASING.md."
+      ]
+    },
+    {
       "description": "Group the oxc tools, which change what lint and format report together",
       "groupName": "oxc",
       "matchPackageNames": ["oxlint", "oxlint-tsgolint", "oxfmt", "@oxlint/**"]
@@ -43,6 +56,11 @@
       "description": "The override in pnpm-workspace.yaml replaces the sdk-metrics 2.7.1 that @fedify/fedify pins; keep it on the 2.x line Fedify is built against",
       "matchPackageNames": ["@opentelemetry/sdk-metrics"],
       "allowedVersions": "<3"
+    },
+    {
+      "description": "The kopje-main-runtime project's test pool (pnpm-workspace.yaml) stays on the plugin release whose workerd has SQLite 3.53.4, the runtime that prepares main's statements",
+      "matchDepNames": ["vitest-plugin-sqlite-3534"],
+      "enabled": false
     },
     {
       "description": "lefthook 2.2.2 was published without the provenance its earlier releases carry, and pnpm refuses it as a trust downgrade; skip it until a release with provenance",

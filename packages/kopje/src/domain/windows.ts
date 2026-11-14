@@ -33,24 +33,61 @@ export type Window = {
 // A stream that gave `per` ended there, so the merged window ends at the highest such end (the lowest when ascending):
 // below it a stream may have candidates that were not read. The window is the candidates from the cursor to that end,
 // at most `size`. A single stream (one k, per = size) is the plain case. The parameters are the caller's.
+// The streams are read in one pass and grouped by stream, with no CTE: SQLite expands a CTE's body once per reference,
+// and from 3.54.1 refuses a reference resolved after too many cursors (docs/engineering.md "Queries"), which the
+// streams' own policy walks would otherwise pass. Each group carries its stream's end when it filled (`edge`) and its
+// ids as JSON; the statement returns the first size + 1 distinct ids in cursor order, each with the edges of its
+// streams, and boundedWindow cuts them at the bound. Contracts of the streams: every id is TEXT (compared in cursor
+// order the same in SQLite and here), `o` is constant within a stream (a literal of its arm), and a stream's JSON is
+// at most 21 × per + 1 bytes (per ≤ CONDITION_WALK: 42,001).
 export function mergedWindow(
   db: Db,
   query: { streams: string; ascending: boolean; per: number; size: number },
   ...params: SqlStorageValue[]
 ): Window {
   const order = query.ascending ? "ASC" : "DESC";
-  const [toward, end] = query.ascending ? ["<=", "max"] : [">=", "min"];
-  const highest = query.ascending ? "min" : "max";
-  const rows = db.all<{ id: string; o: number; bound: string | null }>(
-    `WITH c(id, k, o) AS MATERIALIZED (${query.streams}),
-		f(bound) AS (SELECT ${highest}(edge) FROM (SELECT ${end}(id) AS edge FROM c GROUP BY k HAVING count(*) >= ${int(query.per)}))
-		SELECT id, sum(DISTINCT o) AS o, (SELECT bound FROM f) AS bound FROM c
-		WHERE (SELECT bound FROM f) IS NULL OR id ${toward} (SELECT bound FROM f)
-		GROUP BY id ORDER BY id ${order} LIMIT ${int(query.size) + 1}`,
+  const [end, highest] = query.ascending ? ["max", "min"] : ["min", "max"];
+  const rows = db.all<MergedRow>(
+    `SELECT j.value AS id, sum(DISTINCT g.o) AS o, ${highest}(g.edge) AS edge
+		FROM (SELECT CASE WHEN count(*) >= ${int(query.per)} THEN ${end}(id) END AS edge, max(o) AS o,
+				json_group_array(id) AS members
+			FROM (${query.streams}) GROUP BY k) g
+		CROSS JOIN json_each(g.members) j
+		GROUP BY 1 ORDER BY 1 ${order} LIMIT ${int(query.size) + 1}`,
     ...params,
   );
-  const cut = rows.length > query.size || (rows[0]?.bound ?? null) !== null;
-  return { candidates: rows.slice(0, query.size).map(({ id, o }) => ({ id, o })), cut };
+  return boundedWindow(rows, query.ascending, query.size);
+}
+
+// A row of mergedWindow's statement: a candidate, the OR of its streams' bits, and the highest end (lowest when
+// ascending) of its streams that filled, or null.
+export type MergedRow = { id: SqlStorageValue; o: number; edge: SqlStorageValue };
+
+// The window of mergedWindow's rows, the first size + 1 candidates in cursor order: the bound is the highest edge
+// among them (the lowest when ascending), and the window the candidates from the cursor to it, at most `size`, cut
+// when it ends at a bound or past `size`. When the merged bound falls within the first size + 1 candidates, its own row
+// is among them (a filled stream's edge is that stream's last candidate) and carries it, the highest edge of all; when
+// it falls past them, it drops none of them, and the count decides the cut.
+export function boundedWindow(rows: readonly MergedRow[], ascending: boolean, size: number): Window {
+  const text = (value: SqlStorageValue): string => {
+    if (typeof value !== "string") {
+      throw new Error("a merged window's candidate is not TEXT");
+    }
+    return value;
+  };
+  let bound: string | null = null;
+  for (const row of rows) {
+    if (row.edge !== null) {
+      const edge = text(row.edge);
+      if (bound === null || (ascending ? edge < bound : edge > bound)) {
+        bound = edge;
+      }
+    }
+  }
+  const kept = rows
+    .map((row) => ({ id: text(row.id), o: row.o }))
+    .filter(({ id }) => bound === null || (ascending ? id <= bound : id >= bound));
+  return { candidates: kept.slice(0, size), cut: kept.length > size || bound !== null };
 }
 
 // The window of one stream: `candidates` selects (id) rows, the stream's candidates from the cursor in cursor order,

@@ -71,6 +71,19 @@ describe("suites", () => {
     assert.deepEqual(suites("packages/kopje/docs/mastodon-api-spec/client-api/auth-oauth.md"), B(true, true));
   });
 
+  // test-node/witness-recording.test.ts records the flows of witness-world.ts on the Store's sources and compares
+  // recorded.json with them, so a change to any of the three runs the Node suite.
+  it("runs the Node suite for the witness recording and what it records", () => {
+    for (const path of [
+      "packages/kopje/test/main-runtime/recorded.json",
+      "packages/kopje/test/main-runtime/witness-world.ts",
+      "packages/kopje/src/domain/audience.ts",
+      "packages/kopje/src/domain/windows.ts",
+    ]) {
+      assert.deepEqual(suites(path), B(true, true), path);
+    }
+  });
+
   it("runs every suite for code, root config and an empty list", () => {
     assert.deepEqual(suites("packages/kopje/docs/x.md", "packages/kopje/src/store.ts"), B(true, true));
     assert.deepEqual(suites("pnpm-lock.yaml"), B(true, true));
@@ -113,7 +126,10 @@ describe("runs", () => {
   });
 
   it("skips a clean tree that already passed, and runs again once it changes", () => {
-    assert.match(run().pnpm, /--project kopje --project kopje-streaming --project kopje-cli$/);
+    assert.match(
+      run().pnpm,
+      /--project kopje --project kopje-streaming --project kopje-main-runtime --project kopje-cli$/,
+    );
     const again = run();
     assert.equal(again.status, 0);
     assert.equal(again.pnpm, "");

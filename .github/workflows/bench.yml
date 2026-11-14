@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       # node and pnpm as the head's mise.lock pins them. A base from before the move to mise names pnpm 10 in its
       # package.json packageManager, which pnpm 12 then runs in that checkout, with the base's own .npmrc layout.
-      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           working_directory: head
           install_args: node pnpm

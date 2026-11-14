@@ -120,12 +120,21 @@ export function mentionStatusSql(id: string): string {
 // coverage costs one constant seek per emitted predicate while the instance has no suspend block (guardedSql), so the
 // rule then reads no row of an available account but its local_accounts row; otherwise it also reads the account's
 // row by its key and seeks at most 4 × (MAX_BLOCK_LABELS - 1) blocks (coveredSql). An unknown id is available.
-export function availableSql(x: string): string {
+// `covered`, when given, is a column holding guardedAccountCoveredSql(x) of a row the statement already read
+// (statusReads' `hoisted`): the coverage is then resolved there, ahead of the statement's other walks (workerd's cursor
+// rule, docs/engineering.md "Queries"), and still evaluated here, where this term is.
+export function availableSql(x: string, covered?: string): string {
   return `(NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = ${x} AND pl.suspended_at IS NOT NULL
 		UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = ${x} AND pa.deleted_at IS NOT NULL
 		UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended
 			WHERE ps.id = ${x} AND ${individuallySuspendedSql("ps")})
-		AND NOT ${guardedSql(accountCoveredSql(x))})`;
+		AND NOT ${covered ?? guardedAccountCoveredSql(x)})`;
+}
+
+// The coverage term availableSql reads of the account `x`. `copied`: the term is a column of statusReads' hoisted row,
+// which SQLite copies to each place it is used, so its walk's CTEs are NOT MATERIALIZED (statusReads' comment).
+function guardedAccountCoveredSql(x: string, copied = false): string {
+  return guardedSql(accountCoveredSql(x, copied));
 }
 
 // The same rule for a local account whose local_accounts row `l` is already joined, so a query that has the row does
@@ -246,13 +255,14 @@ function guardedSql(covered: string): string {
 // `rule` (a suspend covers it; its media are rejected); a key within them has at most a dot per byte, so its walk is at
 // most DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do
 // not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
-function ruledSql(keys: string, rule: string): string {
+function ruledSql(keys: string, rule: string, copied = false): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
   // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
   // which satisfies the rule alone.
   const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
-  return `EXISTS (WITH RECURSIVE pk(d) AS (${keys}),
-			ps(d, dots) AS (SELECT CASE WHEN ${named} THEN d END,
+  const as = copied ? "AS NOT MATERIALIZED" : "AS";
+  return `EXISTS (WITH RECURSIVE pk(d) ${as} (${keys}),
+			ps(d, dots) ${as} (SELECT CASE WHEN ${named} THEN d END,
 					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
 				UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 					AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
@@ -263,8 +273,8 @@ function ruledSql(keys: string, rule: string): string {
 }
 
 // Whether an instance domain block covers one of `keys` (ruledSql): the rule of one is a suspend.
-function coveredSql(keys: string): string {
-  return ruledSql(keys, "pr.severity = 'suspend'");
+function coveredSql(keys: string, copied = false): string {
+  return ruledSql(keys, "pr.severity = 'suspend'", copied);
 }
 
 // R38 reject_media (Mastodon's DomainBlock.reject_media?, app/models/domain_block.rb:58-60): the rule of one of `keys`
@@ -293,9 +303,10 @@ export function domainCoveredSql(a: string): string {
 }
 
 // Whether an instance domain block covers the account `x` by either key: its row read once by its key.
-function accountCoveredSql(x: string): string {
+function accountCoveredSql(x: string, copied = false): string {
   return coveredSql(
     `${accountKeysSql("pc", `main.accounts pc INDEXED BY ${ACCOUNTS_ID_INDEX} CROSS JOIN`)} AND pc.id = ${x}`,
+    copied,
   );
 }
 
@@ -482,7 +493,12 @@ export function cardEligibleSql(id: string): string {
 //   - direct and limited are seen by the mentioned (silent included) only.
 // It has no time: nothing the viewer chose changes what they may see.
 export function visibleSql(s: string, viewer: string): string {
-  return `(${availableSql(`${s}.account_id`)} AND ${s}.withdrawn = 0
+  return coveredVisibleSql(s, viewer, undefined);
+}
+
+// visibleSql, the author's coverage given as availableSql's `covered`.
+function coveredVisibleSql(s: string, viewer: string, covered: string | undefined): string {
+  return `(${availableSql(`${s}.account_id`, covered)} AND ${s}.withdrawn = 0
 		AND (${s}.account_id IS ${viewer}
 			OR (NOT ${blocksSql(`${s}.account_id`, viewer)} AND ${audienceCaseSql(s, viewer)})))`;
 }
@@ -509,6 +525,15 @@ export function audienceSql(s: string, viewer: string): string {
 		OR EXISTS (SELECT 1 FROM main.statuses ${s}_ao WHERE ${s}_ao.id = ${s}.reblog_of_id AND ${row(`${s}_ao`)})))`;
 }
 
+// The coverage of a status's author and of its original's author, as columns of a row the statement already read
+// (availableSql's `covered`; statusReads' `hoisted`).
+type Coverage = { readonly author: string; readonly original: string };
+
+// How listableSql and homeFilterSql are written: `coverage` as availableSql's `covered`, for the status's author and
+// its original's; with `viewable`, the status is known to be viewable (R3) by a sibling conjunct over the same row
+// (shownSql), so its two visibleSql terms, implied, are left out.
+type RuleOptions = { readonly viewable?: true; readonly coverage?: Coverage | undefined };
+
 // R3: a status may be shown by itself (GET /statuses/:id): the row is visible and, for a reblog, so is the original.
 function viewableSql(s: string, viewer: string): string {
   return `(${visibleSql(s, viewer)} AND (${s}.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM main.statuses ${s}_o
@@ -517,10 +542,12 @@ function viewableSql(s: string, viewer: string): string {
 
 // R8: a status may be listed (feeds, context, bookmarks, favourites, search): viewable, and the viewer filters neither
 // its author nor a reblogged original's at `now`.
-export function listableSql(s: string, viewer: string, now: string): string {
-  return `(${visibleSql(s, viewer)} AND NOT ${filteredForSql(`${s}.account_id`, viewer, now)}
+export function listableSql(s: string, viewer: string, now: string, options: RuleOptions = {}): string {
+  const visible = (r: string, covered: string | undefined) =>
+    options.viewable === true ? "" : `${coveredVisibleSql(r, viewer, covered)} AND `;
+  return `(${visible(s, options.coverage?.author)}NOT ${filteredForSql(`${s}.account_id`, viewer, now)}
 		AND (${s}.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM main.statuses ${s}_o WHERE ${s}_o.id = ${s}.reblog_of_id
-			AND ${visibleSql(`${s}_o`, viewer)} AND NOT ${filteredForSql(`${s}_o.account_id`, viewer, now)})))`;
+			AND ${visible(`${s}_o`, options.coverage?.original)}NOT ${filteredForSql(`${s}_o.account_id`, viewer, now)})))`;
 }
 
 // R9, what home hides of a status for the viewer's choices (FeedManager#filter_from_home): what the list rule hides,
@@ -530,8 +557,8 @@ export function listableSql(s: string, viewer: string, now: string): string {
 // For the public statuses home shows by a followed hashtag, it is FeedManager#filter_from_tags?: the author or an
 // active mention blocked or muted by the viewer, an author blocking the viewer and the author's domain blocked by the
 // viewer each leave a status out (the viewer's own are home's anyway).
-export function homeFilterSql(s: string, viewer: string, now: string): string {
-  return `(${listableSql(s, viewer, now)}
+export function homeFilterSql(s: string, viewer: string, now: string, options: RuleOptions = {}): string {
+  return `(${listableSql(s, viewer, now, options)}
 		AND (${s}.account_id IS ${viewer} OR NOT EXISTS (SELECT 1 FROM main.status_mentions phm
 			WHERE phm.status_id IN (${s}.id, ${s}.reblog_of_id) AND phm.silent = 0
 			AND (${blocksSql(viewer, "phm.account_id")} OR ${mutesSql(viewer, "phm.account_id", now)}))))`;
@@ -660,6 +687,20 @@ type Row = Record<string, SqlStorageValue>;
 // x's author and a TagWindows' hashtags to x's own, each a seek. The caller sets its cursor at x, so with the cursor's
 // windows and bounds the narrowed read returns x exactly when the read positioned at x does; the conjuncts remove
 // only rows other than x.
+// With `at.hoisted` too, union reads x's row (and its original's) once, by its key, ahead of the branches:
+//   SELECT hp.id AS id FROM (SELECT x.id AS id, x.account_id AS author, <coverage of x's author> AS author_covered,
+//       <coverage of its original's author> AS original_covered FROM main.statuses x LEFT JOIN main.statuses xo
+//       ON xo.id = x.reblog_of_id WHERE x.id = <only>) hp
+//     WHERE hp.id IN (<the union as without it>)
+// and the branches' availability terms over x's author and its original's take the coverage from hp (availableSql's
+// `covered`), as an AuthorWindows' narrowing takes x's author (and onlyAuthor gives it to the caller's authors). SQLite
+// flattens hp, so each use of a column is its expression, evaluated where it is used, as the term it replaces: the
+// read evaluates the same walks, in the same places, while each walk's CTE is resolved within hp, ahead of the
+// branches' cursors (workerd's cursor rule, docs/engineering.md "Queries"). SQLite counts the uses of the copies
+// together and would materialize their walks' CTEs, where each occurrence of its own runs them as co-routines, and a
+// materialized CTE is read again from its table; so the copies' CTEs are NOT MATERIALIZED (guardedAccountCoveredSql's
+// `copied`): the same walk, without those reads. No fragment a branch holds names `hp`
+// (test-node/hoisted-alias.test.ts).
 export type StatusReads = {
   // One SELECT, after an optional WITH clause its parts may read, with further columns (name: expression) after the id.
   // oxlint-disable-next-line typescript/no-generated-empty-object-type -- no further columns unless named
@@ -717,6 +758,8 @@ export type StatusReads = {
   // The candidates of a window of that read (windows.ts): the same rows but for the rule and, reading every group,
   // each row's group dismissal, which the read of the candidates applies. Ids as TEXT, in the order of `tail`.
   notificationWindow(db: Db, query: NotificationQuery, ...params: SqlStorageValue[]): { id: string }[];
+  // With `at.hoisted`, the author of the status `at.only` as union's branches may name it (hp.author).
+  onlyAuthor(): string;
 };
 
 export type NotificationQuery = {
@@ -727,10 +770,22 @@ export type NotificationQuery = {
   readonly group?: string;
 };
 
+// The alias of statusReads' hoisted row, which no fragment of this module names.
+const HOISTED = "hp";
+
 export function statusReads(
   viewer: ViewerContext | null,
-  at: { readonly viewer: string; readonly now?: string; readonly only?: string },
+  at: { readonly viewer: string; readonly now?: string; readonly only?: string; readonly hoisted?: true },
 ): StatusReads {
+  if (at.hoisted === true && at.only === undefined) {
+    throw new Error("a hoisted read is narrowed to one status");
+  }
+  // The status a hoisted read reads ahead, and the columns of its coverage.
+  const hoisted = at.hoisted === true ? at.only : undefined;
+  const coverage =
+    hoisted === undefined
+      ? undefined
+      : { author: `${HOISTED}.author_covered`, original: `${HOISTED}.original_covered` };
   const now = () => {
     if (viewer === null || at.now === undefined) {
       throw new Error("this rule needs the time of the read");
@@ -740,11 +795,11 @@ export function statusReads(
   const ruleSql = (rule: StatusRule) => {
     switch (rule) {
       case "visible":
-        return visibleSql("s", at.viewer);
+        return coveredVisibleSql("s", at.viewer, coverage?.author);
       case "listable":
-        return listableSql("s", at.viewer, now());
+        return listableSql("s", at.viewer, now(), { coverage });
       case "homeFilter":
-        return homeFilterSql("s", at.viewer, now());
+        return homeFilterSql("s", at.viewer, now(), { coverage });
     }
   };
   const where = (...terms: (string | undefined)[]) =>
@@ -765,8 +820,8 @@ export function statusReads(
   // The part of the rule over the author `x` alone, which every status of theirs passes if any does: the author is
   // available and, unless the viewer, does not block them; for the list and home rules, the viewer does not filter
   // them either.
-  const authorRuleSql = (rule: StatusRule, x: string) => {
-    const visible = `${availableSql(x)} AND (${x} IS ${at.viewer} OR NOT ${blocksSql(x, at.viewer)})`;
+  const authorRuleSql = (rule: StatusRule, x: string, covered?: string) => {
+    const visible = `${availableSql(x, covered)} AND (${x} IS ${at.viewer} OR NOT ${blocksSql(x, at.viewer)})`;
     return rule === "visible" ? visible : `${visible} AND NOT ${filteredForSql(x, at.viewer, now())}`;
   };
   const branchSql = (rule: StatusRule, q: StatusSelect | AuthorWindows | TagWindows) => {
@@ -797,8 +852,8 @@ export function statusReads(
     const author =
       at.only === undefined
         ? undefined
-        : `wa.account_id = (SELECT oa.account_id FROM main.statuses oa WHERE oa.id = ${at.only})`;
-    const authors = `SELECT wa.account_id FROM (${q.authors}) wa WHERE ${where(author, authorRuleSql(rule, "wa.account_id"))}`;
+        : `wa.account_id = ${coverage === undefined ? `(SELECT oa.account_id FROM main.statuses oa WHERE oa.id = ${at.only})` : `${HOISTED}.author`}`;
+    const authors = `SELECT wa.account_id FROM (${q.authors}) wa WHERE ${where(author, authorRuleSql(rule, "wa.account_id", coverage?.author))}`;
     return `SELECT w.id AS id FROM (${authors}) a CROSS JOIN main.statuses w ON w.id IN (${window})`;
   };
   // A notification read's group term: the one group, or, reading every group, each row above its group's dismissal,
@@ -845,16 +900,35 @@ export function statusReads(
       query: StatusSelect & { readonly with?: string; readonly columns?: Columns<Extra, "id"> },
       ...params: SqlStorageValue[]
     ) {
+      if (hoisted !== undefined) {
+        throw new Error("a hoisted read is a union");
+      }
       const sql = `${query.with ?? ""} ${selectSql(ruleSql(rule), query, query.columns)}`;
       return run<Extra & { id: VisibleStatusId }>(db, sql, params);
     },
     union(db, rule, query, ...params) {
       const branches = query.branches.map((branch) => `SELECT * FROM (${branchSql(rule, branch)})`);
+      const union = `SELECT id FROM (${branches.join(query.all ? " UNION ALL " : " UNION ")}) ${query.tail}`;
+      if (hoisted === undefined) {
+        return run<{ id: VisibleStatusId }>(db, union, params);
+      }
       return run<{ id: VisibleStatusId }>(
         db,
-        `SELECT id FROM (${branches.join(query.all ? " UNION ALL " : " UNION ")}) ${query.tail}`,
+        `SELECT ${HOISTED}.id AS id FROM (SELECT x.id AS id, x.account_id AS author,
+					${guardedAccountCoveredSql("x.account_id", true)} AS author_covered,
+					${guardedAccountCoveredSql("xo.account_id", true)} AS original_covered
+				FROM main.statuses x INDEXED BY ${STATUSES_ID_INDEX}
+				LEFT JOIN main.statuses xo INDEXED BY ${STATUSES_ID_INDEX} ON xo.id = x.reblog_of_id
+				WHERE x.id = ${hoisted}) ${HOISTED}
+			WHERE ${HOISTED}.id IN (${union})`,
         params,
       );
+    },
+    onlyAuthor() {
+      if (hoisted === undefined) {
+        throw new Error("only a hoisted read names its status's author");
+      }
+      return `${HOISTED}.author`;
     },
     authorRule(rule, author) {
       return authorRuleSql(rule, author);
@@ -1219,6 +1293,10 @@ function silencedSql(r: string, a: string, now: string): string {
 // admin.report is shown only while its recipient is `admin`, the OAuth admin's account id (R37; NULL for none), so it
 // leaves every read, push and stream when the admin changes; it goes with its report (notifications.report_id, ON
 // DELETE CASCADE).
+// The terms are written so that every statement holding the rule prepares on workerd (docs/engineering.md "Queries":
+// each domain coverage walk is resolved within CTE_GUARD_LIMIT cursors), without reading more than the rule as it
+// reads: a type's arm is written only where `type` may be that type, an arm that reads walks comes as early as the
+// terms it must follow allow, and a term another conjunct implies is left out (each arm says which).
 export function shownSql(
   r: string,
   type: string,
@@ -1228,26 +1306,62 @@ export function shownSql(
   admin: string,
   warning: string,
 ): string {
-  return `((${from} <> ${r} OR ${type} IN ('poll', 'moderation_warning'))
-		AND (${type} <> 'moderation_warning' OR (${from} = ${r}
-			AND EXISTS (SELECT 1 FROM main.account_warnings aw WHERE aw.id = ${warning} AND aw.target_account_id = ${r})))
-		AND (${type} <> 'admin.report' OR ${r} IS ${admin})
-		AND ${availableSql(from)}
-		AND NOT ${silencedSql(r, from, now)}
-		AND NOT ${blocksSql(from, r)}
-		AND NOT ${domainBlocksSql(r, from)}
-		AND (${status} IS NULL OR EXISTS (SELECT 1 FROM main.statuses s WHERE s.id = ${status} AND ${viewableSql("s", r)}))
-		AND (${type} <> 'reblog' OR EXISTS (SELECT 1 FROM main.statuses nr
-			WHERE nr.account_id = ${from} AND nr.reblog_of_id = ${status} AND ${visibleSql("nr", r)}))
-		AND (${type} <> 'mention' OR NOT EXISTS (SELECT 1 FROM main.statuses mt WHERE mt.id = ${status}
+  const terms = [
+    `(${from} <> ${r} OR ${type} IN ('poll', 'moderation_warning'))`,
+    armSql(
+      type,
+      "moderation_warning",
+      `(${from} = ${r}
+			AND EXISTS (SELECT 1 FROM main.account_warnings aw WHERE aw.id = ${warning} AND aw.target_account_id = ${r}))`,
+    ),
+    armSql(type, "admin.report", `${r} IS ${admin}`),
+    availableSql(from),
+    `NOT ${silencedSql(r, from, now)}`,
+    `NOT ${blocksSql(from, r)}`,
+    `NOT ${domainBlocksSql(r, from)}`,
+    `(${status} IS NULL OR EXISTS (SELECT 1 FROM main.statuses s WHERE s.id = ${status} AND ${viewableSql("s", r)}))`,
+    // After the status's term, which it must follow (the arms are exclusive: the others read nothing for this type).
+    armSql(
+      type,
+      "quoted_update",
+      `EXISTS (SELECT 1 FROM main.quotes nq INDEXED BY ${QUOTES_STATUS_INDEX}
+			CROSS JOIN main.statuses nt INDEXED BY ${STATUSES_ID_INDEX} ON nt.id = nq.quoted_status_id
+			WHERE nq.status_id = ${status} AND nq.state = 'accepted' AND ${viewableSql("nt", r)})`,
+    ),
+    // The boost is the sender's (nr.account_id = from): visibleSql's availability and author-block terms over it are
+    // availableSql(from) and NOT blocksSql(from, r) above.
+    armSql(
+      type,
+      "reblog",
+      `EXISTS (SELECT 1 FROM main.statuses nr WHERE nr.account_id = ${from} AND nr.reblog_of_id = ${status}
+			AND nr.withdrawn = 0 AND (nr.account_id IS ${r} OR ${audienceCaseSql("nr", r)}))`,
+    ),
+    armSql(
+      type,
+      "mention",
+      `NOT EXISTS (SELECT 1 FROM main.statuses mt WHERE mt.id = ${status}
 			AND (EXISTS (SELECT 1 FROM main.status_mentions mm WHERE mm.status_id = mt.id AND mm.silent = 0
 					AND ${silencedSql(r, "mm.account_id", now)})
-				OR (mt.in_reply_to_account_id IS NOT NULL AND ${silencedSql(r, "mt.in_reply_to_account_id", now)}))))
-		AND (${type} <> 'status' OR EXISTS (SELECT 1 FROM main.statuses s WHERE s.id = ${status}
-			AND ${NOT_A_REPLY_TO_OTHERS} AND ${homeFilterSql("s", r, now)}))
-		AND (${type} <> 'quoted_update' OR EXISTS (SELECT 1 FROM main.quotes nq INDEXED BY ${QUOTES_STATUS_INDEX}
-			CROSS JOIN main.statuses nt INDEXED BY ${STATUSES_ID_INDEX} ON nt.id = nq.quoted_status_id
-			WHERE nq.status_id = ${status} AND nq.state = 'accepted' AND ${viewableSql("nt", r)})))`;
+				OR (mt.in_reply_to_account_id IS NOT NULL AND ${silencedSql(r, "mt.in_reply_to_account_id", now)})))`,
+    ),
+    // The status (unique by id) is viewable by the status's term above, so home's rule needs only its filters.
+    armSql(
+      type,
+      "status",
+      `EXISTS (SELECT 1 FROM main.statuses s WHERE s.id = ${status}
+			AND ${NOT_A_REPLY_TO_OTHERS} AND ${homeFilterSql("s", r, now, { viewable: true })})`,
+    ),
+  ];
+  return `(${terms.filter((term) => term !== undefined).join("\n\t\tAND ")})`;
+}
+
+// A type's arm of shownSql: `body` for a notification of type `t`. Where `type` is an SQL string literal (a read of
+// one type), the arm of another type is TRUE, and it is left out.
+function armSql(type: string, t: string, body: string): string | undefined {
+  if (/^'[^']*'$/.test(type)) {
+    return type === `'${t}'` ? body : undefined;
+  }
+  return `(${type} <> '${t}' OR ${body})`;
 }
 
 // R15 for the stored notification row `n` (an alias) of recipient `r`: shownSql over its own columns, as the reads

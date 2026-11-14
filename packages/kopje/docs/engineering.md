@@ -124,6 +124,19 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **A range on an optional cursor is a direct range** ([visibility.md](visibility.md), "Read bounds";
   `test-node/range-predicates.test.ts`).
 - **workerd refuses `LIKE` and `GLOB` patterns over 50 bytes**; a pattern is kept within that.
+- **SQLite 3.54.1 refuses a CTE reference resolved after too many cursors**: as many tables and subqueries numbered
+  before it as the expression depth limit (100 in workerd) less 2, less 3 for a recursive CTE ("VIEWs and/or
+  subqueries nested too deep"). SQLite numbers every FROM item of a SELECT, those of its FROM subqueries included,
+  before it resolves any, then expands expression subqueries in text order (result columns, `WHERE`, `ORDER BY`) and
+  compound arms right to left, so a CTE resolves after every FROM item of its SELECT and every expression subquery
+  before it; and it expands a CTE's body once per reference, so each reference resolves the CTEs inside it again. Every
+  statement the Workers suites run prepares at `CTE_GUARD_LIMIT` (96) on Node's 3.54.1 (`test-node/sql-depth.ts`), so
+  a fragment holding a CTE (the coverage walks of `audience.ts`) keeps each reference within it: read rows in one pass
+  rather than through a CTE referenced several times (`mergedWindow` in `windows.ts`), leave out a walk a sibling term
+  of the same `AND` already implies, or resolve a walk ahead of the statement's other cursors without moving where it
+  is evaluated (`statusReads`' `hoisted` in `audience.ts`, whose comment gives the mechanism). workerd from
+  1.20261111.1 backs the rule out; the Node guard keeps enforcing it, and a statement that passes it prepares on
+  either.
 
 ## Tests
 

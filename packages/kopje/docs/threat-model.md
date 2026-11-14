@@ -3659,6 +3659,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (#1468), statements no test runs, statements where the probe is not only a predicate (its text also a name, as an
   implicit column name a `NATURAL JOIN` or `USING` matches, or its index forced elsewhere with `INDEXED BY`), which
   the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. _Enforced
+  (main)_ for statements the runtime's SQLite would refuse: every statement the Workers suites run prepares at
+  `CTE_GUARD_LIMIT` (96) on Node's SQLite 3.54.1, 4 below workerd's limit on expression depth and on the tables and
+  subqueries numbered before a CTE reference (`test-node/sql-depth.ts`, which calibrates the host's SQLite first;
+  `test/sql-cursor-calibration.test.ts` on workerd); the statements rewritten to stay within that limit return
+  main's rows, read no more rows than main's and run as often, with and without suspend blocks and at the read caps,
+  on the previous runtime's SQLite 3.53.4 (`test/main-runtime/policy.witness.test.ts`), and walk no more domain
+  suffixes (`test-node/shown-walk-work.test.ts`). _Enforced
   (main)_ for filtering before `LIMIT`: `src/domain/timelines.ts` (_Gap: untested_); the tag feed's candidates are the
   hashtags of public statuses (`status_tags.public`, through a partial index), so it never reads the tag's unlisted,
   private, direct or limited statuses, and it reads each requested tag (at most five) in id order from the cursor until

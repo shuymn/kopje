@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { ACCOUNT_FROM, getAccounts, MAX_ACCOUNTS_BY_ID } from "../src/domain/accounts";
-import { activeSql, availableJoinedSql, availableSql, MAX_BLOCK_LABELS } from "../src/domain/audience";
+import { activeSql, availableJoinedSql, availableSql, MAX_BLOCK_LABELS, statusReads } from "../src/domain/audience";
+import { contextOf } from "../src/domain/auth";
 import { enqueueActivity } from "../src/domain/deliveries";
 import {
   createInstanceDomainBlock,
@@ -12,13 +13,23 @@ import {
   fetchRefused,
   updateInstanceDomainBlock,
 } from "../src/domain/instance-domain-blocks";
+import { acceptNotificationRequest, listNotificationRequests } from "../src/domain/notification-requests";
+import {
+  getNotification,
+  listNotifications,
+  mentionedStatus,
+  notify,
+  type NotifyInput,
+} from "../src/domain/notifications";
+import { claimPushes } from "../src/domain/push";
+import { homeStatus } from "../src/domain/timelines";
 import { deliveryRound } from "../src/jobs/deliver";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain, setSeverity, unblockDomain } from "./domain-block-helpers";
 import { LEGACY } from "./federation-helpers";
-import { BUILD, deferred, drainDeliveries } from "./helpers";
+import { BUILD, deferred, drainDeliveries, migratedStore } from "./helpers";
 import { deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { adminEntity, uriOf, world } from "./remote-suspension-helpers";
@@ -465,5 +476,302 @@ describe("deliveries to a blocked domain (VIS-30)", () => {
       expect(await round).toMatchObject({ claimed: 1, settled: ["delivered"] });
       expect(sent).toEqual(["https://blocked.example/inbox"]);
     });
+  });
+});
+
+// Coverage of each account a rule names (docs/visibility.md "Instance domain blocks"): the notification rule reads
+// the coverage of each account a notification names where no sibling term already implies it, and the positioned home
+// read the coverage of a status's author and its original's. For each role an account takes, with every other reason
+// to hide excluded, the notification (or the home status) is shown, hidden once only that account's domain is
+// suspended, and shown again once the block is gone, through each path that reads the rule.
+describe("coverage of each role", () => {
+  const ids = (prefix: string, n: number) => `${prefix}${String(n).padStart(18 - prefix.length, "0")}`;
+  const VIEWER = ids("60", 1);
+  const ROLE = {
+    sender: [ids("70", 1), "sender.example"],
+    author: [ids("70", 2), "author.example"],
+    original: [ids("70", 3), "orig.example"],
+    quoted: [ids("70", 4), "quoted.example"],
+    quotedOriginal: [ids("70", 5), "qorig.example"],
+    stranger: [ids("70", 6), "stranger.example"],
+  } as const;
+  const [SENDER, AUTHOR, ORIGINAL, QUOTED, QUOTED_ORIGINAL, STRANGER] = [
+    ROLE.sender[0],
+    ROLE.author[0],
+    ROLE.original[0],
+    ROLE.quoted[0],
+    ROLE.quotedOriginal[0],
+    ROLE.stranger[0],
+  ];
+  const S = {
+    own: ids("80", 1),
+    senderMention: ids("80", 2),
+    authorMention: ids("80", 3),
+    senderBoost: ids("80", 4),
+    original: ids("80", 5),
+    authorBoost: ids("80", 6),
+    quotedPlain: ids("80", 7),
+    quoting: ids("80", 8),
+    quotedOriginal: ids("80", 9),
+    quotedBoost: ids("80", 10),
+    quotingBoost: ids("80", 11),
+    strangerMention: ids("80", 12),
+    authorPublic: ids("80", 13),
+    ownBoost: ids("80", 14),
+    strangerTagged: ids("80", 15),
+    authorDirect: ids("80", 16),
+  };
+  const iso = new Date(NOW).toISOString();
+  const PRESENT = { origin: "https://kopje.test" };
+  const credential = (scope: "read" | "write") => ({ tokenHash: "viewer", scope, now: NOW });
+
+  // The viewer follows the sender, the author and the quoted account, filters mentions from accounts it does not follow
+  // (the stranger's are requests), and has a push subscription wanting every type.
+  function build(storage: SqlStorage): void {
+    const exec = (query: string, ...params: SqlStorageValue[]) => storage.exec(query, ...params);
+    exec("INSERT INTO instance_settings (name, value) VALUES ('domain', 'kopje.test')");
+    exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/u/viewer', 'viewer')", VIEWER);
+    exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, 'v@example.com', X'00', X'00', 'k')",
+      VIEWER,
+    );
+    exec(
+      "INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes) VALUES ('app', 's', 'app', 'urn:ietf:wg:oauth:2.0:oob', 'read write push')",
+    );
+    exec(
+      "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes) VALUES ('viewer', 'access', 'app', ?, 'read write push')",
+      VIEWER,
+    );
+    exec(
+      `INSERT INTO push_subscriptions (id, token_hash, endpoint, key_p256dh, key_auth, alerts)
+			VALUES (1, 'viewer', 'https://push.example/e', 'k', 'a', json_object('mention', json('true'), 'status', json('true'),
+				'reblog', json('true'), 'follow', json('true'), 'favourite', json('true'), 'quoted_update', json('true')))`,
+    );
+    for (const [id, domain] of Object.values(ROLE)) {
+      exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'x', ?)",
+        id,
+        `https://${domain}/u/x`,
+        domain,
+      );
+    }
+    for (const target of [SENDER, AUTHOR, QUOTED]) {
+      exec("INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')", VIEWER, target);
+    }
+    exec("INSERT INTO notification_policies (account_id, for_not_following) VALUES (?, 'filter')", VIEWER);
+    exec("INSERT INTO tag_follows (account_id, name) VALUES (?, 'a')", VIEWER);
+    const status = (id: string, author: string, reblogOf: string | null = null, visibility = "public") =>
+      exec(
+        `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, content, published_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        `https://kopje.test/s/${id}`,
+        author,
+        reblogOf,
+        visibility,
+        reblogOf === null ? "<p>s</p>" : "",
+        iso,
+      );
+    const mentions = (id: string) =>
+      exec(
+        `INSERT INTO status_mentions (status_id, account_id, silent, requires_mention, author_id)
+				SELECT id, ?, 0, visibility IN ('direct', 'limited'), account_id FROM statuses WHERE id = ?`,
+        VIEWER,
+        id,
+      );
+    const quotes = (id: string, quoted: string, account: string) =>
+      exec(
+        `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, updated_at)
+				VALUES (?, 'https://kopje.test/q', ?, ?, 'accepted', ?)`,
+        id,
+        quoted,
+        account,
+        iso,
+      );
+    status(S.own, VIEWER);
+    status(S.senderMention, SENDER);
+    mentions(S.senderMention);
+    status(S.authorMention, AUTHOR);
+    mentions(S.authorMention);
+    status(S.senderBoost, SENDER, S.own);
+    status(S.original, ORIGINAL);
+    status(S.authorBoost, AUTHOR, S.original);
+    status(S.quotedPlain, QUOTED);
+    status(S.quoting, VIEWER);
+    quotes(S.quoting, S.quotedPlain, QUOTED);
+    status(S.quotedOriginal, QUOTED_ORIGINAL);
+    status(S.quotedBoost, QUOTED, S.quotedOriginal);
+    status(S.quotingBoost, VIEWER);
+    quotes(S.quotingBoost, S.quotedBoost, QUOTED);
+    status(S.strangerMention, STRANGER);
+    mentions(S.strangerMention);
+    status(S.authorPublic, AUTHOR);
+    status(S.ownBoost, VIEWER, S.original);
+    status(S.strangerTagged, STRANGER);
+    exec("INSERT INTO status_tags (status_id, name, public) VALUES (?, 'a', 1)", S.strangerTagged);
+    status(S.authorDirect, AUTHOR, null, "direct");
+    mentions(S.authorDirect);
+  }
+
+  type Notification = { type: NotifyInput["type"]; from: string; status: string | null };
+  // Each path's answer to whether it shows the notification `n`, stored (but for "notify") while nothing covers it.
+  type Transact = <T>(fn: () => T) => T;
+  const PATHS: Record<
+    string,
+    (db: Db, storage: SqlStorage, n: Notification, id: string, transact: Transact) => boolean
+  > = {
+    notify: (db, storage, n) => {
+      storage.exec("DELETE FROM notifications");
+      notify(db, { recipientId: VIEWER, type: n.type, fromId: n.from, statusId: n.status, now: NOW });
+      return storage.exec("SELECT 1 FROM notifications").toArray().length === 1;
+    },
+    // The rule over a window's candidates (`within`, as shownWindow reads them), the notification named twice: each
+    // occurrence is shown or neither is.
+    "within (duplicate ids)": (db, _storage, _n, id) => {
+      const viewer = contextOf(VIEWER, NOW);
+      const rows = statusReads(viewer, { viewer: "?1", now: "?2" }).notifications(
+        db,
+        { where: "", within: "?3", includeFiltered: true, columns: { id: "CAST(n.id AS TEXT)" }, admin: null },
+        viewer.accountId,
+        viewer.now,
+        JSON.stringify([{ id }, { id }]),
+      );
+      expect([0, 2]).toContain(rows.length);
+      return rows.length === 2 && rows.every((row) => row.id === id);
+    },
+    "within (list)": (_db, storage, _n, id) => {
+      const answer = listNotifications.run(storage, {
+        page: { limit: 40 },
+        types: [],
+        excludeTypes: [],
+        accountId: null,
+        includeFiltered: true,
+        present: PRESENT,
+        credential: credential("read"),
+      });
+      return ok(answer).items.some((item) => item.id === id);
+    },
+    "by id": (_db, storage, _n, id) =>
+      ok(getNotification.run(storage, { id, present: PRESENT, credential: credential("read") })) !== null,
+    push: (_db, storage) => {
+      const { pushes } = claimPushes.run(storage, { now: NOW + 1, leaseToken: "lease" });
+      return pushes.length === 1;
+    },
+    "mentioned status": (db, _storage, n) => mentionedStatus(db, contextOf(VIEWER, NOW), n.status!) !== null,
+    "request last status": (_db, storage) => {
+      const page = ok(
+        listNotificationRequests.run(storage, {
+          page: { limit: 40 },
+          present: PRESENT,
+          credential: credential("read"),
+        }),
+      );
+      return page.items.length === 1 && page.items[0]!.last_status !== null;
+    },
+    "accept job": (_db, storage, _n, id, transact) => {
+      const [{ request }] = storage
+        .exec<{ request: string }>("SELECT CAST(id AS TEXT) AS request FROM notification_requests")
+        .toArray() as [{ request: string }];
+      expect(
+        ok(
+          acceptNotificationRequest.run(storage, { id: request, now: NOW, credential: credential("write") }, transact),
+        ),
+      ).toBe(true);
+      return (
+        storage.exec<{ filtered: number }>("SELECT filtered FROM notifications WHERE id = CAST(? AS INTEGER)", id).one()
+          .filtered === 0
+      );
+    },
+  };
+  const ok = <T>(answer: { status: string; value?: T }): T => {
+    expect(answer.status).toBe("ok");
+    return answer.value as T;
+  };
+
+  const NOTIFIED = ["notify", "within (list)", "within (duplicate ids)", "by id", "push"];
+  const REQUESTED = ["notify", "within (duplicate ids)", "request last status", "accept job"];
+  // [role, the account covered, the notification, the paths]
+  const CASES: [string, keyof typeof ROLE, Notification, string[]][] = [
+    ["sender", "sender", { type: "mention", from: SENDER, status: S.senderMention }, [...NOTIFIED, "mentioned status"]],
+    ["sender's boost", "sender", { type: "reblog", from: SENDER, status: S.own }, NOTIFIED],
+    ["status author", "author", { type: "mention", from: SENDER, status: S.authorMention }, NOTIFIED],
+    ["boost original's author", "original", { type: "status", from: AUTHOR, status: S.authorBoost }, NOTIFIED],
+    ["quoted author", "quoted", { type: "quoted_update", from: SENDER, status: S.quoting }, NOTIFIED],
+    [
+      "quoted boost's original author",
+      "quotedOriginal",
+      { type: "quoted_update", from: QUOTED, status: S.quotingBoost },
+      NOTIFIED,
+    ],
+    ["sender, no status", "sender", { type: "follow", from: SENDER, status: null }, NOTIFIED],
+    ["requester", "stranger", { type: "mention", from: STRANGER, status: S.strangerMention }, REQUESTED],
+    ["requested status author", "author", { type: "mention", from: STRANGER, status: S.authorMention }, REQUESTED],
+  ];
+
+  // What `check` answers while nothing covers the account, while a suspend block covers only its domain, and once the
+  // block is gone; each answer in a savepoint rolled back after it.
+  function acrossCoverage(state: DurableObjectState, covered: keyof typeof ROLE, check: () => boolean): boolean[] {
+    const rollback = new Error("rolled back");
+    const answer = () => {
+      let seen: boolean | undefined;
+      try {
+        state.storage.transactionSync(() => {
+          seen = check();
+          throw rollback;
+        });
+      } catch (error) {
+        if (error !== rollback) {
+          throw error;
+        }
+      }
+      return seen!;
+    };
+    const storage = state.storage.sql;
+    const before = answer();
+    storage.exec(
+      "INSERT INTO instance_domain_blocks (domain, severity, created_at, updated_at) VALUES (?, 'suspend', ?, ?)",
+      ROLE[covered][1],
+      iso,
+      iso,
+    );
+    const blocked = answer();
+    storage.exec("DELETE FROM instance_domain_blocks");
+    return [before, blocked, answer()];
+  }
+
+  it.each(CASES.flatMap(([role, covered, n, paths]) => paths.map((path) => [role, path, covered, n] as const)))(
+    "%s through %s",
+    async (_role, path, covered, n) => {
+      const seen = await runInDurableObject(await migratedStore(), (_instance, state) => {
+        const storage = state.storage.sql;
+        const transact: Transact = (fn) => state.storage.transactionSync(fn);
+        const db = new Db(storage, transact);
+        build(storage);
+        notify(db, { recipientId: VIEWER, type: n.type, fromId: n.from, statusId: n.status, now: NOW });
+        const [{ id }] = storage.exec<{ id: string }>("SELECT CAST(id AS TEXT) AS id FROM notifications").toArray() as [
+          { id: string },
+        ];
+        return acrossCoverage(state, covered, () => PATHS[path]!(db, storage, n, id, transact));
+      });
+      expect(seen).toEqual([true, false, true]);
+    },
+  );
+
+  // homeStatus (streaming's positioned home read): the author and, on the branches a boost reaches, the original's
+  // author, on each branch; the viewer's own status has no remote author to cover.
+  it.each([
+    ["followed author", "author", S.authorPublic],
+    ["followed author's boost, the booster", "author", S.authorBoost],
+    ["followed author's boost, the original's author", "original", S.authorBoost],
+    ["own boost, the original's author", "original", S.ownBoost],
+    ["mention", "author", S.authorDirect],
+    ["hashtag", "stranger", S.strangerTagged],
+  ] as const)("home status: %s", async (_branch, covered, statusId) => {
+    const seen = await runInDurableObject(await migratedStore(), (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      build(state.storage.sql);
+      return acrossCoverage(state, covered, () => homeStatus(db, contextOf(VIEWER, NOW), statusId) === statusId);
+    });
+    expect(seen).toEqual([true, false, true]);
   });
 });
