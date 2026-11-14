@@ -26,9 +26,11 @@ import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platf
 //     contexts are served that way and a context is never trusted as an object
 //   - a host the instance's domain policy covers (refusesHost, R38) is not requested at all
 //   - a signed request answered 400 or 401 (RETRY_STATUSES) is sent once more at once, signed with RFC 9421 by the same
-//     key (Signing.retry), as Mastodon 4.7's Request#perform does; each redirect hop starts with draft-cavage again. The
-//     retry passes the same checks as any request (shape, policy, DNS) and is charged to the same budget, inside the
-//     same load's timeout; the first answer's body is cancelled unread, and the second is read as any response
+//     key (Signing.retry), hop by hop: the hop so answered is sent again, and the next hop starts with draft-cavage.
+//     Mastodon 4.7's Request#perform resends the whole request from its first URL instead (docs/mastodon-deviations.md,
+//     "Outbound HTTP signatures"); here each hop stays one this loop has checked. The retry passes the same checks as
+//     any request (shape, policy, DNS) and is charged to the same budget, inside the same load's timeout; the first
+//     answer's body is cancelled unread, and the second is read as any response
 export const DOCUMENT_BODY_LIMIT = 1024 * 1024;
 export const DOCUMENT_TIMEOUT_MS = 5000;
 export const MAX_REDIRECTS = 5;
@@ -146,7 +148,7 @@ export type RequestSigner = (request: Request) => Promise<Request>;
 export type Signing = { sign: RequestSigner; retry?: RequestSigner | undefined };
 
 // Mastodon 4.7 sends a signed request answered with one of these once more with an RFC 9421 signature (request.rb
-// Request#perform); so do the loader and the delivery sink.
+// Request#perform); so does the delivery sink, and the loader for each redirect hop.
 export const RETRY_STATUSES: ReadonlySet<number> = new Set([400, 401]);
 
 export const dnsCheckHost = (url: URL): Promise<void> => validatePublicUrl(url.href);

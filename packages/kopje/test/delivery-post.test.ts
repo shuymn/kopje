@@ -424,7 +424,7 @@ async function knock(
   );
 }
 
-// Mastodon 4.7's double knock for deliveries (D8): a POST answered 400 or 401 to its draft-cavage signature is sent
+// Mastodon 4.7's double knock for deliveries (NET-2): a POST answered 400 or 401 to its draft-cavage signature is sent
 // once more, signed with RFC 9421 by the same key, after the deadline and host checks and the Store's confirmation
 // again; its answer settles the delivery.
 describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {

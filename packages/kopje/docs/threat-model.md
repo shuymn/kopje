@@ -1808,8 +1808,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   credentials, literal IPs, `localhost` and single-label hosts, checks that the name resolves to public addresses,
   re-checks every redirect hop (same origin, at most 5), stops at 1 MiB and 5 s for the whole load, and honours abort
   signals. A signed request answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
-  (`@method`, `@target-uri`), as Mastodon 4.7's `Request#perform` does, after the same checks and within the same load;
-  each redirect hop starts with draft-cavage again. _Enforced (main):_ `src/federation/loader.ts`;
+  (`@method`, `@target-uri`), after the same checks and within the same load, hop by hop: the hop so answered is sent
+  again and the next starts with draft-cavage, where Mastodon 4.7's `Request#perform` resends the whole request from
+  its first URL ([mastodon-deviations.md](mastodon-deviations.md), "Outbound HTTP signatures"). _Enforced (main):_
+  `src/federation/loader.ts`;
   `test/loader.test.ts`. Every global `fetch()` (documents,
   deliveries, Web Push, backups, the Access and Cloudflare APIs) is also strictly public: the compatibility flag
   `global_fetch_strictly_public` routes it through Cloudflare's front door like a request from the Internet, so a host
@@ -3417,16 +3419,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
   retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
   featuredTags 4), and the network part's documents are read with at most one redirect and 512 KiB each
-  (`NETWORK_CAPS`): 6 fetches and 1.5 MiB, so its outbox never starves behind the other two. Accepted: a server that
-  refuses draft-cavage and redirects every document may leave a part unread (a redirect and the retry on each document
-  pass the budget), and the part is retried until `MAX_SYNC_ATTEMPTS`; Mastodon 4.7, Fedify and Misskey accept
-  draft-cavage. A generation starts with every stored actor document (an
+  (`NETWORK_CAPS`): with a redirect or the retry on each document, 6 fetches and 1.5 MiB, so its outbox then never
+  starves behind the other two. Accepted: a document that needs both a redirect and the retry takes 3 or 4 fetches, so
+  such documents can pass a round's budget before their part is read through (three network documents that each
+  redirect and then refuse draft-cavage need 9 of the 8), and the part is retried until `MAX_SYNC_ATTEMPTS`; only a
+  server that refuses draft-cavage needs the retry, and Mastodon 4.7, Fedify and Misskey accept it. A generation starts
+  with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
   document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
   pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches; the network part takes at most 6 a round and
-  54 a generation, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds them before and after
-  the network part reads the outbox", "the network part within one round")).
+  54 a generation while no document needs the RFC 9421 retry, a round's whole budget (8 a round, 72 a generation) when
+  each needs a redirect and the retry, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds
+  them before and after the network part reads the outbox", "the network part within one round")).
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice

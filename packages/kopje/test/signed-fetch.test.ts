@@ -378,7 +378,7 @@ function refusingCavage(fetch: typeof globalThis.fetch, status = 401) {
   return { fetch: refusing, requests };
 }
 
-// Mastodon 4.7's double knock for signed fetches (D8, NET-4, RES-6): a fetch answered 400 or 401 to its draft-cavage
+// Mastodon 4.7's double knock for signed fetches (NET-4, RES-6): a fetch answered 400 or 401 to its draft-cavage
 // signature is sent once more, signed with RFC 9421 by the same key; the loader's own rules are in test/loader.test.ts.
 describe("the RFC 9421 retry (NET-4, RES-6)", () => {
   it.each([401, 400])(
