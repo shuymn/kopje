@@ -14,6 +14,7 @@ import {
   unresolvedFailures,
 } from "../test/mastodon-conformance.js";
 import { PARAM_EXCEPTIONS } from "../test/mastodon-params-exceptions.js";
+import { UNROUTED } from "../test/mastodon-routes-exceptions.js";
 import { guardFixtures, parse, sources, type Source } from "./source-scan.js";
 
 // Every field Mastodon's serializers emit (the fixture's entities, read from Mastodon's source by
@@ -307,9 +308,9 @@ describe(`entity fields match Mastodon v${mastodon.mastodon}`, () => {
     expect(findings(ALL, MAPPING, mastodon.entities, ENTITY_EXCEPTIONS, UNRESOLVED_ENTITIES)).toEqual([]);
   });
 
-  it("cites only defined deviations, and every deviation is cited by an exception of either check", () => {
+  it("cites only defined deviations, and every deviation is cited by an exception of the checks", () => {
     const defined = deviationIds(readFileSync(new URL("../docs/mastodon-deviations.md", import.meta.url), "utf8"));
-    const cited = new Set(deviationsCited(PARAM_EXCEPTIONS, ENTITY_EXCEPTIONS));
+    const cited = new Set(deviationsCited(PARAM_EXCEPTIONS, ENTITY_EXCEPTIONS, { routes: UNROUTED }));
     expect([...cited].filter((id) => !defined.includes(id))).toEqual([]);
     expect(defined.filter((id) => !cited.has(id))).toEqual([]);
   });

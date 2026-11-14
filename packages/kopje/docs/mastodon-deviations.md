@@ -9,10 +9,10 @@ Other documents point here rather than repeat the release.
   the departures below and the gaps open issues track. The claim is for that tag. A fix that a later Mastodon release
   makes may be followed before the reference release moves; the entry or code comment that describes the fixed
   behaviour names that release. The conformance checks compare Kopje with the reference release's source: the routes
-  and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
-  (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`). Their
-  fixtures carry the release in their names and their `mastodon` field, and `test-node/mastodon-reference.test.ts`
-  checks that they name the release this page does.
+  and their access (`test/mastodon-access.test.ts`), the routes Mastodon serves that Kopje does not route (the same
+  test), the request parameters each route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
+  (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
+  and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
 - **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
@@ -22,9 +22,9 @@ Other documents point here rather than repeat the release.
   - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
   - 10, collections under `/api/v1` (`mastodon#39210`);
   - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
-- **Streaming.** Kopje serves the WebSocket streaming API of the reference release, without Server-Sent Events and
-  without a token in the query string, and with bounds on the subscriptions a socket and an account hold, past which a
-  subscription is refused (`src/mastodon/streaming.ts`, `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
+- **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
+  the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
+  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
   remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
@@ -42,7 +42,7 @@ implement it, since a change there (what an account's deletion removes, say) sho
   access, required parameters and values without changing a route, a field or `api_versions`. To move the reference
   release, regenerate the access fixture from the new tag with `scripts/mastodon-scopes.mjs` (and add any new entity to
   its `ENTITIES`), rename the hand-written fixtures and their imports after re-checking them against it, review each
-  new exception, and change the release on this page.
+  new exception and each route the route check reports, and change the release on this page.
 - **A new minor series.** Whether to follow it is decided on what it adds to the surface Kopje already serves, judged
   at its latest patch. Following it is the same move with a larger inventory (routes, parameters, entities, behaviour);
   raising `version` and `api_versions` is a separate step, as above. Before the reference series leaves upstream
@@ -150,6 +150,19 @@ A pull request that fixes a gap removes the exceptions that cite it.
 - **MD-6: Media have no short link.** MediaAttachment `text_url` is always null. Mastodon shows it only for a local
   attachment with a shortcode, and has assigned no shortcode to new media since v3.5.0, so only its older local media
   show one; Kopje assigns none and serves no short link route. Accepted, 2026-10-22.
+- **MD-7: Mastodon's web app API and FASP are not served.** `/api/web/*` (the settings, embeds and push subscriptions
+  of Mastodon's web app) and `/api/fasp/*` (the registration, data sharing and debug callbacks of Fediverse Auxiliary
+  Service Providers) answer 404. Kopje has no Mastodon web app: its pages are its own ([web-pages.md](web-pages.md)),
+  and clients use `/api/v1/push/subscription` and `/api/oembed`. Kopje uses no FASP for search or discovery.
+  Accepted, 2026-11-15.
+- **MD-8: Streaming is WebSocket only.** Kopje serves the streaming API at `/api/v1/streaming` and any path below it
+  as a WebSocket only: a request that is not an upgrade answers 404, so Server-Sent Events are not served. The one
+  exception is `/api/v1/streaming/health`, which answers 200 `OK` as Mastodon's streaming server does. The token is
+  read from the `Authorization` header or `Sec-WebSocket-Protocol`, never from the `access_token` query parameter
+  (`src/mastodon/streaming.ts`). Mastodon's streaming server serves SSE and reads the query token too. From v4.5.11 to
+  v4.7.5 it changed how it parses the request URL and how it ends an SSE heartbeat, and nothing a WebSocket client
+  sees. No surveyed client uses SSE, and a token in a URL reaches the platform's invocation logs (DATA-5 in
+  [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
 
 ## Differences the checks cannot see
 

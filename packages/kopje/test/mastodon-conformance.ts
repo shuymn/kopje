@@ -1,6 +1,6 @@
 // The comparison logic of the Mastodon conformance checks (test/mastodon-params*.test.ts for request parameters,
-// test-node/mastodon-entities.test.ts for entity fields), kept free of the Workers runtime so both pools can import it,
-// and the exception shape they share. Accepted deviations are defined in docs/mastodon-deviations.md (MD-n).
+// test-node/mastodon-entities.test.ts for entity fields, test/mastodon-access.test.ts for the routes Kopje does not
+// serve), kept free of the Workers runtime so both pools can import it, and the exception shape they share. Accepted deviations are defined in docs/mastodon-deviations.md (MD-n).
 
 // A known departure from Mastodon: a gap tracked by an issue, or a decided deviation.
 export type Exception =
@@ -26,6 +26,37 @@ export function sameRoute<R extends { method: string; path: string }>(
 ): R | undefined {
   const shape = (p: string) => p.replace(/:\w+/g, ":");
   return routes.find((route) => route.method === method && shape(route.path) === shape(path));
+}
+
+// Failures of the route check: each route of Mastodon's `release` (`theirs`) that `ours` does not route and no
+// exception lists, each exception for a route `ours` routes now, and each exception that names no route of `theirs`.
+// Exceptions are keyed by 'METHOD /path' in the fixture's spelling, so an upstream rename of a path parameter fails as
+// stale until the key is revisited.
+export function unroutedFailures(
+  release: string,
+  theirs: readonly { method: string; path: string; controller: string; action: string }[],
+  ours: readonly { method: string; path: string }[],
+  exceptions: Readonly<Record<string, Exception>>,
+): string[] {
+  const failures: string[] = [];
+  for (const { method, path, controller, action } of theirs) {
+    const routed = sameRoute(ours, method, path) !== undefined;
+    if (!routed && exceptions[`${method} ${path}`] === undefined) {
+      failures.push(
+        `${method} ${path} (${controller}#${action}): Mastodon v${release} serves it and Kopje does not route it ` +
+          "(route it, or list it in UNROUTED with its gap issue or MD id)",
+      );
+    }
+  }
+  for (const name of Object.keys(exceptions)) {
+    const theirsRoute = theirs.find((route) => `${route.method} ${route.path}` === name);
+    if (theirsRoute === undefined) {
+      failures.push(`${name}: not a route of the fixture; remove its exception`);
+    } else if (sameRoute(ours, theirsRoute.method, theirsRoute.path) !== undefined) {
+      failures.push(`${name}: routed now; remove its exception`);
+    }
+  }
+  return failures;
 }
 
 // One read of a request parameter, as the spies of the parameter test record it: an accessor of Params, Hono's

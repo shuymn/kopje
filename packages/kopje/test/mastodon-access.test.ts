@@ -4,7 +4,8 @@ import type { RouteAccess } from "../src/mastodon/access";
 import { ROUTES } from "../src/mastodon/routes";
 import { grants, type RequiredScope, SCOPES } from "../src/security/scopes";
 import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
-import { sameRoute } from "./mastodon-conformance";
+import { sameRoute, unroutedFailures } from "./mastodon-conformance";
+import { UNROUTED } from "./mastodon-routes-exceptions";
 
 // Every route of the API table (src/mastodon/routes.ts) asks of its caller what Mastodon's same route asks, read from
 // Mastodon's source by scripts/mastodon-scopes.mjs (the fixture's header says how to regenerate it). Compared:
@@ -317,14 +318,32 @@ describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
     expect(Object.keys(EXCEPTIONS).filter((name) => !names.has(name))).toEqual([]);
   });
 
-  it("routes every admin API route of Mastodon", () => {
-    const admin = mastodon.routes.filter((route) => ADMIN_PATH.test(route.path));
-    expect(admin).toHaveLength(63);
-    const missing = admin.filter(
-      (theirs) =>
-        !ROUTES.some((route) => route.method === theirs.method && mastodonRoute(route.method, route.path) === theirs),
-    );
-    expect(missing.map((route) => `${route.method} ${route.path}`)).toEqual([]);
+  it("routes every route of Mastodon, or lists why not", () => {
+    // A tripwire for a generator that loses routes, which this check cannot otherwise see.
+    expect(mastodon.routes.filter((route) => ADMIN_PATH.test(route.path))).toHaveLength(63);
+    expect(unroutedFailures(mastodon.mastodon, mastodon.routes, ROUTES, UNROUTED)).toEqual([]);
+  });
+
+  it("sees a route Kopje lacks, an exception for a routed route, and one for no route", () => {
+    const theirs = [
+      { method: "GET", path: "/api/v1/things/:thing_id", controller: "api/v1/things", action: "show" },
+      { method: "POST", path: "/api/v1/things", controller: "api/v1/things", action: "create" },
+      { method: "DELETE", path: "/api/v1/things/:id", controller: "api/v1/things", action: "destroy" },
+    ];
+    const ours = [
+      { method: "GET", path: "/api/v1/things/:id" },
+      { method: "POST", path: "/api/v1/things" },
+      { method: "GET", path: "/api/v1/other" },
+    ];
+    const gap = { status: "open", issue: 1, note: "n" } as const;
+    // A differently named path parameter is the same route.
+    expect(unroutedFailures("9.9.9", theirs, ours, { "DELETE /api/v1/things/:id": gap })).toEqual([]);
+    expect(unroutedFailures("9.9.9", theirs, ours, { "POST /api/v1/things": gap, "GET /api/v1/gone": gap })).toEqual([
+      "DELETE /api/v1/things/:id (api/v1/things#destroy): Mastodon v9.9.9 serves it and Kopje does not route it " +
+        "(route it, or list it in UNROUTED with its gap issue or MD id)",
+      "POST /api/v1/things: routed now; remove its exception",
+      "GET /api/v1/gone: not a route of the fixture; remove its exception",
+    ]);
   });
 
   it("sets aside only an admin route's role policy, so its scope is still compared", () => {
