@@ -161,7 +161,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
   read from the `Authorization` header or `Sec-WebSocket-Protocol`, never from the `access_token` query parameter
   (`src/mastodon/streaming.ts`). Mastodon's streaming server serves SSE and reads the query token too. From v4.5.11 to
   v4.7.5 it changed how it parses the request URL and how it ends an SSE heartbeat, and nothing a WebSocket client
-  sees. No surveyed client uses SSE, and a token in a URL reaches the platform's invocation logs (DATA-5 in
+  sees. No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are
+  enabled without query-string redaction; the shipped configuration records neither (DATA-5 in
   [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
 
 ## Differences the checks cannot see
