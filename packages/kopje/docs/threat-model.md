@@ -3947,12 +3947,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's year through statements that pin `statuses_account`, `follows_target`, the primary key of `status_tags` and
   the polls index (`INDEXED BY`, `CROSS JOIN`), each inner stage a `LIMIT` subquery and every residual outside it
   (`src/domain/annual-reports.ts`). Four caps bound them, each counted raw to cap + 1 before the rest is read, in cost
-  order: `REPORT_YEAR_STATUSES` (20,000) rows of the owner's year range, boosts and withdrawn rows included;
-  `REPORT_FOLLOWERS` (20,000) accepted follows naming the owner; `REPORT_HASHTAG_USES` (20,000) tag rows of the year's
-  rows and `REPORT_HASHTAG_BYTES` (8 MiB) of their names. An account past one gets no report: `state` answers
+  order: `REPORT_YEAR_STATUSES` (200,000) rows of the owner's year range, boosts and withdrawn rows included;
+  `REPORT_FOLLOWERS` (200,000) accepted follows naming the owner; `REPORT_HASHTAG_USES` (200,000) tag rows of the
+  year's rows and `REPORT_HASHTAG_BYTES` (8 MiB) of their names. An account past one gets no report: `state` answers
   `ineligible`, `generate` writes nothing, and `kopje.annual_reports.capped` is logged (the "Annual reports" entry of
   `docs/mastodon-deviations.md`). Within the caps each statement reads at most its candidates times what each costs (an
-  index entry, a table row, a probe), so `state` reads at most 120,010 rows and `generate` 260,049, derived from the
+  index entry, a table row, a probe), so `state` reads at most 1,200,010 rows and `generate` 2,600,049, derived from the
   caps; outside the campaign both read the setting and the report's key only, and once the owner's report exists the
   report's key (and the setting, for `generate`), whatever the year holds. The top hashtag's grouping takes in at most
   the tag rows and name bytes the cap counted in the same transaction, a bound enforced at run time; its ordering keeps
@@ -3964,8 +3964,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   singleton statistics; it checks each plan, and that growing the keys around the owner's year leaves every read flat
   and each cap passed alone stops the read there; `test/annual-reports.test.ts` ("at the cap the report is made, one
   past it it is not, and the reason is logged", "leaves an existing report available past every cap, reading none of
-  the year"). During the campaign an account without a report pays
-  these reads on each `state` call (accepted; Mastodon's are two `EXISTS` queries); they end once the report exists.
+  the year"). The caps are the largest of 20,000, 50,000, 100,000 and 200,000 for which `state` and then `generate` on
+  that witness, every cap at its value, run within 1,000 ms together; measured with `test/bench/annual-report.bench.ts`
+  (three samples in a Store populated as the migration bench's: 1,000,000 accounts, 3,000,000 follows, 2,000,000
+  statuses with their hashtags; local workerd, a load average of 5 to 9), the medians are 123 ms for `state` and 431 ms
+  for `generate`, 554 ms together, reading 1,180,006 and 2,380,043 rows. These are measurements, not bounds; the
+  enforced bound is the rows-read ceiling. During the campaign an account without a report pays these reads on each
+  `state` call (accepted; Mastodon's are two `EXISTS` queries); they end once the report exists.
 
 #### Maxima of presented units (RES-3)
 

@@ -37,14 +37,17 @@ import { listedTagName, TAG_NAME_JSON_BYTES } from "./tag-bounds";
 
 // ---- Bounds
 
+// The caps are the largest of 20,000, 50,000, 100,000 and 200,000 for which `state` and then `generate` on the all-caps
+// witness run within 1,000 ms together (test/bench/annual-report.bench.ts; the figures are in RES-7).
+
 // The owner's statuses in the year's id range, raw: boosts, every visibility and withdrawn rows included.
-export const REPORT_YEAR_STATUSES = 20_000;
+export const REPORT_YEAR_STATUSES = 200_000;
 // status_tags rows of those statuses, raw.
-export const REPORT_HASHTAG_USES = 20_000;
+export const REPORT_HASHTAG_USES = 200_000;
 // The UTF-8 bytes of those rows' names, summed: what TOP_HASHTAG_SQL groups at most.
 export const REPORT_HASHTAG_BYTES = 8 * 1024 * 1024;
 // Accepted follows naming the owner, raw (any year).
-export const REPORT_FOLLOWERS = 20_000;
+export const REPORT_FOLLOWERS = 200_000;
 // The most used names TOP_HASHTAG_SQL orders and returns; the first that listedTagName admits is the report's.
 export const REPORT_TAG_CANDIDATES = 32;
 // Pending reports GET /api/v1/annual_reports lists, newest year first (Mastodon lists all, unordered).
