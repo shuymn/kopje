@@ -19,7 +19,7 @@ import { createKeyring } from "../src/security/keyring";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { LEGACY } from "./federation-helpers";
+import { LEGACY, signAsLegacy } from "./federation-helpers";
 import { QueueSim } from "./queue-sim";
 import { community, post, remoteAccount, remoteFollows } from "./status-helpers";
 
@@ -199,14 +199,7 @@ describe("the POST (NET-2, NET-3)", () => {
 async function signedCommunity(servers = 2) {
   const h = await community(["alice"]);
   const { alice } = h.users;
-  await sql(
-    h.store,
-    "UPDATE local_accounts SET privkey = ?, privkey_salt = ?, pubkey = ? WHERE account_id = ?",
-    LEGACY.privkey.slice().buffer,
-    LEGACY.salt.slice().buffer,
-    LEGACY.pubkey,
-    alice.id,
-  );
+  await signAsLegacy(h.store, alice.id);
   for (const [name, domain] of (
     [
       ["fan", "fans.example"],
