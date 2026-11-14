@@ -276,7 +276,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "SUSPEND_BLOCKS_SQL (src/domain/audience.ts) occurs once, but the flattened quote state repeats the expression that holds it, so the plan prints its one scalar subquery three times and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it: EXISTS reads the first entry of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks)",
   },
   {
-    id: "03c24e3510a0b719",
+    id: "60aaeadb9eb31666",
     scans: [
       "?: SCAN ps",
       "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
@@ -284,7 +284,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/audience.ts#run < src/domain/audience.ts#Object.union < src/domain/timelines.ts#homeRows < src/domain/timelines.ts#homeStatus < src/domain/streaming.ts#unitOf",
     disposition: "deliberate",
     reason:
-      "statusReads' hoisted row hp (src/domain/audience.ts) holds availableSql's coverage of the status's author and its original's once each, and SQLite's flattening repeats each at every use in the branches, so the plan prints SUSPEND_BLOCKS_SQL's one-entry read of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks) more often than the text holds it and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it; ps is ruledSql's recursive CTE over the author's domain suffixes (each key walked only within DNS_NAME_UTF8_BYTES (1,012) bytes; test/domain-suffix-walk.test.ts), which the classifier cannot bind where the flattened column is used, the fragment's `accounts ps` sharing its name",
+      "statusReads' hoisted row hp (src/domain/audience.ts) holds availableSql's coverage of the status's author and its original's once each, and SQLite's flattening repeats each at every use in the branches, so the plan prints SUSPEND_BLOCKS_SQL's one-entry read of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks) more often than the text holds it and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it; ps is ruledSql's recursive CTE over the author's domain suffixes (each key walked only within DNS_NAME_UTF8_BYTES (1,012) bytes; test/domain-suffix-walk.test.ts), which the classifier cannot bind where the flattened column is used, the fragment's `accounts ps` sharing its name; the copies keep pk and ps co-routines (NOT MATERIALIZED), as each of main's occurrences ran them",
   },
   {
     id: "faf0592983e05942",

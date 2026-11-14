@@ -131,9 +131,12 @@ export function availableSql(x: string, covered?: string): string {
 		AND NOT ${covered ?? guardedAccountCoveredSql(x)})`;
 }
 
-// The coverage term availableSql reads of the account `x`.
-function guardedAccountCoveredSql(x: string): string {
-  return guardedSql(accountCoveredSql(x));
+// The coverage term availableSql reads of the account `x`. `copied`: the term is a column of statusReads' hoisted row,
+// which SQLite copies to each place it is used; SQLite materializes the walk's CTEs of such copies (their uses counted
+// together), where each occurrence of its own runs them as co-routines, and a materialized CTE is read again from its
+// table, so the copies keep them co-routines (NOT MATERIALIZED): the same walk, without those reads.
+function guardedAccountCoveredSql(x: string, copied = false): string {
+  return guardedSql(accountCoveredSql(x, copied));
 }
 
 // The same rule for a local account whose local_accounts row `l` is already joined, so a query that has the row does
@@ -254,13 +257,14 @@ function guardedSql(covered: string): string {
 // `rule` (a suspend covers it; its media are rejected); a key within them has at most a dot per byte, so its walk is at
 // most DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do
 // not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
-function ruledSql(keys: string, rule: string): string {
+function ruledSql(keys: string, rule: string, copied = false): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
   // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
   // which satisfies the rule alone.
   const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
-  return `EXISTS (WITH RECURSIVE pk(d) AS (${keys}),
-			ps(d, dots) AS (SELECT CASE WHEN ${named} THEN d END,
+  const as = copied ? "AS NOT MATERIALIZED" : "AS";
+  return `EXISTS (WITH RECURSIVE pk(d) ${as} (${keys}),
+			ps(d, dots) ${as} (SELECT CASE WHEN ${named} THEN d END,
 					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
 				UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 					AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
@@ -271,8 +275,8 @@ function ruledSql(keys: string, rule: string): string {
 }
 
 // Whether an instance domain block covers one of `keys` (ruledSql): the rule of one is a suspend.
-function coveredSql(keys: string): string {
-  return ruledSql(keys, "pr.severity = 'suspend'");
+function coveredSql(keys: string, copied = false): string {
+  return ruledSql(keys, "pr.severity = 'suspend'", copied);
 }
 
 // R38 reject_media (Mastodon's DomainBlock.reject_media?, app/models/domain_block.rb:58-60): the rule of one of `keys`
@@ -301,9 +305,10 @@ export function domainCoveredSql(a: string): string {
 }
 
 // Whether an instance domain block covers the account `x` by either key: its row read once by its key.
-function accountCoveredSql(x: string): string {
+function accountCoveredSql(x: string, copied = false): string {
   return coveredSql(
     `${accountKeysSql("pc", `main.accounts pc INDEXED BY ${ACCOUNTS_ID_INDEX} CROSS JOIN`)} AND pc.id = ${x}`,
+    copied,
   );
 }
 
@@ -908,8 +913,8 @@ export function statusReads(
       return run<{ id: VisibleStatusId }>(
         db,
         `SELECT ${HOISTED}.id AS id FROM (SELECT x.id AS id, x.account_id AS author,
-					${guardedAccountCoveredSql("x.account_id")} AS author_covered,
-					${guardedAccountCoveredSql("xo.account_id")} AS original_covered
+					${guardedAccountCoveredSql("x.account_id", true)} AS author_covered,
+					${guardedAccountCoveredSql("xo.account_id", true)} AS original_covered
 				FROM main.statuses x INDEXED BY ${STATUSES_ID_INDEX}
 				LEFT JOIN main.statuses xo INDEXED BY ${STATUSES_ID_INDEX} ON xo.id = x.reblog_of_id
 				WHERE x.id = ${hoisted}) ${HOISTED}
