@@ -5,10 +5,13 @@ import { Db } from "../src/db/sql";
 import { localActorOf } from "../src/domain/actors";
 import { stagedList } from "../src/domain/audience";
 import { migratedStore } from "./helpers";
-import { measure, statements } from "./sql-depth-setup";
+import { flatCteAfter } from "./sql-cursor-pads";
+import { measure, measureWith, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
+import { WINDOW_FAMILIES, windowVariants } from "./window-variants";
 
-// The guard of test/sql-depth-setup.ts: it sees the statements the Store runs, and it reports a deep one.
+// The guard of test/sql-depth-setup.ts: it sees the statements the Store runs, and it reports one nested too deep or
+// resolving a CTE after too many cursors (test-node/sql-depth.ts, CTE_GUARD_LIMIT).
 describe("expression depth guard", () => {
   const nested = (depth: number) => `SELECT ${"-(".repeat(depth - 1)}1${")".repeat(depth - 1)}`;
 
@@ -66,8 +69,53 @@ describe("expression depth guard", () => {
     expect(seen.samples).not.toContainEqual(["test-only"]);
   });
 
-  it("reports a statement the Store would refuse, with its depth", async () => {
-    expect(await measure([nested(10), nested(101)])).toEqual([{ depth: 101, sql: nested(101) }]);
+  it("reports a statement nested past the guard's limit, with the lowest limit it prepares at", async () => {
+    expect(await measure([nested(10), nested(96), nested(97), nested(101)])).toEqual([
+      { limit: 97, sql: nested(97) },
+      { limit: 101, sql: nested(101) },
+    ]);
+  });
+
+  it("reports a statement resolving a CTE after more cursors than the guard's limit allows", async () => {
+    expect(await measure([flatCteAfter(94, "accounts"), flatCteAfter(95, "accounts")])).toEqual([
+      { limit: 97, sql: flatCteAfter(95, "accounts") },
+    ]);
+  });
+
+  // Every candidate window statement, in its largest variant, prepares on the Store's runtime (each page windowVariants
+  // reads answers 200) and at the guard's limit on Node.
+  it("passes each candidate window statement in its largest variant", { timeout: 120_000 }, async () => {
+    await windowVariants();
+    for (const [family, member] of Object.entries(WINDOW_FAMILIES)) {
+      const recorded = [...statements.keys()].filter(member);
+      expect(recorded.length, family).toBeGreaterThanOrEqual(2);
+      expect(await measure(recorded), family).toEqual([]);
+    }
+  });
+
+  // A connection to the service that drops is sent again once, with the same statements; anything else fails.
+  it("retries a dropped connection once, and fails on a second drop or any other error", async () => {
+    const dropped = () => Promise.reject(new Error("Network connection lost."));
+    const stub = (...answers: (() => Promise<Response>)[]) => {
+      const bodies: string[] = [];
+      return {
+        bodies,
+        fetch: (_url: string, init: RequestInit) => {
+          bodies.push(init.body as string);
+          return answers.shift()!();
+        },
+      };
+    };
+    const once = stub(dropped, () => Promise.resolve(Response.json([{ limit: 101, sql: "x" }])));
+    expect(await measureWith(once as never, ["x"])).toEqual([{ limit: 101, sql: "x" }]);
+    expect(once.bodies).toEqual(['["x"]', '["x"]']);
+    await expect(measureWith(stub(dropped, dropped) as never, ["x"])).rejects.toThrow("Network connection lost.");
+    const other = stub(() => Promise.reject(new Error("other")), dropped);
+    await expect(measureWith(other as never, ["x"])).rejects.toThrow("other");
+    expect(other.bodies).toHaveLength(1);
+    await expect(
+      measureWith(stub(() => Promise.resolve(new Response("bad", { status: 500 }))) as never, ["x"]),
+    ).rejects.toThrow("bad");
   });
 
   it("refuses a batch, whose later statements it would not measure", async () => {

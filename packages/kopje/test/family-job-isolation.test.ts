@@ -905,6 +905,8 @@ describe("the seeks under stale statistics (RES-7)", () => {
         await setRetry(w.store, f.t, key, 1, NOW - 1);
       }
       const credential = { tokenHash: await sha256Hex(w.users.alice.token), scope: "write" as const, now: NOW };
+      // The retry walk's statements, from its own run (the families' runs reset retry state too).
+      let retry: Awaited<ReturnType<typeof plannedRun>>["plans"] = [];
       const { after } = await staleStatistics(w, {
         grow: async () => {
           for (const statement of GROW[name]!) {
@@ -934,7 +936,8 @@ describe("the seeks under stale statistics (RES-7)", () => {
             const input = { credential, groupKey: "pg1" };
             plans.push(...(await plannedRun(w, pattern, dismissNotificationGroup, input, true)).plans);
           }
-          plans.push(...(await plannedRun(w, pattern, retryParkedJobs, {}, true)).plans);
+          retry = (await plannedRun(w, pattern, retryParkedJobs, {}, true)).plans;
+          plans.push(...retry);
           return plans;
         },
       });
@@ -964,14 +967,15 @@ describe("the seeks under stale statistics (RES-7)", () => {
         expect(seek.rows, `${seek.query} ${seek.plan.join(" | ")}`).toBeLessThanOrEqual(2);
       }
       // The retry walk: its seek of the failing index and its updates (one statement by key, or one per rowid).
-      const walk = after.filter(
+      const walk = retry.filter(
         (s) =>
           s.query.startsWith(`UPDATE ${table} SET attempts = 0, due_at = NULL WHERE`) ||
           s.query.startsWith(`SELECT CAST(rowid AS TEXT) AS r FROM ${table} INDEXED BY ${table}_failing`),
       );
       expect(walk.length).toBeGreaterThan(0);
-      // At its cap (RETRY_JOBS_LIMIT failing rows reset): a fixed number of reads per row reset, none for the 9,900
-      // failing rows past the limit.
+      // At its cap (RETRY_JOBS_LIMIT failing rows reset): five reads per row reset (its failing-index entry, its entry
+      // of the keys' IN list, the seek of its key, its entry of the update's list and of its RETURNING), none for the
+      // 9,900 failing rows past the limit.
       expect(walk.reduce((sum, statement) => sum + statement.rows, 0)).toBeLessThanOrEqual(5 * RETRY_JOBS_LIMIT);
     },
     180_000,

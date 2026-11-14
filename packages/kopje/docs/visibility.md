@@ -752,7 +752,12 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   compares (its stored domain or its actor id's host), read live in every statement; no mark is read. While the
   instance has no `suspend` block the rule costs one constant seek per predicate a statement emits, and its `CASE`
   skips the walk in a result column too; otherwise it reads the account's row by its key and walks each key. Account
-  presentation reads the same rule with the row (`availableJoinedSql`).
+  presentation reads the same rule with the row (`availableJoinedSql`). The notification rule (`shownSql`) reads
+  coverage of the sender, of the status's author and its original's, and of the quoted status's author and its
+  original's; the boost a reblog names is the sender's, and the status arm's status is the one the status term reads,
+  so neither walks again. The positioned home read (`homeStatus`) defines the coverage of the status's author and its
+  original's once, as columns of a derived table over the status's row (`statusReads`' `hoisted`), which SQLite copies
+  to each place the rule uses them and evaluates there, where it evaluated them before (the cursor rule below).
 - **The domain job and its marks.** A write that moves the hosts a block's domain rules into or out of `suspend`
   coverage resets one `remote_moderation_jobs` row (kind `domain`) in its transaction, freezing the newest follow as its
   bound. Rounds reconcile the domain marks (`suspension_source = 'domain'`) with the live blocks; marks serve the
@@ -1003,10 +1008,15 @@ file that no longer matches fails the test too, so the list does not outlive its
 `statuses_feed` index.
 
 The fragments nest: Cloudflare's SQLite refuses an expression deeper than 100 levels, and each nested `EXISTS` and
-each term of an `AND` chain adds to it. The deepest fragment, `shownSql`, compiles at a depth of about 76; keep the
-deepest terms last in a chain and prefer `JOIN ... ON` to `WHERE` for a lookup inside a subquery. The Workers suites
-allow 90: `test/sql-depth-setup.ts` records each statement a suite runs through `Db` and has its depth measured on
-Node (`test-node/sql-depth.ts`), so a statement nearing the limit fails the suite that runs it.
+each term of an `AND` chain adds to it; keep the deepest terms last in a chain and prefer `JOIN ... ON` to `WHERE` for
+a lookup inside a subquery. SQLite 3.54.1 also refuses a statement that resolves a CTE reference after as many
+numbered tables and subqueries as that limit, less 2 (less 3 for a recursive CTE): each coverage walk is a recursive
+CTE, so a statement holding several reaches it first ([engineering.md](engineering.md), "Queries"). The Workers
+suites allow `CTE_GUARD_LIMIT` (96) for both: `test/sql-depth-setup.ts` records each statement a suite runs through
+`Db` and has it prepared at that limit on Node's SQLite 3.54.1 (`test-node/sql-depth.ts`, which first calibrates the
+host's SQLite: a flat CTE behind 94 cursors prepares and behind 95 does not), so a statement nearing either refusal
+fails the suite that runs it. The closest is the push target (`push.ts`), at 95: what precedes its rule runs first on
+purpose, so moving it after would read more when it is false.
 
 ## Read bounds
 

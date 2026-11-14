@@ -26,9 +26,13 @@ catalog:
 
   # Cloudflare Workers: the bundler and dev server, the runtime types and the workerd test pool. deploy/package.json
   # pins the same wrangler.
-  "@cloudflare/vitest-plugin": 1.4.11
-  "@cloudflare/workers-types": 5.20261101.1
-  wrangler: 4.156.0
+  "@cloudflare/vitest-plugin": 1.7.0
+  "@cloudflare/workers-types": 5.20261110.1
+  wrangler: 4.160.0
+  # The workerd test pool on SQLite 3.53.4 (workerd 1.20261023.1), for the kopje-main-runtime project
+  # (vitest.main-runtime.config.ts): main's statements prepare there, so the rewritten policy statements are compared
+  # with them. .github/renovate.json holds it.
+  vitest-plugin-sqlite-3534: npm:@cloudflare/vitest-plugin@1.4.11
 
   # Tests: the runner, its coverage provider and its vite, property tests, the browser job, image fixtures, the HTML,
   # CSS and source scans, and the Markdown the docs checks read.

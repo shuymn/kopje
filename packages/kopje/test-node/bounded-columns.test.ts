@@ -369,6 +369,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "domainCoveredSql",
   // Whether a domain block's reject_media rules a host or an account: predicates (domain/audience.ts).
   "domainMediaRejectedSql",
+  // availableSql's coverage term, the column statusReads' hoisted row reads it into: a predicate (domain/audience.ts).
+  "guardedAccountCoveredSql",
   "hostMediaRejectedSql",
   // A status's filter text figure: whether an input is not text (a predicate) and an upper bound of its length from
   // stored bytes, a number (domain/status-presenter.ts).
@@ -612,6 +614,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/web-pages/status.ts column au.username": { count: 1, reason: LOCAL },
   "src/domain/windows.ts interpolation highest": { count: 1, reason: WINDOW },
   "src/domain/windows.ts interpolation end": { count: 1, reason: WINDOW },
+  "src/domain/windows.ts interpolation int(query.per)": {
+    count: 1,
+    reason: "a merged window's per-stream count (an integer int() checks), naming no column",
+  },
   "src/domain/account-actions.ts accounts.uri": { count: 3, reason: IDENTITY },
   // remoteAttachmentSql's own parts: an attachment entry (cutSql's name and value) and its src, a fixed column name,
   // naming no bounded column.

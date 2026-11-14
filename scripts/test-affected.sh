@@ -56,7 +56,7 @@ KOPJE_CODE=${KOPJE_CODE:-$KOPJE}
 projects=()
 if [ "$KOPJE" = true ]; then
 	if [ "$KOPJE_CODE" = true ]; then
-		projects+=(--project kopje --project kopje-streaming)
+		projects+=(--project kopje --project kopje-streaming --project kopje-main-runtime)
 	fi
 	projects+=(--project kopje-cli)
 fi

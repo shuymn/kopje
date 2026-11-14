@@ -21,9 +21,10 @@ import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { PLAN_AUDIT_ENTRIES } from "./plan-audit-entries";
 import { auditStore, type PlannedOrRefused } from "./plan-audit-store";
 
-// Setup of every Workers suite (vitest.config.ts, vitest.streaming.config.ts): records each distinct statement the
-// suite runs through Db, in the Store or in a test, and after the suite has its expression depth measured on Node
-// (test-node/sql-depth.ts) and the plan of each statement the domain code ran audited (test/plan-audit.ts). Db is where
+// Setup of every Workers suite (vitest.config.ts, vitest.streaming.config.ts, vitest.main-runtime.config.ts): records
+// each distinct statement the suite runs through Db, in the Store or in a test, and after the suite has each prepared
+// on Node at the guard's limit (test-node/sql-depth.ts: its expression depth and the cursors before each CTE) and the
+// plan of each statement the domain code ran audited (test/plan-audit.ts). Db is where
 // the domain code, and the policy fragments it composes (src/domain/audience.ts), run their SQL; the Store kernel's
 // migrations and the dump, import and backup statements run on SqlStorage directly, as fixed or catalog-generated text
 // without such nesting.
@@ -43,8 +44,9 @@ export type Recorded = { samples: SqlStorageValue[][]; production: boolean; meas
 
 export const statements = new Map<string, Recorded>();
 
-// As test-node/sql-depth.ts reports one.
-export type DeepStatement = { depth: number; sql: string };
+// As test-node/sql-depth.ts reports one: refused at CTE_GUARD_LIMIT, with the lowest limit it prepares at (null: none
+// it measures).
+export type DeepStatement = { limit: number | null; sql: string };
 
 const MAX_SITES = 3;
 // A bound value changes a plan through a partial index's condition (test/plan-audit.test.ts); values the suites never
@@ -131,13 +133,33 @@ if (prototype[recorder] === undefined) {
 }
 prototype[recorder] = record;
 
-export async function measure(sql: string[]): Promise<DeepStatement[]> {
-  const service = (env as unknown as { SQL_DEPTH: Fetcher }).SQL_DEPTH;
-  const response = await service.fetch("http://sql-depth/", { method: "POST", body: JSON.stringify(sql) });
+// workerd's error when the connection to a Node service (Miniflare's loopback server) drops before the answer: seen on
+// a loaded host, with main's code too, at a request the service had not received.
+const DROPPED = "Network connection lost.";
+
+// The refused statements of `sql`, as `service` measures them. A dropped connection is retried once: the measure is a
+// pure function of the statements, so the second request measures exactly what the first would have. Any other
+// failure, a refusal or a second drop fails the caller.
+export async function measureWith(service: Pick<Fetcher, "fetch">, sql: string[]): Promise<DeepStatement[]> {
+  const body = JSON.stringify(sql);
+  const send = () => service.fetch("http://sql-depth/", { method: "POST", body });
+  let response: Response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (!(error instanceof Error && error.message === DROPPED)) {
+      throw error;
+    }
+    response = await send();
+  }
   if (!response.ok) {
     throw new Error(await response.text());
   }
   return response.json();
+}
+
+export function measure(sql: string[]): Promise<DeepStatement[]> {
+  return measureWith((env as unknown as { SQL_DEPTH: Fetcher }).SQL_DEPTH, sql);
 }
 
 // Each identity's plan and violations for each sample of its parameters, kept for the worker's later suites: a plan

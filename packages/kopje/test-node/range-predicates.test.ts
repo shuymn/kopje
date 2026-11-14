@@ -12,8 +12,7 @@ import { parse, sources, type Source } from "./source-scan.js";
 // a column and that parameter, in either order around the OR and on either side of the operator, the parameter bare or
 // in CAST(... AS type). A parameter is SQLite's: `?`, `?NNN`, `:name`, `@name` or `$name`. Not flagged: a column tested
 // for NULL (`expires_at IS NULL OR expires_at > ?`, a lifetime, not a cursor), any other operator (`=`, `IS NOT`,
-// `IN`), and bounds that are not parameters (a subquery, as windows.ts's merged bound over its materialized
-// candidates).
+// `IN`), and bounds that are not parameters (a column or a subquery).
 
 const PARAM = String.raw`(?:\?\d*|[:@$][A-Za-z_]\w*)`;
 const COLUMN = String.raw`[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?`;
