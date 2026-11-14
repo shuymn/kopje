@@ -18,10 +18,17 @@ import { round, world, type World } from "./remote-suspension-helpers";
 
 // The admin metrics (Api::V1::Admin::{Measures,Dimensions,Retention}Controller of Mastodon 4.5.11): the measure
 // instance_follows (domain/admin-measures.ts; InstanceFollowsMeasure), its total, series, caps and answer shape
-// (REST::Admin::MeasureSerializer), the request's order of refusals, and dimensions and retention answering `[]`.
+// (REST::Admin::MeasureSerializer), the request's order of refusals (Mastodon 4.5.21's), and dimensions and retention
+// answering `[]`.
 // The other measures: test/admin-measures-keys.test.ts; walks, plans and budgets: test/admin-measures-bounds.test.ts.
 
 const D = "d.example";
+const NOT_ALLOWED = { status: 403, body: { error: "This action is not allowed" } };
+const missing = (key: string) => ({
+  status: 400,
+  body: { error: `param is missing or the value is empty or invalid: ${key}` },
+});
+const INVALID_DATE = { status: 422, body: { error: "Invalid date supplied" } };
 
 // Fediblockhole's request (fetch_instance_follows, fediblockhole/__init__.py:546-549), with optional extras.
 const follows = (domain: string, extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}) => ({
@@ -178,6 +185,17 @@ describe("the measure instance_follows", () => {
   it(`cap the series at ${MEASURE_DAYS} days with 422`, async () => {
     const w = await world();
     await followed(w, w.alice.id, 1, D);
+    // A range Mastodon 4.5.21's range clamp would cut to its last two years (base_measure.rb:20-25) is past the cap
+    // too: Kopje answers no range the clamp moves. Anyone but the OAuth admin is refused first.
+    const sixYears = follows(D, {}, { start_at: "2020-01-01", end_at: "2026-01-01" });
+    expect(await measure(w, sixYears)).toEqual({
+      status: 422,
+      body: { error: `date range too long (at most ${MEASURE_DAYS} days)` },
+    });
+    const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
+    for (const token of [alice, null]) {
+      expect(await measure(w, sixYears, token)).toEqual(NOT_ALLOWED);
+    }
     const full = await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-01" }));
     expect(full.status).toBe(200);
     expect((full.body as Measure[])[0]!.data).toHaveLength(MEASURE_DAYS);
@@ -219,68 +237,66 @@ describe("the measure instance_follows", () => {
     expect(atCap).toBeLessThan(4 * (MEASURE_ROWS + 1) + 100);
   }, 60_000);
 
-  it("read the body before the policy, in retrieve order, after the optional token", async () => {
+  it("refuse other callers, then read the OAuth admin's body in Mastodon 4.5.21's order", async () => {
     const w = await world();
     await followed(w, w.alice.id, 2, D);
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
     const app = await appTokenWith(w.h, "admin:read");
-    // params.require(key) of a key that reads its object, and Date::Error, both before the policy (set_measures),
-    // so to every caller: the admin, a user, an app token and no token.
-    for (const token of [w.admin, alice, app, null]) {
-      const missing = (key: string) => ({
-        status: 400,
-        body: { error: `param is missing or the value is empty or invalid: ${key}` },
-      });
-      expect(await measure(w, { keys: ["instance_follows"] }, token)).toEqual(missing("instance_follows"));
-      expect(await measure(w, { keys: ["instance_follows"], instance_follows: {} }, token)).toMatchObject({
-        status: 400,
-      });
-      for (const key of ["instance_accounts", "instance_statuses", "tag_uses", "tag_accounts", "tag_servers"]) {
-        expect(await measure(w, { keys: [key] }, token)).toEqual(missing(key));
-      }
-      for (const date of [
-        "2026-02-30",
-        "yesterday",
-        "2026-10-01garbage",
-        "2026-10-01T25:00",
-        "2026-10-01T10:00+24:00",
-      ]) {
-        expect(await measure(w, follows(D, {}, { start_at: date, end_at: "2026-10-01" }), token)).toEqual({
-          status: 422,
-          body: { error: "Invalid date supplied" },
-        });
-      }
-      // retrieve's order (measure.rb:21-26): the first known key's object, then the dates, then later keys' objects.
-      const bad = { start_at: "yesterday", end_at: "2026-10-01" };
-      expect(await measure(w, { keys: ["new_users", "instance_accounts"], ...bad }, token)).toEqual({
-        status: 422,
-        body: { error: "Invalid date supplied" },
-      });
-      expect(await measure(w, { keys: ["nothing", "instance_accounts", "new_users"], ...bad }, token)).toEqual(
-        missing("instance_accounts"),
-      );
-      expect(await measure(w, { keys: ["new_users", "instance_accounts"] }, token)).toEqual(
-        missing("instance_accounts"),
-      );
+    // params.require(:keys) (measures_controller.rb:21): absent, blank, [] or {} answers 400 before anything else.
+    for (const body of [{}, { keys: [] }, { keys: "" }, { keys: " \u0085" }, { keys: null }, { keys: {} }]) {
+      expect(await measure(w, { ...body, start_at: "yesterday" }), JSON.stringify(body)).toEqual(missing("keys"));
     }
-    // The optional token is checked before any of them (authorize_if_got_token!): an unknown token answers 401 and a
-    // token without admin:read 403, whatever the body.
+    const formKeys = async (fields: Record<string, string>) => {
+      const response = await w.h.request(MEASURES, bearer(w.admin, form(fields)));
+      return { status: response.status, body: await response.json<unknown>() };
+    };
+    expect(await formKeys({ keys: "", start_at: "yesterday" })).toEqual(missing("keys"));
+    // A form's keys[]= is [""], which Rails does not find blank: no known key, so `[]`.
+    expect(await formKeys({ "keys[]": "", start_at: "yesterday" })).toEqual({ status: 200, body: [] });
+    // In retrieve's order (measure.rb:21-26): the first known key's object, then the dates, then later keys' objects.
+    expect(await measure(w, { keys: ["instance_follows"] })).toEqual(missing("instance_follows"));
+    expect(await measure(w, { keys: ["instance_follows"], instance_follows: {} })).toMatchObject({ status: 400 });
+    for (const key of ["instance_accounts", "instance_statuses", "tag_uses", "tag_accounts", "tag_servers"]) {
+      expect(await measure(w, { keys: [key] })).toEqual(missing(key));
+    }
+    for (const date of ["2026-02-30", "yesterday", "2026-10-01garbage", "2026-10-01T25:00", "2026-10-01T10:00+24:00"]) {
+      expect(await measure(w, follows(D, {}, { start_at: date, end_at: "2026-10-01" }))).toEqual(INVALID_DATE);
+    }
+    const bad = { start_at: "yesterday", end_at: "2026-10-01" };
+    expect(await measure(w, { keys: ["new_users", "instance_accounts"], ...bad })).toEqual(INVALID_DATE);
+    expect(await measure(w, { keys: ["nothing", "instance_accounts", "new_users"], ...bad })).toEqual(
+      missing("instance_accounts"),
+    );
+    expect(await measure(w, { keys: ["new_users", "instance_accounts"] })).toEqual(missing("instance_accounts"));
+    // The optional token is checked first (authorize_if_got_token!): an unknown token answers 401 and a token without
+    // admin:read 403, whatever the body.
     const narrow = await userToken(w.h, "alice@example.com", "read");
-    for (const body of [{ keys: ["instance_follows"] }, follows(D, {}, { start_at: "yesterday" }), {}]) {
+    const bodies = [
+      {},
+      { keys: ["instance_follows"] },
+      follows(D, {}, { start_at: "yesterday" }),
+      { keys: ["new_users", "instance_accounts"], ...bad },
+      { keys: ["active_users"] },
+      { keys: ["new_users"] },
+      follows(D),
+    ];
+    for (const body of bodies) {
       expect((await measure(w, body, "not-a-token")).status).toBe(401);
       expect(await measure(w, body, narrow)).toEqual({
         status: 403,
         body: { error: "This action is outside the authorized scopes" },
       });
-    }
-    for (const token of [alice, app, null]) {
-      for (const body of [follows(D), {}, { keys: ["active_users"] }, { keys: ["new_users"] }]) {
-        expect(await measure(w, body, token)).toEqual({ status: 403, body: { error: "This action is not allowed" } });
+      // Then any caller but the OAuth admin is refused before the body is read (permissions_concern.rb:7,14).
+      for (const token of [alice, app, null]) {
+        expect(await measure(w, body, token), JSON.stringify(body)).toEqual(NOT_ALLOWED);
       }
     }
     // Measure.retrieve's filter_map: unknown keys are left out, each known key answers once per mention, in order.
-    expect(await measure(w, {})).toEqual({ status: 200, body: [] });
     expect(await measure(w, { keys: ["nothing", "constructor", "__proto__"] })).toEqual({ status: 200, body: [] });
+    expect(await measure(w, { keys: "instance_follows", instance_follows: { domain: D } })).toEqual({
+      status: 200,
+      body: [{ key: "instance_follows", unit: null, total: "2", data: [] }],
+    });
     const answer = await measure(w, { ...follows(D), keys: ["nothing", "instance_follows", "instance_follows"] });
     expect(answer.body).toEqual([
       { key: "instance_follows", unit: null, total: "2", data: [] },
@@ -338,18 +354,86 @@ describe("the measure instance_follows", () => {
   });
 });
 
-describe("dimensions and retention", () => {
-  it("answer [] to the OAuth admin and 403 to everyone else", async () => {
+describe("the metrics' refusal order", () => {
+  it("refuse every caller but the OAuth admin before reading the body, a malformed one included", async () => {
     const w = await world();
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
-    for (const path of ["/api/v1/admin/dimensions", "/api/v1/admin/retention"]) {
-      const body = { keys: ["languages"], start_at: "2026-10-01", end_at: "2026-10-02", frequency: "day" };
-      expect(await (await w.h.request(path, bearer(w.admin, json(body)))).json()).toEqual([]);
-      for (const init of [bearer(alice, json(body)), json(body)]) {
-        const response = await w.h.request(path, init);
-        expect(response.status).toBe(403);
-        expect(await response.json()).toEqual({ error: "This action is not allowed" });
+    const app = await appTokenWith(w.h, "admin:read");
+    const narrow = await userToken(w.h, "alice@example.com", "read");
+    const malformed = async (path: string, token: string | null) => {
+      const init = { method: "POST", headers: { "content-type": "application/json" }, body: "{" };
+      const response = await w.h.request(path, token === null ? init : bearer(token, init));
+      return { status: response.status, body: await response.json<unknown>() };
+    };
+    for (const path of [MEASURES, "/api/v1/admin/retention"]) {
+      // The body is parsed for the OAuth admin alone, so only the admin learns it is malformed.
+      expect(await malformed(path, w.admin)).toEqual({ status: 400, body: { error: "Malformed request body" } });
+      expect((await malformed(path, "not-a-token")).status).toBe(401);
+      expect(await malformed(path, narrow)).toEqual({
+        status: 403,
+        body: { error: "This action is outside the authorized scopes" },
+      });
+      for (const token of [alice, app, null]) {
+        expect(await malformed(path, token), `${path} ${token}`).toEqual(NOT_ALLOWED);
       }
+    }
+  });
+});
+
+describe("dimensions and retention", () => {
+  it("retention requires start_at and end_at of the OAuth admin", async () => {
+    const w = await world();
+    const retention = async (body: Record<string, unknown>, token: string | null = w.admin) => {
+      const init = json(body);
+      const response = await w.h.request("/api/v1/admin/retention", token === null ? init : bearer(token, init));
+      return { status: response.status, body: await response.json<unknown>() };
+    };
+    const day = "2026-10-01";
+    // params.require(:start_at), then params.require(:end_at) (retention_controller.rb:21-22), before either is read
+    // as a date; U+0085 is blank to Rails.
+    for (const body of [{}, { end_at: day }, { start_at: "", end_at: day }, { start_at: " \u0085", end_at: "x" }]) {
+      expect(await retention(body), JSON.stringify(body)).toEqual(missing("start_at"));
+    }
+    for (const body of [{ start_at: day }, { start_at: "yesterday", end_at: "" }, { start_at: day, end_at: null }]) {
+      expect(await retention(body), JSON.stringify(body)).toEqual(missing("end_at"));
+    }
+    // Retention#initialize reads both dates (retention.rb:19-20); Kopje reads them as ISO 8601 only, so the dates
+    // Ruby's Date.parse reads leniently answer 422 too. U+FEFF is not blank to Rails, nor a date.
+    for (const date of ["October 1, 2026", "2026-10-01T25:00:00Z", "2026-02-30", "yesterday", "\ufeff", "1582-12-31"]) {
+      expect(await retention({ start_at: date, end_at: day }), date).toEqual(INVALID_DATE);
+      expect(await retention({ start_at: day, end_at: date }), date).toEqual(INVALID_DATE);
+    }
+    for (const dates of [
+      { start_at: day, end_at: "2026-10-02" },
+      { keys: ["languages"], start_at: day, end_at: "2026-10-02", frequency: "day" },
+      { start_at: "2026-10-01T10:00:00Z", end_at: "2026-10-02T00:00:00+09:00", frequency: "month" },
+      { start_at: "2026-10-02", end_at: day, frequency: "nothing" },
+    ]) {
+      expect(await retention(dates)).toEqual({ status: 200, body: [] });
+    }
+    // Mastodon 4.5.21's refusal order: the token, then anyone but the OAuth admin, before the body.
+    const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
+    const app = await appTokenWith(w.h, "admin:read");
+    const narrow = await userToken(w.h, "alice@example.com", "read");
+    for (const body of [{}, { start_at: "October 1, 2026", end_at: day }, { start_at: day, end_at: day }]) {
+      expect((await retention(body, "not-a-token")).status).toBe(401);
+      expect((await retention(body, narrow)).status).toBe(403);
+      for (const token of [alice, app, null]) {
+        expect(await retention(body, token)).toEqual(NOT_ALLOWED);
+      }
+    }
+  });
+
+  it("dimensions answer [] to the OAuth admin and 403 to everyone else", async () => {
+    const w = await world();
+    const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
+    const path = "/api/v1/admin/dimensions";
+    const body = { keys: ["languages"], start_at: "2026-10-01", end_at: "2026-10-02", frequency: "day" };
+    expect(await (await w.h.request(path, bearer(w.admin, json(body)))).json()).toEqual([]);
+    for (const init of [bearer(alice, json(body)), json(body)]) {
+      const response = await w.h.request(path, init);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "This action is not allowed" });
     }
   });
 });

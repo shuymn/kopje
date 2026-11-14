@@ -420,6 +420,16 @@ function accept(db: Db, accountId: string, requests: readonly Answered[], now: n
   runJobs(db, jobs, REQUEST_JOB_BATCHES, now);
 }
 
+// DismissNotificationRequestService#call for each request (the request already gone): a job that deletes its sender's
+// filtered notifications; then the first batches of the jobs, as accept runs them.
+function dismiss(db: Db, accountId: string, requests: readonly Answered[], now: number): void {
+  const jobs = requests.flatMap(({ from_account_id }) => {
+    const job = startJob(db, "dismiss", accountId, from_account_id, iso(now));
+    return job === null ? [] : [job];
+  });
+  runJobs(db, jobs, REQUEST_JOB_BATCHES, now);
+}
+
 // POST /api/v1/notifications/requests/:id/accept. Returns whether the request was the viewer's.
 export const acceptNotificationRequest = userWriteOperation<{ id: string; now: number }, boolean>(
   (db, { id, now }, { accountId }) => {
@@ -434,11 +444,7 @@ export const acceptNotificationRequest = userWriteOperation<{ id: string; now: n
 export const dismissNotificationRequest = userWriteOperation<{ id: string; now: number }, boolean>(
   (db, { id, now }, { accountId }) => {
     const requests = takeRequests(db, accountId, [id]);
-    const jobs = requests.flatMap(({ from_account_id }) => {
-      const job = startJob(db, "dismiss", accountId, from_account_id, iso(now));
-      return job === null ? [] : [job];
-    });
-    runJobs(db, jobs, REQUEST_JOB_BATCHES, now);
+    dismiss(db, accountId, requests, now);
     return requests.length > 0;
   },
 );
@@ -452,14 +458,16 @@ export const acceptNotificationRequests = userWriteOperation<{ ids: string[]; no
   },
 );
 
-// POST /api/v1/notifications/requests/dismiss (dismiss_bulk): each of the viewer's requests among `ids` deleted.
-// Mastodon's dismiss_bulk destroys the requests alone (`@requests.each(&:destroy!)`,
-// app/controllers/api/v1/notifications/requests_controller.rb:47-49), without DismissNotificationRequestService, so
-// the senders' filtered notifications stay, shown with include_filtered; Kopje does the same.
-export const dismissNotificationRequests = userWriteOperation<{ ids: string[] }, null>((db, { ids }, { accountId }) => {
-  takeRequests(db, accountId, ids);
-  return null;
-});
+// POST /api/v1/notifications/requests/dismiss (dismiss_bulk): each of the viewer's requests among `ids` dismissed;
+// ids that name none are ignored. Mastodon 4.5.21's dismiss_bulk destroys the requests and has
+// FilteredNotificationCleanupWorker delete their senders' filtered notifications
+// (app/controllers/api/v1/notifications/requests_controller.rb:47-50), as a single dismiss does.
+export const dismissNotificationRequests = userWriteOperation<{ ids: string[]; now: number }, null>(
+  (db, { ids, now }, { accountId }) => {
+    dismiss(db, accountId, takeRequests(db, accountId, ids), now);
+    return null;
+  },
+);
 
 // GET /api/v1/notifications/requests/merged: whether every request the viewer accepted has had its notifications
 // unfiltered (no accept job left).

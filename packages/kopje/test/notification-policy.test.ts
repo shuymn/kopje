@@ -826,14 +826,16 @@ describe("notification requests", () => {
     );
     expect({ status: accepted.status, body: await accepted.json() }).toEqual({ status: 200, body: {} });
     expect((await listed(h, alice)).map(([, from]) => from)).toEqual([carol.id, bob.id, bob.id]);
-    // dismiss_bulk destroys the requests alone, as Mastodon's: the sender's filtered notifications stay.
+    // Mastodon 4.5.21's dismiss_bulk: the requests go, and so do their senders' filtered notifications.
+    expect(await listed(h, alice, `?account_id=${dave.id}`)).toEqual([["mention", dave.id]]);
     const dismissed = await h.request(
       "/api/v1/notifications/requests/dismiss",
       bearer(alice.token, form({ "id[]": byAccount.get(dave.id)! })),
     );
     expect({ status: dismissed.status, body: await dismissed.json() }).toEqual({ status: 200, body: {} });
     expect(await requests(h, alice)).toEqual([]);
-    expect(await listed(h, alice, `?account_id=${dave.id}`)).toEqual([["mention", dave.id]]);
+    expect(await listed(h, alice, `?account_id=${dave.id}`)).toEqual([]);
+    expect((await stored(h, alice)).some(([, from]) => from === dave.id)).toBe(false);
     // Too many ids at once.
     const many = Array.from({ length: MAX_BULK_REQUESTS + 1 }, (_, i) => String(i + 1));
     const refused = await h.request("/api/v1/notifications/requests/accept", bearer(alice.token, json({ id: many })));
@@ -894,6 +896,42 @@ describe("notification requests", () => {
       expect((await listed(h, alice)).map(([, from]) => from)).toEqual([carol.id, bob.id, bob.id]);
       // The retry added them, as the batch does.
       expect(await linked()).toHaveLength(2);
+      expect(await sql(h.store, "SELECT 1 FROM notification_request_jobs")).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("commits the answers when one job’s first batch fails in a bulk dismiss, and runs the other job (RES-5)", async () => {
+    const { h, alice, bob, carol, dave } = await scene();
+    const byAccount = new Map((await requests(h, alice)).map((r) => [r.account.id, r.id]));
+    // Every deletion of bob's notifications fails: his job's batches throw.
+    await sql(
+      h.store,
+      `CREATE TRIGGER test_job_fails BEFORE DELETE ON notifications WHEN OLD.from_account_id = '${bob.id}'
+			BEGIN SELECT RAISE(ABORT, 'test: the batch fails'); END`,
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const from = async (sender: string) => (await stored(h, alice)).filter(([, id]) => id === sender).length;
+    expect([await from(bob.id), await from(carol.id)]).toEqual([2, 1]);
+    try {
+      const dismissed = await h.request(
+        "/api/v1/notifications/requests/dismiss",
+        bearer(alice.token, json({ id: [byAccount.get(bob.id), byAccount.get(carol.id)] })),
+      );
+      expect({ status: dismissed.status, body: await dismissed.json() }).toEqual({ status: 200, body: {} });
+      // Both requests answered; carol's job ran, bob's failed once and backs off.
+      expect((await requests(h, alice)).map((r) => r.account.id)).toEqual([dave.id]);
+      expect([await from(bob.id), await from(carol.id)]).toEqual([2, 0]);
+      expect(
+        await sql(h.store, "SELECT from_account_id, kind, attempts, due_at FROM notification_request_jobs"),
+      ).toEqual([{ from_account_id: bob.id, kind: "dismiss", attempts: 1, due_at: NOW + JOB_RETRY_DELAYS_MS[0]! }]);
+      await sql(h.store, "DROP TRIGGER test_job_fails");
+      expect(await runStoreJobs(h.store, BUILD, { now: NOW })).toMatchObject({ pending: false });
+      expect(await from(bob.id)).toBe(2);
+      await runStoreJobs(h.store, BUILD, { now: NOW + JOB_RETRY_DELAYS_MS[0]! });
+      expect(await from(bob.id)).toBe(0);
       expect(await sql(h.store, "SELECT 1 FROM notification_request_jobs")).toEqual([]);
     } finally {
       vi.restoreAllMocks();
@@ -989,6 +1027,27 @@ describe("notification requests", () => {
     expect(await sql(h.store, "SELECT count(*) AS n FROM conversations WHERE account_id = ?", alice.id)).toEqual([
       { n: count },
     ]);
+  }, 60_000);
+  it("dismisses in bulk a sender with more filtered notifications than the request’s batches; the job rounds delete the rest", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const bob = await remoteAccount(h.store, "bob");
+    const count = REQUEST_JOB_WINDOW * REQUEST_JOB_BATCHES + 10;
+    await seedFilteredMentions(h, alice, bob, count);
+    const [request] = await requests(h, alice);
+    const dismissed = await h.request(
+      "/api/v1/notifications/requests/dismiss",
+      bearer(alice.token, json({ id: [request!.id] })),
+    );
+    expect(dismissed.status).toBe(200);
+    expect(await requests(h, alice)).toEqual([]);
+    const filtered = async () =>
+      (await sql<{ n: number }>(h.store, "SELECT count(*) AS n FROM notifications WHERE filtered = 1"))[0]!.n;
+    // The request's batches deleted REQUEST_JOB_BATCHES windows; a round deletes the rest.
+    expect(await filtered()).toBe(10);
+    expect(await runStoreJobs(h.store, BUILD, { now: NOW })).toMatchObject({ pending: false });
+    expect(await filtered()).toBe(0);
+    expect(await sql(h.store, "SELECT 1 FROM notification_request_jobs")).toEqual([]);
   }, 60_000);
   it("leaves out of a later batch what a block since refuses, and adds none of it to a conversation", async () => {
     const h = await community(["alice"]);

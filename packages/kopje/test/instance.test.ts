@@ -223,7 +223,7 @@ describe("instance usage.users.active_month", () => {
       .active_month;
   const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-  it("counts the available local accounts active today or on the 27 UTC days before", async () => {
+  it("counts the available local accounts active today or on the 28 UTC days before", async () => {
     const h = await community(["alice", "bob"]);
     expect(await activeMonth(h)).toBe(0);
     // The harness waits for the work the response leaves running (waitUntil), so the day is recorded on return.
@@ -231,9 +231,10 @@ describe("instance usage.users.active_month", () => {
     expect(await activeMonth(h)).toBe(1);
     const setBob = (ms: number) =>
       sql(h.store, "UPDATE local_accounts SET active_on = ? WHERE account_id = ?", day(ms), h.users.bob.id);
-    await setBob(NOW - 27 * DAY_MS);
-    expect(await activeMonth(h)).toBe(2);
+    // Mastodon 4.5.21's active_user_count(4) sums the days from 28 days ago through today.
     await setBob(NOW - 28 * DAY_MS);
+    expect(await activeMonth(h)).toBe(2);
+    await setBob(NOW - 29 * DAY_MS);
     expect(await activeMonth(h)).toBe(1);
     await h.store.suspendAccount(BUILD, { accountId: h.users.alice.id, now: NOW });
     expect(await activeMonth(h)).toBe(0);
@@ -245,16 +246,16 @@ describe("instance usage.users.active_month", () => {
       sql(h.store, "UPDATE local_accounts SET active_on = ? WHERE account_id = ?", value, h.users.bob.id);
     for (const [value, counted] of [
       [day(NOW), 1],
-      [day(NOW - 27 * DAY_MS), 1],
-      [day(NOW - 28 * DAY_MS), 0],
+      [day(NOW - 28 * DAY_MS), 1],
+      [day(NOW - 29 * DAY_MS), 0],
       [day(NOW + DAY_MS), 0],
       ["9999-12-31", 0],
     ] as const) {
       await setBob(value);
       expect(await activeMonth(h), value).toBe(counted);
     }
-    // The last instant of a day still counts its 27th day before; the next midnight drops it and counts the new day.
-    await setBob(day(NOW - 27 * DAY_MS));
+    // The last instant of a day still counts its 28th day before; the next midnight drops it and counts the new day.
+    await setBob(day(NOW - 28 * DAY_MS));
     h.now.mockReturnValue(NOW + DAY_MS - 1);
     expect(await activeMonth(h)).toBe(1);
     h.now.mockReturnValue(NOW + DAY_MS);

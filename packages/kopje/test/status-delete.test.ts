@@ -1460,6 +1460,17 @@ describe("status deletes: forgeries and the retraction's scope", () => {
     expect((await project(w)).retractions).toEqual([]);
   });
 
+  // Mastodon 4.5.21 refuses a Create whose object names another account's stored status (create.rb:36-38,
+  // mastodon#39916), where it used to try to create it again. Kopje's lookup by id refuses it the same way; the
+  // lookup by atomUri is not made.
+  it("a Create by F (same origin) of R's stored status changes nothing", async () => {
+    const w = await inRun([inbox(0, "Create", 0), inbox(1, "Create", 0)]);
+    expect(reasons(w)).toEqual(["created", "not-author"]);
+    expect((await project(w)).statuses.map((s) => [s.uri, s.author, s.withdrawn, s.history])).toEqual([
+      [S1, R, false, []],
+    ]);
+  });
+
   // ID-7, ID-6: a stored status R deleted is created again by nobody (`*`), while R's Delete of a uri never seen
   // here is R's own (deviation 3: Mastodon's Tombstone of it refuses every account, create.rb:438).
   it("F's Create of R's deleted uri is refused; of R's unknown-deleted uri it is taken", async () => {

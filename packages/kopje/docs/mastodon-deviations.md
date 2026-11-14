@@ -6,12 +6,13 @@ Other documents point here rather than repeat the release.
 ## What Kopje follows
 
 - **Client API.** Kopje follows the client API as **Mastodon v4.5.11** serves it, the reference release, apart from
-  the departures below and the gaps open issues track. The claim is for that tag: a later 4.5 patch is followed only
-  once Kopje moves its reference release to it. The conformance checks compare Kopje with the reference release's
-  source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
-  (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`). Their
-  fixtures carry the release in their names and their `mastodon` field, and `test-node/mastodon-reference.test.ts`
-  checks that they name the release this page does.
+  the departures below and the gaps open issues track. The claim is for that tag. A fix that a later Mastodon release
+  makes may be followed before the reference release moves; the entry or code comment that describes the fixed
+  behaviour names that release (for example, "Mastodon 4.5.21 counts …"). The conformance checks compare Kopje with the
+  reference release's source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each
+  route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
+  (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
+  and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
 - **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
@@ -74,19 +75,20 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the admin's, made by `/setup`, an account is made only by invitation: the first sign-in through Cloudflare Access of
   an email the Access admin invited ([setup.md](setup.md), "Adding accounts"; threat model AUTH-9). Accepted,
   2026-10-15; the invitation rule, 2026-10-27.
-- **MD-2: Admin operations withheld from Mastodon's API.** Domain allows, IP, email domain and canonical email
-  blocks, link publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission;
-  dimensions and retention answer `[]` to the OAuth admin and 403 to everyone else. Kopje has no sign-ups, recorded IPs
-  or allowlist mode. Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin
-  reviews trends (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures
-  (`POST /api/v1/admin/measures`), `active_users` (Kopje keeps login days only for the instance activity, from the
-  upgrade that added them and for today, the 184 days before it and tomorrow, plus an imported backlog until the prune
-  reaches it (RES-4 in `docs/threat-model.md`), where the measure takes any range), `interactions` (no count of replies,
-  boosts, follows, votes and favourites by day survives their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no
-  hashtag history over an arbitrary range, and a hashtag's API id names no stored row) and `instance_statuses` (a
-  server's statuses stay stored while their deletion runs) answer 422
-  `measure <key> is not served` to the OAuth admin, the whole request; Mastodon's 400 for a missing object and 422 for
-  an invalid date come first, to every caller. Accepted, 2026-10-22.
+- **MD-2: Admin operations withheld from Mastodon's API.** Domain allows, IP, email domain and canonical email blocks,
+  link publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
+  retention answer `[]` to the OAuth admin and 403 to everyone else, retention after its 400 for a missing `start_at` or
+  `end_at` and 422 for an invalid date, as Mastodon 4.5.21 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
+  Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin reviews trends
+  (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje
+  keeps login days only for the instance activity, from the upgrade that added them and for today, the 184 days before
+  it and tomorrow, plus an imported backlog until the prune reaches it (RES-4 in `docs/threat-model.md`), where the
+  measure takes any range), `interactions` (no count of replies, boosts, follows, votes and favourites by day survives
+  their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's
+  API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
+  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
+  a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
+  caller is refused (403) before the body is read. Accepted, 2026-10-22.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Accepted,
   2026-10-20.
@@ -367,6 +369,19 @@ Accounts (the `Account` and credential account entities):
   again only a day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The
   pinned statuses a collection sync fetches use the stored account however long ago the sync was asked for, where
   Mastodon checks the account when it fetches them. Search always fetches the account.
+- `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
+  accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
+  Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
+  (`credential_account_serializer.rb:17`). The counts differ in two ways.
+  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count is lower. An
+    individual suspension keeps a requester's request pending, while a `suspend` block and a deleted account's purge
+    remove it. Counting among all of them would let the stored requests of suspended accounts make every
+    `verify_credentials` read grow without a bound (RES-7).
+  - **What unavailable means.** Kopje also leaves out a requester whose deletion has started or that a `suspend` block
+    covers, from that moment. Mastodon counts it until its purge removes the request, or until the block's suspension
+    of the domain's accounts reaches it.
+
+  Accepted, 2026-11-15.
 
 Annual reports (`/api/v1/annual_reports`):
 
@@ -390,8 +405,8 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public
   identifier (RFC 6749 §2.2).
 - `usage.users.active_month` counts the available local accounts with an authenticated API or web request on one of the
-  last 28 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
-  request made while a dump holds the Store may go unrecorded. Mastodon counts logins over the 28 days before today,
+  last 29 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
+  request made while a dump holds the Store may go unrecorded. Mastodon 4.5.21 counts logins over the same days,
   suspended users included.
 - `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
   kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
@@ -406,12 +421,12 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   hours of a signed-in user's requests, at each sign-in and at the new user's preparation.
 - The activity answer is kept for the UTC day it was made (or until `activity_api_enabled` changes, or an import is
   verified or published); Mastodon keeps its answer 24 hours from the first request.
-- The activity's logins are exact distinct accounts (Mastodon's are a HyperLogLog estimate), counted among a week's
-  first 600 login rows by day and account, so a week with more than 600 login days (one per account and day) may count
-  fewer accounts than logged in. A day's statuses and registrations stop at 10^12 each. Week 0 holds today only and
-  never reads a later day, which an import may hold; Mastodon names the five days after today too, where it has no key.
-  The day before each week's start is never counted, as in Mastodon's day keys (its sum also reads the legacy `cweek`
-  keys, which Kopje never had).
+- The activity's weeks are Mastodon 4.5.21's, 7 UTC days each. Its logins are exact distinct accounts (Mastodon's are
+  a HyperLogLog estimate), counted among a week's first 700 login rows by day and account, so a week with more than
+  700 login days (one per account and day) may count fewer accounts than logged in. A day's statuses and registrations
+  stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
+  six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
+  had.
 - `thumbnail` is always Kopje's default image; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
@@ -554,7 +569,8 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 
 - A `suspend` block deletes no content of the accounts it covers: they are unavailable while it lasts, and their
   statuses and profiles show again once it is lifted. Mastodon's `BlockDomainService#suspend_accounts!` runs
-  `DeleteAccountService`, which keeps only reported statuses.
+  `DeleteAccountService`, which keeps only the statuses its unresolved reports name, discarded since Mastodon 4.5.21
+  (`deleted_at` set, for its moderators alone).
 - A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
   `Account.by_domain_and_subdomains` of the suspending block.
 - Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
@@ -629,7 +645,7 @@ Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces
   when the rule hides some of their oldest), or one cut by bytes after more than 40 groups. Mastodon has no such
   bound. Accepted, 2026-11-14.
 
-Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
+Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
@@ -637,17 +653,20 @@ Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
 - `include_subdomains` is read as a boolean: empty, `0`, `f`, `false` and `off` (any case) are false; Mastodon takes
   any value sent as true, `"false"` included. The series counts the domain itself only, as 4.5.11 does.
 - `new_users`, `opened_reports` and `resolved_reports` without both dates answer 422; Mastodon answers 500.
-- `start_at` and `end_at` are read as ISO 8601 only, and only when both the date written and the UTC instant lie
-  from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date supplied`, to every caller, as an
-  unreadable date does. The bound keeps every date of the answer in four-digit years. Mastodon reads any date
-  `DateTime.parse` reads.
+- `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
+  written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date
+  supplied` to the OAuth admin, as an unreadable date does. The bound keeps every date of the answer in
+  four-digit years. Mastodon's measures read any date `DateTime.parse` reads, and Mastodon 4.5.21's retention any
+  date `Date.parse` reads, such as `October 1, 2026`, or `2026-10-01T25:00:00Z` read as its date.
 - The previous window (`previous_total`) can still reach before the Gregorian reform. Kopje counts it in the proleptic
   Gregorian calendar, while Ruby's `Date` is Julian before 1582-10-15, so `previous_total` can differ there: for the
-  period 1583-01-01 to 1584-01-01, Kopje's previous window starts on 1582-01-01 and Mastodon's on 1581-12-22. The
-  axis, `total` and the series are not affected.
+  period 1583-01-01 to 1584-01-01, Kopje's previous window starts on 1581-12-31 and Mastodon 4.5.21's on
+  1581-12-21. The axis, `total` and the series are not affected.
 - A measure past the bounds of its walk or its request ([docs/visibility.md](visibility.md), the admin measures)
-  answers 422 and no count, never an undercount, where Mastodon sets no bound; pending requests and accounts being
-  deleted count toward the walk's. So does a stored time that is not the ISO form Kopje writes (an import's).
+  answers 422 and no count, never an undercount; pending requests and accounts being deleted count toward the walk's.
+  So does a stored time that is not the ISO form Kopje writes (an import's). Mastodon sets no bound on the walk. Of
+  the range, Mastodon 4.5.21 clamps a `start_at` more than two years before `end_at` to two years before it and
+  answers for those two years; Kopje refuses a range past 366 days, so it answers no range the clamp would move.
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
