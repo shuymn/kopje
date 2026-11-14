@@ -63,7 +63,8 @@ export const MAX_UNREAD_LIMIT = 1_000;
 // NotificationGroup::SAMPLE_ACCOUNTS_SIZE.
 const SAMPLE_ACCOUNTS = 8;
 
-// How many shown notifications a walk reads at most, for a page or an unread count (at most MAX_UNREAD_LIMIT groups).
+// How many notifications, shown or hidden, a walk reads at most, for a page or an unread count (at most
+// MAX_UNREAD_LIMIT groups).
 export const GROUP_WALK = 2_000;
 
 // How many of a group's notifications, shown or hidden, its count reads at most: a larger group counts at most this
