@@ -35,7 +35,7 @@
     },
     {
       "description": "mise.toml is outside Renovate (mise-update.yml advances it within each major), so a Node.js major must move it too",
-      "matchPackageNames": ["node", "@types/node"],
+      "matchDepNames": ["node", "@types/node"],
       "matchUpdateTypes": ["major"],
       "prBodyNotes": [
         "Before merging, move `node` in mise.toml to the same major and run `mise lock node`, then update the Node.js version named in packages/kopje/RELEASING.md."
