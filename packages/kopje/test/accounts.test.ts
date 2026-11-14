@@ -63,6 +63,62 @@ describe("credentials", () => {
     });
   });
 
+  it("counts follow requests of available accounts, at most 40, among the newest 120", async () => {
+    let next = 0;
+    // `n` new remote accounts on `domain`, each with a pending request to the viewer, in id order (newest last).
+    const requests = async (h: ApiHarness & { aliceId: string }, n: number, domain: string, suspended = false) => {
+      const base = 300000000000000000n + BigInt(next);
+      next += n;
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO accounts (id, uri, username, domain, suspended_at, suspension_source)
+				SELECT CAST(?2 + i AS TEXT), 'https://' || ?3 || '/users/r' || (?2 + i), 'r' || (?2 + i), ?3, ?4, ?5 FROM n`,
+        n,
+        String(base),
+        domain,
+        suspended ? new Date(NOW).toISOString() : null,
+        suspended ? "account" : null,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO follows (account_id, target_account_id, state) SELECT CAST(?2 + i AS TEXT), ?3, 'pending' FROM n`,
+        n,
+        String(base),
+        h.aliceId,
+      );
+    };
+    const count = async (h: ApiHarness & { token: string }) => {
+      const response = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+      return (await response.json<{ source: { follow_requests_count: number } }>()).source.follow_requests_count;
+    };
+    // Mastodon 4.5.21 caps the count at 40 (credential_account_serializer.rb:17).
+    const many = await aliceSession();
+    await requests(many, 39, "a.example");
+    expect(await count(many)).toBe(39);
+    await requests(many, 6, "a.example");
+    expect(await count(many)).toBe(40);
+    // Requests of unavailable accounts (R1) are left out: individually suspended, then covered by a suspend block.
+    const some = await aliceSession();
+    await requests(some, 10, "suspended.example", true);
+    await requests(some, 5, "blocked.example");
+    await requests(some, 15, "ok.example");
+    expect(await count(some)).toBe(20);
+    await blockDomain(some.store, "blocked.example");
+    expect(await count(some)).toBe(15);
+    // Only the newest 120 requests are read: 3 older available requesters count while they are among them, and none
+    // once 121 newer requests of unavailable accounts precede them (the accepted departure).
+    const hidden = await aliceSession();
+    await requests(hidden, 3, "ok.example");
+    await requests(hidden, 117, "suspended.example", true);
+    expect(await count(hidden)).toBe(3);
+    await requests(hidden, 1, "suspended.example", true);
+    expect(await count(hidden)).toBe(2);
+    await requests(hidden, 3, "suspended.example", true);
+    expect(await count(hidden)).toBe(0);
+  });
+
   it("stores plain-text profile fields safely and gives the note back as source", async () => {
     const h = await aliceSession();
     const note = 'Hello <b>world</b> & "friends"\nsecond line\n\nnew paragraph';

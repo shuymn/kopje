@@ -3870,7 +3870,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   accounts' witnesses grow accounts, local_accounts and follows (the profile tabs' also statuses and the condition
   walk's tables) and check the access paths to those three: `a` and `l` by key, a follow by its rowid, no scan of any;
   not the status, field and cache tables the presenter also reads. The `a INDEXED BY` of the owned lists' window
-  (`windowAccountIds`) and of the follow lists' window join changes no plan, so no witness fails without it. Bounded
+  (`windowAccountIds`) and of the follow lists' window join changes no plan, so no witness fails without it. The
+  credential account's `follow_requests_count` reads a window of `readWindow(FOLLOW_REQUESTS_COUNT)` (120) of the
+  account's newest pending requests by `follows_target`, then judges each requester (R1: its row, its local row and
+  its domain coverage by key) outside the window, so its read stays flat however many requests are stored
+  (`test/account-presenter-reads.test.ts` ("reads a window of the viewer's newest requests, flat past its cap, each
+  requester's coverage walked to its end"), ceiling 3,722 rows). Bounded
   writes seek their targets too: a write of an INTEGER PRIMARY KEY table runs one statement per row its bounded
   selection returns (`src/db/by-ids.ts`), a text-keyed target names its key index, and an OR of two columns is two
   probes, each through

@@ -5,16 +5,20 @@ import { Db } from "../src/db/sql";
 import {
   accountsOf,
   credentialAccount,
+  FOLLOW_REQUESTS_COUNT,
   getAccount,
   getAccounts,
   listFollowRequests,
   listFollows,
   partialAccountsOf,
 } from "../src/domain/accounts";
+import { MAX_BLOCK_LABELS } from "../src/domain/audience";
 import { accountEndorsementsWithin } from "../src/domain/endorsements";
+import { readWindow } from "../src/domain/windows";
 import { sha256Hex } from "../src/security/tokens";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { blockDomainIn } from "./domain-block-helpers";
 import {
   localAccounts,
   type PlannedStatement,
@@ -156,5 +160,113 @@ describe("account presentation with stale statistics (RES-7)", () => {
         expect.arrayContaining(["SEARCH f USING INTEGER PRIMARY KEY (rowid=?)"]),
       ]);
     }
+  }, 120_000);
+});
+
+describe("the credential account's follow request count with stale statistics (RES-7)", () => {
+  it("reads a window of the viewer's newest requests, flat past its cap, each requester's coverage walked to its end", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const carol = await remoteAccount(h.store, "carol");
+    await sql(
+      h.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'pending')",
+      carol,
+      bob.id,
+    );
+    let next = 0;
+    // `n` new remote requesters of `target`, newest last, every one available: its domain of MAX_BLOCK_LABELS labels
+    // (the deepest a block's walk seeks) and its actor id on another host of as many, so that both keys are walked.
+    const labels = Array.from({ length: MAX_BLOCK_LABELS - 2 }, (_, i) => `l${i + 1}`).join(".");
+    expect(`${labels}.r1.example`.split(".")).toHaveLength(MAX_BLOCK_LABELS);
+    const requests = async (n: number, target: string) => {
+      const base = String(400000000000000000n + BigInt(next));
+      next += n;
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT CAST(?2 + i AS TEXT), 'https://' || ?3 || '.h' || (?2 + i) || '.example/users/u', 'u' || (?2 + i),
+					?3 || '.r' || (?2 + i) || '.example' FROM n`,
+        n,
+        base,
+        labels,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO follows (account_id, target_account_id, state) SELECT CAST(?2 + i AS TEXT), ?3, 'pending' FROM n`,
+        n,
+        base,
+        target,
+      );
+    };
+    const capture = () =>
+      runInDurableObject(h.store, (_instance, state) => {
+        const plans: PlannedStatement[] = [];
+        const account = credentialAccount(
+          new Db(plannedSql(state.storage.sql, /follow_requests_count/, plans)),
+          alice.id,
+          present,
+        );
+        return { count: account?.source.follow_requests_count, plans };
+      });
+    const { before, after } = await staleStatistics(h, {
+      settle: async () => {
+        // After ANALYZE: 130 requests, more than the window, and suspend blocks that match none of their keys, so the
+        // guard is on and every walk runs to its end.
+        await requests(130, alice.id);
+        await runInDurableObject(h.store, (_instance, state) => {
+          for (let k = 0; k < 20; k++) {
+            blockDomainIn(state.storage.sql, `elsewhere${k}.example`);
+          }
+        });
+      },
+      capture,
+      // The viewer's own key grows to 1,000 requests, another account's beside it.
+      grow: async () => {
+        await requests(870, alice.id);
+        await requests(500, bob.id);
+      },
+    });
+    const pending = await sql<{ n: number }>(
+      h.store,
+      "SELECT COUNT(*) AS n FROM follows WHERE target_account_id = ? AND state = 'pending'",
+      alice.id,
+    );
+    expect(pending[0]!.n).toBe(1000);
+    // Every requester is available, so the window's 120 count and the answer is the cap.
+    expect(readWindow(FOLLOW_REQUESTS_COUNT)).toBe(120);
+    expect([before.count, after.count]).toEqual([FOLLOW_REQUESTS_COUNT, FOLLOW_REQUESTS_COUNT]);
+    expect(before.plans).toHaveLength(1);
+    expect(after.plans).toHaveLength(1);
+    const { plan, rows } = after.plans[0]!;
+    // The read is flat past the window: 130 and 1,000 requests read the same rows.
+    expect(rows).toBe(before.plans[0]!.rows);
+    // The ceiling, at its caps: the viewer's local row, then per candidate of the window its follow row, its account
+    // row and local row, and for each of its two keys the walk's and the match's seek of each suffix of 2 to
+    // MAX_BLOCK_LABELS labels; and the statement's one seek of the suspend blocks' index.
+    const window = readWindow(FOLLOW_REQUESTS_COUNT);
+    const ceiling = 1 + window * (1 + 2 + 2 * (MAX_BLOCK_LABELS - 1) * 2) + 1;
+    // The figure docs/threat-model.md (RES-7) states.
+    expect(ceiling).toBe(3722);
+    expect(rows).toBeLessThanOrEqual(ceiling);
+    // The walks ran: past the window's row seeks, each candidate read a seek per suffix of both keys.
+    expect(rows).toBeGreaterThanOrEqual(window * 2 * (MAX_BLOCK_LABELS - 1));
+    // follows by follows_target, accounts and local rows by key, the blocks by their domain index; no scan, automatic
+    // index or Bloom filter. The suspend blocks' guard reads its partial index, which holds the suspend blocks only.
+    expect(plan).toContainEqual("SEARCH f USING INDEX follows_target (target_account_id=? AND state=?)");
+    expect(plan).toContainEqual("SEARCH a USING INDEX sqlite_autoindex_accounts_1 (id=?)");
+    expect(plan).toContainEqual(expect.stringMatching(/^SEARCH l USING INDEX sqlite_autoindex_local_accounts_1 /));
+    const blocks = plan.filter((detail) => /^(SEARCH|SCAN) (pn|pr|main\.instance_domain_blocks)\b/.test(detail));
+    expect(blocks).toEqual([
+      "SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+      expect.stringMatching(/^SEARCH pn USING .*INDEX sqlite_autoindex_instance_domain_blocks_1 \(domain=\?\)$/),
+      expect.stringMatching(
+        /^SEARCH pr USING .*INDEX sqlite_autoindex_instance_domain_blocks_1 \(domain=\?\) LEFT-JOIN$/,
+      ),
+    ]);
+    expect(scansOf(plan, ["f", "a", "l", "pn", "pr", "follows", "accounts", "local_accounts"])).toEqual([]);
+    expect(plan.filter((detail) => /AUTOMATIC|BLOOM/.test(detail))).toEqual([]);
   }, 120_000);
 });

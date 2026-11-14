@@ -368,6 +368,19 @@ Accounts (the `Account` and credential account entities):
   again only a day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The
   pinned statuses a collection sync fetches use the stored account however long ago the sync was asked for, where
   Mastodon checks the account when it fetches them. Search always fetches the account.
+- `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
+  accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
+  Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
+  (`credential_account_serializer.rb:17`). The counts differ in two ways.
+  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count is lower. An
+    individual suspension keeps a requester's request pending, while a `suspend` block and a deleted account's purge
+    remove it. Counting among all of them would let the stored requests of suspended accounts make every
+    `verify_credentials` read grow without a bound (RES-7).
+  - **What unavailable means.** Kopje also leaves out a requester whose deletion has started or that a `suspend` block
+    covers, from that moment. Mastodon counts it until its purge removes the request, or until the block's suspension
+    of the domain's accounts reaches it.
+
+  Accepted, 2026-11-15.
 
 Annual reports (`/api/v1/annual_reports`):
 
