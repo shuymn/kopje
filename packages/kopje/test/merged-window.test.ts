@@ -90,6 +90,16 @@ const CASES: Record<string, (ascending: boolean) => { streams: Stream[]; query: 
     streams: [stream("a", 1, range(1, 8), a), stream("b", 2, range(11, 18), a)],
     query: { per: 8, size: 5 },
   }),
+  // An id in several filled streams carries the highest of their edges (the lowest when ascending): 9 and 8 are in the
+  // streams ending at 7 and 6, and the bound, 7, is the highest edge, which their rows must carry for it to be found.
+  "shared ids of filled streams with different edges": (a) => ({
+    streams: [
+      stream("a", 1, a ? [1, 2, 3] : [9, 8, 7], a),
+      stream("b", 2, a ? [1, 2, 4] : [9, 8, 6], a),
+      stream("c", 4, a ? [3, 4, 5] : [7, 6, 5], a),
+    ],
+    query: { per: 3, size: 10 },
+  }),
   "a tie at the bound": (a) => ({
     streams: [stream("a", 1, a ? [1, 2, 5] : [9, 8, 5], a), stream("b", 2, a ? [3, 4, 5] : [7, 6, 5], a)],
     query: { per: 3, size: 10 },
