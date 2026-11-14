@@ -11,10 +11,10 @@ import {
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
 
-// Features Kopje has no data for (annual reports, translation, e-mail confirmation, async refreshes), answered as
-// Mastodon answers when the feature has nothing to show or is not configured, because clients call them and a missing
-// route can stop a client (MD-3). Each is replaced when its feature arrives with its own tables; annual reports when
-// Kopje builds their generation. The writes act on records that never exist, so they change nothing.
+// Features Kopje has no data for (translation, e-mail confirmation, async refreshes), answered as Mastodon answers
+// when the feature has nothing to show or is not configured, because clients call them and a missing route can stop a
+// client (MD-3). Each is replaced when its feature arrives with its own tables. The writes act on records that never
+// exist, so they change nothing.
 
 // Mastodon's not_found (ApplicationController#not_found, Api::BaseController#respond_with_error), as opposed to the
 // "Record not found" of an ActiveRecord::RecordNotFound.
@@ -37,25 +37,6 @@ const forUser =
     await signedIn(c, deps);
     return answer(c);
   };
-
-// Annual reports as a stock Mastodon 4.7.5 answers with Wrapstodon off (Setting.wrapstodon false): no campaign
-// (AnnualReport.current_campaign is nil), so no report is generated for anyone (docs/mastodon-deviations.md, annual
-// reports). Kopje makes none.
-// GET /api/v1/annual_reports: Api::V1::AnnualReportsController#index with no pending report
-// (REST::AnnualReportsSerializer).
-export const annualReports = forUser((c) => c.json({ annual_reports: [], accounts: [], statuses: [] }));
-
-// GET /api/v1/annual_reports/:id and POST /api/v1/annual_reports/:id/read: AnnualReportsController#set_annual_report
-// raises RecordNotFound (find_by!) for a year without a report.
-export const annualReport = forUser(recordNotFound);
-
-// GET /api/v1/annual_reports/:id/state: AnnualReport#state is ineligible for a year without a report while no
-// campaign runs.
-export const annualReportState = forUser((c) => c.json({ state: "ineligible" }));
-
-// POST /api/v1/annual_reports/:id/generate: AnnualReportsController#generate renders {} (render_empty) for a year that
-// is not the current campaign's, and starts nothing.
-export const generateAnnualReport = forUser((c) => c.json({}));
 
 // POST /api/v1/statuses/:id/translate: Api::V1::Statuses::TranslationsController rescues
 // TranslationService::NotConfiguredError with not_found. Kopje has no translation service; a status the viewer cannot

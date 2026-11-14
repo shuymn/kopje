@@ -327,6 +327,14 @@ WHEN NEW.account_id IS NOT OLD.account_id AND ${pinsFullSql("NEW.account_id", "N
 BEGIN
   SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
 END;`,
+  // 0093_annual_reports
+  ...boundTriggers(
+    "instance_settings_wrapstodon",
+    "instance_settings",
+    "name, value",
+    "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
+    SETTING_REFUSED,
+  ),
 ];
 
 // Each registered trigger's statement by its name.

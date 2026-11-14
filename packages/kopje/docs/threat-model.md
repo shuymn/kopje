@@ -122,22 +122,43 @@ against their own instance. TLS is assumed between all parties.
   first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
   `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
   request (`verifySpooledRequest`, OPS-9) holds to the same rule. The owner is the actor whose document lists the key,
-  by id and key material, and the key names no other owner. A stored key (`remote_keys`, kept per key id with its owner,
-  whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that, or when its
-  signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one exception is
-  an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document both answer
-  404 or 410: it is verified with its own stored key at any age. Another account's stale key, gone too, is refused
-  there (401) and is not taken for a relay. A live actor is never deleted with a key its current document does not
-  list (401), and a transient failure answers 503.
+  by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
+  first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
+  each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key
+  the signature's verification resolved joins them only within the same first ten (`withVerifiedReference`). Where a
+  fetched document's context gives either property its security meaning (a context Fedify preloads defines it, and
+  the context holds no `null`, no scoped context, no `@import` and no inline definition of it), an entry whose key
+  Fedify cannot import (an ML-DSA-44 Multikey among them), whose key material is not one string (alone, the one member
+  of an array, or a value object's `@value`), or that wraps other entries (a nested array, a `@list`, a `@set`, or any
+  other object of keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the
+  document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
+  property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
+  as fetched. A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at that
+  id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421
+  signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key,
+  and one that names any other key is answered as a signature that does not verify (401), live, on replay and in the
+  rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
+  trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
+  document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
+  the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own
+  stored key at any age. Another account's stale key, gone too, is refused there (401) and is not taken for a relay. A
+  live actor is never deleted with a key its current document does not list (401), and a transient failure answers 503.
   _Enforced (main):_ `receiveInbound`, `verifyHttpSignature` and `verifySpooledRequest` in `src/federation/inbound.ts`;
   `test/inbox.test.ts` ("ID-1: an inbound activity acts only for its signer", "refuses a draft-cavage signature
   without", "refuses an RFC 9421 signature without", "accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them",
   "RFC 9421 signature leaves out a required component", "holds the rollback drain's check of a spooled request to the
   same rule"), `test-node/fedify-usage.test.ts` ("reads Signature-Input with the one structured-field-values Fedify
   resolves"), `test/inbox-regressions.test.ts` ("stored keys, rotation and ownership", "refuses a gone actor's
-  Delete signed with another account's stale stored key"). A stored key list (with the
-  profile, `movedTo` and routing beside it) is replaced only by a document
-  fetched after the last one stored: every store of a remote actor's document issues a new Store revision
+  Delete signed with another account's stale stored key"); `ownKeys` in `src/federation/remote-actor.ts`,
+  `src/federation/key-entries.ts`; `test/inbox-key-forms.test.ts` ("a draft-cavage signature naming a key that is not
+  RSA", "the keys of an actor's document", "the keys read per actor", "a document whose context gives publicKey another
+  meaning", "RFC 9421 signatures by an Ed25519 key", "a key replaced under the same id", "a draft-cavage signature
+  naming an Ed25519 key Kopje serves"), `test/key-entries.test.ts` ("which contexts give the key properties their
+  meaning"), `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers
+  the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
+  `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
+  (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored:
+  every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
@@ -163,15 +184,18 @@ against their own instance. TLS is assumed between all parties.
   quoting server forwarding the quoted author's revocation of a quote's stamp, as Mastodon forwards both). Its HTTP
   signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that actor's
   own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before
-  the Store is called, against a key the actor's current document embeds, that document fetched anew in the request,
+  the Store is called, against a key the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an
+  `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request,
   never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status and stamp `Delete` (the same bodies from 4.4 to 4.7, signed by `LinkedDataSignature#sign!`, which
   writes `expires` from 4.7.0); Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a
   Mastodon 4.4 to 4.7 holding a boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an
   FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`,
-  `object`, `to` and `cc`, and a single proof). Mastodon forwards a body compacted under its `full_context`, so a
-  forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
+  `object`, `to` and `cc`, and a single `eddsa-jcs-2022` proof with exactly the keys Fedify's `createProof` writes, no
+  `expires`). An `mldsa44-jcs-2024` proof is in no profile: no sender of one writes it, and Fedify 2.4.5's verifier
+  does not include the suite; none is handed to a verifier. Mastodon forwards a body compacted under its `full_context`,
+  so a forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
   activitystreams and security/v1, then webfinger from 4.6, cid/v1 and webfinger from 4.7) and one object whose every
   term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
   `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or
@@ -217,7 +241,8 @@ against their own instance. TLS is assumed between all parties.
   v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for each
   profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
   not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion
-  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an `expires`
+  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an FEP-8b32
+  proof with `expires`, which Fedify accepts, refused, and no verifier run for an `mldsa44-jcs-2024` proof; an `expires`
   changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded form refused
   under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or aliases a decision
   term; no network fetch while verifying, and an actor document naming a context that is not preloaded refused; the
@@ -431,12 +456,13 @@ against their own instance. TLS is assumed between all parties.
   if served as `application/activity+json` or `application/ld+json` with the ActivityStreams profile, as Mastodon
   requires, and only if its root is a JSON object (JSON-LD would fetch a string root through the context loader). Other
   JSON (an uploaded file, for example) is refused, and a combined or malformed Content-Type is refused. Signed-document
-  cache entries live under a versioned namespace that is bumped whenever this policy is tightened. _Enforced (main):_
-  `createSafeLoader` and `requireObjectRoot` in `src/federation/loader.ts` (Fedify's document loaders, around their
-  caches too) with `isActivityPubMediaType` in `src/platform/media-type.ts`; JSON-LD contexts go through
-  `createContextLoader`, which never yields an object; `SIGNED_DOCUMENT_PREFIX` in `src/federation/federation.ts`;
-  `test/loader.test.ts`, `test/media-type.test.ts`, `test/document-root.test.ts`, `test/signed-fetch.test.ts` ("plain
-  JSON-LD on the context loader only", "unversioned namespace").
+  cache entries live under a versioned namespace that is bumped whenever this policy, or the reading of an actor's key
+  entries (ID-1), is tightened. _Enforced (main):_ `createSafeLoader` and `requireObjectRoot` in
+  `src/federation/loader.ts` (Fedify's document loaders, around their caches too) with `isActivityPubMediaType` in
+  `src/platform/media-type.ts`; JSON-LD contexts go through `createContextLoader`, which never yields an object;
+  `SIGNED_DOCUMENT_PREFIX` in `src/federation/federation.ts`; `test/loader.test.ts`, `test/media-type.test.ts`,
+  `test/document-root.test.ts`, `test/signed-fetch.test.ts` ("plain JSON-LD on the context loader only", "ignores
+  signed documents cached under").
 
 ### Visibility (VIS)
 
@@ -839,6 +865,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   first login with the bootstrap", "a failure at the first login's insert, after the registration is counted, rolls it
   back"); `test-node/activity-writers.test.ts` is the inventory of the writers of local statuses and accounts, so a new
   one needs a witness of its own.
+  An annual report's top status is a stored id: the presenter shows it, and the status, only when
+  `viewableStatusIds` admits it for the owner (R3), so one deleted or withdrawn since, or an imported row naming a
+  status the owner may not see, discloses nothing (R44). _Enforced (main):_ `src/domain/annual-reports.ts`;
+  `test/annual-reports.test.ts` ("presents the report as REST::AnnualReportSerializer, its top status only while the
+  owner may view it").
 - **VIS-13: a block cuts both ways, as Mastodon's does.** A local block ends the follows between the two accounts in
   both directions and in either state. A remote `Block` (one that passes ID-6) does what Mastodon's
   `ActivityPub::Activity::Block` does (`block.rb:14-16`): it ends the blocker's accepted follow with a `Reject` that
@@ -1512,6 +1543,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   records is the validated credential's client (a scheduled status's, taken when it was scheduled), never a field of the
   body (`postStatus` in `src/domain/scheduled-statuses.ts`; `test/statuses.test.ts` ("ignores an application or
   application_id the request sends")).
+  _Enforced (main)_ for annual reports: every read and change of `annual_reports` is the owner's (`annualReportOwnSql`,
+  R44, all in `src/domain/annual-reports.ts`, which `test-node/policy-boundary.test.ts` keeps alone in touching the
+  table), and `state` and `generate` read and write the caller's own year only, so another account's report answers as
+  one that does not exist; `test/annual-reports.test.ts` ("shows the owner's report of a year, read or not, and no one
+  else's", "marks the owner's report read at the Store's time, which the list then leaves out").
 - **AUTH-7: opaque credentials are unguessable and stored as digests.** Client ids and secrets, codes and access tokens
   are 32 random bytes. Codes and access tokens are stored and looked up only by their full SHA-256, at token info and
   introspection too, so a lookup reveals no prefix; a hit and a miss do not take the same time, and what keeps a token
@@ -2872,7 +2908,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/account-reads.test.ts` ("bounds the ids and the accounts shown"). _Enforced (main):_ follow suggestions answer
   at most 40 accounts (`SUGGESTIONS_KEPT`) within `ANSWER_BYTES` in both versions, v2's wrapper counted with each
   account (`src/domain/suggestions.ts`); `test/suggestions-bounds.test.ts` ("answers SUGGESTIONS_KEPT accounts at
-  their bounds"). _Enforced (main)_ for the profile fields
+  their bounds"). _Enforced (main)_ for annual reports: `GET /api/v1/annual_reports` lists at most
+  `REPORTS_LISTED` (40) pending reports, newest year first, each at most `REPORT_JSON_BYTES` (a name of
+  `TAG_NAME_JSON_BYTES`, counts of 16 digits, 18-digit ids), then the owner's account and the top statuses the owner may
+  view admitted whole within what `ANSWER_BYTES` leaves, with no continuation (`src/domain/annual-reports.ts`);
+  `test/annual-report-bounds.test.ts` ("presents a report at its bounds in REPORT_JSON_BYTES, and an answer of
+  REPORTS_LISTED of them within ANSWER_BYTES"), `test/annual-reports.test.ts` ("lists the owner's pending reports,
+  newest first, at most REPORTS_LISTED, with the owner's account"). _Enforced (main)_ for the profile fields
   of each presented account: a remote account's row carries at most 16 fields, each name and value cut, 32 KiB of
   JSON in all, chosen in SQL from the stored actor document; the presenter then shows only the leading fields whose
   sanitized names and values fit 32 KiB once serialized as JSON, dropping the rest whole. So one account answers at
@@ -3451,7 +3493,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("charges the retry to the request's budget")). Running out of the
   budget is retryable: the request answers 503, records nothing and its spooled copy is retried; a document refused for
   itself stays a permanent refusal. A key an actor lists by reference is taken from the verification that just resolved
-  it, not fetched again. _Enforced (main)_ for remote accounts' collection syncs (`src/federation/collections.ts`,
+  it, not fetched again. Of a fetched document's `publicKey` and `assertionMethod`, at most the first `MAX_PUBLIC_KEYS`
+  (10) entries each are kept where the document's context gives them their key meaning, less each entry that wraps
+  others or whose key material is not one string (ID-1), so `readableKeys` imports at most 20 keys a document and
+  Fedify's parse of it at most one per entry kept: loading an actor imports at most 40 keys. That bound holds only for
+  keys spelled as Mastodon and Fedify write them. Under a context Kopje does not recognize, or any other spelling
+  (either property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`),
+  Fedify imports every key the document holds, bounded only by the document's limits (RES-2): one import per JSON value,
+  at most `MAX_JSON_NODES` (10,000) a parse; a document of RSA-2048 keys at the 1 MiB body limit holds about 2,260. Each
+  store of an actor from a fetched document writes at most 20 keys whatever its context (`MAX_PUBLIC_KEYS` in
+  `src/federation/key-entries.ts`, applied in `ownKeys` and `withVerifiedReference`); rows a Store import restores, and
+  rows stored before this bound, are kept as they are until the actor's next store (`test/key-entries.test.ts` ("imports
+  at most MAX_PUBLIC_KEYS keys of each form", "imports each kept key at most twice, at most MAX_PUBLIC_KEYS of each
+  form, whatever wrappers and arrays hold"), `test/inbox-key-forms.test.ts` ("the keys read per actor")). A request is
+  verified at most twice: again only when a key the Store served fails, with the key resolved from the current document,
+  through the request's loaders and memo (`verify` in `src/federation/inbound.ts`; `test/inbox-key-forms.test.ts`
+  ("refuses a signature by a third key, verifying at most twice with one load")). _Enforced (main)_ for remote accounts'
+  collection syncs (`src/federation/collections.ts`,
   `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
   retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
@@ -3989,6 +4047,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reference by key, a quoting status's own quote row by key at its deletion's barrier, and the oldest retraction still
   staging of a pair by `outbound_activities_object`; 10,000 received and 10,000 withdrawn local quotes of the original
   add no read.
+  _Enforced (main)_ for annual reports (R44): `state` and `generate` for the campaign year without a report read the
+  owner's year through statements that pin `statuses_account`, `follows_target`, the primary key of `status_tags` and
+  the polls index (`INDEXED BY`, `CROSS JOIN`), each inner stage a `LIMIT` subquery and every residual outside it
+  (`src/domain/annual-reports.ts`). Four caps bound them, each counted raw to cap + 1 before the rest is read, in cost
+  order: `REPORT_YEAR_STATUSES` (200,000) rows of the owner's year range, boosts and withdrawn rows included;
+  `REPORT_FOLLOWERS` (200,000) accepted follows naming the owner; `REPORT_HASHTAG_USES` (200,000) tag rows of the
+  year's rows and `REPORT_HASHTAG_BYTES` (8 MiB) of their names. An account past one gets no report: `state` answers
+  `ineligible`, `generate` writes nothing, and `kopje.annual_reports.capped` is logged (the "Annual reports" entry of
+  `docs/mastodon-deviations.md`). Within the caps each statement reads at most its candidates times what each costs (an
+  index entry, a table row, a probe), so `state` reads at most 1,200,010 rows and `generate` 2,600,049, derived from the
+  caps; outside the campaign both read the setting and the report's key only, and once the owner's report exists the
+  report's key (and the setting, for `generate`), whatever the year holds. The top hashtag's grouping takes in at most
+  the tag rows and name bytes the cap counted in the same transaction, a bound enforced at run time; its ordering keeps
+  `REPORT_TAG_CANDIDATES` (32) groups, each a hex key of at most twice `TAG_NAME_BYTES` and a count, of which the first
+  name `listedTagName` admits is the report's. No memory ceiling is claimed for the grouping itself: its records'
+  layout and spill are SQLite's internals. `test/annual-report-bounds.test.ts` holds each statement to its derived
+  bound and to at least its slowest path on the all-caps witness (every input at its cap at once, every statement on
+  its slowest path, in three variants of the hashtag ranking), with statistics taken before the data grew and with
+  singleton statistics; it checks each plan, and that growing the keys around the owner's year leaves every read flat
+  and each cap passed alone stops the read there; `test/annual-reports.test.ts` ("at the cap the report is made, one
+  past it it is not, and the reason is logged", "leaves an existing report available past every cap, reading none of
+  the year"). The caps are the largest of 20,000, 50,000, 100,000 and 200,000 for which `state` and then `generate` on
+  that witness, every cap at its value, run within 1,000 ms together; measured with `test/bench/annual-report.bench.ts`
+  (three samples in a Store populated as the migration bench's: 1,000,000 accounts, 3,000,000 follows, 2,000,000
+  statuses with their hashtags; local workerd, a load average of 5 to 9), the medians are 123 ms for `state` and 431 ms
+  for `generate`, 554 ms together, reading 1,180,006 and 2,380,043 rows. These are measurements, not bounds; the
+  enforced bound is the rows-read ceiling. During the campaign an account without a report pays these reads on each
+  `state` call (accepted; Mastodon's are two `EXISTS` queries); they end once the report exists.
 
 #### Maxima of presented units (RES-3)
 

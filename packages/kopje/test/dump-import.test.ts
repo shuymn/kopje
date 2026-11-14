@@ -1972,10 +1972,11 @@ describe("a boost of a boost (#1247)", () => {
         expect(step).toMatchObject({ ok: true });
         const scan = seen.filter((s) => /FROM "statuses"/.test(s.query));
         const lookups = seen.filter((s) => s.query.startsWith("SELECT 1 AS x FROM statuses WHERE id = "));
-        // Any other statement over statuses but the links' updates (applied first, before the scan).
+        // Any other statement over statuses but the links' updates (applied first, before the scan): the table named
+        // after FROM, JOIN, INTO or UPDATE, not a column of that name (annual_reports.statuses).
         const other = seen.filter(
           (s) =>
-            /\bstatuses\b/.test(s.query) &&
+            /\b(?:FROM|JOIN|INTO|UPDATE)\s+"?statuses\b/i.test(s.query) &&
             !/FROM "statuses"/.test(s.query) &&
             !s.query.startsWith('UPDATE "statuses"') &&
             !lookups.includes(s),

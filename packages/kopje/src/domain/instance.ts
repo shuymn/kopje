@@ -20,6 +20,7 @@ import {
 import { remoteHtmlText, sanitizeDocumentHtml } from "../security/html";
 import { type Account, accountByAddress, type Present, storedAddress } from "./accounts";
 import { accessAdminRefusal } from "./admin-authority";
+import { campaignYear, wrapstodonOn } from "./annual-reports";
 import { availableLocalSql } from "./audience";
 import { forgetActivityAnswer } from "./instance-activity";
 import { logAction } from "./moderation-log";
@@ -53,7 +54,7 @@ export type InstanceSettings = {
 };
 
 // What /api/v2/instance presents beyond the settings.
-export type InstanceUsage = InstanceSettings & {
+type InstanceUsage = InstanceSettings & {
   // The available local accounts with an authenticated request on one of the last ACTIVE_DAYS UTC days, today
   // included (local_accounts.active_on, written by auth.ts noteActivity).
   activeMonth: number;
@@ -61,6 +62,10 @@ export type InstanceUsage = InstanceSettings & {
   // it names no account.
   contactAccount: Account | null;
 };
+
+// What /api/v2/instance presents: the usage and the current annual report campaign (REST::InstanceSerializer#wrapstodon,
+// annual-reports.ts campaignYear), which the v1 instance has none of.
+export type InstanceV2 = InstanceUsage & { wrapstodon: number | null };
 
 // What /api/v1/instance presents beyond the settings. domainCount is the one the cron last kept (refreshDomainCount),
 // so it lags the remote accounts by up to one cron period.
@@ -192,13 +197,18 @@ export const instanceInfo = readOperation.atStoreTime("storeNow")<
   };
 });
 
-// /api/v2/instance: the settings and the one count it presents (usage.users.active_month).
-export const instanceUsage = readOperation<{ now: number; present: Present }, InstanceUsage>((db, { now, present }) => {
+// /api/v2/instance: the settings, the one count it presents (usage.users.active_month) and the campaign, judged at
+// storeNow, the Store's own time (atStoreTime), as the annual report operations judge it.
+export const instanceUsage = readOperation.atStoreTime("storeNow")<
+  { now: number; storeNow: number; present: Present },
+  InstanceV2
+>((db, { now, storeNow, present }) => {
   const settings = settingsOf(db);
   return {
     ...settings,
     activeMonth: db.first<{ active: number }>(INSTANCE_ACTIVE_SQL, ...activeWindow(now))?.active ?? 0,
     contactAccount: contactAccount(db, settings, present),
+    wrapstodon: campaignYear(storeNow, wrapstodonOn(db)),
   };
 });
 
@@ -380,6 +390,7 @@ export const INSTANCE_ADMIN_NAMES = [
   "trends",
   "trendable_by_default",
   "activity_api_enabled",
+  "wrapstodon",
 ] as const;
 
 type AdminName = (typeof INSTANCE_ADMIN_NAMES)[number];
@@ -481,6 +492,7 @@ function adminValue(name: AdminName, raw: unknown): string | null | { refused: s
     case "trends":
     case "trendable_by_default":
     case "activity_api_enabled":
+    case "wrapstodon":
       if (storedSetting(name, value) !== value) {
         return { refused: `${name} must be true or false` };
       }
