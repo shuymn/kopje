@@ -15,8 +15,9 @@ This specification covers:
 
 ## Baseline Version
 
-This specification targets **Mastodon v4.5.11** (pinned reference release). Features introduced in newer versions are
-marked as optional extensions.
+This specification was written against **Mastodon v4.5.11**. Features introduced in newer versions are marked as
+optional extensions. It records Mastodon's behaviour at that release; the release Kopje follows, and how it follows
+newer ones, are in [mastodon-deviations.md](../mastodon-deviations.md).
 
 Implementation references link to [`mastodon/mastodon@v4.5.11`](https://github.com/mastodon/mastodon/tree/v4.5.11).
 

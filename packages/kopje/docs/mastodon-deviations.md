@@ -1,12 +1,58 @@
-# Accepted departures from Mastodon
+# Compatibility with Mastodon
 
-Kopje follows the Mastodon API as Mastodon v4.5.11 serves it. The conformance checks compare it with Mastodon's
-source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
-(`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`).
-Remote-status ingestion and canonical-address confirmation use the later Mastodon v4.7.3 as a reference; Kopje's
-canonical-address fallback and failure handling are described under NET-4 in the threat model.
+This page states which Mastodon release Kopje follows, how it follows newer ones, and the departures it has decided.
+Other documents point here rather than repeat the release.
 
-A difference those checks find is either a gap, tracked by an issue until it is fixed, or a departure that has been
+## What Kopje follows
+
+- **Client API.** Kopje follows the client API as **Mastodon v4.5.11** serves it, the reference release, apart from
+  the departures below and the gaps open issues track. The claim is for that tag: a later 4.5 patch is followed only
+  once Kopje moves its reference release to it. The conformance checks compare Kopje with the reference release's
+  source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
+  (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`). Their
+  fixtures carry the release in their names and their `mastodon` field, and `test-node/mastodon-reference.test.ts`
+  checks that they name the release this page does.
+- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
+  `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
+  they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
+  They rise only when every feature a client switches on at the higher value is served.
+- **Streaming.** Kopje serves the WebSocket streaming API of the reference release, without Server-Sent Events and
+  without a token in the query string, and with bounds on the subscriptions a socket and an account hold, past which a
+  subscription is refused (`src/mastodon/streaming.ts`, `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
+- **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
+  no single release here. A behaviour takes as its reference the release its code and the threat model name:
+  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.3, with Kopje's canonical-address
+  fallback and failure handling under NET-4. A supported series whose activities Kopje refuses or misreads is a gap.
+
+## Following a Mastodon release
+
+Every release of every supported series is read for the parts below. A change found is fixed, accepted here as a
+departure, or opened as a gap, and the reference release moves only when every change up to it has had one of these.
+The paths below are where to start: an entry of the changelog is traced to the services, models and libraries that
+implement it, since a change there (what an account's deletion removes, say) shows in the API without touching a route.
+
+- **A patch of the reference series.** Read its changelog and the diff of `config/routes*`, `app/controllers/api`,
+  `app/controllers/oauth`, `app/controllers/concerns`, `app/serializers/rest` and `streaming/`. A patch can change
+  access, required parameters and values without changing a route, a field or `api_versions`. To move the reference
+  release, regenerate the access fixture from the new tag with `scripts/mastodon-scopes.mjs` (and add any new entity to
+  its `ENTITIES`), rename the hand-written fixtures and their imports after re-checking them against it, review each
+  new exception, and change the release on this page.
+- **A new minor series.** Whether to follow it is decided on what it adds to the surface Kopje already serves, judged
+  at its latest patch. Following it is the same move with a larger inventory (routes, parameters, entities, behaviour);
+  raising `version` and `api_versions` is a separate step, as above. Before the reference series leaves upstream
+  support (4.5: 2027-02-20), decide whether to follow a supported one.
+- **Federation in any supported series.** Read the diff of `app/lib/activitypub`, `app/services/activitypub`,
+  `app/serializers/activitypub`, `app/controllers/concerns/signature_verification.rb`, `app/lib/request*`,
+  `app/helpers/context_helper.rb` and `app/helpers/json_ld_helper.rb`: what is sent and received, contexts, signatures
+  and proofs, identifiers, forwarding, and which activities are authorized. This applies whether or not the reference
+  release moves.
+
+The checks see whether a parameter is read and a field is present. A parameter that is read and then dropped, or a
+wrong value, does not show in them, so the behaviour is reviewed by reading Mastodon's source.
+
+## Deciding a difference
+
+A difference the checks find is either a gap, tracked by an issue until it is fixed, or a departure that has been
 decided. This page lists the decided ones. Each has an id (`MD-n`) that the checks' exceptions cite as
 `{ status: 'accepted', deviation: 'MD-n' }`; every entry here is cited by at least one exception, and every id cited is
 defined here once (`test-node/docs-ids.test.ts`, `test-node/mastodon-entities.test.ts`).
@@ -19,9 +65,7 @@ behaviour change: check what Mastodon does first, and cap only within it or as a
 calling a difference deliberate is not a decision. To accept a departure, add an entry here with the reason, ending
 "Accepted, <date>.", and change the exceptions that cite the gap.
 
-A pull request that fixes a gap removes the exceptions that cite it. When Kopje follows a newer Mastodon release,
-regenerate the fixtures with `scripts/mastodon-scopes.mjs`, review each new exception, and review the behaviour by
-reading Mastodon's source: a parameter that is read and then dropped, or a wrong value, does not show in the checks.
+A pull request that fixes a gap removes the exceptions that cite it.
 
 ## Departures
 
