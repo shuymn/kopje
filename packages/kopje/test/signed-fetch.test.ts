@@ -98,8 +98,8 @@ describe("signed fetches", () => {
     );
     expect(keys).toEqual(
       expect.arrayContaining([
-        ["_fedify", "signedRemoteDocument", "v2", "https://social.example/actor#main-key", NOTE],
-        ["_fedify", "signedRemoteDocument", "v2", "https://social.example/ap/users/Alice#main-key", NOTE],
+        ["_fedify", "signedRemoteDocument", "v3", "https://social.example/actor#main-key", NOTE],
+        ["_fedify", "signedRemoteDocument", "v3", "https://social.example/ap/users/Alice#main-key", NOTE],
       ]),
     );
   });
@@ -130,8 +130,13 @@ describe("signed fetches", () => {
     expect((await ctx.contextLoader(NOTE)).document).toMatchObject({ id: NOTE });
   });
 
-  // A cache entry admitted under an older, looser acceptance policy is never served after the policy is tightened.
-  it("ignores signed documents cached under the unversioned namespace", async () => {
+  // A cache entry admitted under an older, looser acceptance policy is never served after the policy is tightened: the
+  // unversioned namespace, v2 (before the key entries of an actor's document were read as Mastodon 4.7 reads them,
+  // ID-1, RES-6).
+  it.each([
+    ["the unversioned namespace", []],
+    ["v2", ["v2"]],
+  ])("ignores signed documents cached under %s", async (_, version) => {
     const { store, requests, ctx } = await setup();
     const stale = { contextUrl: null, documentUrl: NOTE, document: { id: NOTE, type: "Note", content: "stale" } };
     const kv = new DoKvStore(
@@ -139,7 +144,7 @@ describe("signed fetches", () => {
       BUILD,
       () => NOW,
     );
-    await kv.set(["_fedify", "signedRemoteDocument", "https://social.example/actor#main-key", NOTE], stale);
+    await kv.set(["_fedify", "signedRemoteDocument", ...version, "https://social.example/actor#main-key", NOTE], stale);
 
     expect((await ctx.documentLoader(NOTE)).document).toEqual({ id: NOTE, type: "Note" });
     expect(requests).toHaveLength(1);

@@ -440,12 +440,13 @@ against their own instance. TLS is assumed between all parties.
   if served as `application/activity+json` or `application/ld+json` with the ActivityStreams profile, as Mastodon
   requires, and only if its root is a JSON object (JSON-LD would fetch a string root through the context loader). Other
   JSON (an uploaded file, for example) is refused, and a combined or malformed Content-Type is refused. Signed-document
-  cache entries live under a versioned namespace that is bumped whenever this policy is tightened. _Enforced (main):_
-  `createSafeLoader` and `requireObjectRoot` in `src/federation/loader.ts` (Fedify's document loaders, around their
-  caches too) with `isActivityPubMediaType` in `src/platform/media-type.ts`; JSON-LD contexts go through
-  `createContextLoader`, which never yields an object; `SIGNED_DOCUMENT_PREFIX` in `src/federation/federation.ts`;
-  `test/loader.test.ts`, `test/media-type.test.ts`, `test/document-root.test.ts`, `test/signed-fetch.test.ts` ("plain
-  JSON-LD on the context loader only", "unversioned namespace").
+  cache entries live under a versioned namespace that is bumped whenever this policy, or the reading of an actor's key
+  entries (ID-1), is tightened. _Enforced (main):_ `createSafeLoader` and `requireObjectRoot` in
+  `src/federation/loader.ts` (Fedify's document loaders, around their caches too) with `isActivityPubMediaType` in
+  `src/platform/media-type.ts`; JSON-LD contexts go through `createContextLoader`, which never yields an object;
+  `SIGNED_DOCUMENT_PREFIX` in `src/federation/federation.ts`; `test/loader.test.ts`, `test/media-type.test.ts`,
+  `test/document-root.test.ts`, `test/signed-fetch.test.ts` ("plain JSON-LD on the context loader only", "ignores
+  signed documents cached under").
 
 ### Visibility (VIS)
 
