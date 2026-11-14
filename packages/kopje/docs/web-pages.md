@@ -110,11 +110,11 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   card's edge as the row's start is. In a row with an avatar its centre is the avatar's (the name and address run
   lower); in a row without one it is centred in the row. Where it wraps below the row's text, it starts its line at
   the content edge (browser job).
-- Every profile tab is headed by `ProfileHead`: the same card, its Follow beside the avatar, and the follow dialog.
-  The look-up result's Follow is in the card's action slot for an account and at the end of the author's row
-  (`Who`'s) for a post, wrapping below the name where both do not fit; it reads "Follow", since what it follows is
-  beside it. A page charges each emoji it shows to its allowance once, in document order (the profile's follow
-  dialog's title before the posts).
+- Every profile tab is headed by `ProfileHead`: the same card, its Follow beside the avatar, its foot on the avatar's
+  and inset from the card's edge as from the banner, and the follow dialog. The look-up result's Follow is in the card's
+  action slot for an account and at the end of the author's row (`Who`'s) for a post, wrapping below the name where both
+  do not fit; it reads "Follow", since what it follows is beside it. A page charges each emoji it shows to its allowance
+  once, in document order (the profile's follow dialog's title before the posts).
 - The tabs sit on one line down to a phone's width (sharing the row there, each label centred in its share, at least
   `--s2` apart) and never scroll sideways, which would clip their focus rings. The current tab is the ink with the
   accent's underline; a hovered one takes the ink and a thin neutral underline, so hover never reads as current. A

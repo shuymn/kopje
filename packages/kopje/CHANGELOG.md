@@ -30,6 +30,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Dismissing several notification requests at once (`POST /api/v1/notifications/requests/dismiss`) also deletes the
   senders' filtered notifications, as dismissing one request does and as Mastodon 4.5.21 does. Before, they stayed,
   shown with `include_filtered`.
+- A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
+  where it stood further from the edge.
 
 ## [0.5.2] - 2026-11-14
 
