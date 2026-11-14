@@ -4,8 +4,9 @@ This document defines the version baseline and extension marking conventions for
 
 ## Baseline Version
 
-This specification targets **Mastodon v4.5.11** as the baseline. All MUST and SHOULD requirements are based on this
-version unless otherwise noted.
+This specification was written against **Mastodon v4.5.11**, its baseline. All MUST and SHOULD requirements are based
+on this version unless otherwise noted. The release Kopje follows is in
+[mastodon-deviations.md](../mastodon-deviations.md).
 
 ## Version Annotations
 

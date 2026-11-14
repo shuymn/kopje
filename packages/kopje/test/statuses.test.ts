@@ -55,7 +55,7 @@ async function createsInFlight(store: StoreStub): Promise<void> {
 }
 
 describe("POST /api/v1/statuses", () => {
-  it("posts a status in the Mastodon 4.0.2 shape", async () => {
+  it("posts a status in the Mastodon shape", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     const response = await h.request("/api/v1/statuses", bearer(alice.token, json({ status: "Hello <world>" })));

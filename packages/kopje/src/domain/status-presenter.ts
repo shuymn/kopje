@@ -73,7 +73,7 @@ import {
 } from "./status-rows";
 import { TREND_LANGUAGES } from "./trend-languages";
 
-// The Status entity as Mastodon 4.0.2's REST::StatusSerializer shows it. One presenter for every read path: it takes
+// The Status entity as Mastodon's REST::StatusSerializer shows it. One presenter for every read path: it takes
 // a list of ids and the viewer and reads the related rows kind by kind (statuses and reblogged originals, accounts,
 // media, mentions, tags, viewer flags, polls), each in one query over json_each, so the rows read grow with the page
 // only.
