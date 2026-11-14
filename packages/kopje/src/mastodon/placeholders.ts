@@ -1,5 +1,14 @@
 import { grantsAny } from "../security/scopes";
-import { type ApiContext, type ApiDeps, type ApiHandler, authorized, credential, present, storeCall } from "./context";
+import {
+  type ApiContext,
+  type ApiDeps,
+  type ApiHandler,
+  authorized,
+  credential,
+  optionalTokenCredential,
+  present,
+  storeCall,
+} from "./context";
 import { mastodonError, recordNotFound } from "./errors";
 
 // Features Kopje has no data for (annual reports, translation, e-mail confirmation, async refreshes), answered as
@@ -73,6 +82,36 @@ export const resendConfirmation: ApiHandler = async (c, deps) => {
 // GET /api/v1/emails/check_confirmation: ConfirmationsController#check renders current_user.confirmed?. Kopje's users
 // have no unconfirmed e-mail.
 export const checkConfirmation = forUser((c) => c.json(true));
+
+// GET /api/v1/donation_campaigns: Api::V1::DonationCampaignsController with no campaign source configured (its
+// default) answers 204 to any user; its require_user! answers 422 without one, and Api::BaseController's
+// require_not_suspended! 403 to a suspended user's token. It checks no doorkeeper scope, so any user token passes. A
+// token past its expiry, revoked or of an earlier epoch reads as none (MD-3, AUTH-2's exception).
+export const donationCampaigns: ApiHandler = async (c, deps) => {
+  const value = optionalTokenCredential(c, deps);
+  const check = value === null ? null : await storeCall(c, deps, (s, b) => s.checkCredential(b, value));
+  if (check?.status === "suspended") {
+    authorized(check);
+  }
+  if (check?.status !== "ok" || check.value.accountId === null) {
+    authorized({ status: "user_required" });
+  }
+  return c.body(null, 204);
+};
+
+// POST /api/v1/accounts/:id/email_subscriptions: with e-mail subscriptions off (Setting.email_subscriptions unset),
+// Api::V1::Accounts::EmailSubscriptionsController answers a suspended user's token 403 (require_not_suspended!),
+// Record not found for an id that names no local account (set_account), and an empty 404 otherwise
+// (require_feature_enabled!). It reads no parameter and needs no token; any other token changes nothing (MD-3).
+export const emailSubscription: ApiHandler = async (c, deps) => {
+  const value = optionalTokenCredential(c, deps);
+  const id = c.req.param("id") ?? "";
+  const target = await storeCall(c, deps, (s, b) => s.emailSubscriptionTarget(b, { credential: value, id }));
+  if (target === "suspended") {
+    authorized({ status: "suspended" });
+  }
+  return target === "missing" ? recordNotFound() : new Response(null, { status: 404 });
+};
 
 // An empty list, for an account that exists.
 const emptyAccountList: ApiHandler = async (c, deps) => {

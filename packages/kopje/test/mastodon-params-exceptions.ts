@@ -35,6 +35,7 @@ export const PARAM_EXCEPTIONS: Exceptions = {
 
   // Features not built yet: answered as Mastodon with the feature off.
   "GET /api/v1/admin/domain_allows": PLACEHOLDER(...PAGE),
+  "POST /api/v1/accounts/:id/email_subscriptions": PLACEHOLDER("email"),
 
   // Mastodon reads local and remote only to decide whether the link timeline needs a user
   // (TopicController#require_auth?), which it never does while topic feeds are public, Kopje's only setting (MD-5).

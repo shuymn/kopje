@@ -13,6 +13,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Annual reports answer as Mastodon 4.7.5 with Wrapstodon off. `GET /api/v1/annual_reports/:id/state` answers
   `{"state":"ineligible"}`, `POST /api/v1/annual_reports/:id/generate` answers `{}` and starts nothing, and
   `/api/v2/instance` has `wrapstodon: null`. Kopje makes no annual report yet.
+- `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
+  source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
+  Mastodon does with e-mail subscriptions off. Both had no route.
 
 ### Changed
 

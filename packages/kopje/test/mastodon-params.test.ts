@@ -165,6 +165,9 @@ const RECIPES: Record<string, Recipe> = {
     baseline: async (w) => ({ path: "/api/v1/accounts", token: await appToken(w) }),
     status: { code: 403, reason: "registration through the API is closed (MD-1)" },
   },
+  "POST /api/v1/accounts/:id/email_subscriptions": {
+    status: { code: 404, reason: "feature off (MD-3): Mastodon answers 404 before reading email" },
+  },
   "POST /api/v1/admin/domain_allows": { status: NOT_SERVED },
   "GET /api/v1/admin/ip_blocks": { status: NOT_SERVED },
   "POST /api/v1/admin/ip_blocks": { status: NOT_SERVED },

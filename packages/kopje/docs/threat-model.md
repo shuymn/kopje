@@ -1359,9 +1359,24 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and a token sent must be valid; such a route may declare no scope (`GET /api/v1/tags/:id`: any valid token, app tokens
   read as anonymous), and a `token` route may still require a user (`GET /api/v1/announcements`: any user token,
   whatever its scopes; app tokens 422: `tokenUserReadOperation` in `src/domain/auth.ts`, which
-  `announcements.listAnnouncements` declares); `test/tags.test.ts`, `test/announcements.test.ts`. _Enforced (main):_ the
-  admin API's routes are optional-token routes with admin scopes (Mastodon's `authorize_if_got_token!`): a token sent
-  must be valid and cover the route's scope, and who may act is decided in the Store (VIS-29);
+  `announcements.listAnnouncements` declares); `test/tags.test.ts`, `test/announcements.test.ts`. One exception:
+  `GET /api/v1/donation_campaigns` and `POST /api/v1/accounts/:account_id/email_subscriptions`, which answer as
+  Mastodon with the feature off (MD-3), are optional routes on which a token that is not valid (unknown, revoked, past
+  its expiry, or of an earlier epoch with its owner available) reads as anonymous, as an app token does. Mastodon's
+  `Api::BaseController` reads the owner of an expired or revoked token there too; Kopje does not
+  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held,
+  unexpired token of an earlier epoch whose owner is suspended answers 403, since suspension is checked before the
+  epoch. Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
+  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held, unexpired
+  token of a suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
+  show nothing of the token's owner (a successful authenticated donation request keeps the ordinary activity
+  recording of the access middleware, RES-6). _Enforced (main):_ `donationCampaigns` and `emailSubscription` in
+  `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`
+  (`src/domain/accounts.ts`); `test/placeholders.test.ts` (the donation and e-mail subscriptions cases, and "answers
+  an expired or revoked token as no token on the feature-off routes"), and `test/mastodon-access.test.ts` (the two
+  routes' access exceptions). _Enforced (main):_ the admin API's routes are optional-token routes with admin scopes
+  (Mastodon's `authorize_if_got_token!`): a token sent must be valid and cover the route's scope, and who may act is
+  decided in the Store (VIS-29);
   `test/mastodon-access.test.ts` compares them with Mastodon's, setting aside only each admin route's role policy, and
   `test/admin-api.test.ts` ("admin routes").
 - **AUTH-3: OAuth follows the supported contract.** _Enforced (main):_ `src/app/authorize.tsx`, `src/mastodon/oauth.ts`,

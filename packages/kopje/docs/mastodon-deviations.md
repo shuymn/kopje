@@ -99,8 +99,12 @@ A pull request that fixes a gap removes the exceptions that cite it.
   never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Annual reports
-  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Accepted,
-  2026-10-20; annual reports, 2026-11-15.
+  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Donation
+  campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
+  user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
+  answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
+  `email_subscriptions`. Accepted, 2026-10-20; annual reports, donation campaigns and e-mail subscriptions,
+  2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
   the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
   16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
@@ -473,6 +477,20 @@ OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
   deletes revoked tokens (Mastodon: `active: false`). A suspended or stale-epoch caller is refused with
   `invalid_token`, and an authorization code presented as the caller is `invalid_token` where Doorkeeper finds no
   caller (400). `invalid_client` carries Kopje's Basic challenge and text, as at `/oauth/token`.
+
+Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campaigns`,
+`POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
+[threat-model.md](threat-model.md)):
+
+- A token past its expiry or revoked is answered as no token, whatever its owner's state: donation campaigns answers
+  422 and e-mail subscriptions its 404. A token of an earlier credential epoch is answered the same way while its owner
+  is available, and 403 while its owner is suspended, as on every route. Mastodon reads these two routes' token only
+  through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its value,
+  expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token of an
+  available owner gets donation campaigns' 204, and one of a suspended owner gets 403 on both. In Kopje a token past
+  its expiry or revoked is no credential on any route: the Store refuses an expired one inside the operation and
+  deletes a revoked one. The visible difference is only the status code of a feature-off answer. Accepted,
+  2026-11-15.
 
 Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
 

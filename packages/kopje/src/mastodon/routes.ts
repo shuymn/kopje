@@ -139,6 +139,8 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/emails/confirmations", "token", placeholders.resendConfirmation),
   get("/api/v1/emails/check_confirmation", { scope: "read:accounts" }, placeholders.checkConfirmation),
   get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, placeholders.asyncRefresh),
+  // Feature-off answers that read a sent token without requiring one (AUTH-2's exception).
+  get("/api/v1/donation_campaigns", { optional: true }, placeholders.donationCampaigns),
 
   get("/api/v1/accounts/verify_credentials", { scope: ["profile", "read:accounts"] }, accounts.verifyCredentials),
   patch("/api/v1/accounts/update_credentials", { scope: "write:accounts" }, accounts.updateCredentials),
@@ -169,6 +171,7 @@ export const ROUTES: readonly Route[] = [
   get("/api/v1/accounts/:id/endorsements", { scope: "read:accounts", optional: true }, accounts.accountEndorsements),
   // Any token at the route; the handler refuses one without a user (require_user!).
   get("/api/v1/accounts/:id/identity_proofs", "token", placeholders.identityProofs),
+  post("/api/v1/accounts/:id/email_subscriptions", { optional: true }, placeholders.emailSubscription),
 
   get("/api/v1/accounts/:id/lists", { scope: "read:lists" }, lists.accountLists),
 

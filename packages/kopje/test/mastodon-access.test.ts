@@ -108,6 +108,18 @@ const EXCEPTIONS: Record<string, Exception> = {
     reason:
       "a token without a user owns no status, so StatusPolicy#update? refuses it there (403); Kopje refuses it at the route",
   },
+  "GET /api/v1/donation_campaigns": {
+    kopje: "optional token, scopes any, no user required",
+    mastodon: "required token, scopes any, user required",
+    reason:
+      "require_user! with no doorkeeper check: an anonymous request reaches placeholders.donationCampaigns, which answers 422 without a user and 403 to a suspended one",
+  },
+  "POST /api/v1/accounts/:id/email_subscriptions": {
+    kopje: "optional token, scopes any, no user required",
+    mastodon: "none token, scopes any, no user required",
+    reason:
+      "no token is required, but Api::BaseController#require_not_suspended! reads a sent one: placeholders.emailSubscription answers a suspended user's token 403 and ignores any other",
+  },
   "GET /api/v1/accounts/relationships": {
     kopje: "required token, scopes follow read read:follows, user required",
     mastodon: "required token, scopes read read:follows, user required",
