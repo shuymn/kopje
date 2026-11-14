@@ -968,11 +968,12 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 Relayed activities (an activity whose HTTP signer is not its actor; ID-1 in [threat-model.md](threat-model.md)):
 
 - Of the activities another server relays, Kopje applies only a status's `Delete` that carries its author's proof
-  (Forwarded deletes, above); any other answers 401 and changes nothing. Mastodon applies a relayed activity of any
-  type whose RsaSignature2017 signature by its actor verifies (`ActivityPub::ProcessActivityService`; before 4.7,
-  `ProcessCollectionService#verify_account!`), and from 4.7.0 one whose FEP-8b32 proof by its actor verifies
-  (`process_activity_service.rb:42-75`). An inbound activity acts only for its signer, and Kopje weighs an author's
-  proof only on a body it has a profile for (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
+  (Forwarded deletes, above); any other changes nothing, answered 202 and dropped once the relaying server owns its key,
+  and 401 when it does not. Mastodon applies a relayed activity of any type whose RsaSignature2017 signature by its
+  actor verifies (`ActivityPub::ProcessActivityService`; before 4.7, `ProcessCollectionService#verify_account!`), and
+  from 4.7.0 one whose FEP-8b32 proof by its actor verifies (`process_activity_service.rb:42-75`). An inbound activity
+  acts only for its signer, and Kopje weighs an author's proof only on a body it has a profile for
+  (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
 
 Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
 `ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):

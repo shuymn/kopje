@@ -176,9 +176,10 @@ against their own instance. TLS is assumed between all parties.
   term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
   `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or
   cid/v1 defines, is or aliases one the decision reads (cid/v1's scoped contexts apply only under keys and types a
-  profile body cannot have). A stamp's `Delete` has no forwarded profile, since Mastodon 4.5.21 forwards it without
-  its signature. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL in
-  it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI
+  profile body cannot have). A stamp's `Delete` has no forwarded profile yet (#1599): Mastodon 4.7.5 forwards it with
+  its author's signature, compacted under its `full_context`, and such a relay is dropped (202, logged), the quote
+  staying accepted. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL
+  in it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI
   or the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's shape, Mastodon's
   signature with an optional `expires`, a string in the form `sign!` writes, a proof's own `@context` the body's), so
   the body's JSON-LD meaning is its literal JSON:

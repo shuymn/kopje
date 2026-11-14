@@ -456,7 +456,7 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
     }
   });
 
-  it("refuses a stamp's Delete in the forwarded form under each context, which Mastodon sends without its signature", async () => {
+  it("refuses a stamp's Delete in the forwarded form under each context, as Mastodon 4.7.5 forwards it signed (#1599)", async () => {
     const { bob, status } = await world();
     const stamp = STAMP(bob, status);
     const bodies = [

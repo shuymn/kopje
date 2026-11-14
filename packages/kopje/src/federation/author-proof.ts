@@ -98,8 +98,8 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   // back the values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder
   // sends that copy. Its @context is one of the three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The
   // keys of these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no
-  // forwarded profile: Mastodon 4.5.21 drops its signature (safe_for_forwarding? fails for it), so it is relayed
-  // unproven.
+  // forwarded profile yet (#1599): Mastodon 4.7.5 forwards it in this form, its author's signature kept, and
+  // inbound.ts relayed drops it (202, logged), the quote staying accepted.
   mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
