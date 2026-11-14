@@ -15,10 +15,10 @@ import { storeReceive } from "./inbox-store-helpers";
 import { DAY_MS } from "./read-helpers";
 import { world, type World } from "./remote-suspension-helpers";
 
-// The measures of POST /api/v1/admin/measures besides instance_follows (test/admin-measures.test.ts), against
-// Mastodon 4.5.11's Admin::Metrics::Measure classes: new_users, opened_reports and resolved_reports with their windows
-// and previous_total (Mastodon 4.5.21's base_measure.rb:95-105), instance_accounts, instance_followers, instance_reports and
-// instance_media_attachments, the refused keys (MD-2), and stored times that cannot be read.
+// The measures of POST /api/v1/admin/measures besides instance_follows (test/admin-measures.test.ts), against Mastodon
+// 4.5.11's Admin::Metrics::Measure classes: new_users, opened_reports and resolved_reports with their windows and
+// previous_total (Mastodon 4.5.21's base_measure.rb:95-105), instance_accounts, instance_followers, instance_reports
+// and instance_media_attachments, the refused keys (MD-2), and stored times that cannot be read.
 
 const D = "d.example";
 const NOT_ALLOWED = { status: 403, body: { error: "This action is not allowed" } };

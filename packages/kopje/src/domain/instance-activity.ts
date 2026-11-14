@@ -86,8 +86,8 @@ function enabled(db: Db): boolean {
   return row?.value !== "false";
 }
 
-// One window's three values. Each sum reads at most ACTIVITY_WINDOW_DAYS rows of activity_counts by its key; the logins read at most
-// ACTIVITY_LOGIN_ROWS rows of activity_logins by its key, then count the distinct accounts among them.
+// One window's three values. Each sum reads at most ACTIVITY_WINDOW_DAYS rows of activity_counts by its key; the logins
+// read at most ACTIVITY_LOGIN_ROWS rows of activity_logins by its key, then count the distinct accounts among them.
 export const ACTIVITY_WINDOW_SQL = `SELECT
 	(SELECT SUM(value) FROM activity_counts WHERE kind = 'statuses' AND day >= ?1 AND day < ?2) AS statuses,
 	(SELECT COUNT(DISTINCT account_id) FROM (SELECT account_id FROM activity_logins
