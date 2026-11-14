@@ -4,7 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { nodeStorage, normalized, rolledBack, transaction, witnessDatabase, witnessWorld } from "./witness-store.js";
+import { normalized } from "../test/sql-text.js";
+import { nodeStorage, rolledBack, transaction, witnessDatabase, witnessWorld } from "./witness-store.js";
 
 // The provenance of test/main-runtime/recorded.json, which the main-runtime witnesses and shown-walk-work.test.ts read
 // main's statements from: its `main` side is what main's sources at its `base` commit issue in each flow of

@@ -4,14 +4,15 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { boundedWindow, type MergedRow, type Window } from "../../src/domain/windows";
 import { migratedStore } from "../helpers";
 import { statementId } from "../plan-audit";
-import { type Baseline, type Count, expectBeside, normalized, PlanWitness, STATISTICS } from "../plan-witness";
+import { type Baseline, type Count, expectBeside, PlanWitness, STATISTICS } from "../plan-witness";
 import type { SqlRow } from "../read-helpers";
+import { normalized } from "../sql-text";
 import RECORDED from "./recorded.json";
 import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-world";
 
-// Claims 7 and 9 of the cursor-rule rewrite, and W3/W4 of the one-pass candidate windows (docs/engineering.md
-// "Queries"): on the runtime whose SQLite (3.53.4) prepares main's statements, each statement the rewrite changed
-// returns main's rows (a window: main's Window, through each side's own post-processing), writes as many and changes
+// The statements rewritten to stay within SQLite's cursor rule, the candidate windows' included (docs/engineering.md
+// "Queries"), cost no more than main's: on the runtime whose SQLite (3.53.4) prepares main's statements, each changed
+// statement returns main's rows (a window: main's Window, through each side's own post-processing), writes as many and changes
 // the same rows, and reads no more rows than main's, after ANALYZE and under the plan audit's singleton statistics, in
 // every world of witness-world.ts; and each flow runs as many statements as main's, each unchanged one as often.
 // main's statements are main's literal text, recorded from main's sources at the commit recorded.json names, with the

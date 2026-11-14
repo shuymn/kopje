@@ -3,20 +3,13 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  nodeStorage,
-  normalized,
-  rolledBack,
-  transaction,
-  type World,
-  witnessDatabase,
-  witnessWorld,
-} from "./witness-store.js";
+import { normalized } from "../test/sql-text.js";
+import { countingInstr } from "./instr-counter.js";
+import { nodeStorage, rolledBack, transaction, type World, witnessDatabase, witnessWorld } from "./witness-store.js";
 
-// Claim 8 of the cursor-rule rewrite (docs/engineering.md "Queries"): in every world of
-// test/main-runtime/witness-world.ts, each flow walks no more domain suffixes than main's. Workerd's rows-read counter
-// does not count a walk that finds no block (domain-coverage-cost.test.ts), so the walks are counted here as that suite
-// counts them: instr(), overridden by a counting function of the same behavior, is called at every label a walk steps.
+// The cursor-rule rewrite's statements (docs/engineering.md "Queries") walk no more domain suffixes than main's: in
+// every world of test/main-runtime/witness-world.ts, each flow walks no more than main's flow does, counted by the
+// calls of a counting instr() (instr-counter.ts), which a walk makes at every label it steps.
 // The worlds and flows run on Node's SQLite (3.54.1) (witness-store.ts); main's side runs the same flow with main's
 // literal text in place of each statement the rewrite changed (test/main-runtime/recorded.json, whose provenance
 // witness-recording.test.ts checks), bound to the same parameters.
@@ -32,24 +25,17 @@ const { buildWorld, FLOWS, WORLDS, worldName } = await witnessWorld(new URL("../
 // rows the rewrite's code reads in another shape.
 const reshaped = (main: string) => main.includes("f(bound) AS");
 
-let calls = 0;
-let counting = true;
-
 // The Store over `db`, running main's text in place of a statement where `swap` gives one (from its normalized text):
 // its walks are counted, and a reshaped statement's rows are the rewrite's, read uncounted.
-function swapping(db: DatabaseSync, swap: (text: string) => string | undefined) {
+function swapping(
+  db: DatabaseSync,
+  counter: ReturnType<typeof countingInstr>,
+  swap: (text: string) => string | undefined,
+) {
   return nodeStorage(db, (query, params) => {
     const main = swap(normalized(query));
     const rows = db.prepare(main ?? query).all(...params);
-    if (main === undefined || !reshaped(main)) {
-      return rows;
-    }
-    counting = false;
-    try {
-      return db.prepare(query).all(...params);
-    } finally {
-      counting = true;
-    }
+    return main === undefined || !reshaped(main) ? rows : counter.uncounted(() => db.prepare(query).all(...params));
   });
 }
 
@@ -57,12 +43,7 @@ function swapping(db: DatabaseSync, swap: (text: string) => string | undefined) 
 // built.
 function walks(world: World): Record<string, { main: number; mine: number }> {
   const db = witnessDatabase();
-  db.function("instr", { deterministic: true }, (haystack, needle) => {
-    if (counting) {
-      calls++;
-    }
-    return typeof haystack === "string" && typeof needle === "string" ? haystack.indexOf(needle) + 1 : null;
-  });
+  const counter = countingInstr(db);
   const transact = transaction(db);
   const context = transact(() => buildWorld(nodeStorage(db), world));
   const counted: Record<string, { main: number; mine: number }> = {};
@@ -75,10 +56,10 @@ function walks(world: World): Record<string, { main: number; mine: number }> {
         expect(text, `${flow}: statement ${at} as recorded`).toBe(statements[recorded.mine[at]!]);
         return main ? statements[recorded.main[at]!] : undefined;
       };
-      calls = 0;
-      rolledBack(db, () => run(swapping(db, swap), transact, context));
+      counter.reset();
+      rolledBack(db, () => run(swapping(db, counter, swap), transact, context));
       expect(position, `${flow}: statements as recorded`).toBe(recorded.mine.length);
-      return calls;
+      return counter.calls();
     };
     counted[flow] = { main: side(true), mine: side(false) };
   }

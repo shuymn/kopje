@@ -21,8 +21,6 @@ export async function witnessWorld(root: URL): Promise<WitnessWorld> {
   return (await import(new URL("test/main-runtime/witness-world.ts", root).href)) as WitnessWorld;
 }
 
-export const normalized = (sql: string) => sql.replace(/\s+/g, " ").trim();
-
 // An empty Store, its expression depth limit at 1,000 so that main's statements prepare on SQLite 3.54.1.
 export function witnessDatabase(): DatabaseSync {
   const db = createKopjeDatabase();

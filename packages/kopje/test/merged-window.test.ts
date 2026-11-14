@@ -7,7 +7,7 @@ import { CONDITION_WALK, mergedWindow, type Window } from "../src/domain/windows
 import { migratedStore } from "./helpers";
 import { runs } from "./policy-world";
 
-// W2: mergedWindow (src/domain/windows.ts), which reads the streams in one pass and bounds its rows in the Worker,
+// mergedWindow (src/domain/windows.ts), which reads the streams in one pass and bounds its rows in the Worker,
 // returns the Window main's statement and its post-processing returned, copied here literally (MAIN_WINDOW), over the
 // same streams. The streams are given as rows (id, k, o) bound as JSON, each stream's ids in cursor order and at most
 // `per` of them, `o` constant within a stream, as mergedWindow's contracts require of its callers. Each case below is
@@ -129,7 +129,7 @@ const CASES: Record<string, (ascending: boolean) => { streams: Stream[]; query: 
   }),
 };
 
-describe("mergedWindow beside main's (W2)", () => {
+describe("mergedWindow beside main's", () => {
   it.each(Object.keys(CASES).flatMap((name) => [false, true].map((ascending) => [name, ascending] as const)))(
     "%s, ascending %s",
     async (name, ascending) => {

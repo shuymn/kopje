@@ -3,6 +3,7 @@ import { expect } from "vitest";
 import { statementId } from "./plan-audit";
 import { singletonStatistics } from "./plan-audit-store";
 import { type SqlRow, watchedCursor } from "./read-helpers";
+import { normalized } from "./sql-text";
 
 // The side-by-side witness of a statement rewritten for its plan (docs/engineering.md, "Queries"; RES-7): main's
 // statement is its own literal baseline, guarded by its audited identity, and each case names the baselines its flow
@@ -16,8 +17,6 @@ import { type SqlRow, watchedCursor } from "./read-helpers";
 
 export const STATISTICS = ["singleton", "analyzed"] as const;
 export type Statistics = (typeof STATISTICS)[number];
-
-export const normalized = (sql: string) => sql.replace(/\s+/g, " ").trim();
 
 // main's statement, by its audited identity: its literal SQL, and how its rewrite reads, either `pins` (the rewrite's
 // text, whitespace collapsed, back to main's) or `text` (the rewrite exactly, whitespace collapsed). `writes`: a query

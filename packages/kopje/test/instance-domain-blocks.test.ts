@@ -479,7 +479,7 @@ describe("deliveries to a blocked domain (VIS-30)", () => {
   });
 });
 
-// Claims 5 and 6 of the cursor-rule rewrite (docs/visibility.md "Instance domain blocks"): the notification rule reads
+// Coverage of each account a rule names (docs/visibility.md "Instance domain blocks"): the notification rule reads
 // the coverage of each account a notification names where no sibling term already implies it, and the positioned home
 // read the coverage of a status's author and its original's. For each role an account takes, with every other reason
 // to hide excluded, the notification (or the home status) is shown, hidden once only that account's domain is

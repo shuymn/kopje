@@ -82,7 +82,8 @@ describe("expression depth guard", () => {
     ]);
   });
 
-  // W1: every candidate window statement, in its largest variant, prepares at the guard's limit.
+  // Every candidate window statement, in its largest variant, prepares on the Store's runtime (each page windowVariants
+  // reads answers 200) and at the guard's limit on Node.
   it("passes each candidate window statement in its largest variant", { timeout: 120_000 }, async () => {
     await windowVariants();
     for (const [family, member] of Object.entries(WINDOW_FAMILIES)) {
