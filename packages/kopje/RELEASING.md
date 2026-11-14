@@ -43,7 +43,7 @@ On npmjs.com, as an owner of the `kopje` package:
 3. In the same settings, under Publishing access, choose "Require two-factor authentication and disallow tokens".
    Trusted publishing keeps working; tokens can no longer publish.
 
-The publish needs npm 11.5.1 or later and Node.js 22.14.0 or later; the workflow uses Node.js 24 and checks the npm
+The publish needs npm 11.5.1 or later and Node.js 22.14.0 or later; the workflow uses Node.js 26 and checks the npm
 version. npm adds provenance itself for a trusted publish from a public repository. See npm's
 [Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers/) (allowed actions, the 2-day expiry,
 the required versions and the publishing-access setting) and
