@@ -843,14 +843,10 @@ export function isoTimeSql(column: string): string {
   return `(${STAMP.projection(column)})`;
 }
 
-// A CHECK's form of the same rule (0093): 1 when `column` holds a stored time, else 0, never NULL (SQLite accepts a
-// CHECK that is NULL, and strftime answers NULL for text it cannot read). The type first, then the raw bytes, then
-// NUL, then isoTimeAcceptedSql, so what the CHECK admits is what isoTimeSql shows.
-export function isoTimeCheckSql(column: string): string {
-  return `CASE ${isoTimeWhen(column).join(" ")} ELSE 0 END`;
-}
-
-// isoTimeCheckSql's WHEN terms, in order.
+// The WHEN terms, in order, of a CHECK's form of the same rule: 0093's times, whose CASE reportCheck ends with ELSE 0,
+// so it is 1 when `column` holds a stored time, else 0, never NULL (SQLite accepts a CHECK that is NULL, and strftime
+// answers NULL for text it cannot read). The type first, then the raw bytes, then NUL, then isoTimeAcceptedSql, so
+// what the CHECK admits is what isoTimeSql shows.
 function isoTimeWhen(column: string): string[] {
   return [
     `WHEN typeof(${column}) <> 'text' THEN 0`,

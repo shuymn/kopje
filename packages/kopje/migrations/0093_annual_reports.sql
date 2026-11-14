@@ -14,7 +14,7 @@
 --                                 (on); none is rewritten.
 --
 -- Bounds (src/platform/stored-bounds.ts ANNUAL_REPORT_ARCHETYPES, ANNUAL_REPORT_YEARS, SAFE_INTEGER_MAX,
--- isoTimeCheckSql, WRAPSTODON_SETTING_BOUNDS; src/domain/status-bounds.ts TAG_NAME_BYTES, MAX_TAG_LENGTH): year an
+-- isoTimeWhen, WRAPSTODON_SETTING_BOUNDS; src/domain/status-bounds.ts TAG_NAME_BYTES, MAX_TAG_LENGTH): year an
 -- integer from 1 to 9999; archetype one of five words; the counts integers from 0, the uses from 2, to 2^53 - 1;
 -- top_status_id 18 ASCII digits; top_hashtag 1 to TAG_NAME_BYTES raw bytes, no NUL, at most MAX_TAG_LENGTH characters;
 -- the times Kopje's 24-byte form. The statements below are the output of annualReportsMigrationSql and of
