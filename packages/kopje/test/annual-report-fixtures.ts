@@ -6,6 +6,7 @@ import {
   REPORT_YEAR_STATUSES,
 } from "../src/domain/annual-reports";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
+import { toHex } from "../src/platform/hex";
 
 // Fixtures of the annual report tests and bench, written with SQL: an account's statuses at chosen ids of a year, their
 // hashtags and polls, its followers, and the all-caps witness (every input the year's reads take at its cap at once).
@@ -41,7 +42,6 @@ export type Post = {
   poll?: boolean;
 };
 
-const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const utf8 = (text: string) => new TextEncoder().encode(text);
 
 // Writes `post` as a statuses row (and its tags and poll).
@@ -67,7 +67,7 @@ export function insertPost(sql: SqlStorage, post: Post): void {
     sql.exec(
       "INSERT INTO status_tags (status_id, name) VALUES (?, CAST(unhex(?) AS TEXT))",
       post.id,
-      hex(typeof tag === "string" ? utf8(tag) : tag),
+      toHex(typeof tag === "string" ? utf8(tag) : tag),
     );
   }
   if (post.poll === true) {
@@ -261,7 +261,7 @@ export function buildWitness(
     sql.exec(
       `INSERT INTO status_tags (status_id, name)
 			SELECT json_extract(value, '$[0]'), CAST(unhex(json_extract(value, '$[1]')) AS TEXT) FROM json_each(?)`,
-      JSON.stringify(rows.slice(at, at + 500).map(([id, name]) => [id, hex(name)])),
+      JSON.stringify(rows.slice(at, at + 500).map(([id, name]) => [id, toHex(name)])),
     );
   }
   // Other accounts' uses of the same names are not the owner's (a growth witness grows them).
@@ -341,7 +341,7 @@ function witnessNames(variant: WitnessVariant): { names: Uint8Array[]; admissibl
   const firstSize = new Map<string, number>();
   let total = 0;
   heads.forEach((head, row) => {
-    const key = hex(head);
+    const key = toHex(head);
     const bytes = firstSize.get(key) ?? size(row);
     firstSize.set(key, bytes);
     names.push(nameOf(head, bytes));

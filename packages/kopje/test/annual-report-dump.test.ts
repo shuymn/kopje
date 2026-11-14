@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DumpTrailer } from "../src/platform/dump-format";
+import { toHex } from "../src/platform/hex";
 import { Sha256 } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
 import { seedAccount, sql } from "./api-helpers";
@@ -129,8 +130,7 @@ describe("annual reports in dumps", () => {
   it("are refused on import past their bounds, with the constraint’s name", async () => {
     const { store } = await source();
     const { text } = await dumpViaRpc(store);
-    const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-    const text_ = (value: string) => `CAST(X'${hex(new TextEncoder().encode(value))}' AS TEXT)`;
+    const text_ = (value: string) => `CAST(X'${toHex(new TextEncoder().encode(value))}' AS TEXT)`;
     const cases: [Partial<Record<Column, string>>, RegExp][] = [
       [{ year: "0" }, /annual_report_year/],
       [{ year: "10000" }, /annual_report_year/],
@@ -156,7 +156,7 @@ describe("annual reports in dumps", () => {
       [{ created_at: "'2026-12-10T01:02:03.004é'" }, /annual_report_created_at/],
       [{ created_at: "'2026-12-10T01:02:03.00é'" }, /annual_report_created_at/],
       [{ created_at: text_("2026-12-10T01:02:03.004\u0000") }, /annual_report_created_at/],
-      [{ created_at: `X'${hex(new TextEncoder().encode(CREATED))}'` }, /annual_report_created_at/],
+      [{ created_at: `X'${toHex(new TextEncoder().encode(CREATED))}'` }, /annual_report_created_at/],
       [{ created_at: "20261210" }, /annual_report_created_at/],
       [{ account_id: "'900000000000000009'" }, /chunk-failed: FOREIGN KEY constraint failed/],
     ];
