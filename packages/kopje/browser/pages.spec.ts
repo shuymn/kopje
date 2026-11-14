@@ -1643,6 +1643,28 @@ test("status and profile: no wrapped meta line begins with a separator at 320 an
   expect(inside).toBeGreaterThan(0);
 });
 
+// An author's row (a post's, a quote's, the focal post's, a list's): the name and the address beneath it, as one
+// block of text, are centred on the avatar beside them, so neither runs below it.
+for (const name of ["profile", "thread", "followers"] as const) {
+  test(`${name}: each author's name and address are centred on the avatar`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await open(page, pageNamed(name));
+    const rows = await page.locator(".who").evaluateAll((whos: Element[]) =>
+      whos.map((who) => {
+        const avatar = who.querySelector(":scope > .av")!.getBoundingClientRect();
+        const top = who.querySelector(".name span")!.getBoundingClientRect().top;
+        const bottom = who.querySelector(".meta > .handle")!.getBoundingClientRect().bottom;
+        return { off: (top + bottom) / 2 - (avatar.top + avatar.bottom) / 2, below: bottom - avatar.bottom };
+      }),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Math.abs(row.off)).toBeLessThanOrEqual(1.5);
+      expect(row.below).toBeLessThanOrEqual(1);
+    }
+  });
+}
+
 // The Follow beside a profile's avatar (the profile and the look-up result for an account): inset from the card's
 // edge as from the banner.
 for (const name of ["profile", "interaction-result"] as const) {

@@ -16,10 +16,10 @@ import { Icon } from "./icon";
 
 // Accounts and posts. Avatars are decorative; their boxes match their CSS size.
 
-type AvatarSize = 40 | 44 | 88;
+type AvatarSize = 40 | 46 | 88;
 
 // Each size's class, written out so every class the stylesheet styles is a literal in the source (stylesheet test).
-const AVATAR_CLASS: Record<AvatarSize, string> = { 40: "av av40", 44: "av av44", 88: "av av88" };
+const AVATAR_CLASS: Record<AvatarSize, string> = { 40: "av av40", 46: "av av46", 88: "av av88" };
 
 export const Avatar: FC<{ src: string | null; size: AvatarSize; eager?: boolean }> = ({ src, size, eager = false }) =>
   src === null ? (
@@ -58,7 +58,7 @@ export const InlineText: FC<{ text: Inline[] }> = ({ text }) => (
 // the row's end (the look-up result's Follow, as the profile card has it beside the avatar).
 export const Who: FC<{
   account: AuthorView;
-  size: 40 | 44;
+  size: 40 | 46;
   heading?: "h1" | undefined;
   when?: { iso: string; text: string; link: Link | null; edited: boolean } | undefined;
   action?: Child;
@@ -347,7 +347,7 @@ const Quote: FC<{ quote: QuoteView; playback: boolean; ofPage?: boolean }> = ({ 
     <div class="quote">
       <Who
         account={post.author}
-        size={40}
+        size={46}
         when={{ iso: post.createdAt, text: f.instant(post.createdAt), link: post.link, edited: post.editedAt !== null }}
       />
       <PostBody post={post} lcp={false} playback={playback} />
@@ -450,7 +450,7 @@ export const PostCard: FC<{
       )}
       <Who
         account={post.author}
-        size={44}
+        size={46}
         heading={focal ? "h1" : undefined}
         when={focal ? undefined : { iso: post.createdAt, text: f.instant(post.createdAt), link: post.link, edited }}
         action={action}

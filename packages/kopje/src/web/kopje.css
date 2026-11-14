@@ -531,9 +531,9 @@ button,
   height: 40px;
 }
 
-.av44 {
-  width: 44px;
-  height: 44px;
+.av46 {
+  width: 46px;
+  height: 46px;
 }
 
 .av88 {
@@ -675,8 +675,8 @@ button,
   &::after {
     position: absolute;
     inset-block-start: 100%;
-    /* Geometry: under the avatar's centre (the card's padding, then half a 44px avatar less half the line). */
-    inset-inline-start: calc(var(--pad) + 21px);
+    /* Geometry: under the avatar's centre (the card's padding, then half a 46px avatar less half the line). */
+    inset-inline-start: calc(var(--pad) + 22px);
     block-size: var(--s5);
     border-inline-start: 2px solid var(--line);
     content: "";
@@ -704,8 +704,10 @@ button,
   font-weight: 600;
 }
 
-/* An author: the avatar, then the name and its address as one group, set close (line height 1.25, --s1). As a page's
-   h1 (a post's author, a list's owner) it looks as on a feed card: the name at the text's size and weight. */
+/* An author: the avatar, then the name and its address as one group, set close (line height 1.25, no gap: the name's
+   and the time's 24px targets touch), so the two lines of a post's author span its 46px avatar (a name that wraps runs
+   lower). As a page's h1 (a post's author, a list's owner) it looks as on a feed card: the name at the text's size and
+   weight. */
 .who {
   display: flex;
   align-items: flex-start;
@@ -713,7 +715,6 @@ button,
   min-width: 0;
 
   & .id {
-    gap: var(--s1);
     min-width: 0;
     line-height: 1.25;
   }
@@ -732,11 +733,13 @@ button,
     }
   }
 
-  /* An end action is centred on the avatar (both 44px: the focal author's avatar and a control's height), at the
-	   row's end because the name takes the space between; where it wraps below the name, it starts its line at the
-	   content edge. */
+  /* An end action is centred on the avatar (a 44px control in a slot of the avatar's 46px), at the row's end because
+	   the name takes the space between; where it wraps below the name, it starts its line at the content edge. */
   & > .end {
+    display: flex;
     flex: none;
+    align-items: center;
+    min-height: 46px;
   }
 }
 
