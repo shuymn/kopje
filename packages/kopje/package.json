@@ -110,6 +110,7 @@
     "valibot": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:",
+    "vitest-plugin-sqlite-3534": "catalog:",
     "wrangler": "catalog:"
   },
   "engines": {
