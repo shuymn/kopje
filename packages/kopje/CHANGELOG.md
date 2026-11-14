@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-14
+
+A patch release, published under the npm dist-tag `latest`. On Cloudflare's runtime whose SQLite is 3.54.1, which
+Workers have run since about 2026-11-10 regardless of their compatibility date, notifications, push, the home, list and
+hashtag timelines and the streaming home timeline failed; they work again. Upgrading is strongly recommended.
+
+### Instance changes
+
+- Store schema: no migration. A rollback to 0.5.1 is a code-only rollback ([docs/upgrade.md](docs/upgrade.md)). No
+  `wrangler.jsonc` change.
+
 ### Changed
 
 - The instance template's deploy workflow (`deploy/ci/github-actions-deploy.yml`) runs on Node.js 26, the current LTS
