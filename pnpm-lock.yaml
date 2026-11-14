@@ -111,6 +111,9 @@ catalogs:
     sanitize-html:
       specifier: 2.18.1
       version: 2.18.1
+    structured-field-values:
+      specifier: 2.0.4
+      version: 2.0.4
     temporal-polyfill:
       specifier: 1.0.8
       version: 1.0.8
@@ -254,6 +257,9 @@ importers:
       sanitize-html:
         specifier: 'catalog:'
         version: 2.18.1
+      structured-field-values:
+        specifier: 'catalog:'
+        version: 2.0.4
       temporal-polyfill:
         specifier: 'catalog:'
         version: 1.0.8

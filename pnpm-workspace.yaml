@@ -19,10 +19,13 @@ catalog:
   temporal-polyfill: 1.0.8
   valibot: 1.5.0
 
-  # Fedify, one version for all of its packages.
+  # Fedify, one version for all of its packages, and the structured-field parser it reads Signature-Input with, at the
+  # version @fedify/fedify resolves: src/federation/inbound.ts reads the member Fedify verified with the same copy
+  # (test-node/fedify-usage.test.ts).
   "@fedify/fedify": 2.4.5
   "@fedify/testing": 2.4.5
   "@fedify/vocab": 2.4.5
+  structured-field-values: 2.0.4
 
   # Cloudflare Workers: the bundler and dev server, the runtime types and the workerd test pool. deploy/package.json
   # pins the same wrangler.

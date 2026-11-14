@@ -303,6 +303,9 @@ export type SignOptions = {
   contentType?: string;
   at?: number;
   headers?: Record<string, string>;
+  // An RFC 9421 signature instead: Fedify's default components, or the given ones followed by content-digest unless
+  // digest is false (Fedify adds it to any signature it makes over a body, so without it the body goes unsigned).
+  rfc9421?: { components?: string[]; digest?: boolean };
 };
 
 // The init of a POST of `activity` to `path`, signed as `actor` signs (Date at `at`, Digest, Host).
@@ -318,14 +321,21 @@ export async function signedInit(
     headers: { "content-type": options.contentType ?? AP, ...options.headers },
     body,
   });
+  const currentTime = Temporal.Instant.fromEpochMilliseconds(options.at ?? NOW);
+  const rfc9421 = options.rfc9421;
+  const components = rfc9421?.components?.map((value) => ({ value, params: {} }));
   const signed = await signRequest(
     unsigned,
     options.privateKey ?? actor.privateKey,
     new URL(options.keyId ?? actor.keyId),
-    {
-      spec: "draft-cavage-http-signatures-12",
-      currentTime: Temporal.Instant.fromEpochMilliseconds(options.at ?? NOW),
-    },
+    rfc9421 === undefined
+      ? { spec: "draft-cavage-http-signatures-12", currentTime }
+      : {
+          spec: "rfc9421",
+          currentTime,
+          ...(components === undefined ? {} : { rfc9421: { components } }),
+          ...(rfc9421.digest === false ? { body: null } : {}),
+        },
   );
   return { method: "POST", headers: signed.headers, body };
 }

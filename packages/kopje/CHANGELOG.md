@@ -8,6 +8,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
+  4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`). A request whose signature covers
+  less is refused with 401, as one whose signature does not verify; draft-cavage signatures are unchanged. No Store
+  migration and no `wrangler.jsonc` change.
+
 ## [0.5.2] - 2026-11-14
 
 A patch release, published under the npm dist-tag `latest`. On a Cloudflare runtime whose SQLite 3.54.1 counts every
