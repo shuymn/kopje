@@ -566,7 +566,8 @@ Paged status lists with request conditions:
   is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
   status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
 
-Grouped notifications (`GET /api/v2/notifications`; threat model RES-7):
+Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
+[threat-model.md](threat-model.md)):
 
 - A page's walk reads at most 2,000 notifications (`GROUP_WALK`), shown or hidden; a page whose walk meets more of the
   groups it has found (in practice a status favourited by thousands within a few hours) holds the groups found and its
@@ -575,16 +576,14 @@ Grouped notifications (`GET /api/v2/notifications`; threat model RES-7):
   walk found it by when those leave it out, so a larger group counts at most 400; its oldest is the first shown among
   its 400 oldest from the page's lower end up, or the notification the walk found it by when none is. Mastodon reads
   every notification of the group in the page's range (`NotificationGroup.load_groups_data`).
-- A page reads at most 7,200 notifications of its groups (rule-hidden ones included) and visits at most 81 groups,
-  across the passes that admit it again after a byte cut: its passes stop at 6,400 and 80 (`GROUP_ADMISSION_CANDIDATES`,
-  `GROUP_ADMISSION_VISITS`), each read starting only while all it may read still fits, and the rest is a reserve for its
-  first group. A page whose reads would pass them is shorter: it holds the groups its last pass admitted, from the
-  first, as far as the reads it made hold for a page that ends there (its statuses matched against keyword filters
-  within the text allowance of the requested page, not of a page asked for with that many groups), or else its first
-  group alone (with the groups before it that show nothing), and its `Link` continues from its last group's discovery
-  position, so the next page finds the rest. This shortens a page whose groups hold more than about 6,000 / `limit`
-  notifications each (fewer when the rule hides some of their oldest), or one cut by bytes after more than 40 groups.
-  Mastodon has no such bound. Accepted, 2026-11-14.
+- A page's group reads share one work budget across the passes that admit it again after a byte cut. A page whose
+  reads would pass it is shorter: it holds the groups its last pass admitted, from the first, as far as the reads it
+  made hold for a page that ends there (its statuses matched against keyword filters within the text allowance of the
+  requested page, not of a page asked for with that many groups), or else its first group alone (with the groups
+  before it that show nothing), and its `Link` continues from its last group's discovery position, so the next page
+  finds the rest. This shortens a page whose groups hold more than about 6,000 / `limit` notifications each (fewer
+  when the rule hides some of their oldest), or one cut by bytes after more than 40 groups. Mastodon has no such
+  bound. Accepted, 2026-11-14.
 
 Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
 
