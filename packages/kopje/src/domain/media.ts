@@ -522,17 +522,16 @@ function setUp(db: Db): boolean {
 
 // Doomed uploads, oldest first. They cannot be attached or read any more (liveMediaSql), so the R2 objects can go
 // before the rows.
-export const expiredMedia = mediaDeleteOperation<{ now: number; limit: number }, ExpiredMedia[]>(
-  (db, { now, limit }) =>
-    setUp(db)
-      ? db.all<ExpiredMedia>(
-          `SELECT id, file_token AS token FROM media_attachments
+export const expiredMedia = mediaDeleteOperation<{ now: number; limit: number }, ExpiredMedia[]>((db, { now, limit }) =>
+  setUp(db)
+    ? db.all<ExpiredMedia>(
+        `SELECT id, file_token AS token FROM media_attachments
 				WHERE status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ? AND ${notEmojiSql("media_attachments")}
 				ORDER BY gc_at LIMIT ?`,
-          iso(now),
-          Math.min(limit, SWEEP_BATCH),
-        )
-      : [],
+        iso(now),
+        Math.min(limit, SWEEP_BATCH),
+      )
+    : [],
 );
 
 // Deletes swept rows whose R2 objects are gone; a row attached again meanwhile cannot match (it has no gc_at). A row
