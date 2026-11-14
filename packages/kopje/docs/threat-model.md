@@ -172,39 +172,42 @@ against their own instance. TLS is assumed between all parties.
   between verification and parsing. Contexts are served from Fedify's preloaded set alone, for the verification and
   every parse. The proven `Delete` has exactly the literal id, one actor (the author) and one object (the literal
   object's id). Any other form is answered as a proof that does not verify: a relayed `Delete` from Misskey, or from a
-  Mastodon release whose context differs, is refused, and an author's own `Delete` in such a form applies but forwards
-  nothing. A Mastodon signature's `expires` is judged at the time the request reached the inbox (its spool time on
-  replay, OPS-1): an earlier one does not verify.
+  Mastodon release whose context differs, is dropped (202), and an author's own `Delete` in such a form applies but
+  forwards nothing. A Mastodon signature's `expires` is judged at the time the request reached the inbox (its spool time
+  on replay, OPS-1): an earlier one does not verify.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
   (VIS-3, its forward included); anything else of the actor's origin as at most a stamp. A relay without a proof
   changes no status and is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
-  again; a proof that does not verify answers 401; any other activity signed by a key its actor does not own still
+  again; a proof that does not verify, or whose author's document is gone or unusable, is answered 202 and changes
+  nothing (no status, no retraction, no stored actor document, never the unproven path), as Mastodon drops a relay
+  whose signature does not verify, and is logged; any other activity signed by a key its actor does not own still
   answers 401. Fedify 2.4.4 refuses `@graph`, `@included` and `@reverse` (and their aliases) before
   and after compacting a signed document and verifies the compacted form it parses, the class of Linked Data Signature
   bypass Mastodon fixed in 4.5.10 (GHSA-53m7-2wrh-q839).
   _Enforced (main):_ `relayed` in `src/federation/inbound.ts`, `src/federation/author-proof.ts`, `relayedDelete` in
-  `src/domain/inbox.ts`; `test/relayed-delete.test.ts` (a Mastodon-signed and a Kopje-signed status `Delete` relayed
-  and applied with the author's own effects, as a Mastodon 4.6 or 4.7 forwards it too, signed with or without
-  `expires`, by an author whose key is `#main-key` or `#rsa-…`, and the refusal of a missing or invalid proof, a proof of another
-  activity id or by a key on another host, a signer that does not own its key, another author's status, a uri of
-  another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
+  `src/domain/inbox.ts`; `test/relayed-delete.test.ts` (a Mastodon-signed and a Kopje-signed status `Delete` relayed and
+  applied with the author's own effects, as a Mastodon 4.6 or 4.7 forwards it too, signed with or without `expires`, by
+  an author whose key is `#main-key` or `#rsa-…`; the drop (202, logged, the status, its retractions and the stored
+  author unchanged) of an invalid or expired proof, a proof of another activity id or by a key on another host, a signed
+  graph that does not assert `Delete`, a remote context, and a proof whose author's document is gone, with 503 while it
+  is unavailable; and the refusal of a missing proof, a signer that does not own its key, another author's status, a uri
+  of another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
   proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
-  fixture derived from the sender's source with only the `@context` replaced (the `full_context` of v4.5.21, v4.6.11
-  and v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for
-  each profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an
-  `expires` not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context
-  confusion cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an
-  `expires` changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded
-  form refused under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or
-  aliases a decision term; no network fetch while verifying, and an actor document naming a
-  context that is not preloaded refused; the request's shared context cache is not observed by a test),
-  `test/quotes.test.ts` ("relayed revocations (ID-1’s
-  exception)": Mastodon's stamp `Delete`, signed with or without `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof
-  covering another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed
-  `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction
-  for input that fails ID-1", "judges a relayed author proof's expires against the spool time").
+  fixture derived from the sender's source with only the `@context` replaced (the `full_context` of v4.5.21, v4.6.11 and
+  v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for each
+  profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
+  not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion
+  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an `expires`
+  changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded form refused
+  under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or aliases a decision
+  term; no network fetch while verifying, and an actor document naming a context that is not preloaded refused; the
+  request's shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s
+  exception)": Mastodon's stamp `Delete`, signed with or without `expires`, a missing proof, a forged signature, a proof
+  by another actor's key, a proof covering another object, a valid proof on another activity type, a signed graph with
+  no `Delete` type, a signed `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts`
+  ("records no retraction for input that fails ID-1", "judges a relayed author proof's expires against the spool time").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that

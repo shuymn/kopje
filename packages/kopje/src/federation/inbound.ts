@@ -55,7 +55,8 @@ import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STA
 //      fresh) lists the key id, and the key names no other owner. The activity id has the actor's origin. One
 //      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by the
 //      quoting server) is signed by its relayer, who must own that key in the same way; it is applied as the actor's
-//      only with the actor's own proof (author-proof.ts), and without one it only has the stamp verified again.
+//      only with the actor's own proof (author-proof.ts), and without one it only has the stamp verified again. A proof
+//      that does not hold drops the relay: 202, nothing applied, logged (dropped).
 //   5. Per type, what the Store cannot fetch itself: a fresh actor document for Update, the Move target (ID-4), the
 //      object of a Create or Update given by id only.
 //   6. The Store applies it. It may answer that it needs a document first (the original of a boost it does not have,
@@ -79,7 +80,15 @@ export type InboundRequest = {
 
 // 202: done or deliberately ignored (a format or authorization problem, as Mastodon answers); 401: the signature or
 // the signer's identity failed; 415: not an ActivityStreams body; 503: a remote fetch failed in a way that may pass.
-export type InboxOutcome = { status: 202 | 401 | 415 | 503; reason: string; jobsPending?: boolean; delivers?: boolean };
+// dropped: a 202 for a relay whose signer is established but which applies nothing (its author proof does not hold),
+// logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops such a relay after answering 202.
+export type InboxOutcome = {
+  status: 202 | 401 | 415 | 503;
+  reason: string;
+  jobsPending?: boolean;
+  delivers?: boolean;
+  dropped?: true;
+};
 
 export type InboundDeps = Omit<FederationDeps, "domain"> & { domain: string; recipient: string | null };
 
@@ -715,8 +724,11 @@ type Relay = {
 // Delete, signed by a local sharer of the status or the quoting status). The signer owns its key as any actor must
 // (ID-1, judged on the signer). With the actor's own proof, verified against a key the actor's current document embeds,
 // it is applied as the actor's Delete; without one it is handed on unproven, which can only have a stamp verified
-// again. A proof that is present but does not verify refuses it. Only the Store's relayedDelete applies either, and
-// decides again what it may apply to: never an actor or a boost, a status only when proven, public or unlisted.
+// again. A proof that is present but does not hold (outside every profile, not verifying, expired, or its author's
+// document gone or unusable) drops the relay with 202 before any Store call, never handing it on unproven: Mastodon
+// drops a relay whose signature does not verify after answering 202, and a 401 would only be retried. Only the Store's
+// relayedDelete applies either, and decides again what it may apply to: never an actor or a boost, a status only when
+// proven, public or unlisted.
 // The actor's document is stored under the actor's revision (the gate read it for the envelope's actor, not for the
 // signer, whose document is only checked here).
 async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
@@ -757,7 +769,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       return { status: 503, reason: "actor-unavailable" };
     }
     if (fetched.kind !== "ok" || fetched.input === null) {
-      return { status: 401, reason: "actor-unusable" };
+      return { status: 202, reason: "author-unusable", dropped: true };
     }
     const verdict = await verifyAuthorProof(
       json,
@@ -766,7 +778,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       receivedAt,
     );
     if (!verdict) {
-      return { status: 401, reason: "proof-invalid" };
+      return { status: 202, reason: "proof-invalid", dropped: true };
     }
     actor = fetched.input;
     proven = true;

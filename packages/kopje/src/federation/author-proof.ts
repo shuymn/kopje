@@ -9,12 +9,12 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 // Delete with always_sign) or an FEP-8b32 Object Integrity Proof, which Fedify verifies. A body is considered only in
 // one of the closed forms below (PROFILES), taken from its sender's source: its @context deep-equal to the profile's
 // (or, as Mastodon forwards it, one release line's MASTODON_NAMED_CONTEXTS and an object of MASTODON_CONTEXT_TERMS
-// alone), every URL in it preloaded, and every key at every level one the sender writes. In that form the body's JSON-LD
-// meaning is its literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop, alias or
-// redefine a key (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification and
-// parsing. Any other form, a relayed Delete from Misskey or from a Mastodon release with another context included, is
-// answered as a proof that does not verify (docs/mastodon-deviations.md): relayed, 401 (inbound.ts relayed,
-// proof-invalid); the author's own Delete applies as unproven and forwards nothing (inbound.ts proveDelete).
+// alone), every URL in it preloaded, and every key at every level one the sender writes. In that form the body's
+// JSON-LD meaning is its literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop,
+// alias or redefine a key (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification
+// and parsing. Any other form, a relayed Delete from Misskey or from a Mastodon release with another context included,
+// is answered as a proof that does not verify (docs/mastodon-deviations.md): relayed, dropped with 202 (inbound.ts
+// relayed, proof-invalid); the author's own Delete applies as unproven and forwards nothing (inbound.ts proveDelete).
 //   - A Mastodon signature's `expires` (LinkedDataSignature#sign! writes it from 4.7.0) is judged at the instant the
 //     request reached the inbox (OPS-1): one earlier does not prove, as Mastodon's verify_actor! refuses a past one.
 //     Fedify covers it with the signature but compares it with no clock.
@@ -296,8 +296,8 @@ function keyIdsOf(json: Json): string[] {
   );
 }
 
-// Whether a Mastodon signature's `expires` (its form checked by isSignature) is earlier than `receivedAt`; equal is not,
-// as Mastodon's `past?`.
+// Whether a Mastodon signature's `expires` (its form checked by isSignature) is earlier than `receivedAt`; equal is
+// not, as Mastodon's `past?`.
 function expired(json: Json, receivedAt: number): boolean {
   const expires = isJson(json.signature) ? json.signature.expires : undefined;
   return typeof expires === "string" && Date.parse(expires) < receivedAt;

@@ -1,5 +1,5 @@
 import { signJsonLd } from "@fedify/fedify";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
@@ -12,6 +12,7 @@ import {
   mastodonDelete,
   mastodonForwarded,
   mastodonSigned,
+  signTime,
 } from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
@@ -125,6 +126,34 @@ async function effects(t: Setup, uri: string) {
 		FROM outbound_activities WHERE json_extract(body, '$.activity.type') IN ('Delete', 'Undo') ORDER BY id`,
   );
   return { ...counts, outbound };
+}
+
+// The `kopje.inbox.refused` lines `post` logs (processInbox), and its answer.
+async function logged(post: () => Promise<number>) {
+  const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const status = await post();
+    const refused = logs.mock.calls.filter(([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused");
+    return { status, refused };
+  } finally {
+    logs.mockRestore();
+  }
+}
+
+// `body`, relayed by dan while bob's document has changed since it was stored (a new name), is dropped: 202, `reason`
+// logged once, the status as it was, no retraction of it recorded, and bob's stored document unchanged.
+async function dropped(t: Setup, bob: TestActor, dan: TestActor, body: Json, uri: string, reason: string) {
+  const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
+  const before = await sql(t.store, author, bob.uri);
+  t.web.serve(bob.uri, { ...bob.document, name: "renamed" });
+  const { status, refused } = await logged(() => t.post(dan, body));
+  expect(status).toBe(202);
+  expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 202, reason }]]);
+  expect(await stored(t.store, uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  expect(await sql(t.store, "SELECT count(*) AS n FROM inbound_retractions WHERE target_uri = ?", uri)).toEqual([
+    { n: 0 },
+  ]);
+  expect(await sql(t.store, author, bob.uri)).toEqual(before);
 }
 
 // alice's boost of `id` through the API, and a listener on her user stream (so a status's removal streams, R32).
@@ -277,7 +306,8 @@ describe("a relayed status Delete that does not meet every condition changes not
     ["a proof covering another status", "tampered"],
     ["a proof covering another activity id, the object unchanged", "id"],
     ["a proof whose creator key is on another host than the author", "host"],
-  ])("refuses %s", async (_name, kind) => {
+    ["a proof whose expires is earlier than the request", "expired"],
+  ])("drops %s", async (_name, kind) => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     const other = await note(t, bob);
@@ -291,15 +321,40 @@ describe("a relayed status Delete that does not meet every condition changes not
       body = { ...signed, id: `${bob.uri}#delete-${nextId()}` };
     } else if (kind === "host") {
       body = await ldSigned(deletion(bob, status.uri), { ...bob, keyId: `${RELAY}/users/bob#main-key` });
+    } else if (kind === "expired") {
+      body = await mastodon47Signed(deletion(bob, status.uri), bob, { expires: signTime(NOW - 1000) });
     } else {
       const signed = await ldSigned(deletion(bob, other.uri), bob);
       body = { ...signed, object: { id: status.uri, type: "Tombstone", atomUri: status.uri } };
     }
-    expect(await t.post(dan, body)).toBe(401);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    await dropped(t, bob, dan, body, status.uri, "proof-invalid");
   });
 
-  it("requires the signed graph to assert Delete", async () => {
+  it("drops a relay whose proof's author document is gone, and answers 503 while it is unavailable", async () => {
+    const { t, bob, dan } = await world();
+    const status = await note(t, bob);
+    const signed = await ldSigned(deletion(bob, status.uri), bob);
+    t.web.fail(bob.uri, 503);
+    expect(await logged(() => t.post(dan, signed))).toEqual({
+      status: 503,
+      refused: [[{ event: "kopje.inbox.refused", status: 503, reason: "actor-unavailable" }]],
+    });
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
+    const before = await sql(t.store, author, bob.uri);
+    t.web.fail(bob.uri, 410);
+    expect(await logged(() => t.post(dan, signed))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "author-unusable" }]],
+    });
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    expect(
+      await sql(t.store, "SELECT count(*) AS n FROM inbound_retractions WHERE target_uri = ?", status.uri),
+    ).toEqual([{ n: 0 }]);
+    expect(await sql(t.store, author, bob.uri)).toEqual(before);
+  });
+
+  it("drops a relay whose signed graph does not assert Delete", async () => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     // bob signed a document of no type; the relay adds `type: "Delete"` under a context that maps `type` to nothing, so
@@ -308,11 +363,10 @@ describe("a relayed status Delete that does not meet every condition changes not
     delete unsigned.type;
     const signed = await ldSigned(unsigned, bob);
     const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
-    expect(await t.post(dan, relayed)).toBe(401);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    await dropped(t, bob, dan, relayed, status.uri, "proof-invalid");
   });
 
-  it("refuses a body naming a remote context, which the request's loaders never fetch", async () => {
+  it("drops a body naming a remote context, which the request's loaders never fetch", async () => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     const remote = "https://relay.example/context.jsonld";
@@ -325,9 +379,8 @@ describe("a relayed status Delete that does not meet every condition changes not
         url === remote ? Promise.resolve({ document, documentUrl: url, contextUrl: null }) : contexts(url),
     });
     const { "@context": _context, ...signature } = signed.signature;
-    expect(await t.post(dan, { ...signed, signature })).toBe(401);
+    await dropped(t, bob, dan, { ...signed, signature }, status.uri, "proof-invalid");
     expect(t.web.fetched).not.toContain(remote);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
   });
 
   it("refuses a relay whose HTTP signer does not own its key", async () => {

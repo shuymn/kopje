@@ -1,7 +1,7 @@
 // Mastodon's full_context (app/helpers/context_helper.rb: NAMED_CONTEXT_MAP in order, then the merged
-// CONTEXT_EXTENSION_MAP, serialized_context), read from each release tag's source: v4.4.0 to v4.4.28, v4.5.0 to v4.5.21,
-// v4.6.0 to v4.6.11 and v4.7.0 to v4.7.5. Mastodon compacts a signed activity under full_context before it forwards it
-// (ActivityPub::ProcessCollectionService in 4.4 to 4.6, ActivityPub::ProcessActivityService in 4.7;
+// CONTEXT_EXTENSION_MAP, serialized_context), read from each release tag's source: v4.4.0 to v4.4.28, v4.5.0 to
+// v4.5.21, v4.6.0 to v4.6.11 and v4.7.0 to v4.7.5. Mastodon compacts a signed activity under full_context before it
+// forwards it (ActivityPub::ProcessCollectionService in 4.4 to 4.6, ActivityPub::ProcessActivityService in 4.7;
 // JsonLdHelper#compact), so a Delete another Mastodon forwards carries one release line's named contexts and then one
 // such object (federation/author-proof.ts, the forwarded profiles).
 

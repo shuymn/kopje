@@ -863,9 +863,10 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   `verify_account!`, 4.7's `process_activity_service.rb` `actor_from_verified_ld_signature`; a past `expires` does not
   verify) and applies it as the author's own (`activity/delete.rb` `delete_status`) to a status of any
   visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion (`delete_person`);
-  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Kopje changes
-  no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
-  `Delete` of an actor.
+  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Its inbox
+  answers 202 before processing, and drops a relay whose signature does not verify; Kopje answers such a relay 202
+  too, applying nothing. Kopje changes no status for a relay without a proof, nor for a private, direct or limited
+  status or a boost, and refuses a relayed `Delete` of an actor.
 - An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
   profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
   Mastodon's status `Delete` (`DeleteSerializer`, `DeleteNoteSerializer` from 4.6) and stamp `Delete`
@@ -876,7 +877,8 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   FEP-8b32 proof. Mastodon verifies a signature whatever the body's context and keys, refusing only JSON-LD features
   it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or
   forwarded by a Mastodon whose `full_context` holds a named context, term or definition outside 4.4 to 4.7, is
-  refused, and an author's own `Delete` in such a form applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
+  dropped with 202, as Mastodon drops one whose signature does not verify, and an author's own `Delete` in such a form
+  applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 

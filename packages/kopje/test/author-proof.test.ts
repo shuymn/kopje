@@ -428,8 +428,8 @@ describe("contexts come from the preloaded set alone (ID-1)", () => {
 
 // A Mastodon holding a boost or quote forwards a signed Delete compacted under its full_context
 // (ActivityPub::ProcessCollectionService, ProcessActivityService from 4.7): the forwarded profiles accept one release
-// line's MASTODON_NAMED_CONTEXTS and one object of MASTODON_CONTEXT_TERMS (src/federation/mastodon-context.ts), with the
-// senders' keys.
+// line's MASTODON_NAMED_CONTEXTS and one object of MASTODON_CONTEXT_TERMS (src/federation/mastodon-context.ts), with
+// the senders' keys.
 describe("a Delete a Mastodon forwards (ID-1)", () => {
   const STAMP = (bob: TestActor, status: string) => ({
     uri: `${bob.uri}/quote_authorizations/1`,

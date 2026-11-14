@@ -1026,8 +1026,10 @@ describe("relayed revocations (ID-1’s exception)", () => {
     ["a forged signature (another key under the author’s key id)", "forged"],
     ["a proof by another actor’s key", "other"],
     ["a proof covering another object", "tampered"],
-  ])("refuses %s", async (_name, kind) => {
+  ])("drops %s, the quote kept though its stamp is gone", async (_name, kind) => {
     const { t, carol, dan, stamp, quote } = await relayWorld();
+    // Gone: handed on unproven, the relay would have the quote verified again and revoked.
+    t.web.fail(stamp, 404);
     let body: Record<string, unknown>;
     if (kind === "forged") {
       body = await ldSigned(deletion(carol, stamp), { ...carol, privateKey: dan.privateKey });
@@ -1036,27 +1038,29 @@ describe("relayed revocations (ID-1’s exception)", () => {
     } else {
       body = { ...(await ldSigned(deletion(carol, `${stamp}0`), carol)), object: stamp };
     }
-    expect(await t.post(dan, body)).toBe(401);
+    expect(await t.post(dan, body)).toBe(202);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
-  it("refuses a proof whose signed graph is not a Delete, a `type` added under a context that drops it", async () => {
+  it("drops a proof whose signed graph is not a Delete, a `type` added under a context that drops it", async () => {
     const { t, carol, dan, stamp, quote } = await relayWorld();
+    t.web.fail(stamp, 404);
     const { type: _type, ...untyped } = deletion(carol, stamp);
     const signed = await ldSigned(untyped, carol);
     const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
-    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await t.post(dan, relayed)).toBe(202);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
-  it("refuses a signed Update of the stamp relayed as a Delete through a context that nests the signature", async () => {
+  it("drops a signed Update of the stamp relayed as a Delete through a context that nests the signature", async () => {
     const { t, carol, dan, stamp, quote } = await relayWorld();
+    t.web.fail(stamp, 404);
     const update = { ...deletion(carol, stamp), id: `${stamp}#updates/${nextId()}`, type: "Update" };
     const signed = await ldSigned(update, carol);
     // `type` read as Update, and the signature, nested into the activity, adding its own type read as Delete.
     const nest = { Delete: "as:Update", signature: "@nest", RsaSignature2017: "as:Delete" };
     const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), nest], type: "Delete" };
-    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await t.post(dan, relayed)).toBe(202);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
@@ -1129,8 +1133,9 @@ describe("relayed revocations (ID-1’s exception)", () => {
       documentLoader: contexts,
     });
     const json = (await signed.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>;
-    // Tampered, it is refused; as signed, applied.
-    expect(await t.post(dan, { ...json, object: `${pair.stamp}0` })).toBe(401);
+    // Tampered, it is dropped, the quote kept though its stamp is gone; as signed, applied.
+    t.web.fail(pair.stamp, 404);
+    expect(await t.post(dan, { ...json, object: `${pair.stamp}0` })).toBe(202);
     expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted" });
     expect(await t.post(dan, json)).toBe(202);
     expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "revoked" });

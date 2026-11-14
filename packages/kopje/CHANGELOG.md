@@ -20,6 +20,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and the 28 UTC days before it (29 days, where it counted 28). The admin measures' `previous_total` counts the period
   of the same number of days right before the requested one, by the dates written. The time of day no longer moves it,
   and it no longer overlaps the requested period's first day. No Store migration and no `wrangler.jsonc` change.
+- A relayed `Delete` whose author proof is in no accepted form, does not verify, or names an author whose document is
+  gone is answered 202 and changes nothing, as Mastodon drops it, instead of 401, which senders retried. It is logged
+  as `kopje.inbox.refused` with status 202. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
