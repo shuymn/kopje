@@ -54,8 +54,12 @@ export function isStorableActorId(id: string): boolean {
 // letters only (actors.ts LOCAL_BY_USERNAME). The cutover's conversion and verification and the Store's import and
 // config refuse such an account with it; the Store finds the one candidate with LOCAL_USERNAME_SEEK_SQL first.
 export function localUsernameIsDomain(username: string, domain: string): boolean {
-  const fold = (value: string) => value.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
-  return fold(username) === fold(domain);
+  return sqliteLower(username) === sqliteLower(domain);
+}
+
+// SQLite's lower() without ICU: ASCII A-Z to a-z, every other code unit unchanged.
+export function sqliteLower(text: string): string {
+  return text.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
 }
 
 // The local account a username names (one seek of the unique index accounts_local_username), or none.
