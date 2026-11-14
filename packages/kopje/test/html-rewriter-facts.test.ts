@@ -153,6 +153,17 @@ describe("HTMLRewriter facts", () => {
     expect(await rewrite("<span>".repeat(10_000), HTML, ["a"])).toEqual([]);
   });
 
+  // Observed on this runtime with short attributes: lol-html charges a start tag's attributes to the stream's shared
+  // 3 MiB budget, its list growing by doubling (lol-html 13d5fa750e, "Charge lexer attributes to the shared memory
+  // budget"), so 32,768 pass and the 32,769th fails. It is not a per-tag constant: other memory use moves it.
+  it("fails the transformed stream when a start tag's attributes pass the memory limit", async () => {
+    const tag = (n: number) => `<a href=x${" a=b".repeat(n - 1)}>`;
+    expect(elements(await rewrite(tag(32_768), HTML, ["a"], ["href"]))).toEqual([
+      { kind: "element", tag: "a", ns: XHTML, attrs: { href: "x" } },
+    ]);
+    await expect(rewrite(tag(32_769), HTML, ["a"], ["href"])).rejects.toThrow(/memory/i);
+  });
+
   it("calls the end tag handler only for an explicit end tag", async () => {
     const closed = await rewrite("<title>a</title>", HTML, ["title"]);
     expect(closed.some((event) => event.kind === "end")).toBe(true);
