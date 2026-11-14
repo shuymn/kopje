@@ -106,6 +106,8 @@ export type Account = {
   // A local account's only: its highlighted role, the OAuth admin's Owner while it is available; [] otherwise.
   roles?: AccountRole[];
   suspended?: true;
+  // Present, true, only while the account's handle is invalidated (shownHandle).
+  invalid_handle?: true;
   // The account it moved to (Account#moved_to_account), one level deep (MOVED_ACCOUNT_COLUMNS), when it has one
   // stored; null while it is unavailable (REST::AccountSerializer#moved_to_account).
   moved?: Account | null;
@@ -399,21 +401,24 @@ export function admitAccounts(
 
 // An account's profile URL. A stored url is used only when it is http(s) (HTML-3); otherwise it is derived from the
 // actor URI, which carries the account's origin (a local account's carries the instance origin), or from this
-// instance's origin when the URI is not http(s) either. Each is used only within PROFILE_URL_LIMIT as serialized
-// (RES-2): a longer one falls back to the next, and to '' when none fits (a converted row of a long host and name).
-// `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
+// instance's origin when the URI is not http(s) either. An invalidated handle (shownHandle) names no page, so such an
+// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Each is used only within
+// PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when none fits (a converted
+// row of a long host and name). `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
 export function accountUrl(
-  row: { url: string | null; uri: string; username: string; domain: string | null },
+  row: { id: string; url: string | null; uri: string; username: string; domain: string | null },
   origin: string,
   href = ACCOUNT_BOUNDS.href,
 ): string {
+  const stored = href(row.url);
+  if (stored !== null) {
+    return stored;
+  }
+  if (shownHandle(row).invalid) {
+    return href(row.uri) ?? "";
+  }
   const actor = httpUrl(row.uri);
-  return (
-    href(row.url) ??
-    (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ??
-    href(`${origin}/@${acctOf(row)}`) ??
-    ""
-  );
+  return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${acctOf(row)}`) ?? "";
 }
 
 // How a presenter bounds an account's URLs and actor id (RES-2): `href` serializes an http(s) URL within its bound or
@@ -465,8 +470,32 @@ function shownImage(
   return { image: href, still: bounds.image(still) ?? href };
 }
 
-export function acctOf(row: { username: string; domain: string | null }): string {
-  return row.domain === null ? row.username : `${row.username}@${row.domain}`;
+// The domain of an invalidated handle's address (Account#pretty_acct): reserved (RFC 6761), so it names no server.
+const INVALID_HANDLE_DOMAIN = "handle.invalid";
+
+// How every presenter shows an account's username and acct (Mastodon's pretty_username and pretty_acct). A remote
+// account whose handle another account has taken is invalidated: its stored username starts with '! ' (Mastodon's
+// invalidated_username?), which no username Kopje matches by address can (addressRow), and it shows its id as
+// username and `<id>@handle.invalid` as acct, within the bounds a valid row's fill (accounts.id is 18 digits, the
+// CHECK of 0000_initial). A local account is never invalidated. `row.username` is the read's projection
+// (usernameSql), whose cut keeps the prefix.
+export function shownHandle(row: { id: string; username: string; domain: string | null }): {
+  username: string;
+  acct: string;
+  invalid: boolean;
+} {
+  if (row.domain !== null && row.username.startsWith("! ")) {
+    return { username: row.id, acct: `${row.id}@${INVALID_HANDLE_DOMAIN}`, invalid: true };
+  }
+  return {
+    username: row.username,
+    acct: row.domain === null ? row.username : `${row.username}@${row.domain}`,
+    invalid: false,
+  };
+}
+
+export function acctOf(row: { id: string; username: string; domain: string | null }): string {
+  return shownHandle(row).acct;
 }
 
 // An unavailable account (R1: suspended, or a remote account whose deletion has started, as the row's query read it
@@ -543,10 +572,11 @@ function presentIdentity(
     cachedImageUrls(own?.header ?? null, origin),
   );
   const shown: Profile = suspended ? { display_name: "", note: "", emojis: [], fields: [] } : profile();
+  const handle = shownHandle(row);
   return {
     id: row.id,
-    username: row.username,
-    acct: acctOf(row),
+    username: handle.username,
+    acct: handle.acct,
     display_name: shown.display_name,
     locked: !suspended && row.locked === 1,
     bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
@@ -574,6 +604,7 @@ function presentIdentity(
       ? { noindex: false, roles: !suspended && adminAccountIdOnce(db) === row.id ? [OWNER_BADGE] : [] }
       : {}),
     ...(suspended ? { suspended: true as const } : {}),
+    ...(handle.invalid ? { invalid_handle: true as const } : {}),
   };
 }
 

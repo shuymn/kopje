@@ -89,7 +89,6 @@ const ACCOUNT: Record<string, Exception> = {
     "show_media",
     "show_media_replies",
   ),
-  ...open(1587, "verified and invalid handles", "invalid_handle"),
   ...open(1589, "collections", "feature_approval"),
   // Left out, as with e-mail subscriptions off.
   ...accepted("MD-3", "email_subscriptions"),
