@@ -890,6 +890,27 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   (`signed_request.rb:150-153`). The signature Kopje selects meets Mastodon's required parameters and covered
   components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
   components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
+- A `Multikey` an actor lists by reference in `assertionMethod` is not fetched, so a signature by it does not verify;
+  Mastodon 4.7 fetches it (`process_account_service.rb:434-444`). No sender in the sources lists one so, and fetching
+  it would cost a fetch per key (RES-6). Accepted, 2026-11-15.
+- An ML-DSA-44 key is not read, where Mastodon 4.7 stores one for proofs (`multibase.rb:62-66`): Fedify 2.4.5 cannot
+  import it. The actor stays usable (ID-1). Accepted, 2026-11-15.
+- An Ed25519 key in a legacy `publicKey`, or in a key document of its own its actor lists, verifies an RFC 9421
+  signature, where Mastodon reads every legacy key as RSA (`process_account_service.rb:396`, `:414`). Its owner is
+  judged by the rule of every key, so no actor gains anything over its own keys. Accepted, 2026-11-15.
+- An unreadable key in a document whose context Kopje does not recognize as giving `publicKey` or `assertionMethod`
+  their key meaning (a context its instance serves, as Pleroma's `litepub-0.1.jsonld`, or one that redefines either
+  term), or spelled otherwise than Mastodon and Fedify write it (either property or its key material under a compact
+  or absolute IRI, an entry with its own `@context` or a `@nest`), still makes that actor unusable, where Mastodon
+  skips the key (`process_account_service.rb:448-452`) or reads only the plain spelling: recognizing more contexts and
+  spellings would mean fetching or expanding them, and no sender in the sources writes an unreadable key under any
+  context or such a spelling. Accepted, 2026-11-15.
+- A key whose `publicKeyPem` or `publicKeyMultibase` is a one-element array of a string, or a value object holding
+  one (`{"@value": …}`), is read, as Fedify 2.4.5 reads it; Mastodon 4.7 takes the member as given
+  (`process_account_service.rb:392`, `:425`), so only a string is a key it uses. Accepted, 2026-11-15.
+- An entry of `publicKey` or `assertionMethod` that is itself an array is skipped and the actor stays usable, where
+  Mastodon 4.7 takes it for a key id and fails to process the document (`json_ld_helper.rb:96` raises on an array).
+  Neither reads a key from it. Accepted, 2026-11-15.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
@@ -982,11 +1003,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   the keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
   reached the inbox); Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 to 4.7 forwards it,
   compacted under its `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an
-  FEP-8b32 proof. Mastodon verifies a signature whatever the body's context and keys, refusing only JSON-LD features
-  it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or
-  forwarded by a Mastodon whose `full_context` holds a named context, term or definition outside 4.4 to 4.7, is
-  dropped with 202, as Mastodon drops one whose signature does not verify, and an author's own `Delete` in such a form
-  applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
+  FEP-8b32 proof (`eddsa-jcs-2022`, without `expires`). Mastodon verifies a signature whatever the body's context and
+  keys, refusing only JSON-LD features it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a
+  relayed `Delete` from Misskey, or forwarded by a Mastodon whose `full_context` holds a named context, term or
+  definition outside 4.4 to 4.7, is dropped with 202, as Mastodon drops one whose signature does not verify, and an
+  author's own `Delete` in such a form applies but is not forwarded. Adding a profile is a change of its own.
+  Accepted, 2026-11-13. Mastodon 4.7 also verifies an `mldsa44-jcs-2024` proof and a proof with `expires`, judged at
+  receipt (`object_integrity_proof.rb:7`, `:19`). Kopje answers either as a proof that does not verify: no sender of a
+  profile writes them, its verifier (Fedify 2.4.5) does not include the ML-DSA-44 suite although the runtime could
+  verify it, and it judges `expires` at its own clock. Accepted, 2026-11-15.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
