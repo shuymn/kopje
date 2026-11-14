@@ -36,8 +36,8 @@ import { appToken, DAY_MS, observedSql, plannedRun, rowsRead, scansOf, staleStat
 import { storeWith } from "./setup-helpers";
 import { community } from "./status-helpers";
 
-// GET /api/v1/instance/activity (domain/instance-activity.ts): Mastodon's 12 weeks of 6 UTC days, what the counters
-// and logins record, the day's kept answer, the retention prune, and the read's bounds (RES-3, RES-4, RES-7).
+// GET /api/v1/instance/activity (domain/instance-activity.ts): Mastodon 4.5.21's 12 weeks of 7 UTC days, what the
+// counters and logins record, the day's kept answer, the retention prune, and the read's bounds (RES-3, RES-4, RES-7).
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const WEEK_MS = 7 * DAY_MS;
@@ -168,7 +168,8 @@ describe("instance activity: the answer", () => {
     h.now.mockReturnValue(NOW + DAY_MS);
     const next = await answer(h);
     expect(next[0]).toMatchObject({ week: String((NOW + DAY_MS) / 1000), statuses: "0" });
-    expect(next[1]).toMatchObject({ statuses: "0" });
+    // Yesterday is in week 1, whose 7 days end with it.
+    expect(next[1]).toMatchObject({ statuses: "2" });
     // The setting written through the admin path forgets the kept answer.
     h.now.mockReturnValue(NOW);
     await setAccess(h.store);
@@ -352,20 +353,20 @@ describe("instance activity: the answer", () => {
 });
 
 describe("instance activity: the weeks", () => {
-  // Week i holds the 6 UTC days D-7i to D-7i+5 (ActivityTracker#sum over week_edge_days' exclusive range): today in
-  // week 0 alone, and the day before each week's start (1, 8, 15, ..., 71 days ago) in none.
+  // Week i holds the 7 UTC days D-7i to D-7i+6 (Mastodon 4.5.21's ActivityTracker#sum over week_edge_days, both
+  // included): today in week 0 alone.
   const expectedWeek = (ago: number): number | null => {
     if (ago === 0) {
       return 0;
     }
     const week = Math.ceil(ago / 7);
-    return ago > 0 && ago % 7 !== 1 && week < ACTIVITY_WEEKS ? week : null;
+    return ago > 0 && week < ACTIVITY_WEEKS ? week : null;
   };
 
   it("places each day in its week, at the first and the last millisecond of the UTC day", async () => {
     const h = await apiHarness();
-    expect([0, 2, 7, 72, 77].map(expectedWeek)).toEqual([0, 1, 1, 11, 11]);
-    expect([1, 8, 15, 71, 78, 84, 85, -1].map(expectedWeek)).toEqual([null, null, null, null, null, null, null, null]);
+    expect([0, 1, 2, 7, 8, 15, 71, 72, 77].map(expectedWeek)).toEqual([0, 1, 1, 1, 2, 3, 11, 11, 11]);
+    expect([78, 84, 85, -1].map(expectedWeek)).toEqual([null, null, null, null]);
     for (const now of [NOW, NOW + DAY_MS - 1]) {
       await sql(h.store, "DELETE FROM activity_counts");
       await sql(h.store, "DELETE FROM activity_logins");
@@ -804,7 +805,7 @@ async function worstCase(h: Pick<ApiHarness, "store">) {
 
 describe("instance activity: bounds", () => {
   // The largest answer, from the column maxima: `week` Unix seconds of a Date (at most 8.64e15 ms: 13 digits), each
-  // sum of 6 days at ACTIVITY_VALUE_MAX, and logins at most ACTIVITY_LOGIN_ROWS; all digits, so JSON escapes nothing.
+  // sum of 7 days at ACTIVITY_VALUE_MAX, and logins at most ACTIVITY_LOGIN_ROWS; all digits, so JSON escapes nothing.
   const MAX_WEEK = {
     week: "9".repeat(String(Math.floor(8.64e15 / 1000)).length),
     statuses: String(ACTIVITY_WINDOW_DAYS * ACTIVITY_VALUE_MAX),
@@ -814,7 +815,7 @@ describe("instance activity: bounds", () => {
   const MAX_ANSWER_BYTES = new TextEncoder().encode(
     JSON.stringify(Array.from({ length: ACTIVITY_WEEKS }, () => MAX_WEEK)),
   ).length;
-  // Each window: the login cap, and each sum's 6 days plus the row that ends its range.
+  // Each window: the login cap, and each sum's 7 days plus the row that ends its range.
   const WINDOW_ROWS = ACTIVITY_LOGIN_ROWS + 2 * (ACTIVITY_WINDOW_DAYS + 1);
 
   it("derives the largest answer from the column maxima", () => {
@@ -822,10 +823,10 @@ describe("instance activity: bounds", () => {
     expect(MAX_WEEK.statuses).toHaveLength(13);
     expect(MAX_ANSWER_BYTES).toBe(1189);
     // The figures the tests' names and docs/threat-model.md state.
-    expect([WINDOW_ROWS, ACTIVITY_RETENTION_DAYS, ACTIVITY_PRUNE_ROWS]).toEqual([614, 184, 500]);
+    expect([WINDOW_ROWS, ACTIVITY_RETENTION_DAYS, ACTIVITY_PRUNE_ROWS]).toEqual([716, 184, 500]);
   });
 
-  it("reads each window by key within 614 rows at the worst case, with stale statistics", async () => {
+  it("reads each window by key within 716 rows at the worst case, with stale statistics", async () => {
     const h = await apiHarness();
     const { after } = await staleStatistics(h, {
       capture: () => plannedRun(h, /FROM activity_/, madeInstanceActivity, { now: NOW }),

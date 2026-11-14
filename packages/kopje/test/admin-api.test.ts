@@ -286,8 +286,9 @@ describe("admin routes (AUTH-2)", () => {
 
   // Reports (manage_reports), accounts (manage_users), domain blocks and allows (manage_federation) and the metrics
   // (view_dashboard) are served: to the admin, the lists (no report, block, allow or metric here; the two local
-  // accounts), a create without fields (422) and, for an id that is no record's, 404; to everyone else 403, as to a
-  // role without the permission. Deleting an account's data (delete_user_data) is not served: 403 to everyone, as is
+  // accounts), a create without fields (422), measures and retention without their required parameters (400, Mastodon
+  // 4.5.21's params.require) and, for an id that is no record's, 404; to everyone else 403, as to a role without the
+  // permission. Deleting an account's data (delete_user_data) is not served: 403 to everyone, as is
   // creating a domain allow.
   const SERVED = /^\/api\/v1\/admin\/(reports|domain_blocks)(\/|$)|^\/api\/v[12]\/admin\/accounts(\/|$)/;
   const LISTS = new Set(["/api/v1/admin/accounts", "/api/v2/admin/accounts"]);
@@ -295,24 +296,31 @@ describe("admin routes (AUTH-2)", () => {
     "GET /api/v1/admin/reports",
     "GET /api/v1/admin/domain_blocks",
     "GET /api/v1/admin/domain_allows",
-    "POST /api/v1/admin/measures",
     "POST /api/v1/admin/dimensions",
-    "POST /api/v1/admin/retention",
+  ]);
+  const REQUIRED = new Map([
+    ["/api/v1/admin/measures", "keys"],
+    ["/api/v1/admin/retention", "start_at"],
   ]);
   const expected = (path: string, who = "user", method = "GET"): { status: number; body: unknown } =>
     TRENDS.test(path) || (who === "admin" && EMPTY.has(`${method} ${path}`))
       ? { status: 200, body: [] }
       : who === "admin" && LISTS.has(path)
         ? { status: 200, body: expect.arrayContaining([expect.objectContaining({ username: "owner" })]) }
-        : who === "admin" && method === "POST" && path === "/api/v1/admin/domain_blocks"
+        : who === "admin" && method === "POST" && REQUIRED.has(path)
           ? {
-              status: 422,
-              body: { error: "Validation failed: Severity is not included in the list, Domain can't be blank" },
+              status: 400,
+              body: { error: `param is missing or the value is empty or invalid: ${REQUIRED.get(path)!}` },
             }
-          : UNSTORED.test(path) ||
-              (who === "admin" && SERVED.test(path) && (method !== "DELETE" || path.includes("domain_blocks")))
-            ? { status: 404, body: { error: "Record not found" } }
-            : { status: 403, body: { error: "This action is not allowed" } };
+          : who === "admin" && method === "POST" && path === "/api/v1/admin/domain_blocks"
+            ? {
+                status: 422,
+                body: { error: "Validation failed: Severity is not included in the list, Domain can't be blank" },
+              }
+            : UNSTORED.test(path) ||
+                (who === "admin" && SERVED.test(path) && (method !== "DELETE" || path.includes("domain_blocks")))
+              ? { status: 404, body: { error: "Record not found" } }
+              : { status: 403, body: { error: "This action is not allowed" } };
 
   const tokens = async (h: ApiHarness) => ({
     anonymous: null,

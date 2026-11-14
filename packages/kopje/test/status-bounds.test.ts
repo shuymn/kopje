@@ -683,6 +683,25 @@ describe("a remote status is stored within its bounds (RES-2)", () => {
     }).media;
     expect(media.map((m) => [m.url, m.previewUrl])).toEqual([[fits, null]]);
   });
+
+  it("parses at most 4 usable attachments: the 5th is left out", () => {
+    const png = (i: number) => ({ type: "Document", mediaType: "image/png", url: `https://remote.example/m/${i}.png` });
+    // A link (href) and an attachment without a usable url do not count toward the cap; the 5th usable one is cut, as
+    // Mastodon 4.5.21's Create and Update keep at most 4 (process_status_update_service.rb:92-100).
+    const media = note({
+      attachment: [
+        { type: "Link", href: "https://remote.example/page" },
+        png(0),
+        { type: "Document", mediaType: "image/png", url: "ftp://remote.example/m/x.png" },
+        png(1),
+        png(2),
+        png(3),
+        png(4),
+      ],
+    }).media;
+    expect(MAX_STATUS_MEDIA).toBe(4);
+    expect(media.map((m) => m.url)).toEqual([0, 1, 2, 3].map((i) => png(i).url));
+  });
 });
 
 describe("a local status is written within its bounds (RES-2)", () => {

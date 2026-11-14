@@ -37,7 +37,7 @@ export const PARAM_EXCEPTIONS: Exceptions = {
 
   // Admin features not served.
   "POST /api/v1/admin/dimensions": NOT_SERVED("end_at", "keys[]", "limit", "start_at"),
-  "POST /api/v1/admin/retention": NOT_SERVED("end_at", "frequency", "start_at"),
+  "POST /api/v1/admin/retention": NOT_SERVED("frequency"),
   "POST /api/v1/admin/domain_allows": NOT_SERVED("domain"),
   "GET /api/v1/admin/ip_blocks": NOT_SERVED(...PAGE),
   "POST /api/v1/admin/ip_blocks": NOT_SERVED("comment", "expires_in", "ip", "severity"),

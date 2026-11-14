@@ -151,7 +151,7 @@ export const dismissRequests: ApiHandler = withParams(async (c, deps, p) => {
   if (ids instanceof Response) {
     return ids;
   }
-  const input = { credential: userCredential(c, deps), ids };
+  const input = { credential: userCredential(c, deps), ids, now: deps.now() };
   authorized(await storeCall(c, deps, (s, b) => s.dismissNotificationRequests(b, input)));
   return c.json({});
 });

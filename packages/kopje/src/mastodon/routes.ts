@@ -415,7 +415,7 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/admin/trends/links/publishers/:id/reject", { scope: "admin:write", optional: true }, admin.notAllowed),
   post("/api/v1/admin/dimensions", { scope: "admin:read", optional: true }, admin.emptyMetric),
   post("/api/v1/admin/measures", { scope: "admin:read", optional: true }, admin.measures),
-  post("/api/v1/admin/retention", { scope: "admin:read", optional: true }, admin.emptyMetric),
+  post("/api/v1/admin/retention", { scope: "admin:read", optional: true }, admin.retention),
   get("/api/v1/admin/tags", { scope: "admin:read", optional: true }, admin.notAllowed),
   get("/api/v1/admin/tags/:id", { scope: "admin:read", optional: true }, admin.notAllowed),
   put("/api/v1/admin/tags/:id", { scope: "admin:write", optional: true }, admin.notAllowed),

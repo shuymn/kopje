@@ -8,8 +8,28 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
+  is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
+  for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400
+  without `start_at` or `end_at`, as Mastodon 4.5.21 does, and 422 for a date that is not ISO 8601, as measures does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)); both answered `[]` before.
+- Day ranges follow Mastodon 4.5.21. `GET /api/v1/instance/activity` counts 7 days a week, so the day before a week's
+  start, which no week counted, is in the week before. `usage.users.active_month` of `/api/v2/instance` counts today
+  and the 28 UTC days before it (29 days, where it counted 28). The admin measures' `previous_total` counts the period
+  of the same number of days right before the requested one, by the dates written. The time of day no longer moves it,
+  and it no longer overlaps the requested period's first day. No Store migration and no `wrangler.jsonc` change.
+
 ### Fixed
 
+- `source.follow_requests_count` (`verify_credentials`, `update_credentials`) counts only requests from available
+  accounts, at most 40, as Mastodon 4.5.21 does. It counted every pending request, those of suspended accounts
+  included, without a limit, and read all of them. It counts among the newest 120 requests, as the first page of
+  `GET /api/v1/follow_requests` lists them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)).
+- Dismissing several notification requests at once (`POST /api/v1/notifications/requests/dismiss`) also deletes the
+  senders' filtered notifications, as dismissing one request does and as Mastodon 4.5.21 does. Before, they stayed,
+  shown with `include_filtered`.
 - On the public pages, an author's name and address sit centred beside the avatar, where they ran below it: the two
   lines are set without a gap, and the avatar beside them (a post's, a quote's, a list's) is 46px.
 - A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
