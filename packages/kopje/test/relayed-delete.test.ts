@@ -679,20 +679,14 @@ describe("a relay of another type is dropped once its signer owns its key (ID-1)
   it("refuses a relay whose signer is a local account", async () => {
     const { t, bob, post } = await relayWorld();
     const status = await note(t, bob);
-    // A key on another host naming alice as its owner, by mallory's material, and a document at alice's uri listing it
-    // (as Fedify's key-owner check reads it): the signer resolves to a local account.
-    const keyUrl = `${RELAY}/keys/alice`;
+    // A document at alice's uri (served by the test web, as a forged answer would be) listing a key of mallory's
+    // material in alice's name: the key's owner, and so the signer, is a local account, and no other check refuses it.
+    const keyUrl = `${ALICE_URI}#forged-key`;
     const mallory = await mastodonActor(t.web, "mallory", { origin: RELAY, key: 7 });
-    t.web.serve(keyUrl, {
-      "@context": [AS, SECURITY, { Key: "sec:Key" }],
-      id: keyUrl,
-      type: "Key",
-      owner: ALICE_URI,
-      publicKeyPem: mallory.pem,
-    });
     t.web.serve(ALICE_URI, {
       ...mallory.document,
       id: ALICE_URI,
+      inbox: `${ALICE_URI}/inbox`,
       publicKey: { id: keyUrl, owner: ALICE_URI, publicKeyPem: mallory.pem },
     });
     const before = await snapshot(t);
