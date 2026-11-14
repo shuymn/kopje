@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { ACCOUNT_FROM, getAccounts, MAX_ACCOUNTS_BY_ID } from "../src/domain/accounts";
-import { activeSql, availableJoinedSql, availableSql, MAX_BLOCK_LABELS } from "../src/domain/audience";
+import { activeSql, availableJoinedSql, availableSql, MAX_BLOCK_LABELS, statusReads } from "../src/domain/audience";
 import { contextOf } from "../src/domain/auth";
 import { enqueueActivity } from "../src/domain/deliveries";
 import {
@@ -625,6 +625,20 @@ describe("coverage of each role", () => {
       notify(db, { recipientId: VIEWER, type: n.type, fromId: n.from, statusId: n.status, now: NOW });
       return storage.exec("SELECT 1 FROM notifications").toArray().length === 1;
     },
+    // The rule over a window's candidates (`within`, as shownWindow reads them), the notification named twice: each
+    // occurrence is shown or neither is.
+    "within (duplicate ids)": (db, _storage, _n, id) => {
+      const viewer = contextOf(VIEWER, NOW);
+      const rows = statusReads(viewer, { viewer: "?1", now: "?2" }).notifications(
+        db,
+        { where: "", within: "?3", includeFiltered: true, columns: { id: "CAST(n.id AS TEXT)" }, admin: null },
+        viewer.accountId,
+        viewer.now,
+        JSON.stringify([{ id }, { id }]),
+      );
+      expect([0, 2]).toContain(rows.length);
+      return rows.length === 2 && rows.every((row) => row.id === id);
+    },
     "within (list)": (_db, storage, _n, id) => {
       const answer = listNotifications.run(storage, {
         page: { limit: 40 },
@@ -674,8 +688,8 @@ describe("coverage of each role", () => {
     return answer.value as T;
   };
 
-  const NOTIFIED = ["notify", "within (list)", "by id", "push"];
-  const REQUESTED = ["notify", "request last status", "accept job"];
+  const NOTIFIED = ["notify", "within (list)", "within (duplicate ids)", "by id", "push"];
+  const REQUESTED = ["notify", "within (duplicate ids)", "request last status", "accept job"];
   // [role, the account covered, the notification, the paths]
   const CASES: [string, keyof typeof ROLE, Notification, string[]][] = [
     ["sender", "sender", { type: "mention", from: SENDER, status: S.senderMention }, [...NOTIFIED, "mentioned status"]],
