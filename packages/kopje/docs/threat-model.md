@@ -3622,7 +3622,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cron's turn resumes it from the persisted position after a lost continuation, and that a drain after the barrier runs
   no turn; a new event kind joins its table (`KINDS`). `src/stream-hub.ts`, `src/domain/streaming.ts`;
   `test/streaming/streaming.test.ts`. _Gap:_ the budgets count work, not CPU time; a turn at the limits is to be
-  measured on a deployed instance, as is how long a hibernated idle socket stays open.
+  measured on a deployed instance. A hibernated socket that carries no frame either way is closed by the platform:
+  measured from one home network against a deployed instance, four silent sockets started at different times each
+  closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client); a socket the client pinged every
+  20 minutes outlived them, to 6,393 s (#1211). Kopje sends no server ping, and a client reconnects, as Mastodon's
+  clients do; REST stays the source of truth.
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
   a restore are paid indefinitely ([backup.md](backup.md)).
@@ -3726,9 +3730,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   most 2,000 notifications in its walk and 7,200 in its groups, and visits at most 81 groups
   (`GROUP_ADMISSION_CANDIDATES`, `GROUP_ADMISSION_VISITS` and `VISIT_CANDIDATES` in
   `src/domain/notification-groups.ts`; `test/notification-group-budgets.test.ts` ("grouped notifications within one
-  work budget")). Accepted: a group of more than 400 counts at most 400; a page whose walk meets more than 2,000
-  notifications of the groups it found (one group that large, in practice) ends with those groups, its Link going on
-  from the last notification read; and a page whose reads would pass its budget holds the groups its last pass
+  work budget")). Measured on a deployed instance (#1211), the Store's CPU for one such page whose first group fills
+  its answer, so that no prefix holds: about 0.3 s (median; 0.5 s at most) at the budget's visits with groups of
+  medium size, and about 0.8 s (1.1 s at most) with every status and sample account at its bounds, where presenting
+  them, not reading, dominates. Accepted: a group of more than 400 counts at most 400; a page whose walk meets more
+  than 2,000 notifications of the groups it found (one group that large, in practice) ends with those groups, its Link
+  going on from the last notification read; and a page whose reads would pass its budget holds the groups its last pass
   admitted as far as those reads hold for a page that ends there (`provenPrefix`; its statuses are matched within the
   filter text allowance of the requested page, `MAX_FILTER_REQUEST_TEXT`), or else its first group alone, its
   Link going on from its last group's discovery position (mastodon-deviations.md, "Grouped notifications"). Clearing
