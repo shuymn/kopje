@@ -6,7 +6,7 @@ import { localActorOf } from "../src/domain/actors";
 import { stagedList } from "../src/domain/audience";
 import { migratedStore } from "./helpers";
 import { flatCteAfter } from "./sql-cursor-pads";
-import { measure, statements } from "./sql-depth-setup";
+import { measure, measureWith, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
 import { WINDOW_FAMILIES, windowVariants } from "./window-variants";
 
@@ -91,6 +91,31 @@ describe("expression depth guard", () => {
       expect(recorded.length, family).toBeGreaterThanOrEqual(2);
       expect(await measure(recorded), family).toEqual([]);
     }
+  });
+
+  // A connection to the service that drops is sent again once, with the same statements; anything else fails.
+  it("retries a dropped connection once, and fails on a second drop or any other error", async () => {
+    const dropped = () => Promise.reject(new Error("Network connection lost."));
+    const stub = (...answers: (() => Promise<Response>)[]) => {
+      const bodies: string[] = [];
+      return {
+        bodies,
+        fetch: (_url: string, init: RequestInit) => {
+          bodies.push(init.body as string);
+          return answers.shift()!();
+        },
+      };
+    };
+    const once = stub(dropped, () => Promise.resolve(Response.json([{ limit: 101, sql: "x" }])));
+    expect(await measureWith(once as never, ["x"])).toEqual([{ limit: 101, sql: "x" }]);
+    expect(once.bodies).toEqual(['["x"]', '["x"]']);
+    await expect(measureWith(stub(dropped, dropped) as never, ["x"])).rejects.toThrow("Network connection lost.");
+    const other = stub(() => Promise.reject(new Error("other")), dropped);
+    await expect(measureWith(other as never, ["x"])).rejects.toThrow("other");
+    expect(other.bodies).toHaveLength(1);
+    await expect(
+      measureWith(stub(() => Promise.resolve(new Response("bad", { status: 500 }))) as never, ["x"]),
+    ).rejects.toThrow("bad");
   });
 
   it("refuses a batch, whose later statements it would not measure", async () => {
