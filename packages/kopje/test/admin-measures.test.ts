@@ -185,16 +185,6 @@ describe("the measure instance_follows", () => {
   it(`cap the series at ${MEASURE_DAYS} days with 422`, async () => {
     const w = await world();
     await followed(w, w.alice.id, 1, D);
-    const full = await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-01" }));
-    expect(full.status).toBe(200);
-    expect((full.body as Measure[])[0]!.data).toHaveLength(MEASURE_DAYS);
-    expect(await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-02" }))).toEqual({
-      status: 422,
-      body: { error: `date range too long (at most ${MEASURE_DAYS} days)` },
-    });
-    // The cap counts the generated steps: a range that starts in the afternoon steps once less.
-    const late = await measure(w, follows(D, {}, { start_at: "2025-01-01T12:00:00Z", end_at: "2026-01-02" }));
-    expect((late.body as Measure[])[0]!.data).toHaveLength(MEASURE_DAYS);
     // A range Mastodon 4.5.21's range clamp would cut to its last two years (base_measure.rb:20-25) is past the cap
     // too: Kopje answers no range the clamp moves. Anyone but the OAuth admin is refused first.
     const sixYears = follows(D, {}, { start_at: "2020-01-01", end_at: "2026-01-01" });
@@ -206,6 +196,16 @@ describe("the measure instance_follows", () => {
     for (const token of [alice, null]) {
       expect(await measure(w, sixYears, token)).toEqual(NOT_ALLOWED);
     }
+    const full = await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-01" }));
+    expect(full.status).toBe(200);
+    expect((full.body as Measure[])[0]!.data).toHaveLength(MEASURE_DAYS);
+    expect(await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-02" }))).toEqual({
+      status: 422,
+      body: { error: `date range too long (at most ${MEASURE_DAYS} days)` },
+    });
+    // The cap counts the generated steps: a range that starts in the afternoon steps once less.
+    const late = await measure(w, follows(D, {}, { start_at: "2025-01-01T12:00:00Z", end_at: "2026-01-02" }));
+    expect((late.body as Measure[])[0]!.data).toHaveLength(MEASURE_DAYS);
   });
 
   it(`answer 422 above ${MEASURE_ROWS} walked follows, never an undercount, with reads bounded by the walk`, async () => {
