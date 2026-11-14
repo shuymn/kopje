@@ -59,6 +59,7 @@ Paths in this section are under `packages/kopje/`.
 
 ## Commits and pull requests
 
-- Commit subjects use Conventional Commits with a scope, for example `feat(kopje): ...` or `fix(kopje): ...`.
+- Commit subjects use Conventional Commits. The scope names the area changed, such as `federation`, `mastodon`, `web`,
+  `store`, `cli`, `docs`, `deploy` or `deps`, for example `fix(federation): ...`.
 - A pull request explains what changed, why, and how it was verified, and names what was not run. It lists the
   `packages/kopje/docs/threat-model.md` invariant IDs it touches. UI-visible changes include screenshots.
