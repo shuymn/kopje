@@ -29,6 +29,19 @@
       "matchPackageNames": ["vitest", "@vitest/**"]
     },
     {
+      "description": "Keep the Cloudflare Workers toolchain apart from the other updates: it moves workerd, the runtime the Store's SQL runs on, and a runtime change that fails the tests must not hold back the rest",
+      "groupName": "cloudflare workers",
+      "matchPackageNames": ["wrangler", "miniflare", "@cloudflare/vitest-plugin", "@cloudflare/workers-types"]
+    },
+    {
+      "description": "mise.toml is outside Renovate (mise-update.yml advances it within each major), so a Node.js major must move it too",
+      "matchPackageNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": [
+        "Before merging, move `node` in mise.toml to the same major and run `mise lock node`, then update the Node.js version named in packages/kopje/RELEASING.md."
+      ]
+    },
+    {
       "description": "Group the oxc tools, which change what lint and format report together",
       "groupName": "oxc",
       "matchPackageNames": ["oxlint", "oxlint-tsgolint", "oxfmt", "@oxlint/**"]
