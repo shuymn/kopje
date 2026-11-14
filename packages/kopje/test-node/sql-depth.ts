@@ -4,9 +4,9 @@
 // can, and both rules read it. The cursor rule is enforced here only: mise.lock pins a Node whose SQLite (3.54.1) has
 // it, while workerd from 1.20261111.1 backs it out (test/sql-cursor-calibration.test.ts checks the runtime's success
 // side). A Node update that loses the rule fails the calibration below, and is decided then: keep a Node with the rule
-// for the guard, or retire the guard by the owner's decision. The Workers suites send every statement they run through Db here
-// (test/sql-depth-setup.ts, through the SQL_DEPTH binding of vitest.config.ts), so a statement nearing either refusal
-// fails the suite that runs it, not a request in production.
+// for the guard, or retire the guard by the owner's decision. The Workers suites send every statement they run through
+// Db here (test/sql-depth-setup.ts, through the SQL_DEPTH binding of vitest.config.ts), so a statement nearing either
+// refusal fails the suite that runs it, not a request in production.
 
 import type { DatabaseSync } from "node:sqlite";
 

@@ -8,6 +8,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- Notifications, the home, list and hashtag timelines, the public hashtag page and the streaming home timeline work
+  again on a Cloudflare runtime whose SQLite is 3.54.1. That SQLite refuses a statement that reads a recursive query
+  after as many tables and subqueries as its expression limit (100), and writing, listing, grouping and pushing
+  notifications, reading those timelines and streaming a followed account's status home each ran one, so they failed
+  with "nested too deep". The notification rule now reads an account's coverage by an instance domain block only where
+  no other condition of the rule already decides it, the positioned home read takes the coverage of a status's author
+  and its original's from the status's row it reads first, and a timeline reads its candidate windows in one pass.
+  What the API answers is unchanged, and no statement reads more rows than before. No Store migration and no
+  `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)). The deploy template pins
+  wrangler 4.160.0.
+
 ## [0.5.1] - 2026-11-14
 
 A patch release, published under the npm dist-tag `latest`. One page of grouped notifications can no longer hold the

@@ -65,9 +65,9 @@ export type MergedRow = { id: SqlStorageValue; o: number; edge: SqlStorageValue 
 
 // The window of mergedWindow's rows, the first size + 1 candidates in cursor order: the bound is the highest edge
 // among them (the lowest when ascending), and the window the candidates from the cursor to it, at most `size`, cut
-// when it ends at a bound or past `size`. A bound below the first size + 1 candidates is that of a stream whose
-// edge row is among them (its edge is its own last row), carrying the highest edge; one past them drops none of them,
-// and the count decides the cut.
+// when it ends at a bound or past `size`. When the merged bound falls within the first size + 1 candidates, its own row
+// is among them (a filled stream's edge is that stream's last candidate) and carries it, the highest edge of all; when
+// it falls past them, it drops none of them, and the count decides the cut.
 export function boundedWindow(rows: readonly MergedRow[], ascending: boolean, size: number): Window {
   const text = (value: SqlStorageValue): string => {
     if (typeof value !== "string") {
