@@ -178,9 +178,9 @@ unless the request asks for filtered ones (`include_filtered`, or `account_id` i
 reads a filtered notification; a read by id (v1, and `ungrouped-<id>` in v2, as Mastodon's `show`) shows one. The push
 target leaves them out too (`UNFILTERED_SQL`). Accepting a request records the permission and unfilters the sender's
 filtered notifications, adding its direct mentions to the recipient's conversations, as Mastodon's
-`UnfilterNotificationsWorker` does; dismissing one deletes them; both walk the sender's notifications in bounded
-batches (`src/domain/notification-requests.ts`), the first in the request and the rest with the inbound jobs. Requests,
-the policy and permissions are their recipient's alone: only their owner reads or answers them.
+`UnfilterNotificationsWorker` does; dismissing one, or several at once, deletes them; both walk the sender's
+notifications in bounded batches (`src/domain/notification-requests.ts`), the first in the request and the rest with the
+inbound jobs. Requests, the policy and permissions are their recipient's alone: only their owner reads or answers them.
 
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
 (`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the

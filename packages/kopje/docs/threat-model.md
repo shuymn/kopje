@@ -994,8 +994,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS` and
   `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
   `src/domain/notification-groups.ts`, `src/domain/push.ts`, `purgeRelationships` and `STATUS_CHILDREN` in
-  `src/domain/inbox.ts`, migration `0020_notification_policies`; `test/notification-policy.test.ts`,
-  `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`,
+  `src/domain/inbox.ts`, migration `0020_notification_policies`; `test/notification-policy.test.ts` (among others,
+  "dismisses in bulk a sender with more filtered notifications than the request’s batches; the job rounds delete the
+  rest"), `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`,
   `test/policy-bounds.test.ts`, `test/migrations.test.ts`, `test/cascade-guard.test.ts`.
 
 - **VIS-25: a report reveals to the servers it is forwarded to only what its reporter may see, and never its reporter.**
