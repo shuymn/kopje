@@ -866,7 +866,11 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Its inbox
   answers 202 before processing, and drops a relay whose signature does not verify; Kopje answers such a relay 202
   too, applying nothing. Kopje changes no status for a relay without a proof, nor for a private, direct or limited
-  status or a boost, and refuses a relayed `Delete` of an actor.
+  status or a boost. Mastodon also applies, as its author's, a relayed `Delete` of an actor and a relay of another type
+  whose signature verifies (a reply to one of its accounts forwarded as `Create`, `create.rb` `forward_for_reply`; an
+  edit forwarded as `Update`, `process_status_update_service.rb` `forward_activity!`); Kopje applies none of them: once
+  the relaying server owns its HTTP signature's key, such a relay is answered 202 and dropped, logged, and a signer
+  that does not own its key is answered 401.
 - An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
   profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
   Mastodon's status `Delete` (`DeleteSerializer`, `DeleteNoteSerializer` from 4.6) and stamp `Delete`

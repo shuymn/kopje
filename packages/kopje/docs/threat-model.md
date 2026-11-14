@@ -182,10 +182,11 @@ against their own instance. TLS is assumed between all parties.
   changes no status and is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
   again; a proof that does not verify, or whose author's document is gone or unusable, is answered 202 and changes
   nothing (no status, no retraction, no stored actor document, never the unproven path), as Mastodon drops a relay
-  whose signature does not verify, and is logged; any other activity signed by a key its actor does not own still
-  answers 401. Fedify 2.4.4 refuses `@graph`, `@included` and `@reverse` (and their aliases) before
-  and after compacting a signed document and verifies the compacted form it parses, the class of Linked Data Signature
-  bypass Mastodon fixed in 4.5.10 (GHSA-53m7-2wrh-q839).
+  whose signature does not verify, and is logged; any other relay (another type, or a relayed `DeleteActor`) whose
+  signer owns its key is answered 202, applies nothing and is logged, as Mastodon drops a relay it cannot verify; a
+  signer that does not own its key is answered 401. Fedify 2.4.4 refuses `@graph`, `@included` and `@reverse` (and their
+  aliases) before and after compacting a signed document and verifies the compacted form it parses, the class of Linked
+  Data Signature bypass Mastodon fixed in 4.5.10 (GHSA-53m7-2wrh-q839).
   _Enforced (main):_ `relayed` in `src/federation/inbound.ts`, `src/federation/author-proof.ts`, `relayedDelete` in
   `src/domain/inbox.ts`; `test/relayed-delete.test.ts` (a Mastodon-signed and a Kopje-signed status `Delete` relayed and
   applied with the author's own effects, as a Mastodon 4.6 or 4.7 forwards it too, signed with or without `expires`, by
@@ -193,9 +194,11 @@ against their own instance. TLS is assumed between all parties.
   author unchanged) of an invalid or expired proof, a proof of another activity id or by a key on another host, a signed
   graph that does not assert `Delete`, a remote context, and a proof whose author's document is gone, with 503 while it
   is unavailable; and the refusal of a missing proof, a signer that does not own its key, another author's status, a uri
-  of another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
-  proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
-  fixture derived from the sender's source with only the `@context` replaced (the `full_context` of v4.5.21, v4.6.11 and
+  of another origin, a private, direct or limited status, a boost, and a status that turned private while the proof was
+  verified; the drop of a relayed `Delete` of an actor and of a forwarded reply or edit whose signer owns its key,
+  stored or fetched, nothing written, and the 401 for one whose signer does not own its key, is local, or whose actor is
+  local), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a fixture
+  derived from the sender's source with only the `@context` replaced (the `full_context` of v4.5.21, v4.6.11 and
   v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for each
   profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
   not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion

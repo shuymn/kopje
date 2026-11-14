@@ -1064,11 +1064,21 @@ describe("relayed revocations (ID-1’s exception)", () => {
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
-  it("refuses an author proof on any other activity, and applies one on a status as the author's Delete", async () => {
+  it("drops an author proof on any other activity, and applies one on a status as the author's Delete", async () => {
     const { t, carol, dan, target, quote } = await relayWorld();
     const boost = await ldSigned({ ...deletion(carol, target.id), type: "Announce" }, carol);
-    expect(await t.post(dan, boost)).toBe(401);
+    // No relay of another type is applied: 202, logged, nothing changed.
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await t.post(dan, boost)).toBe(202);
+      expect(logs.mock.calls.filter(([e]) => (e as { event?: string }).event === "kopje.inbox.refused")).toEqual([
+        [{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }],
+      ]);
+    } finally {
+      logs.mockRestore();
+    }
     expect(await statusRow(t.store, target.id)).toBeDefined();
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
     // carol's Delete of her public status, relayed with her proof: the status goes and the quote of it is detached, as
     // by her own Delete (test/relayed-delete.test.ts).
     const statusDelete = await ldSigned(deletion(carol, target.id), carol);

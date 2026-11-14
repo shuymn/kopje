@@ -23,6 +23,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A relayed `Delete` whose author proof is in no accepted form, does not verify, or names an author whose document is
   gone is answered 202 and changes nothing, as Mastodon drops it, instead of 401, which senders retried. It is logged
   as `kopje.inbox.refused` with status 202. No Store migration and no `wrangler.jsonc` change.
+- Any other activity another server relays (a forwarded reply or edit, or an account's `Delete`), which Kopje does not
+  apply, is answered 202 once the relaying server's signature is established, as Mastodon answers it, instead of 401,
+  which senders retried for days. It is logged as `kopje.inbox.refused` with status 202. A relay whose signer does not
+  own its key is still answered 401.
 
 ### Fixed
 

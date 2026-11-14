@@ -1,7 +1,7 @@
 import { signRequest } from "@fedify/fedify";
 import { runInDurableObject } from "cloudflare:test";
 import { Temporal } from "temporal-polyfill";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { forwardSubject } from "../src/domain/deliveries";
@@ -105,6 +105,24 @@ const counts = async (store: StoreStub, id: string) =>
       id,
     )
   )[0];
+
+// The answer to `post` and the kopje.inbox.refused lines it logged: for an activity in one actor's name signed by
+// another remote actor that owns its key, a relay Kopje does not apply, 202 and one relay-not-applied line
+// (inbound.ts relayed).
+async function asRelay(post: () => Promise<number>) {
+  const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const status = await post();
+    const refused = logs.mock.calls.filter(([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused");
+    return { status, refused };
+  } finally {
+    logs.mockRestore();
+  }
+}
+const RELAY_NOT_APPLIED = {
+  status: 202,
+  refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+};
 
 // Nothing at all changed in the tables an activity writes.
 async function untouched(store: StoreStub): Promise<void> {
@@ -630,24 +648,28 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
     await untouched(t.store);
   });
 
-  it("refuses a wrong signer: another server’s key for this actor", async () => {
+  // Signed by a key another remote actor owns, an activity in bob's name is a relay, which Kopje drops (202, applying
+  // nothing, logged), as Mastodon's inbox answers it.
+  it("refuses a wrong signer: another server’s key for this actor, dropped as a relay", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const mallory = await mastodonActor(t.web, "mallory", { origin: "https://evil.example", key: 3 });
-    expect(await t.post(bob, follow(bob), { keyId: mallory.keyId, privateKey: mallory.privateKey })).toBe(401);
+    const signed = { keyId: mallory.keyId, privateKey: mallory.privateKey };
+    expect(await asRelay(() => t.post(bob, follow(bob), signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
-  it("refuses the same origin with a different actor", async () => {
+  it("refuses the same origin with a different actor, dropped as a relay", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     // Signed by carol's own key, in bob's name.
-    expect(await t.post(bob, follow(bob), { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(401);
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await asRelay(() => t.post(bob, follow(bob), signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
-  it("refuses a key whose document names another owner, even when that owner lists it", async () => {
+  it("refuses a key whose document names another owner, even when that owner lists it: a relay by it", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const keyUri = `${MASTODON}/keys/shared`;
@@ -661,7 +683,7 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
       ...bob.document,
       publicKey: [bob.document.publicKey, { id: `${keyUri}#main-key`, owner: keyUri, publicKeyPem: bob.pem }],
     });
-    expect(await t.post(bob, follow(bob), { keyId: `${keyUri}#main-key` })).toBe(401);
+    expect(await asRelay(() => t.post(bob, follow(bob), { keyId: `${keyUri}#main-key` }))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
@@ -790,8 +812,8 @@ describe("ID-6: the authorization table, one negative case per row", () => {
     const bob = await mastodonActor(t.web, "bob");
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     const flag = (actor: TestActor, object: string) => mastodonFlag(actor, [object], "spam", activityId(MASTODON));
-    // Signed by carol, naming bob as its actor: not bob's.
-    expect(await t.post(carol, flag(bob, DAVE_URI))).toBe(401);
+    // Signed by carol, naming bob as its actor: not bob's, a relay Kopje drops.
+    expect(await asRelay(() => t.post(carol, flag(bob, DAVE_URI)))).toEqual(RELAY_NOT_APPLIED);
     // A remote account that no named status shows replying to a local account is no target.
     expect(await t.post(carol, flag(carol, bob.uri))).toBe(202);
     expect(await sql(t.store, "SELECT * FROM reports")).toEqual([]);
@@ -954,9 +976,10 @@ describe("ID-7: replay changes nothing twice", () => {
     // own proof it is applied to nothing, and records nothing.
     expect(await t.post(bob, deletion, { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(202);
     await untouched(t.store);
-    expect(await t.post(bob, { ...deletion, type: "Undo" }, { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(
-      401,
-    );
+    // Any other type is dropped as a relay.
+    const undo = { ...deletion, type: "Undo" };
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await asRelay(() => t.post(bob, undo, signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 

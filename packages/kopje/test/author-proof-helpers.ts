@@ -281,6 +281,27 @@ export function mastodonForwarded(signed: Json, context: unknown = MASTODON_45_F
   return { ...signed, "@context": context };
 }
 
+// What a Mastodon 4.7 forwards of a signed activity it did not author, as received: a reply to a local status
+// (Activity::Create#forward_for_reply, signed by the replied-to account) or an edit of a status a local account shared
+// (ProcessStatusUpdateService#forward_activity!, signed by a sharer). ProcessActivityService compacts the body under
+// full_context, which drops null values, and patch_for_forwarding! puts back every other value of these bodies (Public,
+// single-item arrays); the signature is kept. Checked once with jsonld.js and a port of patch_for_forwarding! (equal,
+// member order aside), not with Mastodon's Ruby.
+export function mastodonForwardedActivity(signed: Json, context: unknown = MASTODON_47_FORWARDED_CONTEXT): Json {
+  const compacted = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(compacted)
+      : typeof value === "object" && value !== null
+        ? Object.fromEntries(
+            Object.entries(value)
+              .filter(([, v]) => v !== null)
+              .map(([k, v]) => [k, compacted(v)]),
+          )
+        : value;
+  const { signature, ...body } = signed;
+  return { ...(compacted(body) as Json), "@context": context, signature };
+}
+
 // An actor of mastodon.example with an RSA key (its HTTP signatures) and an Ed25519 assertion method (Multikey, its
 // FEP-8b32 proofs), served on `web`, with two signers by that key:
 //   - fedify: the Delete Fedify's signObject writes (its default Delete context, copied into the proof), as a sender
