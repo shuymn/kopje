@@ -112,8 +112,8 @@ catalogs:
       specifier: 8.1.1
       version: 8.1.1
     sanitize-html:
-      specifier: 2.18.1
-      version: 2.18.1
+      specifier: 2.18.2
+      version: 2.18.2
     structured-field-values:
       specifier: 2.0.4
       version: 2.0.4
@@ -262,7 +262,7 @@ importers:
         version: 8.1.1
       sanitize-html:
         specifier: 'catalog:'
-        version: 2.18.1
+        version: 2.18.2
       structured-field-values:
         specifier: 'catalog:'
         version: 2.0.4
@@ -2448,8 +2448,8 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
 
-  sanitize-html@2.18.1:
-    resolution: {integrity: sha512-2X5lC8fYla8YaT8g73Nj+HcLWXan5dLyCWLgVvaOmfw7JI78IRsyNtIDytTHdn7hBQbIkCah7Zbmd5jabzeDig==}
+  sanitize-html@2.18.2:
+    resolution: {integrity: sha512-LTQVNHBeKB5qIae9x2J2Fw68ORnES++8vzYaG7DFT8P4GVCJFeHffHnRUzf5Mrxfx+4GweIvMRqkBPHHodaVNg==}
     engines: {node: '>=22.12.0'}
 
   semver@7.8.5:
@@ -4595,7 +4595,7 @@ snapshots:
       '@rolldown/binding-win32-arm64-msvc': 1.2.18
       '@rolldown/binding-win32-x64-msvc': 1.2.18
 
-  sanitize-html@2.18.1:
+  sanitize-html@2.18.2:
     dependencies:
       escape-string-regexp: 4.0.0
       htmlparser2: 12.0.0
