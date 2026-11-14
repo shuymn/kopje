@@ -12,7 +12,7 @@ const AccountRows: FC<{ accounts: AuthorView[] }> = ({ accounts }) => (
   <ul class="card rows accounts" role="list">
     {accounts.map((account) => (
       <li>
-        <Who account={account} size={44} />
+        <Who account={account} size={46} />
       </li>
     ))}
   </ul>

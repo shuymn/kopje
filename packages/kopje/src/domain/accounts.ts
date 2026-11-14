@@ -830,6 +830,12 @@ export const lookupAccount = readOperation<
   accountByAddress(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
 );
 
+// source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
+// (credential_account_serializer.rb:17). Kopje counts, among the newest readWindow(FOLLOW_REQUESTS_COUNT) pending
+// requests (follows_target, as listFollowRequests' first page reads them), those of available requesters (R1), at
+// most FOLLOW_REQUESTS_COUNT (docs/mastodon-deviations.md, "Accounts").
+export const FOLLOW_REQUESTS_COUNT = 40;
+
 type CredentialRow = {
   default_visibility: Visibility;
   default_sensitive: number;
@@ -843,9 +849,13 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
     `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
-			(SELECT COUNT(*) FROM follows WHERE target_account_id = ?1 AND state = 'pending') AS follow_requests_count
+			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
+					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
+				WHERE ${availableJoinedSql("a", "l")}) AS follow_requests_count
 		FROM local_accounts WHERE account_id = ?1`,
     accountId,
+    readWindow(FOLLOW_REQUESTS_COUNT),
   );
   if (row === undefined || local === undefined) {
     return null;
@@ -858,7 +868,7 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       language: local.default_language,
       note: htmlToPlainText(row.note),
       fields: localFields(row),
-      follow_requests_count: local.follow_requests_count,
+      follow_requests_count: Math.min(local.follow_requests_count, FOLLOW_REQUESTS_COUNT),
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,

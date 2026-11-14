@@ -1,8 +1,14 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { Db } from "../src/db/sql";
 import { type InboundActivity, PURGE_BATCH, receiveActivity } from "../src/domain/inbox";
-import { MAX_STATUS_MEDIA, MAX_STATUS_TAGS } from "../src/domain/remote-statuses";
+import {
+  MAX_STATUS_MEDIA,
+  MAX_STATUS_TAGS,
+  storeRemoteStatus,
+  updateRemoteStatus,
+} from "../src/domain/remote-statuses";
 import { MAX_STATUS_MENTION_ROWS } from "../src/domain/status-bounds";
 import { getTag } from "../src/domain/tags";
 import { tagTimeline } from "../src/domain/timelines";
@@ -24,6 +30,7 @@ import {
   misskeyActor,
   serveWebFinger,
   signedInit,
+  type TestActor,
 } from "./inbox-helpers";
 import {
   ACCOUNT_SEARCHES,
@@ -342,6 +349,24 @@ describe("Create (Mastodon and Misskey)", () => {
       in_reply_to_id: local.id,
       in_reply_to_account_id: DAVE,
     });
+  });
+
+  it("a private or direct reply to a local status, by an account nobody here follows and addressing nobody here, is not stored", async () => {
+    const t = await setup();
+    const local = await localStatus(t, { status: "hello", visibility: "public" }, "dave");
+    const erin = await mastodonActor(t.web, "erin", { origin: OTHER, key: 3 });
+    // Mastodon 4.5.21's related_to_local_activity? by visibility (create.rb:421-431): a reply to a local status counts
+    // for a public or unlisted status alone.
+    const privateReply = mastodonNote(erin, { inReplyTo: local.uri, to: [`${erin.uri}/followers`], cc: [] });
+    const directReply = mastodonNote(erin, { inReplyTo: local.uri, to: [`${OTHER}/users/x`], cc: [] });
+    for (const note of [privateReply, directReply]) {
+      expect(await t.post(erin, create(erin, note))).toBe(202);
+      expect(await statusRow(t.store, note.id)).toBeUndefined();
+    }
+    // The same reply, public, is stored: the rule reached the parent.
+    const publicReply = mastodonNote(erin, { inReplyTo: local.uri });
+    expect(await t.post(erin, create(erin, publicReply))).toBe(202);
+    expect(await statusRow(t.store, publicReply.id)).toMatchObject({ in_reply_to_id: local.id, visibility: "public" });
   });
 
   it("fetches the object of a Create given by id only, from the actor’s origin only", async () => {
@@ -1319,6 +1344,65 @@ describe("bounds (RES-2, RES-4)", () => {
     expect(row.content.length).toBeLessThanOrEqual(REMOTE_HTML_RAW_LIMIT + 7);
     expect(await sql(t.store, "SELECT count(*) AS n FROM media_attachments")).toEqual([{ n: MAX_STATUS_MEDIA }]);
     expect(await sql(t.store, "SELECT count(*) AS n FROM status_tags")).toEqual([{ n: MAX_STATUS_TAGS }]);
+  });
+
+  // The two caps past the parser's (Mastodon 4.5.21 keeps at most 4 on an Update too, mastodon#39978): each is fed
+  // an input of 5, bypassing the parser, which hands its input to them uncut.
+  const png = (i: number) => ({ type: "Document", mediaType: "image/png", url: `${MASTODON}/m/${i}.png` });
+  const fourMedia = (bob: TestActor) =>
+    mastodonNote(bob, { published: "2026-10-11T23:00:00Z", attachment: [0, 1, 2, 3].map(png) });
+  // The parsed `object` with a 5th attachment after its 4.
+  const withFifth = (object: Record<string, unknown>) => {
+    const input = parseRemoteStatus(object)!;
+    expect(input.media).toHaveLength(MAX_STATUS_MEDIA);
+    return { ...input, media: [...input.media, { ...input.media[3]!, url: png(4).url }] };
+  };
+  const CTX = { now: NOW, origin: LOCAL, deliveredTo: null, fetched: true };
+
+  it("stores at most 4 attachments whatever the input holds", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const author = { id: await followed(t, bob), uri: bob.uri };
+    const object = fourMedia(bob);
+    const input = withFifth(object);
+    expect(input.media).toHaveLength(5);
+    const outcome = await runInDurableObject(t.store, (_instance, state) =>
+      storeRemoteStatus(new Db(state.storage.sql), author, input, CTX),
+    );
+    expect(outcome).toMatchObject({ applied: true, reason: "created" });
+    expect(
+      await sql(
+        t.store,
+        "SELECT position, url FROM media_attachments WHERE status_id = ? ORDER BY position",
+        outcome.statusId!,
+      ),
+    ).toEqual([0, 1, 2, 3].map((position) => ({ position, url: `${MASTODON}/m/${position}.png` })));
+    expect((await statusRow(t.store, object.id))?.id).toBe(outcome.statusId);
+  });
+
+  it("an Update that only adds a 5th attachment records no edit", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const author = { id: await followed(t, bob), uri: bob.uri };
+    const object = fourMedia(bob);
+    expect(await t.post(bob, create(bob, object))).toBe(202);
+    const row = (await statusRow(t.store, object.id))!;
+    const media = () =>
+      sql(t.store, "SELECT id, position, url FROM media_attachments WHERE status_id = ? ORDER BY position", row.id);
+    const before = await media();
+    expect(before).toHaveLength(MAX_STATUS_MEDIA);
+    // A newer version, the same text and the same 4 attachments, then a 5th.
+    const input = withFifth({ ...object, updated: "2026-10-11T23:30:00Z" });
+    const outcome = await runInDurableObject(t.store, (_instance, state) =>
+      updateRemoteStatus(new Db(state.storage.sql), author, input, CTX),
+    );
+    // The Update was taken (its version recorded), and changed nothing an edit records.
+    expect(outcome).toMatchObject({ statusId: row.id });
+    expect(await sql(t.store, "SELECT remote_version, edited_at FROM statuses WHERE id = ?", row.id)).toEqual([
+      { remote_version: "2026-10-11T23:30:00.000Z", edited_at: null },
+    ]);
+    expect(await sql(t.store, "SELECT 1 FROM status_edits WHERE status_id = ?", row.id)).toEqual([]);
+    expect(await media()).toEqual(before);
   });
 
   it("refuses an activity or a fetched document past the JSON bounds before reading it", async () => {

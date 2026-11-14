@@ -121,14 +121,15 @@ describe("images", () => {
           `${name} ${attr(img, "src")}`,
         ).toBe(true);
         // The only eager images: the likely LCP image, the header's mark, the profile's avatar and the focal
-        // post's author avatar, the 44px one in the focal card.
+        // post's author avatar, the 46px one in the focal card.
         const eager =
           first.includes(img) ||
           closest(img, (e) => classes(e).includes("bar")) !== null ||
           (name === "profile" && classes(img).includes("av88")) ||
           (name === "status" &&
-            classes(img).includes("av44") &&
-            closest(img, (e) => classes(e).includes("focal")) !== null);
+            classes(img).includes("av46") &&
+            closest(img, (e) => classes(e).includes("focal")) !== null &&
+            closest(img, (e) => classes(e).includes("quote")) === null);
         expect(attr(img, "loading"), `${name} ${attr(img, "src")}`).toBe(eager ? null : "lazy");
       }
     }

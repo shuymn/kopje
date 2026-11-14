@@ -99,6 +99,12 @@ const RECIPES: Record<string, Recipe> = {
       params: { "keys[]": "new_users", start_at: "2026-10-01", end_at: "2026-10-02" },
     }),
   },
+  "POST /api/v1/admin/retention": {
+    baseline: () => ({
+      path: "/api/v1/admin/retention",
+      params: { start_at: "2026-10-01", end_at: "2026-10-02", frequency: "day" },
+    }),
+  },
   "POST /api/v1/admin/domain_blocks": {
     baseline: () => ({
       path: "/api/v1/admin/domain_blocks",

@@ -18,11 +18,11 @@ import { readOperation, sessionOperation, writeOperation } from "./operation";
 //   - registrations: each local account the setup creates (User#prepare_new_user!); imports and restores count none.
 //   - logins: the local accounts with a login on a UTC day: the setup's account (prepare_new_user! records its login
 //     too) and an account's authenticated request (auth.ts noteActivity, at most one Store call per token and day).
-// Days are UTC dates YYYY-MM-DD. Mastodon's sum reads the 6 days D-7i to D-7i+5 for week i (week_edge_days' exclusive
-// range), so week 0 holds today only and the day before each week's start is never counted.
+// Days are UTC dates YYYY-MM-DD. Mastodon 4.5.21's sum reads week_edge_days inclusively (activity_controller.rb:34-36,
+// activity_tracker.rb:41-42), so week i holds the 7 days D-7i to D-7i+6; week 0 holds today only (activityWeeks).
 
 export const ACTIVITY_WEEKS = 12;
-export const ACTIVITY_WINDOW_DAYS = 6;
+export const ACTIVITY_WINDOW_DAYS = 7;
 
 // RES-4: the rows kept are those of today and the ACTIVITY_RETENTION_DAYS before it (Mastodon's 6-month expiry),
 // and tomorrow's (a clock ahead of the Store's); the cron deletes the others, at most ACTIVITY_PRUNE_ROWS a table a
@@ -30,9 +30,9 @@ export const ACTIVITY_WINDOW_DAYS = 6;
 export const ACTIVITY_RETENTION_DAYS = 184;
 export const ACTIVITY_PRUNE_ROWS = 500;
 
-// RES-7: the login rows a window reads (raw candidates, before COUNT(DISTINCT)): 6 days of 100 accounts. A window with
+// RES-7: the login rows a window reads (raw candidates, before COUNT(DISTINCT)): 7 days of 100 accounts. A window with
 // more counts the distinct accounts of its first ACTIVITY_LOGIN_ROWS rows by (day, account_id).
-export const ACTIVITY_LOGIN_ROWS = 600;
+export const ACTIVITY_LOGIN_ROWS = 700;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -86,8 +86,8 @@ function enabled(db: Db): boolean {
   return row?.value !== "false";
 }
 
-// One window's three values. Each sum reads at most 6 rows of activity_counts by its key; the logins read at most
-// ACTIVITY_LOGIN_ROWS rows of activity_logins by its key, then count the distinct accounts among them.
+// One window's three values. Each sum reads at most ACTIVITY_WINDOW_DAYS rows of activity_counts by its key; the logins
+// read at most ACTIVITY_LOGIN_ROWS rows of activity_logins by its key, then count the distinct accounts among them.
 export const ACTIVITY_WINDOW_SQL = `SELECT
 	(SELECT SUM(value) FROM activity_counts WHERE kind = 'statuses' AND day >= ?1 AND day < ?2) AS statuses,
 	(SELECT COUNT(DISTINCT account_id) FROM (SELECT account_id FROM activity_logins
@@ -97,7 +97,7 @@ export const ACTIVITY_WINDOW_SQL = `SELECT
 export type ActivityWeek = { week: string; statuses: string; logins: string; registrations: string };
 
 // The 12 weeks at `now`, as ActivityController#activity: `week` the start's Unix seconds (i.weeks.ago.to_i), and
-// the counts as strings. A window ends after today at the latest: Mastodon's week 0 also names the 5 days after today,
+// the counts as strings. A window ends after today at the latest: Mastodon's week 0 also names the 6 days after today,
 // which hold no key there; here an imported or restored later day is never read.
 export function activityWeeks(db: Db, now: number): ActivityWeek[] {
   return Array.from({ length: ACTIVITY_WEEKS }, (_, i) => {
