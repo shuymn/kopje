@@ -6,12 +6,12 @@ import {
   remoteFieldLink,
   verifiableLink,
 } from "../src/domain/field-verification";
-import remote from "./fixtures/mastodon-4.5.11-remote-links.json";
-import fixture from "./fixtures/mastodon-4.5.11-verifiable.json";
+import remote from "./fixtures/mastodon-4.7.5-remote-links.json";
+import fixture from "./fixtures/mastodon-4.7.5-verifiable.json";
 
-// domain/field-verification.ts verifiableLink against Mastodon's Account::Field#verifiable? (v4.5.11, Addressable
-// 2.9.0). The fixture is hand-written from the Addressable source, not generated (its `method`): no Ruby with
-// Addressable 2.9.0 and idn-ruby was available. Kopje must never verify a value Mastodon would not.
+// domain/field-verification.ts verifiableLink against Mastodon's Account::Field#verifiable? (v4.7.5, Addressable
+// 2.9.2). The fixture is hand-written from the Addressable source, not generated (its `method`): no Ruby with
+// Addressable 2.9.2 and idn-ruby was available. Kopje must never verify a value Mastodon would not.
 
 type Case = { value: string; verifiable: boolean; reason: string };
 const cases = (fixture as { cases: Case[] }).cases;

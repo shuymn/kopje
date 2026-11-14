@@ -16,7 +16,7 @@ import {
 } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
-import mastodon from "./fixtures/mastodon-4.5.11-api-access.json";
+import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
 import { type Read, type ReadMethod, type RouteObservation, sameRoute } from "./mastodon-conformance";
 import { bytes, mediaForm, TestCodec } from "./media-helpers";
 import { newClient, VAPID } from "./push-helpers";

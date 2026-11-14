@@ -129,14 +129,18 @@ export const ROUTES: readonly Route[] = [
   del("/api/v1/suggestions/:id", { scope: "write:accounts" }, suggestions.dismissSuggestion),
   get("/api/v2/suggestions", { scope: "read:accounts" }, suggestions.suggestionsV2),
   get("/api/v1/annual_reports", { scope: "read:accounts" }, placeholders.annualReports),
-  // As Mastodon's: every action but index asks write:accounts.
-  get("/api/v1/annual_reports/:id", { scope: "write:accounts" }, placeholders.annualReport),
+  // As Mastodon's: read and generate ask write:accounts, the others read:accounts.
+  get("/api/v1/annual_reports/:id", { scope: "read:accounts" }, placeholders.annualReport),
+  get("/api/v1/annual_reports/:id/state", { scope: "read:accounts" }, placeholders.annualReportState),
   post("/api/v1/annual_reports/:id/read", { scope: "write:accounts" }, placeholders.annualReport),
+  post("/api/v1/annual_reports/:id/generate", { scope: "write:accounts" }, placeholders.generateAnnualReport),
   // E-mail confirmation (any token at the route: placeholders.resendConfirmation checks write:accounts, since Mastodon
   // takes app tokens there), and async refreshes, which Kopje never starts.
   post("/api/v1/emails/confirmations", "token", placeholders.resendConfirmation),
   get("/api/v1/emails/check_confirmation", { scope: "read:accounts" }, placeholders.checkConfirmation),
   get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, placeholders.asyncRefresh),
+  // Feature-off answers that read a sent token without requiring one (AUTH-2's exception).
+  get("/api/v1/donation_campaigns", { optional: true }, placeholders.donationCampaigns),
 
   get("/api/v1/accounts/verify_credentials", { scope: ["profile", "read:accounts"] }, accounts.verifyCredentials),
   patch("/api/v1/accounts/update_credentials", { scope: "write:accounts" }, accounts.updateCredentials),
@@ -167,6 +171,7 @@ export const ROUTES: readonly Route[] = [
   get("/api/v1/accounts/:id/endorsements", { scope: "read:accounts", optional: true }, accounts.accountEndorsements),
   // Any token at the route; the handler refuses one without a user (require_user!).
   get("/api/v1/accounts/:id/identity_proofs", "token", placeholders.identityProofs),
+  post("/api/v1/accounts/:id/email_subscriptions", { optional: true }, placeholders.emailSubscription),
 
   get("/api/v1/accounts/:id/lists", { scope: "read:lists" }, lists.accountLists),
 

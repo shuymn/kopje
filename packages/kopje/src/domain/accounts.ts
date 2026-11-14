@@ -47,6 +47,8 @@ import {
   type ViewerContext,
 } from "./audience";
 import {
+  authorize,
+  type Credential,
   localRole,
   optionalUserReadOperation,
   OWNER_ROLE,
@@ -821,6 +823,24 @@ export function storedAddress(db: Db, username: string, domain: string | null): 
   const row = addressRow(db, username, domain);
   return row === undefined ? null : row.domain === null ? row.stored_username : `${row.stored_username}@${row.domain}`;
 }
+
+// POST /api/v1/accounts/:account_id/email_subscriptions with e-mail subscriptions off (MD-3): Mastodon's
+// require_not_suspended! reads a sent token first, then set_account finds the id among local accounts
+// (Account.local.find), suspended ones included. Only a held, unexpired token of a suspended user counts; any other
+// token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
+// local row.
+export const emailSubscriptionTarget = readOperation<
+  { credential: Credential | null; id: string },
+  "suspended" | "missing" | "local"
+>((db, { credential, id }) => {
+  if (credential !== null && authorize(db, credential).status === "suspended") {
+    return "suspended";
+  }
+  const resolved = resolveAccountId(db, id);
+  const local =
+    resolved === null ? undefined : db.first("SELECT 1 AS local FROM local_accounts WHERE account_id = ?", resolved);
+  return local === undefined ? "missing" : "local";
+});
 
 // domain null means a local account.
 export const lookupAccount = readOperation<

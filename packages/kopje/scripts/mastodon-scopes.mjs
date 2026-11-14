@@ -963,8 +963,9 @@ const VALUE_METHODS = new Set([
 /** @type {Record<string, 'object' | 'array'>} */
 const PERMIT_SHAPES = {
   // Account#fields_attributes= (app/models/account.rb) takes a list of name/value records; clients send an array or
-  // an indexed hash, both an array of records.
+  // an indexed hash, both an array of records. Both controllers pass it to UpdateAccountService.
   "app/controllers/api/v1/accounts/credentials_controller.rb fields_attributes": "array",
+  "app/controllers/api/v1/profiles_controller.rb fields_attributes": "array",
   // UpdateStatusService#update_media_attachments! iterates media_attributes as a list of records.
   "app/controllers/api/v1/statuses_controller.rb media_attributes": "array",
   // PostStatusService / UpdateStatusService read poll as one record (options, expires_in, multiple, hide_totals).
@@ -974,24 +975,44 @@ const PERMIT_SHAPES = {
 };
 
 // Reviewed readings of expressions the extraction cannot read alone, keyed by the unresolved reason it would give. The
-// names come from a constant's literal list (with `member` appended to each, for records), so a change of the list
-// changes them; a constant that is no longer a literal list leaves the reason unresolved.
-/** @type {Record<string, { constant: string, member?: string }>} */
+// names come from a constant's literal list, plus, with `reads`, every literal name that file reads as
+// `truthy_param?(:x)` or `params[:x]` (a non-literal read such as `params[key]` is not counted), with `member` appended
+// to each, for records. So a change of the list or of the file's reads changes them; a constant that is no longer a
+// literal list, or a `reads` file that is gone, leaves the reason unresolved.
+/** @type {Record<string, { constant: string, member?: string, reads?: string }>} */
 const PARAM_READINGS = {
   // resource_params.each_pair: one record per timeline of Marker::TIMELINES (app/models/marker.rb), each with
   // last_read_id.
   "app/controllers/api/v1/markers_controller.rb resource_params: unreadable `*Marker::TIMELINES.map { |timeline| { timeline.to_sym => [:last_read_id] } }`":
     { constant: "Marker::TIMELINES", member: "last_read_id" },
-  // AccountStatusesFilter (app/lib/account_statuses_filter.rb) reads its KEYS from the params it is given.
+  // AccountStatusesFilter reads its KEYS from the params it is given, and some names (exclude_direct, from 4.6) that
+  // KEYS does not list.
   "app/controllers/api/v1/accounts/statuses_controller.rb preloaded_account_statuses: params used whole `params).results,`":
-    { constant: "AccountStatusesFilter::KEYS" },
+    { constant: "AccountStatusesFilter::KEYS", reads: "app/lib/account_statuses_filter.rb" },
 };
+
+// The literal names a file reads as `truthy_param?(:x)` or `params[:x]`; null when the file is missing.
+/** @param {string} checkout @param {string} file @returns {string[] | null} */
+function literalReads(checkout, file) {
+  if (!existsSync(join(checkout, file))) return null;
+  const text = stripComments(readFileSync(join(checkout, file), "utf8"));
+  /** @type {string[]} */
+  const names = [];
+  for (const m of text.matchAll(/(?<![\w.:@$])(?:truthy_param\?\(([^()]*)\)|params\[([^\]]*)\])/g)) {
+    const key = literal(/** @type {string} */ (m[1] ?? m[2]));
+    if (typeof key === "string") names.push(key);
+  }
+  return names;
+}
 
 // params[:x] whose value the consuming code reads as an array (clients send `x[]`), keyed by `<file> <x>`.
 const ARRAY_VALUES = new Set([
   // Admin::Metrics::Measure.retrieve / Dimension.retrieve iterate the keys.
   "app/controllers/api/v1/admin/measures_controller.rb keys",
   "app/controllers/api/v1/admin/dimensions_controller.rb keys",
+  // NotificationFallbackConcern matches the list with include?; the permit beside it takes `supported_types: []`.
+  "app/controllers/api/v1/notifications_controller.rb supported_types",
+  "app/controllers/api/v2/notifications_controller.rb supported_types",
   // TagFeed#tags_for(Array(...)).
   "app/controllers/api/v1/timelines/tag_controller.rb any",
   "app/controllers/api/v1/timelines/tag_controller.rb all",
@@ -1244,8 +1265,11 @@ function bodyReads(body, where, file, sources, checkout) {
     const key = `${where}: ${reason}`;
     const reading = PARAM_READINGS[key];
     const list = reading === undefined ? null : constantList(reading.constant, sources, checkout);
+    const more = reading?.reads === undefined ? [] : literalReads(checkout, reading.reads);
     const names =
-      list === null ? null : list.map((v) => (reading?.member === undefined ? v : `${v}[${reading.member}]`));
+      list === null || more === null
+        ? null
+        : [...new Set([...list, ...more])].map((v) => (reading?.member === undefined ? v : `${v}[${reading.member}]`));
     if (names === null) {
       reads.unresolved.push(key);
     } else {
@@ -1576,6 +1600,19 @@ const ENTITIES = [
   "REST::AnnouncementSerializer",
   "REST::AnnouncementSerializer::AccountSerializer",
   "REST::ReactionSerializer",
+  "REST::ReportSerializer",
+  "REST::RoleSerializer",
+  "REST::SearchSerializer",
+  "REST::CustomEmojiSerializer",
+  "REST::ProfileSerializer",
+  "REST::PartialAccountSerializer",
+  "REST::CollectionSerializer",
+  "REST::CollectionItemSerializer",
+  "REST::CollectionWithAccountsSerializer",
+  "REST::ShallowTagSerializer",
+  "REST::NotificationPolicySerializer",
+  "REST::V1::NotificationPolicySerializer",
+  "REST::AnnualReportSerializer",
 ];
 
 const DECLARATIONS = /^(attributes|attribute|has_one|has_many|belongs_to)\b\s*(.*)$/s;
@@ -1644,7 +1681,19 @@ export function entityFields(checkout, entity) {
   const fields = new Map();
   /** @type {string[]} */
   const unresolved = [];
-  const inherited = body.superclass;
+  const own = statements(body.lines.join("\n")).filter((stmt) => stmt.indent === body.indent);
+  // `self._attributes_data = {}` and `self._reflections = []` drop the attributes and the associations a serializer
+  // inherits (REST::PartialAccountSerializer); one without the other is an inheritance this does not model.
+  const reset = [
+    ["_attributes_data", /^self\._attributes_data\s*=\s*\{\}$/],
+    ["_reflections", /^self\._reflections\s*=\s*\[\]$/],
+  ]
+    .filter(([, form]) => own.some(({ text: stmt }) => /** @type {RegExp} */ (form).test(stmt)))
+    .map(([table]) => table);
+  if (reset.length === 1) {
+    unresolved.push(`${file}: superclass fields partly reset (${reset[0]} alone)`);
+  }
+  const inherited = reset.length === 0 ? body.superclass : null;
   if (inherited !== null && inherited !== "ActiveModel::Serializer") {
     if (existsSync(join(checkout, serializerFile(inherited)))) {
       const parent = entityFields(checkout, inherited);
@@ -1654,9 +1703,9 @@ export function entityFields(checkout, entity) {
       unresolved.push(`${file}: superclass ${inherited} not read`);
     }
   }
-  for (const { indent, text: stmt } of statements(body.lines.join("\n"))) {
+  for (const { text: stmt } of own) {
     const m = DECLARATIONS.exec(stmt);
-    if (m === null || indent !== body.indent) continue;
+    if (m === null) continue;
     const { positional, options } = callArgs(/** @type {string} */ (m[2]).replace(/^\((.*)\)$/s, "$1"));
     const optional = options.if !== undefined || options.unless !== undefined;
     const names = m[1] === "attributes" ? positional : positional.slice(0, 1);

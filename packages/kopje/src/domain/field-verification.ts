@@ -1,9 +1,9 @@
 import { REMOTE_FIELD_LINK_BYTES } from "../platform/stored-bounds";
 
 // Whether a local profile field's value is a link Kopje verifies (rel=me, domain/field-links.ts): a subset of
-// Mastodon's Account::Field#verifiable? (app/models/account/field.rb:35-51, v4.5.11) on Addressable 2.9.0, so that a
+// Mastodon's Account::Field#verifiable? (app/models/account/field.rb:35-51, v4.7.5) on Addressable 2.9.2, so that a
 // value Kopje verifies Mastodon would verify too. test/field-verification.test.ts holds it to the pinned expectations
-// of test/fixtures/mastodon-4.5.11-verifiable.json and lists every value Mastodon accepts and Kopje does not.
+// of test/fixtures/mastodon-4.7.5-verifiable.json and lists every value Mastodon accepts and Kopje does not.
 //
 // The value is split as Addressable splits it (RFC 3986 appendix B), then each part judged as written:
 //   1. the scheme exactly "https" (ACCEPTED_SCHEMES, compared as written);
@@ -61,7 +61,7 @@ export function verifiableLink(value: string): boolean {
 }
 
 // A remote field's link Kopje verifies (domain/remote-field-links.ts): of its original attachment value `value` (before
-// any cut), the href that Mastodon's Account::Field#extract_url_from_html (app/models/account/field.rb:75-93, v4.5.11)
+// any cut), the href that Mastodon's Account::Field#extract_url_from_html (app/models/account/field.rb:75-93, v4.7.5)
 // returns and #verifiable? accepts, for a subset of the values Mastodon reads, else null. The value:
 //   1. trimmed as Ruby's String#strip trims (tab, LF, VT, FF, CR and space at either end); a NUL refuses it (Kopje's
 //      projection passes none);
@@ -73,7 +73,7 @@ export function verifiableLink(value: string): boolean {
 //   5. with no character reference but &amp; and no other & or < in a text or an attribute value;
 //   6. whose decoded href equals its text (all of it, spans included) and passes verifiableLink, within
 //      REMOTE_FIELD_HREF_BYTES and none of "<>\^`{|}.
-// test/field-verification.test.ts holds it to test/fixtures/mastodon-4.5.11-remote-links.json, which lists every value
+// test/field-verification.test.ts holds it to test/fixtures/mastodon-4.7.5-remote-links.json, which lists every value
 // Mastodon accepts and Kopje does not, and the values Kopje must refuse though a looser reading would accept them.
 
 // The stored href bound (stored-bounds.ts REMOTE_FIELD_LINK_BYTES), and Account::Field::MAX_CHARACTERS_COMPAT in bytes
