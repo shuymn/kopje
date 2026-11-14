@@ -50,7 +50,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   apply, is answered 202 once the relaying server's signature is established, as Mastodon answers it, instead of 401,
   which senders retried for days. It is logged as `kopje.inbox.refused` with status 202. A relay whose signer does not
   own its key is still answered 401.
-- At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them. No Store
+- At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
+  entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
 
 ### Fixed

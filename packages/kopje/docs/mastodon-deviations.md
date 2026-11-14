@@ -885,9 +885,17 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   judged by the rule of every key, so no actor gains anything over its own keys. Accepted, 2026-11-15.
 - An unreadable key in a document whose context Kopje does not recognize as giving `publicKey` or `assertionMethod`
   their key meaning (a context its instance serves, as Pleroma's `litepub-0.1.jsonld`, or one that redefines either
-  term) still makes that actor unusable, where Mastodon skips the key (`process_account_service.rb:448-452`):
-  recognizing more contexts would mean fetching or expanding them, and no sender in the sources writes an unreadable
-  key under any context. Accepted, 2026-11-15.
+  term), or spelled otherwise than Mastodon and Fedify write it (either property or its key material under a compact
+  or absolute IRI, an entry with its own `@context` or a `@nest`), still makes that actor unusable, where Mastodon
+  skips the key (`process_account_service.rb:448-452`) or reads only the plain spelling: recognizing more contexts and
+  spellings would mean fetching or expanding them, and no sender in the sources writes an unreadable key under any
+  context or such a spelling. Accepted, 2026-11-15.
+- A key whose `publicKeyPem` or `publicKeyMultibase` is a one-element array of a string, or a value object holding
+  one (`{"@value": …}`), is read, as Fedify 2.4.5 reads it; Mastodon 4.7 takes the member as given
+  (`process_account_service.rb:392`, `:425`), so only a string is a key it uses. Accepted, 2026-11-15.
+- An entry of `publicKey` or `assertionMethod` that is itself an array is skipped and the actor stays usable, where
+  Mastodon 4.7 takes it for a key id and fails to process the document (`json_ld_helper.rb:96` raises on an array).
+  Neither reads a key from it. Accepted, 2026-11-15.
 
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):

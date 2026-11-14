@@ -102,9 +102,11 @@ function inlineNames(object: Json, named: Set<string>): boolean {
 }
 
 // `document` with, for each term its context establishes, the first MAX_PUBLIC_KEYS entries of that property (a single
-// value is one entry; an array's members are its entries, as Mastodon's as_array), less each embedded entry whose key
-// material is present and is not a string the importer imports; the property is removed if its only entry is. The
-// same object when nothing changes. At most MAX_PUBLIC_KEYS imports per term.
+// value is one entry; an array's members are its entries, as Mastodon's as_array), less each entry that wraps others
+// (wraps) and each embedded entry whose key material is present and is not one string the importer imports (material);
+// the property is removed if its only entry is. The same object when nothing changes. At most MAX_PUBLIC_KEYS imports
+// per term, and Fedify's parse then imports at most one key per entry kept: the bound holds only for keys spelled as
+// Mastodon and Fedify write them (docs/threat-model.md RES-6).
 export async function readableKeys(document: unknown, importers: KeyImporters = FEDIFY_IMPORTERS): Promise<unknown> {
   if (!isJson(document)) {
     return document;
@@ -134,17 +136,56 @@ export async function readableKeys(document: unknown, importers: KeyImporters = 
 }
 
 async function readable(entry: unknown, member: string, importer: (material: string) => Promise<unknown>) {
+  if (wraps(entry)) {
+    return false;
+  }
   if (!isJson(entry) || !Object.hasOwn(entry, member)) {
     return true;
   }
-  const material = entry[member];
-  if (typeof material !== "string") {
+  const value = material(entry[member]);
+  if (value === null) {
     return false;
   }
   try {
-    await importer(material);
+    await importer(value);
     return true;
   } catch {
     return false;
   }
+}
+
+// Whether an entry wraps other entries, which Fedify reads as entries of the property itself: a nested array or a @set
+// (JSON-LD expansion flattens both), a @list (Fedify unwraps a property's single list), or any other object of keywords
+// alone but @id and @type (a node with no properties, kept as a reference). Mastodon 4.7.5 reads no key from any of
+// them (ProcessAccountService#legacy_public_keys and #fep_521a_public_keys skip a Hash without the actor as its `owner`,
+// or without `type` Multikey and the actor as its `controller`; a nested array, taken for a key id, makes
+// JsonLdHelper#unsupported_uri_scheme? raise and the document go unprocessed), so dropping it loses no key Mastodon
+// reads, and none of the keys inside it is imported uncounted.
+function wraps(entry: unknown): boolean {
+  if (Array.isArray(entry)) {
+    return true;
+  }
+  if (!isJson(entry)) {
+    return false;
+  }
+  const keys = Object.keys(entry);
+  return keys.length > 0 && keys.every((key) => key.startsWith("@")) && keys.some((key) => !REFERENCE.has(key));
+}
+
+const REFERENCE: ReadonlySet<string> = new Set(["@id", "@type"]);
+
+// The one string of an entry's key material as Fedify 2.4.5 reads it: the string itself, the one member of an array,
+// or a value object's @value. null for any other shape: Fedify imports every value of a longer array or a @list, which
+// the cap would not count.
+function material(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.length === 1 && typeof value[0] === "string" ? value[0] : null;
+  }
+  if (isJson(value) && Object.keys(value).length === 1 && typeof value["@value"] === "string") {
+    return value["@value"];
+  }
+  return null;
 }
