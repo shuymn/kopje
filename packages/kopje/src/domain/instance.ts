@@ -54,7 +54,7 @@ export type InstanceSettings = {
 };
 
 // What /api/v2/instance presents beyond the settings.
-export type InstanceUsage = InstanceSettings & {
+type InstanceUsage = InstanceSettings & {
   // The available local accounts with an authenticated request on one of the last ACTIVE_DAYS UTC days, today
   // included (local_accounts.active_on, written by auth.ts noteActivity).
   activeMonth: number;
