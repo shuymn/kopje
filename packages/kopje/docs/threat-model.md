@@ -2142,6 +2142,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   activities do not look up WebFinger, so an account first seen inbound shows its actor's host until it is resolved, and
   a renamed actor keeps its host until it is resolved again. `test/inbox-canonical-address.test.ts` ("the canonical
   address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
+  invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
+  by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
   `createRemoteLoaders` in `src/federation/federation.ts`, `src/federation/resolve.ts`; `test/inbox-statuses.test.ts`
   ("signed by the instance actor (NET-4)", "resolves a status URL as the instance actor", "answers 401 without a token
   and fetches nothing", "account search with resolve=true (NET-4, VIS-1)"), `test/inbox-statuses-edge.test.ts` ("NET-4:
