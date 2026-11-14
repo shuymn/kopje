@@ -106,7 +106,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // inbound_jobs and indexes it; 0082_public_replies indexes the statuses' public and unlisted replies (1,000,000 of
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
-// the pins of every account holding more than five and deletes the excess. A migration that
+// the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
+// instance_settings row by its key (it adds an empty table, its index and two triggers). A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.

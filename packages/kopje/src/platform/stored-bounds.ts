@@ -786,7 +786,20 @@ export const ACTIVITY_SETTING_BOUNDS = {
 
 type ActivitySettingName = keyof typeof ACTIVITY_SETTING_BOUNDS;
 
-export type StoredSettingName = InstanceSettingName | TrendSettingName | ContactSettingName | ActivitySettingName;
+// Mastodon's `wrapstodon` (config/settings.yml), 'true' or 'false', bound by the triggers of 0093; no row reads as
+// 'true', Mastodon's default (domain/annual-reports.ts campaignYear).
+export const WRAPSTODON_SETTING_BOUNDS = {
+  wrapstodon: oneOf(["true", "false"]),
+} as const satisfies Record<string, InstanceSettingBound>;
+
+type WrapstodonSettingName = keyof typeof WRAPSTODON_SETTING_BOUNDS;
+
+export type StoredSettingName =
+  | InstanceSettingName
+  | TrendSettingName
+  | ContactSettingName
+  | ActivitySettingName
+  | WrapstodonSettingName;
 
 function settingBound(name: StoredSettingName): InstanceSettingBound {
   if (name in TREND_SETTING_BOUNDS) {
@@ -795,17 +808,20 @@ function settingBound(name: StoredSettingName): InstanceSettingBound {
   if (name in ACTIVITY_SETTING_BOUNDS) {
     return ACTIVITY_SETTING_BOUNDS[name as ActivitySettingName];
   }
+  if (name in WRAPSTODON_SETTING_BOUNDS) {
+    return WRAPSTODON_SETTING_BOUNDS[name as WrapstodonSettingName];
+  }
   return name in CONTACT_SETTING_BOUNDS
     ? CONTACT_SETTING_BOUNDS[name as ContactSettingName]
     : INSTANCE_SETTING_BOUNDS[name as InstanceSettingName];
 }
 
-// The value `name` stores for `value` (null: no row), through 0049's bounds, 0057's, 0059's or 0072's.
+// The value `name` stores for `value` (null: no row), through 0049's bounds, 0057's, 0059's, 0072's or 0093's.
 export function storedSetting(name: StoredSettingName, value: string): string | null {
   return settingBound(name).writer(value);
 }
 
-// The projection of a stored setting `name` over `column`, through 0049's bounds, 0057's, 0059's or 0072's.
+// The projection of a stored setting `name` over `column`, through 0049's bounds, 0057's, 0059's, 0072's or 0093's.
 export function settingProjectionSql(name: StoredSettingName, column: string): string {
   return settingBound(name).projection(column);
 }
@@ -825,6 +841,23 @@ export function utcDay(now: number): string | null {
 // the bytes judged before strftime reads the value, so a long imported value costs one length.
 export function isoTimeSql(column: string): string {
   return `(${STAMP.projection(column)})`;
+}
+
+// A CHECK's form of the same rule (0093): 1 when `column` holds a stored time, else 0, never NULL (SQLite accepts a
+// CHECK that is NULL, and strftime answers NULL for text it cannot read). The type first, then the raw bytes, then
+// NUL, then isoTimeAcceptedSql, so what the CHECK admits is what isoTimeSql shows.
+export function isoTimeCheckSql(column: string): string {
+  return `CASE ${isoTimeWhen(column).join(" ")} ELSE 0 END`;
+}
+
+// isoTimeCheckSql's WHEN terms, in order.
+function isoTimeWhen(column: string): string[] {
+  return [
+    `WHEN typeof(${column}) <> 'text' THEN 0`,
+    `WHEN length(CAST(${column} AS BLOB)) <> 24 THEN 0`,
+    `WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 0`,
+    `WHEN ${isoTimeAcceptedSql(column).replace(/\s*\n\s*/g, "\n        ")} THEN 1`,
+  ];
 }
 
 // ---- Profile credentials: migration 0058_profile_credentials
@@ -2114,4 +2147,84 @@ export function remoteMediaUsagePastBoundSql(row: string): string {
 	${cardCountCase(c("pending"), false, SAFE_INTEGER_MAX)}
 	WHEN ${c("doomed")} > ${c("bytes")} THEN 1
 	ELSE 0 END`;
+}
+
+// ---- Annual reports: migration 0093_annual_reports (domain/annual-reports.ts)
+
+// annual_reports holds one row per local account and year: Mastodon's GeneratedAnnualReport of schema 2, its four
+// sources as typed columns. Each CHECK is a CASE that yields 1 or 0 and is written `(...) = 1`, so no value makes it
+// NULL, and judges the type first, then the raw bytes, then NUL, then the structure. A column's affinity converts a
+// value losslessly before its CHECK runs (text '2026' or REAL 2026.0 into an INTEGER column, an integer into a TEXT
+// one); what keeps another type is refused by the type term.
+export const ANNUAL_REPORT_ARCHETYPES = ["lurker", "booster", "pollster", "replier", "oracle"] as const;
+export type AnnualReportArchetype = (typeof ANNUAL_REPORT_ARCHETYPES)[number];
+// The years a row may name: GeneratedAnnualReport's year is any integer; Kopje stores the four-digit years.
+export const ANNUAL_REPORT_YEARS = { min: 1, max: 9999 } as const;
+
+// A CHECK of 0093: `when` (WHEN ... THEN 1 or 0 lines, in the order the column is judged) as a CASE yielding 1 or 0,
+// written `(...) = 1`.
+function reportCheck(name: string, when: readonly string[]): string {
+  return `CONSTRAINT ${name} CHECK ((CASE\n      ${when.join("\n      ")}\n      ELSE 0 END) = 1)`;
+}
+
+// The WHEN lines of an integer from `min` to SAFE_INTEGER_MAX.
+function reportCountWhen(column: string, min: number): string[] {
+  return [`WHEN typeof(${column}) <> 'integer' THEN 0`, `WHEN ${column} BETWEEN ${min} AND ${SAFE_INTEGER_MAX} THEN 1`];
+}
+
+// The statements of 0093 before its triggers (domain/stored-triggers.ts), with a hashtag name of 1 to `name.bytes` raw
+// UTF-8 bytes and at most `name.length` characters as SQLite's length() counts them (domain/status-bounds.ts
+// TAG_NAME_BYTES and MAX_TAG_LENGTH, which this module cannot import); test/migrations.test.ts compares the file with
+// it.
+export function annualReportsMigrationSql(name: { bytes: number; length: number }): string {
+  const archetypes = ANNUAL_REPORT_ARCHETYPES.map((a) => `'${a}'`).join(", ");
+  const columns = [
+    "account_id TEXT NOT NULL REFERENCES local_accounts (account_id) ON DELETE CASCADE",
+    `year INTEGER NOT NULL ${reportCheck("annual_report_year", [
+      "WHEN typeof(year) <> 'integer' THEN 0",
+      `WHEN year BETWEEN ${ANNUAL_REPORT_YEARS.min} AND ${ANNUAL_REPORT_YEARS.max} THEN 1`,
+    ])}`,
+    `archetype TEXT NOT NULL ${reportCheck("annual_report_archetype", [
+      "WHEN typeof(archetype) <> 'text' THEN 0",
+      "WHEN length(CAST(archetype AS BLOB)) > 8 THEN 0",
+      "WHEN instr(CAST(archetype AS BLOB), x'00') > 0 THEN 0",
+      `WHEN archetype IN (${archetypes}) THEN 1`,
+    ])}`,
+    `statuses INTEGER NOT NULL ${reportCheck("annual_report_statuses", reportCountWhen("statuses", 0))}`,
+    `followers INTEGER NOT NULL ${reportCheck("annual_report_followers", reportCountWhen("followers", 0))}`,
+    `top_status_id TEXT ${reportCheck("annual_report_top_status_id", [
+      "WHEN top_status_id IS NULL THEN 1",
+      "WHEN typeof(top_status_id) <> 'text' THEN 0",
+      "WHEN length(CAST(top_status_id AS BLOB)) <> 18 THEN 0",
+      "WHEN instr(CAST(top_status_id AS BLOB), x'00') > 0 THEN 0",
+      "WHEN top_status_id NOT GLOB '*[^0-9]*' THEN 1",
+    ])}`,
+    `top_hashtag TEXT ${reportCheck("annual_report_top_hashtag", [
+      "WHEN top_hashtag IS NULL THEN 1",
+      "WHEN typeof(top_hashtag) <> 'text' THEN 0",
+      `WHEN length(CAST(top_hashtag AS BLOB)) NOT BETWEEN 1 AND ${name.bytes} THEN 0`,
+      "WHEN instr(CAST(top_hashtag AS BLOB), x'00') > 0 THEN 0",
+      `WHEN length(top_hashtag) <= ${name.length} THEN 1`,
+    ])}`,
+    `top_hashtag_uses INTEGER ${reportCheck("annual_report_top_hashtag_uses", [
+      "WHEN top_hashtag_uses IS NULL THEN 1",
+      ...reportCountWhen("top_hashtag_uses", 2),
+    ])}`,
+    `viewed_at TEXT ${reportCheck("annual_report_viewed_at", ["WHEN viewed_at IS NULL THEN 1", ...isoTimeWhen("viewed_at")])}`,
+    `created_at TEXT NOT NULL ${reportCheck("annual_report_created_at", isoTimeWhen("created_at"))}`,
+    reportCheck("annual_report_top_hashtag_pair", [
+      "WHEN top_hashtag IS NULL AND top_hashtag_uses IS NULL THEN 1",
+      "WHEN top_hashtag IS NOT NULL AND top_hashtag_uses IS NOT NULL THEN 1",
+    ]),
+    "PRIMARY KEY (account_id, year)",
+  ];
+  return `CREATE TABLE annual_reports (
+  ${columns.join(",\n  ")}
+) WITHOUT ROWID;
+
+CREATE INDEX annual_reports_pending ON annual_reports (account_id, year) WHERE viewed_at IS NULL;
+
+DELETE FROM instance_settings
+WHERE name = 'wrapstodon' AND value IS NOT 'true' AND value IS NOT 'false';
+`;
 }
