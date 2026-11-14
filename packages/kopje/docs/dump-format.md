@@ -423,6 +423,22 @@ A chunk past these fails with the CHECK's name (`account_invitation_email`, `acc
 Store honours them as the admin added them (threat-model AUTH-9). A dump taken before 0081 has no such table: it
 restores into a Store at its own migrations, which then upgrades. A file built from legacy data has no row.
 
+Annual reports (migration `0093_annual_reports`): an `annual_reports` row names a local account (`account_id`, a
+`local_accounts` row, whose delete cascades to it) and a `year` (an integer from 1 to 9999), one per account and year,
+and holds an `archetype` (`lurker`, `booster`, `pollster`, `replier` or `oracle`), `statuses` and `followers`
+(integers from 0 to 2^53 - 1), `top_status_id` (NULL or 18 ASCII digits; no foreign key, so it may name a status the
+Store no longer holds, which the report then does not show), `top_hashtag` and `top_hashtag_uses` (both NULL, or a
+name of 1 to 1,024 UTF-8 bytes with no NUL and at most 256 characters, and an integer from 2 to 2^53 - 1),
+`viewed_at` (NULL while pending) and `created_at`, each as `YYYY-MM-DDTHH:MM:SS.sssZ` with an hour of 00 to 23.
+SQLite's column affinity stores numeric text and an integral REAL in an INTEGER column as the integer, and an integer
+in a TEXT column as its decimal text, before the CHECK runs. A chunk past these fails with the CHECK's name
+(`annual_report_year`, `annual_report_archetype`, `annual_report_statuses`, `annual_report_followers`,
+`annual_report_top_status_id`, `annual_report_top_hashtag`, `annual_report_top_hashtag_uses`,
+`annual_report_top_hashtag_pair`, `annual_report_viewed_at`, `annual_report_created_at`) or a `PRIMARY KEY` or
+`FOREIGN KEY` failure. A restored report is presented as it was dumped, `created_at` included; nothing recomputes it.
+A dump taken before 0093 has no such table: it restores into a Store at its own migrations, which then upgrades. A
+file built from legacy data has no row. An `instance_settings` row named `wrapstodon` holds `true` or `false`.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any

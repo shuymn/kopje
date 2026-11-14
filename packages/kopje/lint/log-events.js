@@ -20,6 +20,7 @@ const AREAS = new Set([
   "activity",
   "admin",
   "announcements",
+  "annual_reports",
   "authorize",
   "backup",
   "card_images",

@@ -99,6 +99,9 @@ import {
   LOCAL_USERNAME_BYTES,
   MAX_ACCOUNT_INVITATIONS,
   storedInvitationEmail,
+  ANNUAL_REPORT_ARCHETYPES,
+  annualReportsMigrationSql,
+  WRAPSTODON_SETTING_BOUNDS,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -371,9 +374,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(68);
+      expect(STORED_TRIGGERS.size).toBe(70);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        68 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        70 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -12281,6 +12284,226 @@ describe("0092_reject_replays", () => {
       expect(sql.exec("SELECT account_id, follower_id, follow_uri, edge_id FROM reject_replays").toArray()).toEqual([
         { account_id: L1, follower_id: r, follow_uri: "https://r1.example/follows/1", edge_id: null },
       ]);
+    });
+  });
+});
+
+describe("0093_annual_reports", () => {
+  const NAME = "0093_annual_reports";
+  const at = NAMES.indexOf(NAME);
+  const SETTING = /instance_settings: a value past its stored bound/;
+  const label = (value: unknown) => JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v));
+  const OWNER = "100000000000000001";
+  const STAMP = "2026-12-10T00:00:00.000Z";
+  // The file's statements, comments and blank runs left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const upgraded = async (state: DurableObjectState) => {
+    expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+    state.storage.sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?1, 'owner', NULL)",
+      OWNER,
+    );
+    state.storage.sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+      OWNER,
+    );
+  };
+
+  it("follows 0092, writes the generator's statements and triggers, and checks every reference", () => {
+    expect(NAMES[at - 1]).toBe("0092_reject_replays");
+    // A new table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    expect(Object.keys(WRAPSTODON_SETTING_BOUNDS)).toEqual(["wrapstodon"]);
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toBe(
+      statements(
+        `${annualReportsMigrationSql({ bytes: TAG_NAME_BYTES, length: MAX_TAG_LENGTH })}\n${emitTriggers([
+          "instance_settings_wrapstodon_insert",
+          "instance_settings_wrapstodon_update",
+        ])}`,
+      ),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("deletes a wrapstodon row past its bound that a pre-0093 Store holds, and keeps one within it", async () => {
+    for (const [value, kept] of [
+      ["on", false],
+      ["TRUE", false],
+      [blob("true"), false],
+      [1, false],
+      ["true", true],
+      ["false", true],
+    ] as const) {
+      const store = freshStore();
+      await runInDurableObject(store, async (_instance, state) => {
+        const sql = state.storage.sql;
+        await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+        sql.exec("INSERT INTO instance_settings (name, value) VALUES ('wrapstodon', ?), ('title', 'Herd')", value);
+        expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+        expect(sql.exec("SELECT name, value FROM instance_settings ORDER BY name").toArray(), label(value)).toEqual([
+          { name: "title", value: "Herd" },
+          ...(kept ? [{ name: "wrapstodon", value }] : []),
+        ]);
+      });
+    }
+  });
+
+  it("bounds the setting on insert, update, rename and upsert, for this name only", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await upgraded(state);
+      const NAME_ = "wrapstodon";
+      for (const value of ["true", "false"]) {
+        sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES (?, ?)", NAME_, value);
+        sql.exec("UPDATE instance_settings SET value = ? WHERE name = ?", value, NAME_);
+        expect(storedSetting(NAME_, value)).toBe(value);
+      }
+      for (const value of ["on", "", "TRUE", "true ", "1", blob("true"), 1, null]) {
+        expect(
+          () => sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES (?, ?)", NAME_, value),
+          label(value),
+        ).toThrow(/instance_settings: a value past its stored bound|NOT NULL/);
+        expect(
+          () => sql.exec("UPDATE instance_settings SET value = ? WHERE name = ?", value, NAME_),
+          label(value),
+        ).toThrow(/instance_settings: a value past its stored bound|NOT NULL/);
+        expect(
+          () =>
+            sql.exec(
+              "INSERT INTO instance_settings (name, value) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET value = ?2",
+              NAME_,
+              value,
+            ),
+          label(value),
+        ).toThrow(/instance_settings: a value past its stored bound|NOT NULL/);
+      }
+      expect(storedSetting(NAME_, "yes")).toBeNull();
+      sql.exec("INSERT INTO instance_settings (name, value) VALUES ('domain', 'on')");
+      expect(() => sql.exec("UPDATE instance_settings SET name = 'wrapstodon' WHERE name = 'domain'")).toThrow(SETTING);
+      expect(sql.exec("SELECT value FROM instance_settings WHERE name = 'wrapstodon'").one().value).toBe("false");
+    });
+  });
+
+  it("holds each column to its CHECK at both ends of its domain, on insert and update", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await upgraded(state);
+      const refused = /CHECK constraint failed|NOT NULL/;
+      const base: Record<string, SqlStorageValue> = {
+        account_id: OWNER,
+        year: 2026,
+        archetype: "oracle",
+        statuses: 0,
+        followers: 0,
+        top_status_id: null,
+        top_hashtag: null,
+        top_hashtag_uses: null,
+        viewed_at: null,
+        created_at: STAMP,
+      };
+      const insert = (row: Record<string, SqlStorageValue>) => {
+        const columns = Object.keys(row);
+        sql.exec(
+          `INSERT INTO annual_reports (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(row),
+        );
+        sql.exec("DELETE FROM annual_reports");
+      };
+      const MAX = Number.MAX_SAFE_INTEGER;
+      const name = (bytes: number, char = "a") => char.repeat(bytes);
+      const accepted: Record<string, SqlStorageValue>[] = [
+        { year: 1 },
+        { year: 9999 },
+        ...ANNUAL_REPORT_ARCHETYPES.map((archetype) => ({ archetype })),
+        { statuses: MAX, followers: MAX },
+        { top_status_id: "000000000000000000" },
+        { top_hashtag: "a", top_hashtag_uses: 2 },
+        { top_hashtag: name(MAX_TAG_LENGTH), top_hashtag_uses: MAX },
+        // MAX_TAG_LENGTH characters of four bytes each fill TAG_NAME_BYTES.
+        { top_hashtag: "😀".repeat(MAX_TAG_LENGTH), top_hashtag_uses: 2 },
+        { viewed_at: "0000-01-01T00:00:00.000Z", created_at: "9999-12-31T23:59:59.999Z" },
+      ];
+      for (const change of accepted) {
+        expect(() => insert({ ...base, ...change }), label(change)).not.toThrow();
+      }
+      const past: Record<string, SqlStorageValue>[] = [
+        { year: 0 },
+        { year: 10000 },
+        { year: 2026.5 },
+        { year: "2026x" },
+        { year: blob("2026") },
+        { archetype: "Oracle" },
+        { archetype: "oracle\u0000" },
+        { archetype: blob("oracle") },
+        { statuses: -1 },
+        { followers: String(MAX + 1) },
+        { statuses: 2.5 },
+        { followers: "12x" },
+        { top_status_id: "10000000000000001" },
+        { top_status_id: "1000000000000000a" },
+        { top_status_id: "10000000000000000\u0000" },
+        { top_status_id: blob("100000000000000001") },
+        { top_hashtag: "", top_hashtag_uses: 2 },
+        { top_hashtag: name(MAX_TAG_LENGTH + 1, "é"), top_hashtag_uses: 2 },
+        { top_hashtag: "a\u0000b", top_hashtag_uses: 2 },
+        { top_hashtag: blob("tag"), top_hashtag_uses: 2 },
+        { top_hashtag: "tag", top_hashtag_uses: 1 },
+        { top_hashtag: "tag", top_hashtag_uses: 2.5 },
+        { top_hashtag: "tag", top_hashtag_uses: "3x" },
+        { top_hashtag: "tag" },
+        { top_hashtag_uses: 2 },
+        { created_at: "x".repeat(24) },
+        { created_at: "2026-12-10T24:00:00.000Z" },
+        { created_at: "2026-12-10T00:00:00.00é" },
+        { created_at: "2026-12-10T00:00:00.000\u0000" },
+        { created_at: blob(STAMP) },
+        { created_at: 20261210 },
+        { created_at: null },
+        { viewed_at: "2026-12-10" },
+      ];
+      for (const change of past) {
+        expect(() => insert({ ...base, ...change }), label(change)).toThrow(refused);
+      }
+      // Bytes SQLite's length() counts as no character (continuation bytes, as an import may hold) meet the byte bound
+      // alone: TAG_NAME_BYTES of them pass, one more is refused.
+      const continuation = (bytes: number) => new Uint8Array(bytes).fill(0x80).buffer;
+      const rawName = (bytes: number) =>
+        sql.exec(
+          `INSERT INTO annual_reports (account_id, year, archetype, statuses, followers, top_hashtag, top_hashtag_uses,
+						created_at) VALUES (?, 2026, 'oracle', 0, 0, CAST(? AS TEXT), 2, ?)`,
+          OWNER,
+          continuation(bytes),
+          STAMP,
+        );
+      rawName(TAG_NAME_BYTES);
+      sql.exec("DELETE FROM annual_reports");
+      expect(() => rawName(TAG_NAME_BYTES + 1)).toThrow(refused);
+      sql.exec(
+        "INSERT INTO annual_reports (account_id, year, archetype, statuses, followers, created_at) VALUES (?, 2026, 'oracle', 0, 0, ?)",
+        OWNER,
+        STAMP,
+      );
+      expect(() => sql.exec("UPDATE annual_reports SET viewed_at = 'x'")).toThrow(refused);
+      expect(() => sql.exec("UPDATE annual_reports SET top_hashtag = 'tag'")).toThrow(refused);
+      expect(() => sql.exec("UPDATE annual_reports SET year = 0")).toThrow(refused);
+      // A report names a local account, and goes with it.
+      expect(sql.exec("SELECT \"table\", on_delete FROM pragma_foreign_key_list('annual_reports')").toArray()).toEqual([
+        { table: "local_accounts", on_delete: "CASCADE" },
+      ]);
+      expect(sql.exec("SELECT sql FROM sqlite_master WHERE name = 'annual_reports_pending'").one().sql).toContain(
+        "WHERE viewed_at IS NULL",
+      );
     });
   });
 });

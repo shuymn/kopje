@@ -43,6 +43,7 @@ const NOT_CARRIED: Record<string, string> = {
   admin_actions: "the moderation log of Kopje; legacy Wildebeest has no admin API and logs no moderation",
   announcement_dismissals: "dismissals of announcements, which legacy Wildebeest does not have",
   announcement_reactions: "reactions to announcements, which legacy Wildebeest does not have",
+  annual_reports: "annual reports Kopje generates; legacy Wildebeest has none",
   announcements: "announcements of the Access admin; legacy Wildebeest has none",
   account_trend_reviews: "the Access admin’s trends reviews of accounts; legacy Wildebeest has no trends review",
   account_warnings: "warnings of an admin account action; legacy Wildebeest has no moderation warnings",

@@ -125,6 +125,12 @@ the restore's check of the file tried again, three times at most before the file
 round that failed; its claims are taken again after their hold. None carries a URL, a header or an error message from
 the remote host.
 
+`kopje.annual_reports.capped` (level warn, nothing to fix) records an annual report not made because the account's
+year passed a cap: `cap` (`statuses`, `hashtag_uses`, `hashtag_bytes` or `followers`) and `call` (`state` or
+`generate`). The account gets no report that year (the "Annual reports" entry of
+[mastodon-deviations.md](mastodon-deviations.md); RES-7 in [threat-model.md](threat-model.md)), and a client asking
+`state` again logs it again. It carries no account, year or other identity.
+
 ## Cost
 
 Workers Logs is billed to the account, not to one Worker: every Worker and Pages project in the account shares the
