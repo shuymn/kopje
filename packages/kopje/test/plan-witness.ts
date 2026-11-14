@@ -21,15 +21,18 @@ export const normalized = (sql: string) => sql.replace(/\s+/g, " ").trim();
 
 // main's statement, by its audited identity: its literal SQL, and how its rewrite reads, either `pins` (the rewrite's
 // text, whitespace collapsed, back to main's) or `text` (the rewrite exactly, whitespace collapsed). `writes`: a query
-// listing the rows the statement writes, read before and after it on both sides.
+// listing the rows the statement writes, read before and after it on both sides. `result`: where the rewrite returns
+// rows of another shape that its caller turns into the same answer (mergedWindow's rows and their bound), each side's
+// rows as its caller reads them, compared in their place.
 export type Baseline = {
   sql: string;
   pins?: (text: string) => string;
   text?: string;
   writes?: string;
+  result?: { main: (rows: SqlRow[]) => unknown; mine: (rows: SqlRow[]) => unknown };
 };
 
-type Measure = { rows: number; written: number; result: SqlRow[]; removed: string[]; added: string[] };
+type Measure = { rows: number; written: number; result: unknown; removed: string[]; added: string[] };
 
 // One production statement: `id` the baseline it is the rewrite of; `fault` set when it did not pair (out of order,
 // past the sequence, main's own statement unchanged, a statement of the family no baseline names, one the witness does
@@ -151,7 +154,8 @@ export class PlanWitness {
         try {
           transact(() => {
             const cursor = real.exec<SqlRow>(baseline.sql, ...params);
-            side.main.result = cursor.toArray();
+            const rows = cursor.toArray();
+            side.main.result = baseline.result === undefined ? rows : baseline.result.main(rows);
             side.main.rows = cursor.rowsRead;
             side.main.written = cursor.rowsWritten;
             changes(side.main);
@@ -174,7 +178,7 @@ export class PlanWitness {
               delete side.fault;
             }
           },
-          (result) => (side.mine.result = result),
+          (result) => (side.mine.result = baseline.result === undefined ? result : baseline.result.mine(result)),
         );
       },
     } as unknown as SqlStorage;
@@ -223,8 +227,9 @@ export class PlanWitness {
 const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, n) => sum + n, 0);
 
 // The run paired every statement with its expected baseline, the whole sequence in order; each pair returned the same
-// rows, wrote as many and changed the same rows; under ANALYZE the rewrite read no more than main.
-export function expectBeside(statistics: Statistics, run: Run): void {
+// rows, wrote as many and changed the same rows; under ANALYZE the rewrite read no more than main, and with
+// `singletonRows` under singleton statistics too.
+export function expectBeside(statistics: Statistics, run: Run, options: { singletonRows?: true } = {}): void {
   expect(
     run.sides.map((side) => (side.fault === undefined ? side.id : `${side.id} (${side.fault})`)),
     "main's statements, every one in order",
@@ -240,7 +245,7 @@ export function expectBeside(statistics: Statistics, run: Run): void {
     expect(side.mine.written, side.query).toBe(side.main.written);
     expect(side.mine.removed, side.query).toEqual(side.main.removed);
     expect(side.mine.added, side.query).toEqual(side.main.added);
-    if (statistics === "analyzed") {
+    if (statistics === "analyzed" || options.singletonRows === true) {
       expect(side.mine.rows, side.query).toBeLessThanOrEqual(side.main.rows);
     }
   }

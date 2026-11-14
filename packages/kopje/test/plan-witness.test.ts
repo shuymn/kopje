@@ -12,6 +12,7 @@ import {
   type Run,
   type Side,
 } from "./plan-witness";
+import type { SqlRow } from "./read-helpers";
 
 // test/plan-witness.ts against itself: each guard of the side-by-side witness, met by one minimal case that fails it,
 // beside the case that passes. The world: a table t of `k` keys, two rows each, with an index on k.
@@ -276,6 +277,30 @@ describe("each pair", () => {
     expect(() => expectBeside("analyzed", analyzed)).toThrow(/expected \d+ to be less than or equal to/);
     const singleton = await witnessed(entries, () => [id], [[scan, 3]], { statistics: "singleton" });
     expectBeside("singleton", singleton);
+    expect(() => expectBeside("singleton", singleton, { singletonRows: true })).toThrow(
+      /expected \d+ to be less than or equal to/,
+    );
+  });
+
+  it("compares each side as its caller reads it, and fails a rewrite whose caller answers other candidates", async () => {
+    const id = await statementId(SELECT);
+    // The rewrite returns each row's key too, which its caller drops.
+    const wider = "SELECT id, k FROM t WHERE k = ? ORDER BY id";
+    const ids = (rows: SqlRow[]) => rows.map((row) => row.id);
+    const entries = (mine: (rows: SqlRow[]) => unknown) => ({
+      [id]: { sql: SELECT, text: wider, result: { main: ids, mine } },
+    });
+    const kept = await witnessed(entries(ids), () => [id], [[wider, 3]]);
+    expect(kept.sides[0]!.mine.result).toEqual([7, 8]);
+    expectBeside("analyzed", kept);
+    const others = await witnessed(
+      entries((rows) => ids(rows).toReversed()),
+      () => [id],
+      [[wider, 3]],
+    );
+    expect(() => expectBeside("analyzed", others)).toThrow(/k FROM t WHERE k = \? ORDER BY id: expected/);
+    const raw = await witnessed({ [id]: { sql: SELECT, text: wider } }, () => [id], [[wider, 3]]);
+    expect(() => expectBeside("analyzed", raw)).toThrow(/k FROM t WHERE k = \? ORDER BY id: expected/);
   });
 });
 
