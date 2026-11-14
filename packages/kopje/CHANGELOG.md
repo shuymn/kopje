@@ -8,6 +8,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- The instance template's deploy workflow (`deploy/ci/github-actions-deploy.yml`) runs on Node.js 26, the current LTS
+  line, instead of 24. An instance that copied the workflow keeps Node.js 24 until it copies the new one; both work, as
+  `kopje-admin` and wrangler need Node.js 22 or later. No Store migration and no `wrangler.jsonc` change.
+
 ### Fixed
 
 - Notifications, the home, list and hashtag timelines, the public hashtag page and the streaming home timeline work
