@@ -27,7 +27,7 @@ import { readWindow, windowJson, windowOf, windowPage } from "./windows";
 export const END_FOLLOW_NOTIFICATIONS_SQL =
   "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ?1 AND type IN ('follow', 'follow_request') AND from_account_id = ?2";
 
-// Notifications of local users (Mastodon 4.0.2 v1). They are written by the operation that causes them, in its
+// Notifications of local users (Mastodon's v1 notifications). They are written by the operation that causes them, in its
 // transaction, and read in pages in the Store. One rule (shownSql in audience.ts) decides whether a notification is
 // written, shown and pushed: the recipient is not its sender, the sender is not suspended, blocked (either way), muted
 // with notifications (while the mute applies), or domain-blocked by the recipient, and the recipient may see the

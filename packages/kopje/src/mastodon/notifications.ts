@@ -3,8 +3,8 @@ import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
 import { parseBoolean } from "./params";
 
-// /api/v1/notifications (Mastodon 4.0.2 v1): the list with types[], exclude_types[], account_id and
-// include_filtered (Mastodon 4.5), one notification, dismiss and clear.
+// /api/v1/notifications: the list with types[], exclude_types[], account_id and
+// include_filtered, one notification, dismiss and clear.
 
 export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);

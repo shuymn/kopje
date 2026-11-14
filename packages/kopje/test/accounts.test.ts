@@ -250,7 +250,7 @@ describe("account lookup", () => {
     expect(await response.text()).toContain(`"id":"${id}"`);
   });
 
-  it("redacts a suspended account's profile as Mastodon 4.0.2 does", async () => {
+  it("redacts a suspended account's profile as Mastodon does", async () => {
     const h = await apiHarness();
     const id = await seedAccount(h.store, { username: "gone", displayName: "Gone", locked: true });
     await sql(
