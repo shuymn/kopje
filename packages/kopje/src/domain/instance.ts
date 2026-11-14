@@ -66,9 +66,9 @@ export type InstanceUsage = InstanceSettings & {
 // so it lags the remote accounts by up to one cron period.
 export type InstanceInfo = InstanceUsage & { userCount: number; statusCount: number; domainCount: number };
 
-// Mastodon's active_month counts the 28 days before today (InstancePresenter#active_user_count); Kopje keeps one day
-// per account, so its 28 days are today and the 27 before it.
-const ACTIVE_DAYS = 28;
+// Mastodon 4.5.21's active_user_count(4) sums the days from 28 days ago through today (instance_presenter.rb:57-58,
+// activity_tracker.rb:41-42): 29 UTC days, today included.
+const ACTIVE_DAYS = 29;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // The about page's settings: the extended description as stored (at most INSTANCE_DOCUMENT_BYTES), which the page

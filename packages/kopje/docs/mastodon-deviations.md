@@ -391,8 +391,8 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public
   identifier (RFC 6749 §2.2).
 - `usage.users.active_month` counts the available local accounts with an authenticated API or web request on one of the
-  last 28 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
-  request made while a dump holds the Store may go unrecorded. Mastodon counts logins over the 28 days before today,
+  last 29 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
+  request made while a dump holds the Store may go unrecorded. Mastodon 4.5.21 counts logins over the same days,
   suspended users included.
 - `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
   kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
@@ -407,12 +407,12 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   hours of a signed-in user's requests, at each sign-in and at the new user's preparation.
 - The activity answer is kept for the UTC day it was made (or until `activity_api_enabled` changes, or an import is
   verified or published); Mastodon keeps its answer 24 hours from the first request.
-- The activity's logins are exact distinct accounts (Mastodon's are a HyperLogLog estimate), counted among a week's
-  first 600 login rows by day and account, so a week with more than 600 login days (one per account and day) may count
-  fewer accounts than logged in. A day's statuses and registrations stop at 10^12 each. Week 0 holds today only and
-  never reads a later day, which an import may hold; Mastodon names the five days after today too, where it has no key.
-  The day before each week's start is never counted, as in Mastodon's day keys (its sum also reads the legacy `cweek`
-  keys, which Kopje never had).
+- The activity's weeks are Mastodon 4.5.21's, 7 UTC days each. Its logins are exact distinct accounts (Mastodon's are
+  a HyperLogLog estimate), counted among a week's first 700 login rows by day and account, so a week with more than
+  700 login days (one per account and day) may count fewer accounts than logged in. A day's statuses and registrations
+  stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
+  six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
+  had.
 - `thumbnail` is always Kopje's default image; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.

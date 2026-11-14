@@ -1809,7 +1809,7 @@ export function linkReviewPastBoundSql(row: string, key: "url" | "domain"): stri
 // ---- Instance activity: migration 0072_activity_tracking (domain/instance-activity.ts)
 
 // activity_counts: one row per kind and UTC day, value the day's count (1 to ACTIVITY_VALUE_MAX: the writers add 1 and
-// stop there, so a window's sum of 6 days stays a safe integer of at most 13 digits). activity_logins: one row per UTC
+// stop there, so a window's sum of 7 days stays a safe integer of at most 13 digits). activity_logins: one row per UTC
 // day and local account with a login that day, account_id an 18-digit id as TEXT (accounts.id's form), no foreign key.
 export const ACTIVITY_KINDS = ["statuses", "registrations"] as const;
 export const ACTIVITY_VALUE_MAX = 1_000_000_000_000;
