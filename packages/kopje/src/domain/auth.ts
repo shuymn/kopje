@@ -1,6 +1,6 @@
 import { LOCAL_ACCOUNTS_ID_INDEX, OAUTH_CLIENTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import type { StoreOperation } from "../platform/store-kernel";
+import type { StoreClock, StoreOperation, TimedOperation } from "../platform/store-kernel";
 import { grantsAny, type RequiredScope } from "../security/scopes";
 import { adminAccountId, adminAccountIdOnce } from "./admin-authority";
 import type { ViewerContext } from "./audience";
@@ -142,19 +142,35 @@ export function authorizeStream(
 
 type Declare = typeof readOperation;
 
+type UserRun<I, O> = (db: Db, input: I, viewer: UserViewer, context: UserContext) => O;
+
+// The credential checked, then `run` with the user it names.
+function asUser<I extends { credential: UserCredential }, O>(run: UserRun<I, O>) {
+  return (db: Db, input: I): Authorized<O> => {
+    const auth = authorize(db, input.credential);
+    if (auth.status !== "ok") {
+      return auth;
+    }
+    // authorize() refuses a token without an account when a scope is required.
+    const viewer = auth.viewer as UserViewer;
+    return { status: "ok", value: run(db, input, viewer, contextOf(viewer.accountId, viewer.now)) };
+  };
+}
+
+// `.atStoreTime(field)` declares one that also takes the Store's own time in `field` (operation.ts), the credential
+// still judged at its request time.
 function guarded(declare: Declare) {
-  return <I, O>(
-    run: (db: Db, input: I, viewer: UserViewer, context: UserContext) => O,
+  const operation = <I, O>(
+    run: UserRun<I & { credential: UserCredential }, O>,
   ): StoreOperation<I & { credential: UserCredential }, Authorized<O>> =>
-    declare<I & { credential: UserCredential }, Authorized<O>>((db, input) => {
-      const auth = authorize(db, input.credential);
-      if (auth.status !== "ok") {
-        return auth;
-      }
-      // authorize() refuses a token without an account when a scope is required.
-      const viewer = auth.viewer as UserViewer;
-      return { status: "ok", value: run(db, input, viewer, contextOf(viewer.accountId, viewer.now)) };
-    });
+    declare<I & { credential: UserCredential }, Authorized<O>>(asUser(run));
+  const atStoreTime =
+    <C extends StoreClock>(clock: C) =>
+    <I extends Record<C, number>, O>(
+      run: UserRun<I & { credential: UserCredential }, O>,
+    ): TimedOperation<I & { credential: UserCredential }, Authorized<O>, C> =>
+      declare.atStoreTime(clock)<I & { credential: UserCredential }, Authorized<O>>(asUser(run));
+  return Object.assign(operation, { atStoreTime });
 }
 
 // Operations of a signed-in user, under the scope of the route.

@@ -1,0 +1,62 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { instanceUsage } from "../src/domain/instance";
+import { type ApiHarness, apiHarness, setSetting, sql } from "./api-helpers";
+import { BUILD } from "./helpers";
+
+// The annual report campaign through the RPC path (P1): requests through the Worker to the Store, with the Store's
+// clock (Date in the Durable Object, which the kernel reads at each call: test/store-clock.test.ts) set apart from the
+// Worker's (the harness's `now`, which the credential and the input's `now` carry). The campaign is judged, and its
+// times stamped, by the Store's clock only; judging it by the Worker's fails every case below.
+
+const at = (iso: string) => Date.parse(iso);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// The harness, then the two clocks: the Store's faked from here on, the Worker's as given.
+async function clocks(store: string, worker: string): Promise<ApiHarness> {
+  const h = await apiHarness();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(at(store));
+  h.now.mockReturnValue(at(worker));
+  return h;
+}
+
+async function wrapstodon(h: ApiHarness): Promise<unknown> {
+  const response = await h.request("/api/v2/instance");
+  expect(response.status).toBe(200);
+  return (await response.json<{ wrapstodon: unknown }>()).wrapstodon;
+}
+
+describe("the campaign of /api/v2/instance, by the Store's clock", () => {
+  it.each([
+    ["2026-12-31T23:59:59.999Z", "2027-01-01T00:00:01.000Z", 2026],
+    ["2026-12-10T00:00:00.000Z", "2026-12-09T23:59:59.999Z", 2026],
+    ["2027-01-01T00:00:00.000Z", "2026-12-31T23:59:59.999Z", null],
+    ["2027-01-02T12:00:00.000Z", "2026-12-31T23:59:59.999Z", null],
+  ])("the Store at %s, the Worker at %s: %s", async (store, worker, year) => {
+    const h = await clocks(store, worker);
+    expect(await wrapstodon(h)).toBe(year);
+  });
+
+  it("is null with the switch off, and on again once the row is removed", async () => {
+    const h = await clocks("2026-12-20T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+    await setSetting(h.store, "wrapstodon", "false");
+    expect(await wrapstodon(h)).toBeNull();
+    await setSetting(h.store, "wrapstodon", "true");
+    expect(await wrapstodon(h)).toBe(2026);
+    await sql(h.store, "DELETE FROM instance_settings WHERE name = 'wrapstodon'");
+    expect(await wrapstodon(h)).toBe(2026);
+  });
+
+  it("is declared on the Store's clock, which replaces a storeNow the caller sends", async () => {
+    expect(instanceUsage.clock).toBe("storeNow");
+    const h = await clocks("2026-12-20T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+    const input = { now: at("2026-11-01T00:00:00.000Z"), present: { origin: "https://kopje.test" } };
+    // An RPC caller is not held to the type: it may send the field anyway.
+    const sent = { ...input, storeNow: at("2026-11-01T00:00:00.000Z") } as typeof input;
+    expect(await h.store.instanceUsage(BUILD, sent)).toMatchObject({ wrapstodon: 2026 });
+  });
+});
