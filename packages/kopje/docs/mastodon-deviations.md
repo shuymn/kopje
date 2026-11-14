@@ -409,6 +409,25 @@ Accounts (the `Account` and credential account entities):
 
   Accepted, 2026-11-15.
 
+Remote collections (an account's featured statuses and hashtags, and the collections its counts come from;
+Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-model.md)):
+
+- Kopje reads an account's collections only on its actor's origin, within one request's fetch budget per round
+  (`src/federation/collections.ts`):
+  - the featured collection and its first page, of whose items the first 20 are pinned;
+  - the `featuredTags` collection and at most 3 of its pages;
+  - one document each of the following, followers and outbox collections, for their counts (Accounts, above).
+
+  Mastodon 4.7.5 reads every item of the featured collection's first page, and the featured hashtags until it has 10
+  or has read 10 pages, both only on the actor's host. Accepted, 2026-11-15.
+
+Followers synchronisation (Mastodon's `Collection-Synchronization` header and
+`/users/:username/followers_synchronization`):
+
+- Kopje neither sends nor reads the header and serves no partial followers collection. A follow one side lost is not
+  repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
+  also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
+
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-3):
 
 - Kopje answers as Mastodon 4.7.5 does with Wrapstodon off (its admin setting, on by default). No report is made:
@@ -687,6 +706,15 @@ Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces
   when the rule hides some of their oldest), or one cut by bytes after more than 40 groups. Mastodon has no such
   bound. Accepted, 2026-11-14.
 
+Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their streams; Mastodon's
+`FeedManager#add_to_feed`):
+
+- Every boost by a followed account that passes the follow's options is shown and streamed, also when the original or
+  another boost of it is among the newer entries. Mastodon leaves such a boost out, unstreamed, when the original or a
+  boost of it is among the 80 newest entries of the feed as the boost arrives (`REBLOG_FALLOFF`; 40 before 4.7), unless
+  the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
+  statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
+
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
@@ -917,6 +945,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   a form applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
+
+Relayed activities (an activity whose HTTP signer is not its actor; ID-1 in [threat-model.md](threat-model.md)):
+
+- Of the activities another server relays, Kopje applies only a status's `Delete` that carries its author's proof
+  (Forwarded deletes, above); any other answers 401 and changes nothing. Mastodon applies a relayed activity of any
+  type whose RsaSignature2017 signature by its actor verifies (`ActivityPub::ProcessActivityService`; before 4.7,
+  `ProcessCollectionService#verify_account!`), and from 4.7.0 one whose FEP-8b32 proof by its actor verifies
+  (`process_activity_service.rb:42-75`). An inbound activity acts only for its signer, and Kopje weighs an author's
+  proof only on a body it has a profile for (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
 
 Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
 `ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):
