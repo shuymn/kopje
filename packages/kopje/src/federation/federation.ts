@@ -355,8 +355,10 @@ export function createKopjeFederation(
       state.source = { kind: "actor", username: actor.username, rendered: JSON.stringify(actor) };
       return localActorObject(ctx, actor);
     })
-    .mapHandle(async (_ctx, username) =>
-      isInstanceHandle(username, domain) ? INSTANCE_ACTOR : ((await localActor(username))?.username ?? null),
+    // A local account first: the instance actor never takes a local account's handle (ID-5).
+    .mapHandle(
+      async (_ctx, username) =>
+        (await localActor(username))?.username ?? (isInstanceHandle(username, domain) ? INSTANCE_ACTOR : null),
     )
     .mapActorAlias("/actor", INSTANCE_ACTOR)
     .setKeyPairsDispatcher(async (_ctx, identifier) => {
@@ -550,8 +552,9 @@ const OBJECT_ID = /^[0-9A-Za-z-]{1,64}$/;
 const FIRST_OUTBOX_CURSOR = "first";
 
 // The instance actor's handle is acct:<domain>@<domain>, its preferredUsername at the domain: Mastodon's
-// WebfingerResource#account_from_acct answers Account.representative for a username that is the local domain exactly,
-// before any local account (v4.7.5). A local username has no '.' (LOCAL_USERNAME), so it never is the domain.
+// WebfingerResource#account_from_acct answers Account.representative for a username that is the local domain exactly
+// (v4.7.5). Mastodon asks this before any local account; Kopje asks it after (mapHandle), since a Store may hold a
+// local account of that username from before its writers refused one (localUsernameIsDomain, ID-5).
 function isInstanceHandle(username: string, domain: string): boolean {
   return username === domain;
 }

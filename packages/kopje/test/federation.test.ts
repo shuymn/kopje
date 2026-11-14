@@ -266,6 +266,30 @@ describe("instance actor", () => {
     expect(upper.body).toMatchObject({ subject: "acct:social.example@social.example" });
   });
 
+  // ID-5: a local account keeps its WebFinger identity. Imports, conversion and configuration refuse a local username
+  // that is the domain; a Store that holds one anyway (written before those refusals) answers the account for it, and
+  // the instance actor then has no handle answer, only its URI one.
+  it("never answers its handle for a local account whose username is the domain", async () => {
+    const { json, store } = await instance();
+    await seedLocalAccount(store, DOMAIN, { id: "333333333333333333", username: "social.example" });
+    const self = {
+      rel: "self",
+      type: "application/activity+json",
+      href: "https://social.example/ap/users/social.example",
+    };
+    for (const handle of ["social.example", "SOCIAL.EXAMPLE"]) {
+      const { status, body } = await json(`/.well-known/webfinger?resource=acct:${handle}@social.example`);
+      expect([handle, status]).toEqual([handle, 200]);
+      expect(body).toMatchObject({ subject: `acct:${handle}@social.example`, links: expect.arrayContaining([self]) });
+    }
+    const byUri = await json("/.well-known/webfinger?resource=https://social.example/actor");
+    expect(byUri.body).toMatchObject({
+      links: expect.arrayContaining([
+        { rel: "self", type: "application/activity+json", href: "https://social.example/actor" },
+      ]),
+    });
+  });
+
   it("answers no other handle at the domain, nor the domain's handle elsewhere", async () => {
     const { request } = await instance();
     for (const resource of [

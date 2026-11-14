@@ -550,7 +550,9 @@ WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `Webfing
 - The instance actor answers for its URI (`/actor`) and for its handle, `acct:<domain>@<domain>`, whose username must
   be the domain exactly, as Mastodon's `account_from_acct` matches its own instance actor. Its `preferredUsername` is
   the domain, where Mastodon's is `mastodon.internal`, so its subject is `acct:<domain>@<domain>`. Account lookup,
-  search, mentions and the public pages never find it.
+  search, mentions and the public pages never find it. Mastodon asks for the instance actor before any local account;
+  Kopje asks after, so a local account whose username is the domain (which conversion, import and configuration now
+  refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
 - Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
   type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
   there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its

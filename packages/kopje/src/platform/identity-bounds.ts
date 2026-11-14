@@ -48,3 +48,16 @@ export function isStorableActorId(id: string): boolean {
   }
   return withinIdentityBound(href, ACTOR_URI_LIMIT) && withinIdentityBound(id, ACTOR_URI_LIMIT);
 }
+
+// ID-5: whether a local username is the instance domain, so that the account would hold the instance actor's handle
+// (federation.ts isInstanceHandle). Compared as local usernames are looked up, by SQLite's lower(), which folds ASCII
+// letters only (actors.ts LOCAL_BY_USERNAME). The cutover's conversion and verification and the Store's import and
+// config refuse such an account with it; the Store finds the one candidate with LOCAL_USERNAME_SEEK_SQL first.
+export function localUsernameIsDomain(username: string, domain: string): boolean {
+  const fold = (value: string) => value.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+  return fold(username) === fold(domain);
+}
+
+// The local account a username names (one seek of the unique index accounts_local_username), or none.
+export const LOCAL_USERNAME_SEEK_SQL =
+  "SELECT id, username FROM accounts INDEXED BY accounts_local_username WHERE domain IS NULL AND lower(username) = lower(?)";

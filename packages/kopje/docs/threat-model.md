@@ -265,10 +265,18 @@ against their own instance. TLS is assumed between all parties.
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
   no key pair. The instance actor is served at `/actor` only, and WebFinger answers it for that URI and for its handle,
   `acct:<domain>@<domain>` with the domain exactly as the username (`isInstanceHandle`); it has no `accounts` row, so
-  it is no account to lookup, search, mentions or the public pages. _Enforced (main):_ `src/federation/federation.ts`;
-  `test/federation.test.ts` ("differently cased path", "another host, an unknown user, and the request host", "by its
-  handle, the domain at the domain", "no other handle at the domain"), `test/signed-fetch.test.ts` ("no key pairs for
-  a spelling"), `test/instance-actor-handle.test.ts` ("names no account in lookup, mentions or the public pages").
+  it is no account to lookup, search, mentions or the public pages. A local account keeps its own WebFinger identity:
+  no local username is the domain in any case (`localUsernameIsDomain` in `src/platform/identity-bounds.ts`, compared
+  as local usernames are looked up): the cutover's conversion and verification, the Store's import verification
+  (against the domain the Store keeps) and its configuration of the domain refuse one, and invitations and `/setup`
+  take only `LOCAL_USERNAME`, which has no `.`. A Store that holds one from before these refusals answers WebFinger for
+  that handle with the account (`mapHandle` asks for a local account first), and its instance actor then has no handle
+  answer, only its URI one. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently
+  cased path", "another host, an unknown user, and the request host", "by its handle, the domain at the domain", "no
+  other handle at the domain", "never answers its handle for a local account whose username is the domain"),
+  `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/instance-actor-handle.test.ts` ("names no account
+  in lookup, mentions or the public pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance
+  domain"), `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require

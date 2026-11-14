@@ -153,15 +153,13 @@ function answerVariant(request: Request, domain: string, documents: Map<string, 
     if (host.toLowerCase() !== domain) {
       return notFound();
     }
-    // The instance actor's handle (federation.ts isInstanceHandle) is answered after the import, as its URI is.
-    if (user === domain) {
-      return null;
-    }
     const canonical = [...documents.keys()].find(
       (key) => key.toLowerCase() === `webfinger:acct:${user}@${domain}`.toLowerCase(),
     );
     if (canonical === undefined) {
-      return notFound();
+      // The instance actor's handle (federation.ts isInstanceHandle), when no local account holds it, is answered
+      // after the import, as its URI is.
+      return user === domain ? null : notFound();
     }
     const snapshot = documents.get(canonical)!;
     const answer = JSON.parse(snapshot.body) as Record<string, unknown>;
