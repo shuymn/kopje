@@ -1665,6 +1665,27 @@ for (const name of ["profile", "thread", "followers"] as const) {
   });
 }
 
+// The Follow beside a profile's avatar (the profile and the look-up result for an account): inset from the card's
+// edge as from the banner.
+for (const name of ["profile", "interaction-result"] as const) {
+  for (const width of [1280, 320]) {
+    test(`${name}: the Follow beside the avatar is inset from the banner as from the card's edge at ${width} px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await open(page, pageNamed(name));
+      const insets = await page.locator(".card.profile").evaluate((card: Element) => {
+        const banner = card.querySelector(":scope > .banner")!.getBoundingClientRect();
+        const button = card.querySelector(".prow button")!.getBoundingClientRect();
+        const edge = card.getBoundingClientRect().left + card.clientLeft + card.clientWidth;
+        return [button.top - banner.bottom, edge - button.right];
+      });
+      expect(insets[0]).toBeGreaterThan(0);
+      expect(Math.abs(insets[0]! - insets[1]!)).toBeLessThanOrEqual(1);
+    });
+  }
+}
+
 // The look-up result's Follow by a post's author: beside the identity where both fit, inset from the card's edge as
 // the avatar is from the other and centred on the avatar (not on the name and address, which run lower); below it
 // where they do not, starting at the content edge. A long name keeps a column of its own rather than being squeezed
