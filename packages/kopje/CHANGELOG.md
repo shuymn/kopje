@@ -8,6 +8,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
+  where it stood further from the edge.
+
 ## [0.5.2] - 2026-11-14
 
 A patch release, published under the npm dist-tag `latest`. On a Cloudflare runtime whose SQLite 3.54.1 counts every
