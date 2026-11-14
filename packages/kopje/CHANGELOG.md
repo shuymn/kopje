@@ -33,6 +33,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage
   signatures are unchanged. No Store migration and no `wrangler.jsonc` change.
+- A delivery or a signed fetch answered 400 or 401 is sent once more at once with an RFC 9421 signature by the same
+  key, following Mastodon 4.7's retry with an RFC 9421 signature, and the second answer decides it; a delivery answered
+  400 was given up at once before. Web Push is not retried. No Store migration and no `wrangler.jsonc` change.
 - The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
   is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
   for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400

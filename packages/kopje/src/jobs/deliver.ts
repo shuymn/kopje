@@ -9,7 +9,7 @@ import { PACKAGE_VERSION } from "../platform/package-version";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { generateRsaKeyPair, type KeyGen } from "../security/key-wrap";
-import { createKeyring, type Signer } from "../security/keyring";
+import { createKeyring, type RequestSigning, type Signer } from "../security/keyring";
 import { pushRound } from "./push";
 
 // The Worker's side of delivery (domain/deliveries.ts has the Store's). A round claims a bounded batch of due lane
@@ -106,34 +106,38 @@ export async function deliveryRound(env: Env, deps: DeliveryDeps): Promise<Round
       let withheld: Dropped | "stale" | "unconfirmed" | null = null;
       // Key loading counts against the delivery's budget like the DNS check and the POST. After it, and after the
       // host check, the Store confirms the row under its lease and hands over the body to sign and send (VIS-30,
-      // confirmDelivery): nothing is sent unless it does.
+      // confirmDelivery): nothing is sent unless it does. The RFC 9421 retry of a POST answered 400 or 401 is
+      // confirmed again the same way, and sends the body that confirmation returns.
+      const confirmed = async (pick: (signing: RequestSigning) => RequestSigning["sign"]) => {
+        const signer = await signerOf(delivery.signer);
+        if (signer === null) {
+          return null;
+        }
+        let confirmation: Confirmation;
+        try {
+          confirmation = await callStore(
+            async (): Promise<Confirmation> =>
+              await store.confirmDelivery(build, { id: delivery.id, leaseToken: claim.leaseToken, now: deps.now() }),
+          );
+        } catch (error) {
+          // The lease expires and the row is claimed again.
+          console.error({ event: "kopje.delivery.confirm.failed", delivery: delivery.id, ...errorFields(error) });
+          withheld = "unconfirmed";
+          return null;
+        }
+        if (confirmation.status !== "send") {
+          withheld = confirmation.status === "stale" ? "stale" : confirmation;
+          return null;
+        }
+        const body = confirmation.body;
+        const sign = pick(signer);
+        return (request: Request) => sign(new Request(request, { method: request.method, body }));
+      };
       const outcome = await postActivity(post, {
         inbox: delivery.inbox,
         body: "",
-        signer: async () => {
-          const sign = (await signerOf(delivery.signer))?.sign;
-          if (sign === undefined) {
-            return null;
-          }
-          let confirmation: Confirmation;
-          try {
-            confirmation = await callStore(
-              async (): Promise<Confirmation> =>
-                await store.confirmDelivery(build, { id: delivery.id, leaseToken: claim.leaseToken, now: deps.now() }),
-            );
-          } catch (error) {
-            // The lease expires and the row is claimed again.
-            console.error({ event: "kopje.delivery.confirm.failed", delivery: delivery.id, ...errorFields(error) });
-            withheld = "unconfirmed";
-            return null;
-          }
-          if (confirmation.status !== "send") {
-            withheld = confirmation.status === "stale" ? "stale" : confirmation;
-            return null;
-          }
-          const body = confirmation.body;
-          return (request) => sign(new Request(request, { method: request.method, body }));
-        },
+        signer: () => confirmed((signing) => signing.sign),
+        retry: () => confirmed((signing) => signing.retry),
         deadline,
       });
       if (withheld !== null) {

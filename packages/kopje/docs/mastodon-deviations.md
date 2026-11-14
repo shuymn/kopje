@@ -897,6 +897,16 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   Mastodon 4.7 takes it for a key id and fails to process the document (`json_ld_helper.rb:96` raises on an array).
   Neither reads a key from it. Accepted, 2026-11-15.
 
+Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
+
+- A signed fetch answered 400 or 401 is sent once more with an RFC 9421 signature hop by hop: the redirect hop so
+  answered is sent again, and the next hop starts with draft-cavage. Mastodon 4.7 sends the whole request with
+  draft-cavage, its client following redirects, and on a final 400 or 401 sends it again from the first URL with
+  RFC 9421 (`request.rb:132-146`, `:189`, `:207`). So a redirect chain whose two hops both need RFC 9421 takes four
+  requests where Mastodon takes three. Kopje follows redirects in its own loader, which checks each hop (origin, host,
+  domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
+  has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
+
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):
 

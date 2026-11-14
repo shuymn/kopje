@@ -1,6 +1,6 @@
 import { type DeliveryOutcome, LEASE_MS } from "../domain/deliveries";
 import { errorFields } from "../platform/error-message";
-import { assertPublicShape, dnsCheckHost, type RequestSigner } from "./loader";
+import { assertPublicShape, dnsCheckHost, type RequestSigner, RETRY_STATUSES } from "./loader";
 
 // The delivery sink (NET-2, NET-3): one signed POST of one activity to one inbox.
 //   - The inbox passes NET-1's host rules (https, no credentials, no literal IP or local name, public addresses by
@@ -9,14 +9,18 @@ import { assertPublicShape, dnsCheckHost, type RequestSigner } from "./loader";
 //     its signature, to a target nobody checked (Fedify and Mastodon follow them; Kopje does not).
 //   - The body is the stored activity, as application/activity+json (what Mastodon and Fedify send), signed by its
 //     lane account's key (its author's, or a forwarding booster's, whose body goes as received) with draft-cavage HTTP
-//     Signatures and a Digest (Fedify's signRequest via the keyring). Fedify's
-//     own sending path (sendActivity, its queue) is not used: it follows redirects and owns retries and keys
-//     (the kopje/fedify-usage lint rule).
-//   - The whole path from the claim (key loading, DNS, signing, POST, response) is budgeted: it ends after
-//     DELIVERY_TIMEOUT_MS or at the round's deadline inside the lease, whichever is first, and sends nothing after.
-//   - The answer is classified as Mastodon's DeliveryWorker does: 2xx delivered; 401, 408, 429, other 4xx is permanent
-//     except those three, 501 permanent, any other status or a network error retried. Fedify stops only on 404 and
-//     410; Mastodon's wider rule spares servers that refuse an activity for good.
+//     Signatures and a Digest (Fedify's signRequest via the keyring). A POST answered 400 or 401 (RETRY_STATUSES) is
+//     sent once more at once, signed with RFC 9421 by the same key (PostTarget.retry), as Mastodon 4.7's
+//     Request#perform does; the deadline, the host check and the target's own check (the Store's confirmation, for a
+//     delivery) run again before it, and the first answer's body is cancelled unread. Fedify's own sending path
+//     (sendActivity, its queue, doubleKnock) is not used: it follows redirects and owns retries and keys (the
+//     kopje/fedify-usage lint rule).
+//   - The whole path from the claim (key loading, DNS, signing, both POSTs, responses) is budgeted: it ends after
+//     DELIVERY_TIMEOUT_MS or at the round's deadline inside the lease, whichever is first, and sends nothing after; a
+//     retry it leaves no time for is a transient failure, never the first answer's.
+//   - The last answer is classified as Mastodon's DeliveryWorker does: 2xx delivered; 401, 408, 429, other 4xx is
+//     permanent except those three, 501 permanent, any other status or a network error retried. Fedify stops only on
+//     404 and 410; Mastodon's wider rule spares servers that refuse an activity for good.
 export const DELIVERY_TIMEOUT_MS = 30_000;
 export const ACTIVITY_CONTENT_TYPE = "application/activity+json";
 // Room left in the lease after the POST's deadline, for the completion to reach the Store.
@@ -35,11 +39,14 @@ export type PostDeps = {
 };
 
 // One delivery: the stored inbox and body, the author's signer (loaded lazily, inside the budget), and the time by
-// which the POST must have been sent, which leaves the completion room inside the lease.
+// which the POST must have been sent, which leaves the completion room inside the lease. retry, when given, is the
+// signer of the one more POST of an answer in RETRY_STATUSES, loaded right before it: null sends nothing more and
+// keeps the first answer. Without it (Web Push), every POST is sent once.
 export type PostTarget = {
   inbox: string;
   body: string;
   signer: () => Promise<RequestSigner | null>;
+  retry?: (() => Promise<RequestSigner | null>) | undefined;
   deadline: number;
 };
 
@@ -59,9 +66,15 @@ export function classifyStatus(status: number): DeliveryOutcome {
 class Timeout extends Error {}
 
 const exhausted: DeliveryOutcome = { kind: "failed", status: null, error: "lease budget exhausted", permanent: false };
+const unavailable: DeliveryOutcome = {
+  kind: "failed",
+  status: null,
+  error: "signing key unavailable",
+  permanent: false,
+};
 
-// The whole path (DNS check, key loading, signing, POST and status) runs under one budget: the smaller of the POST
-// timeout and the time left before the deadline. Nothing is sent once the budget is spent, even if a slow step
+// The whole path (DNS check, key loading, signing, each POST and its status) runs under one budget: the smaller of the
+// POST timeout and the time left before the deadline. Nothing is sent once the budget is spent, even if a slow step
 // finishes later, so a POST never leaves after its lease could have been claimed again (NET-2, RES-6).
 export async function postActivity(deps: PostDeps, target: PostTarget): Promise<DeliveryOutcome> {
   let url: URL;
@@ -86,19 +99,25 @@ export async function postActivity(deps: PostDeps, target: PostTarget): Promise<
     controller.signal.addEventListener("abort", () => reject(controller.signal.reason as Error), { once: true });
   });
   const live = () => !controller.signal.aborted && deps.now() < deadline;
-  const sending = (async (): Promise<DeliveryOutcome> => {
+  // One POST: the host check (NET-3, before every POST), the signer, then the request, the clock checked after the
+  // signer is loaded and right before the POST. Its status, or the outcome that ended it before anything was sent
+  // (`unsigned` when the signer is null).
+  const post = async (
+    signer: () => Promise<RequestSigner | null>,
+    unsigned: DeliveryOutcome,
+  ): Promise<number | DeliveryOutcome> => {
     try {
       await (deps.checkHost ?? dnsCheckHost)(url);
     } catch {
       // DNS may fail for a while; retried like any transient failure until the attempts run out.
       return { kind: "failed", status: null, error: "refused or unresolved host", permanent: false };
     }
-    const sign = live() ? await target.signer() : null;
+    const sign = live() ? await signer() : null;
     if (!live()) {
       return exhausted;
     }
     if (sign === null) {
-      return { kind: "failed", status: null, error: "signing key unavailable", permanent: false };
+      return unsigned;
     }
     const request = await sign(
       new Request(url, {
@@ -115,7 +134,19 @@ export async function postActivity(deps: PostDeps, target: PostTarget): Promise<
     const response = await deps.fetch(request);
     // Only the status matters; the body is not read.
     await response.body?.cancel().catch(() => {});
-    return classifyStatus(response.status);
+    return response.status;
+  };
+  const sending = (async (): Promise<DeliveryOutcome> => {
+    const first = await post(target.signer, unavailable);
+    if (typeof first !== "number") {
+      return first;
+    }
+    const answer = classifyStatus(first);
+    if (target.retry === undefined || !RETRY_STATUSES.has(first)) {
+      return answer;
+    }
+    const second = await post(target.retry, answer);
+    return typeof second === "number" ? classifyStatus(second) : second;
   })();
   sending.catch(() => {});
   try {

@@ -57,7 +57,7 @@ import {
   type FetchBudget,
   type LoaderDeps,
   RefusedFetchError,
-  type RequestSigner,
+  type Signing,
   requireObjectRoot,
 } from "./loader";
 
@@ -186,11 +186,11 @@ function federationParts(deps: FederationDeps, state: FederationState) {
   };
 
   // A signed loader caches per signing key: what one key was shown must not reach another key or the
-  // unsigned path.
-  const signedLoader = (keyId: URL, sign: () => Promise<RequestSigner>) =>
+  // unsigned path. Its RFC 9421 retry signs with the same key (Signing), so it is cached under the same key id.
+  const signedLoader = (keyId: URL, signing: () => Promise<Signing>) =>
     requireObjectRoot(
       kvCache({
-        loader: async (url, options) => createSafeLoader(loaderDeps, await sign())(url, options),
+        loader: async (url, options) => createSafeLoader(loaderDeps, await signing())(url, options),
         kv,
         prefix: [...SIGNED_DOCUMENT_PREFIX, keyId.href],
       }),
@@ -255,7 +255,7 @@ export function createRemoteLoaders(
   const memoized = (caps: DocumentCaps): DocumentLoader => {
     const fetched = new Map<string, ReturnType<DocumentLoader>>();
     const fresh = requireObjectRoot(async (url, options) => {
-      return withinBounds(await createSafeLoader({ ...loaderDeps, ...caps }, (await signer()).sign)(url, options));
+      return withinBounds(await createSafeLoader({ ...loaderDeps, ...caps }, await signer())(url, options));
     });
     return (url, options) => memo(fetched, withoutFragment(url), () => fresh(url, options));
   };
@@ -326,7 +326,7 @@ export function createKopjeFederation(
     kv,
     origin,
     // Fetches with no specific recipient are signed as the instance actor (secure-mode servers refuse unsigned ones).
-    documentLoaderFactory: () => signedLoader(instanceKeyId, async () => (await instanceSigner()).sign),
+    documentLoaderFactory: () => signedLoader(instanceKeyId, instanceSigner),
     contextLoaderFactory: () => parts.contextLoader,
     // Fedify calls this with the recipient's key on a personal inbox.
     authenticatedDocumentLoaderFactory: ({ keyId, privateKey }) =>

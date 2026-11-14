@@ -12,20 +12,25 @@ import {
   MAX_REDIRECTS,
   RefusedFetchError,
   requestBudget,
+  type Signing,
+  TransientFetchError,
 } from "../src/federation/loader";
 import { deferred } from "./helpers";
 
 const ACTOR = "https://remote.example/users/bob";
 const AP = { "content-type": "application/activity+json" };
 
-// A fetch over a route table; it records every request, and a route may set the response's final URL.
-function fakeFetch(routes: Record<string, () => Response | Promise<Response>>) {
+// A fetch over a route table; it records every request, a route may set the response's final URL, and it is given the
+// request (to answer by its signature's form).
+function fakeFetch(routes: Record<string, (request: Request) => Response | Promise<Response>>) {
   const requests: Request[] = [];
   const fetch = ((input: RequestInfo | URL) => {
     const request = input instanceof Request ? input : new Request(input);
     requests.push(request);
     const route = routes[request.url];
-    return route === undefined ? Promise.resolve(new Response("missing", { status: 404 })) : Promise.resolve(route());
+    return route === undefined
+      ? Promise.resolve(new Response("missing", { status: 404 }))
+      : Promise.resolve(route(request));
   }) as typeof globalThis.fetch;
   return { fetch, requests };
 }
@@ -271,7 +276,7 @@ describe("safe document loader", () => {
       signed.headers.set("signature", "test");
       return Promise.resolve(signed);
     };
-    await createSafeLoader({ fetch, checkHost: () => Promise.resolve(), userAgent: "Kopje/test" }, sign)(ACTOR);
+    await createSafeLoader({ fetch, checkHost: () => Promise.resolve(), userAgent: "Kopje/test" }, { sign })(ACTOR);
     expect(requests[0]?.headers.get("signature")).toBe("test");
   });
 
@@ -373,5 +378,155 @@ describe("safe document loader", () => {
     const deps = { fetch, checkHost: () => Promise.resolve(), userAgent: "Kopje/test" };
     await expect(createContextLoader(deps)(ACTOR)).rejects.toThrow(/alternate/);
     expect(requests).toHaveLength(1);
+  });
+});
+
+// A signing that marks each request with the form that signed it, as the keyring's pair signs: draft-cavage writes
+// Signature alone, RFC 9421 Signature-Input as well.
+const SIGNING: Signing = {
+  sign: (request) => Promise.resolve(new Request(request, { headers: { ...headersOf(request), signature: "cavage" } })),
+  retry: (request) =>
+    Promise.resolve(
+      new Request(request, { headers: { ...headersOf(request), signature: "rfc9421", "signature-input": "sig1=()" } }),
+    ),
+};
+
+function headersOf(request: Request): Record<string, string> {
+  return Object.fromEntries(request.headers);
+}
+
+const formOf = (request: Request) => request.headers.get("signature") ?? "unsigned";
+
+// A receiver that refuses draft-cavage, as one accepting only RFC 9421 would: `status` to a request without
+// Signature-Input, `then` to the rest.
+function refusingCavage(status: number, then: () => Response | Promise<Response>) {
+  return (request: Request) => (request.headers.has("signature-input") ? then() : new Response(null, { status }));
+}
+
+const signed = (fetch: typeof globalThis.fetch, extra: Partial<LoaderDeps> = {}, signing: Signing = SIGNING) =>
+  createSafeLoader({ fetch, checkHost: () => Promise.resolve(), userAgent: "Kopje/test", ...extra }, signing);
+
+// Mastodon 4.7's double knock (request.rb Request#perform) in the loader (NET-1, RES-6): a signed request answered 400
+// or 401 is sent once more with the retry's signature, after the same checks and within the same budget and timeout.
+describe("the RFC 9421 retry (NET-1, RES-6)", () => {
+  it.each([400, 401])("sends a signed request answered %i once more with the retry's signature", async (status) => {
+    const document = () => Response.json({ id: ACTOR }, { headers: AP });
+    const { fetch, requests } = fakeFetch({ [ACTOR]: refusingCavage(status, document) });
+    const budget = requestBudget(Date.now());
+    expect((await signed(fetch, { budget })(ACTOR)).document).toEqual({ id: ACTOR });
+    expect(requests.map((r) => [r.url, formOf(r)])).toEqual([
+      [ACTOR, "cavage"],
+      [ACTOR, "rfc9421"],
+    ]);
+    expect(budget.fetches).toBe(6);
+  });
+
+  it.each([403, 404, 410, 500, 503])("sends a signed request answered %i once", async (status) => {
+    const { fetch, requests } = fakeFetch({ [ACTOR]: () => new Response(null, { status }) });
+    await expect(signed(fetch)(ACTOR)).rejects.toMatchObject({ response: { status } });
+    expect(requests.map(formOf)).toEqual(["cavage"]);
+  });
+
+  it("reads the retry's answer as any response: its status is the load's", async () => {
+    const { fetch, requests } = fakeFetch({ [ACTOR]: () => new Response(null, { status: 401 }) });
+    await expect(signed(fetch)(ACTOR)).rejects.toMatchObject({ response: { status: 401 } });
+    expect(requests.map(formOf)).toEqual(["cavage", "rfc9421"]);
+  });
+
+  it("starts each redirect hop with draft-cavage, and signs a hop's retry for that hop", async () => {
+    const next = "https://remote.example/u/bob";
+    const document = () => Response.json({ id: next }, { headers: AP });
+    const moved = () => new Response(null, { status: 302, headers: { location: "/u/bob" } });
+    const once = fakeFetch({ [ACTOR]: moved, [next]: refusingCavage(401, document) });
+    expect((await signed(once.fetch)(ACTOR)).documentUrl).toBe(next);
+    expect(once.requests.map((r) => [r.url, formOf(r)])).toEqual([
+      [ACTOR, "cavage"],
+      [next, "cavage"],
+      [next, "rfc9421"],
+    ]);
+
+    const both = fakeFetch({ [ACTOR]: refusingCavage(400, moved), [next]: refusingCavage(401, document) });
+    expect((await signed(both.fetch)(ACTOR)).documentUrl).toBe(next);
+    expect(both.requests.map((r) => [r.url, formOf(r)])).toEqual([
+      [ACTOR, "cavage"],
+      [ACTOR, "rfc9421"],
+      [next, "cavage"],
+      [next, "rfc9421"],
+    ]);
+  });
+
+  it("charges the retry to the request's budget, and sends none past it", async () => {
+    const { fetch, requests } = fakeFetch({
+      [ACTOR]: refusingCavage(401, () => Response.json({ id: ACTOR }, { headers: AP })),
+    });
+    const budget = { ...requestBudget(Date.now()), fetches: 1 };
+    await expect(signed(fetch, { budget })(ACTOR)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(requests.map(formOf)).toEqual(["cavage"]);
+    expect(budget.fetches).toBe(0);
+  });
+
+  // R38: a block that commits while the first answer is awaited (the gate) stops the retry.
+  it("asks the domain policy again before the retry, and sends nothing once it refuses the host", async () => {
+    const reached = deferred();
+    const release = deferred();
+    const { fetch, requests } = fakeFetch({
+      [ACTOR]: async () => {
+        reached.resolve();
+        await release.promise;
+        return new Response(null, { status: 401 });
+      },
+    });
+    let blocked = false;
+    const asked: string[] = [];
+    const refusesHost = (host: string) => {
+      asked.push(host);
+      return Promise.resolve(blocked);
+    };
+    const loading = signed(fetch, { refusesHost })(ACTOR);
+    await reached.promise;
+    blocked = true;
+    release.resolve();
+    await expect(loading).rejects.toThrow(/blocked by the instance/);
+    expect(requests.map(formOf)).toEqual(["cavage"]);
+    expect(asked).toEqual(["remote.example", "remote.example"]);
+  });
+
+  it("runs the host check again before the retry, and sends nothing once it refuses", async () => {
+    const { fetch, requests } = fakeFetch({ [ACTOR]: () => new Response(null, { status: 401 }) });
+    const checked: string[] = [];
+    const checkHost = (url: URL) => {
+      checked.push(url.href);
+      return checked.length > 1 ? Promise.reject(new Error("Invalid or private address: 10.0.0.1")) : Promise.resolve();
+    };
+    await expect(signed(fetch, { checkHost })(ACTOR)).rejects.toThrow(/private address/);
+    expect(requests.map(formOf)).toEqual(["cavage"]);
+    expect(checked).toEqual([ACTOR, ACTOR]);
+  });
+
+  it("holds the retry to the load's timeout", async () => {
+    const { fetch, requests } = fakeFetch({
+      [ACTOR]: refusingCavage(401, () => new Promise<Response>(() => {})),
+    });
+    const error = await signed(fetch, { timeoutMs: 20 })(ACTOR).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TransientFetchError);
+    expect(error).toMatchObject({ message: expect.stringContaining("Timed out after 20 ms") });
+    expect(requests.map(formOf)).toEqual(["cavage", "rfc9421"]);
+  });
+
+  it("sends an unsigned load answered 401 once, and a signing without a retry once", async () => {
+    const refused = () => new Response(null, { status: 401 });
+    const deps = (fetch: typeof globalThis.fetch) => ({ fetch, checkHost: () => Promise.resolve(), userAgent: "x" });
+    const unsigned = fakeFetch({ [ACTOR]: refused });
+    await expect(createSafeLoader(deps(unsigned.fetch))(ACTOR)).rejects.toMatchObject({ response: { status: 401 } });
+    await expect(createContextLoader(deps(unsigned.fetch))(ACTOR)).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+    expect(unsigned.requests.map(formOf)).toEqual(["unsigned", "unsigned"]);
+
+    const signOnly = fakeFetch({ [ACTOR]: refused });
+    await expect(signed(signOnly.fetch, {}, { sign: SIGNING.sign })(ACTOR)).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+    expect(signOnly.requests.map(formOf)).toEqual(["cavage"]);
   });
 });
