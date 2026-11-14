@@ -15,7 +15,7 @@ catalog:
   htmlparser2: 12.0.0
   jose: 6.2.17
   linkify-it: 6.1.0
-  sanitize-html: 2.18.1
+  sanitize-html: 2.18.2
   temporal-polyfill: 1.0.8
   valibot: 1.5.0
 
