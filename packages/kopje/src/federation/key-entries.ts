@@ -1,6 +1,7 @@
 import { importMultibaseKey, importPem, preloadedContexts } from "@fedify/fedify";
 
 import { withinJsonBounds } from "../platform/json-bounds";
+import { isObject as isJson } from "./json-shapes";
 
 // The key entries of a fetched document as Mastodon 4.7 reads them (ID-1, RES-6): of `publicKey` (legacy keys) and of
 // `assertionMethod` (FEP-521a Multikeys), the first MAX_PUBLIC_KEYS entries each, an entry whose key cannot be imported
@@ -46,10 +47,6 @@ export type KeyImporters = Record<KeyTerm, (material: string) => Promise<unknown
 const FEDIFY_IMPORTERS: KeyImporters = { publicKey: importPem, assertionMethod: importMultibaseKey };
 
 type Json = Record<string, unknown>;
-
-function isJson(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 // The terms a root @context establishes as the security key properties (see the header). A context past the JSON
 // bounds (RES-2) establishes nothing, which also bounds this walk.

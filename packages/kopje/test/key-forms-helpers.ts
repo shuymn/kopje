@@ -126,10 +126,10 @@ export async function multikeyActor(web: RemoteWeb, username: string, options: {
   return { actor, ed, rsa: rsaKey, document };
 }
 
-// The init of a POST of `activity` to `path` with a draft-cavage signature (hs2019, the algorithm Mastodon names) by
+// The init of a POST of `activity` with a draft-cavage signature (hs2019, the algorithm Mastodon names) by
 // `keyId` over (request-target), host, date and digest, as Mastodon signs; its signature bytes are not a signature by
 // any key, since a key that is not RSA makes Fedify 2.4.5 throw before it compares them.
-export async function cavageByKeyId(keyId: string, path: string, activity: unknown): Promise<RequestInit> {
+export async function cavageByKeyId(keyId: string, activity: unknown): Promise<RequestInit> {
   const body = JSON.stringify(activity);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)));
   const headers = new Headers({

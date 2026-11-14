@@ -461,7 +461,7 @@ describe("the rollback drain (OPS-9)", () => {
       publicKeyPem: (await ed25519Key(keyUrl)).pem,
     });
     const path = "/ap/users/alice/inbox";
-    await r.post(path, await cavageByKeyId(keyUrl, path, follow(r.carol.uri, 1)));
+    await r.post(path, await cavageByKeyId(keyUrl, follow(r.carol.uri, 1)));
     await r.spool(path, follow(r.dave.uri, 1), r.dave);
     await r.consume();
     expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });

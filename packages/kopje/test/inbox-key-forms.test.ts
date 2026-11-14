@@ -113,12 +113,12 @@ describe("a draft-cavage signature naming a key that is not RSA (ID-1)", () => {
     const bob = await mastodonActor(t.web, "bob");
     const ed = await ed25519Key(bob.keyId);
     t.web.serve(bob.uri, { ...bob.document, publicKey: { id: bob.keyId, owner: bob.uri, publicKeyPem: ed.pem } });
-    const init = await cavageByKeyId(bob.keyId, "/inbox", follow(bob));
+    const init = await cavageByKeyId(bob.keyId, follow(bob));
     await expect(fedifyAlone(t.web, init)).rejects.toMatchObject({ name: "InvalidAccessError" });
 
     expect(await t.refusals(init)).toEqual({ status: 401, refused: INVALID });
     expect(t.web.fetched).toContain(bob.uri);
-    const { queue, refused } = await t.replay(await cavageByKeyId(bob.keyId, "/inbox", follow(bob)));
+    const { queue, refused } = await t.replay(await cavageByKeyId(bob.keyId, follow(bob)));
     expect(queue.pending).toEqual([]);
     expect(queue.retries).toBe(0);
     expect(refused).toEqual(INVALID);
@@ -139,7 +139,7 @@ describe("a draft-cavage signature naming a key that is not RSA (ID-1)", () => {
       owner: bob.uri,
       publicKeyPem: ed.pem,
     });
-    const init = await cavageByKeyId(keyUrl, "/inbox", follow(bob));
+    const init = await cavageByKeyId(keyUrl, follow(bob));
     await expect(fedifyAlone(t.web, init)).rejects.toMatchObject({ name: "InvalidAccessError" });
 
     expect(await t.refusals(init)).toEqual({ status: 401, refused: INVALID });
@@ -157,7 +157,7 @@ describe("a draft-cavage signature naming a key that is not RSA (ID-1)", () => {
     const ed = await ed25519Key(bob.keyId);
     t.web.serve(bob.uri, { ...bob.document, publicKey: { id: bob.keyId, owner: bob.uri, publicKeyPem: ed.pem } });
     // The stored RSA key is served fresh and fails these bytes, so Fedify refetches the key and finds the Ed25519 one.
-    const init = await cavageByKeyId(bob.keyId, "/inbox", follow(bob));
+    const init = await cavageByKeyId(bob.keyId, follow(bob));
     await expect(fedifyAlone(t.web, init)).rejects.toMatchObject({ name: "InvalidAccessError" });
     const before = t.web.fetched.length;
 
@@ -170,7 +170,7 @@ describe("a draft-cavage signature naming a key that is not RSA (ID-1)", () => {
   it("still spools a request whose key lookup the Store refuses in maintenance", async () => {
     const t = await setup({ store: refusingKeyLookups });
     const bob = await mastodonActor(t.web, "bob");
-    const init = await cavageByKeyId(bob.keyId, "/inbox", follow(bob));
+    const init = await cavageByKeyId(bob.keyId, follow(bob));
     // The gate reads the first keyId, Fedify the last, so the key is asked of the Store (remoteKey), which refuses.
     const headers = new Headers(init.headers);
     headers.set("signature", `keyId="https://other.example/k",${headers.get("signature")!}`);
@@ -647,11 +647,11 @@ describe("a draft-cavage signature naming an Ed25519 key Kopje serves (ID-1)", (
     const t = await setup();
     const carol = await knownActor(t);
     const served = { keyId: carol.ed.keyId, owner: carol.actor.uri, publicKey: carol.ed.publicKey };
-    const init = await cavageByKeyId(carol.ed.keyId, "/inbox", follow(carol.actor));
+    const init = await cavageByKeyId(carol.ed.keyId, follow(carol.actor));
     await expect(fedifyAlone(t.web, init, served)).rejects.toMatchObject({ name: "InvalidAccessError" });
     expect(await t.refusals(init)).toEqual({ status: 401, refused: INVALID });
     const envelope = { "@context": AS, id: `${MASTODON}/activities/no-actor`, type: "Follow", object: ALICE_URI };
-    expect(await t.send(await cavageByKeyId(carol.ed.keyId, "/inbox", envelope))).toBe(401);
+    expect(await t.send(await cavageByKeyId(carol.ed.keyId, envelope))).toBe(401);
     await blockDomain(t.store, "mastodon.example");
     const [first] = (await sql<{ uri: string }>(t.store, "SELECT uri FROM follows")) as { uri: string }[];
     const undo = {
@@ -661,14 +661,14 @@ describe("a draft-cavage signature naming an Ed25519 key Kopje serves (ID-1)", (
       actor: carol.actor.uri,
       object: first!.uri,
     };
-    expect(await t.send(await cavageByKeyId(carol.ed.keyId, "/inbox", undo))).toBe(401);
+    expect(await t.send(await cavageByKeyId(carol.ed.keyId, undo))).toBe(401);
     expect(await follows(t.store)).toHaveLength(1);
   });
 
   it("refuses one naming a Multikey resolved on first contact", async () => {
     const t = await setup();
     const carol = await multikeyActor(t.web, "carol");
-    const init = await cavageByKeyId(carol.ed.keyId, "/inbox", follow(carol.actor));
+    const init = await cavageByKeyId(carol.ed.keyId, follow(carol.actor));
     const served = { keyId: carol.ed.keyId, owner: carol.actor.uri, publicKey: carol.ed.publicKey };
     await expect(fedifyAlone(t.web, init, served)).rejects.toMatchObject({ name: "InvalidAccessError" });
     expect(await t.refusals(init)).toEqual({ status: 401, refused: INVALID });

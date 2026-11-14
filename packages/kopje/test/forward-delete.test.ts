@@ -328,21 +328,7 @@ describe("the proof round (need proof)", () => {
   it("an FEP-8b32 proof forwards too, and the POSTed body verifies", async () => {
     const w = await world();
     const { erin, ed } = await fepActor(w);
-    const note = mastodonNote(erin);
-    expect(await w.post(erin, create(erin, note))).toBe(202);
-    const id = await statusId(w.t.store, note.id);
-    await boost(w, id);
-    await deliver(w);
-    const unsigned = new Delete({
-      id: new URL(`${note.id}#delete`),
-      actor: new URL(erin.uri),
-      object: new URL(note.id),
-    });
-    const signed = await signObject(unsigned, ed.privateKey, new URL(`${erin.uri}#ed25519-key`), {
-      contextLoader: contexts,
-      documentLoader: contexts,
-    });
-    const json = (await signed.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>;
+    const { note, json } = await fepDelete(w, erin, ed);
     expect(await w.post(erin, json)).toBe(202);
     expect(proofRounds(w)).toBe(1);
     expect(await forwards(w.t.store, note.id)).toHaveLength(1);

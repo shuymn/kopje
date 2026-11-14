@@ -1294,7 +1294,7 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
       owner: bob.uri,
       publicKeyPem: (await ed25519Key(keyUrl)).pem,
     });
-    const init = await cavageByKeyId(keyUrl, "/inbox", follow(bob));
+    const init = await cavageByKeyId(keyUrl, follow(bob));
     await expect(fedifyServed(t.web, init)).rejects.toMatchObject({ name: "InvalidAccessError" });
     const checked = await verifySpooledRequest({ ...t.web.loader, userAgent: "Kopje/test" }, "kopje.test", {
       url: `${LOCAL}/inbox`,
