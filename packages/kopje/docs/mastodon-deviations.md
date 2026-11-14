@@ -6,12 +6,13 @@ Other documents point here rather than repeat the release.
 ## What Kopje follows
 
 - **Client API.** Kopje follows the client API as **Mastodon v4.5.11** serves it, the reference release, apart from
-  the departures below and the gaps open issues track. The claim is for that tag: a later 4.5 patch is followed only
-  once Kopje moves its reference release to it. The conformance checks compare Kopje with the reference release's
-  source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
-  (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`). Their
-  fixtures carry the release in their names and their `mastodon` field, and `test-node/mastodon-reference.test.ts`
-  checks that they name the release this page does.
+  the departures below and the gaps open issues track. The claim is for that tag. A fix that a later Mastodon release
+  makes may be followed before the reference release moves; the entry or code comment that describes the fixed
+  behaviour names that release (for example, "Mastodon 4.5.21 counts …"). The conformance checks compare Kopje with the
+  reference release's source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each
+  route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
+  (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
+  and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
 - **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
@@ -568,7 +569,8 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 
 - A `suspend` block deletes no content of the accounts it covers: they are unavailable while it lasts, and their
   statuses and profiles show again once it is lifted. Mastodon's `BlockDomainService#suspend_accounts!` runs
-  `DeleteAccountService`, which keeps only reported statuses.
+  `DeleteAccountService`, which keeps only the statuses its unresolved reports name, discarded since Mastodon 4.5.21
+  (`deleted_at` set, for its moderators alone).
 - A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
   `Account.by_domain_and_subdomains` of the suspending block.
 - Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
