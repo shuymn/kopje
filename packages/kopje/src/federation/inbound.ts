@@ -574,6 +574,7 @@ export async function receiveInbound(
           state,
           budget,
           revisions,
+          receivedAt: request.receivedAt,
         })
       : { status: 401, reason: "not-key-owner" };
   }
@@ -600,6 +601,7 @@ export async function receiveInbound(
     budget,
     body: parsed.body,
     revisions,
+    receivedAt: request.receivedAt,
   });
 }
 
@@ -663,6 +665,7 @@ async function domainBlocked(
     budget: context.budget,
     body: parsed.body,
     revisions: context.revisions,
+    receivedAt: request.receivedAt,
   });
 }
 
@@ -704,6 +707,8 @@ type Relay = {
   state: FederationState;
   budget: FetchBudget;
   revisions: InboxGate["revisions"];
+  // When the request reached the inbox (InboundRequest), the instant the author proof is judged at.
+  receivedAt: number;
 };
 
 // A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a status's or a stamp's
@@ -728,6 +733,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     state,
     budget,
     revisions,
+    receivedAt,
   } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
     return { status: 401, reason: "not-key-owner" };
@@ -757,6 +763,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       json,
       { id: activity.id, actor: actorUri, object: activity.object },
       JSON.parse(fetched.input.raw) as unknown,
+      receivedAt,
     );
     if (!verdict) {
       return { status: 401, reason: "proof-invalid" };
@@ -781,6 +788,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     budget,
     body: json,
     revisions,
+    receivedAt,
   });
 }
 
@@ -797,6 +805,8 @@ type Application = {
   body: Json;
   // What the inbox gate read before any document was fetched (InboundGate).
   revisions: InboxGate["revisions"];
+  // When the request reached the inbox (InboundRequest), the instant an author proof is judged at.
+  receivedAt: number;
 };
 
 // Steps 5 and 6: what the type needs, and the Store.
@@ -850,7 +860,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       if (prepared.type !== "Delete") {
         break;
       }
-      const proof = await proveDelete(application.body, prepared, actorUri, loadersFor(need));
+      const proof = await proveDelete(application.body, prepared, actorUri, loadersFor(need), application.receivedAt);
       rethrowStoreError(state);
       if (proof === "transient") {
         return { status: 503, reason: "proof-unavailable" };
@@ -891,12 +901,13 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
 }
 
 // Whether the author proof the body of the actor's own Delete carries verifies against a key the actor's current
-// document embeds (author-proof.ts); 'transient' when that may change.
+// document embeds, judged at `receivedAt` (author-proof.ts); 'transient' when that may change.
 async function proveDelete(
   body: Json,
   activity: { id: string; object: string },
   actorUri: string,
   loaders: RemoteLoaders,
+  receivedAt: number,
 ): Promise<boolean | "transient"> {
   const fetched = await fetchActor(actorUri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
@@ -909,6 +920,7 @@ async function proveDelete(
     body,
     { id: activity.id, actor: actorUri, object: activity.object },
     JSON.parse(fetched.input.raw) as unknown,
+    receivedAt,
   );
 }
 

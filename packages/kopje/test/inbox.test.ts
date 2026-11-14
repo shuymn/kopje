@@ -4,14 +4,16 @@ import { Temporal } from "temporal-polyfill";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { forwardSubject } from "../src/domain/deliveries";
 import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { handleQueue } from "../src/jobs/queue";
 import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
-import { seedFollows, sql } from "./api-helpers";
+import { bearer, seedFollows, settle, sql } from "./api-helpers";
 import { countingStore, harness, heldStore, inboxDeps, NOW, seedInstanceKey, type StoreCall } from "./app-helpers";
+import { mastodon47Signed, mastodonDelete, signTime } from "./author-proof-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedFollow, seedLocalAccount } from "./federation-helpers";
 import { mastodonFlag } from "./fixtures/flags";
@@ -30,7 +32,13 @@ import {
   signedInit,
   type TestActor,
 } from "./inbox-helpers";
-import { mastodonNote } from "./inbox-status-helpers";
+import {
+  create as statusCreate,
+  followed,
+  mastodonNote,
+  setup as statusSetup,
+  type Setup as StatusSetup,
+} from "./inbox-status-helpers";
 
 // Inbound activities about actors and relationships, end to end through the app: signed requests from synthetic
 // Mastodon- and Misskey-shaped servers, the Store's effects, and the threat model's inbound negative cases. Test names
@@ -1027,6 +1035,60 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
     expect(queue.pending).toEqual([]);
     expect(queue.retries).toBe(0);
     await untouched(t.store);
+  });
+
+  // A Mastodon 4.7 author proof's expires is judged at the spool time too (ID-1): bob's public status, held through
+  // alice's follow and boosted by her, and his Delete, its signature expiring at NOW + 1 h, spooled by `signer` (bob
+  // himself, or dan relaying it) at `at` and replayed at NOW + 3 h.
+  const HOUR = 60 * 60 * 1000;
+  async function spooledDelete(by: "author" | "relay", at: number) {
+    const t: StatusSetup = await statusSetup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const dan = await mastodonActor(t.web, "dan", { origin: "https://relay.example", key: 6 });
+    const note = mastodonNote(bob);
+    expect(await t.post(bob, statusCreate(bob, note))).toBe(202);
+    const [status] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+    const boosted = await t.request(
+      `/api/v1/statuses/${status!.id}/reblog`,
+      bearer(t.tokens.alice, { method: "POST" }),
+    );
+    expect(boosted.status).toBe(200);
+    const body = await mastodon47Signed(mastodonDelete(bob, note.id), bob, { expires: signTime(NOW + HOUR) });
+    const signer = by === "author" ? bob : dan;
+    const maintenance = harness(
+      t.store,
+      { MAINTENANCE: "readonly" },
+      BUILD,
+      { keygen: fixtureKeyGen, loader: t.web.loader },
+      () => at,
+    );
+    const spooled = await maintenance.request("/inbox", await signedInit(signer, "/inbox", body, { at }));
+    expect(spooled.status).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW + 3 * HOUR };
+    await maintenance.queue.deliver((batch) => handleQueue(batch, { ...t.env, MAINTENANCE: "off" } as Env, deps));
+    expect(maintenance.queue.pending).toEqual([]);
+    await settle(t.store);
+    const statuses = await sql(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+    const forwards = await sql(
+      t.store,
+      "SELECT account_id FROM outbound_activities WHERE object_uri = ?",
+      forwardSubject(note.id),
+    );
+    return { held: statuses.length === 1, forwards: forwards.length };
+  }
+
+  it("judges a relayed author proof's expires against the spool time", async () => {
+    // Spooled before expires: applied as bob's own Delete. Spooled after it (its HTTP signature dated then): unproven,
+    // so the relay changes nothing.
+    expect(await spooledDelete("relay", NOW)).toMatchObject({ held: false });
+    expect(await spooledDelete("relay", NOW + 2 * HOUR)).toEqual({ held: true, forwards: 0 });
+  });
+
+  it("judges an author's own proof's expires against the spool time, forwarding only when it held then", async () => {
+    // The forward is recorded in the request (inbox.ts recordForwards), staged by the job.
+    expect(await spooledDelete("author", NOW)).toEqual({ held: false, forwards: 1 });
+    expect(await spooledDelete("author", NOW + 2 * HOUR)).toEqual({ held: false, forwards: 0 });
   });
 
   it("retries a replay whose remote fetch failed transiently", async () => {

@@ -29,7 +29,7 @@ import { StoreUnavailableError } from "../src/platform/store-errors";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
-import { mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
+import { mastodon47Signed, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
 import { BUILD, deferred } from "./helpers";
 import {
   actorDefaults,
@@ -1004,6 +1004,13 @@ describe("relayed revocations (ID-1’s exception)", () => {
     const { t, carol, dan, stamp, quote, target } = await relayWorld();
     const body = mastodonStampDelete(carol, { uri: stamp, quoting: quote.id, quoted: target.id });
     expect(await t.post(dan, await mastodonSigned(body, carol))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+  });
+
+  it("applies Mastodon 4.7's stamp Delete, its signature with expires, as the author's", async () => {
+    const { t, carol, dan, stamp, quote, target } = await relayWorld();
+    const body = mastodonStampDelete(carol, { uri: stamp, quoting: quote.id, quoted: target.id });
+    expect(await t.post(dan, await mastodon47Signed(body, carol))).toBe(202);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
   });
 

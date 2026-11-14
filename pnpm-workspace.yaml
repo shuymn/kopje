@@ -35,13 +35,15 @@ catalog:
   vitest-plugin-sqlite-3534: npm:@cloudflare/vitest-plugin@1.4.11
 
   # Tests: the runner, its coverage provider and its vite, property tests, the browser job, image fixtures, the HTML,
-  # CSS and source scans, and the Markdown the docs checks read.
+  # CSS and source scans, the Markdown the docs checks read, and the canonicalization Mastodon's signature fixtures hash
+  # (jsonld: the copy @fedify/fedify resolves).
   "@axe-core/playwright": 4.14.0
   "@jsquash/webp": 1.5.0
   "@playwright/test": 1.65.0
   "@vitest/coverage-v8": 5.1.0
   css-tree: 3.2.1
   fast-check: 4.10.2
+  jsonld: 9.0.0
   mdast-util-from-markdown: 2.1.0
   mdast-util-gfm: 3.1.0
   micromark-extension-gfm: 3.0.0

@@ -4,7 +4,15 @@ import { describe, expect, it } from "vitest";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
 import { harness, NOW, offline } from "./app-helpers";
-import { mastodonDelete, mastodonSigned } from "./author-proof-helpers";
+import {
+  MASTODON_46_FORWARDED_CONTEXT,
+  MASTODON_47_FORWARDED_CONTEXT,
+  mastodon47Actor,
+  mastodon47Signed,
+  mastodonDelete,
+  mastodonForwarded,
+  mastodonSigned,
+} from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
@@ -144,6 +152,33 @@ describe("a relayed status Delete with the author's proof (ID-1)", () => {
       // Gone, streamed once, retracted, alice's boost withdrawn with its Undo, and the Delete forwarded through it.
       expect(own).toMatchObject({ statuses: 0, streamed: 1, retractions: 2, boosts: 0 });
       expect(own!.outbound).toEqual([
+        { account_id: ALICE, type: "Delete", immutable: 1 },
+        { account_id: ALICE, type: "Undo", immutable: null },
+      ]);
+    }
+  }, 60_000);
+
+  it("applies a status Delete a Mastodon 4.6 or 4.7 forwards, its signature by 4.6's sign! or 4.7's (expires)", async () => {
+    const cases = [
+      ["4.6 forward", mastodonSigned, MASTODON_46_FORWARDED_CONTEXT, false],
+      ["4.7 forward", mastodonSigned, MASTODON_47_FORWARDED_CONTEXT, false],
+      ["4.7 forward of a 4.7 signature", mastodon47Signed, MASTODON_47_FORWARDED_CONTEXT, false],
+      ["4.7 forward of a 4.7 author's, its key #rsa-…", mastodon47Signed, MASTODON_47_FORWARDED_CONTEXT, true],
+    ] as const;
+    for (const [name, sign, context, author47] of cases) {
+      const { t, bob, dan } = await world();
+      // A 4.7 author, followed by alice; its documents and HTTP signatures name its #rsa- key.
+      const author = author47 ? await mastodon47Actor(t.web, "ann", { key: 4 }) : bob;
+      if (author47) {
+        await followed(t, author);
+      }
+      const status = await note(t, author);
+      await boostAndListen(t, status.id);
+      const forwarded = mastodonForwarded(await sign(deletion(author, status.uri), author), context);
+      expect(await t.post(dan, forwarded), name).toBe(202);
+      const after = await effects(t, status.uri);
+      expect(after, name).toMatchObject({ statuses: 0, streamed: 1, retractions: 2, boosts: 0 });
+      expect(after.outbound, name).toEqual([
         { account_id: ALICE, type: "Delete", immutable: 1 },
         { account_id: ALICE, type: "Undo", immutable: null },
       ]);

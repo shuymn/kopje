@@ -152,23 +152,29 @@ against their own instance. TLS is assumed between all parties.
   the Store is called, against a key the actor's current document embeds, that document fetched anew in the request,
   never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
-  Mastodon 4.5's and Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a Mastodon holding a
-  boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default
-  `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a
-  single proof). Mastodon forwards a body compacted under its `full_context`, so a forwarded profile's `@context` is
-  activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a definition some
-  release gave it: the union of `full_context` in `app/helpers/context_helper.rb` at every release tag from v4.4.0 to
-  v4.5.21, none of whose terms is or aliases one the decision reads. A stamp's `Delete` has no forwarded profile, since
-  Mastodon 4.5.21 forwards it without its signature. In a profile the `@context` is deep-equal to the sender's (or,
-  forwarded, in that form), every URL in it preloaded, and every key at every level is one the sender writes (`type`
-  the string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single
-  proof in the sender's shape, a proof's own `@context` the body's), so the body's JSON-LD meaning is its literal JSON:
+  Mastodon's status and stamp `Delete` (the same bodies from 4.4 to 4.7, signed by `LinkedDataSignature#sign!`, which
+  writes `expires` from 4.7.0); Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a
+  Mastodon 4.4 to 4.7 holding a boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an
+  FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`,
+  `object`, `to` and `cc`, and a single proof). Mastodon forwards a body compacted under its `full_context`, so a
+  forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
+  activitystreams and security/v1, then webfinger from 4.6, cid/v1 and webfinger from 4.7) and one object whose every
+  term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
+  `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or
+  cid/v1 defines, is or aliases one the decision reads (cid/v1's scoped contexts apply only under keys and types a
+  profile body cannot have). A stamp's `Delete` has no forwarded profile, since Mastodon 4.5.21 forwards it without
+  its signature. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL in
+  it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI
+  or the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's shape, Mastodon's
+  signature with an optional `expires`, a string in the form `sign!` writes, a proof's own `@context` the body's), so
+  the body's JSON-LD meaning is its literal JSON:
   no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
   between verification and parsing. Contexts are served from Fedify's preloaded set alone, for the verification and
   every parse. The proven `Delete` has exactly the literal id, one actor (the author) and one object (the literal
   object's id). Any other form is answered as a proof that does not verify: a relayed `Delete` from Misskey, or from a
   Mastodon release whose context differs, is refused, and an author's own `Delete` in such a form applies but forwards
-  nothing.
+  nothing. A Mastodon signature's `expires` is judged at the time the request reached the inbox (its spool time on
+  replay, OPS-1): an earlier one does not verify.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
@@ -180,26 +186,32 @@ against their own instance. TLS is assumed between all parties.
   bypass Mastodon fixed in 4.5.10 (GHSA-53m7-2wrh-q839).
   _Enforced (main):_ `relayed` in `src/federation/inbound.ts`, `src/federation/author-proof.ts`, `relayedDelete` in
   `src/domain/inbox.ts`; `test/relayed-delete.test.ts` (a Mastodon-signed and a Kopje-signed status `Delete` relayed
-  and applied with the author's own effects, and the refusal of a missing or invalid proof, a proof of another
+  and applied with the author's own effects, as a Mastodon 4.6 or 4.7 forwards it too, signed with or without
+  `expires`, by an author whose key is `#main-key` or `#rsa-…`, and the refusal of a missing or invalid proof, a proof of another
   activity id or by a key on another host, a signer that does not own its key, another author's status, a uri of
   another origin, a private, direct or limited status, a boost, an actor, and a status that turned private while the
   proof was verified), `test/author-proof.test.ts` (each profile built by its sender's code, the forwarded ones from a
-  fixture derived from the sender's source with only the `@context` replaced, Mastodon's Ruby compaction not run; a
-  refusal for each profile check above that Fedify alone would pass, and for the JSON-LD type, signature, proof and
-  context confusion cases; stamp `Delete`s in the forwarded form refused; no allowed term that is or aliases a decision
-  term; no network fetch while verifying, and an actor document naming a
+  fixture derived from the sender's source with only the `@context` replaced (the `full_context` of v4.5.21, v4.6.11
+  and v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for
+  each profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an
+  `expires` not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context
+  confusion cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an
+  `expires` changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded
+  form refused under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or
+  aliases a decision term; no network fetch while verifying, and an actor document naming a
   context that is not preloaded refused; the request's shared context cache is not observed by a test),
   `test/quotes.test.ts` ("relayed revocations (ID-1’s
-  exception)": Mastodon's stamp `Delete`, a missing proof, a forged signature, a proof by another actor's key, a proof
+  exception)": Mastodon's stamp `Delete`, signed with or without `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof
   covering another object, a valid proof on another activity type, a signed graph with no `Delete` type, a signed
   `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts` ("records no retraction
-  for input that fails ID-1").
+  for input that fails ID-1", "judges a relayed author proof's expires against the spool time").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
   A remote author's own `Delete` of a status that local accounts boosted or quoted is forwarded (VIS-3) only once that
   proof verifies the same way; a proof that is present but does not verify, or none, forwards nothing, and the `Delete`
-  applies as its actor's (`test/forward-delete.test.ts` ("an invalid proof deletes and forwards nothing", "an FEP-8b32
-  proof forwards too")).
+  applies as its actor's (`test/forward-delete.test.ts` ("an invalid proof deletes and forwards nothing", "an expired
+  proof deletes and forwards nothing", "an FEP-8b32 proof forwards too", "a Mastodon 4.7 signature with expires
+  forwards")).
   See `src/federation/ld-sign.ts`, `test/quote-requests.test.ts` and the fedify-usage lint rule
   (`packages/kopje/lint/fedify-usage.js`).
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
@@ -4480,9 +4492,10 @@ heap).
   `src/app/app.ts`, `src/app/gate.ts`, `src/federation/spool.ts`, `processInbox` in `src/federation/inbox.ts`;
   `test/gate.test.ts` ("maintenance gate", "inbox gate"). A PITR
   restore requires env `MAINTENANCE=full`: _Enforced (main)_ (`test/admin.test.ts` ("restores
-  only under MAINTENANCE=full")). Replay that verifies the signature against the spool time:
-  _Enforced (main):_ `src/jobs/queue.ts`, `src/federation/inbound.ts`; `test/inbox.test.ts`
-  ("OPS-1"), `test/gate.test.ts` ("refuses a personal inbox of nobody"). A replay reads the actor's revision when it
+  only under MAINTENANCE=full")). Replay that verifies the signature against the spool time and judges an author
+  proof's `expires` against it: _Enforced (main):_ `src/jobs/queue.ts`, `src/federation/inbound.ts`;
+  `test/inbox.test.ts` ("OPS-1", "judges an author's own proof's expires against the spool time"),
+  `test/gate.test.ts` ("refuses a personal inbox of nobody"). A replay reads the actor's revision when it
   is replayed (ID-1): an `Update(Person)` whose document another store superseded answers 503, having written nothing,
   and the replay takes the Queue's ordinary retry, within its retry budget (`test/inbox-actor-revision.test.ts`).
 - **OPS-2: no upgrade runs under a dump freeze or an import.** Migrations wait while either exists. The freeze also

@@ -34,6 +34,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   lines are set without a gap, and the avatar beside them (a post's, a quote's, a list's) is 46px.
 - A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
   where it stood further from the edge.
+- A status or stamp `Delete` signed by a Mastodon 4.7 author (its signature carries `expires`), and a status `Delete`
+  forwarded by a Mastodon 4.6 or 4.7 server that holds a boost or quote of the status, are applied as the author's and
+  forwarded through local boosts and quotes again; an `expires` already past when the request arrived does not prove.
 
 ## [0.5.2] - 2026-11-14
 
