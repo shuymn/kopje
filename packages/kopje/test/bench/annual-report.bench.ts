@@ -13,7 +13,7 @@ import {
 } from "../../src/domain/annual-reports";
 import { sha256Hex } from "../../src/security/tokens";
 import { buildWitness, IN_CAMPAIGN, YEAR } from "../annual-report-fixtures";
-import { GENERATE_STATEMENTS, namedStatements, STATE_STATEMENTS } from "../annual-report-statements";
+import { expectStatements, GENERATE_STATEMENTS, STATE_STATEMENTS } from "../annual-report-statements";
 import { apiHarness, seedAccount, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
 import { measuredStatements, scopedToken } from "../read-helpers";
@@ -167,24 +167,15 @@ it("states and generates the all-caps witness's report within the budget", async
     await scheduler.wait(1);
     return { value, ms: Date.now() - started - 1 };
   };
-  // Each statement on its slowest path (test/annual-report-statements.ts), in the order the operation runs them.
-  const slowest = (statements: Parameters<typeof namedStatements>[0], names: readonly string[]) => {
-    const named = namedStatements(statements);
-    expect(named.map((s) => s.name)).toEqual(names);
-    for (const s of named) {
-      expect(s.rows, `${s.name} reads at least ${s.bound.min}`).toBeGreaterThanOrEqual(s.bound.min);
-      expect(s.rows, `${s.name} reads at most ${s.bound.max}`).toBeLessThanOrEqual(s.bound.max);
-    }
-    return Object.fromEntries(named.map((s) => [s.name, s]));
-  };
   const samples: { stateMs: number; generateMs: number; rows: Record<string, number> }[] = [];
   for (let sample = 0; sample < SAMPLES; sample++) {
     const state = await timed(() => measuredStatements(h, annualReportState, input("read:accounts")));
     expect(state.value.output).toEqual({ status: "ok", value: "eligible" });
-    const stated = slowest(state.value.statements, STATE_STATEMENTS);
+    // Each statement on its slowest path, within its bound (test/annual-report-statements.ts).
+    const stated = expectStatements(state.value.statements, STATE_STATEMENTS, true);
     const generated = await timed(() => measuredStatements(h, generateAnnualReport, input("write:accounts"), true));
     expect(generated.value.output).toEqual({ status: "ok", value: undefined });
-    const made = slowest(generated.value.statements, GENERATE_STATEMENTS);
+    const made = expectStatements(generated.value.statements, GENERATE_STATEMENTS, true);
     expect(made.G3?.returned).toBe(REPORT_TAG_CANDIDATES);
     expect(
       await sql(

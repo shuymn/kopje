@@ -1,3 +1,5 @@
+import { expect } from "vitest";
+
 import {
   ARCHETYPE_SQL,
   DISTRIBUTABLE_YEAR_SQL,
@@ -63,19 +65,34 @@ export const STATEMENT_BOUNDS: readonly StatementBound[] = [
 export const STATE_STATEMENTS = ["authorize", "A1", "S1", "C1", "C2", "C3", "C4"];
 export const GENERATE_STATEMENTS = ["authorize", "S1", "A1", "C1", "C2", "C3", "G1", "G2", "G3", "G4", "G5"];
 
-export function ceiling(names: readonly string[]): number {
+function ceiling(names: readonly string[]): number {
   return names.reduce((sum, name) => sum + (STATEMENT_BOUNDS.find((b) => b.name === name)?.max ?? Infinity), 0);
 }
 
-export type NamedStatement = MeasuredStatement & { name: string; bound: StatementBound };
+type NamedStatement = MeasuredStatement & { name: string; bound: StatementBound };
 
-// Each recorded statement with the bound it matches; one that matches none throws.
-export function namedStatements(statements: readonly MeasuredStatement[]): NamedStatement[] {
-  return statements.map((statement) => {
+// The statements an operation ran, each named by the bound its text matches (one that matches none throws): their
+// names in the order `expected` gives, each at most its bound's max and all of them together at most the operation's
+// ceiling, and, `slowest` (every input at its cap), each at least its bound's min. Returns them by name.
+export function expectStatements(
+  statements: readonly MeasuredStatement[],
+  expected: readonly string[],
+  slowest: boolean,
+): Record<string, NamedStatement> {
+  const named = statements.map((statement): NamedStatement => {
     const bound = STATEMENT_BOUNDS.find((candidate) => candidate.matches(statement.query));
     if (bound === undefined) {
       throw new Error(`a statement no bound names: ${statement.query.slice(0, 120)}`);
     }
     return { ...statement, name: bound.name, bound };
   });
+  expect(named.map((s) => s.name)).toEqual(expected);
+  for (const s of named) {
+    expect(s.rows, `${s.name} reads at most ${s.bound.max}`).toBeLessThanOrEqual(s.bound.max);
+    if (slowest) {
+      expect(s.rows, `${s.name} reads at least ${s.bound.min}`).toBeGreaterThanOrEqual(s.bound.min);
+    }
+  }
+  expect(named.reduce((sum, s) => sum + s.rows, 0)).toBeLessThanOrEqual(ceiling(expected));
+  return Object.fromEntries(named.map((s) => [s.name, s]));
 }

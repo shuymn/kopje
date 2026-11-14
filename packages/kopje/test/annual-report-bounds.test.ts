@@ -40,11 +40,11 @@ import {
   YEAR,
   yearEnd,
 } from "./annual-report-fixtures";
-import { ceiling, GENERATE_STATEMENTS, namedStatements, STATE_STATEMENTS } from "./annual-report-statements";
+import { expectStatements, GENERATE_STATEMENTS, STATE_STATEMENTS } from "./annual-report-statements";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { singletonStatistics } from "./plan-audit-store";
-import { explainPlan, type MeasuredStatement, measuredStatements, scansOf, scopedToken } from "./read-helpers";
+import { explainPlan, measuredStatements, scansOf, scopedToken } from "./read-helpers";
 
 // The read ceiling of `state` and `generate` (RES-7), derived from the caps of src/domain/annual-reports.ts
 // (test/annual-report-statements.ts: each statement's reads at most and on its slowest path), and held by the all-caps
@@ -68,21 +68,6 @@ const F = REPORT_FOLLOWERS;
 const K = REPORT_TAG_CANDIDATES;
 const STATE = STATE_STATEMENTS;
 const GENERATE = GENERATE_STATEMENTS;
-
-// The statements an operation ran, each by its bound's name, held to its ceiling (and, `slowest`, to its floor).
-function held(statements: readonly MeasuredStatement[], expected: readonly string[], slowest: boolean) {
-  const named = namedStatements(statements);
-  expect(named.map((s) => s.name)).toEqual(expected);
-  for (const s of named) {
-    expect(s.rows, `${s.name} reads at most ${s.bound.max}`).toBeLessThanOrEqual(s.bound.max);
-    if (slowest) {
-      expect(s.rows, `${s.name} reads at least ${s.bound.min}`).toBeGreaterThanOrEqual(s.bound.min);
-    }
-  }
-  const total = named.reduce((sum, s) => sum + s.rows, 0);
-  expect(total).toBeLessThanOrEqual(ceiling(expected));
-  return Object.fromEntries(named.map((s) => [s.name, s]));
-}
 
 async function world() {
   const h = await apiHarness();
@@ -191,10 +176,10 @@ describe("the all-caps witness", () => {
         }
         const state = await w.state();
         expect(state.output, statistics).toEqual({ status: "ok", value: "eligible" });
-        held(state.statements, STATE, true);
+        expectStatements(state.statements, STATE, true);
         const generated = await w.generate();
         expect(generated.output).toEqual({ status: "ok", value: undefined });
-        const g = held(generated.statements, GENERATE, true);
+        const g = expectStatements(generated.statements, GENERATE, true);
         // G3 handed REPORT_TAG_CANDIDATES rows to JavaScript, and the stored name is the 32nd, or none.
         expect(g.G3?.returned).toBe(K);
         expect(await report(w.h), statistics).toEqual([expectedReport(witness)]);
@@ -209,7 +194,7 @@ describe("growth", () => {
   it("leaves every statement's reads flat as the keys around the owner's year grow, and stops at a cap however far it is passed", async () => {
     const w = await world();
     const witness = await w.inStore((s) => buildWitness(s, w.alice, w.bob, "admissible-32nd"));
-    const baseline = held((await w.state()).statements, STATE, true);
+    const baseline = expectStatements((await w.state()).statements, STATE, true);
     const carol = await seedAccount(w.h.store, { username: "carol", email: "carol@example.com" });
     // Keys that are not the owner's year: the other account's rows in the range and their uses of the same names,
     // the owner's rows outside the year, and pending requests.
@@ -240,7 +225,7 @@ describe("growth", () => {
       insertAccounts(s, F, 900000000000000000n);
       insertFollows(s, w.alice, F, 900000000000000000n, "pending", "2026-03-01T00:00:00.000Z");
     });
-    const grown = held((await w.state()).statements, STATE, true);
+    const grown = expectStatements((await w.state()).statements, STATE, true);
     for (const name of STATE) {
       expect(grown[name]?.rows, name).toBe(baseline[name]?.rows);
     }
@@ -288,7 +273,7 @@ describe("growth", () => {
       await w.inStore(add);
       const past = await w.state();
       expect(past.output, cap).toEqual({ status: "ok", value: "ineligible" });
-      held(past.statements, ran, false);
+      expectStatements(past.statements, ran, false);
       await w.inStore(remove);
     }
     expect((await w.state()).output).toEqual({ status: "ok", value: "eligible" });
