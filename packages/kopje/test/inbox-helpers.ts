@@ -1,5 +1,6 @@
 import { exportSpki, signRequest } from "@fedify/fedify";
 import { Temporal } from "temporal-polyfill";
+import { vi } from "vitest";
 
 import type { RemoteActorInput } from "../src/domain/remote-actors";
 import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
@@ -371,4 +372,16 @@ export function actorDefaults(): Omit<
     emojiTags: [],
     raw: "{}",
   };
+}
+
+// The answer `post` gives and the `kopje.inbox.refused` lines it logs (processInbox), the console silenced meanwhile.
+export async function loggedRefusals(post: () => Promise<number>): Promise<{ status: number; refused: unknown[][] }> {
+  const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const status = await post();
+    const refused = logs.mock.calls.filter(([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused");
+    return { status, refused };
+  } finally {
+    logs.mockRestore();
+  }
 }

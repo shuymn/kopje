@@ -1,5 +1,5 @@
 import { signJsonLd } from "@fedify/fedify";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
@@ -17,7 +17,7 @@ import {
 } from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
-import { mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import { loggedRefusals, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -130,25 +130,13 @@ async function effects(t: Setup, uri: string) {
   return { ...counts, outbound };
 }
 
-// The `kopje.inbox.refused` lines `post` logs (processInbox), and its answer.
-async function logged(post: () => Promise<number>) {
-  const logs = vi.spyOn(console, "log").mockImplementation(() => {});
-  try {
-    const status = await post();
-    const refused = logs.mock.calls.filter(([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused");
-    return { status, refused };
-  } finally {
-    logs.mockRestore();
-  }
-}
-
 // `body`, relayed by dan while bob's document has changed since it was stored (a new name), is dropped: 202, `reason`
 // logged once, the status as it was, no retraction of it recorded, and bob's stored document unchanged.
 async function dropped(t: Setup, bob: TestActor, dan: TestActor, body: Json, uri: string, reason: string) {
   const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
   const before = await sql(t.store, author, bob.uri);
   t.web.serve(bob.uri, { ...bob.document, name: "renamed" });
-  const { status, refused } = await logged(() => t.post(dan, body));
+  const { status, refused } = await loggedRefusals(() => t.post(dan, body));
   expect(status).toBe(202);
   expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 202, reason }]]);
   expect(await stored(t.store, uri)).toEqual({ visibility: "public", withdrawn: 0 });
@@ -337,7 +325,7 @@ describe("a relayed status Delete that does not meet every condition changes not
     const status = await note(t, bob);
     const signed = await ldSigned(deletion(bob, status.uri), bob);
     t.web.fail(bob.uri, 503);
-    expect(await logged(() => t.post(dan, signed))).toEqual({
+    expect(await loggedRefusals(() => t.post(dan, signed))).toEqual({
       status: 503,
       refused: [[{ event: "kopje.inbox.refused", status: 503, reason: "actor-unavailable" }]],
     });
@@ -345,7 +333,7 @@ describe("a relayed status Delete that does not meet every condition changes not
     const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
     const before = await sql(t.store, author, bob.uri);
     t.web.fail(bob.uri, 410);
-    expect(await logged(() => t.post(dan, signed))).toEqual({
+    expect(await loggedRefusals(() => t.post(dan, signed))).toEqual({
       status: 202,
       refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "author-unusable" }]],
     });
@@ -457,7 +445,7 @@ describe("a relayed status Delete that does not meet every condition changes not
   it("drops a relayed Delete of an actor, proven or not", async () => {
     const { t, bob, erin, dan } = await world();
     // Of the actor itself (a DeleteActor: no relay of it is applied), and of another actor of its origin.
-    expect(await logged(async () => t.post(dan, await idOnly(bob, bob.uri)))).toEqual({
+    expect(await loggedRefusals(async () => t.post(dan, await idOnly(bob, bob.uri)))).toEqual({
       status: 202,
       refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
     });
@@ -554,7 +542,7 @@ describe("a relay of another type is dropped once its signer owns its key (ID-1)
     const counting = countingStore(w.t.store);
     const h = harness(counting.stub, {}, undefined, { keygen: fixtureKeyGen, loader: w.t.web.loader }, () => NOW);
     const post = (signer: TestActor, body: Json, keyId?: string) =>
-      logged(async () => {
+      loggedRefusals(async () => {
         const init = await signedInit(signer, "/inbox", body, { at: NOW, ...(keyId === undefined ? {} : { keyId }) });
         return (await h.request("/inbox", init)).status;
       });

@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
@@ -22,6 +22,7 @@ import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-
 import { BUILD, completeSetup, migratedStore } from "./helpers";
 import {
   LOCAL,
+  loggedRefusals,
   MASTODON,
   mastodonActor,
   RemoteWeb,
@@ -811,17 +812,11 @@ describe("second review: deletion, keys and generations", () => {
     await ageKeys(t);
     t.web.fail(bob.uri, 410);
     t.web.fail(carol.uri, 410);
-    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
-    try {
-      const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
-      expect(await t.post(bob, deleteSelf(bob), signed)).toBe(401);
-      const refused = logs.mock.calls.filter(
-        ([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused",
-      );
-      expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]]);
-    } finally {
-      logs.mockRestore();
-    }
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await loggedRefusals(() => t.post(bob, deleteSelf(bob), signed))).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]],
+    });
     expect(await accountId(t.store, bob.uri)).toBeDefined();
     expect(await accountId(t.store, carol.uri)).toBeDefined();
     expect((await edges(t.store)).length).toBe(2);
