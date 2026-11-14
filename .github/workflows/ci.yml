@@ -66,6 +66,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The Node suite's test-node/witness-recording.test.ts reads Kopje's sources at the commit the main-runtime
+      # witnesses' recording names (its `base`), which this one-commit checkout lacks: fetch that commit alone.
+      - name: Fetch the witness recording's base
+        run: |
+          base=$(jq --exit-status --raw-output .base packages/kopje/test/main-runtime/recorded.json)
+          git fetch --quiet --no-tags --depth=1 origin "$base"
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
       - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
@@ -104,6 +110,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The Node suite's test-node/witness-recording.test.ts reads Kopje's sources at the commit the main-runtime
+      # witnesses' recording names (its `base`), which this one-commit checkout lacks: fetch that commit alone.
+      - name: Fetch the witness recording's base
+        run: |
+          base=$(jq --exit-status --raw-output .base packages/kopje/test/main-runtime/recorded.json)
+          git fetch --quiet --no-tags --depth=1 origin "$base"
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
       - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:

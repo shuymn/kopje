@@ -9,9 +9,10 @@ import { nodeStorage, normalized, rolledBack, transaction, witnessDatabase, witn
 // The provenance of test/main-runtime/recorded.json, which the main-runtime witnesses and shown-walk-work.test.ts read
 // main's statements from: its `main` side is what main's sources at its `base` commit issue in each flow of
 // witness-world.ts, and its `mine` side what the current sources issue. Both are recorded here, on Node's SQLite, and
-// compared with the file: main's sources are taken from Git (`git archive`, so a shallow clone needs
-// `git fetch --unshallow`), with the current witness-world.ts beside them (it names nothing only one side has). The
-// main-runtime witnesses check in turn that workerd runs the `mine` sequences (as many of each statement as recorded).
+// compared with the file: main's sources are taken from Git (`git archive`; a clone without that commit fails, naming
+// the fetch that brings it, as CI's test jobs run it), with the current witness-world.ts beside them (it names nothing
+// only one side has). The main-runtime witnesses check in turn that workerd runs the `mine` sequences (as many of
+// each statement as recorded).
 // KOPJE_RECORD_WITNESS=1 rewrites the file from the two recordings instead, which a change to the rewrite's statements
 // requires.
 
@@ -56,13 +57,21 @@ async function record(root: URL): Promise<Record<string, string[]>> {
 // The package's sources at `base` in a directory of their own, with the current witness-world.ts beside them;
 // removed after `fn`, whatever it does.
 async function atBase<T>(base: string, fn: (root: URL) => Promise<T>): Promise<T> {
+  // The repository's root: a pathspec is read from the working directory, inside the tree named.
+  const root = fileURLToPath(new URL("../../", PACKAGE));
+  try {
+    execFileSync("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: root, stdio: "ignore", timeout: GIT_MS });
+  } catch {
+    throw new Error(
+      `recorded.json's base ${base} is not in this clone; fetch it: git fetch --no-tags --depth=1 origin ${base}`,
+    );
+  }
   const tmp = fileURLToPath(new URL(".wrangler/tmp/", PACKAGE));
   mkdirSync(tmp, { recursive: true });
   const dir = mkdtempSync(`${tmp}witness-base-`);
   try {
     const archive = execFileSync("git", ["archive", "--format=tar", `${base}:packages/kopje`, "src"], {
-      // The repository's root: a pathspec is read from the working directory, inside the tree named.
-      cwd: fileURLToPath(new URL("../../", PACKAGE)),
+      cwd: root,
       maxBuffer: 256 * 1024 * 1024,
       timeout: GIT_MS,
     });
