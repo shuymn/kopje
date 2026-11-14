@@ -101,6 +101,54 @@ async function world() {
   return { h, alice, bob, state, generate, list, inStore };
 }
 
+type World = Awaited<ReturnType<typeof world>>;
+
+// G3's ordered keys as JavaScript receives them: REPORT_TAG_CANDIDATES rows, each a hex key within 2 × TAG_NAME_BYTES.
+async function expectKeysWithin(w: World): Promise<void> {
+  const keys = await sql<{ key: string; uses: number }>(
+    w.h.store,
+    TOP_HASHTAG_SQL,
+    w.alice,
+    idIn(YEAR, 0),
+    yearEnd(YEAR),
+  );
+  expect(keys).toHaveLength(K);
+  expect(Math.max(...keys.map((k) => k.key.length))).toBeLessThanOrEqual(2 * TAG_NAME_BYTES);
+}
+
+// Each statement's plan under the statistics in place: its pinned index, and no table scanned.
+async function expectPlans(w: World): Promise<void> {
+  const range = [w.alice, idIn(YEAR, 0), yearEnd(YEAR)];
+  const plans = await w.inStore((s) => ({
+    C1: explainPlan(s, YEAR_STATUSES_SQL, ...range),
+    C2: explainPlan(s, FOLLOWERS_SQL, w.alice),
+    C3: explainPlan(s, TAG_USES_SQL, ...range),
+    C4: explainPlan(s, DISTRIBUTABLE_YEAR_SQL, ...range),
+    G1: explainPlan(s, ARCHETYPE_SQL, ...range),
+    G2: explainPlan(s, TOP_STATUS_SQL, ...range),
+    G3: explainPlan(s, TOP_HASHTAG_SQL, ...range),
+    G4: explainPlan(s, FOLLOWERS_IN_YEAR_SQL, w.alice, "2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z"),
+    A1: explainPlan(s, REPORT_EXISTS_SQL, w.alice, YEAR),
+  }));
+  const tables = ["statuses", "s", "status_tags", "t", "follows", "f", "polls", "p", "annual_reports", "r"];
+  for (const [name, plan] of Object.entries(plans)) {
+    expect(scansOf(plan.split(" | "), tables), `${name}: ${plan}`).toEqual([]);
+  }
+  const year = "USING INDEX statuses_account (account_id=? AND id>? AND id<?)";
+  expect(plans.C1).toContain("SEARCH statuses USING COVERING INDEX statuses_account (account_id=? AND id>? AND id<?)");
+  expect(plans.C2).toContain("SEARCH follows USING COVERING INDEX follows_target (target_account_id=? AND state=?)");
+  for (const name of ["C3", "C4", "G1", "G2", "G3"] as const) {
+    expect(plans[name], name).toContain(`SEARCH s ${year}`);
+  }
+  for (const name of ["C3", "G3"] as const) {
+    expect(plans[name], name).toContain("SEARCH t USING PRIMARY KEY (status_id=?)");
+  }
+  expect(plans.G1).toMatch(/SEARCH p USING (?:COVERING )?INDEX sqlite_autoindex_polls_1 \(status_id=\?\)/);
+  expect(plans.G3).toContain("USE TEMP B-TREE FOR GROUP BY");
+  expect(plans.G4).toContain("SEARCH f USING INDEX follows_target (target_account_id=? AND state=?)");
+  expect(plans.A1).toContain("SEARCH r USING PRIMARY KEY (account_id=? AND year=?)");
+}
+
 const report = (h: { store: Parameters<typeof sql>[0] }) =>
   sql(
     h.store,
@@ -136,6 +184,11 @@ describe("the all-caps witness", () => {
         if (statistics === "singleton") {
           await w.inStore((s) => singletonStatistics(s));
         }
+        // The admissible-32nd witness also carries G3's key sizes (under the stale statistics) and each statement's
+        // plan (under the singleton ones), read apart from the operations whose statements are recorded.
+        if (variant === "admissible-32nd") {
+          await (statistics === "stale" ? expectKeysWithin(w) : expectPlans(w));
+        }
         const state = await w.state();
         expect(state.output, statistics).toEqual({ status: "ok", value: "eligible" });
         held(state.statements, STATE, true);
@@ -150,20 +203,6 @@ describe("the all-caps witness", () => {
     },
     600_000,
   );
-
-  it("hands G3's ordered keys to JavaScript within REPORT_TAG_CANDIDATES rows of 2 × TAG_NAME_BYTES", async () => {
-    const w = await world();
-    await w.inStore((s) => buildWitness(s, w.alice, w.bob, "admissible-32nd"));
-    const keys = await sql<{ key: string; uses: number }>(
-      w.h.store,
-      TOP_HASHTAG_SQL,
-      w.alice,
-      idIn(YEAR, 0),
-      yearEnd(YEAR),
-    );
-    expect(keys).toHaveLength(K);
-    expect(Math.max(...keys.map((k) => k.key.length))).toBeLessThanOrEqual(2 * TAG_NAME_BYTES);
-  }, 600_000);
 });
 
 describe("growth", () => {
@@ -253,47 +292,6 @@ describe("growth", () => {
       await w.inStore(remove);
     }
     expect((await w.state()).output).toEqual({ status: "ok", value: "eligible" });
-  }, 600_000);
-});
-
-describe("plans", () => {
-  it("walks each statement's pinned index, scanning no table", async () => {
-    const w = await world();
-    await w.inStore((s) => buildWitness(s, w.alice, w.bob, "admissible-32nd"));
-    const range = [w.alice, idIn(YEAR, 0), yearEnd(YEAR)];
-    const plans = await w.inStore((s) => {
-      singletonStatistics(s);
-      return {
-        C1: explainPlan(s, YEAR_STATUSES_SQL, ...range),
-        C2: explainPlan(s, FOLLOWERS_SQL, w.alice),
-        C3: explainPlan(s, TAG_USES_SQL, ...range),
-        C4: explainPlan(s, DISTRIBUTABLE_YEAR_SQL, ...range),
-        G1: explainPlan(s, ARCHETYPE_SQL, ...range),
-        G2: explainPlan(s, TOP_STATUS_SQL, ...range),
-        G3: explainPlan(s, TOP_HASHTAG_SQL, ...range),
-        G4: explainPlan(s, FOLLOWERS_IN_YEAR_SQL, w.alice, "2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z"),
-        A1: explainPlan(s, REPORT_EXISTS_SQL, w.alice, YEAR),
-      };
-    });
-    const tables = ["statuses", "s", "status_tags", "t", "follows", "f", "polls", "p", "annual_reports", "r"];
-    for (const [name, plan] of Object.entries(plans)) {
-      expect(scansOf(plan.split(" | "), tables), `${name}: ${plan}`).toEqual([]);
-    }
-    const year = "USING INDEX statuses_account (account_id=? AND id>? AND id<?)";
-    expect(plans.C1).toContain(
-      "SEARCH statuses USING COVERING INDEX statuses_account (account_id=? AND id>? AND id<?)",
-    );
-    expect(plans.C2).toContain("SEARCH follows USING COVERING INDEX follows_target (target_account_id=? AND state=?)");
-    for (const name of ["C3", "C4", "G1", "G2", "G3"] as const) {
-      expect(plans[name], name).toContain(`SEARCH s ${year}`);
-    }
-    for (const name of ["C3", "G3"] as const) {
-      expect(plans[name], name).toContain("SEARCH t USING PRIMARY KEY (status_id=?)");
-    }
-    expect(plans.G1).toMatch(/SEARCH p USING (?:COVERING )?INDEX sqlite_autoindex_polls_1 \(status_id=\?\)/);
-    expect(plans.G3).toContain("USE TEMP B-TREE FOR GROUP BY");
-    expect(plans.G4).toContain("SEARCH f USING INDEX follows_target (target_account_id=? AND state=?)");
-    expect(plans.A1).toContain("SEARCH r USING PRIMARY KEY (account_id=? AND year=?)");
   }, 600_000);
 });
 
