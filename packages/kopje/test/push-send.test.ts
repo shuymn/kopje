@@ -586,7 +586,8 @@ describe("settling a push", () => {
     expect(await rows(h.store)).toEqual([]);
   });
 
-  // Mastodon 4.5's Web::PushNotificationWorker: a 4xx other than 408 and 429 ends the subscription.
+  // Mastodon 4.5's Web::PushNotificationWorker: a 4xx other than 408 and 429 ends the subscription. A push answered 400
+  // or 401 is sent once: it is not HTTP-signed, so sendPush gives the sink no RFC 9421 retry.
   it.each([400, 401, 403, 404, 410, 413])(
     "deletes the subscription and its pending pushes when the push service answers %i",
     async (status) => {

@@ -99,6 +99,7 @@
     "hono": "catalog:",
     "htmlparser2": "catalog:",
     "jose": "catalog:",
+    "jsonld": "catalog:",
     "linkify-it": "catalog:",
     "mdast-util-from-markdown": "catalog:",
     "mdast-util-gfm": "catalog:",

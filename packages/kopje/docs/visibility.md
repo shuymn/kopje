@@ -857,8 +857,8 @@ accounts and 17 hosts per target. A target lists up to 16 accounts and their hos
 `many` ("not all unavailable"), and above 16 hosts it lists none. A target that also serves an inbox with unknown
 recipients (a retraction's earlier receivers) has none.
 
-At the claim, and again at confirmation right before the POST (`confirmDelivery`), a row that is not a retraction is
-dropped when:
+At the claim, and again at confirmation right before each POST (`confirmDelivery`; the RFC 9421 retry of a POST answered
+400 or 401 is confirmed again), a row that is not a retraction is dropped when:
 
 | Rule     | Refused when                                                                            |
 | -------- | --------------------------------------------------------------------------------------- |

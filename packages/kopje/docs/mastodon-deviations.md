@@ -50,8 +50,10 @@ implement it, since a change there (what an account's deletion removes, say) sho
 - **Federation in any supported series.** Read the diff of `app/lib/activitypub`, `app/services/activitypub`,
   `app/serializers/activitypub`, `app/controllers/concerns/signature_verification.rb`, `app/lib/request*`,
   `app/helpers/context_helper.rb` and `app/helpers/json_ld_helper.rb`: what is sent and received, contexts, signatures
-  and proofs, identifiers, forwarding, and which activities are authorized. This applies whether or not the reference
-  release moves.
+  and proofs, identifiers, forwarding, and which activities are authorized; and compare `full_context`
+  (`NAMED_CONTEXT_MAP`, `CONTEXT_EXTENSION_MAP`) and `LinkedDataSignature#sign!` at the new tag with
+  `MASTODON_NAMED_CONTEXTS`, `MASTODON_CONTEXT_TERMS` and `PROFILES`: a difference is a gap, tracked by an issue until a
+  profile covers it. This applies whether or not the reference release moves.
 
 The checks see whether a parameter is read and a field is present. A parameter that is read and then dropped, or a
 wrong value, does not show in them, so the behaviour is reviewed by reading Mastodon's source.
@@ -889,6 +891,16 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
   components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
 
+Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
+
+- A signed fetch answered 400 or 401 is sent once more with an RFC 9421 signature hop by hop: the redirect hop so
+  answered is sent again, and the next hop starts with draft-cavage. Mastodon 4.7 sends the whole request with
+  draft-cavage, its client following redirects, and on a final 400 or 401 sends it again from the first URL with
+  RFC 9421 (`request.rb:132-146`, `:189`, `:207`). So a redirect chain whose two hops both need RFC 9421 takes four
+  requests where Mastodon takes three. Kopje follows redirects in its own loader, which checks each hop (origin, host,
+  domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
+  has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
+
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):
 
@@ -951,33 +963,42 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 - A status's `Delete` another server relays (its HTTP signer is not its actor) is applied, and forwarded, as the
   author's own only when it carries the author's proof, verified (an RsaSignature2017 signature or an FEP-8b32 proof),
   and only to a public or unlisted original Kopje holds as that author's, on the author's origin (ID-1). Mastodon
-  verifies a relayed `Delete`'s RsaSignature2017 signature by its author (`process_collection_service.rb`
-  `verify_account!`) and applies it as the author's own (`activity/delete.rb` `delete_status`) to a status of any
+  verifies a relayed `Delete`'s RsaSignature2017 signature by its author (4.5's `process_collection_service.rb`
+  `verify_account!`, 4.7's `process_activity_service.rb` `actor_from_verified_ld_signature`; a past `expires` does not
+  verify) and applies it as the author's own (`activity/delete.rb` `delete_status`) to a status of any
   visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion (`delete_person`);
-  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Kopje changes
-  no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
-  `Delete` of an actor.
+  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Its inbox
+  answers 202 before processing, and drops a relay whose signature does not verify; Kopje answers such a relay 202
+  too, applying nothing. Kopje changes no status for a relay without a proof, nor for a private, direct or limited
+  status or a boost. Mastodon also applies, as its author's, a relayed `Delete` of an actor and a relay of another type
+  whose signature verifies (a reply to one of its accounts forwarded as `Create`, `create.rb` `forward_for_reply`; an
+  edit forwarded as `Update`, `process_status_update_service.rb` `forward_activity!`); Kopje applies none of them: once
+  the relaying server owns its HTTP signature's key, such a relay is answered 202 and dropped, logged, and a signer
+  that does not own its key is answered 401.
 - An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
   profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
-  Mastodon 4.5's status `Delete` (`DeleteSerializer`) and stamp `Delete` (`DeleteQuoteAuthorizationSerializer`), each
-  with the `@context` Mastodon 4.5 writes and the keys its serializer and `LinkedDataSignature#sign!` write; Kopje's
-  own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 or 4.5 forwards it, compacted under its
-  `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof. Mastodon
-  verifies a signature whatever the body's context and keys, refusing only JSON-LD features it does not support
-  (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or forwarded by a Mastodon
-  whose `full_context` holds a term or definition outside 4.4 and 4.5, is refused, and an author's own `Delete` in such
-  a form applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
+  Mastodon's status `Delete` (`DeleteSerializer`, `DeleteNoteSerializer` from 4.6) and stamp `Delete`
+  (`DeleteQuoteAuthorizationSerializer`), the same bodies from 4.4 to 4.7, each with the `@context` Mastodon writes and
+  the keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
+  reached the inbox); Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 to 4.7 forwards it,
+  compacted under its `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an
+  FEP-8b32 proof. Mastodon verifies a signature whatever the body's context and keys, refusing only JSON-LD features
+  it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or
+  forwarded by a Mastodon whose `full_context` holds a named context, term or definition outside 4.4 to 4.7, is
+  dropped with 202, as Mastodon drops one whose signature does not verify, and an author's own `Delete` in such a form
+  applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
 Relayed activities (an activity whose HTTP signer is not its actor; ID-1 in [threat-model.md](threat-model.md)):
 
 - Of the activities another server relays, Kopje applies only a status's `Delete` that carries its author's proof
-  (Forwarded deletes, above); any other answers 401 and changes nothing. Mastodon applies a relayed activity of any
-  type whose RsaSignature2017 signature by its actor verifies (`ActivityPub::ProcessActivityService`; before 4.7,
-  `ProcessCollectionService#verify_account!`), and from 4.7.0 one whose FEP-8b32 proof by its actor verifies
-  (`process_activity_service.rb:42-75`). An inbound activity acts only for its signer, and Kopje weighs an author's
-  proof only on a body it has a profile for (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
+  (Forwarded deletes, above); any other changes nothing, answered 202 and dropped once the relaying server owns its key,
+  and 401 when it does not. Mastodon applies a relayed activity of any type whose RsaSignature2017 signature by its
+  actor verifies (`ActivityPub::ProcessActivityService`; before 4.7, `ProcessCollectionService#verify_account!`), and
+  from 4.7.0 one whose FEP-8b32 proof by its actor verifies (`process_activity_service.rb:42-75`). An inbound activity
+  acts only for its signer, and Kopje weighs an author's proof only on a body it has a profile for
+  (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
 
 Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
 `ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):

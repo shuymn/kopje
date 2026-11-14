@@ -48,25 +48,29 @@ export const MAX_FEATURED_TAG_PAGES = 3;
 // The most documents each part of a read fetches (domain/remote-collections.ts PART_*): the featured collection and its
 // first page, the following, followers and outbox collections, and the featuredTags collection and its pages. A round
 // reads the parts not read yet in that order, and records each it reads through, so the parts together may cost more
-// than one budget. Each part alone fits a round's budget even with a redirect hop on each of its documents, checked as
-// the module loads: a part read first in its round always completes, so every round with a healthy part left makes
-// progress.
+// than one budget. Each part alone fits a round's budget even with a redirect hop, or the RFC 9421 retry of a signed
+// fetch answered 400 or 401 (loader.ts RETRY_STATUSES), on each of its documents, checked as the module loads: a part
+// read first in its round always completes, so every round with a healthy part left makes progress. Both on one
+// document are not covered: a server that refuses draft-cavage and redirects every document may leave a part unread
+// until its attempts run out (RES-6).
 export const PART_DOCUMENTS = { featured: 2, network: 3, tags: 1 + MAX_FEATURED_TAG_PAGES } as const;
 if (Math.max(...Object.values(PART_DOCUMENTS)) * 2 > REQUEST_MAX_FETCHES) {
-  throw new Error("each part of a collection read must fit one round of REQUEST_MAX_FETCHES, a redirect each included");
+  throw new Error(
+    "each part of a collection read must fit one round of REQUEST_MAX_FETCHES, a redirect or an RFC 9421 retry each included",
+  );
 }
 // The network part's documents are read under tighter caps, so that its three fit one round's fetches and bytes
-// together whatever the documents are (RES-6): one redirect each (PART_DOCUMENTS.network × 2 fetches) and 512 KiB of
-// body each (UTF-8 bytes as served; three take 1.5 MiB of REQUEST_MAX_BYTES). A document past them is settled as
-// unreadable: it gives no count, and a following or followers collection past them hides the network, as any
-// collection that cannot be read does. The other parts keep the loader's own caps.
+// together whatever the documents are (RES-6): one redirect, or the RFC 9421 retry, each (PART_DOCUMENTS.network × 2
+// fetches) and 512 KiB of body each (UTF-8 bytes as served; three take 1.5 MiB of REQUEST_MAX_BYTES). A document past
+// them is settled as unreadable: it gives no count, and a following or followers collection past them hides the
+// network, as any collection that cannot be read does. The other parts keep the loader's own caps.
 export const NETWORK_CAPS = { documentBytes: 512 * 1024, maxRedirects: 1 } as const satisfies DocumentCaps;
 if (
   PART_DOCUMENTS.network * (1 + NETWORK_CAPS.maxRedirects) > REQUEST_MAX_FETCHES ||
   PART_DOCUMENTS.network * NETWORK_CAPS.documentBytes >= REQUEST_MAX_BYTES
 ) {
   throw new Error(
-    "the network part must fit one round of REQUEST_MAX_FETCHES and REQUEST_MAX_BYTES under NETWORK_CAPS",
+    "the network part must fit one round of REQUEST_MAX_FETCHES and REQUEST_MAX_BYTES under NETWORK_CAPS, a redirect or an RFC 9421 retry each included",
   );
 }
 

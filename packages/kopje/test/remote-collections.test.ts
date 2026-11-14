@@ -1512,16 +1512,17 @@ describe("the network part within one round", () => {
 });
 
 // RES-6: the most HTTP requests one generation of a sync makes, computed from the constants. Every read claim reads
-// every unread part with each document redirected as far as its loader allows, cut by the round's REQUEST_MAX_FETCHES;
+// every unread part with each document redirected as far as its loader allows, each hop sent `sends` times (twice when
+// draft-cavage is answered 400 or 401 and the loader retries with RFC 9421), cut by the round's REQUEST_MAX_FETCHES;
 // a part is read through at the last of its MAX_SYNC_ATTEMPTS claims; then MAX_REMOTE_PINS pending statuses are
 // fetched one per MAX_SYNC_ATTEMPTS claims, each round its whole budget. A call (COLLECTION_SYNCS_PER_ROUND claims)
 // may run two rounds of one generation.
 describe("the requests of one generation", () => {
-  function worstCase(network: { documents: number; redirects: number }) {
+  function worstCase(network: { documents: number; redirects: number }, sends = 1) {
     const parts = [
-      PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS),
-      network.documents * (1 + network.redirects),
-      PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS),
+      PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS) * sends,
+      network.documents * (1 + network.redirects) * sends,
+      PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS) * sends,
     ];
     const readClaims = parts.length * MAX_SYNC_ATTEMPTS;
     const readRound = Math.min(
@@ -1540,11 +1541,17 @@ describe("the requests of one generation", () => {
 
   it("bounds them before and after the network part reads the outbox", () => {
     const before = worstCase({ documents: 2, redirects: MAX_REDIRECTS });
-    const after = worstCase({ documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects });
-    console.info(`Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
-    expect({ before, after }).toEqual({
+    const network = { documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects };
+    const after = worstCase(network);
+    // Every hop answered 400 or 401 to draft-cavage and sent again with RFC 9421 (loader.ts RETRY_STATUSES).
+    const retried = worstCase(network, 2);
+    console.info(
+      `Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}, retried ${JSON.stringify(retried)}`,
+    );
+    expect({ before, after, retried }).toEqual({
       before: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 2, perCall: 16, perGeneration: 552 },
       after: { networkPerRound: 6, networkPerGeneration: 54, networkHealthy: 3, perCall: 16, perGeneration: 552 },
+      retried: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 552 },
     });
   });
 });

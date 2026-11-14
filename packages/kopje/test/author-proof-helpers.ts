@@ -1,13 +1,15 @@
 import { exportSpki, signJsonLd, signObject } from "@fedify/fedify";
 import { CryptographicKey, Delete, Multikey, Person } from "@fedify/vocab";
+import jsonld from "jsonld/dist/jsonld.esm.js";
 
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
-import { MASTODON, type RemoteWeb, type TestActor } from "./inbox-helpers";
+import { NOW } from "./app-helpers";
+import { MASTODON, mastodonActor, type RemoteWeb, type TestActor } from "./inbox-helpers";
 import { AS, PUBLIC } from "./inbox-status-helpers";
 import { contexts } from "./quote-helpers";
 
-// Signed Deletes as Mastodon 4.5 sends them (federation/author-proof.ts PROFILES), for the tests that relay or forward
-// them.
+// Signed Deletes as Mastodon 4.4 to 4.7 send them (federation/author-proof.ts PROFILES), for the tests that relay or
+// forward them.
 
 type Json = Record<string, unknown>;
 
@@ -55,8 +57,8 @@ export function mastodonStampDelete(actor: TestActor, stamp: { uri: string; quot
   };
 }
 
-// The RsaSignature2017 LinkedDataSignature#sign! writes (type, creator, created, signatureValue: no @context of its
-// own, which Fedify's signJsonLd adds and its verification ignores), by `signer`'s key.
+// The RsaSignature2017 LinkedDataSignature#sign! writes up to 4.6 (type, creator, created, signatureValue: no @context
+// of its own, which Fedify's signJsonLd adds and its verification ignores), by `signer`'s key.
 export async function mastodonSigned(json: Json, signer: TestActor): Promise<Json> {
   const signed = (await signJsonLd(json, signer.privateKey, new URL(signer.keyId), {
     contextLoader: contexts,
@@ -65,10 +67,98 @@ export async function mastodonSigned(json: Json, signer: TestActor): Promise<Jso
   return { ...signed, signature };
 }
 
+// The time sign! writes: Time#iso8601 of a UTC time, whole seconds.
+export function signTime(epochMs: number): string {
+  return `${new Date(epochMs).toISOString().slice(0, 19)}Z`;
+}
+
+// The RsaSignature2017 LinkedDataSignature#sign! writes from 4.7.0 (Mastodon v4.7.3 linked_data_signature.rb:39-58),
+// by `signer`'s key: the options type, creator, created and expires (by default the test's NOW and two days later); the
+// message the hex SHA-256 of the options but type under identity/v1, then that of the body without its signature, each
+// canonicalized with RDFC-1.0 (as Fedify's verification hashes them); the body's @context as sign! leaves it (it
+// appends security/v1 once, which these bodies already end with).
+export async function mastodon47Signed(
+  json: Json,
+  signer: TestActor,
+  options: { created?: string; expires?: string | number } = {},
+): Promise<Json> {
+  const { signature: _signature, ...body } = json;
+  const created = options.created ?? signTime(NOW);
+  const expires = options.expires ?? signTime(NOW + 2 * 24 * 60 * 60 * 1000);
+  const hash = async (document: unknown) => {
+    const canonical = await jsonld.canonize(document, {
+      algorithm: "RDFC-1.0",
+      format: "application/n-quads",
+      documentLoader: contexts,
+    });
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const message =
+    (await hash({ creator: signer.keyId, created, expires, "@context": "https://w3id.org/identity/v1" })) +
+    (await hash(body));
+  const value = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", signer.privateKey, new TextEncoder().encode(message));
+  const signatureValue = btoa(String.fromCharCode(...new Uint8Array(value)));
+  return { ...body, signature: { type: "RsaSignature2017", creator: signer.keyId, created, expires, signatureValue } };
+}
+
+// A Mastodon 4.7 Person (ActivityPub::ActorSerializer of v4.7.5: `context :security, :webfinger` and its extensions,
+// webfinger, showFeatured, showMedia and showRepliesInMedia), its key one created on 4.7 (Account#generate_keys:
+// `#rsa-` and 16 hex digits), served on `web` in place of mastodonActor's.
+export async function mastodon47Actor(
+  web: RemoteWeb,
+  username: string,
+  options: { key?: number; origin?: string } = {},
+): Promise<TestActor> {
+  const actor = await mastodonActor(web, username, options);
+  const keyId = `${actor.uri}#rsa-0123456789abcdef`;
+  const document: Json = {
+    ...actor.document,
+    "@context": [
+      AS,
+      SECURITY,
+      "https://purl.archive.org/socialweb/webfinger",
+      {
+        manuallyApprovesFollowers: "as:manuallyApprovesFollowers",
+        toot: "http://joinmastodon.org/ns#",
+        featured: { "@id": "toot:featured", "@type": "@id" },
+        featuredTags: { "@id": "toot:featuredTags", "@type": "@id" },
+        alsoKnownAs: { "@id": "as:alsoKnownAs", "@type": "@id" },
+        movedTo: { "@id": "as:movedTo", "@type": "@id" },
+        schema: "http://schema.org#",
+        PropertyValue: "schema:PropertyValue",
+        value: "schema:value",
+        discoverable: "toot:discoverable",
+        suspended: "toot:suspended",
+        memorial: "toot:memorial",
+        indexable: "toot:indexable",
+        attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
+        showFeatured: "toot:showFeatured",
+        showMedia: "toot:showMedia",
+        showRepliesInMedia: "toot:showRepliesInMedia",
+        gts: "https://gotosocial.org/ns#",
+        interactionPolicy: { "@id": "gts:interactionPolicy", "@type": "@id" },
+        canFeature: { "@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id" },
+        canQuote: { "@id": "gts:canQuote", "@type": "@id" },
+        automaticApproval: { "@id": "gts:automaticApproval", "@type": "@id" },
+        manualApproval: { "@id": "gts:manualApproval", "@type": "@id" },
+        focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+      },
+    ],
+    webfinger: `${username}@${new URL(actor.uri).host}`,
+    showFeatured: true,
+    showMedia: true,
+    showRepliesInMedia: true,
+    publicKey: { id: keyId, owner: actor.uri, publicKeyPem: actor.pem },
+  };
+  web.serve(actor.uri, document);
+  return { ...actor, keyId, document };
+}
+
 // The @context of a Delete Mastodon 4.5.21 forwarded, as received from it: its full_context
 // (app/helpers/context_helper.rb), which ActivityPub::ProcessCollectionService compacts a signed body under before
 // ActivityPub::Forwarder sends it.
-export const MASTODON_FORWARDED_CONTEXT = [
+export const MASTODON_45_FORWARDED_CONTEXT = [
   "https://www.w3.org/ns/activitystreams",
   "https://w3id.org/security/v1",
   {
@@ -112,13 +202,104 @@ export const MASTODON_FORWARDED_CONTEXT = [
   },
 ];
 
+// full_context's extension object at every tag v4.6.0 to v4.7.5, in Ruby's merge order. Regenerate with
+// `SRC="$(git -C <mastodon> show v4.7.5:app/helpers/context_helper.rb)" ruby -rjson -e 'eval(ENV["SRC"]);
+// o=Object.new; o.extend(ContextHelper); puts JSON.pretty_generate(o.full_context)'`.
+const MASTODON_46_EXTENSIONS = {
+  manuallyApprovesFollowers: "as:manuallyApprovesFollowers",
+  sensitive: "as:sensitive",
+  Hashtag: "as:Hashtag",
+  movedTo: { "@id": "as:movedTo", "@type": "@id" },
+  alsoKnownAs: { "@id": "as:alsoKnownAs", "@type": "@id" },
+  toot: "http://joinmastodon.org/ns#",
+  Emoji: "toot:Emoji",
+  featured: { "@id": "toot:featured", "@type": "@id" },
+  featuredTags: { "@id": "toot:featuredTags", "@type": "@id" },
+  schema: "http://schema.org#",
+  PropertyValue: "schema:PropertyValue",
+  value: "schema:value",
+  ostatus: "http://ostatus.org#",
+  atomUri: "ostatus:atomUri",
+  inReplyToAtomUri: "ostatus:inReplyToAtomUri",
+  conversation: "ostatus:conversation",
+  focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+  blurhash: "toot:blurhash",
+  discoverable: "toot:discoverable",
+  indexable: "toot:indexable",
+  memorial: "toot:memorial",
+  votersCount: "toot:votersCount",
+  suspended: "toot:suspended",
+  attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
+  showFeatured: "toot:showFeatured",
+  showMedia: "toot:showMedia",
+  showRepliesInMedia: "toot:showRepliesInMedia",
+  QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest",
+  quote: { "@id": "https://w3id.org/fep/044f#quote", "@type": "@id" },
+  quoteUri: "http://fedibird.com/ns#quoteUri",
+  _misskey_quote: "https://misskey-hub.net/ns#_misskey_quote",
+  quoteAuthorization: { "@id": "https://w3id.org/fep/044f#quoteAuthorization", "@type": "@id" },
+  gts: "https://gotosocial.org/ns#",
+  interactionPolicy: { "@id": "gts:interactionPolicy", "@type": "@id" },
+  canFeature: { "@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id" },
+  canQuote: { "@id": "gts:canQuote", "@type": "@id" },
+  automaticApproval: { "@id": "gts:automaticApproval", "@type": "@id" },
+  manualApproval: { "@id": "gts:manualApproval", "@type": "@id" },
+  QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
+  interactingObject: { "@id": "gts:interactingObject", "@type": "@id" },
+  interactionTarget: { "@id": "gts:interactionTarget", "@type": "@id" },
+  FeatureRequest: "https://w3id.org/fep/7aa9#FeatureRequest",
+  FeaturedCollection: "https://w3id.org/fep/7aa9#FeaturedCollection",
+  FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem",
+  FeatureAuthorization: "https://w3id.org/fep/7aa9#FeatureAuthorization",
+  topic: { "@id": "https://w3id.org/fep/7aa9#topic", "@type": "@id" },
+  featuredObject: { "@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id" },
+  featureAuthorization: { "@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id" },
+};
+
+// The @context of a Delete Mastodon 4.6.11 forwards (ActivityPub::ProcessCollectionService), and of one Mastodon 4.7.5
+// forwards (ActivityPub::ProcessActivityService): full_context at those tags.
+export const MASTODON_46_FORWARDED_CONTEXT = [
+  "https://www.w3.org/ns/activitystreams",
+  "https://w3id.org/security/v1",
+  "https://purl.archive.org/socialweb/webfinger",
+  MASTODON_46_EXTENSIONS,
+];
+export const MASTODON_47_FORWARDED_CONTEXT = [
+  "https://www.w3.org/ns/activitystreams",
+  "https://w3id.org/security/v1",
+  "https://www.w3.org/ns/cid/v1",
+  "https://purl.archive.org/socialweb/webfinger",
+  MASTODON_46_EXTENSIONS,
+];
+
 // `signed` with its @context replaced by `context` and its signature kept: what a Mastodon holding a boost or quote of a
 // status forwards of its signed Delete (JsonLdHelper#compact under full_context, then patch_for_forwarding! putting back
 // every value but the @context). Every key of Mastodon's and Kopje's status Deletes is a full_context term, so the
-// compaction changes nothing else (checked once with jsonld.js, not with Mastodon's Ruby). A stamp's Delete in this form
-// is an artificial input: Mastodon forwards a stamp's Delete without its signature.
-export function mastodonForwarded(signed: Json, context: unknown = MASTODON_FORWARDED_CONTEXT): Json {
+// compaction changes nothing else (checked once with jsonld.js, not with Mastodon's Ruby). A stamp's Delete in this
+// form stands for how Mastodon 4.7.5 forwards it, its signature kept, a form no profile accepts yet (#1599).
+export function mastodonForwarded(signed: Json, context: unknown = MASTODON_45_FORWARDED_CONTEXT): Json {
   return { ...signed, "@context": context };
+}
+
+// What a Mastodon 4.7 forwards of a signed activity it did not author, as received: a reply to a local status
+// (Activity::Create#forward_for_reply, signed by the replied-to account) or an edit of a status a local account shared
+// (ProcessStatusUpdateService#forward_activity!, signed by a sharer). ProcessActivityService compacts the body under
+// full_context, which drops null values, and patch_for_forwarding! puts back every other value of these bodies (Public,
+// single-item arrays); the signature is kept. Checked once with jsonld.js and a port of patch_for_forwarding! (equal,
+// member order aside), not with Mastodon's Ruby.
+export function mastodonForwardedActivity(signed: Json, context: unknown = MASTODON_47_FORWARDED_CONTEXT): Json {
+  const compacted = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(compacted)
+      : typeof value === "object" && value !== null
+        ? Object.fromEntries(
+            Object.entries(value)
+              .filter(([, v]) => v !== null)
+              .map(([k, v]) => [k, compacted(v)]),
+          )
+        : value;
+  const { signature, ...body } = signed;
+  return { ...(compacted(body) as Json), "@context": context, signature };
 }
 
 // An actor of mastodon.example with an RSA key (its HTTP signatures) and an Ed25519 assertion method (Multikey, its

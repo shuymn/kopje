@@ -65,7 +65,9 @@ import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STA
 //      fresh) lists the key id, and the key names no other owner. The activity id has the actor's origin. One
 //      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by the
 //      quoting server) is signed by its relayer, who must own that key in the same way; it is applied as the actor's
-//      only with the actor's own proof (author-proof.ts), and without one it only has the stamp verified again.
+//      only with the actor's own proof (author-proof.ts), and without one it only has the stamp verified again. A proof
+//      that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other relay (another type, or an
+//      actor's Delete) whose signer owns its key is dropped the same way.
 //   5. Per type, what the Store cannot fetch itself: a fresh actor document for Update, the Move target (ID-4), the
 //      object of a Create or Update given by id only.
 //   6. The Store applies it. It may answer that it needs a document first (the original of a boost it does not have,
@@ -89,7 +91,16 @@ export type InboundRequest = {
 
 // 202: done or deliberately ignored (a format or authorization problem, as Mastodon answers); 401: the signature or
 // the signer's identity failed; 415: not an ActivityStreams body; 503: a remote fetch failed in a way that may pass.
-export type InboxOutcome = { status: 202 | 401 | 415 | 503; reason: string; jobsPending?: boolean; delivers?: boolean };
+// dropped: a 202 for a relay whose signer is established but which applies nothing (its author proof does not hold, or
+// Kopje applies no relay of its type), logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops
+// such a relay after answering 202.
+export type InboxOutcome = {
+  status: 202 | 401 | 415 | 503;
+  reason: string;
+  jobsPending?: boolean;
+  delivers?: boolean;
+  dropped?: true;
+};
 
 export type InboundDeps = Omit<FederationDeps, "domain"> & { domain: string; recipient: string | null };
 
@@ -577,7 +588,8 @@ export async function receiveInbound(
   // The key is gone, and the activity is the actor's own Delete. A stored key of any age may speak for the actor
   // only if the actor document itself answers 404 or 410: a live actor is never deleted with a key it no longer
   // lists. Without a stored key the Delete cannot be verified and is answered 202, as Mastodon does, so that servers
-  // do not retry it.
+  // do not retry it. The key must be the actor's own: another owner's stale key is refused here, as it would be
+  // fresh, and never reaches the relay branch (ID-1).
   if ("status" in verified && verified.reason === "key-gone" && parsed.ok && parsed.activity.type === "DeleteActor") {
     const current = await fetchActor(parsed.actor, loaders.document, loaders.context);
     rethrowStoreError(state);
@@ -594,6 +606,10 @@ export async function receiveInbound(
       return verified.reason === "key-gone" || verified.reason === "key-refused"
         ? { status: 202, reason: "unknown-actor-deleted" }
         : verified;
+    }
+    const recovered = verified.key.id === null ? undefined : served.get(verified.key.id.href);
+    if (recovered === undefined || recovered.key !== verified.key || recovered.owner !== parsed.actor) {
+      return { status: 401, reason: "not-key-owner" };
     }
   }
   if ("status" in verified) {
@@ -619,22 +635,21 @@ export async function receiveInbound(
   const signerUri =
     fromStore !== undefined && fromStore.key === key ? fromStore.owner : (key.ownerId?.href ?? actorUri);
   if (signerUri !== actorUri) {
-    return activity.type === "Delete"
-      ? relayed(deps, {
-          activity,
-          body: parsed.body,
-          actorUri,
-          signerUri,
-          origin,
-          key,
-          pem,
-          fromStore,
-          loaders,
-          state,
-          budget,
-          revisions,
-        })
-      : { status: 401, reason: "not-key-owner" };
+    return relayed(deps, {
+      activity,
+      body: parsed.body,
+      actorUri,
+      signerUri,
+      origin,
+      key,
+      pem,
+      fromStore,
+      loaders,
+      state,
+      budget,
+      revisions,
+      receivedAt: request.receivedAt,
+    });
   }
   if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
@@ -659,6 +674,7 @@ export async function receiveInbound(
     budget,
     body: parsed.body,
     revisions,
+    receivedAt: request.receivedAt,
   });
 }
 
@@ -722,6 +738,7 @@ async function domainBlocked(
     budget: context.budget,
     body: parsed.body,
     revisions: context.revisions,
+    receivedAt: request.receivedAt,
   });
 }
 
@@ -750,7 +767,7 @@ async function ownerDocument(
 }
 
 type Relay = {
-  activity: Extract<InboundActivity, { type: "Delete" }>;
+  activity: InboundActivity | Dereference;
   // The activity as received (Parsed's body, of the bytes the signature covers).
   body: Json;
   actorUri: string;
@@ -763,14 +780,22 @@ type Relay = {
   state: FederationState;
   budget: FetchBudget;
   revisions: InboxGate["revisions"];
+  // When the request reached the inbox (InboundRequest), the instant the author proof is judged at.
+  receivedAt: number;
 };
 
-// A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a status's or a stamp's
-// Delete, signed by a local sharer of the status or the quoting status). The signer owns its key as any actor must
-// (ID-1, judged on the signer). With the actor's own proof, verified against a key the actor's current document embeds,
-// it is applied as the actor's Delete; without one it is handed on unproven, which can only have a stamp verified
-// again. A proof that is present but does not verify refuses it. Only the Store's relayedDelete applies either, and
-// decides again what it may apply to: never an actor or a boost, a status only when proven, public or unlisted.
+// An activity relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a status's or a
+// stamp's Delete, signed by a local sharer of the status or the quoting status; of a reply to a local status, Create;
+// of an edit of a shared status, Update). The signer owns its key as any actor must (ID-1, judged on the signer): a
+// signer that does not answers 401. Only a Delete of an object is applied: any other relay, an actor's Delete included,
+// is dropped with 202 once its signer is established, before any Store call, as Mastodon's inbox answers 202 and drops
+// a relay it cannot verify, and a 401 would only be retried. With the actor's own proof, verified against a key the
+// actor's current document embeds, it is applied as the actor's Delete; without one it is handed on unproven, which can
+// only have a stamp verified again. A proof that is present but does not hold (outside every profile, not verifying,
+// expired, or its author's document gone or unusable) drops the relay with 202 before any Store call, never handing it
+// on unproven: Mastodon drops a relay whose signature does not verify after answering 202, and a 401 would only be
+// retried. Only the Store's relayedDelete applies either, and decides again what it may apply to: never an actor or a
+// boost, a status only when proven, public or unlisted.
 // The actor's document is stored under the actor's revision (the gate read it for the envelope's actor, not for the
 // signer, whose document is only checked here).
 async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
@@ -787,11 +812,12 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     state,
     budget,
     revisions,
+    receivedAt,
   } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
     return { status: 401, reason: "not-key-owner" };
   }
-  if (!sameOrigin(activity.id, actorUri)) {
+  if (activity.type === "Delete" && !sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   if (fromStore?.key !== key) {
@@ -800,6 +826,9 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     if ("status" in owned) {
       return owned;
     }
+  }
+  if (activity.type !== "Delete") {
+    return { status: 202, reason: "relay-not-applied", dropped: true };
   }
   let actor: RemoteActorInput | null = null;
   let proven = false;
@@ -810,15 +839,16 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       return { status: 503, reason: "actor-unavailable" };
     }
     if (fetched.kind !== "ok" || fetched.input === null) {
-      return { status: 401, reason: "actor-unusable" };
+      return { status: 202, reason: "author-unusable", dropped: true };
     }
     const verdict = await verifyAuthorProof(
       json,
       { id: activity.id, actor: actorUri, object: activity.object },
       JSON.parse(fetched.input.raw) as unknown,
+      receivedAt,
     );
     if (!verdict) {
-      return { status: 401, reason: "proof-invalid" };
+      return { status: 202, reason: "proof-invalid", dropped: true };
     }
     actor = fetched.input;
     proven = true;
@@ -840,6 +870,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     budget,
     body: json,
     revisions,
+    receivedAt,
   });
 }
 
@@ -856,6 +887,8 @@ type Application = {
   body: Json;
   // What the inbox gate read before any document was fetched (InboundGate).
   revisions: InboxGate["revisions"];
+  // When the request reached the inbox (InboundRequest), the instant an author proof is judged at.
+  receivedAt: number;
 };
 
 // Steps 5 and 6: what the type needs, and the Store.
@@ -909,7 +942,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       if (prepared.type !== "Delete") {
         break;
       }
-      const proof = await proveDelete(application.body, prepared, actorUri, loadersFor(need));
+      const proof = await proveDelete(application.body, prepared, actorUri, loadersFor(need), application.receivedAt);
       rethrowStoreError(state);
       if (proof === "transient") {
         return { status: 503, reason: "proof-unavailable" };
@@ -950,12 +983,13 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
 }
 
 // Whether the author proof the body of the actor's own Delete carries verifies against a key the actor's current
-// document embeds (author-proof.ts); 'transient' when that may change.
+// document embeds, judged at `receivedAt` (author-proof.ts); 'transient' when that may change.
 async function proveDelete(
   body: Json,
   activity: { id: string; object: string },
   actorUri: string,
   loaders: RemoteLoaders,
+  receivedAt: number,
 ): Promise<boolean | "transient"> {
   const fetched = await fetchActor(actorUri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
@@ -968,6 +1002,7 @@ async function proveDelete(
     body,
     { id: activity.id, actor: actorUri, object: activity.object },
     JSON.parse(fetched.input.raw) as unknown,
+    receivedAt,
   );
 }
 

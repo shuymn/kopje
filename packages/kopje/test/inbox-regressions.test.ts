@@ -22,6 +22,7 @@ import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-
 import { BUILD, completeSetup, migratedStore } from "./helpers";
 import {
   LOCAL,
+  loggedRefusals,
   MASTODON,
   mastodonActor,
   RemoteWeb,
@@ -800,6 +801,26 @@ describe("second review: deletion, keys and generations", () => {
     t.web.fail(bob.uri, 410);
     expect(await t.post(bob, deleteSelf(bob))).toBe(202);
     expect(await accountId(t.store, bob.uri)).toBeUndefined();
+  });
+
+  it("refuses a gone actor's Delete signed with another account's stale stored key, gone too (ID-1)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    await t.post(bob, follow(bob));
+    await t.post(carol, follow(carol));
+    await ageKeys(t);
+    t.web.fail(bob.uri, 410);
+    t.web.fail(carol.uri, 410);
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await loggedRefusals(() => t.post(bob, deleteSelf(bob), signed))).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]],
+    });
+    expect(await accountId(t.store, bob.uri)).toBeDefined();
+    expect(await accountId(t.store, carol.uri)).toBeDefined();
+    expect((await edges(t.store)).length).toBe(2);
+    expect(await count(t.store, "SELECT 1 FROM inbound_jobs")).toBe(0);
   });
 
   it("answers 503 when the key is gone but the actor document fails transiently, and 401 when it is alive", async () => {

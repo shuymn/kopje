@@ -39,6 +39,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage
   signatures are unchanged. No Store migration and no `wrangler.jsonc` change.
+- A delivery or a signed fetch answered 400 or 401 is sent once more at once with an RFC 9421 signature by the same
+  key, following Mastodon 4.7's retry with an RFC 9421 signature, and the second answer decides it; a delivery answered
+  400 was given up at once before. Web Push is not retried. No Store migration and no `wrangler.jsonc` change.
 - The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
   is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
   for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400
@@ -49,6 +52,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and the 28 UTC days before it (29 days, where it counted 28). The admin measures' `previous_total` counts the period
   of the same number of days right before the requested one, by the dates written. The time of day no longer moves it,
   and it no longer overlaps the requested period's first day. No Store migration and no `wrangler.jsonc` change.
+- A relayed `Delete` whose author proof is in no accepted form, does not verify, or names an author whose document is
+  gone is answered 202 and changes nothing, as Mastodon drops it, instead of 401, which senders retried. It is logged
+  as `kopje.inbox.refused` with status 202. No Store migration and no `wrangler.jsonc` change.
+- Any other activity another server relays (a forwarded reply or edit, or an account's `Delete`), which Kopje does not
+  apply, is answered 202 once the relaying server's signature is established, as Mastodon answers it, instead of 401,
+  which senders retried for days. It is logged as `kopje.inbox.refused` with status 202. A relay whose signer does not
+  own its key is still answered 401.
 
 ### Fixed
 
@@ -63,6 +73,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   lines are set without a gap, and the avatar beside them (a post's, a quote's, a list's) is 46px.
 - A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
   where it stood further from the edge.
+- A status or stamp `Delete` signed by a Mastodon 4.7 author (its signature carries `expires`), and a status `Delete`
+  forwarded by a Mastodon 4.6 or 4.7 server that holds a boost or quote of the status, are applied as the author's and
+  forwarded through local boosts and quotes again; an `expires` already past when the request arrived does not prove.
 
 ## [0.5.2] - 2026-11-14
 
