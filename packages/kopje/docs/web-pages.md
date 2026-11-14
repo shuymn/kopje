@@ -107,7 +107,7 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
 - There is one one-line utility, `.oneline`: the text cut with an ellipsis, the whole kept (a heading naming a server,
   a website's host, the embed code); and one two-line one, `.clamp` (the handoff's post text).
 - A row with an end action (the look-up result's Follow by the author, an authorized app's Revoke) insets it from the
-  card's edge as the row's start is. In a row with an avatar its centre is the avatar's (the name and address run
+  card's edge as the row's start is. In a row with an avatar its centre is the avatar's (a name that wraps runs
   lower); in a row without one it is centred in the row. Where it wraps below the row's text, it starts its line at
   the content edge (browser job).
 - Every profile tab is headed by `ProfileHead`: the same card, its Follow beside the avatar, and the follow dialog.

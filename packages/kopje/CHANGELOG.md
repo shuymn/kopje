@@ -8,6 +8,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- On the public pages, an author's name and address sit centred beside the avatar, where they ran below it: the two
+  lines are set without a gap, and the avatar beside them (a post's, a quote's, a list's) is 46px.
+
 ## [0.5.2] - 2026-11-14
 
 A patch release, published under the npm dist-tag `latest`. On a Cloudflare runtime whose SQLite 3.54.1 counts every
