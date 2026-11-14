@@ -125,8 +125,8 @@ const OPEN = { "access-control-allow-origin": "*" };
 
 // The other answers Kopje's dispatchers give that the snapshot can tell exactly, since it holds every local actor:
 //   - WebFinger for acct:<user>@<domain> in any case: the user's answer, its subject the user as asked and the domain
-//     in lower case (Fedify's answer); an unknown user, another domain, or another URL of this origin but the
-//     instance actor's: 404;
+//     in lower case (Fedify's answer); an unknown user, another domain, or another URL of this origin: 404, except
+//     the instance actor's handle and URI (503: its key does not exist yet);
 //   - an actor path that is not a local actor's exact path, asked as JSON: 404, as Kopje (actor paths keep case).
 // Anything else (a foreign URL, a malformed query) is left to 503.
 function answerVariant(request: Request, domain: string, documents: Map<string, Snapshot>): Response | null {
@@ -152,6 +152,10 @@ function answerVariant(request: Request, domain: string, documents: Map<string, 
     const [, user, host] = acct as unknown as [string, string, string];
     if (host.toLowerCase() !== domain) {
       return notFound();
+    }
+    // The instance actor's handle (federation.ts isInstanceHandle) is answered after the import, as its URI is.
+    if (user === domain) {
+      return null;
     }
     const canonical = [...documents.keys()].find(
       (key) => key.toLowerCase() === `webfinger:acct:${user}@${domain}`.toLowerCase(),

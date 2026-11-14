@@ -337,8 +337,9 @@ export function createKopjeFederation(
     .setActorDispatcher("/ap/users/{identifier}", async (ctx, identifier) => {
       if (identifier === INSTANCE_ACTOR) {
         // The HTTP alias rule: the document is served at /actor, never under the /ap/users template. WebFinger
-        // resolves it only by its canonical URI; Fedify also maps the template spelling of the identifier to it.
-        if (!isInstanceActorRequest(ctx.url, origin)) {
+        // resolves it only by its canonical URI and its handle; Fedify also maps the template spelling of the
+        // identifier to it.
+        if (!isInstanceActorRequest(ctx.url, domain)) {
           return null;
         }
         const key = await loadInstanceKey();
@@ -354,7 +355,9 @@ export function createKopjeFederation(
       state.source = { kind: "actor", username: actor.username, rendered: JSON.stringify(actor) };
       return localActorObject(ctx, actor);
     })
-    .mapHandle(async (_ctx, username) => (await localActor(username))?.username ?? null)
+    .mapHandle(async (_ctx, username) =>
+      isInstanceHandle(username, domain) ? INSTANCE_ACTOR : ((await localActor(username))?.username ?? null),
+    )
     .mapActorAlias("/actor", INSTANCE_ACTOR)
     .setKeyPairsDispatcher(async (_ctx, identifier) => {
       if (identifier === INSTANCE_ACTOR) {
@@ -546,10 +549,21 @@ export function createKopjeFederation(
 const OBJECT_ID = /^[0-9A-Za-z-]{1,64}$/;
 const FIRST_OUTBOX_CURSOR = "first";
 
-function isInstanceActorRequest(url: URL, origin: string): boolean {
+// The instance actor's handle is acct:<domain>@<domain>, its preferredUsername at the domain: Mastodon's
+// WebfingerResource#account_from_acct answers Account.representative for a username that is the local domain exactly,
+// before any local account (v4.7.5). A local username has no '.' (LOCAL_USERNAME), so it never is the domain.
+function isInstanceHandle(username: string, domain: string): boolean {
+  return username === domain;
+}
+
+// WebFinger reaches the instance actor by its URI, or by its handle (mapHandle), whose host Fedify has already matched
+// to the domain.
+function isInstanceActorRequest(url: URL, domain: string): boolean {
   if (url.pathname === "/.well-known/webfinger") {
     const resources = url.searchParams.getAll("resource");
-    return resources.length === 1 && resources[0] === `${origin}/actor`;
+    const resource = resources.length === 1 ? resources[0]! : "";
+    const handle = /^acct:([^@]+)@[^@]+$/.exec(resource)?.[1];
+    return resource === `https://${domain}/actor` || (handle !== undefined && isInstanceHandle(handle, domain));
   }
   return url.pathname === "/actor";
 }
