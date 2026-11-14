@@ -10,6 +10,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
+  4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
+  request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage
+  signatures are unchanged. No Store migration and no `wrangler.jsonc` change.
 - The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
   is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
   for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400

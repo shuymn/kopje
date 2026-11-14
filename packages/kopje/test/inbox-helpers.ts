@@ -2,7 +2,7 @@ import { exportSpki, signRequest } from "@fedify/fedify";
 import { Temporal } from "temporal-polyfill";
 
 import type { RemoteActorInput } from "../src/domain/remote-actors";
-import { RSA_ALGORITHM } from "../src/security/key-wrap";
+import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
 import { NOW } from "./app-helpers";
 
 // Remote servers for inbox tests: synthetic, real-shaped actor documents (Mastodon 4.x and Misskey 2024+) served by
@@ -303,6 +303,10 @@ export type SignOptions = {
   contentType?: string;
   at?: number;
   headers?: Record<string, string>;
+  // An RFC 9421 signature instead: Fedify's default components, or the given ones (a name, or a name with parameters)
+  // followed by content-digest unless digest is false (Fedify adds it to any signature it makes over a body, so without
+  // it the body goes unsigned). The Content-Digest header is always sent, signed or not.
+  rfc9421?: { components?: (string | { value: string; params: Record<string, unknown> })[]; digest?: boolean };
 };
 
 // The init of a POST of `activity` to `path`, signed as `actor` signs (Date at `at`, Digest, Host).
@@ -313,19 +317,35 @@ export async function signedInit(
   options: SignOptions = {},
 ): Promise<RequestInit> {
   const body = typeof activity === "string" ? activity : JSON.stringify(activity);
+  const rfc9421 = options.rfc9421;
+  // Fedify's signer writes Content-Digest from the body it signs; without one (digest false), it is written here.
+  const digest =
+    rfc9421?.digest !== false
+      ? {}
+      : {
+          "content-digest": `sha-256=:${bytesToBase64(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))),
+          )}:`,
+        };
   const unsigned = new Request(`${LOCAL}${path}`, {
     method: "POST",
-    headers: { "content-type": options.contentType ?? AP, ...options.headers },
+    headers: { "content-type": options.contentType ?? AP, ...digest, ...options.headers },
     body,
   });
+  const currentTime = Temporal.Instant.fromEpochMilliseconds(options.at ?? NOW);
+  const components = rfc9421?.components?.map((c) => (typeof c === "string" ? { value: c, params: {} } : c));
   const signed = await signRequest(
     unsigned,
     options.privateKey ?? actor.privateKey,
     new URL(options.keyId ?? actor.keyId),
-    {
-      spec: "draft-cavage-http-signatures-12",
-      currentTime: Temporal.Instant.fromEpochMilliseconds(options.at ?? NOW),
-    },
+    rfc9421 === undefined
+      ? { spec: "draft-cavage-http-signatures-12", currentTime }
+      : {
+          spec: "rfc9421",
+          currentTime,
+          ...(components === undefined ? {} : { rfc9421: { components } }),
+          ...(rfc9421.digest === false ? { body: null } : {}),
+        },
   );
   return { method: "POST", headers: signed.headers, body };
 }

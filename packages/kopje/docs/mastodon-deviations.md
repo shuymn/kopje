@@ -795,6 +795,14 @@ Removing a favourite or bookmark (`POST /api/v1/statuses/:id/unfavourite` and `/
   visibility, where Mastodon's `show?` still shows a private, direct or limited status to a mentioned viewer. Accepted,
   2026-10-27.
 
+Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`; ID-1 in `docs/threat-model.md`):
+
+- A request whose `Signature-Input` names several signatures is judged by the first of them, of at most three, that
+  verifies; Mastodon refuses a request whose `Signature-Input` names more than one signature, before verifying any
+  (`signed_request.rb:150-153`). The signature Kopje selects meets Mastodon's required parameters and covered
+  components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
+  components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
+
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):
 

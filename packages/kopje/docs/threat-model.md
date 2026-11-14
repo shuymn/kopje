@@ -114,15 +114,27 @@ against their own instance. TLS is assumed between all parties.
 
 - **ID-1: an inbound activity acts only for its signer.** It is processed only if its HTTP signature verifies, the key's
   owner equals `activity.actor`, and that actor is not local. An unsigned or unverifiable request changes nothing and
-  answers 401. The owner is the actor whose document lists the key, by id and key material, and the key names no
-  other owner. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
-  trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
-  document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
-  the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with the stored
-  key at any age. A live actor is never deleted with a key its current document does not list (401), and a transient
-  failure answers 503. _Enforced (main):_ `receiveInbound` in `src/federation/inbound.ts`; `test/inbox.test.ts` ("ID-1:
-  an inbound activity acts only for its signer"), `test/inbox-regressions.test.ts` ("stored keys, rotation and
-  ownership"). A stored key list (with the profile, `movedTo` and routing beside it) is replaced only by a document
+  answers 401. A signature verifies only if it covers the request, and one that covers less is answered as one that
+  does not verify: a draft-cavage signature covers `(request-target)` and `date`, and `digest` when the request has a
+  body (Fedify's check); an RFC 9421 signature covers `@method` and `@target-uri`, and `content-digest` unless the
+  method is GET or HEAD, each without parameters, as Mastodon 4.7 requires, besides the `keyid` and `created` Fedify
+  requires. Of a request's RFC 9421 signatures, the rule applies to the `Signature-Input` member Fedify verified, the
+  first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
+  `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
+  request (`verifySpooledRequest`, OPS-9) holds to the same rule. The owner is the actor whose document lists the key,
+  by id and key material, and the key names no other owner. A stored key (`remote_keys`, kept per key id with its owner,
+  whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that, or when its
+  signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one exception is
+  an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document both answer
+  404 or 410: it is verified with the stored key at any age. A live actor is never deleted with a key its current
+  document does not list (401), and a transient failure answers 503.
+  _Enforced (main):_ `receiveInbound`, `verifyHttpSignature` and `verifySpooledRequest` in `src/federation/inbound.ts`;
+  `test/inbox.test.ts` ("ID-1: an inbound activity acts only for its signer", "refuses a draft-cavage signature
+  without", "refuses an RFC 9421 signature without", "accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them",
+  "RFC 9421 signature leaves out a required component", "holds the rollback drain's check of a spooled request to the
+  same rule"), `test-node/fedify-usage.test.ts` ("reads Signature-Input with the one structured-field-values Fedify
+  resolves"), `test/inbox-regressions.test.ts` ("stored keys, rotation and ownership"). A stored key list (with the
+  profile, `movedTo` and routing beside it) is replaced only by a document
   fetched after the last one stored: every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
