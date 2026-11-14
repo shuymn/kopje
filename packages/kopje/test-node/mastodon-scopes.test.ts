@@ -219,6 +219,10 @@ describe("mastodon-scopes.mjs concerns and with_options", () => {
         "      resources :tags",
         "      resources :links, only: [:show]",
         "    end",
+        "",
+        "    with_options only: [:show] do",
+        "      resource :profile",
+        "    end",
         "  end",
         "end",
         "",
@@ -234,6 +238,7 @@ describe("mastodon-scopes.mjs concerns and with_options", () => {
       "GET /api/v1/links/:link_id/reviews api/v1/reviews#index",
       "POST /api/v1/links/:link_id/reviews api/v1/reviews#create",
       "GET /api/v1/links/:id api/v1/links#show",
+      "GET /api/v1/profile api/v1/profiles#show",
     ]);
   });
 
@@ -327,6 +332,154 @@ describe("mastodon-scopes.mjs concerns and with_options", () => {
     const reports = route("/api/v1/admin/reports");
     expect(reports?.guards).toEqual(["require_moderator_or_admin_permissions"]);
     expect(reports?.unresolved).toEqual(["Pundit policy: authorize :report, :review?"]);
+  });
+
+  // A controller including Reviewing (the given module body); PolicyChecks registers a callback that authorizes.
+  const reviewing = (concern: string[], classBody = ["  include Reviewing"]) => ({
+    "config/routes/api.rb":
+      "namespace :api do\n  namespace :v1 do\n    resources :things, only: [:index]\n  end\nend\n",
+    "app/controllers/api/v1/things_controller.rb": [
+      "class Api::V1::ThingsController < Api::BaseController",
+      ...classBody,
+      "",
+      "  def index",
+      "    render json: []",
+      "  end",
+      "end",
+      "",
+    ].join("\n"),
+    "app/controllers/concerns/reviewing.rb": [
+      "module Reviewing",
+      "  extend ActiveSupport::Concern",
+      ...concern,
+      "end",
+      "",
+    ].join("\n"),
+    "app/controllers/concerns/policy_checks.rb": [
+      "module PolicyChecks",
+      "  extend ActiveSupport::Concern",
+      "",
+      "  included do",
+      "    before_action :check_review",
+      "  end",
+      "",
+      "  def check_review",
+      "    authorize :thing, :index?",
+      "  end",
+      "end",
+      "",
+    ].join("\n"),
+  });
+  const policy = "Pundit policy: authorize :thing, :index?";
+
+  it("registers a dependency's callbacks before the included block's, as Rails does", async () => {
+    // The skip only removes check_review once PolicyChecks has registered it.
+    await checkout(
+      reviewing([
+        "  include PolicyChecks",
+        "",
+        "  included do",
+        "    skip_before_action :check_review",
+        "    before_action :require_reviewer!",
+        "  end",
+      ]),
+    );
+    const things = route("/api/v1/things");
+    expect(things?.guards).toEqual(["require_reviewer!"]);
+    expect(things?.unresolved).toBeUndefined();
+  });
+
+  it("reads an included block with a block argument as one without", async () => {
+    await checkout(reviewing(["  included do |base|", "    include PolicyChecks", "  end"]));
+    expect(route("/api/v1/things")?.unresolved).toEqual([policy]);
+  });
+
+  it.each([
+    {
+      where: "the concern's module body",
+      concern: ["  if Rails.configuration.x.reviews", "    include PolicyChecks", "  end"],
+      classBody: undefined,
+      reason: "app/controllers/concerns/reviewing.rb: `include PolicyChecks` inside a block registers callbacks",
+    },
+    {
+      where: "the concern's included block",
+      concern: [
+        "  included do",
+        "    if Rails.configuration.x.reviews",
+        "      include PolicyChecks",
+        "    end",
+        "  end",
+      ],
+      classBody: undefined,
+      reason: "app/controllers/concerns/reviewing.rb: `include PolicyChecks` inside a block registers callbacks",
+    },
+    {
+      where: "the class",
+      concern: ["  include PolicyChecks"],
+      classBody: ["  if Rails.configuration.x.reviews", "    include Reviewing", "  end"],
+      reason: "app/controllers/api/v1/things_controller.rb: `include Reviewing` inside a block registers callbacks",
+    },
+  ])(
+    "leaves the callbacks of an include inside a block of $where unresolved",
+    async ({ concern, classBody, reason }) => {
+      await checkout(reviewing(concern, classBody));
+      // The callbacks are still read, so the policy they run is listed too.
+      expect(route("/api/v1/things")?.unresolved).toEqual([reason, policy]);
+    },
+  );
+
+  it("reads an include inside a block that registers no callbacks as nothing", async () => {
+    await checkout(
+      reviewing(
+        ["  def helper", "  end"],
+        ["  include PolicyChecks", "  if Rails.configuration.x.reviews", "    include Reviewing", "  end"],
+      ),
+    );
+    expect(route("/api/v1/things")?.unresolved).toEqual([policy]);
+  });
+
+  it.each([
+    {
+      form: "an included block in braces",
+      concern: ["  included { include PolicyChecks }"],
+      stmt: "included { include PolicyChecks }",
+    },
+    {
+      form: "an included block passed as a proc",
+      concern: ["  included(&POLICY_CHECKS)"],
+      stmt: "included(&POLICY_CHECKS)",
+    },
+    {
+      form: "a self.included hook",
+      concern: ["  def self.included(base)", "    base.include PolicyChecks", "  end"],
+      stmt: "def self.included(base)",
+    },
+    {
+      form: "an included block inside a block",
+      concern: [
+        "  if Rails.configuration.x.reviews",
+        "    included do",
+        "      before_action :check_review",
+        "    end",
+        "  end",
+      ],
+      stmt: "included do",
+    },
+  ])("leaves $form unresolved", async ({ concern, stmt }) => {
+    await checkout(reviewing(concern));
+    expect(route("/api/v1/things")?.unresolved).toEqual([
+      `app/controllers/concerns/reviewing.rb: unreadable \`${stmt}\``,
+    ]);
+  });
+
+  it.each([
+    { form: "an include of several modules", stmt: "include PolicyChecks, Auditing" },
+    { form: "a prepend", stmt: "prepend PolicyChecks" },
+  ])("leaves $form in a class unresolved", async ({ stmt }) => {
+    await checkout(reviewing([], [`  ${stmt}`]));
+    expect(route("/api/v1/things")?.unresolved).toEqual([
+      `app/controllers/api/v1/things_controller.rb: unreadable \`${stmt}\``,
+    ]);
   });
 });
 

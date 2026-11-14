@@ -600,6 +600,7 @@ function readController(checkout, file, cache) {
   }
   /** @type {Callback[]} */
   const callbacks = [];
+  const included = new Set();
   let classIndent = null;
   for (const { indent, text: stmt } of statements(text)) {
     if (/^class\b/.test(stmt) && classIndent === null) {
@@ -607,9 +608,9 @@ function readController(checkout, file, cache) {
       continue;
     }
     const nested = classIndent !== null && indent > classIndent;
-    const include = /^include\s+([\w:]+)$/.exec(stmt);
-    if (include !== null) {
-      callbacks.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), nested, unresolved));
+    const inclusion = inclusionCallbacks(checkout, file, stmt, nested, unresolved, included);
+    if (inclusion !== null) {
+      callbacks.push(...inclusion);
       continue;
     }
     const cb = readCallback(stmt, file, nested, unresolved);
@@ -675,43 +676,78 @@ function readCallback(stmt, file, nested, unresolved) {
   };
 }
 
+// A statement that may change a class's callbacks through a module in a form this script does not read: an include of
+// anything but one constant, a prepend, and the concern hooks other than `included do`.
+const UNREAD_INCLUSION =
+  /^(include|prepend|included|prepended)\b|^def self\.(included|prepended|append_features|prepend_features)\b/;
+
+// The callbacks an inclusion statement in a class or concern (`file`) registers, or null for another statement. An
+// include inside a block (a condition, a method) may not run: if it registers callbacks, the reading is unresolved,
+// as is a form UNREAD_INCLUSION names.
+/**
+ * @param {string} checkout
+ * @param {string} file
+ * @param {string} stmt
+ * @param {boolean} inBlock
+ * @param {string[]} unresolved
+ * @param {Set<string>} included the concerns the class has included so far, whose included block Rails does not run again
+ * @returns {Callback[] | null}
+ */
+function inclusionCallbacks(checkout, file, stmt, inBlock, unresolved, included) {
+  const name = /^include\s+([\w:]+)$/.exec(stmt)?.[1];
+  if (name === undefined) {
+    if (!UNREAD_INCLUSION.test(stmt)) {
+      return null;
+    }
+    unresolved.push(`${file}: unreadable \`${stmt}\``);
+    return [];
+  }
+  const callbacks = concernCallbacks(checkout, name, unresolved, included);
+  if (inBlock && callbacks.length > 0) {
+    unresolved.push(`${file}: \`${stmt}\` inside a block registers callbacks`);
+  }
+  return callbacks;
+}
+
 // The callbacks an `include` of a concern in app/controllers/concerns registers on the class, in the order Rails does
 // (ActiveSupport::Concern#append_features): the concerns it includes in its module body first, then the statements of
-// its `included do` block, where an `include` registers that concern's in place. A concern elsewhere (a helper, a gem)
-// registers none this script reads.
+// its `included do [|base|]` block, where an `include` registers that concern's in place. A concern elsewhere (a
+// helper, a gem) registers none this script reads.
 /**
  * @param {string} checkout
  * @param {string} name
- * @param {boolean} nested the include sits inside a block of the class
  * @param {string[]} unresolved
- * @param {Set<string>} [seen] concerns already followed for this include
+ * @param {Set<string>} included
  * @returns {Callback[]}
  */
-function concernCallbacks(checkout, name, nested, unresolved, seen = new Set()) {
+function concernCallbacks(checkout, name, unresolved, included) {
   const file = classFile(name).replace("app/controllers/", "app/controllers/concerns/");
-  if (seen.has(file) || !existsSync(join(checkout, file))) {
+  if (included.has(file) || !existsSync(join(checkout, file))) {
     return [];
   }
-  seen.add(file);
+  included.add(file);
   /** @type {Callback[]} */
   const dependencies = [];
   /** @type {Callback[]} */
   const block = [];
   let moduleIndent = null;
+  let inBody = false;
   let blockIndent = null;
   for (const { indent, text: stmt } of statements(readFileSync(join(checkout, file), "utf8"))) {
-    if (blockIndent === null && /^module\b/.test(stmt)) {
+    if (!inBody && /^module\b/.test(stmt)) {
       // The innermost of `module A` / `module B` holds the body.
       moduleIndent = indent + 2;
       continue;
     }
-    const include = /^include\s+([\w:]+)$/.exec(stmt);
+    inBody ||= moduleIndent !== null;
     if (blockIndent === null) {
-      if (stmt === "included do" && indent === moduleIndent) {
+      if (indent === moduleIndent && /^included do(\s*\|[^|]*\|)?$/.test(stmt)) {
         blockIndent = indent + 2;
-      } else if (include !== null && indent === moduleIndent) {
-        dependencies.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), nested, unresolved, seen));
+        continue;
       }
+      dependencies.push(
+        ...(inclusionCallbacks(checkout, file, stmt, indent !== moduleIndent, unresolved, included) ?? []),
+      );
       continue;
     }
     if (indent < blockIndent) {
@@ -719,12 +755,13 @@ function concernCallbacks(checkout, name, nested, unresolved, seen = new Set()) 
       blockIndent = null;
       continue;
     }
-    const inner = nested || indent > blockIndent;
-    if (include !== null) {
-      block.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), inner, unresolved, seen));
+    const inBlock = indent > blockIndent;
+    const inclusion = inclusionCallbacks(checkout, file, stmt, inBlock, unresolved, included);
+    if (inclusion !== null) {
+      block.push(...inclusion);
       continue;
     }
-    const cb = readCallback(stmt, file, inner, unresolved);
+    const cb = readCallback(stmt, file, inBlock, unresolved);
     if (cb !== null) {
       block.push(cb);
     }
