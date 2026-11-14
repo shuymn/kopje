@@ -45,8 +45,8 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **Store-local decisions whose inputs are available together are combined into one Store call.** A phase of a
   request ends at an external effect (verifying, fetching, sending) or at a commit, not at each read. A call stays
   separate only when its timing is the guarantee: a policy read after an awaited remote response (`fetchRefused` before
-  a redirect hop or a later request, `webHopRefused`), a confirmation under lease right before a send
-  (`confirmDelivery`), a one-time write (`ensureInstanceActorKey`).
+  a redirect hop, an RFC 9421 retry or a later request, `webHopRefused`), a confirmation under lease right before a
+  send (`confirmDelivery`), a one-time write (`ensureInstanceActorKey`).
 - **A fetch's preparation (its signer and the policy verdict for its first request) is read in the answer that decides
   the fetch** (`FetchPreparation` in `src/domain/inbox.ts`, which names those answers), and a search resolution's
   actor revision read (`actorRevision`) carries the verdict for the actor's fetch the same way. It is optional: the
