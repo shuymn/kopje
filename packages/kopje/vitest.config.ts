@@ -41,8 +41,12 @@ export default defineConfig({
       fileURLToPath(new URL("./test-node/plan-audit-run.ts", import.meta.url)),
     ],
     include: [fileURLToPath(new URL("./test/**/*.test.ts", import.meta.url))],
-    // The streaming suites run in a project of their own, in one worker (vitest.streaming.config.ts).
-    exclude: [fileURLToPath(new URL("./test/streaming/**", import.meta.url))],
+    // The streaming suites run in a project of their own, in one worker (vitest.streaming.config.ts), and so do the
+    // comparisons with main's statements, on the runtime that prepares them (vitest.main-runtime.config.ts).
+    exclude: [
+      fileURLToPath(new URL("./test/streaming/**", import.meta.url)),
+      fileURLToPath(new URL("./test/main-runtime/**", import.meta.url)),
+    ],
     setupFiles: [
       fileURLToPath(new URL("./test/sql-depth-setup.ts", import.meta.url)),
       fileURLToPath(new URL("./test/storage-setup.ts", import.meta.url)),

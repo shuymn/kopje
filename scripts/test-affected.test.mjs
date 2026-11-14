@@ -113,7 +113,10 @@ describe("runs", () => {
   });
 
   it("skips a clean tree that already passed, and runs again once it changes", () => {
-    assert.match(run().pnpm, /--project kopje --project kopje-streaming --project kopje-cli$/);
+    assert.match(
+      run().pnpm,
+      /--project kopje --project kopje-streaming --project kopje-main-runtime --project kopje-cli$/,
+    );
     const again = run();
     assert.equal(again.status, 0);
     assert.equal(again.pnpm, "");

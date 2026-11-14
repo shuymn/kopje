@@ -3,7 +3,15 @@ import { describe, expect, it } from "vitest";
 
 import { migratedStore } from "./helpers";
 import { statementId } from "./plan-audit";
-import { type Baseline, expectBeside, expectGrowth, PlanWitness, type Run, type Side } from "./plan-witness";
+import {
+  type Baseline,
+  type Count,
+  expectBeside,
+  expectGrowth,
+  PlanWitness,
+  type Run,
+  type Side,
+} from "./plan-witness";
 
 // test/plan-witness.ts against itself: each guard of the side-by-side witness, met by one minimal case that fails it,
 // beside the case that passes. The world: a table t of `k` keys, two rows each, with an index on k.
@@ -34,8 +42,9 @@ async function witnessed(
     statistics?: "singleton" | "analyzed";
     keys?: number;
     family?: RegExp;
-    allowed?: readonly string[];
+    allowed?: readonly string[] | Readonly<Record<string, Count>>;
     catching?: boolean;
+    candidates?: number;
   } = {},
 ): Promise<Run> {
   const witness = new PlanWitness(entries, options.family, options.allowed);
@@ -54,6 +63,7 @@ async function witnessed(
       statistics: options.statistics ?? "analyzed",
       expected: expected(ids),
       populations: { t: "SELECT count(*) AS n FROM t" },
+      ...(options.candidates === undefined ? {} : { candidates: options.candidates }),
       run: (wrapped) =>
         statements.map(([query, ...params]) => {
           try {
@@ -177,6 +187,46 @@ describe("the sequence", () => {
     const strict = await witnessed(await baselines(), () => [id], statements, { allowed: [] });
     expect(strict.sides.map((side) => side.fault)).toEqual([undefined, "not allowed"]);
     expect(() => expectBeside("analyzed", strict)).toThrow(/main's statements, every one in order/);
+  });
+});
+
+describe("the counts", () => {
+  const count = "SELECT count(*) AS n FROM t WHERE k = ?";
+  // The pinned read, then the count once per candidate key (a flow that reads per candidate).
+  const perCandidate = (keys: number): [string, ...SqlStorageValue[]][] => [
+    [PINNED, 3],
+    ...Array.from({ length: keys }, (_, k): [string, ...SqlStorageValue[]] => [count, k]),
+  ];
+
+  it("pass each counted statement run as often as its count, constant or per candidate", async () => {
+    const id = await statementId(SELECT);
+    const once = await witnessed(await baselines(), () => [id], perCandidate(1), { allowed: { [count]: 1 } });
+    expectBeside("analyzed", once);
+    expect(once.counts?.executed).toEqual({ [count]: 1 });
+    const per = { [count]: { perCandidate: 1, constant: 0 } };
+    const few = await witnessed(await baselines(), () => [id], perCandidate(2), { allowed: per, candidates: 2 });
+    const many = await witnessed(await baselines(), () => [id], perCandidate(5), { allowed: per, candidates: 5 });
+    expectBeside("analyzed", few);
+    expectBeside("analyzed", many);
+    expectGrowth(few, many, { populations: [] });
+  });
+
+  it("fail an allowed read moved into a per-candidate loop", async () => {
+    const id = await statementId(SELECT);
+    const allowed = { [count]: 1 };
+    const few = await witnessed(await baselines(), () => [id], perCandidate(1), { allowed, candidates: 1 });
+    const many = await witnessed(await baselines(), () => [id], perCandidate(4), { allowed, candidates: 4 });
+    expectBeside("analyzed", few);
+    expect(() => expectBeside("analyzed", many)).toThrow(/each counted statement's executions/);
+    expect(() => expectGrowth(few, many, { populations: [] })).toThrow(/executions grow as main's/);
+  });
+
+  it("fail a counted statement the flow no longer runs, and one it runs twice", async () => {
+    const id = await statementId(SELECT);
+    const none = await witnessed(await baselines(), () => [id], perCandidate(0), { allowed: { [count]: 1 } });
+    expect(() => expectBeside("analyzed", none)).toThrow(/each counted statement's executions/);
+    const twice = await witnessed(await baselines(), () => [id], perCandidate(2), { allowed: { [count]: 1 } });
+    expect(() => expectBeside("analyzed", twice)).toThrow(/each counted statement's executions/);
   });
 });
 

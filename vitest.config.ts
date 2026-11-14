@@ -10,6 +10,7 @@ export default defineConfig({
     projects: [
       "packages/kopje/vitest.config.ts",
       "packages/kopje/vitest.streaming.config.ts",
+      "packages/kopje/vitest.main-runtime.config.ts",
       "packages/kopje/vitest.node.config.ts",
     ],
     // `--coverage` (CI's coverage-test shards) writes coverage/lcov.info, with paths from the repository root, for

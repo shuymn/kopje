@@ -5,10 +5,12 @@ import { Db } from "../src/db/sql";
 import { localActorOf } from "../src/domain/actors";
 import { stagedList } from "../src/domain/audience";
 import { migratedStore } from "./helpers";
+import { flatCteAfter } from "./sql-cursor-pads";
 import { measure, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
 
-// The guard of test/sql-depth-setup.ts: it sees the statements the Store runs, and it reports a deep one.
+// The guard of test/sql-depth-setup.ts: it sees the statements the Store runs, and it reports one nested too deep or
+// resolving a CTE after too many cursors (test-node/sql-depth.ts, CTE_GUARD_LIMIT).
 describe("expression depth guard", () => {
   const nested = (depth: number) => `SELECT ${"-(".repeat(depth - 1)}1${")".repeat(depth - 1)}`;
 
@@ -66,8 +68,17 @@ describe("expression depth guard", () => {
     expect(seen.samples).not.toContainEqual(["test-only"]);
   });
 
-  it("reports a statement the Store would refuse, with its depth", async () => {
-    expect(await measure([nested(10), nested(101)])).toEqual([{ depth: 101, sql: nested(101) }]);
+  it("reports a statement nested past the guard's limit, with the lowest limit it prepares at", async () => {
+    expect(await measure([nested(10), nested(96), nested(97), nested(101)])).toEqual([
+      { limit: 97, sql: nested(97) },
+      { limit: 101, sql: nested(101) },
+    ]);
+  });
+
+  it("reports a statement resolving a CTE after more cursors than the guard's limit allows", async () => {
+    expect(await measure([flatCteAfter(94, "accounts"), flatCteAfter(95, "accounts")])).toEqual([
+      { limit: 97, sql: flatCteAfter(95, "accounts") },
+    ]);
   });
 
   it("refuses a batch, whose later statements it would not measure", async () => {

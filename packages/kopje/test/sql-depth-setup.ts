@@ -21,9 +21,10 @@ import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { PLAN_AUDIT_ENTRIES } from "./plan-audit-entries";
 import { auditStore, type PlannedOrRefused } from "./plan-audit-store";
 
-// Setup of every Workers suite (vitest.config.ts, vitest.streaming.config.ts): records each distinct statement the
-// suite runs through Db, in the Store or in a test, and after the suite has its expression depth measured on Node
-// (test-node/sql-depth.ts) and the plan of each statement the domain code ran audited (test/plan-audit.ts). Db is where
+// Setup of every Workers suite (vitest.config.ts, vitest.streaming.config.ts, vitest.main-runtime.config.ts): records
+// each distinct statement the suite runs through Db, in the Store or in a test, and after the suite has each prepared
+// on Node at the guard's limit (test-node/sql-depth.ts: its expression depth and the cursors before each CTE) and the
+// plan of each statement the domain code ran audited (test/plan-audit.ts). Db is where
 // the domain code, and the policy fragments it composes (src/domain/audience.ts), run their SQL; the Store kernel's
 // migrations and the dump, import and backup statements run on SqlStorage directly, as fixed or catalog-generated text
 // without such nesting.
@@ -43,8 +44,9 @@ export type Recorded = { samples: SqlStorageValue[][]; production: boolean; meas
 
 export const statements = new Map<string, Recorded>();
 
-// As test-node/sql-depth.ts reports one.
-export type DeepStatement = { depth: number; sql: string };
+// As test-node/sql-depth.ts reports one: refused at CTE_GUARD_LIMIT, with the lowest limit it prepares at (null: none
+// it measures).
+export type DeepStatement = { limit: number | null; sql: string };
 
 const MAX_SITES = 3;
 // A bound value changes a plan through a partial index's condition (test/plan-audit.test.ts); values the suites never
