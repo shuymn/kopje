@@ -10,9 +10,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [0.5.2] - 2026-11-14
 
-A patch release, published under the npm dist-tag `latest`. On Cloudflare's runtime whose SQLite is 3.54.1, which
-Workers have run since about 2026-11-10 regardless of their compatibility date, notifications, push, the home, list and
-hashtag timelines and the streaming home timeline failed; they work again. Upgrading is strongly recommended.
+A patch release, published under the npm dist-tag `latest`. On a Cloudflare runtime whose SQLite 3.54.1 counts every
+table and subquery of a statement toward its expression limit, notifications, push, the home, list and hashtag
+timelines, the public hashtag page and the streaming home timeline failed, since a compatibility date does not pin the
+runtime; they now work on it ([cloudflare/workerd#8389](https://github.com/cloudflare/workerd/issues/8389)). Cloudflare
+has since backed that SQLite change out. Upgrading is recommended.
 
 ### Instance changes
 
