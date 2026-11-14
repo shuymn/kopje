@@ -369,6 +369,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "domainCoveredSql",
   // Whether a domain block's reject_media rules a host or an account: predicates (domain/audience.ts).
   "domainMediaRejectedSql",
+  // availableSql's coverage term, the column statusReads' hoisted row reads it into: a predicate (domain/audience.ts).
+  "guardedAccountCoveredSql",
   "hostMediaRejectedSql",
   // A status's filter text figure: whether an input is not text (a predicate) and an upper bound of its length from
   // stored bytes, a number (domain/status-presenter.ts).

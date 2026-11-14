@@ -251,16 +251,18 @@ function exclusiveMemberSql(x: string): string {
 const FOLLOWED = `SELECT hx.target_account_id AS account_id FROM follows hx WHERE hx.account_id = ?1 AND hx.state = 'accepted'
 	AND NOT ${exclusiveMemberSql("hx.target_account_id")}`;
 
-// FOLLOWED for home narrowed to the status ?7 (homeStatus): its author, if the viewer follows it (accepted) and it is in
-// none of their exclusive lists. The exclusion is read from the viewer's lists (lists_account), each checked through
-// the (list_id, account_id) key, so it reads neither the members of those lists nor the lists of other owners that
-// hold the author. Kopje's writers keep an account within MAX_LISTS lists; no stored bound does, so an imported
-// account's lists are walked here (#1481).
-const FOLLOWED_AUTHOR = `SELECT hf.target_account_id AS account_id FROM follows hf
+// FOLLOWED for home narrowed to the status ?7 (homeStatus): its author `author` (statusReads' onlyAuthor), if the viewer
+// follows it (accepted) and it is in none of their exclusive lists. The exclusion is read from the viewer's lists
+// (lists_account), each checked through the (list_id, account_id) key, so it reads neither the members of those lists
+// nor the lists of other owners that hold the author. Kopje's writers keep an account within MAX_LISTS lists; no stored
+// bound does, so an imported account's lists are walked here (#1481).
+function followedAuthorSql(author: string): string {
+  return `SELECT hf.target_account_id AS account_id FROM follows hf
 	WHERE hf.account_id = ?1 AND hf.state = 'accepted'
-		AND hf.target_account_id = (SELECT ha.account_id FROM statuses ha WHERE ha.id = ?7)
+		AND hf.target_account_id = ${author}
 		AND NOT EXISTS (SELECT 1 FROM lists l INDEXED BY lists_account
 			WHERE l.exclusive = 1 AND ${holdingSql("?1", "hf.target_account_id")})`;
+}
 
 // Home (Mastodon's FeedManager#filter_from_home): the viewer's own statuses and those of accounts they follow,
 // public, unlisted and private; direct and limited statuses of their own, and of followed accounts that address
@@ -347,11 +349,14 @@ export function homeStatus(db: Db, viewer: UserContext, statusId: string) {
   return cursor === null ? null : (homeRows(db, viewer, cursor, statusId)[0]?.id ?? null);
 }
 
-// Home's read narrowed to the status `only`, from the cursor positioned at it.
+// Home's read narrowed to the status `only`, from the cursor positioned at it, its row read ahead (statusReads'
+// `hoisted`: the rule's ten coverage walks over its author and its original's are then resolved within the cursor
+// limit, docs/engineering.md "Queries").
 function homeRows(db: Db, viewer: UserContext, cursor: Cursor, only: string) {
   const { accountId, now } = viewer;
   const order = orderOf(cursor);
-  const read = statusReads(viewer, { viewer: "?1", now: "?5", only: "?7" });
+  const read = statusReads(viewer, { viewer: "?1", now: "?5", only: "?7", hoisted: true });
+  const followedAuthor = followedAuthorSql(read.onlyAuthor());
   const options = followOptionsSql(FOLLOWED_REPLIES_SQL);
   const tail = `ORDER BY s.id ${order} LIMIT ?4`;
   return read.union(
@@ -362,13 +367,13 @@ function homeRows(db: Db, viewer: UserContext, cursor: Cursor, only: string) {
       all: false,
       branches: [
         // The public, unlisted and private statuses of the accounts home shows, on statuses_feed.
-        { authors: FOLLOWED_AUTHOR, where: `${FEED} AND ${rangeSql("s.id")}`, and: options, tail },
+        { authors: followedAuthor, where: `${FEED} AND ${rangeSql("s.id")}`, and: options, tail },
         // The viewer's own, whatever their visibility. No follow's options apply (nobody follows themselves).
         { where: `s.account_id = ?1 AND ${rangeSql("s.id")}`, tail },
         // Direct and limited statuses of the accounts home shows that address the viewer, from the viewer's mentions
         // by that account in such statuses (status_mentions_requires_mention).
         {
-          authors: FOLLOWED_AUTHOR,
+          authors: followedAuthor,
           from: "status_mentions m INDEXED BY status_mentions_requires_mention CROSS JOIN",
           join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = m.status_id`,
           author: "m.author_id",
