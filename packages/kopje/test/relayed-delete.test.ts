@@ -3,11 +3,21 @@ import { describe, expect, it } from "vitest";
 
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
-import { harness, NOW, offline } from "./app-helpers";
-import { mastodonDelete, mastodonSigned } from "./author-proof-helpers";
+import { countingStore, harness, NOW, offline } from "./app-helpers";
+import {
+  MASTODON_46_FORWARDED_CONTEXT,
+  MASTODON_47_FORWARDED_CONTEXT,
+  mastodon47Actor,
+  mastodon47Signed,
+  mastodonDelete,
+  mastodonForwarded,
+  mastodonForwardedActivity,
+  mastodonSigned,
+  signTime,
+} from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
-import { mastodonActor, type TestActor } from "./inbox-helpers";
+import { loggedRefusals, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -21,6 +31,7 @@ import {
   setup,
   type Setup,
   token,
+  update,
 } from "./inbox-status-helpers";
 import { contexts } from "./quote-helpers";
 
@@ -119,6 +130,22 @@ async function effects(t: Setup, uri: string) {
   return { ...counts, outbound };
 }
 
+// `body`, relayed by dan while bob's document has changed since it was stored (a new name), is dropped: 202, `reason`
+// logged once, the status as it was, no retraction of it recorded, and bob's stored document unchanged.
+async function dropped(t: Setup, bob: TestActor, dan: TestActor, body: Json, uri: string, reason: string) {
+  const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
+  const before = await sql(t.store, author, bob.uri);
+  t.web.serve(bob.uri, { ...bob.document, name: "renamed" });
+  const { status, refused } = await loggedRefusals(() => t.post(dan, body));
+  expect(status).toBe(202);
+  expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 202, reason }]]);
+  expect(await stored(t.store, uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  expect(await sql(t.store, "SELECT count(*) AS n FROM inbound_retractions WHERE target_uri = ?", uri)).toEqual([
+    { n: 0 },
+  ]);
+  expect(await sql(t.store, author, bob.uri)).toEqual(before);
+}
+
 // alice's boost of `id` through the API, and a listener on her user stream (so a status's removal streams, R32).
 async function boostAndListen(t: Setup, id: string): Promise<void> {
   const boosted = await t.request(`/api/v1/statuses/${id}/reblog`, bearer(t.tokens.alice, { method: "POST" }));
@@ -144,6 +171,33 @@ describe("a relayed status Delete with the author's proof (ID-1)", () => {
       // Gone, streamed once, retracted, alice's boost withdrawn with its Undo, and the Delete forwarded through it.
       expect(own).toMatchObject({ statuses: 0, streamed: 1, retractions: 2, boosts: 0 });
       expect(own!.outbound).toEqual([
+        { account_id: ALICE, type: "Delete", immutable: 1 },
+        { account_id: ALICE, type: "Undo", immutable: null },
+      ]);
+    }
+  }, 60_000);
+
+  it("applies a status Delete a Mastodon 4.6 or 4.7 forwards, its signature by 4.6's sign! or 4.7's (expires)", async () => {
+    const cases = [
+      ["4.6 forward", mastodonSigned, MASTODON_46_FORWARDED_CONTEXT, false],
+      ["4.7 forward", mastodonSigned, MASTODON_47_FORWARDED_CONTEXT, false],
+      ["4.7 forward of a 4.7 signature", mastodon47Signed, MASTODON_47_FORWARDED_CONTEXT, false],
+      ["4.7 forward of a 4.7 author's, its key #rsa-…", mastodon47Signed, MASTODON_47_FORWARDED_CONTEXT, true],
+    ] as const;
+    for (const [name, sign, context, author47] of cases) {
+      const { t, bob, dan } = await world();
+      // A 4.7 author, followed by alice; its documents and HTTP signatures name its #rsa- key.
+      const author = author47 ? await mastodon47Actor(t.web, "ann", { key: 4 }) : bob;
+      if (author47) {
+        await followed(t, author);
+      }
+      const status = await note(t, author);
+      await boostAndListen(t, status.id);
+      const forwarded = mastodonForwarded(await sign(deletion(author, status.uri), author), context);
+      expect(await t.post(dan, forwarded), name).toBe(202);
+      const after = await effects(t, status.uri);
+      expect(after, name).toMatchObject({ statuses: 0, streamed: 1, retractions: 2, boosts: 0 });
+      expect(after.outbound, name).toEqual([
         { account_id: ALICE, type: "Delete", immutable: 1 },
         { account_id: ALICE, type: "Undo", immutable: null },
       ]);
@@ -242,7 +296,8 @@ describe("a relayed status Delete that does not meet every condition changes not
     ["a proof covering another status", "tampered"],
     ["a proof covering another activity id, the object unchanged", "id"],
     ["a proof whose creator key is on another host than the author", "host"],
-  ])("refuses %s", async (_name, kind) => {
+    ["a proof whose expires is earlier than the request", "expired"],
+  ])("drops %s", async (_name, kind) => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     const other = await note(t, bob);
@@ -256,15 +311,40 @@ describe("a relayed status Delete that does not meet every condition changes not
       body = { ...signed, id: `${bob.uri}#delete-${nextId()}` };
     } else if (kind === "host") {
       body = await ldSigned(deletion(bob, status.uri), { ...bob, keyId: `${RELAY}/users/bob#main-key` });
+    } else if (kind === "expired") {
+      body = await mastodon47Signed(deletion(bob, status.uri), bob, { expires: signTime(NOW - 1000) });
     } else {
       const signed = await ldSigned(deletion(bob, other.uri), bob);
       body = { ...signed, object: { id: status.uri, type: "Tombstone", atomUri: status.uri } };
     }
-    expect(await t.post(dan, body)).toBe(401);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    await dropped(t, bob, dan, body, status.uri, "proof-invalid");
   });
 
-  it("requires the signed graph to assert Delete", async () => {
+  it("drops a relay whose proof's author document is gone, and answers 503 while it is unavailable", async () => {
+    const { t, bob, dan } = await world();
+    const status = await note(t, bob);
+    const signed = await ldSigned(deletion(bob, status.uri), bob);
+    t.web.fail(bob.uri, 503);
+    expect(await loggedRefusals(() => t.post(dan, signed))).toEqual({
+      status: 503,
+      refused: [[{ event: "kopje.inbox.refused", status: 503, reason: "actor-unavailable" }]],
+    });
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
+    const before = await sql(t.store, author, bob.uri);
+    t.web.fail(bob.uri, 410);
+    expect(await loggedRefusals(() => t.post(dan, signed))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "author-unusable" }]],
+    });
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    expect(
+      await sql(t.store, "SELECT count(*) AS n FROM inbound_retractions WHERE target_uri = ?", status.uri),
+    ).toEqual([{ n: 0 }]);
+    expect(await sql(t.store, author, bob.uri)).toEqual(before);
+  });
+
+  it("drops a relay whose signed graph does not assert Delete", async () => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     // bob signed a document of no type; the relay adds `type: "Delete"` under a context that maps `type` to nothing, so
@@ -273,11 +353,10 @@ describe("a relayed status Delete that does not meet every condition changes not
     delete unsigned.type;
     const signed = await ldSigned(unsigned, bob);
     const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
-    expect(await t.post(dan, relayed)).toBe(401);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+    await dropped(t, bob, dan, relayed, status.uri, "proof-invalid");
   });
 
-  it("refuses a body naming a remote context, which the request's loaders never fetch", async () => {
+  it("drops a body naming a remote context, which the request's loaders never fetch", async () => {
     const { t, bob, dan } = await world();
     const status = await note(t, bob);
     const remote = "https://relay.example/context.jsonld";
@@ -290,9 +369,8 @@ describe("a relayed status Delete that does not meet every condition changes not
         url === remote ? Promise.resolve({ document, documentUrl: url, contextUrl: null }) : contexts(url),
     });
     const { "@context": _context, ...signature } = signed.signature;
-    expect(await t.post(dan, { ...signed, signature })).toBe(401);
+    await dropped(t, bob, dan, { ...signed, signature }, status.uri, "proof-invalid");
     expect(t.web.fetched).not.toContain(remote);
-    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
   });
 
   it("refuses a relay whose HTTP signer does not own its key", async () => {
@@ -364,10 +442,13 @@ describe("a relayed status Delete that does not meet every condition changes not
     expect(await stored(t.store, boost.id)).toMatchObject({ withdrawn: 0 });
   });
 
-  it("refuses a relayed Delete of an actor, proven or not", async () => {
+  it("drops a relayed Delete of an actor, proven or not", async () => {
     const { t, bob, erin, dan } = await world();
-    // Of the actor itself (a DeleteActor), and of another actor of its origin.
-    expect(await t.post(dan, await idOnly(bob, bob.uri))).toBe(401);
+    // Of the actor itself (a DeleteActor: no relay of it is applied), and of another actor of its origin.
+    expect(await loggedRefusals(async () => t.post(dan, await idOnly(bob, bob.uri)))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+    });
     expect(await t.post(dan, await idOnly(bob, erin.uri))).toBe(202);
     const accounts = await sql<{ uri: string }>(
       t.store,
@@ -446,5 +527,173 @@ describe("a relayed status Delete replayed (ID-1, ID-7)", () => {
     );
     expect(await t.post(bob, create(bob, unseen))).toBe(202);
     expect(await stored(t.store, unseen.id)).toBeNull();
+  });
+});
+
+// A relay Kopje does not apply (a forwarded reply or edit, or an actor's Delete) whose HTTP signer owns its key is
+// dropped with 202 before any Store write, as Mastodon's inbox answers it; a signer whose ownership is not established
+// answers as any other request does. The bodies are what Mastodon 4.7 forwards (mastodonForwardedActivity): frank's
+// reply to dan's status (Activity::Create#forward_for_reply, signed by dan) and bob's edit of a status dan boosted
+// (ProcessStatusUpdateService#forward_activity!), each with its author's LD signature.
+describe("a relay of another type is dropped once its signer owns its key (ID-1)", () => {
+  // The world, with its inbox requests through a counting Store; `post` answers the status and the refusals logged.
+  async function relayWorld() {
+    const w = await world();
+    const counting = countingStore(w.t.store);
+    const h = harness(counting.stub, {}, undefined, { keygen: fixtureKeyGen, loader: w.t.web.loader }, () => NOW);
+    const post = (signer: TestActor, body: Json, keyId?: string) =>
+      loggedRefusals(async () => {
+        const init = await signedInit(signer, "/inbox", body, { at: NOW, ...(keyId === undefined ? {} : { keyId }) });
+        return (await h.request("/inbox", init)).status;
+      });
+    return { ...w, counting, post };
+  }
+
+  // frank's reply to dan's status, and bob's edit of `uri`, as dan's Mastodon forwards them.
+  async function reply(t: Setup, dan: TestActor) {
+    const frank = await mastodonActor(t.web, "frank", { key: 8 });
+    const parent = `${dan.uri}/statuses/1`;
+    const n = mastodonNote(frank, { inReplyTo: parent, inReplyToAtomUri: parent });
+    const signed = await mastodon47Signed({ ...create(frank, n), "@context": MASTODON_47_FORWARDED_CONTEXT }, frank);
+    return { frank, uri: n.id, body: mastodonForwardedActivity(signed) };
+  }
+  async function edit(bob: TestActor, uri: string) {
+    const n = { ...mastodonNote(bob), id: uri, content: "<p>edited</p>", contentMap: { en: "<p>edited</p>" } };
+    const unsigned = { ...update(bob, n, "2026-10-11T13:00:00Z"), "@context": MASTODON_47_FORWARDED_CONTEXT };
+    return mastodonForwardedActivity(await mastodon47Signed(unsigned, bob));
+  }
+
+  const ACCOUNT = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
+  // What a relay could change: statuses, accounts, retractions, outbound activities and quotes.
+  async function snapshot(t: Setup) {
+    const [counts] = await sql(
+      t.store,
+      `SELECT (SELECT count(*) FROM statuses) AS statuses, (SELECT count(*) FROM accounts) AS accounts,
+				(SELECT count(*) FROM inbound_retractions) AS retractions, (SELECT count(*) FROM outbound_activities) AS outbound,
+				(SELECT count(*) FROM quotes) AS quotes, (SELECT group_concat(content) FROM statuses) AS contents`,
+    );
+    return counts;
+  }
+
+  it("drops a forwarded reply from a signer whose key the Store holds, fetching nothing", async () => {
+    const { t, dan, counting, post } = await relayWorld();
+    // dan follows alice: his key and document are stored, fresh.
+    expect(
+      await t.post(dan, {
+        "@context": AS,
+        id: `${dan.uri}#follows/${nextId()}`,
+        type: "Follow",
+        actor: dan.uri,
+        object: ALICE_URI,
+      }),
+    ).toBe(202);
+    const { frank, uri, body } = await reply(t, dan);
+    const before = { state: await snapshot(t), dan: await sql(t.store, ACCOUNT, dan.uri) };
+    const fetched = t.web.fetched.length;
+    expect(await post(dan, body)).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+    });
+    expect(t.web.fetched.slice(fetched)).toEqual([]);
+    expect(counting.calls).not.toContain("receiveActivity");
+    expect({ state: await snapshot(t), dan: await sql(t.store, ACCOUNT, dan.uri) }).toEqual(before);
+    expect(await sql(t.store, "SELECT 1 FROM accounts WHERE uri = ?", frank.uri)).toEqual([]);
+    expect(await stored(t.store, uri)).toBeNull();
+  });
+
+  it("drops a forwarded edit from a signer whose document, fetched, lists its key", async () => {
+    const { t, bob, dan, counting, post } = await relayWorld();
+    const status = await note(t, bob);
+    const before = { state: await snapshot(t), bob: await sql(t.store, ACCOUNT, bob.uri) };
+    const fetched = t.web.fetched.length;
+    expect(await post(dan, await edit(bob, status.uri))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+    });
+    expect(t.web.fetched.slice(fetched)).toEqual([dan.uri]);
+    expect(counting.calls).not.toContain("receiveActivity");
+    expect({ state: await snapshot(t), bob: await sql(t.store, ACCOUNT, bob.uri) }).toEqual(before);
+    expect(await sql(t.store, "SELECT 1 FROM accounts WHERE uri = ?", dan.uri)).toEqual([]);
+  });
+
+  // A key that names dan as its owner, served with mallory's material, while dan's document lists that key id with
+  // dan's own material (as "refuses a relay whose HTTP signer does not own its key").
+  it("refuses a forwarded edit from a signer whose document does not list its key", async () => {
+    const { t, bob, dan, counting, post } = await relayWorld();
+    const status = await note(t, bob);
+    const keyUrl = `${RELAY}/keys/dan`;
+    const mallory = await mastodonActor(t.web, "mallory", { origin: RELAY, key: 7 });
+    t.web.serve(dan.uri, { ...dan.document, publicKey: { id: keyUrl, owner: dan.uri, publicKeyPem: dan.pem } });
+    t.web.serve(keyUrl, {
+      "@context": [AS, SECURITY, { Key: "sec:Key" }],
+      id: keyUrl,
+      type: "Key",
+      owner: dan.uri,
+      publicKeyPem: mallory.pem,
+    });
+    const before = await snapshot(t);
+    expect(await post(mallory, await edit(bob, status.uri), keyUrl)).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]],
+    });
+    expect(counting.calls).not.toContain("receiveActivity");
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  // Fedify's key-owner check fetches the signer's document through the request's memoized loader while it verifies the
+  // HTTP signature (a separate key names it as its owner), before any relay is considered: a transient failure there
+  // fails the verification, so the sender retries.
+  it("refuses a forwarded edit while its signer's document is unavailable, as any signature it cannot verify", async () => {
+    const { t, bob, dan, post } = await relayWorld();
+    const status = await note(t, bob);
+    const keyUrl = `${RELAY}/keys/dan`;
+    t.web.serve(keyUrl, {
+      "@context": [AS, SECURITY, { Key: "sec:Key" }],
+      id: keyUrl,
+      type: "Key",
+      owner: dan.uri,
+      publicKeyPem: dan.pem,
+    });
+    t.web.fail(dan.uri, 503);
+    const before = await snapshot(t);
+    expect(await post(dan, await edit(bob, status.uri), keyUrl)).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "invalidSignature" }]],
+    });
+    expect(t.web.fetched).toContain(dan.uri);
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  it("refuses a relay whose signer is a local account", async () => {
+    const { t, bob, post } = await relayWorld();
+    const status = await note(t, bob);
+    // A document at alice's uri (served by the test web, as a forged answer would be) listing a key of mallory's
+    // material in alice's name: the key's owner, and so the signer, is a local account, and no other check refuses it.
+    const keyUrl = `${ALICE_URI}#forged-key`;
+    const mallory = await mastodonActor(t.web, "mallory", { origin: RELAY, key: 7 });
+    t.web.serve(ALICE_URI, {
+      ...mallory.document,
+      id: ALICE_URI,
+      inbox: `${ALICE_URI}/inbox`,
+      publicKey: { id: keyUrl, owner: ALICE_URI, publicKeyPem: mallory.pem },
+    });
+    const before = await snapshot(t);
+    expect(await post(mallory, await edit(bob, status.uri), keyUrl)).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]],
+    });
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  it("refuses an activity of a local actor relayed by another server, before any relay is considered", async () => {
+    const { t, dan, post } = await relayWorld();
+    const n = { ...mastodonNote(dan), id: `${ALICE_URI}/statuses/${nextId()}`, attributedTo: ALICE_URI };
+    const body = { ...create(dan, n), actor: ALICE_URI };
+    const before = await snapshot(t);
+    expect(await post(dan, body)).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "local-actor" }]],
+    });
+    expect(await snapshot(t)).toEqual(before);
   });
 });

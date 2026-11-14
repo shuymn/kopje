@@ -105,7 +105,7 @@ async function actorDocument(t: Setup): Promise<unknown> {
 }
 
 function proof(json: Json, uri: string, actorDocument: unknown, object = uri) {
-  return verifyAuthorProof(json, { id: `${uri}#delete`, actor: ALICE_URI, object }, actorDocument);
+  return verifyAuthorProof(json, { id: `${uri}#delete`, actor: ALICE_URI, object }, actorDocument, NOW);
 }
 
 describe("the Delete of a local status carries its author's proof when it is public or unlisted (VIS-3)", () => {
@@ -863,6 +863,7 @@ describe("a Kopje holder of a boost forwards a Kopje author's signed Delete (VIS
         JSON.parse(delivered!.body) as Json,
         { id: `${status.uri}#delete`, actor: ANN_URI, object: status.uri },
         document,
+        NOW,
       ),
     ).toBe(true);
     expect(await t.post(ann, delivered!.body)).toBe(202);

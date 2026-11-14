@@ -4,6 +4,7 @@ import { Temporal } from "temporal-polyfill";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { forwardSubject } from "../src/domain/deliveries";
 import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
@@ -13,8 +14,9 @@ import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
 import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
 import { requestSigner } from "../src/security/keyring";
-import { seedFollows, sql } from "./api-helpers";
+import { bearer, seedFollows, settle, sql } from "./api-helpers";
 import { countingStore, harness, heldStore, inboxDeps, NOW, seedInstanceKey, type StoreCall } from "./app-helpers";
+import { mastodon47Signed, mastodonDelete, signTime } from "./author-proof-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedFollow, seedLocalAccount } from "./federation-helpers";
 import { mastodonFlag } from "./fixtures/flags";
@@ -23,6 +25,7 @@ import {
   actorDefaults,
   AP,
   LOCAL,
+  loggedRefusals,
   MASTODON,
   mastodonActor,
   MISSKEY,
@@ -33,7 +36,13 @@ import {
   signedInit,
   type TestActor,
 } from "./inbox-helpers";
-import { mastodonNote } from "./inbox-status-helpers";
+import {
+  create as statusCreate,
+  followed,
+  mastodonNote,
+  setup as statusSetup,
+  type Setup as StatusSetup,
+} from "./inbox-status-helpers";
 
 // Inbound activities about actors and relationships, end to end through the app: signed requests from synthetic
 // Mastodon- and Misskey-shaped servers, the Store's effects, and the threat model's inbound negative cases. Test names
@@ -100,6 +109,13 @@ const counts = async (store: StoreStub, id: string) =>
       id,
     )
   )[0];
+
+// What loggedRefusals gives for an activity in one actor's name signed by another remote actor that owns its key, a
+// relay Kopje does not apply: 202 and one relay-not-applied line (inbound.ts relayed).
+const RELAY_NOT_APPLIED = {
+  status: 202,
+  refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+};
 
 // Nothing at all changed in the tables an activity writes.
 async function untouched(store: StoreStub): Promise<void> {
@@ -688,24 +704,28 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
     await untouched(t.store);
   });
 
-  it("refuses a wrong signer: another server’s key for this actor", async () => {
+  // Signed by a key another remote actor owns, an activity in bob's name is a relay, which Kopje drops (202, applying
+  // nothing, logged), as Mastodon's inbox answers it.
+  it("refuses a wrong signer: another server’s key for this actor, dropped as a relay", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const mallory = await mastodonActor(t.web, "mallory", { origin: "https://evil.example", key: 3 });
-    expect(await t.post(bob, follow(bob), { keyId: mallory.keyId, privateKey: mallory.privateKey })).toBe(401);
+    const signed = { keyId: mallory.keyId, privateKey: mallory.privateKey };
+    expect(await loggedRefusals(() => t.post(bob, follow(bob), signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
-  it("refuses the same origin with a different actor", async () => {
+  it("refuses the same origin with a different actor, dropped as a relay", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     // Signed by carol's own key, in bob's name.
-    expect(await t.post(bob, follow(bob), { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(401);
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await loggedRefusals(() => t.post(bob, follow(bob), signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
-  it("refuses a key whose document names another owner, even when that owner lists it", async () => {
+  it("refuses a key whose document names another owner, even when that owner lists it: a relay by it", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const keyUri = `${MASTODON}/keys/shared`;
@@ -719,7 +739,9 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
       ...bob.document,
       publicKey: [bob.document.publicKey, { id: `${keyUri}#main-key`, owner: keyUri, publicKeyPem: bob.pem }],
     });
-    expect(await t.post(bob, follow(bob), { keyId: `${keyUri}#main-key` })).toBe(401);
+    expect(await loggedRefusals(() => t.post(bob, follow(bob), { keyId: `${keyUri}#main-key` }))).toEqual(
+      RELAY_NOT_APPLIED,
+    );
     await untouched(t.store);
   });
 
@@ -902,8 +924,8 @@ describe("ID-6: the authorization table, one negative case per row", () => {
     const bob = await mastodonActor(t.web, "bob");
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     const flag = (actor: TestActor, object: string) => mastodonFlag(actor, [object], "spam", activityId(MASTODON));
-    // Signed by carol, naming bob as its actor: not bob's.
-    expect(await t.post(carol, flag(bob, DAVE_URI))).toBe(401);
+    // Signed by carol, naming bob as its actor: not bob's, a relay Kopje drops.
+    expect(await loggedRefusals(() => t.post(carol, flag(bob, DAVE_URI)))).toEqual(RELAY_NOT_APPLIED);
     // A remote account that no named status shows replying to a local account is no target.
     expect(await t.post(carol, flag(carol, bob.uri))).toBe(202);
     expect(await sql(t.store, "SELECT * FROM reports")).toEqual([]);
@@ -1066,9 +1088,10 @@ describe("ID-7: replay changes nothing twice", () => {
     // own proof it is applied to nothing, and records nothing.
     expect(await t.post(bob, deletion, { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(202);
     await untouched(t.store);
-    expect(await t.post(bob, { ...deletion, type: "Undo" }, { keyId: carol.keyId, privateKey: carol.privateKey })).toBe(
-      401,
-    );
+    // Any other type is dropped as a relay.
+    const undo = { ...deletion, type: "Undo" };
+    const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+    expect(await loggedRefusals(() => t.post(bob, undo, signed))).toEqual(RELAY_NOT_APPLIED);
     await untouched(t.store);
   });
 
@@ -1147,6 +1170,60 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
     expect(queue.pending).toEqual([]);
     expect(queue.retries).toBe(0);
     await untouched(t.store);
+  });
+
+  // A Mastodon 4.7 author proof's expires is judged at the spool time too (ID-1): bob's public status, held through
+  // alice's follow and boosted by her, and his Delete, its signature expiring at NOW + 1 h, spooled by `signer` (bob
+  // himself, or dan relaying it) at `at` and replayed at NOW + 3 h.
+  const HOUR = 60 * 60 * 1000;
+  async function spooledDelete(by: "author" | "relay", at: number) {
+    const t: StatusSetup = await statusSetup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const dan = await mastodonActor(t.web, "dan", { origin: "https://relay.example", key: 6 });
+    const note = mastodonNote(bob);
+    expect(await t.post(bob, statusCreate(bob, note))).toBe(202);
+    const [status] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+    const boosted = await t.request(
+      `/api/v1/statuses/${status!.id}/reblog`,
+      bearer(t.tokens.alice, { method: "POST" }),
+    );
+    expect(boosted.status).toBe(200);
+    const body = await mastodon47Signed(mastodonDelete(bob, note.id), bob, { expires: signTime(NOW + HOUR) });
+    const signer = by === "author" ? bob : dan;
+    const maintenance = harness(
+      t.store,
+      { MAINTENANCE: "readonly" },
+      BUILD,
+      { keygen: fixtureKeyGen, loader: t.web.loader },
+      () => at,
+    );
+    const spooled = await maintenance.request("/inbox", await signedInit(signer, "/inbox", body, { at }));
+    expect(spooled.status).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW + 3 * HOUR };
+    await maintenance.queue.deliver((batch) => handleQueue(batch, { ...t.env, MAINTENANCE: "off" } as Env, deps));
+    expect(maintenance.queue.pending).toEqual([]);
+    await settle(t.store);
+    const statuses = await sql(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+    const forwards = await sql(
+      t.store,
+      "SELECT account_id FROM outbound_activities WHERE object_uri = ?",
+      forwardSubject(note.id),
+    );
+    return { held: statuses.length === 1, forwards: forwards.length };
+  }
+
+  it("judges a relayed author proof's expires against the spool time", async () => {
+    // Spooled before expires: applied as bob's own Delete. Spooled after it (its HTTP signature dated then): dropped
+    // because its author proof expired, so the relay changes nothing.
+    expect(await spooledDelete("relay", NOW)).toMatchObject({ held: false });
+    expect(await spooledDelete("relay", NOW + 2 * HOUR)).toEqual({ held: true, forwards: 0 });
+  });
+
+  it("judges an author's own proof's expires against the spool time, forwarding only when it held then", async () => {
+    // The forward is recorded in the request (inbox.ts recordForwards), staged by the job.
+    expect(await spooledDelete("author", NOW)).toEqual({ held: false, forwards: 1 });
+    expect(await spooledDelete("author", NOW + 2 * HOUR)).toEqual({ held: false, forwards: 0 });
   });
 
   it("drops a spooled request whose RFC 9421 signature leaves out a required component (ID-1)", async () => {
