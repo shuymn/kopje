@@ -28,7 +28,7 @@ import {
   SERVED_MEASURES,
   type ServedMeasure,
 } from "../domain/admin-measures";
-import { OWNER_ROLE, type UserCredential } from "../domain/auth";
+import { OWNER_ROLE } from "../domain/auth";
 import { type InstanceDomainBlock, MAX_DOMAIN_INPUT } from "../domain/instance-domain-blocks";
 import { ADMIN_REPORTS_LIMIT, MAX_ADMIN_REPORTS_LIMIT, type ReportAction } from "../domain/reports";
 import { blockedDomain } from "../platform/domain-name";
@@ -542,8 +542,9 @@ export const domainAllows: ApiHandler = async (c, deps) => {
 // The refusal order of Mastodon 4.5.21's metrics: the optional token (authorize_if_got_token!), then any caller other
 // than the OAuth admin (require_moderator_or_admin_permissions, permissions_concern.rb:7,14), each before the body is
 // read (set_measures, set_retention). adminDashboardGranted makes both checks.
-async function dashboardGranted(c: ApiContext, deps: ApiDeps, credential: UserCredential | null): Promise<void> {
-  authorized(await storeCall(c, deps, (s, b) => s.adminDashboardGranted(b, { credential })));
+async function dashboardGranted(c: ApiContext, deps: ApiDeps): Promise<void> {
+  const input = { credential: optionalCredential(c, deps) };
+  authorized(await storeCall(c, deps, (s, b) => s.adminDashboardGranted(b, input)));
 }
 
 // A metric handler given the OAuth admin's parameters: dashboardGranted refuses every other caller before the body is
@@ -553,7 +554,7 @@ function dashboardParams(
 ): ApiHandler {
   const read = withParams((c, deps, p) => Promise.resolve(handler(c, deps, p)));
   return async (c, deps) => {
-    await dashboardGranted(c, deps, optionalCredential(c, deps));
+    await dashboardGranted(c, deps);
     return read(c, deps);
   };
 }
@@ -564,7 +565,7 @@ const paramMissing = (name: string) => mastodonError(400, `param is missing or t
 // POST /api/v1/admin/dimensions: no dimension key is served (MD-2), so the OAuth admin gets `[]`, as
 // Dimension.retrieve answers keys it does not know (dimension.rb:15-21).
 export const emptyMetric: ApiHandler = async (c, deps) => {
-  await dashboardGranted(c, deps, optionalCredential(c, deps));
+  await dashboardGranted(c, deps);
   return c.json([]);
 };
 
@@ -675,7 +676,7 @@ function presentMeasure(key: ServedMeasure, measure: MeasureValue) {
 
 // POST /api/v1/admin/measures (measures_controller.rb, Admin::Metrics::Measure.retrieve, measure.rb:21-26): one
 // measure per known key in `keys`, in order, repeats included; unknown keys are left out (filter_map). In Mastodon
-// 4.5.21's refusal order (dashboardGranted), only the OAuth admin's body is read. Then, to the OAuth admin:
+// 4.5.21's refusal order (dashboardParams), only the OAuth admin's body is read. Then, to the OAuth admin:
 // - no `keys` answers 400 (params.require(:keys), measures_controller.rb:21): absent, blank, `[]` or `{}`;
 // - in retrieve's order, a key that reads its object without one answers 400 (params.require) and, at the first known
 //   key, a date that is none 422 (Date::Error, error_handling.rb:15-17);

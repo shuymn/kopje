@@ -405,6 +405,7 @@ describe("dimensions and retention", () => {
     }
     for (const dates of [
       { start_at: day, end_at: "2026-10-02" },
+      { keys: ["languages"], start_at: day, end_at: "2026-10-02", frequency: "day" },
       { start_at: "2026-10-01T10:00:00Z", end_at: "2026-10-02T00:00:00+09:00", frequency: "month" },
       { start_at: "2026-10-02", end_at: day, frequency: "nothing" },
     ]) {
@@ -423,17 +424,16 @@ describe("dimensions and retention", () => {
     }
   });
 
-  it("answer [] to the OAuth admin and 403 to everyone else", async () => {
+  it("dimensions answer [] to the OAuth admin and 403 to everyone else", async () => {
     const w = await world();
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
-    for (const path of ["/api/v1/admin/dimensions", "/api/v1/admin/retention"]) {
-      const body = { keys: ["languages"], start_at: "2026-10-01", end_at: "2026-10-02", frequency: "day" };
-      expect(await (await w.h.request(path, bearer(w.admin, json(body)))).json()).toEqual([]);
-      for (const init of [bearer(alice, json(body)), json(body)]) {
-        const response = await w.h.request(path, init);
-        expect(response.status).toBe(403);
-        expect(await response.json()).toEqual({ error: "This action is not allowed" });
-      }
+    const path = "/api/v1/admin/dimensions";
+    const body = { keys: ["languages"], start_at: "2026-10-01", end_at: "2026-10-02", frequency: "day" };
+    expect(await (await w.h.request(path, bearer(w.admin, json(body)))).json()).toEqual([]);
+    for (const init of [bearer(alice, json(body)), json(body)]) {
+      const response = await w.h.request(path, init);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "This action is not allowed" });
     }
   });
 });
