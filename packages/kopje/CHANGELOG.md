@@ -10,6 +10,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- On the public pages, an author's name and address sit centred beside the avatar, where they ran below it: the two
+  lines are set without a gap, and the avatar beside them (a post's, a quote's, a list's) is 46px.
 - A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
   where it stood further from the edge.
 
