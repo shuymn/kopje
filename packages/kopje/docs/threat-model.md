@@ -180,14 +180,17 @@ against their own instance. TLS is assumed between all parties.
   quoting server forwarding the quoted author's revocation of a quote's stamp, as Mastodon forwards both). Its HTTP
   signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that actor's
   own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before
-  the Store is called, against a key the actor's current document embeds, that document fetched anew in the request,
+  the Store is called, against a key the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an
+  `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request,
   never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status and stamp `Delete` (the same bodies from 4.4 to 4.7, signed by `LinkedDataSignature#sign!`, which
   writes `expires` from 4.7.0); Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a
   Mastodon 4.4 to 4.7 holding a boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an
   FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`,
-  `object`, `to` and `cc`, and a single proof). Mastodon forwards a body compacted under its `full_context`, so a
+  `object`, `to` and `cc`, and a single `eddsa-jcs-2022` proof with exactly the keys Fedify's `createProof` writes, no
+  `expires`). An `mldsa44-jcs-2024` proof is in no profile: no sender of one writes it, and Fedify 2.4.5's verifier
+  does not include the suite; none is handed to a verifier. Mastodon forwards a body compacted under its `full_context`, so a
   forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
   activitystreams and security/v1, then webfinger from 4.6, cid/v1 and webfinger from 4.7) and one object whose every
   term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
@@ -234,7 +237,8 @@ against their own instance. TLS is assumed between all parties.
   v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for each
   profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
   not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion
-  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an `expires`
+  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an FEP-8b32
+  proof with `expires`, which Fedify accepts, refused, and no verifier run for an `mldsa44-jcs-2024` proof; an `expires`
   changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded form refused
   under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or aliases a decision
   term; no network fetch while verifying, and an actor document naming a context that is not preloaded refused; the

@@ -970,11 +970,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   the keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
   reached the inbox); Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 to 4.7 forwards it,
   compacted under its `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an
-  FEP-8b32 proof. Mastodon verifies a signature whatever the body's context and keys, refusing only JSON-LD features
-  it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or
-  forwarded by a Mastodon whose `full_context` holds a named context, term or definition outside 4.4 to 4.7, is
-  dropped with 202, as Mastodon drops one whose signature does not verify, and an author's own `Delete` in such a form
-  applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
+  FEP-8b32 proof (`eddsa-jcs-2022`, without `expires`). Mastodon verifies a signature whatever the body's context and
+  keys, refusing only JSON-LD features it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a
+  relayed `Delete` from Misskey, or forwarded by a Mastodon whose `full_context` holds a named context, term or
+  definition outside 4.4 to 4.7, is dropped with 202, as Mastodon drops one whose signature does not verify, and an
+  author's own `Delete` in such a form applies but is not forwarded. Adding a profile is a change of its own.
+  Accepted, 2026-11-13. Mastodon 4.7 also verifies an `mldsa44-jcs-2024` proof and a proof with `expires`, judged at
+  receipt (`object_integrity_proof.rb:7`, `:19`). Kopje answers either as a proof that does not verify: no sender of a
+  profile writes them, its verifier (Fedify 2.4.5) does not include the ML-DSA-44 suite although the runtime could
+  verify it, and it judges `expires` at its own clock. Accepted, 2026-11-15.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 
