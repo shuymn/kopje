@@ -318,8 +318,9 @@ export async function signedInit(
 ): Promise<RequestInit> {
   const body = typeof activity === "string" ? activity : JSON.stringify(activity);
   const rfc9421 = options.rfc9421;
+  // Fedify's signer writes Content-Digest from the body it signs; without one (digest false), it is written here.
   const digest =
-    rfc9421 === undefined
+    rfc9421?.digest !== false
       ? {}
       : {
           "content-digest": `sha-256=:${bytesToBase64(
