@@ -3,7 +3,7 @@ import { Delete } from "@fedify/vocab";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deleteSigning, stampDeleteActivity } from "../src/domain/activities";
-import { PROFILES, verifyAuthorProof } from "../src/federation/author-proof";
+import { PROFILES, type ProofVerifiers, verifyAuthorProof } from "../src/federation/author-proof";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "../src/federation/mastodon-context";
 import { NOW } from "./app-helpers";
 import {
@@ -306,8 +306,61 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
       expect(await proves({ ...unsigned, proof: [valid] }, fep.actor, status)).toBe(true);
       expect(await proves({ ...unsigned, proof: [] }, fep.actor, status)).toBe(false);
     });
+
+    it("refuses a proof with expires, which Fedify accepts (no profile's sender writes it)", async () => {
+      const { fep, status, unsigned } = await fedifyBody();
+      const body = await fep.sign(unsigned, { extra: { expires: "2099-01-01T00:00:00Z" } });
+      await refused(body, fep.actor, status);
+    });
+
+    it("runs no verifier for an mldsa44-jcs-2024 proof, and one for an eddsa-jcs-2022 proof by the same author", async () => {
+      const { fep, status, unsigned } = await fedifyBody();
+      const control = await fep.sign(unsigned);
+      const mldsa = mldsaProof(unsigned, fep.actor);
+      // Fedify 2.4.5 refuses the suite before verifying anything, so the outcome alone cannot show Kopje's guard.
+      expect(await fedifyAccepts(mldsa, fep.actor)).toBe(false);
+      const { verifiers, calls } = countingVerifiers();
+      const expected = { id: unsigned.id as string, actor: fep.actor.uri, object: status };
+      expect(await verifyAuthorProof(mldsa, expected, fep.actor.document, NOW, verifiers)).toBe(false);
+      expect(calls).toEqual({ verifyObject: 0, verifyJsonLd: 0 });
+      expect(await verifyAuthorProof(control, expected, fep.actor.document, NOW, verifiers)).toBe(true);
+      expect(calls).toEqual({ verifyObject: 1, verifyJsonLd: 0 });
+    });
   });
 });
+
+// `body` with an mldsa44-jcs-2024 proof as Mastodon 4.7 verifies one (ObjectIntegrityProof.verify_mldsa44_jcs_2024: a
+// single proof, its options without @context, which the verifier takes from the body), by an ML-DSA-44 key of
+// `actor`; its proofValue is a multibase of no signature, since no verifier Kopje uses reaches it.
+function mldsaProof(body: Json, actor: TestActor): Json {
+  return {
+    ...body,
+    proof: {
+      type: "DataIntegrityProof",
+      cryptosuite: "mldsa44-jcs-2024",
+      verificationMethod: `${actor.uri}#mldsa-key`,
+      proofPurpose: "assertionMethod",
+      created: "2026-11-13T00:00:00Z",
+      proofValue: `z${"1".repeat(64)}`,
+    },
+  };
+}
+
+// Fedify's verifiers of an LD signature and an FEP-8b32 proof, each call counted.
+function countingVerifiers() {
+  const calls = { verifyObject: 0, verifyJsonLd: 0 };
+  const verifiers: ProofVerifiers = {
+    verifyObject: ((...args: Parameters<typeof verifyObject>) => {
+      calls.verifyObject++;
+      return verifyObject(...args);
+    }) as typeof verifyObject,
+    verifyJsonLd: (...args: Parameters<typeof verifyJsonLd>) => {
+      calls.verifyJsonLd++;
+      return verifyJsonLd(...args);
+    },
+  };
+  return { verifiers, calls };
+}
 
 describe("each exploit found against the proof is refused (ID-1)", () => {
   it("a type the context maps to nothing (round 1)", async () => {

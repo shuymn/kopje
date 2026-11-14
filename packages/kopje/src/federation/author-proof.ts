@@ -142,6 +142,9 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
 const SIGNATURE_KEYS = ["type", "creator", "created", "signatureValue"];
 // The form of `created` and `expires` in LinkedDataSignature#sign! (Time#iso8601 of a UTC time).
 const SIGN_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+// The keys Fedify 2.4.5's createProof writes, and nothing else. `expires`, which Mastodon 4.7 accepts at receipt
+// (object_integrity_proof.rb:19), is outside the profile: no sender of one writes it, and Fedify would judge it at its
+// own clock, not at the time the request reached the inbox (OPS-1).
 const PROOF_KEYS = ["type", "cryptosuite", "verificationMethod", "proofPurpose", "proofValue", "created"];
 
 function isJson(value: unknown): value is Json {
@@ -258,7 +261,10 @@ function isSignTime(value: string): boolean {
 
 // One proof (alone, or alone in an array, as Fedify's signObject writes one), a DataIntegrityProof (eddsa-jcs-2022)
 // whose own @context, when it has one, is the body's. A second proof is refused, whatever it is: no sender of a profile
-// writes one, so how Fedify judges several (2.4.5 refuses the body when any of them fails) is not relied on.
+// writes one, so how Fedify judges several (2.4.5 refuses the body when any of them fails) is not relied on. An
+// mldsa44-jcs-2024 proof, which Mastodon 4.7 verifies (object_integrity_proof.rb:7), is in no profile: no sender of
+// one writes the suite, and Fedify 2.4.5's verifier does not include it, though the runtime could verify ML-DSA-44
+// (workerd's node:crypto); it is refused here, before any verifier runs.
 function isProof(json: Json): boolean {
   const proofs = Array.isArray(json.proof) ? json.proof : [json.proof];
   return (
@@ -313,6 +319,10 @@ export function hasAuthorProof(json: Json): boolean {
   return (json.signature !== undefined && json.signature !== null) || (json.proof !== undefined && json.proof !== null);
 }
 
+// Fedify's verifiers of an LD signature and of an FEP-8b32 proof; a caller other than Fedify's defaults is a test that
+// counts the calls.
+export type ProofVerifiers = { verifyObject: typeof verifyObject; verifyJsonLd: typeof verifyJsonLd };
+
 // Whether `json` is, in one of the PROFILES, a Delete of exactly `expected` proven by a key the actor's document
 // embeds, at `receivedAt` (epoch milliseconds: when the request reached the inbox, its spool time on replay).
 export async function verifyAuthorProof(
@@ -320,6 +330,7 @@ export async function verifyAuthorProof(
   expected: ProvenDelete,
   actorDocument: unknown,
   receivedAt: number,
+  verifiers: ProofVerifiers = { verifyObject, verifyJsonLd },
 ): Promise<boolean> {
   const matched = profileOf(json);
   if (
@@ -340,9 +351,9 @@ export async function verifyAuthorProof(
   try {
     let proven: unknown;
     if (matched.profile.form !== "proof") {
-      proven = (await verifyJsonLd(json, options)) ? await Delete.fromJsonLd(json, options) : null;
+      proven = (await verifiers.verifyJsonLd(json, options)) ? await Delete.fromJsonLd(json, options) : null;
     } else {
-      proven = await verifyObject(Delete, json, options);
+      proven = await verifiers.verifyObject(Delete, json, options);
     }
     return (
       proven instanceof Delete &&

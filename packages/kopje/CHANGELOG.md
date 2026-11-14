@@ -16,6 +16,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
+- Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
+  keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
+  change.
 
 ### Changed
 
@@ -50,6 +53,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   apply, is answered 202 once the relaying server's signature is established, as Mastodon answers it, instead of 401,
   which senders retried for days. It is logged as `kopje.inbox.refused` with status 202. A relay whose signer does not
   own its key is still answered 401.
+- At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
+  entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
@@ -67,6 +73,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A status or stamp `Delete` signed by a Mastodon 4.7 author (its signature carries `expires`), and a status `Delete`
   forwarded by a Mastodon 4.6 or 4.7 server that holds a boost or quote of the status, are applied as the author's and
   forwarded through local boosts and quotes again; an `expires` already past when the request arrived does not prove.
+- An actor whose document lists a key Kopje cannot read (an ML-DSA-44 key, as Mastodon 4.7 reads them, or an EC key)
+  can reach Kopje wherever its document is read: that key is left out, where requests that needed the document (first
+  contact, a key older than a day, a profile update, an author's proof) were refused.
+- A request signed with draft-cavage by a key that is not RSA (an Ed25519 key, which only RFC 9421 signatures use) is
+  answered 401, as one whose signature does not verify. It failed with an error (500), a queued one was retried until
+  dropped, and the cutover rollback's drain stopped at it.
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.

@@ -2,6 +2,7 @@ import {
   type DocumentLoader,
   exportSpki,
   FetchError,
+  importSpki,
   type KeyCache,
   verifyRequestDetailed,
   type VerifyRequestDetailedResult,
@@ -28,7 +29,6 @@ import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bou
 import { withinJsonBounds } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
-import { importPublicKeyPem } from "../security/key-wrap";
 import { hasAuthorProof, verifyAuthorProof } from "./author-proof";
 import {
   afterRevisionRead,
@@ -38,6 +38,7 @@ import {
   type RemoteLoaders,
 } from "./federation";
 import { typeIs } from "./json-shapes";
+import { MAX_PUBLIC_KEYS } from "./key-entries";
 import {
   createContextLoader,
   createSafeLoader,
@@ -49,7 +50,7 @@ import {
   requestBudget,
   requireObjectRoot,
 } from "./loader";
-import { fetchActor } from "./remote-actor";
+import { fetchActor, loadActor, ownKeys } from "./remote-actor";
 import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STATUS_TYPES } from "./remote-status";
 
 // Inbound activities: verification, identity, and the shape of each activity, in the Worker; the effects in
@@ -57,8 +58,8 @@ import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STA
 //
 //   1. The Content-Type is an ActivityStreams type (ID-8).
 //   2. The HTTP signature verifies with Fedify, against the time the request was received (OPS-1: a spooled request
-//      is judged by its spool time), and covers what Mastodon 4.7 requires (verifyHttpSignature). Unsigned or
-//      unverifiable: 401, nothing changes (ID-1).
+//      is judged by its spool time), by an RSA or Ed25519 key (a draft-cavage one by an RSA key only), and covers what
+//      Mastodon 4.7 requires (verifyHttpSignature). Unsigned or unverifiable: 401, nothing changes (ID-1).
 //   3. The body is a JSON object with the ActivityStreams context, a type, an id and an actor (a string or array root
 //      is refused, ID-8).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
@@ -371,38 +372,69 @@ function activityOf(
 
 type ServedKey = { key: CryptographicKey; owner: string };
 
-// A KeyCache over the Store: a key a verified actor document listed, with its owner (remote_keys). A key is served only
-// while fresh (listed within 24 hours); anyAge is for the one exception, a Delete by an actor whose document is gone
-// (receiveInbound). Fedify verifies with a served key first and, if the signature fails (a rotated key), fetches the
-// key anew. Fetched keys are not written back here: the actor document is stored with its keys when the activity is
-// applied. The gate's key serves exactly the key id it was read for, judged fresh at this lookup (ID-1); any other key
-// id is asked of the Store.
+type KeyLoaders = { document: DocumentLoader; context: DocumentLoader };
+
+// A KeyCache over the Store: a key a verified actor document listed, with its owner (remote_keys), imported by its
+// type (an RSA or Ed25519 PEM-SPKI; any other is not served). A key is served only while fresh (listed within 24
+// hours); anyAge is for the exceptions that fetch nothing (a gone actor's Delete, a domain-blocked actor's cleanup, an
+// envelope with no usable actor). The gate's key serves exactly the key id it was read for, judged fresh at this lookup
+// (ID-1); any other key id is asked of the Store. A key id the Store does not serve is resolved (resolvedKey): its
+// owner's document, loaded through the request's loaders, read as an actor's keys are, not recorded in `served`, so its
+// owner is judged as for any key Fedify fetches; if it is not found there, Fedify fetches the key itself. When a key
+// fails, Fedify fetches it anew past this cache and reads only legacy keys, so verify resolves it once more. Keys
+// found are not written back here: the actor document is stored with its keys when the activity is applied.
 function storedKeys(
   deps: InboundDeps,
   served: Map<string, ServedKey>,
   anyAge: boolean,
   prefetched: InboxGate["key"],
+  loaders: KeyLoaders,
 ): KeyCache {
   return {
     async get(keyId) {
       const stored = await lookupKey(deps, keyId.href, prefetched);
-      if (stored === null || (!stored.fresh && !anyAge)) {
-        return undefined;
+      const publicKey = stored === null || (!stored.fresh && !anyAge) ? null : await importKey(stored.pem);
+      if (stored === null || publicKey === null) {
+        return resolvedKey(keyId, loaders);
       }
-      try {
-        const key = new CryptographicKey({
-          id: keyId,
-          owner: new URL(stored.owner),
-          publicKey: await importPublicKeyPem(stored.pem),
-        });
-        served.set(keyId.href, { key, owner: stored.owner });
-        return key;
-      } catch {
-        return undefined;
-      }
+      const key = new CryptographicKey({ id: keyId, owner: new URL(stored.owner), publicKey });
+      served.set(keyId.href, { key, owner: stored.owner });
+      return key;
     },
     async set() {},
   };
+}
+
+// A KeyCache that only resolves (resolvedKey): verify's second pass, and the rollback drain, which has no Store.
+function resolvingKeys(loaders: KeyLoaders): KeyCache {
+  return { get: (keyId) => resolvedKey(keyId, loaders), async set() {} };
+}
+
+// D4 of the key forms (ID-1): the key `keyId` names, as its owner's document lists it: the document at the key id
+// without its fragment, loaded through `loaders` (the request's memo, signer and budget), parsed as an actor whose id is
+// exactly that URL, and the key among its keys (remote-actor.ts ownKeys: its Multikeys and legacy keys) under that very
+// id, owned by that actor. Anything else (no actor there, a key it does not embed, a load that fails) answers nothing,
+// and Fedify fetches the key itself through the same loaders (a key document of its own, an actor at the key URL).
+async function resolvedKey(keyId: URL, loaders: KeyLoaders): Promise<CryptographicKey | undefined> {
+  const hash = keyId.href.indexOf("#");
+  const uri = hash === -1 ? keyId.href : keyId.href.slice(0, hash);
+  const loaded = await loadActor(uri, loaders.document, loaders.context);
+  if (loaded.kind !== "ok") {
+    return undefined;
+  }
+  const listed = (await ownKeys(loaded.actor, new URL(uri))).find((key) => key.id === keyId.href);
+  const publicKey = listed === undefined ? null : await importKey(listed.pem);
+  return publicKey === null ? undefined : new CryptographicKey({ id: keyId, owner: new URL(uri), publicKey });
+}
+
+// A stored or resolved key, imported by its PEM-SPKI's algorithm (RSA or Ed25519, Fedify's importSpki); null for any
+// other.
+async function importKey(pem: string): Promise<CryptoKey | null> {
+  try {
+    return await importSpki(pem);
+  } catch {
+    return null;
+  }
 }
 
 async function lookupKey(
@@ -453,11 +485,27 @@ const COVERED_WITH_BODY = [...COVERED, "content-digest"];
 // Signature-Input header, and reports the label of the member it verified; that member is read with the parser Fedify
 // reads it with. A required component counts only as a string item of that name without parameters: Mastodon 4.7
 // compares a component with its parameters serialized, so `"@method";req` is not `@method` there.
+// ID-1: a draft-cavage signature verifies with an RSA key only, as Mastodon's (rsa-sha256 and hs2019,
+// SignedRequest::HttpSignature). Fedify 2.4.5 verifies it with RSASSA-PKCS1-v1_5 whatever key it found, served, fetched
+// or refetched, and WebCrypto's verify throws InvalidAccessError for a key of another algorithm; on that path it is
+// the only WebCrypto call on a remote key, so the exception means exactly that the key cannot verify the signature,
+// which is answered as a signature that does not verify. Any other error propagates.
 async function verifyHttpSignature(
   signed: Request,
   options: VerifyRequestOptions,
 ): Promise<VerifyRequestDetailedResult> {
-  const verified = await verifyRequestDetailed(signed, options);
+  let verified: VerifyRequestDetailedResult;
+  try {
+    verified = await verifyRequestDetailed(signed, options);
+  } catch (error) {
+    if (
+      signed.headers.has("Signature-Input") ||
+      !(error instanceof DOMException && error.name === "InvalidAccessError")
+    ) {
+      throw error;
+    }
+    return { verified: false, reason: { type: "invalidSignature" } };
+  }
   if (!verified.verified || !signed.headers.has("Signature-Input") || covers(signed, verified.signatureLabel)) {
     return verified;
   }
@@ -492,25 +540,42 @@ function isBare(item: Item, name: string): boolean {
 
 type Verified = { key: CryptographicKey; pem: string } | InboxOutcome;
 
+// The signature verified with the keys the Store serves, else resolved (storedKeys). When it fails with a key the
+// Store served (a key its actor has since replaced under the same id) and the loaders fetch, it is verified once more
+// with every key resolved from the current document (resolvingKeys) and `served` emptied, so the key's owner is judged
+// as for any fetched key: Fedify's own refetch reads only legacy keys (fetchKeyDetailed). At most two passes; with
+// NO_FETCH loaders (anyAge: the Store's key is the only evidence), one.
 async function verify(
   deps: InboundDeps,
   request: InboundRequest,
   headers: Headers,
-  loaders: { document: DocumentLoader; context: DocumentLoader },
+  loaders: KeyLoaders,
   served: Map<string, ServedKey>,
   anyAge: boolean,
   prefetched: InboxGate["key"],
 ): Promise<Verified> {
-  const signed = new Request(request.url, { method: request.method, headers, body: request.body });
+  const signed = () => new Request(request.url, { method: request.method, headers, body: request.body });
+  const options = {
+    documentLoader: loaders.document,
+    contextLoader: loaders.context,
+    currentTime: Temporal.Instant.fromEpochMilliseconds(request.receivedAt),
+    timeWindow: TIME_WINDOW,
+  };
   let verified: VerifyRequestDetailedResult;
   try {
-    verified = await verifyHttpSignature(signed, {
-      documentLoader: loaders.document,
-      contextLoader: loaders.context,
-      keyCache: storedKeys(deps, served, anyAge, prefetched),
-      currentTime: Temporal.Instant.fromEpochMilliseconds(request.receivedAt),
-      timeWindow: TIME_WINDOW,
+    verified = await verifyHttpSignature(signed(), {
+      ...options,
+      keyCache: storedKeys(deps, served, anyAge, prefetched, loaders),
     });
+    if (
+      !verified.verified &&
+      verified.reason.type === "invalidSignature" &&
+      served.size > 0 &&
+      loaders.document !== NO_FETCH
+    ) {
+      served.clear();
+      verified = await verifyHttpSignature(signed(), { ...options, keyCache: resolvingKeys(loaders) });
+    }
   } catch (error) {
     // A key document whose JSON-LD context could not be loaded.
     const failure = loadFailureOf(error);
@@ -1029,7 +1094,8 @@ async function fetchNeeded(
 
 // An actor may list a key by reference (publicKey: "<key URL>") rather than embed it. Fedify has just resolved that
 // reference to verify the signature, so the verified key is reused instead of fetched again: it is kept if the actor
-// lists its id, the key names no other owner, and its id has the actor's origin.
+// lists its id among the first MAX_PUBLIC_KEYS of publicKey (the rule ownKeys holds embedded keys to, so one store
+// writes at most that many more, RES-6), the key names no other owner, and its id has the actor's origin.
 function withVerifiedReference(
   keys: { id: string; pem: string }[],
   listed: URL[],
@@ -1041,7 +1107,7 @@ function withVerifiedReference(
   if (
     id === undefined ||
     keys.some((k) => k.id === id) ||
-    !listed.some((url) => url.href === id) ||
+    !listed.slice(0, MAX_PUBLIC_KEYS).some((url) => url.href === id) ||
     (key.ownerId !== null && key.ownerId.href !== actorUri) ||
     !sameOrigin(id, actorUri)
   ) {
@@ -1149,11 +1215,14 @@ export async function verifySpooledRequest(
   const documentLoader = requireObjectRoot(bounded(createSafeLoader(deps)));
   const contextLoader = bounded(createContextLoader(deps));
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });
+  const loaders = { document: documentLoader, context: contextLoader };
   let verified: VerifyRequestDetailedResult;
   try {
+    // Keys are resolved as on the inbox (storedKeys), with no Store: no key is served from it, so no second pass.
     verified = await verifyHttpSignature(signed, {
       documentLoader,
       contextLoader,
+      keyCache: resolvingKeys(loaders),
       currentTime: Temporal.Instant.fromEpochMilliseconds(request.receivedAt),
       timeWindow: TIME_WINDOW,
     });
@@ -1175,7 +1244,7 @@ export async function verifySpooledRequest(
     return { ok: false, transient: false, reason: "not-key-owner" };
   }
   const pem = await exportSpki(key.publicKey);
-  const owned = await ownerDocument(actorUri, key, pem, { document: documentLoader, context: contextLoader });
+  const owned = await ownerDocument(actorUri, key, pem, loaders);
   if ("status" in owned) {
     return { ok: false, transient: owned.status === 503, reason: owned.reason };
   }

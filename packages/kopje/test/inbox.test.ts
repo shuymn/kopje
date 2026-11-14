@@ -43,6 +43,13 @@ import {
   setup as statusSetup,
   type Setup as StatusSetup,
 } from "./inbox-status-helpers";
+import {
+  cavageByKeyId,
+  ed25519Key,
+  fedifyAlone as fedifyServed,
+  multikeyActor,
+  rfc9421Init,
+} from "./key-forms-helpers";
 
 // Inbound activities about actors and relationships, end to end through the app: signed requests from synthetic
 // Mastodon- and Misskey-shaped servers, the Store's effects, and the threat model's inbound negative cases. Test names
@@ -1259,6 +1266,45 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
       expect(await check(rfc9421), missing).toEqual({ ok: false, transient: false, reason: "invalidSignature" });
     }
     expect(await check(MASTODON_47)).toMatchObject({ ok: true, actor: bob.uri });
+  });
+
+  it("hands on through the rollback drain's check an Ed25519 RFC 9421 request by a Multikey (ID-1)", async () => {
+    const t = await setup();
+    const carol = await multikeyActor(t.web, "carol");
+    const init = await rfc9421Init(carol.ed.keyId, carol.ed.privateKey, "/inbox", follow(carol.actor));
+    const checked = await verifySpooledRequest({ ...t.web.loader, userAgent: "Kopje/test" }, "kopje.test", {
+      url: `${LOCAL}/inbox`,
+      method: "POST",
+      headers: [...new Headers(init.headers)],
+      body: new TextEncoder().encode(init.body as string),
+      receivedAt: NOW,
+    });
+    expect(checked).toMatchObject({ ok: true, actor: carol.actor.uri });
+  });
+
+  it("answers the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified (ID-1)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const keyUrl = `${MASTODON}/keys/bob`;
+    t.web.serve(bob.uri, { ...bob.document, publicKey: keyUrl });
+    t.web.serve(keyUrl, {
+      "@context": "https://w3id.org/security/v1",
+      id: keyUrl,
+      type: "CryptographicKey",
+      owner: bob.uri,
+      publicKeyPem: (await ed25519Key(keyUrl)).pem,
+    });
+    const init = await cavageByKeyId(keyUrl, follow(bob));
+    await expect(fedifyServed(t.web, init)).rejects.toMatchObject({ name: "InvalidAccessError" });
+    const checked = await verifySpooledRequest({ ...t.web.loader, userAgent: "Kopje/test" }, "kopje.test", {
+      url: `${LOCAL}/inbox`,
+      method: "POST",
+      headers: [...new Headers(init.headers)],
+      body: new TextEncoder().encode(init.body as string),
+      receivedAt: NOW,
+    });
+    expect(checked).toEqual({ ok: false, transient: false, reason: "invalidSignature" });
+    expect(t.web.fetched).toContain(keyUrl);
   });
 
   it("retries a replay whose remote fetch failed transiently", async () => {
