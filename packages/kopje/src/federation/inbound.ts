@@ -38,6 +38,7 @@ import {
   type RemoteLoaders,
 } from "./federation";
 import { typeIs } from "./json-shapes";
+import { MAX_PUBLIC_KEYS } from "./key-entries";
 import {
   createContextLoader,
   createSafeLoader,
@@ -1045,7 +1046,8 @@ async function fetchNeeded(
 
 // An actor may list a key by reference (publicKey: "<key URL>") rather than embed it. Fedify has just resolved that
 // reference to verify the signature, so the verified key is reused instead of fetched again: it is kept if the actor
-// lists its id, the key names no other owner, and its id has the actor's origin.
+// lists its id among the first MAX_PUBLIC_KEYS of publicKey (the rule ownKeys holds embedded keys to, so one store
+// writes at most that many more, RES-6), the key names no other owner, and its id has the actor's origin.
 function withVerifiedReference(
   keys: { id: string; pem: string }[],
   listed: URL[],
@@ -1057,7 +1059,7 @@ function withVerifiedReference(
   if (
     id === undefined ||
     keys.some((k) => k.id === id) ||
-    !listed.some((url) => url.href === id) ||
+    !listed.slice(0, MAX_PUBLIC_KEYS).some((url) => url.href === id) ||
     (key.ownerId !== null && key.ownerId.href !== actorUri) ||
     !sameOrigin(id, actorUri)
   ) {

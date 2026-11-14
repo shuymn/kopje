@@ -3416,8 +3416,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/federation/loader.ts`; cached contexts cost nothing; icons are taken only when embedded). Running out of the
   budget is retryable: the request answers 503, records nothing and its spooled copy is retried; a document refused for
   itself stays a permanent refusal. A key an actor lists by reference is taken from the verification that just resolved
-  it, not fetched again. _Enforced (main)_ for remote accounts' collection syncs (`src/federation/collections.ts`,
-  `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
+  it, not fetched again. Of a fetched document's `publicKey` and `assertionMethod`, at most the first `MAX_PUBLIC_KEYS`
+  (10) entries each are kept where the document's context gives them their key meaning, so `readableKeys` imports at
+  most 20 keys a document, and each store of an actor from a fetched document writes at most 20 keys whatever its
+  context (`MAX_PUBLIC_KEYS` in `src/federation/key-entries.ts`, applied in `ownKeys` and `withVerifiedReference`);
+  rows a Store import restores, and rows stored before this bound, are kept as they are until the actor's next store
+  (`test/key-entries.test.ts` ("imports at most MAX_PUBLIC_KEYS keys of each form"),
+  `test/inbox-key-forms.test.ts` ("the keys read per actor")). _Enforced (main)_ for remote accounts' collection syncs
+  (`src/federation/collections.ts`, `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect on each of its
   documents (featured 2 documents, network 3: the following, followers and outbox collections, featuredTags 4), and
   the network part's documents are read with at most one redirect and 512 KiB each (`NETWORK_CAPS`): 6 fetches and

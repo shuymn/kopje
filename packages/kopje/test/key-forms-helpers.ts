@@ -1,16 +1,18 @@
 import {
   type DocumentLoader,
+  encodeMultibase,
   exportSpki,
   type KeyCache,
   preloadedContexts,
   verifyRequestDetailed,
 } from "@fedify/fedify";
-import { CryptographicKey } from "@fedify/vocab";
+import { CryptographicKey, Multikey, Person } from "@fedify/vocab";
 import { Temporal } from "temporal-polyfill";
 
-import { bytesToBase64 } from "../src/security/key-wrap";
+import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
 import { NOW } from "./app-helpers";
-import { AP, LOCAL, type RemoteWeb } from "./inbox-helpers";
+import { AP, LOCAL, MASTODON, type RemoteWeb, type TestActor } from "./inbox-helpers";
+import { contexts } from "./quote-helpers";
 
 // The key and signature forms an actor of Mastodon 4.7's reading may use (docs/threat-model.md ID-1), each built from
 // its sender's source: Ed25519 keys, a draft-cavage signature naming a key that is not RSA, and an Ed25519 RFC 9421
@@ -34,6 +36,94 @@ export type Ed25519Key = { keyId: string; privateKey: CryptoKey; publicKey: Cryp
 export async function ed25519Key(keyId: string, index = 0): Promise<Ed25519Key> {
   const pair = await ed25519Pair(index);
   return { keyId, privateKey: pair.privateKey, publicKey: pair.publicKey, pem: await exportSpki(pair.publicKey) };
+}
+
+const rsaPairs = new Map<number, Promise<CryptoKeyPair>>();
+
+// RSA key pairs (RSASSA-PKCS1-v1_5, SHA-256, as Mastodon's and Fedify's), generated once per test file by index.
+export function rsaPair(index = 0): Promise<CryptoKeyPair> {
+  let pair = rsaPairs.get(index);
+  if (pair === undefined) {
+    pair = crypto.subtle.generateKey(
+      { ...RSA_ALGORITHM, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
+      true,
+      ["sign", "verify"],
+    ) as Promise<CryptoKeyPair>;
+    rsaPairs.set(index, pair);
+  }
+  return pair;
+}
+
+const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+// Keys Mastodon 4.7 reads (Multibase.decode_key_to_pem, multibase.rb:51-72) but Fedify 2.4.5 cannot import, or reads
+// otherwise, as a Multikey's publicKeyMultibase or a legacy key's publicKeyPem:
+//   - an ML-DSA-44 key: base58btc of the multicodec mldsa-44-pub (0x1210, varint 0x90 0x24) and 1312 fixed bytes;
+//   - an unknown multicodec: secp256k1-pub (0xe7, varint 0xe7 0x01) and 33 fixed bytes;
+//   - an EC P-256 PEM-SPKI, and a PEM that does not parse.
+export const ML_DSA_44_MULTIBASE = text(
+  encodeMultibase("base58btc", new Uint8Array([0x90, 0x24, ...new Uint8Array(1312).fill(0x2a)])),
+);
+export const UNKNOWN_MULTIBASE = text(
+  encodeMultibase("base58btc", new Uint8Array([0xe7, 0x01, ...new Uint8Array(33).fill(0x02)])),
+);
+export const UNPARSEABLE_PEM = "-----BEGIN PUBLIC KEY-----\nnot base64 at all!\n-----END PUBLIC KEY-----\n";
+
+export async function ecPem(): Promise<string> {
+  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const spki = new Uint8Array((await crypto.subtle.exportKey("spki", pair.publicKey)) as ArrayBuffer);
+  const lines = bytesToBase64(spki)
+    .match(/.{1,64}/g)!
+    .join("\n");
+  return `-----BEGIN PUBLIC KEY-----\n${lines}\n-----END PUBLIC KEY-----\n`;
+}
+
+// An Ed25519 key as a `u`-prefixed (base64url) Multikey, which Mastodon 4.7 and Fedify both read.
+export async function base64urlMultibase(publicKey: CryptoKey): Promise<string> {
+  const raw = new Uint8Array((await crypto.subtle.exportKey("raw", publicKey)) as ArrayBuffer);
+  return text(encodeMultibase("base64url", new Uint8Array([0xed, 0x01, ...raw])));
+}
+
+type Json = Record<string, unknown>;
+
+// An actor as a Fedify-based sender writes it (Person#toJsonLd, its @context as Fedify writes it): an RSA legacy key
+// #main-key (its draft-cavage signatures), and FEP-521a Multikeys in assertionMethod, an Ed25519 one #ed25519-key and an
+// RSA one #rsa-key. Served on `web` as application/activity+json. `actor` signs with the legacy key (signedInit).
+export async function multikeyActor(web: RemoteWeb, username: string, options: { origin?: string; key?: number } = {}) {
+  const index = options.key ?? 0;
+  const uri = `${options.origin ?? MASTODON}/users/${username}`;
+  const main = await rsaPair(2 * index);
+  const rsa = await rsaPair(2 * index + 1);
+  const ed = await ed25519Key(`${uri}#ed25519-key`, index);
+  const person = new Person({
+    id: new URL(uri),
+    preferredUsername: username,
+    inbox: new URL(`${uri}/inbox`),
+    publicKey: new CryptographicKey({ id: new URL(`${uri}#main-key`), owner: new URL(uri), publicKey: main.publicKey }),
+    assertionMethods: [
+      new Multikey({ id: new URL(ed.keyId), controller: new URL(uri), publicKey: ed.publicKey }),
+      new Multikey({ id: new URL(`${uri}#rsa-key`), controller: new URL(uri), publicKey: rsa.publicKey }),
+    ],
+  });
+  const document = (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Json;
+  web.serve(uri, document);
+  const actor: TestActor = {
+    uri,
+    keyId: `${uri}#main-key`,
+    privateKey: main.privateKey,
+    pem: await exportSpki(main.publicKey),
+    document,
+  };
+  const rsaKey = {
+    keyId: `${uri}#rsa-key`,
+    privateKey: rsa.privateKey,
+    publicKey: rsa.publicKey,
+    pem: await exportSpki(rsa.publicKey),
+  };
+  return { actor, ed, rsa: rsaKey, document };
 }
 
 // The init of a POST of `activity` to `path` with a draft-cavage signature (hs2019, the algorithm Mastodon names) by

@@ -1,3 +1,4 @@
+import { Person } from "@fedify/vocab";
 import { describe, expect, it } from "vitest";
 
 import { handleQueue } from "../src/jobs/queue";
@@ -7,8 +8,27 @@ import { sql } from "./api-helpers";
 import { harness, inboxDeps } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, completeSetup, migratedStore } from "./helpers";
-import { LOCAL, loggedRefusals, MASTODON, mastodonActor, RemoteWeb, signedInit, type TestActor } from "./inbox-helpers";
-import { cavageByKeyId, ed25519Key, fedifyAlone } from "./key-forms-helpers";
+import {
+  LOCAL,
+  loggedRefusals,
+  MASTODON,
+  mastodonActor,
+  RemoteWeb,
+  type SignOptions,
+  signedInit,
+  type TestActor,
+} from "./inbox-helpers";
+import { setup as statusSetup } from "./inbox-status-helpers";
+import {
+  cavageByKeyId,
+  ecPem,
+  ed25519Key,
+  fedifyAlone,
+  ML_DSA_44_MULTIBASE,
+  multikeyActor,
+  servedLoader,
+  UNKNOWN_MULTIBASE,
+} from "./key-forms-helpers";
 
 // The key and signature forms of Mastodon 4.7's reading (ID-1): which keys an actor's document gives it, Ed25519 HTTP
 // signatures, and a draft-cavage signature naming a key that is not RSA, live and on replay.
@@ -42,7 +62,9 @@ async function setup(options: { store?: (store: StoreStub) => StoreStub } = {}) 
     });
     return { queue: maintenance.queue, refused: replayed.refused };
   };
-  return { store, web, send, refusals, replay, h };
+  const post = async (actor: TestActor, activity: unknown, sign: SignOptions = {}) =>
+    send(await signedInit(actor, "/inbox", activity, sign));
+  return { store, web, send, post, refusals, replay, h };
 }
 
 let sequence = 0;
@@ -147,5 +169,129 @@ describe("a draft-cavage signature naming a key that is not RSA (ID-1)", () => {
     expect(await t.send({ ...init, headers })).toBe(202);
     expect(t.h.queue.pending).toHaveLength(1);
     expect(await follows(t.store)).toEqual([]);
+  });
+});
+
+// An actor listing, beside its readable keys, keys Mastodon 4.7 reads and Fedify 2.4.5 cannot import (an ML-DSA-44
+// Multikey, an unknown multicodec, an EC legacy key) and nulls (mastodon#40194).
+async function unreadableKeysActor(t: { web: RemoteWeb }, username: string) {
+  const carol = await multikeyActor(t.web, username);
+  const { uri } = carol.actor;
+  const methods = carol.document.assertionMethod as unknown[];
+  const document = {
+    ...carol.document,
+    publicKey: [carol.document.publicKey, { id: `${uri}#ec-key`, owner: uri, publicKeyPem: await ecPem() }, null],
+    assertionMethod: [
+      ...methods,
+      { id: `${uri}#mldsa-key`, type: "Multikey", controller: uri, publicKeyMultibase: ML_DSA_44_MULTIBASE },
+      null,
+      { id: `${uri}#k1-key`, type: "Multikey", controller: uri, publicKeyMultibase: UNKNOWN_MULTIBASE },
+    ],
+  };
+  t.web.serve(uri, document);
+  // Fedify alone cannot parse the document as served.
+  await expect(
+    Person.fromJsonLd(document, { documentLoader: servedLoader(t.web), contextLoader: servedLoader(t.web) }),
+  ).rejects.toThrow(/./);
+  return { ...carol, document };
+}
+
+describe("an actor whose document lists keys Kopje cannot read (ID-1)", () => {
+  it("is usable on first contact, its readable keys stored", async () => {
+    const t = await setup();
+    const carol = await unreadableKeysActor(t, "carol");
+    expect(await t.post(carol.actor, follow(carol.actor))).toBe(202);
+    expect(await follows(t.store)).toHaveLength(1);
+    expect(await keys(t.store)).toEqual([{ key_id: carol.actor.keyId, pem: carol.actor.pem }]);
+  });
+
+  it("is found by search resolution", async () => {
+    const t = await statusSetup();
+    const carol = await unreadableKeysActor(t, "carol");
+    const found = await t.api<{ accounts: { acct: string }[] }>(
+      `/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent(carol.actor.uri)}`,
+    );
+    expect(found.body.accounts.map((a) => a.acct)).toEqual(["carol@mastodon.example"]);
+  });
+});
+
+// Eleven legacy keys of `actor`, its own first, each with its key material: the first MAX_PUBLIC_KEYS and one more.
+function elevenKeys(actor: TestActor) {
+  return Array.from({ length: 11 }, (_, i) => ({
+    id: i === 0 ? actor.keyId : `${actor.uri}#key-${i}`,
+    owner: actor.uri,
+    publicKeyPem: actor.pem,
+  }));
+}
+
+describe("the keys read per actor (ID-1, RES-6)", () => {
+  it("reads ten entries of publicKey from a recognized context: a signature by the eleventh is refused", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    t.web.serve(bob.uri, { ...bob.document, publicKey: elevenKeys(bob) });
+    expect(await t.post(bob, follow(bob))).toBe(202);
+    expect(await keys(t.store)).toHaveLength(10);
+    const eleventh = await signedInit(bob, "/inbox", follow(bob), { keyId: `${bob.uri}#key-10` });
+    // Fedify alone finds the eleventh key in the document as served, and verifies.
+    expect(await fedifyAlone(t.web, eleventh)).toMatchObject({ verified: true });
+    expect(await t.refusals(eleventh)).toEqual({ status: 401, refused: INVALID });
+    expect(await follows(t.store)).toHaveLength(1);
+  });
+
+  it("stores ten keys from a context it does not recognize, and refuses the 11th legacy key", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    // An instance-hosted context, as Pleroma and Akkoma serve litepub-0.1.jsonld.
+    const litepub = `${MASTODON}/schemas/litepub-0.1.jsonld`;
+    t.web.serve(litepub, { "@context": [AS, "https://w3id.org/security/v1"] }, "application/ld+json");
+    t.web.serve(bob.uri, {
+      ...bob.document,
+      "@context": [AS, litepub, { "@language": "und" }],
+      publicKey: elevenKeys(bob),
+    });
+    expect(await t.post(bob, follow(bob))).toBe(202);
+    const stored = await keys(t.store);
+    expect(stored).toHaveLength(10);
+    const eleventh = await signedInit(bob, "/inbox", follow(bob), { keyId: `${bob.uri}#key-10` });
+    expect(await fedifyAlone(t.web, eleventh)).toMatchObject({ verified: true });
+    expect(await t.refusals(eleventh)).toEqual({
+      status: 401,
+      refused: [[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]],
+    });
+    expect(await keys(t.store)).toEqual(stored);
+    expect(await follows(t.store)).toHaveLength(1);
+  });
+});
+
+describe("a document whose context gives publicKey another meaning (ID-1, ID-4)", () => {
+  it("applies a Move whose target lists the mover as its eleventh alias under publicKey, its document kept whole", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 2 });
+    const aliases = [...Array.from({ length: 10 }, (_, i) => `https://other.example/users/${i}`), bob.uri];
+    // A valid JSON-LD redefinition no known sender writes: Fedify alone reads the eleven values as aliases.
+    const target = {
+      ...carol.document,
+      "@context": [AS, "https://w3id.org/security/v1", { publicKey: { "@id": "as:alsoKnownAs", "@type": "@id" } }],
+      publicKey: aliases,
+    };
+    t.web.serve(carol.uri, target);
+    const parsed = await Person.fromJsonLd(target, {
+      documentLoader: servedLoader(t.web),
+      contextLoader: servedLoader(t.web),
+    });
+    expect(parsed.aliasIds.map((id) => id.href)).toEqual(aliases);
+    expect(await t.post(bob, follow(bob))).toBe(202);
+    const move = { "@context": AS, id: `${bob.uri}#moves/1`, type: "Move", actor: bob.uri, object: bob.uri };
+    const logged = await loggedRefusals(() => t.post(bob, { ...move, target: carol.uri }));
+    expect(logged).toEqual({ status: 202, refused: [] });
+    const [moved] = await sql<{ moved: string | null }>(
+      t.store,
+      "SELECT m.uri AS moved FROM accounts a LEFT JOIN accounts m ON m.id = a.moved_to_account_id WHERE a.uri = ?",
+      bob.uri,
+    );
+    expect(moved).toEqual({ moved: carol.uri });
+    const [raw] = await sql<{ raw: string }>(t.store, "SELECT raw FROM accounts WHERE uri = ?", carol.uri);
+    expect((JSON.parse(raw!.raw) as { publicKey: unknown }).publicKey).toEqual(aliases);
   });
 });

@@ -12,6 +12,7 @@ import { hostDomain } from "../platform/domain-name";
 import { errorMessage } from "../platform/error-message";
 import { publicShapeRefusal } from "../platform/http-url";
 import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platform/media-type";
+import { readableKeys } from "./key-entries";
 
 // The document loader every remote fetch goes through, unsigned or signed. Fedify's default allows http, 16 MiB
 // bodies and 10 s per call, so it is replaced. The rules, each from a legacy security fix:
@@ -25,6 +26,8 @@ import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platf
 //     (isActivityPubMediaType, GHSA-jhrq-qvrm-qr36); the context loader alone takes plain JSON-LD or JSON, since JSON-LD
 //     contexts are served that way and a context is never trusted as an object
 //   - a host the instance's domain policy covers (refusesHost, R38) is not requested at all
+//   - a document's publicKey and assertionMethod entries are read as Mastodon 4.7 reads them: the first ten each, those
+//     whose key cannot be imported left out (key-entries.ts readableKeys, ID-1)
 export const DOCUMENT_BODY_LIMIT = 1024 * 1024;
 export const DOCUMENT_TIMEOUT_MS = 5000;
 export const MAX_REDIRECTS = 5;
@@ -36,6 +39,8 @@ type Kind = {
   refusal: string;
   // Whether the document must be a JSON object (see requireObjectRoot).
   objectRoot: boolean;
+  // Whether its key entries are read as Mastodon 4.7 reads them (readableKeys): ActivityPub documents only.
+  keyEntries: boolean;
 };
 
 const DOCUMENT: Kind = {
@@ -43,6 +48,7 @@ const DOCUMENT: Kind = {
   accepts: isActivityPubMediaType,
   refusal: "Not an ActivityPub document",
   objectRoot: true,
+  keyEntries: true,
 };
 
 const CONTEXT_TYPES = new Set(["application/ld+json", "application/json", "application/activity+json"]);
@@ -51,6 +57,7 @@ const CONTEXT: Kind = {
   accepts: (media) => CONTEXT_TYPES.has(media.essence),
   refusal: "Not a JSON-LD context",
   objectRoot: false,
+  keyEntries: false,
 };
 
 // WebFinger answers (RFC 7033): JRD, as servers serve it. Never trusted as an ActivityPub object; only the actor link
@@ -61,6 +68,7 @@ const WEBFINGER: Kind = {
   accepts: (media) => WEBFINGER_TYPES.has(media.essence),
   refusal: "Not a WebFinger document",
   objectRoot: true,
+  keyEntries: false,
 };
 
 // A document refused by policy (scheme, host, redirect, type, size, id, root) or unusable as served. Fetching
@@ -318,7 +326,11 @@ async function readDocument(
   if (id !== undefined && originOf(id) !== final.origin) {
     throw new RefusedFetchError(final, `Document id ${id} is not on ${final.origin}`);
   }
-  const loaded = { ...remote, documentUrl: final.href };
+  // ID-1: a document's key entries as Mastodon 4.7 reads them (key-entries.ts readableKeys). A context given in a Link
+  // header applies before the document's own, so the document's alone does not establish what its terms mean.
+  const document =
+    kind.keyEntries && remote.contextUrl === null ? await readableKeys(remote.document) : remote.document;
+  const loaded = { ...remote, document, documentUrl: final.href };
   return kind.objectRoot ? assertObjectRoot(loaded) : loaded;
 }
 

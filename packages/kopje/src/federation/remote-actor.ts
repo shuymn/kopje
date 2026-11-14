@@ -8,6 +8,7 @@ import { httpUrl } from "../platform/http-url";
 import { isRemoteUsername, isStorableActorId } from "../platform/identity-bounds";
 import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
+import { MAX_PUBLIC_KEYS } from "./key-entries";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -95,10 +96,13 @@ async function imageUrl(get: () => Promise<{ url: URL | Link | null } | null>): 
   }
 }
 
-// The keys embedded in the document that belong to this actor: a key naming another owner, or with an id on another
-// origin, is not the actor's to vouch for (ID-1) and is left out. Referenced keys are not fetched.
+// The keys embedded in the document that belong to this actor (ID-1): a key naming another owner, with an id on another
+// origin, or whose id is not among the first MAX_PUBLIC_KEYS ids the actor lists (as Fedify parsed them, whatever the
+// document's context), is not the actor's to vouch for and is left out, so one store writes at most MAX_PUBLIC_KEYS
+// keys (RES-6). Referenced keys are not fetched.
 async function ownKeys(actor: Actor, uri: URL): Promise<{ id: string; pem: string }[]> {
   const keys: { id: string; pem: string }[] = [];
+  const listed = new Set(actor.publicKeyIds.slice(0, MAX_PUBLIC_KEYS).map((id) => id.href));
   try {
     for await (const key of actor.getPublicKeys({
       documentLoader: NO_FETCH,
@@ -106,7 +110,12 @@ async function ownKeys(actor: Actor, uri: URL): Promise<{ id: string; pem: strin
       suppressError: true,
     })) {
       const owner = key.ownerId;
-      if (key.id === null || key.id.origin !== uri.origin || (owner !== null && owner.href !== uri.href)) {
+      if (
+        key.id === null ||
+        !listed.has(key.id.href) ||
+        key.id.origin !== uri.origin ||
+        (owner !== null && owner.href !== uri.href)
+      ) {
         continue;
       }
       if (key.publicKey !== null) {
