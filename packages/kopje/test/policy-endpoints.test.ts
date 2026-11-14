@@ -318,7 +318,9 @@ describe("the status read endpoints agree with the model of their rules", () => 
       }),
       runs(CASES, 20261018),
     );
-  }, 60_000);
+    // Up to 68 s in a CI shard on workerd 1.20261110 (SQLite 3.54.1); alone, the file runs about twice as long there
+    // as on workerd 1.20261023.
+  }, 120_000);
 });
 
 // Runs every endpoint for every viewer of the case and returns what disagrees with the model.
