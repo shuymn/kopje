@@ -97,7 +97,9 @@ const ACTOR_CLASSES = { Person, Service, Group, Organization, Application } as c
 // Fedify's kvCache serves a hit without calling the loader, so entries admitted under a looser acceptance policy would
 // outlive a fix for their TTL. Bump the version whenever the document loader's acceptance policy is tightened.
 // v2: ActivityPub media types only and object roots only (ID-8).
-const SIGNED_DOCUMENT_PREFIX = ["_fedify", "signedRemoteDocument", "v2"] as const;
+// v3: an actor's key entries read as Mastodon 4.7 reads them, the first ten of each form (key-entries.ts readableKeys,
+// ID-1, RES-6).
+const SIGNED_DOCUMENT_PREFIX = ["_fedify", "signedRemoteDocument", "v3"] as const;
 
 // The instance actor's key, created on first use (a write, so it needs a Store that accepts writes once). Racing first
 // uses agree on one key: ensureInstanceActorKey keeps the first stored and returns it. Federation (signed fetches, the

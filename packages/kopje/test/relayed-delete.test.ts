@@ -5,6 +5,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, settle, sql } from "./api-helpers";
 import { countingStore, harness, NOW, offline } from "./app-helpers";
 import {
+  fepActor,
   MASTODON_46_FORWARDED_CONTEXT,
   MASTODON_47_FORWARDED_CONTEXT,
   mastodon47Actor,
@@ -33,6 +34,7 @@ import {
   token,
   update,
 } from "./inbox-status-helpers";
+import { ML_DSA_44_MULTIBASE } from "./key-forms-helpers";
 import { contexts } from "./quote-helpers";
 
 // ID-1, VIS-3: a status's Delete that another server relays (its HTTP signer is not its actor), carrying the author's
@@ -154,6 +156,47 @@ async function boostAndListen(t: Setup, id: string): Promise<void> {
 }
 
 describe("a relayed status Delete with the author's proof (ID-1)", () => {
+  // fiona (mastodon.example), a Fedify-based author whose document lists an ML-DSA-44 Multikey beside her Ed25519 one,
+  // followed by alice, and her stored status.
+  async function fepAuthor() {
+    const w = await world();
+    const fiona = await fepActor(w.t.web, "fiona");
+    const { uri } = fiona.actor;
+    const document = {
+      ...fiona.actor.document,
+      assertionMethod: [
+        ...[fiona.actor.document.assertionMethod].flat(),
+        { id: `${uri}#mldsa-key`, type: "Multikey", controller: uri, publicKeyMultibase: ML_DSA_44_MULTIBASE },
+      ],
+    };
+    w.t.web.serve(uri, document);
+    await followed(w.t, fiona.actor);
+    const status = await note(w.t, fiona.actor);
+    return { ...w, fiona, status };
+  }
+
+  it("applies a Delete proven by an Ed25519 key its author lists beside an ML-DSA-44 key", async () => {
+    const { t, dan, fiona, status } = await fepAuthor();
+    const { status: answered, refused } = await loggedRefusals(async () =>
+      t.post(dan, await fiona.fedify(`${status.uri}#delete`, status.uri)),
+    );
+    expect({ answered, refused }).toEqual({ answered: 202, refused: [] });
+    await settle(t.store);
+    expect(await stored(t.store, status.uri)).toBeNull();
+  });
+
+  it("drops a Delete whose proof is mldsa44-jcs-2024", async () => {
+    const { t, dan, fiona, status } = await fepAuthor();
+    const signed = await fiona.fedify(`${status.uri}#delete`, status.uri);
+    const proof = { ...(signed.proof as Json), cryptosuite: "mldsa44-jcs-2024" };
+    const { status: answered, refused } = await loggedRefusals(() => t.post(dan, { ...signed, proof }));
+    expect({ answered, refused }).toEqual({
+      answered: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "proof-invalid" }]],
+    });
+    expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
+  });
+
   it("applies a Mastodon-signed Delete of a public or unlisted status as the author's own, with its effects", async () => {
     for (const visibility of ["public", "unlisted"] as const) {
       // The same status, deleted by its author directly, and relayed by dan: the same effects.
