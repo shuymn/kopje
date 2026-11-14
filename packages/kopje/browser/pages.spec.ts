@@ -1643,8 +1643,8 @@ test("status and profile: no wrapped meta line begins with a separator at 320 an
   expect(inside).toBeGreaterThan(0);
 });
 
-// The Follow beside a profile's avatar (the profile and the look-up result for an account): inset from the banner
-// as from the card's edge.
+// The Follow beside a profile's avatar (the profile and the look-up result for an account): inset from the card's
+// edge as from the banner.
 for (const name of ["profile", "interaction-result"] as const) {
   for (const width of [1280, 320]) {
     test(`${name}: the Follow beside the avatar is inset from the banner as from the card's edge at ${width} px`, async ({

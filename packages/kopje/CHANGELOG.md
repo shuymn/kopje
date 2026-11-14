@@ -10,8 +10,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
-- A profile's Follow, and the look-up result's for an account, sits as far below the banner as it is from the card's
-  edge, where it sat closer to the banner.
+- A profile's Follow, and the look-up result's for an account, stands as far from the card's edge as from the banner,
+  where it stood further from the edge.
 
 ## [0.5.2] - 2026-11-14
 

@@ -1173,17 +1173,19 @@ dialog[open]::backdrop {
   }
 }
 
-/* Following and interacting from another server: the profile's Follow beside the avatar, inset from the banner as
-   from the card's edge, the rule each side of the word between a form and the address to search for, and a value to
-   copy, whole and wrapping, its copy button's slot reserved so the button appears without moving anything. */
+/* Following and interacting from another server: the profile's Follow beside the avatar, its foot on the avatar's
+   and its inset from the card's edge the same as from the banner, the rule each side of the word between a form and
+   the address to search for, and a value to copy, whole and wrapping, its copy button's slot reserved so the button
+   appears without moving anything. */
 .prow {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: var(--s4);
 
-  /* The row's top is the banner's edge, so this is the action's inset from it, not space between siblings. */
   & > :last-child {
-    margin-block-start: var(--pad);
+    /* Bleed: the 44px action stands 16px below the banner (the 88px avatar less its 28px rise), so it reaches 8px
+       into the card's 24px padding to stand 16px from its edge too. */
+    margin-inline-end: calc(-1 * var(--s2));
   }
 }
 
@@ -1561,6 +1563,11 @@ input[aria-invalid="true"] {
     height: 72px;
     /* Bleed: the smaller avatar rises over the banner by the same share. */
     margin-top: -1rem;
+  }
+
+  .prow > :last-child {
+    /* Bleed: the action stands 12px below the banner (72px less 16px less 44px), 4px into the 16px padding. */
+    margin-inline-end: calc(-1 * var(--s1));
   }
 
   /* The tabs share the row, each growing by the same share with its label centred, at least --s2 apart (their focus
