@@ -10,32 +10,29 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
-- A page of grouped notifications (`GET /api/v2/notifications`) now does its work within one budget, shared by every
-  pass that admits it again after a byte cut: at most 7,200 notifications read for its groups' counts and oldest ones
-  (those the visibility rule hides included) and 81 group visits, of which 800 and one visit are kept for its first
-  group. A page whose reads would pass it holds the groups it admitted as far as what it read holds for a shorter page
-  (keyword filters still match within the requested page's text allowance), or else its first group alone, and its
-  `Link` goes on from its last group, so the next page finds the rest; a page whose reads fit answers as before. One
-  page could take seconds of the Store's time, during which every other request to the instance waited: a page of many
-  groups each favourited by hundreds of accounts, cut by its 8 MiB budget, read about 190,000 notifications, and now
-  reads at most 9,200 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), RES-7). A group's oldest notification
-  is also found with fewer reads. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+- A page of grouped notifications (`GET /api/v2/notifications`) now does its work within one budget. One page could
+  take seconds of the Store's time, during which every other request to the instance waited: a page of many groups
+  each favourited by hundreds of accounts, cut by its 8 MiB budget, read about 190,000 notifications, and now reads at
+  most 9,200. A page whose reads would pass the budget holds fewer groups, down to its first, and its `Link` goes on
+  from its last group, so the next page finds the rest; a page whose reads fit answers as before. A group's oldest
+  notification is also found with fewer reads. What a client sees is in
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md) ("Grouped notifications"), and the bounds are RES-7 in
+  [docs/threat-model.md](docs/threat-model.md). No Store migration and no `wrangler.jsonc` change; a code-only
+  rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+
+- A malformed `import_receipt`, `import_reset` or `published` record no longer fails every operation of the Store,
+  and an import record that is not JSON refuses every operation as an import in progress instead of failing it. For
+  well-formed records admission decides as before. The Store admits each operation, and answers health, from the five
+  operator records admission decides by (maintenance, the import, the unpublished import, the dump and the media
+  rebuild's lease) instead of all eight, so a completed dump's receipt, about 60 KB, is no longer handed to every
+  operation. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
   ([docs/upgrade.md](docs/upgrade.md)).
 
-- The Store admits each operation, and answers health, from the five operator records admission decides by
-  (maintenance, the import, the unpublished import, the dump and the media rebuild's lease) instead of reading and
-  parsing all eight. A completed dump's receipt, about 60 KB, is no longer handed to every operation, and the running
-  import's record is read only for whether it exists. For well-formed records admission decides as before. A malformed
-  `import_receipt`, `import_reset` or `published` record no longer fails every operation, and an import record that is
-  not JSON refuses every operation as an import in progress instead of failing it. No Store migration and no
-  `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
-
 - `GET /api/v1/instance` no longer counts the remote accounts' domains on every request: `stats.domain_count` is the
-  count the 5-minute cron keeps in `kopje_state`, at most 10 minutes old; past that, counted on request (a new or
-  upgraded Store before the first cron run, an import or a reset, which clear it, and a skipped refresh, such as during
-  a dump or under the env's `MAINTENANCE`). It is never dumped. `GET /api/v2/instance`
-  reads only what it presents (`usage.users.active_month`) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)).
-  No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+  count the 5-minute cron keeps, at most 10 minutes old, and is counted on request only when no kept count is that
+  fresh ([docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists when). `GET /api/v2/instance` reads only what
+  it presents (`usage.users.active_month`). No Store migration and no `wrangler.jsonc` change; a code-only rollback is
+  safe ([docs/upgrade.md](docs/upgrade.md)).
 
 - The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
   addressed to Public alone, as Mastodon sends it, so a booster or quoter can forward it with the author's proof, and
@@ -52,25 +49,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   author's current key, and the status is a public or unlisted original Kopje holds as that author's, on the author's
   origin (ID-1, #1506). So a status its author deletes leaves a Kopje server that holds it only through another
   server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or
-  of an actor changes no status. An author proof, on a relayed status or stamp `Delete` or on an author's own `Delete`
-  to forward, is considered only in one of the sender profiles: Mastodon 4.5's status and stamp `Delete`, Kopje's own,
-  Mastodon's and Kopje's status `Delete` as a Mastodon holding a boost or quote of the status forwards it (the
-  forwarded profiles, none for a stamp's `Delete`, which Mastodon 4.5.21 forwards without its signature. Mastodon
-  compacts the body under its `full_context` and forwards it with that `@context`, so the `@context` is
-  activitystreams, security/v1 and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a definition some
-  release gave it, the union of `full_context` in `app/helpers/context_helper.rb` at every 4.4 and 4.5 release tag,
-  v4.4.0 to v4.5.21, read from each tag's source, none of whose terms is or aliases one the decision reads), and a
-  `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys
-  `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof), each with its sender's `@context`
-  and keys. A relayed `Delete` in any other form, from Misskey or forwarded by a Mastodon whose `full_context` holds a
-  term or definition outside 4.4 and 4.5, is refused, and an author's own `Delete` in such a form is no longer
-  forwarded ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc`
-  change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+  of an actor changes no status. An author's proof, on a relayed `Delete` or on an author's own `Delete` to forward,
+  is considered only in the sender profiles: Mastodon 4.5's and Kopje's own, their status `Delete` as a Mastodon 4.4
+  or 4.5 forwards it, and Fedify 2.4.5's with an FEP-8b32 proof
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Forwarded deletes"). A relayed `Delete` in any other
+  form, from Misskey for example, is refused, and an author's own `Delete` in such a form is no longer forwarded. No
+  Store migration and no `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
 
 - An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
   (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters
   of those tables only, so only a crafted or corrupted dump is refused. The inbound jobs read the counters by name on
-  every round, and an import could otherwise grow them without limit ([docs/dump-format.md](docs/dump-format.md)).
+  every round, and an import could otherwise grow them without limit ([docs/dump-format.md](docs/dump-format.md)). No
+  Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
@@ -78,16 +68,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   authentication and before validation and the `Idempotency-Key`, as Mastodon does: a reply that also fails validation
   (its length, visibility, poll, media count, `quote_approval_policy` or `scheduled_at`) no longer answers 422, and a
   repeated `Idempotency-Key` no longer answers the earlier status or scheduled status. A quote post that passes
-  validation is posted in one Store call instead of two.
+  validation is posted in one Store call instead of two. No Store migration and no `wrangler.jsonc` change.
 
 - `PUT /api/v1/statuses/:id` answers 404 for a status that is missing or not the caller's own before validation, as
   Mastodon does: an edit that also fails validation (its length, media count, poll, `quote_approval_policy`, a media
-  description or a thumbnail) no longer answers 422.
+  description or a thumbnail) no longer answers 422. No Store migration and no `wrangler.jsonc` change.
 
-- An import of a dump that holds an accepted quote, a backup restore included, verifies: the insert of each accepted
-  quote adds 1 to its quoted status's count, which the dumped row already holds, and verify takes that 1 off again in
-  bounded steps before the checksums ([docs/dump-format.md](docs/dump-format.md), "Bounded work"). An import whose
-  verification began before the upgrade starts its checksums again.
+- An import of a dump that holds an accepted quote, a backup restore included, now verifies: verify keeps each quoted
+  status's dumped count instead of counting the quote twice ([docs/dump-format.md](docs/dump-format.md), "Bounded
+  work"). An import whose verification began before the upgrade starts its checksums again. No Store migration and no
+  `wrangler.jsonc` change.
 
 - NodeInfo's `activeMonth` and `activeHalfyear` count only local accounts that are not suspended, as `total` does, so
   a suspended account that posted in the window no longer makes them exceed `total`. `localPosts` is unchanged and

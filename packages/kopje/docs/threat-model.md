@@ -3622,11 +3622,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cron's turn resumes it from the persisted position after a lost continuation, and that a drain after the barrier runs
   no turn; a new event kind joins its table (`KINDS`). `src/stream-hub.ts`, `src/domain/streaming.ts`;
   `test/streaming/streaming.test.ts`. _Gap:_ the budgets count work, not CPU time; a turn at the limits is to be
-  measured on a deployed instance. A hibernated socket that carries no frame either way is closed by the platform:
-  measured from one home network against a deployed instance, four silent sockets started at different times each
-  closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client); a socket the client pinged every
-  20 minutes outlived them, to 6,393 s (#1211). Kopje sends no server ping, and a client reconnects, as Mastodon's
-  clients do; REST stays the source of truth.
+  measured on a deployed instance. The platform closes a hibernated socket that carries no frame either way: measured
+  from one home network against a deployed instance (#1211), four silent sockets started at different times each
+  closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client), and a socket the client pinged every
+  20 minutes outlived them, to 6,393 s. Kopje sends no server ping; a client reconnects, as Mastodon's clients do, and
+  REST stays the source of truth.
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
   a restore are paid indefinitely ([backup.md](backup.md)).
@@ -3718,31 +3718,31 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reads the account's own index by id, and a publication round reads the due ones through the index by time, so neither
   grows with the accounts that schedule or their scheduled statuses (`test/policy-bounds.test.ts` ("however many
   accounts schedule")). _Enforced (main)_ for grouped notifications: a page of groups walks the viewer's notifications
-  from the cursor, as the list does, and reads at most 2,000 of those the rule shows; each group's count, samples and
-  ends are read through the `(account_id, group_key, id)` index, at most 400 notifications per group; a group's accounts
-  are paged through the same index; so none grows with the notifications of one group (`test/policy-bounds.test.ts`
-  ("however many notifications a group holds")). A page's admission passes (the first, the re-admissions after a byte
-  cut, and the fallback) share one work budget, charged with the notifications its group reads take as candidates
-  before the rule hides any (those of groups and passes later rejected included) and with each group visited: a pass
-  visits a group only while the visit fits within 80, and starts each read only while all it may read (400 for the
-  members, a window of the oldest's) still fits within 6,400 candidates; the fallback, the page's first admissible
-  group alone over its own range, has a reserve of one visit and 800, the most one visit reads. A page thus reads at
-  most 2,000 notifications in its walk and 7,200 in its groups, and visits at most 81 groups
-  (`GROUP_ADMISSION_CANDIDATES`, `GROUP_ADMISSION_VISITS` and `VISIT_CANDIDATES` in
-  `src/domain/notification-groups.ts`; `test/notification-group-budgets.test.ts` ("grouped notifications within one
+  from the cursor, as the list does, and reads at most 2,000 of them, shown or hidden (`GROUP_WALK`); each group's
+  count, samples and ends are read through the `(account_id, group_key, id)` index, at most 400 notifications per group
+  (`GROUP_COUNT`); a group's accounts are paged through the same index; so none grows with the notifications of one
+  group (`test/policy-bounds.test.ts` ("however many notifications a group holds")). A page's admission passes (the
+  first, the re-admissions after a byte cut, and the fallback) share one work budget, charged with the candidates its
+  group reads take before the rule hides any (those of groups and passes later rejected included) and with each group
+  visited: a pass visits a group only while the visit fits within 80 (`GROUP_ADMISSION_VISITS`), and starts each read
+  only while all it may read (400 for the members, a window of the oldest's) still fits within 6,400 candidates
+  (`GROUP_ADMISSION_CANDIDATES`); the fallback, the page's first admissible group alone over its own range, has a
+  reserve of one visit and 800 candidates, the most one visit reads (`VISIT_CANDIDATES`). A page thus reads at most
+  2,000 notifications in its walk and 7,200 in its groups, and visits at most 81 groups
+  (`src/domain/notification-groups.ts`; `test/notification-group-budgets.test.ts` ("grouped notifications within one
   work budget")). Measured on a deployed instance (#1211), the Store's CPU for one such page whose first group fills
   its answer, so that no prefix holds: about 0.3 s (median; 0.5 s at most) at the budget's visits with groups of
   medium size, and about 0.8 s (1.1 s at most) with every status and sample account at its bounds, where presenting
-  them, not reading, dominates. Accepted: a group of more than 400 counts at most 400; a page whose walk meets more
-  than 2,000 notifications of the groups it found (one group that large, in practice) ends with those groups, its Link
-  going on from the last notification read; and a page whose reads would pass its budget holds the groups its last pass
-  admitted as far as those reads hold for a page that ends there (`provenPrefix`; its statuses are matched within the
-  filter text allowance of the requested page, `MAX_FILTER_REQUEST_TEXT`), or else its first group alone, its
-  Link going on from its last group's discovery position (mastodon-deviations.md, "Grouped notifications"). Clearing
-  notifications and dismissing a group hide what they remove from every read at once and delete it in bounded
-  batches: the request records the highest id removed (migration `0023_notification_clears`) and deletes at most
-  2,000 notifications, newest first, and each round of the notification jobs up to 2,000 more, failed batches
-  included (RES-5); every read of an account's notifications starts above its clear, and every read of one group
+  them, not reading, dominates. Accepted ([mastodon-deviations.md](mastodon-deviations.md), "Grouped notifications"):
+  a group of more than 400 counts at most 400; a page whose walk meets more than 2,000 notifications of the groups it
+  found (in practice one group that large) ends with those groups, its Link going on from the last notification read;
+  and a page whose reads would pass its budget holds the groups its last pass admitted as far as those reads hold for
+  a page that ends there (`provenPrefix`; its statuses are matched within the filter text allowance of the requested
+  page, `MAX_FILTER_REQUEST_TEXT`), or else its first group alone, its Link going on from its last group's discovery
+  position. Clearing notifications and dismissing a group hide what they remove from every read at once and delete
+  it in bounded batches: the request records the highest id removed (migration `0023_notification_clears`) and
+  deletes at most 2,000 notifications, newest first, and each round of the notification jobs up to 2,000 more, failed
+  batches included (RES-5); every read of an account's notifications starts above its clear, and every read of one group
   above its dismissal (`keptFloorSql` in `src/domain/audience.ts`), so neither the request, a round nor such a read
   grows with what is hidden (`test/policy-bounds.test.ts` ("touch a bounded batch");
   `test/notification-clears.test.ts`). _Gap:_ until the rounds have deleted a dismissed group larger than the request
