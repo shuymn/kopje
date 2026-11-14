@@ -1,17 +1,22 @@
-import type { Exception, Exceptions } from "./mastodon-conformance.js";
+import { accepted, type Exceptions, open } from "./mastodon-conformance.js";
 
 // The request parameters Mastodon reads and Kopje does not, by route (test/mastodon-params.test.ts). Each is a real
 // gap: tracked by an issue (open) or a decided deviation of docs/mastodon-deviations.md (accepted). A harness
 // limitation is fixed in the test's recipes or world, never written here.
-
-const accepted = (deviation: `MD-${number}`, ...names: string[]): Record<string, Exception> =>
-  Object.fromEntries(names.map((name) => [name, { status: "accepted", deviation }]));
 
 const PAGE = ["limit", "max_id", "min_id", "since_id"];
 
 // Admin features Kopje does not serve (MD-2) and features not built yet (MD-3).
 const NOT_SERVED = (...names: string[]) => accepted("MD-2", ...names);
 const PLACEHOLDER = (...names: string[]) => accepted("MD-3", ...names);
+
+// The collection alerts of Mastodon 4.6: push.ts reads data[alerts][<type>] only for ALERT_TYPES.
+const PUSH_COLLECTION_ALERTS = open(
+  1582,
+  "the collection alerts of Mastodon 4.6",
+  "data[alerts][added_to_collection]",
+  "data[alerts][collection_update]",
+);
 
 export const PARAM_EXCEPTIONS: Exceptions = {
   "POST /api/v1/accounts": accepted(
@@ -34,6 +39,28 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   // Mastodon reads local and remote only to decide whether the link timeline needs a user
   // (TopicController#require_auth?), which it never does while topic feeds are public, Kopje's only setting (MD-5).
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
+
+  // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
+  "GET /api/v1/notifications": open(1582, "supported_types and fallback", "supported_types[]"),
+  "GET /api/v1/notifications/:id": open(1582, "supported_types and fallback", "supported_types[]"),
+  "GET /api/v2/notifications": open(1582, "supported_types and fallback", "supported_types[]"),
+  "GET /api/v2/notifications/:group_key": open(1582, "supported_types and fallback", "supported_types[]"),
+  "PATCH /api/v1/notifications/policy": open(1582, "Mastodon 4.6's bot condition", "filter_bots"),
+  "PUT /api/v1/notifications/policy": open(1582, "Mastodon 4.6's bot condition", "filter_bots"),
+  "PATCH /api/v2/notifications/policy": open(1582, "Mastodon 4.6's bot condition", "for_bots"),
+  "PUT /api/v2/notifications/policy": open(1582, "Mastodon 4.6's bot condition", "for_bots"),
+  "POST /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
+  "PUT /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
+  "PATCH /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
+  "PATCH /api/v1/accounts/update_credentials": open(
+    1583,
+    "the profile image descriptions of Mastodon 4.6",
+    "avatar_description",
+    "header_description",
+  ),
+  "GET /api/v1/accounts/:id/statuses": open(1585, "exclude_direct", "exclude_direct"),
+  "GET /api/v1/admin/reports": open(1585, "unresolved on admin reports", "unresolved"),
+  "POST /api/v1/reports": open(1589, "collections", "collection_ids[]"),
 
   // Admin features not served.
   "POST /api/v1/admin/dimensions": NOT_SERVED("end_at", "keys[]", "limit", "start_at"),

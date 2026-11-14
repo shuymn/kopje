@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RouteAccess } from "../src/mastodon/access";
 import { ROUTES } from "../src/mastodon/routes";
 import { grants, type RequiredScope, SCOPES } from "../src/security/scopes";
-import mastodon from "./fixtures/mastodon-4.5.11-api-access.json";
+import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
 import { sameRoute } from "./mastodon-conformance";
 
 // Every route of the API table (src/mastodon/routes.ts) asks of its caller what Mastodon's same route asks, read from
@@ -107,6 +107,11 @@ const EXCEPTIONS: Record<string, Exception> = {
       "unresolved (Pundit policy: authorize @status, :update?; authorize @status, :show?): required token, scopes write write:statuses, no user required",
     reason:
       "a token without a user owns no status, so StatusPolicy#update? refuses it there (403); Kopje refuses it at the route",
+  },
+  "GET /api/v1/annual_reports/:id": {
+    kopje: "required token, scopes write write:accounts, user required",
+    mastodon: "required token, scopes read read:accounts, user required",
+    reason: "#1590's feature-off contract, commit 3",
   },
   "GET /api/v1/accounts/relationships": {
     kopje: "required token, scopes follow read read:follows, user required",

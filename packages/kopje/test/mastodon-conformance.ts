@@ -10,9 +10,13 @@ export type Exception =
 // Exceptions by 'METHOD /path' (or entity), then by parameter (or field) name.
 export type Exceptions = Record<string, Record<string, Exception>>;
 
-// Open exceptions of #1142 for `names`, with the same note.
-export const open = (note: string, ...names: string[]): Record<string, Exception> =>
-  Object.fromEntries(names.map((name) => [name, { status: "open", issue: 1142, note }]));
+// Open exceptions of the gap issue `issue` for `names`, with the same note.
+export const open = (issue: number, note: string, ...names: string[]): Record<string, Exception> =>
+  Object.fromEntries(names.map((name) => [name, { status: "open", issue, note }]));
+
+// Accepted exceptions of the deviation `deviation` for `names`.
+export const accepted = (deviation: `MD-${number}`, ...names: string[]): Record<string, Exception> =>
+  Object.fromEntries(names.map((name) => [name, { status: "accepted", deviation }]));
 
 // The route of `routes` with `method` and `path`, path parameters matched whatever their names.
 export function sameRoute<R extends { method: string; path: string }>(

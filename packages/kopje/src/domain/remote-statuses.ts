@@ -55,7 +55,7 @@ import {
   writeTags,
 } from "./statuses";
 
-// Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.3's
+// Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them. The Worker has parsed the object as
 // Mastodon reads it (compacted JSON), sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to
 // the bounds below (RES-2, RES-4); here it is authorized against the stored state (ID-3, ID-6, ID-7) and written.

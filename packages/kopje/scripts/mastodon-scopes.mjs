@@ -1600,6 +1600,19 @@ const ENTITIES = [
   "REST::AnnouncementSerializer",
   "REST::AnnouncementSerializer::AccountSerializer",
   "REST::ReactionSerializer",
+  "REST::ReportSerializer",
+  "REST::RoleSerializer",
+  "REST::SearchSerializer",
+  "REST::CustomEmojiSerializer",
+  "REST::ProfileSerializer",
+  "REST::PartialAccountSerializer",
+  "REST::CollectionSerializer",
+  "REST::CollectionItemSerializer",
+  "REST::CollectionWithAccountsSerializer",
+  "REST::ShallowTagSerializer",
+  "REST::NotificationPolicySerializer",
+  "REST::V1::NotificationPolicySerializer",
+  "REST::AnnualReportSerializer",
 ];
 
 const DECLARATIONS = /^(attributes|attribute|has_one|has_many|belongs_to)\b\s*(.*)$/s;

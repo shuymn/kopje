@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ROUTES } from "../src/mastodon/routes";
 import { bearer, sql } from "./api-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
-import mastodon from "./fixtures/mastodon-4.5.11-api-access.json";
+import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
 import { covers, paramFailures } from "./mastodon-conformance";
 import { PARAM_EXCEPTIONS, UNRESOLVED_PARAMS } from "./mastodon-params-exceptions";
 import {

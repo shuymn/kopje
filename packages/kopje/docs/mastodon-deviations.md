@@ -5,24 +5,29 @@ Other documents point here rather than repeat the release.
 
 ## What Kopje follows
 
-- **Client API.** Kopje follows the client API as **Mastodon v4.5.11** serves it, the reference release, apart from
+- **Client API.** Kopje follows the client API as **Mastodon v4.7.5** serves it, the reference release, apart from
   the departures below and the gaps open issues track. The claim is for that tag. A fix that a later Mastodon release
   makes may be followed before the reference release moves; the entry or code comment that describes the fixed
-  behaviour names that release (for example, "Mastodon 4.5.21 counts …"). The conformance checks compare Kopje with the
-  reference release's source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each
-  route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
-  (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
-  and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
+  behaviour names that release. The conformance checks compare Kopje with the reference release's source: the routes
+  and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
+  (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`). Their
+  fixtures carry the release in their names and their `mastodon` field, and `test-node/mastodon-reference.test.ts`
+  checks that they name the release this page does.
 - **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
-  They rise only when every feature a client switches on at the higher value is served.
+  They rise only when every feature a client switches on at the higher value is served. Mastodon v4.7.5 advertises
+  `api_versions.mastodon` 11. Each step signals a feature:
+  - 8, `exclude_direct` (`mastodon#37763`);
+  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
+  - 10, collections under `/api/v1` (`mastodon#39210`);
+  - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
 - **Streaming.** Kopje serves the WebSocket streaming API of the reference release, without Server-Sent Events and
   without a token in the query string, and with bounds on the subscriptions a socket and an account hold, past which a
   subscription is refused (`src/mastodon/streaming.ts`, `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.3, with Kopje's canonical-address
+  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
   fallback and failure handling under NET-4. A supported series whose activities Kopje refuses or misreads is a gap.
 
 ## Following a Mastodon release
@@ -41,7 +46,7 @@ implement it, since a change there (what an account's deletion removes, say) sho
 - **A new minor series.** Whether to follow it is decided on what it adds to the surface Kopje already serves, judged
   at its latest patch. Following it is the same move with a larger inventory (routes, parameters, entities, behaviour);
   raising `version` and `api_versions` is a separate step, as above. Before the reference series leaves upstream
-  support (4.5: 2027-02-20), decide whether to follow a supported one.
+  support (4.7: no date in v4.7.5's `SECURITY.md`), decide whether to follow a supported one.
 - **Federation in any supported series.** Read the diff of `app/lib/activitypub`, `app/services/activitypub`,
   `app/serializers/activitypub`, `app/controllers/concerns/signature_verification.rb`, `app/lib/request*`,
   `app/helpers/context_helper.rb` and `app/helpers/json_ld_helper.rb`: what is sent and received, contexts, signatures
@@ -88,7 +93,10 @@ A pull request that fixes a gap removes the exceptions that cite it.
   API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
   422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
   a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
-  caller is refused (403) before the body is read. Accepted, 2026-10-22.
+  caller is refused (403) before the body is read. Accepted, 2026-10-22. Kopje does not offer silencing or
+  memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships writes
+  no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
+  never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Accepted,
   2026-10-20.
@@ -435,7 +443,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
 - The operator's documents (the privacy policy, the terms of service, the extended description) are HTML, sanitized by
   `sanitizeDocumentHtml` (`src/security/html.ts`) in `/api/v1/instance/*` and on their pages alike. Their headings are
   kept only as h2 to h4, without attributes (h1 becomes h2, h5 and h6 become h4), and a link that is not an absolute
-  http(s) URL loses its href and stays as text (HTML-3; [setup.md](setup.md), Instance details). Mastodon 4.5.11
+  http(s) URL loses its href and stays as text (HTML-3; [setup.md](setup.md), Instance details). Mastodon 4.7.5
   renders each from Markdown with Redcarpet (`REST::PrivacyPolicySerializer`, `REST::TermsOfServiceSerializer`,
   `REST::ExtendedDescriptionSerializer`, without `safe_links_only`), keeping h1 to h6 and relative links as written.
   `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the pages show them"), `test/html.test.ts`
@@ -651,7 +659,7 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
 - An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts.
 - `include_subdomains` is read as a boolean: empty, `0`, `f`, `false` and `off` (any case) are false; Mastodon takes
-  any value sent as true, `"false"` included. The series counts the domain itself only, as 4.5.11 does.
+  any value sent as true, `"false"` included. The series counts the domain itself only, as Mastodon 4.7.5 does.
 - `new_users`, `opened_reports` and `resolved_reports` without both dates answer 422; Mastodon answers 500.
 - `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
   written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date

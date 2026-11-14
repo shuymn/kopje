@@ -2057,7 +2057,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
   hands over no signer or key; a write refused while resolving (the final store, or the instance key's creation) also
   leaves the answer to the plain search (`resolveQuery` in `src/mastodon/search.ts`). An account's canonical address is
-  decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
+  decided as Mastodon 4.7.5's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
   it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
   candidate, which must answer for that subject with the same actor id; otherwise the address is on the host

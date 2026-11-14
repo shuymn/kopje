@@ -16,7 +16,7 @@ import {
   setup,
 } from "./inbox-status-helpers";
 
-// The canonical address of a remote account (NET-4, VIS-5), as Mastodon 4.7.3's
+// The canonical address of a remote account (NET-4, VIS-5), as Mastodon 4.7.5's
 // ActivityPub::ProcessAccountService#check_webfinger! and ResolveAccountService decide it: the actor's own host
 // declares the address in the subject of its WebFinger answer, another domain in it is a candidate that must name the
 // same actor back, and the confirmation holds only for the (username, domain, actor id) it was made for. Aliases never

@@ -11,7 +11,7 @@ import { REMOTE_FIELD_INDEXES, REMOTE_VERIFIED_SHOWN, SAFE_INTEGER_MAX } from ".
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import remote from "./fixtures/mastodon-4.5.11-remote-links.json";
+import remote from "./fixtures/mastodon-4.7.5-remote-links.json";
 import { migratedStore } from "./helpers";
 import { actorDefaults } from "./inbox-helpers";
 import { observedSql } from "./read-helpers";
