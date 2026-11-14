@@ -127,6 +127,27 @@ describe("a remote Question", () => {
     ]);
   });
 
+  it("without an end is open: it presents expires_at null and expired false, and takes a vote", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const object = question(bob, { endTime: undefined });
+    expect("endTime" in JSON.parse(JSON.stringify(object))).toBe(false);
+    const id = await remotePoll(t, bob, object);
+    expect(await sql(t.store, "SELECT expires_at FROM polls WHERE status_id = ?", id)).toEqual([{ expires_at: null }]);
+    const { body } = await api<{ poll: Poll }>(t, `/api/v1/statuses/${id}`);
+    expect(body.poll).toMatchObject({ expires_at: null, expired: false, votes_count: 3 });
+    // Mastodon's Expireable#expired? is false without an end, so the vote is taken (4.5.21's poll.tsx:62-68 lets the
+    // web client vote in it too).
+    const voted = await api<Poll>(t, `/api/v1/polls/${id}/votes`, {
+      method: "POST",
+      body: JSON.stringify({ choices: ["0"] }),
+    });
+    expect(voted).toMatchObject({ status: 200, body: { expired: false, votes_count: 4, own_votes: [0] } });
+    const sent = (await outbound(t.store)).filter((o) => (o.activity.object as { name?: string })?.name === "cats");
+    expect(sent).toHaveLength(1);
+  });
+
   it("takes the counts, voters and end of an Update(Question) that names no new version, but not new choices", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
