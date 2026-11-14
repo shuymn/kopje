@@ -16,6 +16,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
+- Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
+  keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
+  change.
 
 ### Changed
 

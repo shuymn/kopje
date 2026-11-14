@@ -875,6 +875,19 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   (`signed_request.rb:150-153`). The signature Kopje selects meets Mastodon's required parameters and covered
   components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
   components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
+- A `Multikey` an actor lists by reference in `assertionMethod` is not fetched, so a signature by it does not verify;
+  Mastodon 4.7 fetches it (`process_account_service.rb:434-444`). No sender in the sources lists one so, and fetching
+  it would cost a fetch per key (RES-6). Accepted, 2026-11-15.
+- An ML-DSA-44 key is not read, where Mastodon 4.7 stores one for proofs (`multibase.rb:62-66`): Fedify 2.4.5 cannot
+  import it. The actor stays usable (ID-1). Accepted, 2026-11-15.
+- An Ed25519 key in a legacy `publicKey`, or in a key document of its own its actor lists, verifies an RFC 9421
+  signature, where Mastodon reads every legacy key as RSA (`process_account_service.rb:396`, `:414`). Its owner is
+  judged by the rule of every key, so no actor gains anything over its own keys. Accepted, 2026-11-15.
+- An unreadable key in a document whose context Kopje does not recognize as giving `publicKey` or `assertionMethod`
+  their key meaning (a context its instance serves, as Pleroma's `litepub-0.1.jsonld`, or one that redefines either
+  term) still makes that actor unusable, where Mastodon skips the key (`process_account_service.rb:448-452`):
+  recognizing more contexts would mean fetching or expanding them, and no sender in the sources writes an unreadable
+  key under any context. Accepted, 2026-11-15.
 
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):

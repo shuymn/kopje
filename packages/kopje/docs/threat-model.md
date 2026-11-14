@@ -122,7 +122,18 @@ against their own instance. TLS is assumed between all parties.
   first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
   `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
   request (`verifySpooledRequest`, OPS-9) holds to the same rule. The owner is the actor whose document lists the key,
-  by id and key material, and the key names no other owner. A stored key (`remote_keys`, kept per key id with its owner,
+  by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
+  first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
+  each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key
+  the signature's verification resolved joins them only within the same first ten (`withVerifiedReference`). Where a
+  fetched document's context gives either property its security meaning (a context Fedify preloads defines it, and
+  the context holds no `null`, no scoped context, no `@import` and no inline definition of it), an entry whose key
+  Fedify cannot import (an ML-DSA-44 Multikey among them) is removed before the document is read (`readableKeys`), so
+  the actor stays usable; any other document is read as fetched. A key id the Store does not hold fresh, or whose
+  stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
+  for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the
+  algorithm its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a
+  signature that does not verify (401), live, on replay and in the rollback drain. A stored key (`remote_keys`, kept per key id with its owner,
   whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that, or when its
   signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one exception is
   an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document both answer
@@ -135,9 +146,15 @@ against their own instance. TLS is assumed between all parties.
   "RFC 9421 signature leaves out a required component", "holds the rollback drain's check of a spooled request to the
   same rule"), `test-node/fedify-usage.test.ts` ("reads Signature-Input with the one structured-field-values Fedify
   resolves"), `test/inbox-regressions.test.ts` ("stored keys, rotation and ownership", "refuses a gone actor's
-  Delete signed with another account's stale stored key"). A stored key list (with the
-  profile, `movedTo` and routing beside it) is replaced only by a document
-  fetched after the last one stored: every store of a remote actor's document issues a new Store revision
+  Delete signed with another account's stale stored key"); `ownKeys` in `src/federation/remote-actor.ts`, `src/federation/key-entries.ts`;
+  `test/inbox-key-forms.test.ts` ("a draft-cavage signature naming a key that is not RSA", "the keys of an actor's
+  document", "the keys read per actor", "a document whose context gives publicKey another meaning", "RFC 9421
+  signatures by an Ed25519 key", "a key replaced under the same id", "a draft-cavage signature naming an Ed25519 key
+  Kopje serves"), `test/key-entries.test.ts` ("which contexts give the key properties their meaning"),
+  `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers the
+  rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
+  `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
+  (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored: every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
@@ -3422,7 +3439,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   context (`MAX_PUBLIC_KEYS` in `src/federation/key-entries.ts`, applied in `ownKeys` and `withVerifiedReference`);
   rows a Store import restores, and rows stored before this bound, are kept as they are until the actor's next store
   (`test/key-entries.test.ts` ("imports at most MAX_PUBLIC_KEYS keys of each form"),
-  `test/inbox-key-forms.test.ts` ("the keys read per actor")). _Enforced (main)_ for remote accounts' collection syncs
+  `test/inbox-key-forms.test.ts` ("the keys read per actor")). A request is verified at most twice: again only when a
+  key the Store served fails, with the key resolved from the current document, through the request's loaders and memo
+  (`verify` in `src/federation/inbound.ts`; `test/inbox-key-forms.test.ts` ("refuses a signature by a third key,
+  verifying at most twice with one load")). _Enforced (main)_ for remote accounts' collection syncs
   (`src/federation/collections.ts`, `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect on each of its
   documents (featured 2 documents, network 3: the following, followers and outbox collections, featuredTags 4), and

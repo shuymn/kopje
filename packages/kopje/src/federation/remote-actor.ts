@@ -1,5 +1,5 @@
 import { type DocumentLoader, exportSpki, FetchError } from "@fedify/fedify";
-import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject } from "@fedify/vocab";
+import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
 import type { RemoteActorInput } from "../domain/remote-actors";
@@ -41,6 +41,19 @@ export async function fetchActor(
   loader: DocumentLoader,
   contextLoader: DocumentLoader,
 ): Promise<FetchedActor> {
+  const loaded = await loadActor(uri, loader, contextLoader);
+  return loaded.kind === "ok"
+    ? { kind: "ok", actor: loaded.actor, input: await remoteActorInput(loaded.actor, loaded.document) }
+    : loaded;
+}
+
+// fetchActor's load and parse, without reading the document into a remote account's columns: the parsed actor and
+// the document as loaded.
+export async function loadActor(
+  uri: string,
+  loader: DocumentLoader,
+  contextLoader: DocumentLoader,
+): Promise<{ kind: "ok"; actor: Actor; document: unknown } | Exclude<FetchedActor, { kind: "ok" }>> {
   let remote: Awaited<ReturnType<DocumentLoader>>;
   try {
     remote = await loader(uri);
@@ -66,7 +79,7 @@ export async function fetchActor(
   if (!isActor(object) || object.id?.href !== uri) {
     return { kind: "unusable" };
   }
-  return { kind: "ok", actor: object, input: await remoteActorInput(object, remote.document) };
+  return { kind: "ok", actor: object, document: remote.document };
 }
 
 // A natural-language value: a plain string or Fedify's LanguageString (a String with a language tag).
@@ -96,37 +109,47 @@ async function imageUrl(get: () => Promise<{ url: URL | Link | null } | null>): 
   }
 }
 
-// The keys embedded in the document that belong to this actor (ID-1): a key naming another owner, with an id on another
-// origin, or whose id is not among the first MAX_PUBLIC_KEYS ids the actor lists (as Fedify parsed them, whatever the
-// document's context), is not the actor's to vouch for and is left out, so one store writes at most MAX_PUBLIC_KEYS
-// keys (RES-6). Referenced keys are not fetched.
-async function ownKeys(actor: Actor, uri: URL): Promise<{ id: string; pem: string }[]> {
+// The keys of this actor (ID-1): its FEP-521a Multikeys (assertionMethod), then its legacy keys (publicKey), embedded
+// in its document, the first of each id kept, as Mastodon 4.7 orders them (ProcessAccountService#public_keys). A key
+// is the actor's only if its id has the actor's origin, it names no other owner (a legacy key's owner, a Multikey's
+// controller), it is RSA or Ed25519 (what Fedify imports), and its id is among the first MAX_PUBLIC_KEYS ids the actor
+// lists in its property (as Fedify parsed them, whatever the document's context), so one store writes at most
+// 2 × MAX_PUBLIC_KEYS keys (RES-6). Keys listed by reference are not fetched (RES-6; inbound.ts withVerifiedReference
+// takes a legacy one the signature's verification resolved). Stored as PEM-SPKI, whose algorithm is the key type.
+export async function ownKeys(actor: Actor, uri: URL): Promise<{ id: string; pem: string }[]> {
+  const options = { documentLoader: NO_FETCH, contextLoader: NO_FETCH, suppressError: true };
+  const forms = [
+    { listed: actor.assertionMethodIds, keys: () => actor.getAssertionMethods(options) },
+    { listed: actor.publicKeyIds, keys: () => actor.getPublicKeys(options) },
+  ];
   const keys: { id: string; pem: string }[] = [];
-  const listed = new Set(actor.publicKeyIds.slice(0, MAX_PUBLIC_KEYS).map((id) => id.href));
-  try {
-    for await (const key of actor.getPublicKeys({
-      documentLoader: NO_FETCH,
-      contextLoader: NO_FETCH,
-      suppressError: true,
-    })) {
-      const owner = key.ownerId;
-      if (
-        key.id === null ||
-        !listed.has(key.id.href) ||
-        key.id.origin !== uri.origin ||
-        (owner !== null && owner.href !== uri.href)
-      ) {
-        continue;
+  for (const form of forms) {
+    const listed = new Set(form.listed.slice(0, MAX_PUBLIC_KEYS).map((id) => id.href));
+    try {
+      for await (const key of form.keys()) {
+        const owner = key instanceof Multikey ? key.controllerId : key.ownerId;
+        const id = key.id?.href;
+        if (
+          id === undefined ||
+          !listed.has(id) ||
+          keys.some((kept) => kept.id === id) ||
+          key.id!.origin !== uri.origin ||
+          (owner !== null && owner.href !== uri.href) ||
+          key.publicKey === null ||
+          !KEY_ALGORITHMS.has(key.publicKey.algorithm.name)
+        ) {
+          continue;
+        }
+        keys.push({ id, pem: await exportSpki(key.publicKey) });
       }
-      if (key.publicKey !== null) {
-        keys.push({ id: key.id.href, pem: await exportSpki(key.publicKey) });
-      }
+    } catch {
+      // A key that does not parse ends its form's list.
     }
-  } catch {
-    // A key that does not parse is not listed.
   }
   return keys;
 }
+
+const KEY_ALGORITHMS: ReadonlySet<string> = new Set(["RSASSA-PKCS1-v1_5", "Ed25519"]);
 
 // The columns of a remote account (null if the document cannot be one). Display names are plain text; the bio is
 // sanitized HTML (HTML-1); URLs are http(s) or null (HTML-3). Misskey's extensions (_misskey_summary, isCat, ...) are
