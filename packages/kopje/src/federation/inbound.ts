@@ -1,5 +1,14 @@
-import { type DocumentLoader, exportSpki, FetchError, type KeyCache, verifyRequestDetailed } from "@fedify/fedify";
+import {
+  type DocumentLoader,
+  exportSpki,
+  FetchError,
+  type KeyCache,
+  verifyRequestDetailed,
+  type VerifyRequestDetailedResult,
+  type VerifyRequestOptions,
+} from "@fedify/fedify";
 import { CryptographicKey } from "@fedify/vocab";
+import { decodeDict, Item } from "structured-field-values";
 import { Temporal } from "temporal-polyfill";
 
 import {
@@ -48,7 +57,8 @@ import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STA
 //
 //   1. The Content-Type is an ActivityStreams type (ID-8).
 //   2. The HTTP signature verifies with Fedify, against the time the request was received (OPS-1: a spooled request
-//      is judged by its spool time). Unsigned or unverifiable: 401, nothing changes (ID-1).
+//      is judged by its spool time), and covers what Mastodon 4.7 requires (verifyHttpSignature). Unsigned or
+//      unverifiable: 401, nothing changes (ID-1).
 //   3. The body is a JSON object with the ActivityStreams context, a type, an id and an actor (a string or array root
 //      is refused, ID-8).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
@@ -420,6 +430,55 @@ function isTransientKeyFailure(result: { status: number } | { error: Error }): b
 // Used where the Store's key is the only evidence: nothing may be fetched.
 const NO_FETCH: DocumentLoader = (url) => Promise.reject(new RefusedFetchError(new URL(url), "Not fetched"));
 
+// ID-1: what an RFC 9421 signature must cover, as Mastodon 4.7 requires (SignedRequest::HttpMessageSignature
+// #verify_signature_strength!): the method and the target URI, and the content digest unless the method is GET or HEAD,
+// the methods for which Fedify does not compare a covered Content-Digest with the body. Fedify itself requires only
+// keyid and created; a draft-cavage signature it holds to (request-target), date and, with a body, digest.
+const COVERED = ["@method", "@target-uri"];
+const COVERED_WITH_BODY = [...COVERED, "content-digest"];
+
+// Fedify's verifyRequestDetailed, which refuses as an invalid signature a verified RFC 9421 signature that leaves out
+// a component COVERED or COVERED_WITH_BODY names (ID-1). Fedify verifies as RFC 9421 exactly the requests with a
+// Signature-Input header, and reports the label of the member it verified; that member is read with the parser Fedify
+// reads it with. A required component counts only as a string item of that name without parameters: Mastodon 4.7
+// compares a component with its parameters serialized, so `"@method";req` is not `@method` there.
+async function verifyHttpSignature(
+  signed: Request,
+  options: VerifyRequestOptions,
+): Promise<VerifyRequestDetailedResult> {
+  const verified = await verifyRequestDetailed(signed, options);
+  if (!verified.verified || !signed.headers.has("Signature-Input") || covers(signed, verified.signatureLabel)) {
+    return verified;
+  }
+  return { verified: false, reason: { type: "invalidSignature" } };
+}
+
+function covers(signed: Request, label: string | undefined): boolean {
+  if (label === undefined) {
+    return false;
+  }
+  let members: ReturnType<typeof decodeDict>;
+  try {
+    members = decodeDict(signed.headers.get("Signature-Input") ?? "");
+  } catch {
+    return false;
+  }
+  if (members instanceof Map || !Object.hasOwn(members, label)) {
+    return false;
+  }
+  const components: unknown = members[label]?.value;
+  const required = signed.method === "GET" || signed.method === "HEAD" ? COVERED : COVERED_WITH_BODY;
+  return (
+    Array.isArray(components) &&
+    required.every((name) => components.some((item: unknown) => item instanceof Item && isBare(item, name)))
+  );
+}
+
+function isBare(item: Item, name: string): boolean {
+  const params: unknown = item.params;
+  return item.value === name && (params == null || (typeof params === "object" && Object.keys(params).length === 0));
+}
+
 type Verified = { key: CryptographicKey; pem: string } | InboxOutcome;
 
 async function verify(
@@ -432,9 +491,9 @@ async function verify(
   prefetched: InboxGate["key"],
 ): Promise<Verified> {
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });
-  let verified: Awaited<ReturnType<typeof verifyRequestDetailed>>;
+  let verified: VerifyRequestDetailedResult;
   try {
-    verified = await verifyRequestDetailed(signed, {
+    verified = await verifyHttpSignature(signed, {
       documentLoader: loaders.document,
       contextLoader: loaders.context,
       keyCache: storedKeys(deps, served, anyAge, prefetched),
@@ -1055,9 +1114,9 @@ export async function verifySpooledRequest(
   const documentLoader = requireObjectRoot(bounded(createSafeLoader(deps)));
   const contextLoader = bounded(createContextLoader(deps));
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });
-  let verified: Awaited<ReturnType<typeof verifyRequestDetailed>>;
+  let verified: VerifyRequestDetailedResult;
   try {
-    verified = await verifyRequestDetailed(signed, {
+    verified = await verifyHttpSignature(signed, {
       documentLoader,
       contextLoader,
       currentTime: Temporal.Instant.fromEpochMilliseconds(request.receivedAt),
