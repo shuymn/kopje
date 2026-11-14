@@ -17,8 +17,8 @@ import { frontMatterLines, type MarkdownNode, parseMarkdown, visit } from "./mar
 // Columns are code points; a line's indentation, quote markers and list marker count.
 //
 // The files are the Markdown under packages/kopje and deploy/, the paths whose changes run this suite
-// (scripts/test-affected.sh). The repository's other Markdown is wrapped the same way but not checked here: the push
-// hook runs only the suites a change affects, so a check over files outside them would fail a later, unrelated push.
+// (scripts/test-affected.sh). The repository's other Markdown is wrapped the same way but not checked here: CI runs
+// only the suites a change affects, so a check over files outside them would fail a later, unrelated change.
 // Of the CHANGELOG only the `[Unreleased]` section and what precedes it are read: released entries stay as they were
 // published.
 const CHANGELOG = "packages/kopje/CHANGELOG.md";
