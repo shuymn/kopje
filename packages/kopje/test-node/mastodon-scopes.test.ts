@@ -619,6 +619,35 @@ describe("mastodon-scopes.mjs request parameters", () => {
     expect(params("/api/v1/relationships")).toEqual({ names: ["id[]"], unresolved: [] });
   });
 
+  it("reads params[:supported_types] of either notifications controller as a list", async () => {
+    const notifications = (version: string) =>
+      [
+        `class Api::${version}::NotificationsController < Api::BaseController`,
+        "  def index",
+        "    render json: [], supported_notification_types: params[:supported_types]",
+        "  end",
+        "end",
+        "",
+      ].join("\n");
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    resources :notifications, only: :index",
+        "  end",
+        "  namespace :v2 do",
+        "    resources :notifications, only: :index",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/notifications_controller.rb": notifications("V1"),
+      "app/controllers/api/v2/notifications_controller.rb": notifications("V2"),
+    });
+    expect(params("/api/v1/notifications")).toEqual({ names: ["supported_types[]"], unresolved: [] });
+    expect(params("/api/v2/notifications")).toEqual({ names: ["supported_types[]"], unresolved: [] });
+  });
+
   it("follows helpers through an inherited method and the concerns a controller includes, and ends a cycle", async () => {
     await checkout({
       "config/routes/api.rb":
@@ -849,6 +878,69 @@ describe("mastodon-scopes.mjs parameter helpers and reviewed readings", () => {
     });
   });
 
+  it("adds the literal reads of a reviewed reading's file to its list", async () => {
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    resources :accounts, only: [] do",
+        "      scope module: :accounts do",
+        "        resources :statuses, only: :index",
+        "      end",
+        "    end",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/accounts/statuses_controller.rb": [
+        "class Api::V1::Accounts::StatusesController < Api::BaseController",
+        "  def index",
+        "    render json: preloaded_account_statuses",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def preloaded_account_statuses",
+        "    paginate(",
+        "      AccountStatusesFilter.new(@account, current_account, params).results,",
+        "      limit_param(DEFAULT_STATUSES_LIMIT)",
+        "    )",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/lib/account_statuses_filter.rb": [
+        "class AccountStatusesFilter",
+        "  KEYS = %i(",
+        "    pinned",
+        "    tagged",
+        "  ).freeze",
+        "",
+        "  def pinned?",
+        "    truthy_param?(:pinned)",
+        "  end",
+        "",
+        "  def exclude_direct?",
+        "    truthy_param?(:exclude_direct)",
+        "  end",
+        "",
+        "  def tagged?",
+        "    params[:tagged].present? && params['tag_mode'] != 'any'",
+        "  end",
+        "",
+        "  def truthy_param?(key)",
+        "    ActiveModel::Type::Boolean.new.cast(params[key])",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(params("/api/v1/accounts/:account_id/statuses")).toEqual({
+      names: ["exclude_direct", "limit", "pinned", "tag_mode", "tagged"],
+      unresolved: [],
+    });
+  });
+
   it("resolves a loop variable by the innermost block that binds it, unresolved when its collection is no literal", async () => {
     await checkout({
       "config/routes/api.rb":
@@ -994,6 +1086,49 @@ describe("mastodon-scopes.mjs entity fields", () => {
     expect(entityFields(dir, "REST::MissingSerializer")).toEqual({
       fields: [],
       unresolved: ["app/serializers/rest/missing_serializer.rb not found"],
+    });
+  });
+
+  const partial = (resets: string[]) => ({
+    "app/serializers/rest/account_serializer.rb": [
+      "class REST::AccountSerializer < ActiveModel::Serializer",
+      "  attributes :id, :username, :note",
+      "",
+      "  has_many :emojis, serializer: REST::CustomEmojiSerializer",
+      "end",
+      "",
+    ].join("\n"),
+    "app/serializers/rest/partial_account_serializer.rb": [
+      "class REST::PartialAccountSerializer < REST::AccountSerializer",
+      ...resets.map((table) => `  self.${table}`),
+      "  self._links = []",
+      "",
+      "  attributes :id, :username, :avatar_description",
+      "end",
+      "",
+    ].join("\n"),
+  });
+  const file = "app/serializers/rest/partial_account_serializer.rb";
+  const own = ["avatar_description", "id", "username"].map((name) => ({ name, optional: false }));
+
+  it("reads only a subclass's own fields when it resets both of its superclass's tables", async () => {
+    await checkout(partial(["_attributes_data = {}", "_reflections = []"]));
+    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({ fields: own, unresolved: [] });
+  });
+
+  it("leaves a subclass that resets only its superclass's attributes unresolved", async () => {
+    await checkout(partial(["_attributes_data = {}"]));
+    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({
+      fields: own,
+      unresolved: [`${file}: superclass fields partly reset (_attributes_data alone)`],
+    });
+  });
+
+  it("leaves a subclass that resets only its superclass's associations unresolved", async () => {
+    await checkout(partial(["_reflections = []"]));
+    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({
+      fields: own,
+      unresolved: [`${file}: superclass fields partly reset (_reflections alone)`],
     });
   });
 });
