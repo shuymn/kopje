@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
@@ -800,6 +800,32 @@ describe("second review: deletion, keys and generations", () => {
     t.web.fail(bob.uri, 410);
     expect(await t.post(bob, deleteSelf(bob))).toBe(202);
     expect(await accountId(t.store, bob.uri)).toBeUndefined();
+  });
+
+  it("refuses a gone actor's Delete signed with another account's stale stored key, gone too (ID-1)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    await t.post(bob, follow(bob));
+    await t.post(carol, follow(carol));
+    await ageKeys(t);
+    t.web.fail(bob.uri, 410);
+    t.web.fail(carol.uri, 410);
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const signed = { keyId: carol.keyId, privateKey: carol.privateKey };
+      expect(await t.post(bob, deleteSelf(bob), signed)).toBe(401);
+      const refused = logs.mock.calls.filter(
+        ([entry]) => (entry as { event?: string }).event === "kopje.inbox.refused",
+      );
+      expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 401, reason: "not-key-owner" }]]);
+    } finally {
+      logs.mockRestore();
+    }
+    expect(await accountId(t.store, bob.uri)).toBeDefined();
+    expect(await accountId(t.store, carol.uri)).toBeDefined();
+    expect((await edges(t.store)).length).toBe(2);
+    expect(await count(t.store, "SELECT 1 FROM inbound_jobs")).toBe(0);
   });
 
   it("answers 503 when the key is gone but the actor document fails transiently, and 401 when it is alive", async () => {

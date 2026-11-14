@@ -588,7 +588,8 @@ export async function receiveInbound(
   // The key is gone, and the activity is the actor's own Delete. A stored key of any age may speak for the actor
   // only if the actor document itself answers 404 or 410: a live actor is never deleted with a key it no longer
   // lists. Without a stored key the Delete cannot be verified and is answered 202, as Mastodon does, so that servers
-  // do not retry it.
+  // do not retry it. The key must be the actor's own: another owner's stale key is refused here, as it would be
+  // fresh, and never reaches the relay branch (ID-1).
   if ("status" in verified && verified.reason === "key-gone" && parsed.ok && parsed.activity.type === "DeleteActor") {
     const current = await fetchActor(parsed.actor, loaders.document, loaders.context);
     rethrowStoreError(state);
@@ -605,6 +606,10 @@ export async function receiveInbound(
       return verified.reason === "key-gone" || verified.reason === "key-refused"
         ? { status: 202, reason: "unknown-actor-deleted" }
         : verified;
+    }
+    const recovered = verified.key.id === null ? undefined : served.get(verified.key.id.href);
+    if (recovered === undefined || recovered.key !== verified.key || recovered.owner !== parsed.actor) {
+      return { status: 401, reason: "not-key-owner" };
     }
   }
   if ("status" in verified) {
