@@ -154,7 +154,7 @@ export async function processInbox(
       revisions: gate.revisions,
     },
   );
-  if (outcome.status !== 202) {
+  if (outcome.status !== 202 || outcome.dropped === true) {
     // Our own reason codes only: nothing the request supplied (DATA-5).
     console.log({ event: "kopje.inbox.refused", status: outcome.status, reason: outcome.reason });
   }

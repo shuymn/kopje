@@ -2,19 +2,22 @@ import { type DocumentLoader, preloadedContexts, verifyJsonLd, verifyObject } fr
 import { Delete } from "@fedify/vocab";
 
 import { RefusedFetchError } from "./loader";
-import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
+import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-context";
 
 // The author's own proof on a Delete (ID-1's exception, domain/inbox.ts relayedDelete, and the forward of an author's
 // own Delete, recordForwards): a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's
 // Delete with always_sign) or an FEP-8b32 Object Integrity Proof, which Fedify verifies. A body is considered only in
 // one of the closed forms below (PROFILES), taken from its sender's source: its @context deep-equal to the profile's
-// (or, as Mastodon forwards it, activitystreams, security/v1 and an object of MASTODON_CONTEXT_TERMS alone), every URL
-// in it preloaded, and every key at every level one the sender writes. In that form the body's JSON-LD meaning is its
-// literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop, alias or redefine a key
-// (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification and parsing. Any other
-// form, a relayed Delete from Misskey or from a Mastodon release with another context included, is answered as a proof
-// that does not verify (docs/mastodon-deviations.md): relayed, 401 (inbound.ts relayed, proof-invalid); the author's
-// own Delete applies as unproven and forwards nothing (inbound.ts proveDelete).
+// (or, as Mastodon forwards it, one release line's MASTODON_NAMED_CONTEXTS and an object of MASTODON_CONTEXT_TERMS
+// alone), every URL in it preloaded, and every key at every level one the sender writes. In that form the body's
+// JSON-LD meaning is its literal JSON, so what Fedify verifies is what Kopje reads: no inline term can nest, drop,
+// alias or redefine a key (`@nest`, `null`, `proof`, `type`), and no context resolves differently between verification
+// and parsing. Any other form, a relayed Delete from Misskey or from a Mastodon release with another context included,
+// is answered as a proof that does not verify (docs/mastodon-deviations.md): relayed, dropped with 202 (inbound.ts
+// relayed, proof-invalid); the author's own Delete applies as unproven and forwards nothing (inbound.ts proveDelete).
+//   - A Mastodon signature's `expires` (LinkedDataSignature#sign! writes it from 4.7.0) is judged at the instant the
+//     request reached the inbox (OPS-1): one earlier does not prove, as Mastodon's verify_actor! refuses a past one.
+//     Fedify covers it with the signature but compares it with no clock.
 //   - The key must be one the actor's own document embeds: the verifiers load keys through a loader that serves only
 //     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
 //     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
@@ -50,15 +53,16 @@ const QUOTE_AUTHORIZATION = {
 
 // The accepted forms, each its sender's @context verbatim and the keys its serializer writes.
 export const PROFILES: Readonly<Record<string, Profile>> = {
-  // Mastodon 4.5's status Delete: ActivityPub::DeleteSerializer (its TombstoneSerializer's context_extensions
-  // :atom_uri, app/helpers/context_helper.rb atom_uri), signed by LinkedDataSignature#sign!, which appends security/v1.
+  // Mastodon's status Delete: ActivityPub::DeleteSerializer (DeleteNoteSerializer from 4.6, the same body; its
+  // TombstoneSerializer's context_extensions :atom_uri, app/helpers/context_helper.rb atom_uri), signed by
+  // LinkedDataSignature#sign!, which appends security/v1. The bodies are the same from 4.4 to 4.7.
   mastodonStatus: {
     form: "mastodon",
     context: [AS, { ostatus: "http://ostatus.org#", atomUri: "ostatus:atomUri" }, SECURITY],
     extra: ["to"],
     object: TOMBSTONE,
   },
-  // Mastodon 4.5's stamp Delete: ActivityPub::DeleteQuoteAuthorizationSerializer, its object the
+  // Mastodon's stamp Delete: ActivityPub::DeleteQuoteAuthorizationSerializer, its object the
   // QuoteAuthorizationSerializer's (context_helper.rb quote_authorizations), signed as above (RevokeQuoteService).
   mastodonStamp: {
     form: "mastodon",
@@ -88,12 +92,14 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   },
   // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
   kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
-  // Mastodon's and Kopje's status Delete, as a Mastodon (4.4 or 4.5) that holds a boost or quote of the status
-  // forwards it: ActivityPub::ProcessCollectionService replaces the body with its compaction under full_context
-  // (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts back the values compaction
-  // changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder sends that copy. The keys of
-  // these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no forwarded
-  // profile: Mastodon 4.5.21 drops its signature (safe_for_forwarding? fails for it), so it is relayed unproven.
+  // Mastodon's and Kopje's status Delete, as a Mastodon (4.4 to 4.7) that holds a boost or quote of the status
+  // forwards it: ActivityPub::ProcessCollectionService (ProcessActivityService from 4.7) replaces the body with its
+  // compaction under full_context (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts
+  // back the values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder
+  // sends that copy. Its @context is one of the three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The
+  // keys of these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no
+  // forwarded profile yet (#1599): Mastodon 4.7.5 forwards it in this form, its author's signature kept, and
+  // inbound.ts relayed drops it (202, logged), the quote staying accepted.
   mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
@@ -129,6 +135,8 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
 };
 
 const SIGNATURE_KEYS = ["type", "creator", "created", "signatureValue"];
+// The form of `created` and `expires` in LinkedDataSignature#sign! (Time#iso8601 of a UTC time).
+const SIGN_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const PROOF_KEYS = ["type", "cryptosuite", "verificationMethod", "proofPurpose", "proofValue", "created"];
 
 function isJson(value: unknown): value is Json {
@@ -163,16 +171,19 @@ function everyString(value: Json): boolean {
   return Object.values(value).every((v) => typeof v === "string");
 }
 
-// The @context of a body Mastodon forwards: activitystreams, security/v1 and one object, each of whose terms is one
-// MASTODON_CONTEXT_TERMS lists, with a definition a release gave it.
+// The @context of a body Mastodon forwards: one of MASTODON_NAMED_CONTEXTS exactly, in order, then one object, each of
+// whose terms is one MASTODON_CONTEXT_TERMS lists, with a definition a release gave it.
 function isForwardedContext(context: unknown): boolean {
+  if (!Array.isArray(context)) {
+    return false;
+  }
+  const object: unknown = context.at(-1);
   return (
-    Array.isArray(context) &&
-    context.length === 3 &&
-    context[0] === AS &&
-    context[1] === SECURITY &&
-    isJson(context[2]) &&
-    Object.entries(context[2]).every(
+    MASTODON_NAMED_CONTEXTS.some(
+      (named) => context.length === named.length + 1 && named.every((url, i) => context[i] === url),
+    ) &&
+    isJson(object) &&
+    Object.entries(object).every(
       ([term, definition]) =>
         Object.hasOwn(MASTODON_CONTEXT_TERMS, term) &&
         MASTODON_CONTEXT_TERMS[term]!.some((allowed) => deepEqual(allowed, definition)),
@@ -215,18 +226,28 @@ function objectId(value: unknown, form: Profile["object"]): string | null {
     : null;
 }
 
-// Fedify's createSignature names identity/v1 as the signature's own @context (@fedify/fedify 2.4.5 ld-*.mjs); Mastodon
-// writes none.
+// Fedify's createSignature names identity/v1 as the signature's own @context (@fedify/fedify 2.4.5 ld-*.mjs) and
+// writes no `expires`; Mastodon writes no @context, and `expires` from 4.7.0 (in sign!'s form, a valid instant).
 function isSignature(value: unknown, form: "mastodon" | "fedify"): boolean {
   if (!isJson(value)) {
     return false;
   }
   const required = form === "fedify" ? [...SIGNATURE_KEYS, "@context"] : SIGNATURE_KEYS;
   return (
-    hasKeys(value, required) &&
+    hasKeys(value, required, form === "mastodon" ? ["expires"] : []) &&
     everyString(value) &&
     value.type === "RsaSignature2017" &&
-    (form === "mastodon" || value["@context"] === IDENTITY)
+    (form === "mastodon"
+      ? value.expires === undefined || (typeof value.expires === "string" && isSignTime(value.expires))
+      : value["@context"] === IDENTITY)
+  );
+}
+
+// Whether `value` is a time as sign! writes it, naming a valid instant (no 30 February).
+function isSignTime(value: string): boolean {
+  const time = Date.parse(value);
+  return (
+    SIGN_TIME.test(value) && Number.isFinite(time) && new Date(time).toISOString() === `${value.slice(0, -1)}.000Z`
   );
 }
 
@@ -275,21 +296,34 @@ function keyIdsOf(json: Json): string[] {
   );
 }
 
+// Whether a Mastodon signature's `expires` (its form checked by isSignature) is earlier than `receivedAt`; equal is
+// not, as Mastodon's `past?`.
+function expired(json: Json, receivedAt: number): boolean {
+  const expires = isJson(json.signature) ? json.signature.expires : undefined;
+  return typeof expires === "string" && Date.parse(expires) < receivedAt;
+}
+
 // Whether the body carries an author proof at all (an LD signature or an FEP-8b32 proof), valid or not.
 export function hasAuthorProof(json: Json): boolean {
   return (json.signature !== undefined && json.signature !== null) || (json.proof !== undefined && json.proof !== null);
 }
 
 // Whether `json` is, in one of the PROFILES, a Delete of exactly `expected` proven by a key the actor's document
-// embeds.
-export async function verifyAuthorProof(json: Json, expected: ProvenDelete, actorDocument: unknown): Promise<boolean> {
+// embeds, at `receivedAt` (epoch milliseconds: when the request reached the inbox, its spool time on replay).
+export async function verifyAuthorProof(
+  json: Json,
+  expected: ProvenDelete,
+  actorDocument: unknown,
+  receivedAt: number,
+): Promise<boolean> {
   const matched = profileOf(json);
   if (
     matched === null ||
     json.id !== expected.id ||
     json.actor !== expected.actor ||
     matched.object !== expected.object ||
-    !keyIdsOf(json).every((id) => withoutFragment(id) === expected.actor)
+    !keyIdsOf(json).every((id) => withoutFragment(id) === expected.actor) ||
+    expired(json, receivedAt)
   ) {
     return false;
   }

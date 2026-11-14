@@ -35,7 +35,13 @@ import type { StoreStub } from "../src/platform/store-client";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
-import { mastodonDelete, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
+import {
+  mastodon47Signed,
+  mastodonDelete,
+  mastodonSigned,
+  mastodonStampDelete,
+  signTime,
+} from "./author-proof-helpers";
 import { batch, batches, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
@@ -336,7 +342,12 @@ describe("the proof round (need proof)", () => {
     for (const s of sent) {
       expect(s.body).toBe(JSON.stringify(json));
       expect(
-        await verifyAuthorProof(s.json, { id: `${note.id}#delete`, actor: erin.uri, object: note.id }, erin.document),
+        await verifyAuthorProof(
+          s.json,
+          { id: `${note.id}#delete`, actor: erin.uri, object: note.id },
+          erin.document,
+          NOW,
+        ),
       ).toBe(true);
     }
   });
@@ -348,6 +359,37 @@ describe("the proof round (need proof)", () => {
     const forged = await ldSigned(deletion(w.bob, o.uri), { ...w.bob, privateKey: w.carol.privateKey });
     const fetched = actorFetches(w);
     expect(await w.post(w.bob, forged)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(actorFetches(w) - fetched).toBe(1);
+    expect(await forwards(w.t.store, o.uri)).toEqual([]);
+    expect(await jobBound(w.t.store, o.id)).toBeNull();
+    await jobs(w.t.store);
+    expect(await sql(w.t.store, "SELECT id FROM statuses WHERE id = ?", o.id)).toEqual([]);
+    expect((await deliver(w)).filter((s) => s.json.type === "Delete")).toEqual([]);
+  });
+
+  it("a Mastodon 4.7 signature with expires forwards, POSTed byte for byte", async () => {
+    const w = await world();
+    const { o } = await boosted(w);
+    const body = await mastodon47Signed(deletion(w.bob, o.uri), w.bob);
+    expect(await w.post(w.bob, body)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, o.uri)).toHaveLength(1);
+    await jobs(w.t.store);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete");
+    expect(sent.map((s) => s.inbox).toSorted()).toEqual([`${FANS}/inbox`, `${MASTODON}/inbox`, RECEIPTS]);
+    for (const s of sent) {
+      expect(s.body).toBe(JSON.stringify(body));
+    }
+  });
+
+  it("an expired proof deletes and forwards nothing", async () => {
+    const w = await world();
+    const { o } = await boosted(w);
+    // Valid, but its expires one second before the request was received (OPS-1): unproven, the Delete applies as bob's.
+    const expired = await mastodon47Signed(deletion(w.bob, o.uri), w.bob, { expires: signTime(w.clock.now - 1000) });
+    const fetched = actorFetches(w);
+    expect(await w.post(w.bob, expired)).toBe(202);
     expect(proofRounds(w)).toBe(1);
     expect(actorFetches(w) - fetched).toBe(1);
     expect(await forwards(w.t.store, o.uri)).toEqual([]);
@@ -1066,7 +1108,7 @@ describe("the body from the request to the POST", () => {
     for (const d of sent) {
       expect(d.body).toBe(s);
       const expected = { id: signed.id as string, actor: w.bob.uri, object: o.uri };
-      expect(await verifyAuthorProof(d.json, expected, w.bob.document)).toBe(true);
+      expect(await verifyAuthorProof(d.json, expected, w.bob.document, NOW)).toBe(true);
     }
   });
 
@@ -1096,7 +1138,10 @@ describe("the body from the request to the POST", () => {
     }
   });
 
-  it("sends an immutable stamp forward’s personal copy unedited", async () => {
+  it.each([
+    ["Mastodon 4.5", mastodonSigned],
+    ["Mastodon 4.7, with expires", mastodon47Signed],
+  ])("sends an immutable stamp forward’s personal copy unedited, signed as %s signs", async (_name, sign) => {
     const w = await world();
     const theirs = mastodonNote(w.bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
     expect(await w.post(w.bob, create(w.bob, theirs))).toBe(202);
@@ -1118,7 +1163,7 @@ describe("the body from the request to the POST", () => {
     const stamp = `${w.bob.uri}/quote_authorizations/${nextId()}`;
     expect(await w.post(w.bob, quoteAccept(w.bob, mine, stamp))).toBe(202);
     await deliver(w);
-    const body = await ldSigned(mastodonStampDelete(w.bob, { uri: stamp, quoting: mine, quoted: theirs.id }), w.bob);
+    const body = await sign(mastodonStampDelete(w.bob, { uri: stamp, quoting: mine, quoted: theirs.id }), w.bob);
     expect(await w.post(w.bob, body)).toBe(202);
     const sent = (await deliver(w)).filter((d) => d.json.type === "Delete");
     expect(sent.map((d) => d.inbox)).toContain(`${MASTODON}/users/bob/inbox`);
