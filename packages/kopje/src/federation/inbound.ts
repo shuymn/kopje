@@ -14,7 +14,7 @@ import {
 } from "../domain/inbox";
 import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
-import { fetchableHref } from "../platform/http-url";
+import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
@@ -122,7 +122,7 @@ export function fetchesFirst(parsed: Parsed): string | null {
   const url =
     activity.type === "UpdateActor"
       ? actor
-      : activity.type === "Dereference" && originOf(activity.object) === originOf(actor)
+      : activity.type === "Dereference" && sameOrigin(activity.object, actor)
         ? activity.object
         : activity.type === "Move" && target !== null && target !== actor
           ? target
@@ -163,7 +163,7 @@ function refOf(value: unknown): ActivityRef {
   };
 }
 
-export function originOf(uri: string | null): string | null {
+function originOf(uri: string | null): string | null {
   if (uri === null) {
     return null;
   }
@@ -561,8 +561,9 @@ export async function receiveInbound(
     fromStore !== undefined && fromStore.key === key ? fromStore.owner : (key.ownerId?.href ?? actorUri);
   if (signerUri !== actorUri) {
     return activity.type === "Delete"
-      ? relayed(deps, request, {
+      ? relayed(deps, {
           activity,
+          body: parsed.body,
           actorUri,
           signerUri,
           origin,
@@ -576,7 +577,7 @@ export async function receiveInbound(
         })
       : { status: 401, reason: "not-key-owner" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   let actor: RemoteActorInput | null = null;
@@ -648,7 +649,7 @@ async function domainBlocked(
   if (originOf(actorUri) === context.origin) {
     return { status: 401, reason: "local-actor" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   return apply(deps, {
@@ -670,7 +671,7 @@ async function ownerDocument(
   uri: string,
   key: CryptographicKey,
   pem: string,
-  loaders: RemoteLoaders,
+  loaders: Pick<RemoteLoaders, "document" | "context">,
 ): Promise<{ input: RemoteActorInput } | InboxOutcome> {
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
@@ -691,6 +692,8 @@ async function ownerDocument(
 
 type Relay = {
   activity: Extract<InboundActivity, { type: "Delete" }>;
+  // The activity as received (Parsed's body, of the bytes the signature covers).
+  body: Json;
   actorUri: string;
   signerUri: string;
   origin: string;
@@ -703,19 +706,33 @@ type Relay = {
   revisions: InboxGate["revisions"];
 };
 
-// A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a stamp's Delete, signed
-// by a local sharer of the quoting status). The signer owns its key as any actor must (ID-1, judged on the signer).
-// With the actor's own proof, verified against a key the actor's current document embeds, it is applied as the actor's
-// Delete; without one it is handed on unproven, which can only have a stamp verified again. A proof that is present but
-// does not verify refuses it. Only the Store's relayedDelete applies either: never to an actor, a status or a boost.
+// A Delete relayed by another server: the HTTP signer is not the actor (Mastodon's forward of a status's or a stamp's
+// Delete, signed by a local sharer of the status or the quoting status). The signer owns its key as any actor must
+// (ID-1, judged on the signer). With the actor's own proof, verified against a key the actor's current document embeds,
+// it is applied as the actor's Delete; without one it is handed on unproven, which can only have a stamp verified
+// again. A proof that is present but does not verify refuses it. Only the Store's relayedDelete applies either, and
+// decides again what it may apply to: never an actor or a boost, a status only when proven, public or unlisted.
 // The actor's document is stored under the actor's revision (the gate read it for the envelope's actor, not for the
 // signer, whose document is only checked here).
-async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay): Promise<InboxOutcome> {
-  const { activity, actorUri, signerUri, origin, key, pem, fromStore, loaders, state, budget, revisions } = relay;
+async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
+  const {
+    activity,
+    body: json,
+    actorUri,
+    signerUri,
+    origin,
+    key,
+    pem,
+    fromStore,
+    loaders,
+    state,
+    budget,
+    revisions,
+  } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
     return { status: 401, reason: "not-key-owner" };
   }
-  if (originOf(activity.id) !== originOf(actorUri)) {
+  if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   if (fromStore?.key !== key) {
@@ -725,7 +742,6 @@ async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay)
       return owned;
     }
   }
-  const json = JSON.parse(new TextDecoder().decode(request.body)) as Json;
   let actor: RemoteActorInput | null = null;
   let proven = false;
   if (hasAuthorProof(json)) {
@@ -741,12 +757,7 @@ async function relayed(deps: InboundDeps, request: InboundRequest, relay: Relay)
       json,
       { id: activity.id, actor: actorUri, object: activity.object },
       JSON.parse(fetched.input.raw) as unknown,
-      loaders.context,
     );
-    rethrowStoreError(state);
-    if (verdict === "transient") {
-      return { status: 503, reason: "proof-unavailable" };
-    }
     if (!verdict) {
       return { status: 401, reason: "proof-invalid" };
     }
@@ -898,7 +909,6 @@ async function proveDelete(
     body,
     { id: activity.id, actor: actorUri, object: activity.object },
     JSON.parse(fetched.input.raw) as unknown,
-    loaders.context,
   );
 }
 
@@ -939,7 +949,7 @@ function withVerifiedReference(
     keys.some((k) => k.id === id) ||
     !listed.some((url) => url.href === id) ||
     (key.ownerId !== null && key.ownerId.href !== actorUri) ||
-    originOf(id) !== originOf(actorUri)
+    !sameOrigin(id, actorUri)
   ) {
     return keys;
   }
@@ -958,7 +968,7 @@ async function prepare(
 ): Promise<InboundActivity | InboxOutcome> {
   if (activity.type === "Dereference") {
     // The object of the actor's own activity: only on the actor's origin (Mastodon's permitted_origin).
-    if (originOf(activity.object) !== originOf(actorUri)) {
+    if (!sameOrigin(activity.object, actorUri)) {
       return { status: 202, reason: "foreign-object" };
     }
     const fetched = await fetchRemoteStatus(activity.object, loaders.document, activity.activity);
@@ -1029,7 +1039,7 @@ export async function verifySpooledRequest(
   if (originOf(actorUri) === `https://${domain}`) {
     return { ok: false, transient: false, reason: "invalid-actor" };
   }
-  if (originOf(envelope.id) !== originOf(actorUri)) {
+  if (!sameOrigin(envelope.id, actorUri)) {
     return { ok: false, transient: false, reason: "foreign-id" };
   }
   const deps = { ...loader, budget: requestBudget(Date.now()) };
@@ -1071,16 +1081,9 @@ export async function verifySpooledRequest(
     return { ok: false, transient: false, reason: "not-key-owner" };
   }
   const pem = await exportSpki(key.publicKey);
-  const fetched = await fetchActor(actorUri, documentLoader, contextLoader);
-  if (fetched.kind === "transient") {
-    return { ok: false, transient: true, reason: "actor-unavailable" };
-  }
-  if (fetched.kind !== "ok" || fetched.input === null) {
-    return { ok: false, transient: false, reason: "actor-unusable" };
-  }
-  const keys = withVerifiedReference(fetched.input.keys, fetched.actor.publicKeyIds, key, pem, actorUri);
-  if (!keys.some((listed) => listed.id === key.id?.href && listed.pem === pem)) {
-    return { ok: false, transient: false, reason: "not-key-owner" };
+  const owned = await ownerDocument(actorUri, key, pem, { document: documentLoader, context: contextLoader });
+  if ("status" in owned) {
+    return { ok: false, transient: owned.status === 503, reason: owned.reason };
   }
   return { ok: true, actor: actorUri, activity: json };
 }

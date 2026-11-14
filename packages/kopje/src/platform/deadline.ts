@@ -1,3 +1,5 @@
+import { errorFields } from "./error-message";
+
 // A deadline for awaited work (the cutover drain, the media rebuild): past it nothing new is started, and what is
 // running is given up. What is given up may still land, so a caller that gives up keeps its lease until it expires.
 
@@ -66,4 +68,27 @@ export async function withinKept<T>(
     }
     throw error;
   }
+}
+
+// Releases the claims a cron round did not start, one at a time, and stops at the first release that fails: a passed
+// deadline unlogged, any other failure logged as `event`. Returns how many releases held their claim.
+export async function releaseUnstarted<C>(
+  claims: Iterable<C>,
+  release: (claim: C) => Promise<{ held: boolean }>,
+  event: string,
+): Promise<number> {
+  let released = 0;
+  for (const claim of claims) {
+    try {
+      if ((await release(claim)).held) {
+        released++;
+      }
+    } catch (error) {
+      if (!(error instanceof DeadlinePassed)) {
+        console.error({ event, ...errorFields(error) });
+      }
+      break;
+    }
+  }
+  return released;
 }

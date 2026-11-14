@@ -1,6 +1,6 @@
 import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
-import { readConfig } from "../platform/config";
+import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
 import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
 import {
@@ -8,9 +8,9 @@ import {
   authorized,
   present,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery } from "./pagination";
@@ -49,11 +49,7 @@ export function searchParams(p: Params): SearchParams {
   return { query, offset: offsetParam(p) };
 }
 
-export const search: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const search: ApiHandler = withParams(async (c, deps, p) => {
   // Rails' params.require refuses a blank q here (the account search answers it with an empty list).
   const parsed = p.get("q")?.trim() === "" ? { error: mastodonError(400, "Missing parameter q") } : searchParams(p);
   if ("error" in parsed) {
@@ -101,7 +97,7 @@ export const search: ApiHandler = async (c, deps) => {
     }),
   );
   return c.json(authorized(results));
-};
+});
 
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
@@ -132,8 +128,7 @@ export async function resolveQuery(
   deps: Parameters<ApiHandler>[1],
   query: string,
 ): Promise<Found | null> {
-  const config = readConfig(c.env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(c.env)) {
     return null;
   }
   const gate = authorized(

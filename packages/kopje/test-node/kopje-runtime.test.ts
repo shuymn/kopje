@@ -53,5 +53,9 @@ describe("the packaged cutover runtime", () => {
     expect((packagedRuntime.sanitizeRemoteHtml as (html: string) => string)("<p>a<script>x</script></p>")).toBe(
       "<p>a</p>",
     );
+    // The dump writer's literals, from a value as node:sqlite returns it.
+    const literal = packagedRuntime.valueLiteral as (type: string, value: Uint8Array) => string;
+    expect(literal("text", new Uint8Array([0x61, 0x00]))).toBe("CAST(X'6100' AS TEXT)");
+    expect(literal("blob", new Uint8Array([0x00, 0xff]))).toBe("X'00FF'");
   });
 });

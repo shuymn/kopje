@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
 import { storedBlurhash } from "../platform/stored-bounds";
@@ -41,45 +42,42 @@ export type RebuildRow = { id: string; token: string; contentType: string | null
 // it.
 export type RebuildPage = { rows: RebuildRow[]; next: string | null; done: boolean };
 
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
-
 // Complete local media with a token that is not doomed: what is served, or should be.
 const ELIGIBLE = `file_token IS NOT NULL AND processed = 1 AND url <> '' AND (gc_at IS NULL OR gc_at > ?)`;
 
-export const rebuildCandidates = readOperation<{ after: string | null; now: number }, RebuildPage>(
-  (db, { after, now }) => {
-    const scanned = db.all<{ id: string }>(
-      "SELECT id FROM media_attachments WHERE id > ? ORDER BY id LIMIT ?",
-      after ?? "",
-      SCAN_WINDOW,
-    );
-    const last = scanned.at(-1)?.id;
-    if (last === undefined) {
-      return { rows: [], next: after, done: true };
-    }
-    const rows = db
-      .all<Omit<RebuildRow, "emoji"> & { emoji: number }>(
-        `SELECT id, file_token AS token, content_type AS contentType,
+export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: string | null; now: number }, RebuildPage>((
+  db,
+  { after, now },
+) => {
+  const scanned = db.all<{ id: string }>(
+    "SELECT id FROM media_attachments WHERE id > ? ORDER BY id LIMIT ?",
+    after ?? "",
+    SCAN_WINDOW,
+  );
+  const last = scanned.at(-1)?.id;
+  if (last === undefined) {
+    return { rows: [], next: after, done: true };
+  }
+  const rows = db
+    .all<Omit<RebuildRow, "emoji"> & { emoji: number }>(
+      `SELECT id, file_token AS token, content_type AS contentType,
 				EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = media_attachments.id) AS emoji
 			FROM media_attachments WHERE ${ELIGIBLE} AND id > ? AND id <= ? ORDER BY id LIMIT ?`,
-        iso(now),
-        after ?? "",
-        last,
-        REBUILD_PAGE,
-      )
-      .map((row) => ({ ...row, emoji: row.emoji === 1 }));
-    if (rows.length === REBUILD_PAGE) {
-      return { rows, next: rows.at(-1)?.id ?? last, done: false };
-    }
-    return { rows, next: last, done: scanned.length < SCAN_WINDOW };
-  },
-);
+      iso(now),
+      after ?? "",
+      last,
+      REBUILD_PAGE,
+    )
+    .map((row) => ({ ...row, emoji: row.emoji === 1 }));
+  if (rows.length === REBUILD_PAGE) {
+    return { rows, next: rows.at(-1)?.id ?? last, done: false };
+  }
+  return { rows, next: last, done: scanned.length < SCAN_WINDOW };
+});
 
 // Whether a row is still a candidate with this token: the rebuild asks after its files are written (mastodon/
 // media-rebuild.ts).
-export const rebuildRowLive = readOperation<{ id: string; token: string; now: number }, boolean>(
+export const rebuildRowLive = readOperation.atStoreTime("now")<{ id: string; token: string; now: number }, boolean>(
   (db, { id, token, now }) =>
     db.first(
       `SELECT 1 AS found FROM media_attachments WHERE id = ? AND file_token = ? AND ${ELIGIBLE}`,
@@ -95,8 +93,8 @@ function adminRefused(db: Db, authority: ImportAuthority): string | null {
 }
 
 // The rebuild's lease (REBUILD_LEASE in kopje_state; not dumped, imported or reset). Every rebuild operation runs at
-// the Store's own time (store.ts passes it, whatever the Worker's clock says), so acquisition, ownership and the fences
-// of store-admin.ts read one clock. A call renews it before each row and, while an R2 write it started is pending,
+// the Store's own time (atStoreTime, whatever the Worker's clock says), so acquisition, ownership and the fences of
+// store-admin.ts read one clock. A call renews it before each row and, while an R2 write it started is pending,
 // every REBUILD_HEARTBEAT_MS (mastodon/media-rebuild.ts), so it never expires under a write while the call runs.
 export const REBUILD_LEASE_MS = 10 * 60 * 1000;
 
@@ -160,7 +158,7 @@ export type RebuildLeaseResult =
 
 // Takes or renews the lease for `holder` (for REBUILD_LEASE_MS from the Store's `now`), or releases it. A release by a
 // holder that no longer holds it changes nothing.
-export const rebuildLease = mediaRebuildOperation<
+export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
   { authority: ImportAuthority; holder: string; release?: boolean; restoredAt: number | null; now: number },
   RebuildLeaseResult
 >((db, { authority, holder, release, restoredAt, now }) => {
@@ -199,7 +197,7 @@ export type RebuildCharge =
 // Charges one rebuilt row's transformations to the instance's budget of the month `now` is in, before Images is called,
 // as its writer charged them (RES-6): TRANSFORMS_PER_EMOJI for a custom emoji's image, TRANSFORMS_PER_UPLOAD for any
 // other row (its preview's RGBA too). The kind is the Store's (a primary-key probe of custom_emojis), not the caller's.
-export const chargeRebuild = mediaRebuildOperation<
+export const chargeRebuild = mediaRebuildOperation.atStoreTime("now")<
   { authority: ImportAuthority; holder: string; id: string; limit: number; now: number },
   RebuildCharge
 >((db, { authority, holder, id, limit, now }) => {
@@ -229,7 +227,7 @@ export type RebuildRecord =
 // and the blurhash change; no account is touched, so a profile image keeps the static it had. The blurhash is the new
 // preview's, as storedBlurhash keeps it; null (an emoji, or its RGBA output failed) keeps the stored one, so a
 // transient failure loses nothing. A row doomed after this is caught by rebuildRowLive once the files are written.
-export const recordRebuild = mediaRebuildOperation<
+export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
     holder: string;

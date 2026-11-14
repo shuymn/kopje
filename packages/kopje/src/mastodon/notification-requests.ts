@@ -7,18 +7,16 @@ import {
   authorized,
   present,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
-import { parseBoolean } from "./params";
+import { type Params, parseBoolean } from "./params";
 
 // The notification policy (Mastodon 4.5's /api/v1 and /api/v2/notifications/policy) and notification requests
 // (/api/v1/notifications/requests); the Store does the work (domain/notification-requests.ts).
-
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 
 const COLUMNS = Object.keys(POLICY_DEFAULTS) as PolicyColumn[];
 
@@ -63,11 +61,7 @@ async function update(c: ApiContext, deps: ApiDeps, changes: Partial<Policy>) {
 // filter_private_mentions, each setting its condition to filter (true) or accept (false), as NotificationPolicy's v1
 // setters do. Mastodon's setter takes any value Ruby holds true, so a form's "false" filters there; Kopje reads the
 // values as Rails casts booleans ("0", "f", "false", "off" and blank are false), as clients mean them.
-export const updatePolicyV1: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updatePolicyV1: ApiHandler = withParams(async (c, deps, p) => {
   const changes: Partial<Policy> = {};
   for (const column of V1_COLUMNS) {
     const value = p.get(column.replace(/^for_/, "filter_"));
@@ -76,17 +70,13 @@ export const updatePolicyV1: ApiHandler = async (c, deps) => {
     }
   }
   return c.json(v1Policy(await update(c, deps, changes)));
-};
+});
 
 // PATCH and PUT /api/v2/notifications/policy: for_not_following, for_not_followers, for_new_accounts,
 // for_private_mentions and for_limited_accounts, each accept, filter or drop (or the enum's integer, 0 to 2).
 // Mastodon's enum refuses any other value with an ArgumentError ("'x' is not a valid for_not_following"), which no
 // handler rescues, so it answers 500; Kopje answers 422 with that message, and changes nothing.
-export const updatePolicyV2: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updatePolicyV2: ApiHandler = withParams(async (c, deps, p) => {
   const changes: Partial<Policy> = {};
   for (const column of COLUMNS) {
     const value = p.get(column);
@@ -100,21 +90,17 @@ export const updatePolicyV2: ApiHandler = async (c, deps) => {
     changes[column] = choice;
   }
   return c.json(v2Policy(await update(c, deps, changes)));
-};
+});
 
 // GET /api/v1/notifications/requests: 40 by default, at most 80, by max_id, since_id and min_id, with Link headers.
-export const listRequests: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const listRequests: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
   const credential = userCredential(c, deps);
   const result = authorized(
     await storeCall(c, deps, (s, b) => s.listNotificationRequests(b, { credential, page, present: present(c) })),
   );
   return pageResponse(c, result, page.limit);
-};
+});
 
 export const getRequest: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
@@ -122,27 +108,23 @@ export const getRequest: ApiHandler = async (c, deps) => {
   const request = authorized(
     await storeCall(c, deps, (s, b) => s.getNotificationRequest(b, { credential, id, present: present(c) })),
   );
-  return request === null ? NOT_FOUND() : c.json(request);
+  return request === null ? recordNotFound() : c.json(request);
 };
 
 export const acceptRequest: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", now: deps.now() };
   const found = authorized(await storeCall(c, deps, (s, b) => s.acceptNotificationRequest(b, input)));
-  return found ? c.json({}) : NOT_FOUND();
+  return found ? c.json({}) : recordNotFound();
 };
 
 export const dismissRequest: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", now: deps.now() };
   const found = authorized(await storeCall(c, deps, (s, b) => s.dismissNotificationRequest(b, input)));
-  return found ? c.json({}) : NOT_FOUND();
+  return found ? c.json({}) : recordNotFound();
 };
 
 // id[] of the bulk forms (set_requests: Array(params[:id]).uniq), at most MAX_BULK_REQUESTS.
-async function bulkIds(c: ApiContext, deps: ApiDeps): Promise<string[] | Response> {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+async function bulkIds(c: ApiContext, deps: ApiDeps, p: Params): Promise<string[] | Response> {
   const ids = [...new Set(p.getAll("id"))];
   if (ids.length > MAX_BULK_REQUESTS) {
     return refuseAfterAuth(
@@ -154,25 +136,25 @@ async function bulkIds(c: ApiContext, deps: ApiDeps): Promise<string[] | Respons
   return ids;
 }
 
-export const acceptRequests: ApiHandler = async (c, deps) => {
-  const ids = await bulkIds(c, deps);
+export const acceptRequests: ApiHandler = withParams(async (c, deps, p) => {
+  const ids = await bulkIds(c, deps, p);
   if (ids instanceof Response) {
     return ids;
   }
   const input = { credential: userCredential(c, deps), ids, now: deps.now() };
   authorized(await storeCall(c, deps, (s, b) => s.acceptNotificationRequests(b, input)));
   return c.json({});
-};
+});
 
-export const dismissRequests: ApiHandler = async (c, deps) => {
-  const ids = await bulkIds(c, deps);
+export const dismissRequests: ApiHandler = withParams(async (c, deps, p) => {
+  const ids = await bulkIds(c, deps, p);
   if (ids instanceof Response) {
     return ids;
   }
   const input = { credential: userCredential(c, deps), ids };
   authorized(await storeCall(c, deps, (s, b) => s.dismissNotificationRequests(b, input)));
   return c.json({});
-};
+});
 
 export const merged: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);

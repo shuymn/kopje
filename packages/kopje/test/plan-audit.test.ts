@@ -2,9 +2,13 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { SUSPEND_BLOCKS_SQL } from "../src/domain/audience";
 import { cachedImagesOf } from "../src/domain/remote-media";
 import { migratedStore } from "./helpers";
+import { fragmentCount } from "./plan-audit";
+import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { auditStore, queryPlan, singletonStatistics } from "./plan-audit-store";
+import { STATISTICS } from "./plan-witness";
 import { auditPlans, type Recorded, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
 
@@ -193,5 +197,132 @@ describe("plan audit", () => {
     }
     const literal = "SELECT id FROM accounts WHERE id = ? AND username LIKE 'a%' LIMIT ?";
     expect(await failuresOf(recorded(literal, ["1", 1]))).toEqual([]);
+  });
+
+  // The suspend blocks' allowance (PLAN_AUDIT_ALLOWANCES) on the planner's own plans: each occurrence of
+  // SUSPEND_BLOCKS_SQL plans as one line of its scan, and a walk of the same index by other SQL stays in the plan of
+  // the statement without the fragment.
+  describe("the suspend blocks' allowance", () => {
+    const SUSPEND_SCAN = "SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend";
+    const walk = `(SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
+			WHERE severity = 'suspend')`;
+
+    it("is SUSPEND_BLOCKS_SQL itself, with the scan its plan shows", () => {
+      expect(PLAN_AUDIT_ALLOWANCES.map(({ fragment, scan }) => ({ fragment, scan }))).toEqual([
+        { fragment: SUSPEND_BLOCKS_SQL, scan: `instance_domain_blocks: ${SUSPEND_SCAN}` },
+      ]);
+    });
+
+    it("passes a statement's scan of the fragment, once for each time it contains it", async () => {
+      const once = `SELECT ${SUSPEND_BLOCKS_SQL} AS x`;
+      // As guardedSql (src/domain/audience.ts) puts it in an account's columns.
+      const twice = `SELECT id, CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN 1 ELSE 0 END AS a,
+				CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN 2 ELSE 0 END AS b FROM accounts WHERE id = ?`;
+      const store = await migratedStore();
+      const lines = await runInDurableObject(store, (_instance, state) => {
+        singletonStatistics(state.storage.sql);
+        const sql = state.storage.sql;
+        return [once, twice].map((query, n) => details(sql, query, ...(n === 0 ? [] : ["1"])));
+      });
+      expect(lines.map((plan) => plan.filter((detail) => detail === SUSPEND_SCAN).length)).toEqual([1, 2]);
+      expect(await failuresOf(recorded(once, []))).toEqual([]);
+      expect(await failuresOf(recorded(twice, ["1"]))).toEqual([]);
+    });
+
+    it("fails the scan more often than the fragment, or without it", async () => {
+      for (const query of [
+        `SELECT ${SUSPEND_BLOCKS_SQL} AS x, ${walk} AS n`,
+        `SELECT ${walk} AS n`,
+        // The fragment's text as a name is no occurrence of it.
+        `SELECT ${walk} AS "${SUSPEND_BLOCKS_SQL}"`,
+        `SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend'`,
+      ]) {
+        expect(await failuresOf(recorded(query, [])), query).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}instance_domain_blocks: ${SUSPEND_SCAN}$`, "m")),
+        ]);
+      }
+    });
+
+    // The fragment's line can drop out of the plan (an unused column of a flattened subquery) while another walk of
+    // the same index prints exactly its detail, as often as the statement contains the fragment: the plan of the
+    // statement without the fragment still shows that walk, an aggregate or a correlated one. A walk the fragment
+    // guards (`CASE WHEN fragment THEN walk`) stays in that plan too, since its stand-in does not fold.
+    it("fails a walk of the index that prints as the fragment's scan", async () => {
+      const correlated = `(SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
+				WHERE severity = 'suspend' AND id + 0 <> length(a.username))`;
+      const unused = (n: string, from = "") =>
+        `SELECT n FROM (SELECT ${SUSPEND_BLOCKS_SQL} AS unused, ${n} AS n${from})`;
+      const guarded = `CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN ${correlated} ELSE 0 END`;
+      const cases: [string, SqlStorageValue[], number][] = [
+        [unused(walk), [], 1],
+        [unused(correlated, " FROM accounts a WHERE a.id = ?"), ["1"], 1],
+        [unused(guarded, " FROM accounts a WHERE a.id = ?"), ["1"], 2],
+      ];
+      const store = await migratedStore();
+      const plans = await runInDurableObject(store, (_instance, state) => {
+        singletonStatistics(state.storage.sql);
+        return cases.map(([query, params]) => details(state.storage.sql, query, ...params));
+      });
+      for (const [n, [query, params, occurrences]] of cases.entries()) {
+        // Each prints the allowed detail exactly as often as the statement contains the fragment.
+        expect(fragmentCount(query, SUSPEND_BLOCKS_SQL), query).toBe(occurrences);
+        expect(plans[n]!.filter((detail) => detail === SUSPEND_SCAN).length, query).toBe(occurrences);
+        expect(await failuresOf(recorded(query, params)), query).toEqual([
+          expect.stringMatching(new RegExp(`offending lines:\\n {4}instance_domain_blocks: ${SUSPEND_SCAN}$`, "m")),
+        ]);
+      }
+    });
+
+    // RES-7: the fragment reads one entry of the partial index of the suspend blocks, once in a statement however
+    // many rows test it, and however many suspend blocks (and noop blocks) the Store holds: statistics are taken on a
+    // Store of one suspend block, as singleton statistics or by ANALYZE, before 4,000 suspend blocks and as many noop
+    // ones are added. A statement of 50 rows reads one row more with the fragment than with a constant in its place.
+    it.each(STATISTICS)("reads one suspend block however many there are, with %s statistics", async (statistics) => {
+      const rowsOf = (x: string) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
+				SELECT ${x} AS x FROM n`;
+      const probe = `SELECT ${SUSPEND_BLOCKS_SQL} AS x`;
+      const perRow = rowsOf(SUSPEND_BLOCKS_SQL);
+      const store = await migratedStore();
+      const measured = await runInDurableObject(store, (_instance, state) => {
+        const sql = state.storage.sql;
+        const grow = (from: number, to: number) =>
+          sql.exec(
+            `WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+						INSERT INTO instance_domain_blocks (domain, severity, created_at, updated_at)
+						SELECT 'd' || i || '.example', CASE WHEN i % 2 = 0 THEN 'suspend' ELSE 'noop' END, 'x', 'x' FROM n`,
+            from,
+            to,
+          );
+        const suspends = () =>
+          sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_domain_blocks WHERE severity = 'suspend'").one()
+            .n;
+        const run = (query: string) => {
+          const cursor = sql.exec<{ x: number }>(query);
+          const values = cursor.toArray().map((row) => row.x);
+          return { values: [...new Set(values)], rows: cursor.rowsRead };
+        };
+        const constant = run(rowsOf("1")).rows;
+        const read = (query: string) => {
+          const { values, rows } = run(query);
+          return { values, rows: query === perRow ? rows - constant : rows };
+        };
+        grow(1, 2);
+        if (statistics === "singleton") {
+          singletonStatistics(sql);
+        } else {
+          sql.exec("ANALYZE");
+        }
+        const before = { suspends: suspends(), reads: [read(probe), read(perRow)] };
+        grow(3, 8_002);
+        return [before, { suspends: suspends(), reads: [read(probe), read(perRow)] }];
+      });
+      expect(measured.map((phase) => phase.suspends)).toEqual([1, 4_001]);
+      for (const phase of measured) {
+        expect(phase.reads).toEqual([
+          { values: [1], rows: 1 },
+          { values: [1], rows: 1 },
+        ]);
+      }
+    });
   });
 });

@@ -8,10 +8,11 @@ import {
   type RemoteMediaMaintenance,
   type RemoteMediaOutcome,
 } from "../domain/remote-media";
-import { MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, withinKept } from "../platform/deadline";
+import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
+import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
-import { callStore, type StoreStub } from "../platform/store-client";
+import { remoteFileKey } from "../platform/media-files";
+import { type StoreStub, storeRpc } from "../platform/store-client";
 import { randomToken } from "../security/tokens";
 import type { InboxDeps } from "./inbox";
 import { dnsCheckHost } from "./loader";
@@ -106,12 +107,6 @@ function bounded<T>(work: () => Promise<T>, end: number, now: () => number): Pro
   return withinKept(running, work, end, now);
 }
 
-// Whether the env holds the Worker in maintenance (a write must not start).
-function envMaintenance(env: Env): boolean {
-  const config = readConfig(env);
-  return !config.ok || config.config.MAINTENANCE !== "off";
-}
-
 // The end of an operation of `budget` ms started now within an allocation ending at `end`, or null when it does not
 // fit (it is not started).
 export function admitted(budget: number, end: number, now: () => number): number | null {
@@ -145,14 +140,14 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     lost: 0,
     stopped: running.size > 0,
   };
-  if (envMaintenance(env)) {
+  if (envInMaintenance(env)) {
     return round;
   }
   const config = readConfig(env);
   const cap = config.ok ? config.config.REMOTE_MEDIA_CACHE_BYTES : 0;
   const retentionDays = config.ok ? config.config.MEDIA_CACHE_RETENTION_DAYS : MEDIA_CACHE_RETENTION_DEFAULT_DAYS;
   const build = deps.build(env);
-  const rpc = <T>(call: (store: StoreStub) => Promise<T>) => callStore(() => call(deps.store(env)));
+  const rpc = storeRpc(deps.store, env);
   const bucket = deps.bucket?.(env) ?? env.MEDIA;
   const start = deps.now();
   const maintenanceEnd = start + MAINTENANCE_MS;
@@ -161,7 +156,7 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
   // A Store call of the allocation ending at `until`, started only when its budget fits.
   const store = async <T>(call: (s: StoreStub) => Promise<T>, until: number): Promise<T> => {
     const by = admitted(STORE_CALL_MS, until, deps.now);
-    if (by === null || envMaintenance(env)) {
+    if (by === null || envInMaintenance(env)) {
       throw new DeadlinePassed();
     }
     return inTime(() => rpc(call), by, deps.now);
@@ -369,7 +364,7 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     }
     const put = async (key: string, bytes: Uint8Array, contentType: string): Promise<boolean> => {
       const by = Math.min(deadline, deps.now() + PUT_MS);
-      if (by <= deps.now() || envMaintenance(env)) {
+      if (by <= deps.now() || envInMaintenance(env)) {
         return false;
       }
       try {
@@ -385,14 +380,14 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     if (!(await admit(claim, file.hosts, deadline))) {
       return { outcome: { kind: "unattempted" }, step: "admission", host };
     }
-    if (!(await put(`remote/${claim.token}/full`, file.bytes, file.type))) {
+    if (!(await put(remoteFileKey(claim.token, "full"), file.bytes, file.type))) {
       return { outcome: { kind: "failed", permanent: false }, step: "put", host };
     }
     if (file.still !== null) {
       if (!(await admit(claim, file.hosts, deadline))) {
         return { outcome: { kind: "partial" }, step: "admission", host };
       }
-      if (!(await put(`remote/${claim.token}/still`, file.still.bytes, file.still.type))) {
+      if (!(await put(remoteFileKey(claim.token, "still"), file.still.bytes, file.still.type))) {
         return { outcome: { kind: "partial" }, step: "put", host };
       }
     }
@@ -418,13 +413,13 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     host: string | null,
     deadline: number,
   ): Promise<ClaimResult> => {
-    if (deadline <= deps.now() || envMaintenance(env) || !(await admit(claim, file.hosts, deadline))) {
+    if (deadline <= deps.now() || envInMaintenance(env) || !(await admit(claim, file.hosts, deadline))) {
       await file.body.cancel().catch(() => {});
       return { outcome: { kind: "unattempted" }, step: "admission", host };
     }
     try {
       await bounded(
-        () => bucket.put(`remote/${claim.token}/full`, file.body, { httpMetadata: { contentType: file.type } }),
+        () => bucket.put(remoteFileKey(claim.token, "full"), file.body, { httpMetadata: { contentType: file.type } }),
         deadline,
         deps.now,
       );
@@ -503,17 +498,10 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     ...Array.from({ length: LANE0_CONCURRENCY }, () => worker(queues[0]!)),
     ...Array.from({ length: LANE1_CONCURRENCY }, () => worker(queues[1]!)),
   ]);
-  for (const claim of queues.flat()) {
-    try {
-      if ((await record(claim, { kind: "unattempted" })).held) {
-        round.released++;
-      }
-    } catch (error) {
-      if (!(error instanceof DeadlinePassed)) {
-        console.error({ event: "kopje.remote_media.release_failed", ...errorFields(error) });
-      }
-      break;
-    }
-  }
+  round.released += await releaseUnstarted(
+    queues.flat(),
+    (claim) => record(claim, { kind: "unattempted" }),
+    "kopje.remote_media.release_failed",
+  );
   return round;
 }

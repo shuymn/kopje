@@ -32,9 +32,13 @@ import {
   type DeletedStatus,
   deleteActivity,
   likeActivity,
+  mainKeyId,
   quoteRequestActivity,
   recordOutbound,
   revocationRejectActivity,
+  deleteSigning,
+  signedAs,
+  signedDeleteEnvelope,
   stampDeleteActivity,
   stampUri,
   statusFacts,
@@ -134,8 +138,10 @@ import { forgetStatusTrend } from "./trends";
 import { edgeRangeSql, readWindow, singleWindow, statusCursor, windowJson, windowPage } from "./windows";
 
 // Statuses: posting, editing and deleting local statuses, the per-status reads, and favourite, reblog and
-// bookmark. Every read goes through the audience rule (audience.ts); every write recomputes the counters it changes
-// from the rows, writes its notifications, and records its outbound intent (activities.ts), all in its transaction.
+// bookmark. Every read goes through the audience rule (audience.ts); every write recomputes the account and status
+// counters it changes (recountStatuses, recountStatus) from the rows, except a delete and an unboost, which subtract
+// 1 on purpose (what the recount would give after the hide, without reading the rows: deleteStatus, removeReblog);
+// each writes its notifications and records its outbound intent (activities.ts), all in its transaction.
 
 export type Viewed<T> = { status: "ok"; value: T } | { status: "not_found" };
 
@@ -514,12 +520,14 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
   return { author, parent, media, visibility, quoted };
 }
 
-// StatusesController#set_thread then #set_quoted_status return 404 before create validation. This read preserves
-// error precedence only; preparePost rechecks both in the writing transaction and alone authorizes.
-export const postTargets = userReadOperation<
-  { inReplyToId?: string | undefined; quotedStatusId?: string },
-  "ok" | "reply_not_found" | "quote_not_found"
->((db, input, { accountId }) => {
+type PostTargets = { inReplyToId?: string | undefined; quotedStatusId?: string | undefined };
+
+type PostTargetsFound = "ok" | "reply_not_found" | "quote_not_found";
+
+// StatusesController#set_thread then #set_quoted_status: a status replied to or quoted that the poster may not see or
+// quote answers 404 before the create action validates anything and before PostStatusService looks up the
+// Idempotency-Key. preparePost rechecks both where it writes, and alone authorizes.
+export function postTargetsOf(db: Db, accountId: string, input: PostTargets): PostTargetsFound {
   if (input.inReplyToId !== undefined && replyParent(db, accountId, input.inReplyToId) === null) {
     return "reply_not_found";
   }
@@ -527,7 +535,13 @@ export const postTargets = userReadOperation<
     return "quote_not_found";
   }
   return "ok";
-});
+}
+
+// postTargetsOf as a read, for a post the Worker refuses: its 404 comes before the Worker's 422, also in readonly
+// maintenance, where postStatus is refused.
+export const postTargets = userReadOperation<PostTargets, PostTargetsFound>((db, input, { accountId }) =>
+  postTargetsOf(db, accountId, input),
+);
 
 // A status a post may quote, as R36 found it.
 type Quotable = QuotedForPost & { visibility: Visibility };
@@ -927,6 +941,14 @@ export function recordEdit(db: Db, statusId: string, at: string): string {
   return row.id;
 }
 
+// Api::V1::StatusesController#update finds the status among the caller's own (a boost of theirs included, which
+// StatusPolicy#update? lets its owner through) before UpdateStatusService validates anything: ownStatus as a read, for
+// an edit the Worker refuses, so its 404 comes before the Worker's 422, also in readonly maintenance, where editStatus
+// is refused. editStatus finds it again where it writes, and alone authorizes.
+export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">((db, { id }, { accountId }) =>
+  ownStatus(db, accountId, id) === null ? "not_found" : "ok",
+);
+
 // PUT /statuses/:id replaces the text, the spoiler, the sensitive flag, the media and their descriptions as Mastodon's
 // UpdateStatusService does (absent media_ids removes the media); an absent language keeps the current one.
 // Visibility cannot change. An edit that changes nothing is not recorded. The first edit also records the original
@@ -1171,12 +1193,61 @@ export const MAX_DELETE_NAMED = MAX_STATUS_MENTION_ROWS;
 
 type Deleted = { status: "ok"; value: Status; jobsPending: boolean } | { status: "not_found" };
 
+// stale: the signed Delete is not the one the Store builds now (deleteStatus); the Worker prepares again.
+type DeleteResult = Deleted | { status: "stale" };
+
+// What the Worker signs before a DELETE is recorded (prepareDelete): the Delete of a public or unlisted original, to
+// sign with its author's key, or null when the status's Delete is recorded unsigned. unsignable: it must be signed but
+// its author has no key to sign it with.
+export type DeletePreparation =
+  | { sign: { activity: Record<string, unknown>; keyId: string; key: StoredKey } | null }
+  | { sign: null; unsignable: true };
+
+// The status a DELETE removes, as deleteStatus finds it: not found unless it is the viewer's own and not withdrawn, and
+// for a boost, its original's removal not begun (unboostableId).
+function deletable(db: Db, accountId: string, id: string): OwnStatus | null {
+  const current = ownStatus(db, accountId, id);
+  if (current === null || (current.reblog_of_id !== null && unboostableId(db, current.id) === null)) {
+    return null;
+  }
+  return current;
+}
+
+// The first step of a DELETE, a read: for an original whose Delete is signed (activities.ts signableDeleteActivity),
+// that Delete and the author's wrapped key, which the Worker LD-signs with (federation/ld-sign.ts) before deleteStatus
+// records it. Signing once, before recording, keeps the Store free of keys (DATA-1) and gives every destination one
+// body. not_found exactly where deleteStatus answers it.
+export const prepareDelete = userReadOperation<{ id: string }, Acted<DeletePreparation>>(
+  (db, { id }, { accountId }) => {
+    const current = deletable(db, accountId, id);
+    if (current === null) {
+      return { status: "not_found" };
+    }
+    const identity = current.reblog_of_id === null ? deletedIdentity(db, current) : null;
+    const signing = identity === null ? null : deleteSigning(identity);
+    if (identity === null || signing?.kind !== "signed") {
+      return { status: "ok", value: { sign: null } };
+    }
+    const key = accountKey(db, accountId);
+    return {
+      status: "ok",
+      value:
+        key === null
+          ? { sign: null, unsignable: true }
+          : { sign: { activity: signing.activity, keyId: mainKeyId(identity.actorUri), key } },
+    };
+  },
+);
+
 // DELETE /api/v1/statuses/:id (StatusesController#destroy, RemoveStatusService): deletes an own status or boost and
 // answers with it as it was, source text included, for redrafting; only the deleted status itself carries its source,
 // and a boost's original is shown only if the viewer may still see it (presentOwnStatus). A boost is withdrawn as an
-// unboost withdraws it (removeReblog). An original is withdrawn in this transaction, each write bounded (RES-6):
-//   - its Delete is recorded first (deleteActivity, over a snapshot read before anything changes the status), after
-//     DELETE_SUPERSEDES earlier activities about it are superseded;
+// unboost withdraws it (removeReblog). Before anything is written, a public or unlisted original's Delete signed by
+// the Worker (`signed`, prepareDelete) must be the one its snapshot makes now (signedAs), and any other status takes
+// none; otherwise the answer is stale and the Worker prepares again. An original is withdrawn in this transaction, each
+// write bounded (RES-6):
+//   - its Delete is recorded first (signed, or deleteActivity, over a snapshot read before anything changes the
+//     status), after DELETE_SUPERSEDES earlier activities about it are superseded;
 //   - it is hidden in one compare-and-set (statuses.withdrawn, R2: nobody sees it, its author included, and a second
 //     DELETE is not found), its content, source and audience cleared;
 //   - what it alone shows goes by key: its card, trend row and review, its author's pin, its poll's due rounds, its
@@ -1192,21 +1263,29 @@ type Deleted = { status: "ok"; value: Status; jobsPending: boolean } | { status:
 //     children and the status. The job's bound is the deadline of the media, which the job gives what the answer did
 //     not show. jobsPending asks the Worker for a round of jobs.
 export const deleteStatus = userMediaDeleteOperation<
-  { id: string; deleteMedia: boolean; now: number; present: Present },
-  Deleted
+  { id: string; deleteMedia: boolean; signed: Record<string, unknown> | null; now: number; present: Present },
+  DeleteResult
 >((db, input, { accountId }, viewer) => {
-  const current = ownStatus(db, accountId, input.id);
-  if (current === null) {
-    return { status: "not_found" };
-  }
   // A boost of an original whose removal has begun: its Undo is that removal's (inbox.ts withdrawLocalBoosts), so the
   // boost is not found, as unreblog answers (unboostableId), before anything is written.
-  if (current.reblog_of_id !== null && unboostableId(db, current.id) === null) {
+  const current = deletable(db, accountId, input.id);
+  if (current === null) {
     return { status: "not_found" };
   }
   const value = presentOwn(db, accountId, current.id, { ...input.present, viewer, source: true });
   if (value === null) {
     return { status: "not_found" };
+  }
+  const deleted = current.reblog_of_id === null ? deletedStatus(db, current) : null;
+  const signing = deleted === null ? null : deleteSigning(deleted);
+  // The signed Delete is recorded only if it is the one this snapshot makes (prepareDelete), checked before anything
+  // is written: a returned answer does not roll the transaction back.
+  if (
+    signing?.kind !== "signed"
+      ? input.signed !== null
+      : input.signed === null || !signedAs(input.signed, signing.activity, mainKeyId(deleted!.actorUri))
+  ) {
+    return { status: "stale" };
   }
   // R32: the streaming delete is captured before anything changes the status's audience.
   streamDelete(db, current.id, input.now);
@@ -1214,7 +1293,6 @@ export const deleteStatus = userMediaDeleteOperation<
     removeReblog(db, accountId, current.id, current.reblog_of_id, input.now);
     return { status: "ok", value, jobsPending: true };
   }
-  const deleted = deletedStatus(db, current);
   // The Delete reaches every inbox with delivery evidence of the status when its job stages it (receipts, and the rows
   // of earlier activities, only marked superseded), and the reach rows (boosts, quotes, mentions, votes) that exist
   // when the staging reads them; one removed meanwhile (a remote Undo of a boost, a purge) is not reached unless other
@@ -1222,7 +1300,12 @@ export const deleteStatus = userMediaDeleteOperation<
   // boosts its request discarded, so its race is narrower (VIS-3).
   if (deleted !== null) {
     supersedeEarlier(db, accountId, deleted.uri, DELETE_SUPERSEDES);
-    beginRetraction(db, accountId, deleteActivity(deleted), input.now, 1, "bounded");
+    // DATA-5: the reason alone, no identity. A public or unlisted status whose imported identity cannot be signed.
+    if (signing?.kind === "identity") {
+      console.warn({ event: "kopje.delivery.delete_unsigned", reason: signing.reason });
+    }
+    const envelope = input.signed === null ? deleteActivity(deleted) : signedDeleteEnvelope(deleted, input.signed);
+    beginRetraction(db, accountId, envelope, input.now, 1, "bounded");
   }
   // The hide, once: the trigger of migration 0074_last_status_lookup moves the account's last status back.
   const hidden = db.run(
@@ -1271,14 +1354,8 @@ export const deleteStatus = userMediaDeleteOperation<
 // received the status under such an id keeps it (VIS-3). A mention whose actor id is past ACTOR_URI_LIMIT is not
 // named: it gets a copy of its own when the Delete is staged.
 function deletedStatus(db: Db, current: OwnStatus): DeletedStatus | null {
-  const row = db.first<{ uri: string; actor_uri: string; poll: number }>(
-    `SELECT ${statusUriSql("s.uri")} AS uri, ${actorUriSql("a.uri")} AS actor_uri,
-			EXISTS (SELECT 1 FROM polls p WHERE p.status_id = s.id) AS poll
-		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
-    current.id,
-  );
-  const usable = (value: string, limit: number) => value !== "" && withinIdentityBound(value, limit);
-  if (row === undefined || !usable(row.uri, STATUS_URI_LIMIT) || !usable(row.actor_uri, ACTOR_URI_LIMIT)) {
+  const identity = deletedIdentity(db, current);
+  if (identity === null) {
     return null;
   }
   const named = db
@@ -1289,13 +1366,35 @@ function deletedStatus(db: Db, current: OwnStatus): DeletedStatus | null {
       current.id,
     )
     .map((m) => m.uri)
-    .filter((uri) => usable(uri, ACTOR_URI_LIMIT));
+    .filter((uri) => usableIdentity(uri, ACTOR_URI_LIMIT));
+  return { ...identity, named };
+}
+
+function usableIdentity(value: string, limit: number): boolean {
+  return value !== "" && withinIdentityBound(value, limit);
+}
+
+// What a Delete of the status says of it but its named mentions (deletedStatus): its id, uri, author's actor id,
+// visibility and whether it has a poll; null as deletedStatus is. All a signature needs (prepareDelete).
+function deletedIdentity(db: Db, current: OwnStatus): Omit<DeletedStatus, "named"> | null {
+  const row = db.first<{ uri: string; actor_uri: string; poll: number }>(
+    `SELECT ${statusUriSql("s.uri")} AS uri, ${actorUriSql("a.uri")} AS actor_uri,
+			EXISTS (SELECT 1 FROM polls p WHERE p.status_id = s.id) AS poll
+		FROM ${STATUS_AUTHOR} WHERE s.id = ?`,
+    current.id,
+  );
+  if (
+    row === undefined ||
+    !usableIdentity(row.uri, STATUS_URI_LIMIT) ||
+    !usableIdentity(row.actor_uri, ACTOR_URI_LIMIT)
+  ) {
+    return null;
+  }
   return {
     id: current.id,
     uri: row.uri,
     actorUri: row.actor_uri,
     visibility: current.visibility,
-    named,
     poll: row.poll === 1,
   };
 }

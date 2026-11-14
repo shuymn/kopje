@@ -1,10 +1,12 @@
 # Mastodon Client API Overview
 
-This document provides an overview of the Mastodon Client REST API, designed for client applications such as official Mastodon apps, Ivory, Elk, and other third-party clients.
+This document provides an overview of the Mastodon Client REST API, designed for client applications such as official
+Mastodon apps, Ivory, Elk, and other third-party clients.
 
 ## Status
 
-This specification is normative for Mastodon server implementations and informative for client developers seeking compatibility.
+This specification is normative for Mastodon server implementations and informative for client developers seeking
+compatibility.
 
 ## Base URL Structure
 
@@ -82,7 +84,8 @@ This endpoint is only served for JSON requests.
 
 ## Rate Limiting
 
-The API implements rate limiting to protect server resources. When rate-limited, the server responds with HTTP 429 Too Many Requests.
+The API implements rate limiting to protect server resources. When rate-limited, the server responds with HTTP 429 Too
+Many Requests.
 
 Clients SHOULD:
 - Respect rate limit headers
@@ -110,7 +113,8 @@ All entity IDs in the Mastodon API are **opaque strings**, not integers. Clients
 }
 ```
 
-IDs are serialized from internal integer identifiers but MUST be treated as opaque values. The numeric format is an implementation detail that MAY change.
+IDs are serialized from internal integer identifiers but MUST be treated as opaque values. The numeric format is an
+implementation detail that MAY change.
 
 ## Error Responses
 
@@ -191,10 +195,14 @@ The `content` field in statuses and notes contains sanitized HTML. Clients MUST:
 
 Key implementation files in the Mastodon codebase:
 
-- Base controller: [`app/controllers/api/base_controller.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/base_controller.rb)
-- Pagination: [`app/controllers/concerns/api/pagination.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/pagination.rb)
-- Rate limiting: [`app/controllers/concerns/api/rate_limit_headers.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/rate_limit_headers.rb)
-- Error handling: [`app/controllers/concerns/api/error_handling.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/error_handling.rb)
+- Base controller:
+  [`app/controllers/api/base_controller.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/api/base_controller.rb)
+- Pagination:
+  [`app/controllers/concerns/api/pagination.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/pagination.rb)
+- Rate limiting:
+  [`app/controllers/concerns/api/rate_limit_headers.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/rate_limit_headers.rb)
+- Error handling:
+  [`app/controllers/concerns/api/error_handling.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/controllers/concerns/api/error_handling.rb)
 
 ## Related Documents
 

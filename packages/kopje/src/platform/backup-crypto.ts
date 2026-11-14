@@ -1,5 +1,7 @@
 import { Encrypter } from "age-encryption";
 
+import { toHex } from "./hex";
+
 // age encryption for backups (DATA-4), by typage (age-encryption): every byte that leaves for the backup bucket passes
 // through here first. Kopje implements no cryptography of its own; it only chooses the recipients.
 
@@ -25,12 +27,6 @@ export function encryptStream(
   plaintext: ReadableStream<Uint8Array>,
 ): Promise<ReadableStream<Uint8Array>> {
   return encrypter(recipients).encrypt(plaintext);
-}
-
-export function toHex(buffer: ArrayBuffer | Uint8Array): string {
-  return Array.from(buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
 }
 
 export async function sha256Of(bytes: Uint8Array): Promise<string> {

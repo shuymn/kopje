@@ -28,6 +28,7 @@ import {
   ownStatusByKey,
   type PostInput,
   postNow,
+  postTargetsOf,
   preparePost,
   refusedPost,
   writePost,
@@ -257,7 +258,7 @@ function scheduleErrors(db: Db, accountId: string, at: string, now: number, exce
   const day = Date.parse(`${at.slice(0, 10)}T00:00:00.000Z`);
   const daily =
     db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss
+      `SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss INDEXED BY scheduled_statuses_account_time
 				WHERE ${scheduledOwnSql("ss", "?1")} AND ss.scheduled_at >= ?2 AND ss.scheduled_at < ?3 AND ss.id IS NOT ?4
 				LIMIT ?5)`,
       accountId,
@@ -303,11 +304,12 @@ export type ScheduleInput = CreateStatusInput & { scheduledAt?: string | undefin
 
 export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: ScheduledStatus };
 
-// POST /api/v1/statuses (PostStatusService), with or without scheduled_at. An Idempotency-Key is resolved first,
-// against the account's statuses and its scheduled statuses alike, whether this request schedules or not: a repeat
-// within the key's hour (IDEMPOTENCY_MS, from the row's created_at) answers with what the first request made, a Status
-// or a ScheduledStatus, and makes nothing (so a key that reserved a scheduled status is never posted twice, once now
-// and once when it is published). An expired key is taken from the older rows, in this transaction, and posts anew.
+// POST /api/v1/statuses (PostStatusService), with or without scheduled_at. The status replied to and the status quoted
+// are checked first (postTargetsOf). Then an Idempotency-Key is resolved, against the account's statuses and its
+// scheduled statuses alike, whether this request schedules or not: a repeat within the key's hour (IDEMPOTENCY_MS,
+// from the row's created_at) answers with what the first request made, a Status or a ScheduledStatus, and makes
+// nothing (so a key that reserved a scheduled status is never posted twice, once now and once when it is published).
+// An expired key is taken from the older rows, in this transaction, and posts anew.
 // Then no scheduled_at, or a time not in the future, posts at once; otherwise the post is checked as an immediate one
 // (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and kept with its
 // media held.
@@ -315,6 +317,10 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   const { accountId } = caller;
   // AUTH-6: the app of the credential, which the Worker cannot name.
   const applicationId = storedApplicationId(caller.client.id);
+  const targets = postTargetsOf(db, accountId, input);
+  if (targets !== "ok") {
+    return { status: targets };
+  }
   if (input.scheduledAt !== undefined && !isTime(input.scheduledAt)) {
     return { status: "invalid", error: "Record invalid" };
   }

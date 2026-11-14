@@ -484,6 +484,78 @@ describe("follow and relationships", () => {
     expect((await follow(json({ languages: ["ja"] }))).languages).toEqual(["ja"]);
     expect((await follow(form({ "languages[]": "" }))).languages).toBeNull();
   });
+  it("recounts only when a follow call adds or removes a follow", async () => {
+    const h = await aliceSession();
+    const bob = await seedAccount(h.store, { username: "bob" });
+    const carol = await seedAccount(h.store, { username: "carol", locked: true });
+    const dave = await seedAccount(h.store, { username: "dave", domain: "remote.test", followersCount: 42 });
+    // Every write of an account row, counted by a trigger of this test.
+    await sql(h.store, "CREATE TABLE account_writes (id TEXT NOT NULL)");
+    await sql(
+      h.store,
+      "CREATE TRIGGER account_writes_counted AFTER UPDATE ON accounts BEGIN INSERT INTO account_writes VALUES (NEW.id); END",
+    );
+    const call = async (id: string, action: "follow" | "unfollow", body: Record<string, unknown> = {}) => {
+      await sql(h.store, "DELETE FROM account_writes");
+      const response = await h.request(`/api/v1/accounts/${id}/${action}`, bearer(h.token, json(body)));
+      expect(response.status).toBe(200);
+      const writes = await sql<{ id: string }>(h.store, "SELECT id FROM account_writes ORDER BY id");
+      return writes.map((row) => row.id);
+    };
+    const options = (id: string) =>
+      sql(h.store, "SELECT show_reblogs, notify, languages FROM follows WHERE target_account_id = ?", id);
+    const counts = async () => {
+      const rows = await sql<{ id: string; followers_count: number; following_count: number }>(
+        h.store,
+        "SELECT id, followers_count, following_count FROM accounts ORDER BY id",
+      );
+      return Object.fromEntries(rows.map(({ id, ...row }) => [id, row]));
+    };
+
+    for (const [target, recounted] of [
+      [bob, [h.aliceId, bob].toSorted()],
+      [carol, [h.aliceId, carol].toSorted()],
+      [dave, [h.aliceId]],
+    ] as const) {
+      expect(await call(target, "follow")).toEqual(recounted);
+      // A repeated follow and one that only changes the options write no account row.
+      expect(await call(target, "follow")).toEqual([]);
+      expect(await call(target, "follow", { reblogs: false, notify: true, languages: ["ja"] })).toEqual([]);
+      expect(await options(target)).toEqual([{ show_reblogs: 0, notify: 1, languages: '["ja"]' }]);
+    }
+    expect(await counts()).toEqual({
+      [h.aliceId]: { followers_count: 0, following_count: 1 },
+      [bob]: { followers_count: 1, following_count: 0 },
+      [carol]: { followers_count: 0, following_count: 0 },
+      [dave]: { followers_count: 42, following_count: 0 },
+    });
+
+    for (const [target, recounted] of [
+      [bob, [h.aliceId, bob].toSorted()],
+      [carol, [h.aliceId, carol].toSorted()],
+      [dave, [h.aliceId]],
+    ] as const) {
+      expect(await call(target, "unfollow")).toEqual(recounted);
+      // An unfollow of an account not followed writes no account row, and still ends a stray follow notification.
+      if (target !== dave) {
+        await sql(
+          h.store,
+          "INSERT INTO notifications (account_id, type, from_account_id) VALUES (?, 'follow', ?)",
+          target,
+          h.aliceId,
+        );
+      }
+      expect(await call(target, "unfollow")).toEqual([]);
+    }
+    expect(await sql(h.store, "SELECT 1 FROM follows")).toEqual([]);
+    expect(await sql(h.store, "SELECT 1 FROM notifications")).toEqual([]);
+    expect(await counts()).toEqual({
+      [h.aliceId]: { followers_count: 0, following_count: 0 },
+      [bob]: { followers_count: 0, following_count: 0 },
+      [carol]: { followers_count: 0, following_count: 0 },
+      [dave]: { followers_count: 42, following_count: 0 },
+    });
+  });
 
   it("answers relationships for several ids, legacy ids included", async () => {
     const h = await aliceSession();

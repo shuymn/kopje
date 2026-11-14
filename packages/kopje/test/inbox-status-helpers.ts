@@ -1,6 +1,6 @@
 import { expect } from "vitest";
 
-import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/inbox";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { sql } from "./api-helpers";

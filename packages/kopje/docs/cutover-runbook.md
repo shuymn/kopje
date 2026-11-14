@@ -84,9 +84,9 @@ preflight lists the writers it can see (`barrier`), and the steps close them:
 | The legacy consumer                                                          | Step 4: removed from the Queue after it drained                                   |
 | Any other Worker bound to the D1                                             | Step 1: find them in the dashboard (D1, the database, its bindings) and stop them |
 
-An export is not a writer, but `wrangler d1 export` makes the D1 unavailable while it runs. Wrangler asks before it does,
-and in a non-interactive shell (a script, the `export_d1` function below run from one, CI) it answers that prompt with
-yes itself. Inside the window nothing uses the D1 any more, so that is harmless; an export taken while the legacy
+An export is not a writer, but `wrangler d1 export` makes the D1 unavailable while it runs. Wrangler asks before it
+does, and in a non-interactive shell (a script, the `export_d1` function below run from one, CI) it answers that prompt
+with yes itself. Inside the window nothing uses the D1 any more, so that is harmless; an export taken while the legacy
 instance still serves (preparation step 2, the rehearsal) makes its requests fail for the export's duration.
 
 ## Placeholders
@@ -170,8 +170,8 @@ None of this affects the legacy instance.
 
    The keys move wrapped as they are (DATA-14). Under the empty KEK they are wrapped under a known value, so at rest
    they are as readable as the Store's data. After publication, move them to a new KEK with `kopje-admin keys rewrap`
-   (see "Rotating the KEK" in [setup.md](setup.md#rotating-the-kek)). Do not set `USER_KEK` before then: changing it alone
-   makes every key fail to unwrap until the rewrap has run.
+   (see "Rotating the KEK" in [setup.md](setup.md#rotating-the-kek)). Do not set `USER_KEK` before then: changing it
+   alone makes every key fail to unwrap until the rewrap has run.
 
 3. **Deploy Kopje** from the instance template ([deploy/README.md](../../../deploy/README.md)), with:
    - `MAINTENANCE=full` as a plain-text variable, before anything can reach it;
@@ -394,8 +394,9 @@ kopje-admin maintenance-worker-check <work>/export-b --domain <domain> --worker 
     `verify-conversion` runs then;
   - `convert` exits 0 (a stop, exit 3, names its reason in the manifest; [cutover.md](cutover.md#steps)). A real
     export usually needs `--accept-deletions`, on `convert` and both `verify-conversion` runs, for rows legacy never
-    showed ([cutover.md](cutover.md#what-the-conversion-does)). Do not pass it blindly: run without it first, read `conversion.dropped`
-    in the manifest, and add it only when every code there is one cutover.md lists, with counts you expect;
+    showed ([cutover.md](cutover.md#what-the-conversion-does)). Do not pass it blindly: run without it first, read
+    `conversion.dropped` in the manifest, and add it only when every code there is one cutover.md lists, with counts you
+    expect;
   - the comparison with `--manifest` passes: the conversion read exactly the fingerprinted rows and notification
     counter (it refuses a file that is not a complete conversion manifest);
   - both `verify-conversion` runs are `PASS`, the second on the Store's own dump after the import. They compute their
@@ -411,8 +412,8 @@ kopje-admin maintenance-worker-check <work>/export-b --domain <domain> --worker 
   (a put replaces the same key). Do not import before it passes: a row whose original is not in R2 has nothing to
   rebuild its files from (`media-rebuild` reports such rows as `original-missing`). The images' served files are made
   from these originals by `kopje-admin media-rebuild` in step 8; until then the moved avatars, headers and attachments
-  answer 404. A rollback leaves the originals in the bucket; a later conversion with the same `images.json` and base time
-  writes the same keys again.
+  answer 404. A rollback leaves the originals in the bucket; a later conversion with the same `images.json` and base
+  time writes the same keys again.
 - **Rollback:** before the import is verified, Rollback A; after, Rollback B.
 
 ### 7. Put Kopje on the domain in full maintenance (1–10 min)
@@ -502,10 +503,10 @@ against the time it was spooled; ones held during maintenance come due within 30
 - from that account, like the test status, and see the notification on Kopje, with its Web Push (receiving and Push
   delivery).
 
-- **Go:** both arrive; Kopje's Queue backlog falls to 0 messages and 0 bytes within 30 minutes; its dead-letter queue stays empty;
-  `kopje-admin deliveries` shows no growing backlog, and with `--images` the profile Updates leave it.
-- **Rollback:** none. Recover forward: PITR to the bookmark ([upgrade.md](upgrade.md#a-version-that-changed-the-schema)),
-  a backup, or a fix.
+- **Go:** both arrive; Kopje's Queue backlog falls to 0 messages and 0 bytes within 30 minutes; its dead-letter queue
+  stays empty; `kopje-admin deliveries` shows no growing backlog, and with `--images` the profile Updates leave it.
+- **Rollback:** none. Recover forward: PITR to the bookmark
+  ([upgrade.md](upgrade.md#a-version-that-changed-the-schema)), a backup, or a fix.
 
 ### 10. Daily backup (after)
 
@@ -615,12 +616,12 @@ them, and a later cutover cannot replay them. Everything below runs through Acce
    domain back if step 7 moved it. Then drain again: requests the maintenance worker spooled while the routes changed
    are collected first (the barrier) and handed off. Those and the legacy instance's first direct requests can
    interleave for the time the routes take to change, as deliveries from different servers always can.
-7. `kopje-admin cutover status`: the journal holds nothing pending, being sent or kept, and Kopje's Queue backlog is 0 messages
-   and 0 bytes (dashboard, Queue metrics).
+7. `kopje-admin cutover status`: the journal holds nothing pending, being sent or kept, and Kopje's Queue backlog is 0
+   messages and 0 bytes (dashboard, Queue metrics).
 8. Remove `CUTOVER_ROLLBACK` from the Kopje Worker; re-enable the legacy workflows and builds (step 1); restore the
    legacy consumer's concurrency (add it again without `--max-concurrency`).
-9. `kopje-admin cutover close --yes`, which needs Kopje's Queue and its dead-letter queue empty. Before then the receipts drop any copy of a
-   handed-off request that is still delivered; afterwards none can be left.
+9. `kopje-admin cutover close --yes`, which needs Kopje's Queue and its dead-letter queue empty. Before then the
+   receipts drop any copy of a handed-off request that is still delivered; afterwards none can be left.
 
 ### Rollback B: after the import is complete
 
@@ -630,10 +631,11 @@ As Rollback A, without step 2, and before step 9:
 kopje-admin cutover reset --yes   # needs MAINTENANCE=full and nothing pending, being sent or kept in the journal
 ```
 
-The reset applies only to a verified import that is not published yet. It takes the Store back to empty, keeping its configuration (domain and Access), through the same bounded reset
-an interrupted import uses; an interrupted reset is continued with `kopje-admin import-reset --yes`. The next attempt
-imports through Access. The reset is refused once the Store is published (`published`), during an import
-(`import-exists`: use `import-reset`) and while the journal holds requests (`journal-not-empty`).
+The reset applies only to a verified import that is not published yet. It takes the Store back to empty, keeping its
+configuration (domain and Access), through the same bounded reset an interrupted import uses; an interrupted reset is
+continued with `kopje-admin import-reset --yes`. The next attempt imports through Access. The reset is refused once the
+Store is published (`published`), during an import (`import-exists`: use `import-reset`) and while the journal holds
+requests (`journal-not-empty`).
 
 ## Kopje's dead-letter queue
 

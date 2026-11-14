@@ -9,9 +9,9 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settle, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
-import { BUILD, claimAndSettle } from "./helpers";
+import { BUILD, claimAndSettle, deferred, drainDeliveries } from "./helpers";
 import { newClient, VAPID } from "./push-helpers";
-import { deferred, deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
+import { deliveryDeps, gatedHost, recordingFetch } from "./quote-helpers";
 import { act, receive, unsuspend, uriOf, world, type World } from "./remote-suspension-helpers";
 import { follow, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 
@@ -31,20 +31,12 @@ const deliveries = (store: StoreStub) =>
 type SentBody = { type: string; actor: string; object: { id?: string } };
 
 // Claims until nothing is due; each row sent, in order: its body and inbox.
-async function drainSent(store: StoreStub): Promise<{ body: SentBody; inbox: string }[]> {
-  const sent: { body: SentBody; inbox: string }[] = [];
-  for (let round = 0; round < 1_000; round++) {
-    const { claim, sent: rows } = await claimAndSettle(store, {
-      now: NOW,
-      leaseToken: `drain-${round}`,
-      outcome: { kind: "delivered", status: 202 },
-    });
-    sent.push(...rows.map(({ inbox, body }) => ({ body: JSON.parse(body) as SentBody, inbox })));
-    if (claim.deliveries.length === 0 && claim.nextDueAt === null) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+function drainSent(store: StoreStub): Promise<{ body: SentBody; inbox: string }[]> {
+  return drainDeliveries(store, ({ inbox, body }) => ({ body: JSON.parse(body) as SentBody, inbox }), {
+    now: NOW,
+    until: "all",
+    rounds: 1_000,
+  });
 }
 
 // The activity type, signer and inbox of each row sent, in order.

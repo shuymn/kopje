@@ -1,6 +1,6 @@
 import { AwsClient } from "aws4fetch";
 
-import { toHex } from "./backup-crypto";
+import { toHex } from "./hex";
 
 // The few S3 calls the scheduled backup makes, path-style (https://endpoint/bucket/key) and signed with SigV4 by
 // aws4fetch. Every request carries the SHA-256 of its payload, so the store rejects a body changed in transit.

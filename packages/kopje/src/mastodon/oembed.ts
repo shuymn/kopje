@@ -1,7 +1,7 @@
 import { escapeHtml } from "../domain/plain-text";
 import type { Status } from "../domain/status-presenter";
 import { type ApiHandler, present, storeCall } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound } from "./errors";
 
 // oEmbed (Mastodon 4.5's Api::OEmbedController and OEmbedSerializer): a status of this instance as a `rich` embed, an
 // iframe of its embed page (/@username/:id/embed, app/public-pages.tsx) that /assets/embed.js puts in place of the
@@ -30,7 +30,7 @@ export const oembed: ApiHandler = async (c, deps) => {
   const found = await storeCall(c, deps, (s, b) => s.embeddedStatus(b, { url, present: present(c), now: deps.now() }));
   // Api::OEmbedController#require_public_status!, and StatusFinder's RecordNotFound.
   if (found.status !== "ok") {
-    return mastodonError(404, "Record not found");
+    return recordNotFound();
   }
   const status = found.value;
   const { domain } = found;

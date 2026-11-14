@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
   type Account,
@@ -10,22 +11,16 @@ import {
   type RelationshipResult,
   resolveAccountId,
 } from "./accounts";
-import {
-  blockActivity,
-  blockUri,
-  followAnswerActivity,
-  followUri,
-  recordOutbound,
-  undoBlockActivity,
-  undoFollowActivity,
-} from "./activities";
+import { blockActivity, blockUri, followAnswerActivity, recordOutbound, undoBlockActivity } from "./activities";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { activeMuteSql, inDomainSql } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { leaveConversationsWith } from "./conversations";
-import { retractFollow } from "./inbox";
 import { DOMAIN_BLOCK_CLEANUPS, nextJob, runJobItem } from "./job-attempts";
+import { END_FOLLOW_NOTIFICATIONS_SQL } from "./notifications";
 import { writeOperation } from "./operation";
+import { retractFollow } from "./retractions";
+import { type EndedFollow, unfollowRemote } from "./unfollow";
 import { edgeRangeSql } from "./windows";
 
 // Blocks, mutes and domain blocks of local users (Mastodon 4.5's BlockService, UnblockService, MuteService,
@@ -70,20 +65,21 @@ function party(db: Db, id: string): Party | undefined {
 // Mastodon's reject_remote_follows! sends it to inbox_url, never to the earlier receivers of the Accepts it withdraws,
 // so recording it costs a constant.
 function endFollow(db: Db, follower: Party, target: Party, now: number, severing = false): boolean {
-  const edge = db.first<{ id: string; uri: string | null; state: string }>(
-    `DELETE FROM follows WHERE account_id = ? AND target_account_id = ?
+  const undone = follower.local === 1 && target.local === 0;
+  const edge = undone
+    ? unfollowRemote(db, follower, target, now)
+    : db.first<EndedFollow>(
+        `DELETE FROM follows WHERE account_id = ? AND target_account_id = ?
 		RETURNING CAST(id AS TEXT) AS id, uri, state`,
-    follower.id,
-    target.id,
-  );
+        follower.id,
+        target.id,
+      );
   if (edge === undefined) {
     return false;
   }
-  db.run(
-    "DELETE FROM notifications WHERE account_id = ? AND from_account_id = ? AND type IN ('follow', 'follow_request')",
-    target.id,
-    follower.id,
-  );
+  if (!undone) {
+    db.run(END_FOLLOW_NOTIFICATIONS_SQL, target.id, follower.id);
+  }
   if (edge.state === "accepted") {
     db.run(
       "UPDATE accounts SET following_count = max(following_count - 1, 0) WHERE id = ? AND domain IS NULL",
@@ -94,18 +90,7 @@ function endFollow(db: Db, follower: Party, target: Party, now: number, severing
       target.id,
     );
   }
-  if (follower.local === 1 && target.local === 0) {
-    recordOutbound(
-      db,
-      follower.id,
-      undoFollowActivity({
-        followUri: edge.uri ?? followUri(follower.uri, edge.id),
-        actorUri: follower.uri,
-        targetUri: target.uri,
-        targetId: target.id,
-      }),
-      now,
-    );
+  if (undone) {
     return true;
   }
   if (follower.local === 0 && target.local === 1) {
@@ -400,7 +385,8 @@ function cleanupBatch(db: Db, cleanup: Cleanup, now: number): boolean {
   if (last != null && user !== undefined) {
     const ended = db.all<{ follower: string; target: string; other: string; other_uri: string }>(
       `SELECT f.account_id AS follower, f.target_account_id AS target, a.id AS other, a.uri AS other_uri
-			FROM follows f JOIN accounts a ON a.id = IIF(f.account_id = ?1, f.target_account_id, f.account_id)
+			FROM follows f CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+				ON a.id = IIF(f.account_id = ?1, f.target_account_id, f.account_id)
 			WHERE f.id > CAST(?3 AS INTEGER) AND f.id <= CAST(?4 AS INTEGER) AND ?1 IN (f.account_id, f.target_account_id)
 				AND ${inDomainSql("a", "?2")}
 			ORDER BY f.id`,
@@ -513,15 +499,16 @@ export const previewDomainBlock = userReadOperation<
   { domain: string },
   { following_count: number; followers_count: number }
 >((db, { domain }, { accountId }) => {
-  const count = (anchor: string, other: string) =>
+  const count = (anchor: string, other: string, index: string) =>
     db.first<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM follows f JOIN accounts a ON a.id = f.${other}
+      `SELECT COUNT(*) AS n FROM follows f INDEXED BY ${index}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = f.${other}
 			WHERE f.${anchor} = ?1 AND f.state = 'accepted' AND ${inDomainSql("a", "?2")}`,
       accountId,
       domain,
     )?.n ?? 0;
   return {
-    following_count: count("account_id", "target_account_id"),
-    followers_count: count("target_account_id", "account_id"),
+    following_count: count("account_id", "target_account_id", "follows_accepted"),
+    followers_count: count("target_account_id", "account_id", "follows_target"),
   };
 });

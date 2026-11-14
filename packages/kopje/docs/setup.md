@@ -44,6 +44,11 @@ Some things cannot be done from the wizard. Do these in the Cloudflare dashboard
    the preview and the preview's pixels its blurhash is computed from, which Images may bill as one with the preview);
    a custom emoji uses two. If you buy more, raise `IMAGES_MONTHLY_TRANSFORMS`.
 
+   `IMAGES_ACCOUNT_MONTHLY_TRANSFORMS` (a plain-text variable) is each local account's share of
+   `IMAGES_MONTHLY_TRANSFORMS` per UTC month, so one account cannot use up the instance's transformations for the
+   others; an upload past it is refused with 429. Unset, it is a tenth of `IMAGES_MONTHLY_TRANSFORMS`, rounded
+   down (400 at the default 4,000).
+
    Link card images are off by default. To store them, set `IMAGES_CARD_MONTHLY_TRANSFORMS` (a plain-text variable)
    to the transformations they may start each UTC month: up to two each (one before the stored WebP, one before the
    pixels its blurhash is computed from; Images may bill the two as one transformation), counted when each starts, so a
@@ -268,8 +273,8 @@ kopje-admin instance activity_api_enabled=false        # turn the weekly activit
 `USER_KEK` wraps the private key of every local account and of the instance actor. `kopje-admin keys rewrap` moves
 them to a new KEK: each key is unwrapped with the previous KEK and wrapped again with the new one. The keys themselves
 do not change, so other servers see nothing and signatures made before still verify. Rotate when the KEK is empty (an
-instance whose keys came over from Wildebeest under the empty KEK, where `kopje-admin health` warns `USER_KEK is empty`),
-or when the KEK may have leaked.
+instance whose keys came over from Wildebeest under the empty KEK, where `kopje-admin health` warns
+`USER_KEK is empty`), or when the KEK may have leaked.
 
 Signing uses `USER_KEK` only. From the moment it changes until the rewrap has run, keys still under the previous KEK
 cannot sign: deliveries fail and wait for their next attempt (each failed attempt counts toward the 15 a delivery has),
@@ -346,7 +351,8 @@ Still to confirm:
 - Still images of animated uploads (a release gate: the local Images binding decodes one frame only and ignores
   `anim`, so tests stand in for the real output). On a real account, upload as the avatar, then as the header, a
   2-frame GIF, a 2-frame animated WebP, a 2-frame APNG and a still PNG (8 uploads, 24 transformations). For each,
-  fetch `avatar` and `avatar_static` (`header` and `header_static`) and count the frames of the served bytes (WebP: the `ANMF` chunks, or 1 without the `VP8X` animation flag; PNG: `acTL`'s frame count, or 1 without it):
+  fetch `avatar` and `avatar_static` (`header` and `header_static`) and count the frames of the served bytes (WebP: the
+  `ANMF` chunks, or 1 without the `VP8X` animation flag; PNG: `acTL`'s frame count, or 1 without it):
   - GIF and animated WebP: `avatar` has at least 2 frames, `avatar_static` exactly 1, and the URLs differ (`/full.` and
     `/small.`).
   - Still PNG and APNG: the upload answers 200, `avatar` has exactly 1 frame, and `avatar_static` equals `avatar`.

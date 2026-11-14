@@ -1,5 +1,7 @@
+import { MEDIA_ID_INDEX } from "../db/indexes";
 import { type Db, ROW_OBJECT_BYTES, RowCapExceeded, RowMeter, VALUE_BYTES } from "../db/sql";
 import { isUnicodeEmoji } from "../platform/emoji-names";
+import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
 import type { ImportAuthority } from "../platform/store-admin";
 import {
@@ -16,7 +18,7 @@ import {
 } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { accountUrl, acctOf } from "./accounts";
-import { accessAdminRefusal } from "./admin-authority";
+import { accessAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES, jsonBytes, unitJsonBytes } from "./answer-budget";
 import { announcementShownSql, availableSql } from "./audience";
 import { tokenUserReadOperation, userWriteOperation } from "./auth";
@@ -305,8 +307,8 @@ function reactionRows(db: Db, announcementId: string, viewer: string | null, nam
 			(SELECT name, count(*) AS count, max(account_id = ?2) AS me, min(id) AS first
 				FROM announcement_reactions INDEXED BY announcement_reactions_name
 				WHERE announcement_id = ?1${name === undefined ? "" : " AND name = ?3"} GROUP BY name) g
-		JOIN announcement_reactions r ON r.id = g.first
-		LEFT JOIN media_attachments m ON m.id = r.custom_emoji_id
+		LEFT JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			ON m.id = (SELECT r.custom_emoji_id FROM announcement_reactions r WHERE r.id = g.first)
 		ORDER BY g.first LIMIT ${MAX_REACTION_NAMES}`,
     announcementId,
     viewer,
@@ -556,7 +558,7 @@ export function streamedAnnouncementReaction(db: Db, subject: string): StreamedR
 }
 
 // ---- The Access admin (app/admin.ts): every write checks the admin in its transaction (AUTH-5) and is logged
-// (moderation-log.ts, Announcement targets), at the Store's own time (store.ts).
+// (moderation-log.ts, Announcement targets), at the Store's own time (atStoreTime).
 
 export type AnnouncementRefusal = {
   ok: false;
@@ -579,15 +581,6 @@ function refusal(code: AnnouncementRefusal["code"], message: string): Announceme
 }
 
 const ACCESS_ONLY = "only an Access admin manages announcements";
-
-function authorityRefusal(db: Db, authority: ImportAuthority): AnnouncementRefusal | null {
-  const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
-  return refused === null && authority.kind === "access" ? null : refusal("wrong-authority", refused ?? ACCESS_ONLY);
-}
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
 
 const TEXT_RULE = "the text is 1 to 10,000 UTF-8 bytes, not blank, with no NUL";
 const TIMES_RULE =
@@ -656,13 +649,13 @@ export type AnnouncementInput = {
 // POST /admin/announcements (Admin::AnnouncementsController#create): published now unless scheduledAt is after `now`
 // (Announcement#set_published; a past one is cleared), at most MAX_ANNOUNCEMENTS in all and MAX_LIVE_ANNOUNCEMENTS
 // live.
-export const createAnnouncement = writeOperation<
+export const createAnnouncement = writeOperation.atStoreTime("now")<
   AnnouncementInput & { authority: ImportAuthority; now: number },
   AnnouncementWritten
 >((db, input) => {
-  const refused = authorityRefusal(db, input.authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, input.authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const text = storedAnnouncementText(input.text);
   if (text === null) {
@@ -698,8 +691,7 @@ export const createAnnouncement = writeOperation<
     now,
     now,
   );
-  const actor = input.authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "create", { type: "Announcement", id }, { excerpt: excerpt(text) }, input.now);
+  logAction(db, admin.actor, "create", { type: "Announcement", id }, { excerpt: excerpt(text) }, input.now);
   if (publish) {
     streamAnnouncement(db, "announcement", id, now);
   }
@@ -712,13 +704,13 @@ export type AnnouncementChanges = Partial<AnnouncementInput>;
 // POST /admin/announcements/:id (Admin::AnnouncementsController#update): the text, the range (judged as it results),
 // all-day and, while unpublished, the schedule (a row that becomes scheduled is counted live). published_at is kept;
 // updated_at is set. Changing nothing answers the row and logs nothing. A published row's change is streamed.
-export const updateAnnouncement = writeOperation<
+export const updateAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: AnnouncementChanges; now: number },
   AnnouncementWritten
 >((db, { authority, id, changes, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -777,8 +769,14 @@ export const updateAnnouncement = writeOperation<
     at,
     id,
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "update", { type: "Announcement", id }, { excerpt: excerpt(text ?? row.text), changed }, now);
+  logAction(
+    db,
+    admin.actor,
+    "update",
+    { type: "Announcement", id },
+    { excerpt: excerpt(text ?? row.text), changed },
+    now,
+  );
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, at);
   }
@@ -787,13 +785,13 @@ export const updateAnnouncement = writeOperation<
 
 // POST /admin/announcements/:id/publish (Announcement#publish!): published now, its schedule cleared, even when it
 // was published already; counted live when it was not.
-export const publishAnnouncement = writeOperation<
+export const publishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -808,21 +806,20 @@ export const publishAnnouncement = writeOperation<
     at,
     id,
   );
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "publish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "publish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   streamAnnouncement(db, "announcement", id, at);
   return { ok: true, announcement: adminAnnouncement(rowById(db, id)!) };
 });
 
 // POST /admin/announcements/:id/unpublish (Announcement#unpublish!): unpublished, its schedule cleared; streamed as
 // announcement.delete when it was published.
-export const unpublishAnnouncement = writeOperation<
+export const unpublishAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementWritten
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = rowById(db, id);
   if (row === undefined) {
@@ -830,8 +827,7 @@ export const unpublishAnnouncement = writeOperation<
   }
   const at = iso(now);
   db.run("UPDATE announcements SET published = 0, scheduled_at = NULL, updated_at = ? WHERE id = ?", at, id);
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "unpublish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "unpublish", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, at);
   }
@@ -849,13 +845,13 @@ const DELETE_ANCILLARY = 1 + 1 + MODERATION_LOG_PRUNE + 1;
 
 // POST /admin/announcements/:id/delete (Admin::AnnouncementsController#destroy): the row with its reactions and
 // dismissals; the log keeps the text's first 200 code units. Streamed as announcement.delete when it was published.
-export const deleteAnnouncement = writeOperation<
+export const deleteAnnouncement = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; now: number },
   AnnouncementDeleted
 >((db, { authority, id, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const row = db.first<{ text: string; published: number }>(
     "SELECT text, published FROM announcements WHERE id = ?",
@@ -882,11 +878,10 @@ export const deleteAnnouncement = writeOperation<
     );
   }
   const rows = new RowBudget(db, ANNOUNCEMENT_DELETE_ROWS);
-  db.run("DELETE FROM announcement_reactions WHERE announcement_id = ?", id);
+  db.run("DELETE FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcement_dismissals WHERE announcement_id = ?", id);
   db.run("DELETE FROM announcements WHERE id = ?", id);
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
-  logAction(db, actor, "delete", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
+  logAction(db, admin.actor, "delete", { type: "Announcement", id }, { excerpt: excerpt(row.text) }, now);
   if (row.published === 1) {
     streamAnnouncement(db, "announcement", id, iso(now));
   }

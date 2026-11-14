@@ -18,11 +18,11 @@ import {
   present,
   refuseAfterAuth,
   requestJobsSoon,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound } from "./errors";
 import { descriptionProblem, parseFocus, sweepSoon, THUMBNAIL_MUST_BE_BLANK, thumbnailSent } from "./media";
 import { pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
@@ -31,7 +31,6 @@ import { type Params, parseBoolean } from "./params";
 // conversation mutes.
 // Requests are checked here as Mastodon's controllers and validators do; the Store authorizes and decides.
 
-const NOT_FOUND = () => mastodonError(404, "Record not found");
 const FORBIDDEN = () => mastodonError(403, "This action is not allowed");
 const REPLY_NOT_FOUND = () => mastodonError(404, "The post you are trying to reply to does not appear to exist.");
 // StatusesController#set_quoted_status: any failure, a status R36 refuses included.
@@ -57,7 +56,7 @@ function viewedResponse<T>(c: ApiContext, result: Viewed<T> | Acted<T>): Respons
     case "ok":
       return c.json(result.value as object);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "forbidden":
       return FORBIDDEN();
     case "invalid":
@@ -188,23 +187,9 @@ export function parseScheduledAt(raw: string): string | null {
   return /^\d{4}-/.test(iso) ? iso : null;
 }
 
-export const createStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
-  // Mastodon's 404 precedence over 422, including R36 refusals and scheduled quotes: domain/statuses.ts postTargets.
+export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
   const inReplyToId = emptyToUndefined(p.get("in_reply_to_id"));
   const quotedStatusId = emptyToUndefined(p.get("quoted_status_id"));
-  if (quotedStatusId !== undefined) {
-    const credential = userCredential(c, deps);
-    const found = authorized(
-      await storeCall(c, deps, (s, b) => s.postTargets(b, { credential, inReplyToId, quotedStatusId })),
-    );
-    if (found !== "ok") {
-      return found === "reply_not_found" ? REPLY_NOT_FOUND() : QUOTE_NOT_FOUND();
-    }
-  }
   const composed = composition(p);
   const visibility = emptyToUndefined(p.get("visibility"));
   const scheduledRaw = emptyToUndefined(p.get("scheduled_at"));
@@ -222,7 +207,17 @@ export const createStatus: ApiHandler = async (c, deps) => {
             ? "Validation failed: Visibility is not included in the list"
             : undefined;
   if (typeof composed === "string" || scheduledAt === null || quotePolicy === null || problem !== undefined) {
-    return refuseAfterAuth(c, deps, mastodonError(422, problem ?? "Validation failed"));
+    const refused = mastodonError(422, problem ?? "Validation failed");
+    if (inReplyToId === undefined && quotedStatusId === undefined) {
+      return refuseAfterAuth(c, deps, refused);
+    }
+    // Mastodon's 404 for the status replied to or quoted comes before any 422 (domain/statuses.ts postTargetsOf); a
+    // read, so it is answered in readonly maintenance too. It authenticates as refuseAfterAuth would.
+    const credential = userCredential(c, deps);
+    const found = authorized(
+      await storeCall(c, deps, (s, b) => s.postTargets(b, { credential, inReplyToId, quotedStatusId })),
+    );
+    return found === "ok" ? refused : found === "reply_not_found" ? REPLY_NOT_FOUND() : QUOTE_NOT_FOUND();
   }
   // The key is stored as the sha256 of all of it, so keys of any length stay distinct (never truncated). It is
   // unique per account (statuses_client_key), and among the account's scheduled statuses.
@@ -260,13 +255,9 @@ export const createStatus: ApiHandler = async (c, deps) => {
       // StatusesController#create rescues UnexpectedMentionsError with the accounts (REST::AccountSerializer).
       return c.json({ error: UNEXPECTED_MENTIONS, unexpected_accounts: result.accounts }, 422);
   }
-};
+});
 
-export const editStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const editStatus: ApiHandler = withParams(async (c, deps, p) => {
   const composed = composition(p);
   // UpdateStatusService applies description and focus of each entry; an entry with neither changes nothing. Entries
   // for the same attachment collapse to one, the later value of each field winning, before anything is compared.
@@ -297,7 +288,11 @@ export const editStatus: ApiHandler = async (c, deps) => {
         : (mediaAttributes.map((a) => descriptionProblem(a.description)).find((found) => found !== undefined) ??
           (thumbnail ? THUMBNAIL_MUST_BE_BLANK : undefined));
   if (typeof composed === "string" || quotePolicy === null || problem !== undefined) {
-    return refuseAfterAuth(c, deps, mastodonError(422, problem ?? "Validation failed"));
+    // Mastodon's 404 for a status that is not the caller's own comes before any 422 (domain/statuses.ts editTarget); a
+    // read, so it is answered in readonly maintenance too. It authenticates as refuseAfterAuth would.
+    const credential = userCredential(c, deps);
+    const found = authorized(await storeCall(c, deps, (s, b) => s.editTarget(b, { credential, id: statusId(c) })));
+    return found === "ok" ? mastodonError(422, problem ?? "Validation failed") : recordNotFound();
   }
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
@@ -312,15 +307,11 @@ export const editStatus: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
 // PUT and PATCH /api/v1/statuses/:id/interaction_policy (Statuses::InteractionPoliciesController#update). The policy
 // is checked in the Store, after the status is found (404) and found the viewer's own (403), as Mastodon checks it.
-export const updateInteractionPolicy: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const updateInteractionPolicy: ApiHandler = withParams(async (c, deps, p) => {
   const quotePolicy = quotePolicyOf(p);
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
@@ -332,20 +323,65 @@ export const updateInteractionPolicy: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
-export const deleteStatus: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
+// Prepare-and-record rounds one DELETE takes at most: another round only when the Delete signed in a round is not the
+// one the Store builds when it records it, which an edit of the status cannot cause (the signed Delete names its
+// status and author alone), so a client cannot cause it in a loop.
+const DELETE_ROUNDS = 3;
+
+// The Delete of a public or unlisted original is LD-signed here, once, with its author's key (VIS-3), before the Store
+// records it with the status's removal in one transaction, which first checks it is the Delete of the status as it is
+// then (statuses.ts deleteStatus). When it cannot be signed, nothing is written and the DELETE answers 503: the status
+// stays, so a later DELETE can still send its proven Delete.
+async function deletion(c: ApiContext, deps: Parameters<ApiHandler>[1], deleteMedia: boolean) {
+  const id = statusId(c);
+  // The credential and its time are taken anew for each Store call, after the awaits before it (the signing included),
+  // so a token that expires while the Delete is signed records nothing (docs/engineering.md).
+  for (let round = 0; round < DELETE_ROUNDS; round++) {
+    const prepared = authorized(
+      await storeCall(c, deps, (s, b) => s.prepareDelete(b, { credential: userCredential(c, deps), id })),
+    );
+    if (prepared.status !== "ok") {
+      return prepared;
+    }
+    const { sign } = prepared.value;
+    if ("unsignable" in prepared.value || (sign !== null && deps.signAsAuthor === undefined)) {
+      return mastodonError(503, "This status's deletion cannot be signed here");
+    }
+    let signed: Record<string, unknown> | null = null;
+    if (sign !== null) {
+      try {
+        signed = await deps.signAsAuthor!(c.env, sign);
+      } catch {
+        return mastodonError(503, "This status's deletion could not be signed; try again");
+      }
+    }
+    const result = authorized(
+      await storeCall(c, deps, (s, b) =>
+        s.deleteStatus(b, {
+          credential: userCredential(c, deps),
+          id,
+          deleteMedia,
+          signed,
+          now: deps.now(),
+          present: present(c),
+        }),
+      ),
+    );
+    if (result.status !== "stale") {
+      return result;
+    }
   }
-  const credential = userCredential(c, deps);
+  return mastodonError(503, "The status changed while it was being deleted; try again");
+}
+
+export const deleteStatus: ApiHandler = withParams(async (c, deps, p) => {
   const deleteMedia = parseBoolean(p.get("delete_media")) ?? false;
-  const result = authorized(
-    await storeCall(c, deps, (s, b) =>
-      s.deleteStatus(b, { credential, id: statusId(c), deleteMedia, now: deps.now(), present: present(c) }),
-    ),
-  );
+  const result = await deletion(c, deps, deleteMedia);
+  if (result instanceof Response) {
+    return result;
+  }
   // delete_media doomed the status's media in the Store; its R2 objects are deleted after the response. The rest of
   // an original's removal is its job's, whose round is asked for (the cron runs one regardless).
   if (deleteMedia && result.status === "ok") {
@@ -355,7 +391,7 @@ export const deleteStatus: ApiHandler = async (c, deps) => {
     requestJobsSoon(c, deps);
   }
   return viewedResponse(c, result);
-};
+});
 
 export const getStatus: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);
@@ -367,11 +403,7 @@ export const getStatus: ApiHandler = async (c, deps) => {
 
 // GET /api/v1/statuses?id[]= (StatusesController#index): the statuses getStatus would show, in one read. More than
 // MAX_STATUSES_BY_ID distinct ids raise Mastodon::ValidationError, which answers 422 with the class's name.
-export const getStatuses: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const getStatuses: ApiHandler = withParams(async (c, deps, p) => {
   const ids = [...new Set(p.getAll("id"))];
   if (ids.length > MAX_STATUSES_BY_ID) {
     return refuseAfterAuth(c, deps, mastodonError(422, "Mastodon::ValidationError"));
@@ -381,7 +413,7 @@ export const getStatuses: ApiHandler = async (c, deps) => {
     s.getStatuses(b, { credential, ids, now: deps.now(), present: present(c) }),
   );
   return c.json(authorized(result));
-};
+});
 
 export const statusContext: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);
@@ -442,11 +474,7 @@ export const unpin = action("unpin");
 export const muteConversation = action("muteConversation");
 export const unmuteConversation = action("unmuteConversation");
 
-export const reblog: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const reblog: ApiHandler = withParams(async (c, deps, p) => {
   const requested = p.get("visibility");
   const visibility = API_VISIBILITIES.includes(requested as ApiVisibility) ? (requested as ApiVisibility) : undefined;
   const credential = userCredential(c, deps);
@@ -461,14 +489,10 @@ export const reblog: ApiHandler = async (c, deps) => {
     }),
   );
   return viewedResponse(c, authorized(result));
-};
+});
 
 function interactors(kind: "favourited_by" | "reblogged_by"): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const page = pageQuery(p);
     const credential = optionalCredential(c, deps);
     const result = authorized(
@@ -477,21 +501,17 @@ function interactors(kind: "favourited_by" | "reblogged_by"): ApiHandler {
       ),
     );
     if (result.status !== "ok") {
-      return NOT_FOUND();
+      return recordNotFound();
     }
     return pageResponse(c, result.value, page.limit);
-  };
+  });
 }
 
 // GET /api/v1/statuses/:id/quotes (Statuses::QuotesController#index): a token with read:statuses, an app token read as
 // anonymous (Mastodon requires no user here); limit 20 by default, at most 40. The Link
 // header's bounds are the page's window (statusQuotes), so next is offered whenever the window was full, also for a
 // page the rule emptied.
-export const statusQuotes: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const statusQuotes: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, 20, 40);
   const credential = optionalCredential(c, deps);
   const result = authorized(
@@ -503,7 +523,7 @@ export const statusQuotes: ApiHandler = async (c, deps) => {
     return viewedResponse(c, result);
   }
   return pageResponse(c, result.value, page.limit, result.value.candidates);
-};
+});
 
 // Prepare-and-record rounds one revoke takes at most: another round only when the quote was accepted again between
 // its preparation and its recording (a QuoteRequest answered meanwhile), which a client cannot cause in a loop.

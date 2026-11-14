@@ -1,7 +1,16 @@
 import { errorFields, errorMessage } from "./error-message";
+import { toHex } from "./hex";
 import { consoleSink, type LogSink } from "./log";
 import { type MaintenanceReason, storeMaintenanceError } from "./store-errors";
-import { activeDump, admitFlags, flagRefusal, PITR_RESTORING, readFlags, rebuildLeaseLive } from "./store-flags";
+import {
+  activeDump,
+  admitFlags,
+  flagRefusal,
+  PITR_RESTORING,
+  readFlags,
+  readGate,
+  rebuildLeaseLive,
+} from "./store-flags";
 
 export type Migration = {
   readonly name: string;
@@ -48,13 +57,39 @@ const READONLY_ADMITS: Record<OperationKind, boolean> = {
 };
 
 // One domain operation = one RPC = one transactionSync. It runs synchronously over the Store's SQLite and must not
-// do external I/O. Timestamps and IDs come from the caller (Date.now() does not advance inside one DO request).
+// do external I/O. Timestamps come from the caller (Date.now() does not advance inside one DO request), except the
+// Store's own time (clock); local IDs are minted in the Store, inside the operation (domain/ids.ts allocateLocalId).
 // savepoint is a nested transactionSync of the same storage (a named savepoint inside the operation's transaction),
 // absent where the caller has none.
 export type StoreOperation<I, O> = {
   readonly kind: OperationKind;
+  // The input field that takes the Store's own time (TimedOperation), absent when the caller's time is enough.
+  readonly clock?: StoreClock;
   run(sql: SqlStorage, input: I, savepoint?: <T>(fn: () => T) => T): O;
 };
+
+// The input fields an operation may take the Store's own time in.
+export type StoreClock = "now" | "storeNow";
+
+// An operation that takes the Store's own time in its input's `clock` field (domain/operation.ts atStoreTime), for
+// state the Store both writes and judges by its age, or a lease and the fences that read it: the kernel fills the field
+// with the time the transaction admitted the operation by, whatever the caller sends in it.
+export type TimedOperation<I, O, C extends StoreClock> = StoreOperation<I, O> & { readonly clock: C };
+
+// The input less the field the Store's clock fills; undefined when nothing else is left.
+type WithoutClock<I, C extends StoreClock> = I extends unknown
+  ? [Exclude<keyof I, C>] extends [never]
+    ? undefined
+    : Omit<I, C>
+  : never;
+
+// What a caller passes to run an operation: its input, less the field the Store's clock fills.
+export type OperationInput<T> =
+  T extends TimedOperation<infer I, unknown, infer C>
+    ? WithoutClock<I, C>
+    : T extends StoreOperation<infer I, unknown>
+      ? I
+      : never;
 
 export type SchemaState =
   | { status: "current" }
@@ -169,7 +204,8 @@ export class StoreKernel {
     this.#ctx = ctx;
     this.#sql = ctx.storage.sql;
     this.#migrations = options.migrations;
-    this.#now = options.now ?? Date.now;
+    // Read at each call, so a clock a test fakes after the Store is built is the one the Store keeps.
+    this.#now = options.now ?? (() => Date.now());
     this.#transaction = options.transaction ?? ((fn) => ctx.storage.transactionSync(fn));
     this.#inject = options.inject ?? (() => {});
     this.#log = options.log ?? consoleSink;
@@ -178,8 +214,15 @@ export class StoreKernel {
 
   // Runs a domain operation if this Store can serve its kind: same build as the caller, schema current, and the
   // readonly table for a held or upgrading Store. Otherwise throws a maintenance error that the Worker maps to spool
-  // or 503. The state is checked inside the same transaction that runs the operation.
-  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: I): Promise<O> {
+  // or 503. The state is checked inside the same transaction that runs the operation, and a TimedOperation's clock
+  // field is filled from the time it is admitted by.
+  async execute<I, O, C extends StoreClock>(
+    callerBuild: string,
+    operation: TimedOperation<I, O, C>,
+    input: WithoutClock<I, C>,
+  ): Promise<O>;
+  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: I): Promise<O>;
+  async execute<I, O>(callerBuild: string, operation: StoreOperation<I, O>, input: unknown): Promise<O> {
     return (await this.#run(callerBuild, operation, () => input, null)).output;
   }
 
@@ -210,7 +253,7 @@ export class StoreKernel {
   async #run<I, O>(
     callerBuild: string,
     operation: StoreOperation<I, O>,
-    inputOf: (refused: MaintenanceReason | null) => I,
+    inputOf: (refused: MaintenanceReason | null) => unknown,
     probe: OperationKind | null,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
     if (callerBuild !== this.build) {
@@ -220,11 +263,15 @@ export class StoreKernel {
     const result = this.#transaction(() => {
       const state = this.#state ?? loaded;
       admit(state, operation.kind);
-      const flags = readFlags(this.#sql);
+      const flags = readGate(this.#sql);
       const now = this.#now();
       admitFlags(flags, operation.kind, now);
       const refused = probe === null ? null : (refusalOf(state, probe) ?? flagRefusal(flags, probe, now));
-      return { output: operation.run(this.#sql, inputOf(refused), this.#transaction), refused };
+      const given = inputOf(refused);
+      const input = (
+        operation.clock === undefined ? given : { ...(given as object | undefined), [operation.clock]: now }
+      ) as I;
+      return { output: operation.run(this.#sql, input, this.#transaction), refused };
     });
     if (operation.kind !== "read") {
       this.#afterCommit(operation);
@@ -236,30 +283,28 @@ export class StoreKernel {
   async health(callerBuild: string): Promise<StoreHealth> {
     const expected = await this.#expectedMigrations();
     const { schema, hold, upgrading } = await this.#currentState();
-    const flags = readFlags(this.#sql);
-    const dump = activeDump(flags, this.#now());
+    const now = this.#now();
+    const gate = readGate(this.#sql);
+    const frozen = activeDump(gate, now) !== null;
+    // The records themselves only while a dump holds its lease or an import runs, so a completed dump's receipt is
+    // not read.
+    const records = frozen || gate.import ? readFlags(this.#sql) : null;
+    const dump = frozen ? (records?.dump ?? null) : null;
+    const running = records?.import ?? null;
     return {
       build: this.build,
       callerBuild,
       versionMatch: callerBuild === this.build,
       schema: { ...schema, applied: this.#readApplied().map((m) => m.name), expected: expected.map((m) => m.name) },
       readonly:
-        schema.status !== "current" ||
-        hold !== null ||
-        upgrading !== null ||
-        flags.maintenance !== null ||
-        dump !== null ||
-        flags.import !== null,
+        schema.status !== "current" || hold !== null || upgrading !== null || gate.maintenance || frozen || gate.import,
       hold: hold?.reason ?? null,
       upgrading: upgrading !== null,
       lastBookmark: this.#readState("upgrade_bookmark"),
       databaseSize: this.#sql.databaseSize,
-      maintenance: flags.maintenance !== null,
+      maintenance: gate.maintenance,
       dump: dump === null ? null : { id: dump.id, leaseUntil: dump.leaseUntil },
-      import:
-        flags.import === null
-          ? null
-          : { id: flags.import.id, state: flags.import.state, lastSeq: flags.import.lastSeq },
+      import: running === null ? null : { id: running.id, state: running.state, lastSeq: running.lastSeq },
     };
   }
 
@@ -335,7 +380,7 @@ export class StoreKernel {
       throw storeMaintenanceError("version-mismatch");
     }
     this.#transaction(() => {
-      if (rebuildLeaseLive(readFlags(this.#sql), this.#now())) {
+      if (rebuildLeaseLive(readGate(this.#sql), this.#now())) {
         throw storeMaintenanceError("rebuild-in-progress");
       }
       this.#writeState(PITR_RESTORING, JSON.stringify({ at: this.#now() }));
@@ -466,8 +511,8 @@ export class StoreKernel {
   }
 
   #upgradeBlocker(): UpgradeBlocked | null {
-    const flags = readFlags(this.#sql);
-    if (flags.import !== null) {
+    const flags = readGate(this.#sql);
+    if (flags.import) {
       return new UpgradeBlocked("import-in-progress", null);
     }
     const dump = activeDump(flags, this.#now());
@@ -645,6 +690,5 @@ function pendingOf(schema: SchemaState): string[] {
 }
 
 export async function sha256(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  return toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
 }

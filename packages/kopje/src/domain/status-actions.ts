@@ -40,39 +40,12 @@ function pinCapSql(account: string): string {
 }
 
 // Whether the account `account` keeps its pin limit of pins other than the status `status`: a new pin of it would
-// pass the limit. Reads at most MAX_REMOTE_PINS + 1 rows through the primary key.
-function pinsFullSql(account: string, status: string): string {
+// pass the limit. Reads at most MAX_REMOTE_PINS + 1 rows through the primary key. The WHEN of 0089's triggers
+// (domain/stored-triggers.ts).
+export function pinsFullSql(account: string, status: string): string {
   return `NOT EXISTS (SELECT 1 FROM status_pins WHERE account_id = ${account} AND status_id = ${status})
   AND (SELECT count(*) FROM (SELECT 1 FROM status_pins WHERE account_id = ${account} LIMIT ${MAX_REMOTE_PINS}))
     >= ${pinCapSql(account)}`;
-}
-
-const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
-
-// Migration 0089_pin_cap after its header (test/migrations.test.ts compares them): each account's pins past its limit
-// deleted, the oldest in pin order first (the presenter's order, newest first by created_at then status id, kept), then
-// triggers that refuse a pin past the limit, inserted or moved to another account. The trim sorts only the pins of
-// accounts holding more than PIN_LIMIT.
-export function pinCapMigrationSql(): string {
-  return `${[
-    `DELETE FROM status_pins WHERE (account_id, status_id) IN (
-  SELECT c.account_id, c.status_id FROM (
-    SELECT p.account_id, p.status_id,
-      row_number() OVER (PARTITION BY p.account_id ORDER BY p.created_at DESC, p.status_id DESC) AS n
-    FROM status_pins p
-    WHERE p.account_id IN (SELECT account_id FROM status_pins GROUP BY account_id HAVING count(*) > ${PIN_LIMIT})
-  ) c WHERE c.n > ${pinCapSql("c.account_id")});`,
-    `CREATE TRIGGER status_pins_cap_insert BEFORE INSERT ON status_pins
-WHEN ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
-    `CREATE TRIGGER status_pins_cap_update BEFORE UPDATE OF account_id ON status_pins
-WHEN NEW.account_id IS NOT OLD.account_id AND ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
-  ].join("\n\n")}\n`;
 }
 
 // StatusPinValidator's messages (statuses.pin_errors in Mastodon's config/locales/en.yml), in its order.

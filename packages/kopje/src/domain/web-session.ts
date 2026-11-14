@@ -12,6 +12,7 @@ import {
   type UserCredential,
   type UserViewer,
 } from "./auth";
+import { readState, writeState } from "./kopje-state";
 import { consumeCode, insertAccessToken, webClientId, WEB_CLIENT_SETTING } from "./oauth";
 import { readOperation, sessionOperation } from "./operation";
 import { FAMILY, LOGIN, MEMBER, sweepPrefix } from "./web-state";
@@ -78,15 +79,6 @@ type Attempt = {
 };
 // accountId: absent in records written before it was kept; such a family has no known owner and is never reused.
 type Family = { current: string | null; ended: boolean; expiresAt: number; accountId?: string };
-
-function readState<T>(db: Db, name: string): T | null {
-  const row = db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name);
-  return row === undefined ? null : (JSON.parse(row.value) as T);
-}
-
-function writeState(db: Db, name: string, value: unknown): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, JSON.stringify(value));
-}
 
 function familyOf(db: Db, tokenHash: string): string | null {
   return readState<{ family: string }>(db, `${MEMBER}${tokenHash}`)?.family ?? null;

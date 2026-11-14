@@ -13,12 +13,12 @@ import { adminClaims, adminHarness, adminTeam, setTeamAccess } from "./access-he
 import { type ApiHarness, bearer, form, json, login, registerApp, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodonFlag } from "./fixtures/flags";
-import { BUILD, runStoreJobs } from "./helpers";
+import { BUILD, runStoreJobs, deferred } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
 import { ALICE, type Setup, setup } from "./inbox-status-helpers";
 import { ADMIN_EMAIL } from "./ops-helpers";
 import { type Client, newClient, readPush, VAPID } from "./push-helpers";
-import { deferred, deliveryDeps } from "./quote-helpers";
+import { deliveryDeps } from "./quote-helpers";
 import { appToken, rowsRead } from "./read-helpers";
 import { community, remoteAccount, type User } from "./status-helpers";
 

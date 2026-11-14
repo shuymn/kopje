@@ -7,7 +7,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
-import { ACTIVITY_ID_LIMIT } from "../platform/identity-bounds";
+import { ACTIVITY_ID_LIMIT, ACTOR_URI_LIMIT } from "../platform/identity-bounds";
 import {
   type Audience,
   availableLocalSql,
@@ -17,6 +17,7 @@ import {
   outboundKind,
   projectedSql,
   PROVENANCE_MAX,
+  PUBLIC_COLLECTION,
   type RemoteRecipient,
   recipientsFor,
   shareReaches,
@@ -37,6 +38,7 @@ import { hostCovered } from "./instance-domain-blocks";
 import { FRESH_ATTEMPTS_SQL, SAFE_MS } from "./job-attempts";
 import { readOperation, writeOperation } from "./operation";
 import { RowBudget } from "./row-budget";
+import { MAX_STATUS_MENTION_ROWS } from "./status-bounds";
 
 // Outbound delivery (NET-2, VIS-3, RES-4, RES-5, RES-6, OPS-3). deliveries is the source of
 // truth; the Queue only rings a doorbell, and the Worker does the POSTs.
@@ -245,12 +247,16 @@ export type ReachOf = { owner: string; object: string; audience: DeliveryAudienc
 // selecting inboxes: the signer, its lanes and the subject stay the envelope's own. followPair: the remote follower a
 // local account's Accept or Reject of a Follow answers (outbound_activities.follow_pair, cancelFollowAnswers); kept in
 // its column, not in the body. An immutable envelope whose audience has shares is a forward (FORWARD_SUBJECT): a
-// remote author's proven Delete, sent as received.
+// remote author's proven Delete, sent as received. addressing: on an immutable retraction staged in steps, the to and
+// cc by which staging places each addressed account's copy instead of the activity's own: a local status's signed
+// Delete (activities.ts signedDeleteEnvelope), addressed to Public alone, reaches the inboxes its unsigned form would.
+// Staging reads it only as stagedAddressing validates it (planOf), and nothing else reads it.
 export type DeliveryEnvelope = {
   activity: Activity;
   audience: DeliveryAudience;
   signedBy?: "instance";
   immutable?: true;
+  addressing?: { to: string[]; cc: string[] };
   reachOf?: ReachOf[];
   followPair?: string;
 };
@@ -454,14 +460,16 @@ function receiptsOf(db: Db, signerId: string, object: string): string[] {
 function receiversOf(db: Db, signerId: string, object: string): string[] {
   const receipts = receiptsOf(db, signerId, object).map((inbox) => ({ inbox }));
   const outstanding = db.all<{ inbox: string }>(
-    `SELECT d.inbox_url AS inbox FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
+    `SELECT d.inbox_url AS inbox FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN deliveries d INDEXED BY deliveries_activity ON d.activity_id = o.id
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0`,
     signerId,
     object,
   );
   const unexpanded = db.all<{ inbox: string }>(
     `SELECT json_extract(t.value, '$.inbox') AS inbox
-		FROM outbound_activities o JOIN outbound_targets c ON c.activity_id = o.id, json_each(c.targets) t
+		FROM outbound_activities o INDEXED BY outbound_activities_object
+			CROSS JOIN outbound_targets c INDEXED BY outbound_targets_activity ON c.activity_id = o.id, json_each(c.targets) t
 		WHERE o.account_id = ? AND o.object_uri = ? AND o.retracts = 0 AND t.key >= c.next`,
     signerId,
     object,
@@ -786,6 +794,9 @@ type IntentRow = {
   id: string;
   staged: string;
   activity: string;
+  // Whether the body has an addressing (any JSON type, null included) and is immutable.
+  addressing: number;
+  immutable: number;
   followers_type: string | null;
   followers: SqlStorageValue;
   status_type: string | null;
@@ -797,6 +808,7 @@ type IntentRow = {
 };
 
 const INTENT_COLUMNS = `CAST(id AS TEXT) AS id, staged, json_extract(body, '$.activity') AS activity,
+	json_type(body, '$.addressing') IS NOT NULL AS addressing, json_type(body, '$.immutable') IS 'true' AS immutable,
 	json_type(body, '$.audience.followers') AS followers_type, json_extract(body, '$.audience.followers') AS followers,
 	json_type(body, '$.audience.status') AS status_type, json_extract(body, '$.audience.status') AS status,
 	json_type(body, '$.audience.distributable') IS 'true' AS distributable,
@@ -830,6 +842,8 @@ type Plan = {
   // to and cc's names (placement): a personal copy goes to an addressed account they do not name.
   addressed: boolean;
   named: Set<string>;
+  // For a staged addressing (stagedAddressing), the ids of the accounts it names, which then alone place copies.
+  namedIds: Set<string> | null;
   // The most UTF-8 bytes of a name past TARGET_CHUNK_BYTES: a uri longer than it can decode to no name.
   namedPast: number;
   status: SqlStorageValue | undefined;
@@ -843,17 +857,81 @@ type Plan = {
   receiptShares: number;
 };
 
-function planOf(db: Db, signerId: string, intent: IntentRow): Plan {
+// The most entries a staged addressing holds: a signed Delete's (activities.ts signedDeleteEnvelope), Public, the
+// followers and at most MAX_STATUS_MENTION_ROWS (MAX_DELETE_NAMED) named mentions. Each entry's UTF-8 bytes are at most
+// ACTOR_URI_LIMIT and the followers collection's suffix.
+const ADDRESSING_ENTRIES = 2 + MAX_STATUS_MENTION_ROWS;
+const ADDRESSING_ENTRY_BYTES = ACTOR_URI_LIMIT + "/followers".length;
+
+// The accounts an immutable intent's `addressing` names, as staging may trust it (DeliveryEnvelope): by id, each entry
+// Public, the signer's followers collection or the actor id of a mention of the intent's status that is not silent,
+// compared in SQL with the stored ids. Those are exactly what the status's unsigned Delete may name (addressingOf over
+// its named mentions), so the placement it gives can make a mentioned account's copy a neutral one, as that Delete
+// does, but never a silent recipient's (VIS-2) nor anyone's beyond the audience, which recipientsFor alone decides. The
+// ids, not the entries, go back to the Worker: two stored actor ids that decode to the same string (malformed UTF-8)
+// stay apart. `to` and `cc` are read at the one path each (json_extract, json_type and json_array_length agree on it
+// whatever duplicate keys a body holds), and listed only as the arrays they were checked to be. Anything else (a type
+// other than two arrays of strings, too many or too long entries, an entry no such row names, as an import may hold)
+// names no account: every addressed account gets a copy of its own at its personal inbox, the copy VIS-2 never
+// widens, and nothing throws. Read once a call, only by a call that places addressed accounts: the intent's row by key
+// and, for each entry, two seeks by unique key.
+function stagedAddressing(db: Db, signerId: string, intent: IntentRow): Set<string> {
+  if (intent.status_type !== "text") {
+    return new Set();
+  }
+  const shaped = db.first<{ ok: number }>(
+    `SELECT json_type(body, '$.addressing.to') IS 'array' AND json_type(body, '$.addressing.cc') IS 'array'
+			AND json_array_length(body, '$.addressing.to') + json_array_length(body, '$.addressing.cc') <= ?2 AS ok
+		FROM main.outbound_activities WHERE id = CAST(?1 AS INTEGER)`,
+    intent.id,
+    ADDRESSING_ENTRIES,
+  );
+  if (shaped?.ok !== 1) {
+    return new Set();
+  }
+  // Each list read at its path (json_each's path argument), one scalar subquery a list.
+  const lists = (["to", "cc"] as const).map((path) =>
+    db.first<{ bad: number; ids: string }>(
+      `SELECT total(NOT (n.type = 'text' AND length(CAST(n.value AS BLOB)) <= ?3 AND (n.value = ?4
+					OR n.value = (SELECT s.uri || '/followers' FROM main.accounts s INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE s.id = ?2)
+					OR n.account IS NOT NULL))) AS bad,
+				json_group_array(n.account) FILTER (WHERE n.account IS NOT NULL) AS ids
+			FROM (SELECT e.type, e.value, (SELECT CAST(a.id AS TEXT) FROM main.accounts a INDEXED BY ${ACCOUNTS_URI_INDEX}
+					CROSS JOIN main.status_mentions m INDEXED BY status_mentions_shown ON m.status_id = ?5 AND m.account_id = a.id
+					WHERE a.uri = e.value AND m.silent = 0) AS account
+				FROM json_each((SELECT o.body FROM main.outbound_activities o WHERE o.id = CAST(?1 AS INTEGER)), ?6) e) n`,
+      intent.id,
+      signerId,
+      ADDRESSING_ENTRY_BYTES,
+      PUBLIC_COLLECTION,
+      intent.status,
+      `$.addressing.${path}`,
+    ),
+  );
+  if (lists.some((list) => list === undefined || list.bad !== 0)) {
+    return new Set();
+  }
+  return new Set(lists.flatMap((list) => JSON.parse(list!.ids) as string[]));
+}
+
+// The phases that place addressed accounts (takeAccount), which alone read a plan's names.
+const ADDRESSED_PHASES: ReadonlySet<Phase> = new Set(["accounts", "mentions", "parent", "boosters", "quoters"]);
+
+function planOf(db: Db, signerId: string, intent: IntentRow, phase: Phase): Plan {
   const activity = JSON.parse(intent.activity) as Activity;
   const { object, retracts } = subjectOf(activity, false);
   const forward = intent.shares_type !== null;
-  const named = [...uris(activity.to), ...uris(activity.cc)];
+  // An immutable intent with an addressing (a signed status Delete) is placed by it as validated; any other by its
+  // activity's own to and cc, an addressing in its body left unread.
+  const staged = intent.addressing === 1 && intent.immutable === 1;
+  const named = staged ? [] : [...uris(activity.to), ...uris(activity.cc)];
   return {
     signerId,
     intentId: intent.id,
     kind: outboundKind(activity, false),
-    addressed: Array.isArray(activity.to),
+    addressed: staged || Array.isArray(activity.to),
     named: new Set(named),
+    namedIds: !staged ? null : ADDRESSED_PHASES.has(phase) ? stagedAddressing(db, signerId, intent) : new Set(),
     namedPast: Math.max(0, ...named.map((uri) => utf8.encode(uri).byteLength).filter((n) => n > BOUND)),
     status: intent.status_type === null ? undefined : intent.status,
     distributable: intent.distributable === 1,
@@ -1092,7 +1170,13 @@ function takeAccount(g: Gathering, row: StagedAccount): boolean {
     return g.take(bytes, null, null);
   }
   let personal = false;
-  if (g.plan.addressed) {
+  if (g.plan.namedIds !== null) {
+    if (uri.value === null && !uri.over) {
+      return g.take(bytes, null, null);
+    }
+    // A staged addressing names accounts by id: two stored ids that decode to the same string stay apart.
+    personal = !g.plan.namedIds.has(row.id);
+  } else if (g.plan.addressed) {
     if (uri.value !== null) {
       personal = !g.plan.named.has(uri.value);
     } else if (!uri.over) {
@@ -1875,8 +1959,8 @@ export function stageRetraction(db: Db, signerId: string, object: string, maxRow
     return false;
   }
   const budget = new RowBudget(db, maxRows);
-  const plan = planOf(db, signerId, intent);
   let staging = stagingOf(db, intent) ?? beginStaging(db, intent.id);
+  const plan = planOf(db, signerId, intent, staging.phase);
   if (staging.phase !== "emit") {
     const g = new Gathering(db, plan, staging, budget);
     const cursor = gather(g, staging);
@@ -2029,14 +2113,14 @@ function serversWithObject(db: Db, signerId: string, object: string): Set<string
 // expanded): the pair of the current version's Create and the Update replaces them.
 function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<string>, now: number): void {
   const earlier = db.all<{ id: string }>(
-    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities
+    `SELECT CAST(id AS TEXT) AS id FROM outbound_activities INDEXED BY outbound_activities_object
 		WHERE account_id = ? AND object_uri = ? AND retracts = 0`,
     signerId,
     object,
   );
   for (const intent of earlier) {
     const removed = db.all<{ lane: string }>(
-      `DELETE FROM deliveries WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
+      `DELETE FROM deliveries INDEXED BY deliveries_activity WHERE activity_id = CAST(? AS INTEGER) AND state <> 'leased'
 				AND lane IN (SELECT value FROM json_each(?)) RETURNING lane`,
       intent.id,
       JSON.stringify([...lanes]),
@@ -2045,7 +2129,8 @@ function replaceWaiting(db: Db, signerId: string, object: string, lanes: Set<str
       promoteLane(db, signerId, lane, now);
     }
     const chunks = db.all<{ id: string; targets: string; next: number }>(
-      "SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets WHERE activity_id = CAST(? AS INTEGER)",
+      `SELECT CAST(id AS TEXT) AS id, targets, next FROM outbound_targets INDEXED BY outbound_targets_activity
+				WHERE activity_id = CAST(? AS INTEGER)`,
       intent.id,
     );
     for (const chunk of chunks) {
@@ -2086,7 +2171,8 @@ function laneOf(inbox: string): string {
 function activeCount(db: Db, where: string, limit: number, ...params: SqlStorageValue[]): number {
   return (
     db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries WHERE ${where} AND state IN ${ACTIVE} LIMIT ?)`,
+      `SELECT count(*) AS n FROM (SELECT 1 FROM deliveries INDEXED BY deliveries_lane WHERE ${where} AND state IN ${ACTIVE}
+				LIMIT ?)`,
       ...params,
       limit,
     )?.n ?? 0
@@ -2124,13 +2210,18 @@ const NO_PERSONAL_INBOX = "no personal inbox";
 
 // Writes up to `budget` targets of the oldest chunks still expanding, oldest first, reading each chunk from its cursor
 // (next). A target over a cap is written as gave_up 'backlog full'; a silent copy without a personal inbox as gave_up
-// 'no personal inbox' (inbox '').
+// 'no personal inbox' (inbox ''). The oldest chunk is the first of outbound_targets in rowid order, its activity read
+// once by its rowid in a correlated lookup (a join by rowid is planned as a scan under statistics taken while the tables
+// were small, RES-7); outbound_targets.activity_id references outbound_activities, so every chunk has one.
 export function expandPending(db: Db, now: number, budget: number): void {
   const admission = new Admission(db);
   while (budget > 0) {
     const chunk = db.first<{ id: string; activity_id: string; account_id: string; retracts: number; next: number }>(
-      `SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id, o.account_id, o.retracts, c.next
-			FROM outbound_targets c JOIN outbound_activities o ON o.id = c.activity_id ORDER BY c.id LIMIT 1`,
+      `SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id,
+				o ->> 1 AS retracts, next
+			FROM (SELECT c.id, c.activity_id, c.next,
+					(SELECT json_array(o.account_id, o.retracts) FROM outbound_activities o WHERE o.id = c.activity_id) AS o
+				FROM outbound_targets c ORDER BY c.id LIMIT 1)`,
     );
     if (chunk === undefined) {
       return;
@@ -2146,8 +2237,8 @@ export function expandPending(db: Db, now: number, budget: number): void {
       `SELECT t.key, json_extract(t.value, '$.inbox') AS inbox, json_extract(t.value, '$.addressee') AS addressee,
 				json_extract(t.value, '$.accounts') AS accounts, json_extract(t.value, '$.domains') AS domains,
 				json_extract(t.value, '$.many') AS many
-			FROM outbound_targets c, json_each(c.targets) t
-			WHERE c.id = CAST(? AS INTEGER) AND t.key >= c.next ORDER BY t.key LIMIT ?`,
+			FROM (SELECT targets, next FROM outbound_targets WHERE id = CAST(?1 AS INTEGER) LIMIT 1) c, json_each(c.targets) t
+			WHERE t.key >= c.next ORDER BY t.key LIMIT ?2`,
       chunk.id,
       budget,
     );
@@ -2811,10 +2902,11 @@ export const completeDelivery = writeOperation<
     // reaches it then (VIS-3).
     db.run(
       `INSERT INTO outbound_receipts (status_id, inbox_url, account_id, delivered_at)
-			SELECT s.id, ?2, o.account_id, ?3 FROM outbound_activities o JOIN statuses s ON s.uri = o.object_uri
-			WHERE o.id = CAST(?1 AS INTEGER)
-				AND (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
-				AND NOT EXISTS (SELECT 1 FROM outbound_activities r
+			SELECT s.id, ?2, o.account_id, ?3
+			FROM (SELECT account_id, object_uri, body, retracts FROM outbound_activities WHERE id = CAST(?1 AS INTEGER) LIMIT 1) o
+				CROSS JOIN statuses s INDEXED BY ${STATUSES_URI_INDEX} ON s.uri = o.object_uri
+			WHERE (json_extract(o.body, '$.activity.type') IN ('Create', 'Announce') OR (s.withdrawn = 1 AND o.retracts = 0))
+				AND NOT EXISTS (SELECT 1 FROM outbound_activities r INDEXED BY outbound_activities_object
 					WHERE r.account_id = o.account_id AND r.object_uri = o.object_uri AND r.retracts = 1 AND r.staged IS NULL)
 			ON CONFLICT DO UPDATE SET delivered_at = excluded.delivered_at`,
       row.activity_id,
@@ -2942,11 +3034,13 @@ function moveToPersonal(
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
-		FROM deliveries d CROSS JOIN json_each(d.recipient_accounts) r
+		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
+				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
+			CROSS JOIN json_each(row.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
-		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND d.recipient_accounts IS NOT NULL
-			AND d.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = d.inbox_url
-			AND a.inbox_url <> d.inbox_url
+		WHERE row.addressee IS NULL AND row.recipient_accounts IS NOT NULL
+			AND row.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = row.inbox_url
+			AND a.inbox_url <> row.inbox_url
 		ORDER BY a.id`,
     row.id,
   );

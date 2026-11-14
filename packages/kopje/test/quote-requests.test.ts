@@ -3,14 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import { MAX_LANE_BACKLOG } from "../src/domain/deliveries";
 import { MAX_QUOTE_REQUESTS_PER_ACTOR } from "../src/domain/quotes";
-import { RETRACTION_TTL_MS } from "../src/domain/remote-actors";
+import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { signAsAuthor } from "../src/federation/ld-sign";
 import { deliveryRound } from "../src/jobs/deliver";
 import { sha256Hex } from "../src/security/tokens";
 import { settleDeliveries, sql } from "./api-helpers";
 import { countingStore, harness, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { LOCAL, mastodonActor, MASTODON, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -30,7 +30,7 @@ import {
   undo,
   update,
 } from "./inbox-status-helpers";
-import { contexts, deferred, deliveryDeps, quoting } from "./quote-helpers";
+import { contexts, deliveryDeps, quoting } from "./quote-helpers";
 import { outbound } from "./status-helpers";
 
 // Being quoted (VIS-28): remote servers' QuoteRequests for local

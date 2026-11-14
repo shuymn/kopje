@@ -3,6 +3,8 @@
 Kopje follows the Mastodon API as Mastodon v4.5.11 serves it. The conformance checks compare it with Mastodon's
 source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each route reads
 (`test/mastodon-params.test.ts`), and the fields of the main entities (`test-node/mastodon-entities.test.ts`).
+Remote-status ingestion and canonical-address confirmation use the later Mastodon v4.7.3 as a reference; Kopje's
+canonical-address fallback and failure handling are described under NET-4 in the threat model.
 
 A difference those checks find is either a gap, tracked by an issue until it is fixed, or a departure that has been
 decided. This page lists the decided ones. Each has an id (`MD-n`) that the checks' exceptions cite as
@@ -119,8 +121,8 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
   they are replaced.
 - The `preview_url` of an animated upload (status media included) is a still.
-- `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts and
-  interactions, or one account's posts the viewer may see, never a public index.
+- `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
+  and interactions, or one account's posts the viewer may see, never a public index.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
@@ -347,6 +349,12 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   last 28 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
   request made while a dump holds the Store may go unrecorded. Mastodon counts logins over the 28 days before today,
   suspended users included.
+- `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
+  kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
+  past that, counted on request. A request counts it itself, and keeps nothing, whenever no kept count is that fresh:
+  before the cron's first run on a new or upgraded Store, after an import begins or a reset ends (both clear it, and
+  it is never dumped), and while the cron's refresh is skipped (a dump in progress, the env's `MAINTENANCE`).
+  `/api/v2/instance` presents no domain count and reads none. `user_count` and `status_count` are counted per request.
 - `GET /api/v1/instance/activity` counts from the upgrade that added it (migration `0072_activity_tracking`): earlier
   weeks read 0, and an import, a restore or a cutover conversion counts nothing (a restore keeps the counts it
   carries). A login is a UTC day with a successful authenticated API request or a signed-in `GET /settings` of the
@@ -535,10 +543,10 @@ Request parameters:
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit before the status and
-  `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media). Mastodon
-  may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger than
-  1 MiB plus 16 KiB answers 413.
+  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is found and
+  before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
+  than 1 MiB plus 16 KiB answers 413.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
   empty file field): empty, it reads as absent; with bytes, a profile image answers 400.
 - A JSON body exceeding 10,000 generated parameter paths (object members, array objects and empty arrays; scalar
@@ -557,6 +565,25 @@ Paged status lists with request conditions:
   `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next` only when the page
   is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
   status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+
+Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
+[threat-model.md](threat-model.md)):
+
+- A page's walk reads at most 2,000 notifications (`GROUP_WALK`), shown or hidden; a page whose walk meets more of the
+  groups it has found (in practice a status favourited by thousands within a few hours) holds the groups found and its
+  `Link` continues from the last notification read. A group's count, samples and newest are of the shown among its
+  newest 400 notifications up to the page's upper end, shown or hidden (`GROUP_COUNT`), with the notification the page's
+  walk found it by when those leave it out, so a larger group counts at most 400; its oldest is the first shown among
+  its 400 oldest from the page's lower end up, or the notification the walk found it by when none is. Mastodon reads
+  every notification of the group in the page's range (`NotificationGroup.load_groups_data`).
+- A page's group reads share one work budget across the passes that admit it again after a byte cut. A page whose
+  reads would pass it is shorter: it holds the groups its last pass admitted, from the first, as far as the reads it
+  made hold for a page that ends there (its statuses matched against keyword filters within the text allowance of the
+  requested page, not of a page asked for with that many groups), or else its first group alone (with the groups
+  before it that show nothing), and its `Link` continues from its last group's discovery position, so the next page
+  finds the rest. This shortens a page whose groups hold more than about 6,000 / `limit` notifications each (fewer
+  when the rule hides some of their oldest), or one cut by bytes after more than 40 groups. Mastodon has no such
+  bound. Accepted, 2026-11-14.
 
 Admin measures (`POST /api/v1/admin/measures`; the keys not served are MD-2):
 
@@ -759,17 +786,55 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   Mastodon keeps discarded with its quote and forwards through (`remove_status_service.rb:53`, `:162-164`).
 - At most 16 owners forward (the boosters first by account id, then the owners of the quotes read by account id),
   through at most 64 quoting statuses across all owners (the first by status id, one owner may hold them all; a policy
-  cap, logged when passed), and
-  nothing is forwarded for a body over 65,536 bytes as serialized or holding a number JSON cannot carry; Mastodon has
-  no such caps.
-- Only a kept boost that is not direct or limited forwards (a converted direct boost is one Kopje kept from legacy
-  data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local account nor
-  an `Update` is forwarded, nor are a quoting status's poll voters reached. A `Delete` another server relays is refused for a status, with or
-  without the author's proof (ID-1's one exception covers a stamp only); Mastodon verifies a relayed `Delete`'s LD
-  signature by its author (`process_collection_service.rb` `verify_account!`), then applies and forwards it as the
-  author's own (`activity/delete.rb` `delete_status`).
+  cap, logged when passed), and nothing is forwarded for a body over 65,536 bytes as serialized or holding a number
+  JSON cannot carry; Mastodon has no such caps.
+- A boost forwards only when it is kept and neither direct nor limited (a converted direct boost is one Kopje kept from
+  legacy data; Mastodon's kept scope counts it, and sends to the booster's followers): neither a reply to a local
+  account nor an `Update` is forwarded, nor are a quoting status's poll voters reached.
+- A status's `Delete` another server relays (its HTTP signer is not its actor) is applied, and forwarded, as the
+  author's own only when it carries the author's proof, verified (an RsaSignature2017 signature or an FEP-8b32 proof),
+  and only to a public or unlisted original Kopje holds as that author's, on the author's origin (ID-1). Mastodon
+  verifies a relayed `Delete`'s RsaSignature2017 signature by its author (`process_collection_service.rb`
+  `verify_account!`) and applies it as the author's own (`activity/delete.rb` `delete_status`) to a status of any
+  visibility or a boost, and a relayed `Delete` of the author's account as the account's deletion (`delete_person`);
+  it forwards one only for a distributable (public or unlisted) status (`forwarder.rb` `forwardable?`). Kopje changes
+  no status for a relay without a proof, nor for a private, direct or limited status or a boost, and refuses a relayed
+  `Delete` of an actor.
+- An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
+  profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
+  Mastodon 4.5's status `Delete` (`DeleteSerializer`) and stamp `Delete` (`DeleteQuoteAuthorizationSerializer`), each
+  with the `@context` Mastodon 4.5 writes and the keys its serializer and `LinkedDataSignature#sign!` write; Kopje's
+  own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 or 4.5 forwards it, compacted under its
+  `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof. Mastodon
+  verifies a signature whatever the body's context and keys, refusing only JSON-LD features it does not support
+  (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or forwarded by a Mastodon
+  whose `full_context` holds a term or definition outside 4.4 and 4.5, is refused, and an author's own `Delete` in such
+  a form applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
+
+Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
+`ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):
+
+- The `Delete` of a public or unlisted status is LD-signed (RsaSignature2017) by its author and addressed to Public
+  alone, as Mastodon signs it (`always_sign`, `Status#sign?`) and addresses it; its context defines `atomUri`, so a
+  Mastodon booster or quoter keeps the signature when it forwards it (`safe_for_forwarding?`). This matches Mastodon.
+- The `Delete` of a private, direct or limited status is unsigned, as in Mastodon, but addressed as the status was:
+  a private one `to` its author's followers with its named mentions in `cc`, a direct or limited one `to` its named
+  mentions with no `cc`; Mastodon's `DeleteSerializer` addresses every `Delete` to Public. A receiver applies either by
+  its object. Accepted, 2026-11-13.
+- When the author's key cannot sign the `Delete` (no key, it does not unwrap, or signing fails), the DELETE answers
+  503 and nothing changes: the status stays, so a later DELETE can send a proven `Delete`. Mastodon removes the status
+  in the request and signs in its job, which raises and is retried. Accepted, 2026-11-13.
+- An imported public or unlisted status whose uri or author's actor id can never be signed (not an http or https URL
+  in the spelling URL serializing gives it, with no fragment, nor an absolute IRI to jsonld) is deleted with its
+  `Delete` unsigned and addressed as the status was, and the reason is logged (`kopje.delivery.delete_unsigned`);
+  Mastodon's ids are always its own URLs. Accepted, 2026-11-13.
+- The `Undo(Announce)` of a public or unlisted boost is unsigned; Mastodon signs it through the same path. No receiver
+  forwards an `Undo`. Accepted, 2026-11-13.
+- The signed body goes unchanged to every target, a silent recipient's own copy included, and an inbox that is a
+  target of the neutral copy and of one or more personal copies gets the same bytes once for each; Mastodon delivers
+  one copy per inbox. Each is applied once. Accepted, 2026-11-13.
 
 Outboxes (`/ap/users/:username/outbox` and the instance actor's `/actor/outbox`; Mastodon's
 `ActivityPub::OutboxesController`, which serves the instance actor's for `Account.representative`, empty):

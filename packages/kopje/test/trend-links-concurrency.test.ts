@@ -6,7 +6,7 @@ import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { cardWorld } from "./card-image-helpers";
-import { BUILD, migratedStore } from "./helpers";
+import { BUILD, migratedStore, deferred } from "./helpers";
 import { authors, HOUR, linkPosts, reviewLink, round as trendsRound, trendLinkRows } from "./trend-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
@@ -19,14 +19,6 @@ const HTML = { "content-type": "text/html; charset=utf-8" };
 const ARTICLE = `<html lang="en"><head><title>Story</title><meta name="description" content="About it">
 	<meta property="og:site_name" content="News"><meta property="og:type" content="article">
 	<meta property="og:image" content="${IMAGE}"></head></html>`;
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 describe("link trends across steps", () => {
   it("counts a card the round fetched while the trends round committed, at the next round", async () => {

@@ -40,6 +40,20 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
 - **A credential or `now` that a Store call uses is taken after any await on network work**, never before it, and a
   writing path checks the Store's flags and the maintenance mode before any network-capable step.
 
+## How a request talks to the Store
+
+- **Store-local decisions whose inputs are available together are combined into one Store call.** A phase of a
+  request ends at an external effect (verifying, fetching, sending) or at a commit, not at each read. A call stays
+  separate only when its timing is the guarantee: a policy read after an awaited remote response (`fetchRefused` before
+  a redirect hop or a later request, `webHopRefused`), a confirmation under lease right before a send
+  (`confirmDelivery`), a one-time write (`ensureInstanceActorKey`).
+- **A fetch's preparation (its signer and the policy verdict for its first request) is read in the answer that decides
+  the fetch** (`FetchPreparation` in `src/domain/inbox.ts`, which names those answers), and a search resolution's
+  actor revision read (`actorRevision`) carries the verdict for the actor's fetch the same way. It is optional: the
+  Worker reads what is missing (`fetchSigner`, `fetchRefused`) as it would without it.
+- **A federation GET is one read**, the setup check included (`src/domain/federation-reads.ts`; a route that does not
+  read there reads the domain in the setup gate first, `src/federation/setup-gate.ts`).
+
 ## Bounds
 
 - **Every bound names its unit**: JSON-escaped UTF-8 bytes, UTF-8 bytes, code points or UTF-16 code units. Its test
@@ -54,14 +68,17 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   witnesses at or below the derived figure. Each endpoint's maximum comes from its own bounds (RES-3, "Maxima of
   presented units", is the table they feed).
 - **A memory bound that rests on an estimate has a runtime backstop** that counts bytes as they are read. Memory peaks
-  are computed by a test from per-column maxima, never by arithmetic in prose.
+  are computed by a test from per-column maxima, never by arithmetic in prose; the test asserts each peak within its
+  bound, and a figure the documents quote from its log is a measurement, labelled as one.
 
 ## Stored values
 
 - **A new stored column or setting gets a stored bound that holds for imported values**, judged in order: the raw
   bytes first, then NUL anywhere, then the structure. Its writer drops what the trigger would refuse by sharing the
   trigger's acceptance rule, so a write never fails on it, and its presenter never throws on a stored value (RES-2,
-  "stored values", applies this per column).
+  "stored values", applies this per column). The migration writes the trigger as `emitTriggers` gives it from that
+  rule, registered in `src/domain/stored-triggers.ts`; `test/migrations.test.ts` holds every trigger of the migrated
+  schema to its registered text, or to the list of those written by hand.
 - **Every presented string or href passes its raw bound and its escaped-JSON bound after UTF-8 decoding**, through one
   shared helper per kind. A stored-bound predicate refuses NUL inside decoded JSON elements too, not only in the raw
   text.
@@ -83,14 +100,24 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   suites audit every statement the domain code runs in them (`test/sql-depth-setup.ts`, `test/plan-audit.ts`): planned
   under singleton statistics with up to three samples of the parameters the domain code passed, a plan that reads a
   whole table or index (a scan, an automatic index, a Bloom filter, a skip-scan) fails its suite unless
-  `test/plan-audit-entries.ts` lists that scan of that statement. A listed scan a suite did not show is only reported,
-  since another suite may pass the value that scans: a change that fixes listed statements removes their entries and
-  shows the audit passes without them. The audit sees no prefix or range walk that EQP shows as a search, nor a plan
-  only a value the suites never pass would choose (a partial index's condition); those keep a witness that grows under
-  the same key. The domain SQL binds no LIKE or GLOB pattern.
+  `test/plan-audit-entries.ts` lists that scan of that statement. A reviewed fragment allowance
+  (`test/plan-audit-allowances.ts`) stands for the entries of every statement that includes one shared fragment, with
+  a witness that the fragment's read stays flat as its table grows; `sampleViolations` in `test/plan-audit.ts` decides
+  when a scan is the fragment's. The attribution assumes the fragment is used as a predicate: a
+  statement where the fragment's text is also a name (an implicit column name, a `NATURAL JOIN` or `USING` over it), or
+  that forces the fragment's index with `INDEXED BY`, is outside what it proves. A listed scan a suite did not show is
+  only reported, since another suite may pass the value that scans: a change that fixes listed
+  statements removes their entries and shows the audit passes without them. The audit sees no prefix or range walk
+  that EQP shows as a search, nor a plan only a value the suites never pass would choose (a partial index's
+  condition); those keep a witness that grows under the same key. The domain SQL binds no LIKE or GLOB pattern.
 - **A cap counts raw candidates before any residual predicate**: an inner stage reads the candidates by the walk's
   index and the predicate is applied outside it (paged reads: [visibility.md](visibility.md), "Read bounds"). Where
   passing the cap must be detected (a refusal or a cut past it), the inner stage reads cap + 1.
+- **A work budget is one per request, shared by every retry, re-admission and fallback**, and charged with raw
+  candidates before residual filtering, including the work of items and passes later rejected. A step starts only
+  while the most it may read still fits, so the bound holds without measuring time (the Store's clock does not advance
+  in synchronous code). A fallback that must always answer keeps a reserve for its own step (grouped notifications,
+  RES-7).
 - **A page may hold fewer rows than its limit only when its continuation is derived from the rows it consumed**, so no
   row is skipped (for example, an answer cut by its byte budget links on from the last row it consumed). A row is never
   dropped after the page's own `LIMIT`/`OFFSET` without the continuation moving past it.
@@ -112,3 +139,15 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   works on a Store of its own name, and what it leaves in module scope (a held call, a cache) is keyed per test or
   settles before the test ends, also when an assertion fails, unless it is the same for every test (the migrated schema
   `migratedStore` replays). The media bucket is emptied before each suite.
+
+## Documents and comments
+
+Each kind of fact has one home, and the other side points at it. A passage follows this when it is next touched.
+
+- **A rule** lives in a document under its ID. A comment carries the ID and only what is local to that code.
+- **A mechanism** lives in its module's header. A document points at the module and keeps what an operator or a
+  reviewer needs without the code: limits, timings, accepted risks.
+- **An inventory** lives in the code's data structure. Prose names the structure.
+- **A number** is written as its constant's name, with the value only where a check ties the two.
+- Two exceptions: the [threat model](threat-model.md) keeps complete invariant statements and their citations, and the
+  operator documents keep values, because their readers do not have the code.

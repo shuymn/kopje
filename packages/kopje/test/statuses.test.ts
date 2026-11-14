@@ -8,7 +8,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
-import { NOW } from "./app-helpers";
+import { countingStore, NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import {
   plannedRun,
@@ -190,6 +190,106 @@ describe("POST /api/v1/statuses", () => {
       const response = await h.request("/api/v1/statuses", bearer(token, json(body)));
       expect({ status: response.status, body: await response.json() }).toEqual({ status, body: { error } });
     }
+  });
+
+  // StatusesController#set_thread and #set_quoted_status run before the create action: a status replied to or quoted
+  // that is missing, or hidden from the poster, answers 404 before any 422 and before the Idempotency-Key is looked up.
+  describe("the status replied to or quoted comes first (StatusesController before_actions)", () => {
+    const REPLY_404 = { status: 404, body: { error: "The post you are trying to reply to does not appear to exist." } };
+    const QUOTE_404 = { status: 404, body: { error: "The post you are trying to quote does not appear to exist." } };
+    // One body for each 422 the Worker answers before calling the Store.
+    const REFUSED: Record<string, unknown>[] = [
+      { status: "x".repeat(501) },
+      { status: "x", visibility: "everyone" },
+      { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
+      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
+      { status: "x", poll: { options: ["a"], expires_in: 3600 } },
+      { status: "x", quote_approval_policy: "everyone" },
+      { status: "x", scheduled_at: "not a time" },
+    ];
+
+    it("answers a reply to a missing or hidden status 404 for each of the Worker's 422s", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const parent = await post(h, alice, { status: "parent" });
+      const hidden = await post(h, bob, { status: "only mine", visibility: "direct" });
+      for (const body of REFUSED) {
+        const alone = await posting(h, alice.token, body);
+        expect(alone.status, JSON.stringify(body)).toBe(422);
+        expect(await posting(h, alice.token, { ...body, in_reply_to_id: parent.id })).toEqual(alone);
+        expect(await posting(h, alice.token, { ...body, quoted_status_id: parent.id })).toEqual(alone);
+        for (const missing of ["123", hidden.id]) {
+          expect(await posting(h, alice.token, { ...body, in_reply_to_id: missing }), JSON.stringify(body)).toEqual(
+            REPLY_404,
+          );
+          expect(await posting(h, alice.token, { ...body, quoted_status_id: missing })).toEqual(QUOTE_404);
+        }
+      }
+      expect(await sql(h.store, "SELECT id FROM statuses ORDER BY id")).toEqual([{ id: parent.id }, { id: hidden.id }]);
+    });
+
+    it("answers a repeated Idempotency-Key 404 when the status replied to or quoted is missing, scheduled or not", async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const later = new Date(NOW + HOUR).toISOString();
+      for (const extra of [{}, { scheduled_at: later }]) {
+        const headers = { "idempotency-key": `key-${JSON.stringify(extra)}` };
+        const first = await posting(h, alice.token, { status: "keyed", ...extra }, { headers });
+        expect(first.status).toBe(200);
+        expect(await posting(h, alice.token, { status: "again", ...extra }, { headers })).toEqual(first);
+        const reply = { status: "again", in_reply_to_id: "123", ...extra };
+        expect(await posting(h, alice.token, reply, { headers })).toEqual(REPLY_404);
+        const quote = { status: "again", quoted_status_id: "123", ...extra };
+        expect(await posting(h, alice.token, quote, { headers })).toEqual(QUOTE_404);
+      }
+    });
+
+    it("makes one Store call for a quote post, and reads the targets only for a post it refuses", async () => {
+      let counting: ReturnType<typeof countingStore> | undefined;
+      const h = await community(["alice"], "read write follow", {
+        wrapStore: (store) => (counting ??= countingStore(store)).stub,
+      });
+      const { alice } = h.users;
+      const quoted = await post(h, alice, { status: "quote me" });
+      const calls = async (body: Record<string, unknown>) => {
+        const start = counting!.calls.length;
+        const answer = await posting(h, alice.token, body);
+        return { status: answer.status, calls: counting!.calls.slice(start).filter((n) => n.startsWith("post")) };
+      };
+      expect(await calls({ status: "look", quoted_status_id: quoted.id })).toEqual({
+        status: 200,
+        calls: ["postStatus"],
+      });
+      expect(await calls({ status: "look", in_reply_to_id: quoted.id })).toEqual({
+        status: 200,
+        calls: ["postStatus"],
+      });
+      expect(await calls({ status: "look", quoted_status_id: "123" })).toEqual({ status: 404, calls: ["postStatus"] });
+      expect(await calls({ status: "x".repeat(501), quoted_status_id: quoted.id })).toEqual({
+        status: 422,
+        calls: ["postTargets"],
+      });
+      expect(await calls({ status: "x".repeat(501) })).toEqual({ status: 422, calls: [] });
+    });
+
+    // The Store's readonly maintenance refuses a write operation (503) and serves a read: a post the Worker refuses
+    // still answers its 404 or 422, as Mastodon would; a post it would accept is refused, whatever its targets. (The
+    // env's MAINTENANCE=readonly answers every POST 503 in the Worker's gate, app/gate.ts.)
+    it("answers the targets of a refused post in the Store's readonly maintenance", async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const parent = await seedStatus(h.store, { accountId: alice.id, visibility: "public" });
+      expect(await h.store.setMaintenance(BUILD, true)).toEqual({ maintenance: true });
+      const tooLong = { status: "x".repeat(501) };
+      const TOO_LONG = { status: 422, body: { error: "Validation failed: Text character limit of 500 exceeded" } };
+      expect(await posting(h, alice.token, { ...tooLong, in_reply_to_id: "123" })).toEqual(REPLY_404);
+      expect(await posting(h, alice.token, { ...tooLong, quoted_status_id: "123" })).toEqual(QUOTE_404);
+      expect(await posting(h, alice.token, { ...tooLong, in_reply_to_id: parent })).toEqual(TOO_LONG);
+      expect(await posting(h, alice.token, tooLong)).toEqual(TOO_LONG);
+      for (const target of [{ in_reply_to_id: "123" }, { quoted_status_id: "123" }, { in_reply_to_id: parent }]) {
+        expect((await posting(h, alice.token, { status: "x", ...target })).status).toBe(503);
+      }
+    });
   });
 
   // Stored text has U+0000 removed (src/platform/stored-bounds.ts storedText), so text of only U+0000 is blank.
@@ -683,6 +783,86 @@ describe("editing", () => {
     await h.request(`/api/v1/statuses/${status.id}`, bearer(alice.token, json({ status: "v3" }, { method: "PUT" })));
     const { body } = await getJson<{ type: string; status: Status }[]>(h, "/api/v1/notifications", bob.token);
     expect(body.map((n) => [n.type, n.status.content])).toEqual([["update", "<p>v3</p>"]]);
+  });
+
+  // Api::V1::StatusesController#update finds the status among the caller's own before UpdateStatusService validates
+  // anything: a status that is missing or not the caller's own answers 404 before any 422.
+  describe("the edited status comes first (StatusesController#update)", () => {
+    const NOT_FOUND = { status: 404, body: { error: "Record not found" } };
+    // One body for each 422 the Worker answers before calling the Store.
+    const REFUSED: Record<string, unknown>[] = [
+      { status: "x".repeat(501) },
+      { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
+      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
+      { status: "x", poll: { options: ["a"], expires_in: 3600 } },
+      { status: "x", quote_approval_policy: "everyone" },
+      { status: "x", media_attributes: [{ id: "1", description: "x".repeat(1501) }] },
+      { status: "x", media_attributes: [{ id: "1", thumbnail: "data:image/png;base64,AA==" }] },
+    ];
+    const editing = (h: ApiHarness, token: string, id: string, body: Record<string, unknown>) =>
+      posting(h, token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
+
+    it("answers a missing status or someone else's 404 for each of the Worker's 422s", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      const theirs = await post(h, bob, { status: "theirs" });
+      const theirBoost = await (await act(h, bob, `/api/v1/statuses/${own.id}/reblog`)).json<Status>();
+      for (const body of REFUSED) {
+        const refused = await editing(h, alice.token, own.id, body);
+        expect(refused.status, JSON.stringify(body)).toBe(422);
+        for (const id of ["123", theirs.id, theirBoost.id]) {
+          expect(await editing(h, alice.token, id, body), `${id} ${JSON.stringify(body)}`).toEqual(NOT_FOUND);
+        }
+      }
+      expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
+    });
+
+    // StatusPolicy#update? lets the owner of a boost through, so the Worker's 422 stands; an edit that passes them is
+    // refused by editStatus, which edits no boost (404).
+    it("answers the caller's own boost the Worker's 422, and a valid edit of it 404", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const theirs = await post(h, bob, { status: "theirs" });
+      const boost = await (await act(h, alice, `/api/v1/statuses/${theirs.id}/reblog`)).json<Status>();
+      for (const body of REFUSED) {
+        const refused = await editing(h, alice.token, boost.id, body);
+        expect(refused.status, JSON.stringify(body)).toBe(422);
+      }
+      expect(await editing(h, alice.token, boost.id, { status: "x" })).toEqual(NOT_FOUND);
+      expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
+    });
+
+    it("makes one Store call for an edit, and reads the status only for an edit it refuses", async () => {
+      let counting: ReturnType<typeof countingStore> | undefined;
+      const h = await community(["alice"], "read write follow", {
+        wrapStore: (store) => (counting ??= countingStore(store)).stub,
+      });
+      const { alice } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      const calls = async (id: string, body: Record<string, unknown>) => {
+        const start = counting!.calls.length;
+        const answer = await editing(h, alice.token, id, body);
+        return { status: answer.status, calls: counting!.calls.slice(start).filter((n) => n.startsWith("edit")) };
+      };
+      expect(await calls(own.id, { status: "edited" })).toEqual({ status: 200, calls: ["editStatus"] });
+      expect(await calls("123", { status: "edited" })).toEqual({ status: 404, calls: ["editStatus"] });
+      expect(await calls(own.id, { status: "x".repeat(501) })).toEqual({ status: 422, calls: ["editTarget"] });
+      expect(await calls("123", { status: "x".repeat(501) })).toEqual({ status: 404, calls: ["editTarget"] });
+    });
+
+    // The Store's readonly maintenance refuses a write operation (503) and serves a read: an edit the Worker refuses
+    // still answers its 404 or 422, as Mastodon would; an edit it would accept is refused.
+    it("answers the status of a refused edit in the Store's readonly maintenance", async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const own = await post(h, alice, { status: "mine" });
+      expect(await h.store.setMaintenance(BUILD, true)).toEqual({ maintenance: true });
+      const tooLong = { status: "x".repeat(501) };
+      expect(await editing(h, alice.token, "123", tooLong)).toEqual(NOT_FOUND);
+      expect((await editing(h, alice.token, own.id, tooLong)).status).toBe(422);
+      expect((await editing(h, alice.token, own.id, { status: "x" })).status).toBe(503);
+    });
   });
 });
 

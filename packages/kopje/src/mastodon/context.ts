@@ -29,8 +29,8 @@ export type ApiDeps = {
   resolve?: (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
   // Asks the Queue for a round of the Store's jobs (a resolved status's quote to verify); cron runs one regardless.
   requestJobs?: (env: Env) => Promise<unknown>;
-  // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, federation/ld-sign.ts);
-  // none: revokes that need a signature answer 503.
+  // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, the Delete of a public or
+  // unlisted status; federation/ld-sign.ts); none: revokes and DELETEs that need a signature answer 503.
   signAsAuthor?: (env: Env, sign: AuthorSignature) => Promise<Record<string, unknown>>;
   // The isolate's memo of recorded activity (mastodon/activity.ts); none: no activity is recorded.
   activity?: ActivityMemo;
@@ -141,21 +141,23 @@ export async function checkOptionalToken(c: ApiContext, deps: ApiDeps): Promise<
   }
 }
 
-// The request's parameters, or the error answer for an unreadable body (after authentication, as Mastodon orders it).
-export async function requestParams(
-  c: ApiContext,
-  deps: ApiDeps,
+// A handler given the request's parameters, or the error answer for an unreadable body (after authentication, as
+// Mastodon orders it). The handler still takes its credential in its body, right before the Store call.
+export function withParams(
+  handler: (c: ApiContext, deps: ApiDeps, p: Params) => Promise<Response>,
   options: ReadOptions = {},
-): Promise<Params | Response> {
-  const result = await readParams(c.req.raw, options);
-  if (!result.ok) {
-    return refuseAfterAuth(
-      c,
-      deps,
-      mastodonError(result.status, result.status === 413 ? "Request body is too large" : "Malformed request body"),
-    );
-  }
-  return result.params;
+): ApiHandler {
+  return async (c, deps) => {
+    const result = await readParams(c.req.raw, options);
+    if (!result.ok) {
+      return refuseAfterAuth(
+        c,
+        deps,
+        mastodonError(result.status, result.status === 413 ? "Request body is too large" : "Malformed request body"),
+      );
+    }
+    return handler(c, deps, result.params);
+  };
 }
 
 // The Web Push application server key clients subscribe with; empty until VAPID_JWK is set.

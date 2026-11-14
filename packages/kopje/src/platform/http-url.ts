@@ -15,6 +15,15 @@ export function httpUrl(value: string | null): URL | null {
   }
 }
 
+// Whether a and b are http: or https: URLs of one origin (scheme, host and port, as URL parsing normalizes them). Any
+// other id has no origin to share, not even with itself: an opaque id serializes its origin as "null", and a blob: URL
+// takes the origin of the URL inside it.
+export function sameOrigin(a: string | null, b: string | null): boolean {
+  const x = httpUrl(a);
+  const y = httpUrl(b);
+  return x !== null && y !== null && x.origin === y.origin;
+}
+
 // URL parsing has already normalized IPv4 forms like 0x7f.1 or 2130706433 to dotted quads.
 const IPV4_LITERAL = /^\d{1,3}(\.\d{1,3}){3}$/;
 
@@ -103,8 +112,8 @@ export function boundedHref(value: string | null, limit: number): string | null 
   return href !== null && href.length <= limit ? href : null;
 }
 
-// The longest fetch target a Store answer prepares (store.ts, the rule): the longest identity fetched, a status uri, in
-// serialized URL characters, which are ASCII bytes.
+// The longest fetch target a Store answer prepares (docs/engineering.md, "How a request talks to the Store"): the
+// longest identity fetched, a status uri, in serialized URL characters, which are ASCII bytes.
 const FETCH_TARGET_LIMIT = STATUS_URI_LIMIT;
 
 // The serialized form of a URL the document loader would request (NET-1's shape, federation/loader.ts) within

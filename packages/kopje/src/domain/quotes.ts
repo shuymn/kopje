@@ -6,6 +6,7 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import {
   type QuoteRequestRef,
@@ -36,12 +37,10 @@ import {
   actorRevision,
   applyRefresh,
   type DocumentRevision,
-  isDeleted,
   isDeletedActor,
   remoteAccount,
   type RemoteActorInput,
   type RemoteRow,
-  RETRACTION_TTL_MS,
   RetryLater,
   staleAccount,
   SWEEP_BATCH,
@@ -55,6 +54,7 @@ import {
   visibilityOf,
 } from "./remote-status-reads";
 import type { storeRemoteStatus } from "./remote-statuses";
+import { isDeleted, RETRACTION_TTL_MS } from "./retractions";
 import { RowBudget } from "./row-budget";
 
 // How a received status is stored: remote-statuses.ts storeRemoteStatus, which its callers pass. Storing a status
@@ -193,7 +193,7 @@ export function recordQuote(
     arrival.hops > 0 &&
     embedded.uri === named.uri &&
     embedded.attributedTo === status.author.uri &&
-    originOf(embedded.uri) === originOf(status.author.uri) &&
+    sameOrigin(embedded.uri, status.author.uri) &&
     db.first("SELECT 1 AS x FROM statuses WHERE uri = ?", embedded.uri) === undefined
   ) {
     store(db, status.author, embedded, {
@@ -596,7 +596,7 @@ function stampValid(stamp: StampInput, row: QuoteRow, quoted: Linked): boolean {
     stamp.id !== null &&
     stamp.id === row.approval_uri &&
     stamp.attributedTo !== null &&
-    originOf(stamp.id) === originOf(stamp.attributedTo) &&
+    sameOrigin(stamp.id, stamp.attributedTo) &&
     stamp.attributedTo === quoted.author_uri &&
     stamp.interactingObject === row.status_uri &&
     stamp.interactionTarget === quoted.uri
@@ -677,7 +677,7 @@ function storeQuoted(
     status.uri !== row.quoted_uri ||
     authorUri === null ||
     authorUri.length > 2048 ||
-    originOf(authorUri) !== originOf(status.uri) ||
+    !sameOrigin(authorUri, status.uri) ||
     originOf(authorUri) === origin ||
     isDeletedActor(db, authorUri, now)
   ) {
@@ -1169,7 +1169,7 @@ export function answerQuoteRequest(
       embedded !== null &&
       embedded.uri === request.instrument &&
       embedded.attributedTo === actor.uri &&
-      originOf(embedded.uri) === originOf(actor.uri)
+      sameOrigin(embedded.uri, actor.uri)
         ? embedded
         : ctx.prefetched;
     if (document === undefined) {
@@ -1560,9 +1560,7 @@ export function acceptOurQuote(
   if (
     quote === undefined ||
     result === null ||
-    originOf(result) === null ||
-    !/^https?:$/.test(new URL(result).protocol) ||
-    originOf(result) !== originOf(actor.uri) ||
+    !sameOrigin(result, actor.uri) ||
     revoked(db, result, actor.uri) ||
     isDeleted(db, actor.uri, result, now)
   ) {

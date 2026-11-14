@@ -11,8 +11,15 @@ import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, settle, settleDeliveries, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
-import { batch, batches, remoteAccountsAt, retractionInboxes, seedStagingRetractions } from "./delete-job-helpers";
-import { BUILD } from "./helpers";
+import {
+  batch,
+  batches,
+  deleteSignature,
+  remoteAccountsAt,
+  retractionInboxes,
+  seedStagingRetractions,
+} from "./delete-job-helpers";
+import { BUILD, deferred } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -27,7 +34,6 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
-import { deferred } from "./quote-helpers";
 import { type PlannedStatement, plannedSql, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
 
@@ -69,7 +75,7 @@ async function unboosted(t: Setup, how: How, id: string, as: As = "alice") {
     const result = state.storage.transactionSync(() =>
       how === "unreblog"
         ? unreblog.run(state.storage.sql, base)
-        : deleteStatus.run(state.storage.sql, { ...base, deleteMedia: false }),
+        : deleteStatus.run(state.storage.sql, { ...base, deleteMedia: false, signed: null }),
     );
     const answered = result.status === "ok" && result.value.status === "ok" ? result.value : null;
     return {
@@ -1020,6 +1026,7 @@ describe("an unboost’s reads under stale statistics (RES-7)", () => {
       credential: dave,
       id: original.id,
       deleteMedia: false,
+      signed: await deleteSignature(t.store, dave, original.id),
       now: NOW,
       present: PRESENT,
     });

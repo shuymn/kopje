@@ -9,10 +9,9 @@ import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
 import { LEGACY } from "./federation-helpers";
-import { BUILD, migratedStore, runStoreJobs } from "./helpers";
+import { BUILD, migratedStore, runStoreJobs, deferred } from "./helpers";
 import { ACCESS, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
 import { QueueSim } from "./queue-sim";
-import { deferred } from "./quote-helpers";
 import { community, domainBlock, follow, getJson, post, remoteAccount, type User } from "./status-helpers";
 import { csrfOf, postForm, signIn } from "./web-helpers";
 

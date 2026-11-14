@@ -3,11 +3,11 @@ import {
   type ApiHandler,
   authorized,
   present,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { recordNotFound, validationFailed } from "./errors";
 import { parseBoolean } from "./params";
 
 // Reports (Mastodon 4.5's Api::V1::ReportsController, app/controllers/api/v1/reports_controller.rb); the Store does
@@ -15,11 +15,7 @@ import { parseBoolean } from "./params";
 
 // POST /api/v1/reports: account_id, comment, category, forward, forward_to_domains[], status_ids[] and rule_ids[]
 // (report_params, reports_controller.rb:25-27).
-export const createReport: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const createReport: ApiHandler = withParams(async (c, deps, p) => {
   const input = {
     credential: userCredential(c, deps),
     account: p.get("account_id") ?? "",
@@ -33,7 +29,7 @@ export const createReport: ApiHandler = async (c, deps) => {
     now: deps.now(),
   };
   return reportResponse(authorized(await storeCall(c, deps, (s, b) => s.createReport(b, input))), c);
-};
+});
 
 // A report operation's answer (domain/reports.ts), the user's or an admin's, as the RPC returns it.
 type ReportAnswer =
@@ -46,8 +42,8 @@ export function reportResponse(result: ReportAnswer, c: ApiContext): Response {
     case "ok":
       return c.json(result.report);
     case "not_found":
-      return mastodonError(404, "Record not found");
+      return recordNotFound();
     case "invalid":
-      return mastodonError(422, `Validation failed: ${result.errors.join(", ")}`);
+      return validationFailed(result.errors);
   }
 }

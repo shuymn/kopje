@@ -23,7 +23,7 @@ import { type FieldLinksDeps, fieldLinksRound } from "../src/federation/field-li
 import type { StoreStub } from "../src/platform/store-client";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { actorDefaults } from "./inbox-helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 
@@ -41,14 +41,6 @@ const link = (href: string) => `<a href="${href}">${href}</a>`;
 
 type Route = (request: Request) => Response | Promise<Response>;
 type Remote = Extract<FieldLinksClaim, { target: "remote" }>;
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
 
 const page = (body: string) => () => new Response(body, { headers: HTML });
 const relMe = (href: string) => page(`<a rel="me" href="${href}">me</a>`);

@@ -97,6 +97,13 @@ code only:
 The Store runs the older code from then on, and its schema still matches. Then pin the older `kopje` version in
 `package.json` (and close or postpone the update pull request), or the next build deploys the newer one again.
 
+Rows the newer code wrote keep their meaning where the older code reads them. One case sends more than the newer code
+would: a release without the signed `Delete` of a public or unlisted status (VIS-3 in
+[threat-model.md](threat-model.md)) ignores the envelope's `addressing` and places that `Delete`'s copies by its own
+`to`, Public alone, so a mentioned account still staging gets a copy of its own at its personal inbox rather than its
+server's shared one. The body goes unchanged to each (it is immutable, which those releases honor), names nobody, and
+reaches no inbox the audience does not hold: more POSTs, never a wider reach.
+
 ### A version that changed the schema
 
 The older code cannot use the newer schema, so the data must go back too. The restore returns the Store to the moment

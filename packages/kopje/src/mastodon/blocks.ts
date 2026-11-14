@@ -5,9 +5,9 @@ import {
   authorized,
   present,
   refuseAfterAuth,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
@@ -43,11 +43,7 @@ function muteExpiry(duration: string | undefined, now: number): string | null {
 }
 
 // notifications defaults to true (Account#mute!).
-export const mute: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const mute: ApiHandler = withParams(async (c, deps, p) => {
   const now = deps.now();
   const input = {
     credential: userCredential(c, deps),
@@ -57,19 +53,15 @@ export const mute: ApiHandler = async (c, deps) => {
     now,
   };
   return relationshipResponse(c, authorized(await storeCall(c, deps, (s, b) => s.mute(b, input))));
-};
+});
 
 // GET /api/v1/blocks and /api/v1/mutes: the accounts, paged by Link headers.
 function accounts(call: "listBlocks" | "listMutes"): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const page = pageQuery(p);
     const input = { credential: userCredential(c, deps), page, present: present(c) };
     return pageResponse(c, authorized(await storeCall(c, deps, (s, b) => s[call](b, input))), page.limit);
-  };
+  });
 }
 
 export const blocks = accounts("listBlocks");
@@ -79,16 +71,12 @@ export const mutes = accounts("listMutes");
 const DOMAIN_BLOCKS_LIMIT = 100;
 const MAX_DOMAIN_BLOCKS_LIMIT = 200;
 
-export const domainBlocks: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const domainBlocks: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
   const credential = userCredential(c, deps);
   const result = authorized(await storeCall(c, deps, (s, b) => s.listDomainBlocks(b, { credential, page })));
   return pageResponse(c, result, page.limit);
-};
+});
 
 // The `domain` parameter as a domain block stores it (`blockedDomain`); null when absent or not a domain name.
 function domainParam(p: Params): { domain: string | null; blank: boolean } {
@@ -96,11 +84,7 @@ function domainParam(p: Params): { domain: string | null; blank: boolean } {
   return { domain: raw === "" ? null : blockedDomain(raw), blank: raw === "" };
 }
 
-export const blockDomain: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const blockDomain: ApiHandler = withParams(async (c, deps, p) => {
   const { domain, blank } = domainParam(p);
   if (domain === null) {
     const problem = blank ? "Domain can't be blank" : "Domain is invalid";
@@ -112,24 +96,16 @@ export const blockDomain: ApiHandler = async (c, deps) => {
     return mastodonError(422, "Validation failed: Domain is this server's own domain");
   }
   return c.json({});
-};
+});
 
 // Unblocking a domain that is not blocked, or no domain at all, answers {} as Mastodon does.
-export const unblockDomain: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const unblockDomain: ApiHandler = withParams(async (c, deps, p) => {
   const input = { credential: userCredential(c, deps), domain: domainParam(p).domain };
   authorized(await storeCall(c, deps, (s, b) => s.unblockDomain(b, input)));
   return c.json({});
-};
+});
 
-export const previewDomainBlock: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const previewDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
   const { domain, blank } = domainParam(p);
   if (blank) {
     return refuseAfterAuth(c, deps, mastodonError(400, "param is missing or the value is empty: domain"));
@@ -139,4 +115,4 @@ export const previewDomainBlock: ApiHandler = async (c, deps) => {
   }
   const credential = userCredential(c, deps);
   return c.json(authorized(await storeCall(c, deps, (s, b) => s.previewDomainBlock(b, { credential, domain }))));
-};
+});

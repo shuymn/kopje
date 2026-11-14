@@ -20,7 +20,7 @@ import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
 import { ActivityMemo } from "../mastodon/activity";
 import type { AuthorSignature } from "../mastodon/context";
-import { maintenanceError, mastodonError } from "../mastodon/errors";
+import { maintenanceError, mastodonError, recordNotFound } from "../mastodon/errors";
 import { mastodonApi } from "../mastodon/routes";
 import { streamingRoutes } from "../mastodon/streaming";
 import { readBackupConfig } from "../platform/backup-config";
@@ -57,6 +57,8 @@ export type AppDeps = {
   fetch?: typeof fetch;
   randomToken?: TokenGenerator;
   images?: (env: Env) => ImageCodec;
+  // LD-signs as a local author (default: federation/ld-sign.ts under USER_KEK); tests wrap it to fail or alter it.
+  signAsAuthor?: (env: Env, sign: AuthorSignature) => Promise<Record<string, unknown>>;
   // Rings the delivery doorbell after an API write (default: a message on env.QUEUE).
   doorbell?: (env: Env) => Promise<void>;
   // Asks for a round of the Store's jobs (default: a message on env.QUEUE): after an admin suspension or unsuspension,
@@ -243,10 +245,12 @@ export function createApp({
     resolve: createResolver({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,
-    signAsAuthor: (env: Env, sign: AuthorSignature) => {
-      const config = readConfig(env);
-      return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
-    },
+    signAsAuthor:
+      seams.signAsAuthor ??
+      ((env: Env, sign: AuthorSignature) => {
+        const config = readConfig(env);
+        return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
+      }),
   };
   // Media reads no Store (web/media.ts): its capability URLs answer on any host.
   app.get(REMOTE_MEDIA_ROUTE, decidesHost(serveRemoteMedia));
@@ -282,7 +286,7 @@ export function createApp({
 
   app.notFound((c) => {
     if (c.req.path.startsWith("/api/")) {
-      return mastodonError(404, "Record not found");
+      return recordNotFound();
     }
     const plain = c.text("Not Found", 404);
     return isRead(c.req.method) && !documentPath(c.req.path) ? negotiate(c, 404, plain, PLAIN_TEXT) : plain;

@@ -32,9 +32,8 @@ import {
   userToken,
 } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, claimSent, migratedStore } from "./helpers";
+import { BUILD, migratedStore, deferred, drainDeliveries } from "./helpers";
 import { newClient, VAPID } from "./push-helpers";
-import { deferred } from "./quote-helpers";
 import { byText } from "./sort";
 import { community, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 import { signIn } from "./web-helpers";
@@ -81,31 +80,15 @@ async function unsuspend(h: ApiHarness, token: string | null, id: string): Promi
 type Sent = { type: string; inbox: string; suspended: boolean; object: unknown };
 
 // Claims and completes every delivery due, until nothing is left; what was sent, in order.
-async function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
-  const sent: Sent[] = [];
-  for (let round = 0; round < 200; round++) {
-    const leaseToken = `lease-${round}`;
-    const claim = await claimSent(store, { now, leaseToken });
-    for (const delivery of claim.deliveries) {
-      const body = JSON.parse(delivery.body) as { type: string; object?: { suspended?: boolean } };
-      sent.push({
-        type: body.type,
-        inbox: delivery.inbox,
-        suspended: body.object?.suspended === true,
-        object: body.object,
-      });
-      await store.completeDelivery(BUILD, {
-        id: delivery.id,
-        leaseToken,
-        now,
-        outcome: { kind: "delivered", status: 202 },
-      });
-    }
-    if (claim.deliveries.length === 0 && claim.nextDueAt === null) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+function drain(store: StoreStub, now = NOW): Promise<Sent[]> {
+  return drainDeliveries(
+    store,
+    ({ inbox, body }) => {
+      const parsed = JSON.parse(body) as { type: string; object?: { suspended?: boolean } };
+      return { type: parsed.type, inbox, suspended: parsed.object?.suspended === true, object: parsed.object };
+    },
+    { now, until: "all", strict: true, rounds: 200 },
+  );
 }
 
 const logRows = (store: StoreStub) =>

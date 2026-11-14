@@ -12,8 +12,8 @@ import {
   authorized,
   optionalTokenCredential,
   present,
-  requestParams,
   storeCall,
+  withParams,
 } from "./context";
 import { LANGUAGES } from "./languages";
 import { limitParam, offsetParam, type Params } from "./params";
@@ -77,11 +77,7 @@ function listResponse(c: ApiContext, items: unknown[], anonymous: boolean, vary:
 
 // GET /api/v1/trends/tags and GET /api/v1/trends (its alias), and GET /api/v1/admin/trends/tags for an admin without
 // manage_taxonomies (`super`).
-export const trendTags: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const trendTags: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const offset = offsetParam(p);
   const limit = limitParam(p, TREND_TAGS_LIMIT, TREND_TAGS_MAX_LIMIT);
@@ -91,15 +87,11 @@ export const trendTags: ApiHandler = async (c, deps) => {
     offsetLink(c, p, "/api/v1/trends/tags", offset, limit, page.read === limit ? offset + limit : null);
   }
   return listResponse(c, page.items, credential === null, "Authorization");
-};
+});
 
 // GET /api/v1/trends/statuses, and GET /api/v1/admin/trends/statuses as trendTags. A page cut by its bytes continues
 // after its last status (offset + consumed), so following next reaches every status once.
-export const trendStatuses: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const trendStatuses: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const offset = offsetParam(p);
   const limit = limitParam(p, TREND_STATUSES_LIMIT, TREND_STATUSES_MAX_LIMIT);
@@ -111,15 +103,11 @@ export const trendStatuses: ApiHandler = async (c, deps) => {
     offsetLink(c, p, "/api/v1/trends/statuses", offset, limit, next);
   }
   return listResponse(c, page.items, credential === null, "Authorization, Accept-Language");
-};
+});
 
 // GET /api/v1/trends/links, and GET /api/v1/admin/trends/links as trendTags: the allowed trending links, the
 // Accept-Language language first.
-export const trendLinks: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const trendLinks: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const offset = offsetParam(p);
   const limit = limitParam(p, TREND_LINKS_LIMIT, TREND_LINKS_MAX_LIMIT);
@@ -134,4 +122,4 @@ export const trendLinks: ApiHandler = async (c, deps) => {
     c.header("Vary", "Authorization, Accept-Language");
   }
   return listResponse(c, page.items, credential === null, "Authorization, Accept-Language");
-};
+});

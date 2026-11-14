@@ -288,7 +288,13 @@ describe("activity plans with stale statistics (RES-7)", () => {
             "INSERT OR REPLACE INTO instance_settings (name, value) VALUES ('contact_username', ?)",
             contact,
           );
-          runs.push(await plannedRun(h, /local_accounts l|INDEXED BY accounts_/, instanceInfo, { now: NOW, present }));
+          runs.push(
+            await plannedRun(h, /local_accounts l|INDEXED BY accounts_/, instanceInfo, {
+              now: NOW,
+              storeNow: NOW,
+              present,
+            }),
+          );
         }
         return runs;
       },
@@ -334,7 +340,8 @@ describe("activity plans with stale statistics (RES-7)", () => {
         const observed = {
           exec: (query: string, ...params: SqlStorageValue[]) => {
             const cursor = real.exec(query, ...params);
-            if (!query.includes("INDEXED BY accounts_domain_username")) {
+            // The address lookups only: the instance counts sum the local accounts' range of the same index.
+            if (!query.includes("INDEXED BY accounts_domain_username") || query === INSTANCE_COUNTS_SQL) {
               return cursor;
             }
             return {
@@ -347,7 +354,7 @@ describe("activity plans with stale statistics (RES-7)", () => {
           },
         } as unknown as SqlStorage;
         const account = lookupAccount.run(observed, { username: "DUP", domain: "remote.test", present });
-        const info = instanceInfo.run(observed, { now: NOW, present });
+        const info = instanceInfo.run(observed, { now: NOW, storeNow: NOW, present });
         return { id: account?.id, contact: info.contactAccount?.id, seen };
       });
     await sql(h.store, "INSERT INTO instance_settings (name, value) VALUES ('contact_username', 'dup@remote.test')");

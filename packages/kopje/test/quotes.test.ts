@@ -18,7 +18,8 @@ import {
   type QuoteWork,
   REVOCATION_BATCHES,
 } from "../src/domain/quotes";
-import { ACCOUNT_STALE_MS, RETRACTION_TTL_MS } from "../src/domain/remote-actors";
+import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
+import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { syncCollections } from "../src/federation/collections";
 import { REQUEST_DEADLINE_MS } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";
@@ -28,7 +29,8 @@ import { StoreUnavailableError } from "../src/platform/store-errors";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
-import { BUILD } from "./helpers";
+import { mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
+import { BUILD, deferred } from "./helpers";
 import {
   actorDefaults,
   LOCAL,
@@ -59,7 +61,7 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
-import { contexts, deferred, QUOTE_CONTEXT, quoting, serveStamp } from "./quote-helpers";
+import { contexts, QUOTE_CONTEXT, quoting, serveStamp } from "./quote-helpers";
 import { rowsRead, watchedCursor } from "./read-helpers";
 
 // Quotes received from remote servers (Mastodon 4.5's Quote, StatusParser's quote properties, VerifyQuoteService and the
@@ -971,7 +973,7 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
 });
 
 // A server relaying carol's Delete of her stamp (Mastodon forwards it signed with a local sharer's key): dan's.
-describe("relayed revocations (ID-1’s one exception)", () => {
+describe("relayed revocations (ID-1’s exception)", () => {
   async function relayWorld() {
     const w = await world();
     const pair = quotedPair(w.t, w.bob, w.carol);
@@ -997,6 +999,13 @@ describe("relayed revocations (ID-1’s one exception)", () => {
       Record<string, unknown>
     >;
   }
+
+  it("applies Mastodon's stamp Delete, its QuoteAuthorization embedded, as the author's", async () => {
+    const { t, carol, dan, stamp, quote, target } = await relayWorld();
+    const body = mastodonStampDelete(carol, { uri: stamp, quoting: quote.id, quoted: target.id });
+    expect(await t.post(dan, await mastodonSigned(body, carol))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+  });
 
   it("applies the author’s LD-signed Delete as the author’s", async () => {
     const { t, carol, dan, stamp, quote, target } = await relayWorld();
@@ -1024,14 +1033,38 @@ describe("relayed revocations (ID-1’s one exception)", () => {
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
   });
 
-  it("refuses an author proof on any other activity, and applies none to a status", async () => {
-    const { t, carol, dan, target } = await relayWorld();
+  it("refuses a proof whose signed graph is not a Delete, a `type` added under a context that drops it", async () => {
+    const { t, carol, dan, stamp, quote } = await relayWorld();
+    const { type: _type, ...untyped } = deletion(carol, stamp);
+    const signed = await ldSigned(untyped, carol);
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+  });
+
+  it("refuses a signed Update of the stamp relayed as a Delete through a context that nests the signature", async () => {
+    const { t, carol, dan, stamp, quote } = await relayWorld();
+    const update = { ...deletion(carol, stamp), id: `${stamp}#updates/${nextId()}`, type: "Update" };
+    const signed = await ldSigned(update, carol);
+    // `type` read as Update, and the signature, nested into the activity, adding its own type read as Delete.
+    const nest = { Delete: "as:Update", signature: "@nest", RsaSignature2017: "as:Delete" };
+    const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), nest], type: "Delete" };
+    expect(await t.post(dan, relayed)).toBe(401);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+  });
+
+  it("refuses an author proof on any other activity, and applies one on a status as the author's Delete", async () => {
+    const { t, carol, dan, target, quote } = await relayWorld();
     const boost = await ldSigned({ ...deletion(carol, target.id), type: "Announce" }, carol);
     expect(await t.post(dan, boost)).toBe(401);
-    // carol's Delete of her status, relayed with her proof: not a stamp, so nothing happens to the status.
+    expect(await statusRow(t.store, target.id)).toBeDefined();
+    // carol's Delete of her public status, relayed with her proof: the status goes and the quote of it is detached, as
+    // by her own Delete (test/relayed-delete.test.ts).
     const statusDelete = await ldSigned(deletion(carol, target.id), carol);
     expect(await t.post(dan, statusDelete)).toBe(202);
-    expect(await statusRow(t.store, target.id)).toBeDefined();
+    await settle(t.store);
+    expect(await statusRow(t.store, target.id)).toBeUndefined();
+    expect(await quoteOf(t, quote.id)).toMatchObject({ quoted_status_id: null, state: "deleted" });
   });
 
   it("without a proof, only verifies the quote again: kept while the stamp holds, revoked once it is gone", async () => {

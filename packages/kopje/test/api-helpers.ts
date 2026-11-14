@@ -9,8 +9,11 @@ import { expandPending } from "../src/domain/deliveries";
 import { allocateLocalId } from "../src/domain/ids";
 import { writeOperation } from "../src/domain/operation";
 import { accountSearchText } from "../src/domain/search-text";
+import { signAsAuthor } from "../src/federation/ld-sign";
+import type { AuthorSignature } from "../src/mastodon/context";
 import type { StoreStub } from "../src/platform/store-client";
 import { NOW } from "./app-helpers";
+import { LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { BUILD, migratedStore, runStoreJobs } from "./helpers";
 
 // Test-only seeding: tests insert accounts through this operation, run directly inside the Store.
@@ -130,27 +133,55 @@ export type AccessTeam = {
   rotate: () => Promise<JsonWebKey>;
 };
 
-async function rsaKey(kid: string): Promise<{ privateJwk: JsonWebKey; publicJwk: JsonWebKey }> {
+type RsaKey = { privateJwk: JsonWebKey; publicJwk: JsonWebKey };
+
+async function rsaPair(): Promise<RsaKey> {
   const pair = (await crypto.subtle.generateKey(
     { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     true,
     ["sign", "verify"],
   )) as CryptoKeyPair;
-  const privateJwk = (await crypto.subtle.exportKey("jwk", pair.privateKey)) as JsonWebKey;
-  const publicJwk = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
   return {
-    privateJwk: { ...privateJwk, alg: "RS256", kid } as JsonWebKey,
-    publicJwk: { ...publicJwk, alg: "RS256", kid, use: "sig" } as JsonWebKey,
+    privateJwk: (await crypto.subtle.exportKey("jwk", pair.privateKey)) as JsonWebKey,
+    publicJwk: (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey,
   };
 }
+
+// `pair` as a team publishes it under `kid`.
+function labelled(pair: RsaKey, kid: string): RsaKey {
+  return {
+    privateJwk: { ...pair.privateJwk, alg: "RS256", kid } as JsonWebKey,
+    publicJwk: { ...pair.publicJwk, alg: "RS256", kid, use: "sig" } as JsonWebKey,
+  };
+}
+
+const rsaKey = async (kid: string): Promise<RsaKey> => labelled(await rsaPair(), kid);
+
+// `make`'s promise, made by the first call and shared by every later one; a rejected one is dropped, so the next call
+// makes it again.
+export function kept<T>(make: () => Promise<T>): () => Promise<T> {
+  let made: Promise<T> | undefined;
+  return () => {
+    made ??= make().catch((error: unknown) => {
+      made = undefined;
+      throw error;
+    });
+    return made;
+  };
+}
+
+// The signing key and the other key of every team, generated once per isolate (vitest.config.ts) and relabelled with
+// each team's kid: a run builds thousands of harnesses, and a 2048-bit pair takes tens of milliseconds in workerd.
+const sharedPairs = kept(() => Promise.all([rsaPair(), rsaPair()]));
 
 export async function accessTeam(): Promise<AccessTeam> {
   const teamDomain = `team-${crypto.randomUUID().slice(0, 8)}.cloudflareaccess.com`;
   const aud = crypto.randomUUID().replace(/-/g, "");
   const kid = crypto.randomUUID();
-  const key = await rsaKey(kid);
+  const [signing, another] = await sharedPairs();
+  const key = labelled(signing, kid);
   // Same kid, different key: a token it signs must not verify.
-  const other = await rsaKey(kid);
+  const other = labelled(another, kid);
   const published = [key.publicJwk];
   const fetchJwks = vi.fn<typeof fetch>((input) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -215,6 +246,14 @@ export async function apiHarness(
     store: () => (wrapStore === undefined ? store : wrapStore(store)),
     fetch: team.fetch,
     randomToken,
+    // The accounts seedAccount makes hold no usable key: an author's signature (a public status's Delete) is made
+    // with the fixture key instead, which their actor documents do not publish. A test of the proof itself uses
+    // inbox-status-helpers' setup, whose accounts hold the fixture key.
+    signAsAuthor: (_env: Env, sign: AuthorSignature) =>
+      signAsAuthor(LEGACY_EMPTY_KEK.kek, {
+        ...sign,
+        key: { privkey: LEGACY_EMPTY_KEK.privkey, salt: LEGACY_EMPTY_KEK.salt, pubkey: LEGACY_EMPTY_KEK.pubkey },
+      }),
     ...seams,
     doorbell,
     jobs,

@@ -6,6 +6,7 @@ import { forgetAdminAccountId, oauthAdmin } from "./admin-authority";
 import { authorize, type UserCredential } from "./auth";
 import { allocateLocalId } from "./ids";
 import { countRegistration, recordLogin } from "./instance-activity";
+import { readState, writeState } from "./kopje-state";
 import { chargeInstanceTransforms } from "./media";
 import { webClientId } from "./oauth";
 import { readOperation, writeOperation } from "./operation";
@@ -97,15 +98,6 @@ export type InstanceConfig = {
   serviceTokenClientId: string | null;
 };
 
-function readState<T>(db: Db, name: string): T | null {
-  const row = db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name);
-  return row === undefined ? null : (JSON.parse(row.value) as T);
-}
-
-function writeState(db: Db, name: string, value: unknown): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, JSON.stringify(value));
-}
-
 function setting(db: Db, name: string): string | null {
   return db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = ?", name)?.value ?? null;
 }
@@ -123,13 +115,14 @@ function accessState(db: Db): AccessState {
 }
 
 // SETUP-3: bootstrapped once any configuration row or any local account exists, however it got there (the wizard, or
-// /admin/config and an import at a cutover).
+// /admin/config and an import at a cutover). The local accounts are probed for one row (LIMIT 1: db.first reads every
+// row of its statement and keeps the first).
 function bootstrapped(db: Db): boolean {
   return (
     db.first(
       `SELECT 1 AS found FROM instance_settings WHERE name IN (${CONFIG_KEYS.map(() => "?").join(",")})`,
       ...CONFIG_KEYS,
-    ) !== undefined || db.first("SELECT 1 AS found FROM local_accounts") !== undefined
+    ) !== undefined || db.first("SELECT 1 AS found FROM local_accounts LIMIT 1") !== undefined
   );
 }
 

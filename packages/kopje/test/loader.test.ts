@@ -13,7 +13,7 @@ import {
   RefusedFetchError,
   requestBudget,
 } from "../src/federation/loader";
-import { deferred } from "./quote-helpers";
+import { deferred } from "./helpers";
 
 const ACTOR = "https://remote.example/users/bob";
 const AP = { "content-type": "application/activity+json" };

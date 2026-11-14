@@ -21,6 +21,20 @@ export function accessAdminRefusal(db: Db, authority: ImportAuthority, refusal: 
   return accessRefusal(settingsFromRows(rows), authority);
 }
 
+// accessAdminRefusal as an admin operation's guard: the Access actor it may log as, or its wrong-authority refusal.
+export function accessAdmin(
+  db: Db,
+  authority: ImportAuthority,
+  refusal: string,
+):
+  | { ok: true; actor: Extract<ImportAuthority, { kind: "access" }> }
+  | { ok: false; code: "wrong-authority"; message: string } {
+  const refused = accessAdminRefusal(db, authority, refusal);
+  return refused === null && authority.kind === "access"
+    ? { ok: true, actor: authority }
+    : { ok: false, code: "wrong-authority", message: refused ?? refusal };
+}
+
 // Why there is, or is not, an OAuth admin:
 //   ok        exactly one local account's email matches admin_email, and it is not suspended
 //   unset     admin_email is missing or empty

@@ -19,7 +19,7 @@ import type { OperationKind } from "./store-kernel";
 
 type MaintenanceFlag = { mode: "readonly"; at: number };
 
-export type DumpRecord = {
+type DumpRecord = {
   id: string;
   // The client's own id for this start, so a start whose response was lost can be asked again (and aborted).
   opId?: string | undefined;
@@ -34,7 +34,9 @@ export type DumpRecord = {
   completed?: { trailer: DumpTrailer; trailerText: string };
 };
 
-type VerifyProgress = { position: ScanPosition; results: TableResult[] };
+// quoteCounts: where the quote count correction stands (store-import.ts correctQuoteCounts): absent before it starts
+// (a record written by an earlier version too), the status_id literal it continues after, or QUOTE_COUNTS_DONE.
+type VerifyProgress = { position: ScanPosition; results: TableResult[]; quoteCounts?: string | undefined };
 
 // resetting: the imported rows are being deleted (StoreAdmin.importReset); nothing else continues the import.
 type ImportState = "receiving" | "finished" | "failed" | "resetting";
@@ -131,12 +133,76 @@ export function readFlags(sql: SqlStorage): OperatorFlags {
   return flags;
 }
 
+// What admission reads of the operator state (StoreKernel, flagRefusal): whether maintenance, an import and an
+// unpublished import are set, and the dump's and the media rebuild's leases. A completed dump's record stays as its
+// receipt (StoreAdmin.dumpFinish), so the gate never reads a record whose lease end is 0 (the receipt's), nor the
+// import's record, only that it exists.
+export type OperatorGate = {
+  maintenance: boolean;
+  import: boolean;
+  unpublished: boolean;
+  dump: { leaseUntil: number } | null;
+  media_rebuild_lease: { until: number } | null;
+};
+
+type GateName = "maintenance" | "dump" | "import" | "unpublished" | "media_rebuild_lease";
+
+// The other records are parsed in JS as readFlags parses them. The import's record is read as JSON null (an absent
+// flag, as readFlags reads it) or as present: a record JSON.parse refuses refuses every operation as an import in
+// progress, where readFlags threw. A lease record is left out only when SQLite reads its lease end as JSON.parse does
+// and that end is the JSON integer 0, a lease that has ended for any Store time: it is text with no NUL in
+// json_valid's RFC 8259 form, it names its lease end's key once and holds no \u escape (so no other spelling of that
+// key can follow, which JSON.parse would take and SQLite would not). No JSON function reads any other record, so
+// nothing SQLite's JSON parser refuses (nesting deeper than its limit) fails the read.
+const GATE_SQL = `SELECT name, CASE WHEN name <> 'import' THEN value
+		WHEN typeof(value) = 'text' AND trim(value, ' ' || char(9, 10, 13)) = 'null' THEN 'null' END AS value
+	FROM (SELECT name, value, CASE name WHEN 'dump' THEN 'leaseUntil' WHEN 'media_rebuild_lease' THEN 'until' END AS lease
+		FROM kopje_state WHERE name IN ('maintenance', 'dump', 'import', 'unpublished', 'media_rebuild_lease'))
+	WHERE CASE WHEN lease IS NULL OR typeof(value) <> 'text' OR instr(value, char(0)) > 0 OR instr(value, '\\u') > 0
+		OR instr(value, '"' || lease || '"') = 0
+		OR instr(substr(value, instr(value, '"' || lease || '"') + 1), '"' || lease || '"') > 0
+		OR NOT json_valid(value) THEN 1
+		ELSE coalesce(value -> ('$.' || lease), '') <> '0' END`;
+
+export function readGate(sql: SqlStorage): OperatorGate {
+  const gate: OperatorGate = {
+    maintenance: false,
+    import: false,
+    unpublished: false,
+    dump: null,
+    media_rebuild_lease: null,
+  };
+  for (const row of sql.exec<{ name: GateName; value: string | null }>(GATE_SQL).toArray()) {
+    if (row.name === "import") {
+      gate.import = row.value === null;
+      continue;
+    }
+    const value = JSON.parse(row.value as string) as unknown;
+    if (row.name === "dump") {
+      gate.dump = value as OperatorGate["dump"];
+    } else if (row.name === "media_rebuild_lease") {
+      gate.media_rebuild_lease = value as OperatorGate["media_rebuild_lease"];
+    } else {
+      gate[row.name] = value !== null;
+    }
+  }
+  return gate;
+}
+
 export function writeFlag<N extends FlagName>(sql: SqlStorage, name: N, value: OperatorFlags[N]): void {
   if (value === null) {
     sql.exec("DELETE FROM kopje_state WHERE name = ?", name);
   } else {
     sql.exec("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, JSON.stringify(value));
   }
+}
+
+// The kept peer domain count (domain/instance.ts refreshDomainCount), derived from the accounts: never dumped, and
+// cleared when an import begins and when a reset ends (store-admin.ts), so no count of other accounts is served.
+export const DOMAIN_COUNT_STATE = "domain_count";
+
+export function forgetDomainCount(sql: SqlStorage): void {
+  sql.exec("DELETE FROM kopje_state WHERE name = ?", DOMAIN_COUNT_STATE);
 }
 
 // The media rebuild's lease (domain/media-rebuild.ts), { holder, until } at the Store's time: one rebuild call at a
@@ -150,12 +216,12 @@ export const REBUILD_LEASE = "media_rebuild_lease";
 export const PITR_RESTORING = "pitr_restoring";
 export const PITR_RESTORING_MS = 5 * 60 * 1000;
 
-export function rebuildLeaseLive(flags: OperatorFlags, now: number): boolean {
+export function rebuildLeaseLive(flags: Pick<OperatorGate, "media_rebuild_lease">, now: number): boolean {
   return flags.media_rebuild_lease !== null && flags.media_rebuild_lease.until > now;
 }
 
 // A dump freezes the Store only while its lease is valid, so a crashed dump cannot freeze it forever.
-export function activeDump(flags: OperatorFlags, now: number): DumpRecord | null {
+export function activeDump<D extends { leaseUntil: number }>(flags: { dump: D | null }, now: number): D | null {
   return flags.dump !== null && now < flags.dump.leaseUntil ? flags.dump : null;
 }
 
@@ -163,7 +229,7 @@ export function activeDump(flags: OperatorFlags, now: number): DumpRecord | null
 // refuse writes, except 'media-rebuild' (store-kernel.ts), so the served files of restored or moved media can be made
 // before publication; an import or a dump in progress refuses it like any write. A media-deleting write
 // ('media-delete') is also refused while the rebuild's lease is live, whatever the other flags say.
-export function admitFlags(flags: OperatorFlags, kind: OperationKind, now: number): void {
+export function admitFlags(flags: OperatorGate, kind: OperationKind, now: number): void {
   const refused = flagRefusal(flags, kind, now);
   if (refused !== null) {
     throw storeMaintenanceError(refused);
@@ -171,18 +237,18 @@ export function admitFlags(flags: OperatorFlags, kind: OperationKind, now: numbe
 }
 
 // The reason admitFlags refuses an operation of this kind, or null when it admits it.
-export function flagRefusal(flags: OperatorFlags, kind: OperationKind, now: number): MaintenanceReason | null {
-  if (flags.import !== null) {
+export function flagRefusal(flags: OperatorGate, kind: OperationKind, now: number): MaintenanceReason | null {
+  if (flags.import) {
     return "import-in-progress";
   }
   if (kind !== "read" && activeDump(flags, now) !== null) {
     return "dump-in-progress";
   }
   const write = kind === "write" || kind === "media-delete";
-  if (write && flags.maintenance !== null) {
+  if (write && flags.maintenance) {
     return "maintenance";
   }
-  if (write && flags.unpublished !== null) {
+  if (write && flags.unpublished) {
     return "unpublished";
   }
   if (kind === "media-delete" && rebuildLeaseLive(flags, now)) {

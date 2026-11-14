@@ -29,11 +29,11 @@ import {
   present,
   refuseAfterAuth,
   requestJobsSoon,
-  requestParams,
   storeCall,
   userCredential,
+  withParams,
 } from "./context";
-import { mastodonError } from "./errors";
+import { mastodonError, recordNotFound, validationFailed } from "./errors";
 import {
   discardProfileUploads,
   type Failure,
@@ -48,14 +48,12 @@ import { MAX_SEARCH_OFFSET, resolveQuery, searchParams } from "./search";
 
 // /api/v1/accounts: credentials, lookup, search, relationships, follow, follower lists, notes and endorsements.
 
-const NOT_FOUND = () => mastodonError(404, "Record not found");
-
 export const verifyCredentials: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
   const account = authorized(
     await storeCall(c, deps, (s, b) => s.verifyCredentials(b, { credential, present: present(c) })),
   );
-  return account === null ? NOT_FOUND() : c.json(account);
+  return account === null ? recordNotFound() : c.json(account);
 };
 
 const MAX_DISPLAY_NAME = 30;
@@ -273,7 +271,7 @@ export const updateCredentials: ApiHandler = async (c, deps) => {
   }
   problems.push(...files.problems);
   if (problems.length > 0) {
-    return refuseAfterAuth(c, deps, mastodonError(422, `Validation failed: ${problems.join(", ")}`));
+    return refuseAfterAuth(c, deps, validationFailed(problems));
   }
   const owned: ProfileUpload[] = [];
   let committed = false;
@@ -292,7 +290,7 @@ export const updateCredentials: ApiHandler = async (c, deps) => {
       return mastodonError(422, "Validation failed: The upload expired");
     }
     if (result.status === "not_found") {
-      return NOT_FOUND();
+      return recordNotFound();
     }
     committed = true;
     if (owned.length > 0) {
@@ -321,7 +319,7 @@ function removeProfileImage(kind: ProfileImage): ApiHandler {
       ),
     );
     if (account === null) {
-      return NOT_FOUND();
+      return recordNotFound();
     }
     sweepSoon(c, deps);
     return c.json(account);
@@ -334,22 +332,18 @@ export const removeHeader = removeProfileImage("header");
 export const getAccount: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
   const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
-  return account === null ? NOT_FOUND() : c.json(account);
+  return account === null ? recordNotFound() : c.json(account);
 };
 
 // GET /api/v1/accounts?id[]= (AccountsController#index): the accounts getAccount would show, in one read. More than
 // DEFAULT_ACCOUNTS_LIMIT distinct ids raise Mastodon::ValidationError, which answers 422 with the class's name.
-export const getAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const getAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const ids = [...new Set(p.getAll("id"))];
   if (ids.length > MAX_ACCOUNTS_BY_ID) {
     return mastodonError(422, "Mastodon::ValidationError");
   }
   return c.json(await storeCall(c, deps, (s, b) => s.getAccounts(b, { ids, present: present(c) })));
-};
+});
 
 // POST /api/v1/accounts (AccountsController#create): Kopje has no open registration, so it answers as Mastodon does
 // with registrations closed, after Mastodon's checks in their order: the token (doorkeeper_authorize! :write,
@@ -373,33 +367,25 @@ export const lookupAccount: ApiHandler = async (c, deps) => {
   const username = at === -1 ? acct : acct.slice(0, at);
   const host = at === -1 ? null : acct.slice(at + 1).toLowerCase();
   if (username === "" || host === "") {
-    return NOT_FOUND();
+    return recordNotFound();
   }
   const domain = host === null || host === new URL(c.req.url).host ? null : host;
   const account = await storeCall(c, deps, (s, b) => s.lookupAccount(b, { username, domain, present: present(c) }));
-  return account === null ? NOT_FOUND() : c.json(account);
+  return account === null ? recordNotFound() : c.json(account);
 };
 
-export const relationships: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const relationships: ApiHandler = withParams(async (c, deps, p) => {
   const ids = p.getAll("id");
   const withSuspended = parseBoolean(p.get("with_suspended")) === true;
   const credential = userCredential(c, deps);
   return c.json(authorized(await storeCall(c, deps, (s, b) => s.relationships(b, { credential, ids, withSuspended }))));
-};
+});
 
 // resolve=true (AccountSearchService#exact_match): at offset 0, a user@domain query is resolved as /api/v2/search
 // resolves it (resolveQuery), after the token is verified; a URL query is not. The resolution failing, a Store in
 // maintenance included, leaves the answer to local data (Mastodon's suppress_errors). The final search takes a fresh
 // credential, so a token that expired while resolving is refused.
-export const searchAccounts: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const searchAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const parsed = searchParams(p);
   if ("error" in parsed) {
     return refuseAfterAuth(c, deps, parsed.error);
@@ -437,14 +423,14 @@ export const searchAccounts: ApiHandler = async (c, deps) => {
     }),
   );
   return c.json(authorized(accounts));
-};
+});
 
 export function relationshipResponse(c: ApiContext, result: RelationshipResult): Response {
   switch (result.status) {
     case "ok":
       return c.json(result.relationship);
     case "not_found":
-      return NOT_FOUND();
+      return recordNotFound();
     case "forbidden":
       return mastodonError(403, "This action is not allowed");
     case "unavailable":
@@ -452,11 +438,7 @@ export function relationshipResponse(c: ApiContext, result: RelationshipResult):
   }
 }
 
-export const follow: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const follow: ApiHandler = withParams(async (c, deps, p) => {
   // Absent keeps the follow's filter; an empty list (`languages: []`, `languages[]=`) clears it.
   const languages = p.has("languages") ? p.getAll("languages").filter((language) => language !== "") : undefined;
   const input = {
@@ -468,8 +450,8 @@ export const follow: ApiHandler = async (c, deps) => {
     now: deps.now(),
   };
   const result = authorized(await storeCall(c, deps, (s, b) => s.follow(b, input)));
-  return result.status === "invalid" ? validationError(result.errors) : relationshipResponse(c, result);
-};
+  return result.status === "invalid" ? validationFailed(result.errors) : relationshipResponse(c, result);
+});
 
 export const unfollow: ApiHandler = async (c, deps) => {
   const target = c.req.param("id") ?? "";
@@ -484,16 +466,8 @@ export const removeFromFollowers: ApiHandler = async (c, deps) => {
   return relationshipResponse(c, authorized(await storeCall(c, deps, (s, b) => s.removeFromFollowers(b, input))));
 };
 
-function validationError(errors: string[]): Response {
-  return mastodonError(422, `Validation failed: ${errors.join(", ")}`);
-}
-
 // POST /api/v1/accounts/:id/note (Accounts::NotesController): the viewer's private note, `comment`.
-export const note: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const note: ApiHandler = withParams(async (c, deps, p) => {
   const input = {
     credential: userCredential(c, deps),
     target: c.req.param("id") ?? "",
@@ -501,14 +475,14 @@ export const note: ApiHandler = async (c, deps) => {
     now: deps.now(),
   };
   const result = authorized(await storeCall(c, deps, (s, b) => s.setNote(b, input)));
-  return result.status === "invalid" ? validationError(result.errors) : relationshipResponse(c, result);
-};
+  return result.status === "invalid" ? validationFailed(result.errors) : relationshipResponse(c, result);
+});
 
 // POST /api/v1/accounts/:id/endorse and /pin, /unendorse and /unpin (Accounts::EndorsementsController).
 export const endorse: ApiHandler = async (c, deps) => {
   const input = { credential: userCredential(c, deps), target: c.req.param("id") ?? "", now: deps.now() };
   const result = authorized(await storeCall(c, deps, (s, b) => s.endorse(b, input)));
-  return result.status === "invalid" ? validationError(result.errors) : relationshipResponse(c, result);
+  return result.status === "invalid" ? validationFailed(result.errors) : relationshipResponse(c, result);
 };
 
 export const unendorse: ApiHandler = async (c, deps) => {
@@ -519,28 +493,20 @@ export const unendorse: ApiHandler = async (c, deps) => {
 // GET /api/v1/endorsements (EndorsementsController): the viewer's, 40 by default and at most 80 with Link headers, or
 // every one at once with limit=0, without them. Kopje's limit=0 answer stops at MAX_ENDORSEMENTS_ANSWERED and
 // ANSWER_BYTES (8 MiB, RES-3); one cut by the bytes links next to the rest (unlimitedResponse).
-export const endorsements: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const endorsements: ApiHandler = withParams(async (c, deps, p) => {
   const query = pageQuery(p);
   const page = p.get("limit") === "0" ? null : query;
   const input = { credential: userCredential(c, deps), page, from: query.maxId, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listEndorsements(b, input)));
   return page === null ? unlimitedResponse(c, result) : pageResponse(c, result, page.limit);
-};
+});
 
 // GET /api/v1/directory (Api::V1::DirectoriesController#show, domain/directory.ts). Parameters as Mastodon reads them:
 // `order` new or active (the default; Kopje reads any other value as active, where Mastodon fails), `local` as a
 // Rails boolean, `offset` (a negative or unreadable one is 0), and `limit` as limit_param (the absolute value, at
 // most 80; 0 or an unreadable one answers no accounts). Without a token, the answer may be cached by anyone for 15
 // seconds (cache_if_unauthenticated!), varying by Authorization as every Mastodon API answer does.
-export const directory: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const directory: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const input = {
     credential,
@@ -558,14 +524,10 @@ export const directory: ApiHandler = async (c, deps) => {
         vary: "Authorization",
       })
     : c.json(accounts);
-};
+});
 
 // GET /api/v1/accounts/:id/endorsements (Accounts::EndorsementsController#index): public.
-export const accountEndorsements: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const accountEndorsements: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
   const input = {
     credential: optionalCredential(c, deps),
@@ -575,15 +537,11 @@ export const accountEndorsements: ApiHandler = async (c, deps) => {
     present: present(c),
   };
   const result = authorized(await storeCall(c, deps, (s, b) => s.accountEndorsements(b, input)));
-  return result === null ? NOT_FOUND() : pageResponse(c, result, page.limit);
-};
+  return result === null ? recordNotFound() : pageResponse(c, result, page.limit);
+});
 
 function followList(direction: "followers" | "following"): ApiHandler {
-  return async (c, deps) => {
-    const p = await requestParams(c, deps);
-    if (p instanceof Response) {
-      return p;
-    }
+  return withParams(async (c, deps, p) => {
     const page = pageQuery(p);
     const credential = optionalCredential(c, deps);
     const result = authorized(
@@ -599,28 +557,24 @@ function followList(direction: "followers" | "following"): ApiHandler {
       ),
     );
     if (result === null) {
-      return NOT_FOUND();
+      return recordNotFound();
     }
     return pageResponse(c, result, page.limit);
-  };
+  });
 }
 
 export const followers = followList("followers");
 export const following = followList("following");
 
 // /api/v1/follow_requests: the viewer's pending followers, and the decision on one of them (VIS-9).
-export const followRequests: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const followRequests: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
   const credential = userCredential(c, deps);
   const result = authorized(
     await storeCall(c, deps, (s, b) => s.listFollowRequests(b, { credential, page, present: present(c) })),
   );
   return pageResponse(c, result, page.limit);
-};
+});
 
 function answerFollowRequest(decision: "authorize" | "reject"): ApiHandler {
   return async (c, deps) => {
@@ -635,17 +589,13 @@ export const rejectFollowRequest = answerFollowRequest("reject");
 export const preferences: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
   const result = authorized(await storeCall(c, deps, (s, b) => s.preferences(b, { credential })));
-  return result === null ? NOT_FOUND() : c.json(result);
+  return result === null ? recordNotFound() : c.json(result);
 };
 
-export const familiarFollowers: ApiHandler = async (c, deps) => {
-  const p = await requestParams(c, deps);
-  if (p instanceof Response) {
-    return p;
-  }
+export const familiarFollowers: ApiHandler = withParams(async (c, deps, p) => {
   const ids = p.getAll("id");
   const credential = userCredential(c, deps);
   return c.json(
     authorized(await storeCall(c, deps, (s, b) => s.familiarFollowers(b, { credential, ids, present: present(c) }))),
   );
-};
+});

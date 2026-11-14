@@ -14,18 +14,19 @@ import {
   LEASE_MS,
   MAX_ATTEMPTS,
 } from "../src/domain/deliveries";
-import { MAX_RETRACTIONS_PER_ACTOR, UNDONE_ANSWER_SIGNERS_SQL } from "../src/domain/inbox";
+import { UNDONE_ANSWER_SIGNERS_SQL } from "../src/domain/inbox";
 import { readOperation } from "../src/domain/operation";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { deliveryRound } from "../src/jobs/deliver";
 import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
-import { BUILD, claimAndSettle, runStoreJobs } from "./helpers";
+import { BUILD, claimAndSettle, runStoreJobs, deferred, drainDeliveries } from "./helpers";
 import { mastodonActor } from "./inbox-helpers";
 import { ALICE, ALICE_URI, AS, DAVE_URI, localStatus, nextId, setup as inboxSetup } from "./inbox-status-helpers";
-import { deferred, deliveryDeps, gatedHost, quoting } from "./quote-helpers";
+import { deliveryDeps, gatedHost, quoting } from "./quote-helpers";
 import { plannedRun, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 import { act, receive, toFollows, unsuspend, uriOf, world } from "./remote-suspension-helpers";
 import { post, remoteAccount, remoteFollows } from "./status-helpers";
@@ -117,21 +118,16 @@ async function lane(t: T): Promise<LaneRow[]> {
 }
 
 // Delivers everything due by LATER, in lane order; each POST as [type, the Follow it answers or the object].
-async function drain(t: T): Promise<[string, string | null][]> {
-  const sent: [string, string | null][] = [];
-  for (let round = 0; round < 1_000; round++) {
-    const settled = await claimAndSettle(t.store, { now: LATER, leaseToken: `drain-${++lease}`, outcome: OK });
-    for (const row of settled.sent) {
+function drain(t: T): Promise<[string, string | null][]> {
+  return drainDeliveries(
+    t.store,
+    (row): [string, string | null] => {
       const body = JSON.parse(row.body) as { type: string; object: unknown };
       const object = typeof body.object === "string" ? body.object : (body.object as { id?: string }).id;
-      sent.push([body.type, object ?? null]);
-    }
-    const { claim } = settled;
-    if (claim.deliveries.length === 0 && (claim.nextDueAt === null || claim.nextDueAt > LATER)) {
-      return sent;
-    }
-  }
-  throw new Error("the deliveries did not drain");
+      return [body.type, object ?? null];
+    },
+    { now: LATER, until: "due", rounds: 1_000 },
+  );
 }
 
 // The answers among what was sent.

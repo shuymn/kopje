@@ -12,7 +12,7 @@ import { DNS_NAME_UTF8_BYTES } from "../platform/domain-name";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
-// Audience and visibility (Mastodon 4.7.3; docs/visibility.md). One module decides
+// Audience and visibility (Mastodon 4.5.11; docs/visibility.md). One module decides
 // who may see a status or an account, for every read path, who is notified, whom an author may address, and how an
 // audience is written to and read from ActivityPub addressing:
 //
@@ -188,7 +188,7 @@ export function activeMuteSql(m: string, now: string): string {
 
 // The mute of the account `x` by `owner` that applies at `now`, as `m`, LEFT JOINed (its options in a relationship).
 export function activeMuteJoinSql(m: string, owner: string, x: string, now: string): string {
-  return `LEFT JOIN main.mutes ${m} ON ${m}.account_id = ${owner} AND ${m}.target_account_id = ${x} AND ${activeMuteSql(m, now)}`;
+  return `LEFT JOIN main.mutes ${m} INDEXED BY mutes_pair ON ${m}.account_id = ${owner} AND ${m}.target_account_id = ${x} AND ${activeMuteSql(m, now)}`;
 }
 
 // Whether `owner` mutes the account `x` at `now`; with `notifications`, only a mute that also hides notifications.
@@ -1633,10 +1633,12 @@ export function reportForwardees(
 ): string[] {
   return db
     .all<{ id: string }>(
-      `SELECT t.id FROM main.accounts t
+      `SELECT t.id FROM main.accounts t INDEXED BY ${ACCOUNTS_ID_INDEX}
 			WHERE t.id = ?1 AND t.domain IS NOT NULL AND t.domain IN (SELECT value FROM json_each(?3))
 			UNION
-			SELECT a.id FROM main.accounts t CROSS JOIN main.statuses s JOIN main.accounts a ON a.id = s.in_reply_to_account_id
+			SELECT a.id FROM main.accounts t INDEXED BY ${ACCOUNTS_ID_INDEX}
+			CROSS JOIN main.statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.in_reply_to_account_id
 			WHERE t.id = ?1 AND s.id IN (SELECT value FROM json_each(?2))
 				AND a.domain IS NOT NULL AND a.domain IN (SELECT value FROM json_each(?3))
 				AND COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url) IS NOT NULLIF(t.inbox_url, '')
@@ -1679,7 +1681,7 @@ export function hasFollowerOn(db: Db, target: string, domain: string): boolean {
     db.first(
       `SELECT 1 AS x FROM (SELECT f.account_id FROM main.follows f INDEXED BY follows_target
 				WHERE f.target_account_id = ?1 AND f.state = 'accepted' LIMIT ?3) w
-			JOIN main.accounts a ON a.id = w.account_id WHERE a.domain = ?2
+			CROSS JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id WHERE a.domain = ?2
 			UNION ALL
 			SELECT 1 FROM (SELECT a.id FROM main.accounts a INDEXED BY accounts_domain_username WHERE a.domain = ?2 LIMIT ?3) d
 			WHERE EXISTS (SELECT 1 FROM main.follows f INDEXED BY follows_pair

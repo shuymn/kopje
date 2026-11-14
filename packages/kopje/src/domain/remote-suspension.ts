@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { followUri } from "./activities";
 import {
   domainCoveredSql,
@@ -117,8 +118,6 @@ type RemoteJob = {
   phase: string;
   cursor: string;
 };
-
-const iso = (ms: number) => new Date(ms).toISOString();
 
 const NEWEST_FOLLOW = "(SELECT coalesce(max(id), 0) FROM follows)";
 

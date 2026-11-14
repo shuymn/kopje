@@ -14,6 +14,11 @@ export const BUILD = env.CF_VERSION_METADATA.id;
 export const MIGRATION_NAMES = MIGRATIONS.map((m) => m.name);
 export const LATEST_MIGRATION = MIGRATION_NAMES.at(-1);
 
+// A promise and its resolvers, for holding one actor at an explicit await point (docs/engineering.md, "Tests").
+export function deferred<T = void>(): PromiseWithResolvers<T> {
+  return Promise.withResolvers<T>();
+}
+
 // Each test gets its own Store object, so test files can run in parallel without sharing state.
 export function freshStore(): StoreStub {
   return env.STORE.getByName(crypto.randomUUID());
@@ -187,6 +192,44 @@ export async function claimAndSettle(
     }
   }
   return { claim, sent };
+}
+
+// A sent row as claimAndSettle gives it.
+export type SentRow = { inbox: string; body: string };
+
+// Claims at `now`, round after round as claimAndSettle with every row sent completed as delivered, until a claim is
+// empty and `until` holds: nothing due by `now` ("due"), nothing waiting at all ("all"), or the caller's own check.
+// With `strict`, every row claimed must be sent. Each row sent through `map`, in order; throws past `rounds` rounds, the
+// bound the caller's test holds the drain to.
+export async function drainDeliveries<T>(
+  store: StoreStub,
+  map: (row: SentRow) => T,
+  options: { now: number; until: "due" | "all" | (() => Promise<boolean>); rounds: number; strict?: boolean },
+): Promise<T[]> {
+  const { now, until } = options;
+  const lease = `drain-${crypto.randomUUID()}`;
+  const sent: T[] = [];
+  for (let round = 0; round < options.rounds; round++) {
+    const { claim, sent: rows } = await claimAndSettle(store, {
+      now,
+      leaseToken: `${lease}-${round}`,
+      outcome: { kind: "delivered", status: 202 },
+    });
+    if (options.strict === true && rows.length !== claim.deliveries.length) {
+      throw new Error(`${claim.deliveries.length - rows.length} deliveries claimed, then not sent at confirmation`);
+    }
+    sent.push(...rows.map(map));
+    const idle =
+      until === "due"
+        ? claim.nextDueAt === null || claim.nextDueAt > now
+        : until === "all"
+          ? claim.nextDueAt === null
+          : await until();
+    if (claim.deliveries.length === 0 && idle) {
+      return sent;
+    }
+  }
+  throw new Error("the deliveries did not drain");
 }
 
 // An email whose local part holds the three letters JavaScript's case folding treats unlike SQLite's lower() (AUTH-9,

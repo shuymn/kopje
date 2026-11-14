@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { EXPANSION_STEP, STAGING_READ, TARGET_CHUNK_BYTES, TARGET_CHUNK_SIZE } from "../src/domain/deliveries";
-import { MAX_RETRACTIONS_PER_ACTOR, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { ACTOR_URI_LIMIT, INBOX_URL_LIMIT } from "../src/federation/remote-actor";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";

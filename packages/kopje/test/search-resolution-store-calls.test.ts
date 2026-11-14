@@ -12,7 +12,7 @@ import { ALICE, AS, mastodonNote, setup, type Setup } from "./inbox-status-helpe
 // The Store calls of a resolving search (GET /api/v2/search and GET /api/v1/accounts/search with resolve=true): after
 // the host check's domain read that every API request makes (instanceDomain, WEB-6), one read before any network work
 // (Store.resolutionGate: the token, the domain and the first request's preparation, or a refusal), then the reads whose
-// timing is the guarantee (store.ts, "How a request talks to the Store").
+// timing is the guarantee (docs/engineering.md, "How a request talks to the Store").
 
 const WEBFINGER = `${MASTODON}/.well-known/webfinger?resource=${encodeURIComponent("acct:bob@mastodon.example")}`;
 const INSTANCE_KEY = `${LOCAL}/actor#main-key`;

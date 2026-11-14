@@ -2,9 +2,10 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
-import { ACCOUNT_EMOJIS_BYTES, presentedLocalFieldsSql } from "../platform/stored-bounds";
+import { ACCOUNT_EMOJIS_BYTES } from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
+import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
 import { PUBLIC_COLLECTION } from "./audience";
 import { localEmojiTags } from "./custom-emojis";
 import type { DeliveryEnvelope } from "./deliveries";
@@ -39,26 +40,6 @@ const CONTEXT = [
 // The context of a suspended actor's Update, which names `suspended` (toot:suspended) as Mastodon's context does.
 const SUSPENDED_CONTEXT = [CONTEXT[0], CONTEXT[1], { ...(CONTEXT[2] as object), suspended: "toot:suspended" }];
 
-type ActorRow = {
-  uri: string;
-  username: string;
-  actor_type: string;
-  display_name: string;
-  note: string;
-  avatar_url: string | null;
-  header_url: string | null;
-  locked: number;
-  discoverable: number | null;
-  indexable: number | null;
-  also_known_as: string;
-  fields: string | null;
-  attribution_domains: string;
-  pubkey: string;
-  created_at: string;
-  suspended_at: string | null;
-  emojis: string | null;
-};
-
 function image(stored: string | null): { type: "Image"; url: string } | undefined {
   const url = httpUrl(stored);
   return url === null ? undefined : { type: "Image", url: url.href };
@@ -66,10 +47,7 @@ function image(stored: string | null): { type: "Image"; url: string } | undefine
 
 function actorRow(db: Db, accountId: string): ActorRow | undefined {
   return db.first<ActorRow>(
-    `SELECT a.uri, a.username, a.actor_type, a.display_name, a.note, a.avatar_url, a.header_url, a.locked,
-			a.discoverable, a.indexable, l.also_known_as, ${presentedLocalFieldsSql("l.fields")} AS fields,
-			l.attribution_domains, l.pubkey, a.created_at,
-			l.suspended_at, a.emojis
+    `SELECT ${ACTOR_ROW_COLUMNS}
 		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,

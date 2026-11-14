@@ -1,8 +1,10 @@
 # Admin API Appendix
 
-This appendix documents the Mastodon Admin API. This API is intended for administrative tools and server management, not for basic client functionality.
+This appendix documents the Mastodon Admin API. This API is intended for administrative tools and server management, not
+for basic client functionality.
 
-> **Note**: The Admin API is less stable than the client API. Implementations MAY support only a subset of these endpoints. This API is not required for federation or basic client compatibility.
+> **Note**: The Admin API is less stable than the client API. Implementations MAY support only a subset of these
+> endpoints. This API is not required for federation or basic client compatibility.
 
 ## Authentication
 
@@ -91,7 +93,8 @@ For fine-grained access control, the following granular scopes are available:
 | PUT | `/api/v1/admin/domain_blocks/:id` | Update domain block |
 | DELETE | `/api/v1/admin/domain_blocks/:id` | Remove domain block |
 
-Domain block parameters: `domain`, `severity` (silence/suspend/noop), `reject_media`, `reject_reports`, `private_comment`, `public_comment`, `obfuscate`
+Domain block parameters: `domain`, `severity` (silence/suspend/noop), `reject_media`, `reject_reports`,
+`private_comment`, `public_comment`, `obfuscate`
 
 **Domain Allows** (for limited federation mode):
 
@@ -236,6 +239,8 @@ All moderation actions are logged to the audit log with:
 ## Reference
 
 For implementation details, see:
-- [`app/controllers/api/v1/admin/`](https://github.com/mastodon/mastodon/tree/main/app/controllers/api/v1/admin) - Controller implementations
-- [`app/serializers/rest/admin/`](https://github.com/mastodon/mastodon/tree/main/app/serializers/rest/admin) - Response serializers
+- [`app/controllers/api/v1/admin/`](https://github.com/mastodon/mastodon/tree/main/app/controllers/api/v1/admin) -
+  Controller implementations
+- [`app/serializers/rest/admin/`](https://github.com/mastodon/mastodon/tree/main/app/serializers/rest/admin) - Response
+  serializers
 - [`app/policies/`](https://github.com/mastodon/mastodon/tree/main/app/policies) - Authorization policies

@@ -1,5 +1,6 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
 import {
@@ -245,8 +246,6 @@ export const getNotificationRequest = userReadOperation<{ id: string; present: P
     return row === undefined ? null : (requestStream(db, viewer, [row], present).next().value ?? null);
   },
 );
-
-const iso = (ms: number) => new Date(ms).toISOString();
 
 // id and cursor (a notification id): read as TEXT and bound back with CAST (DATA-6: an imported id may pass 2^53).
 type Job = { id: string; account_id: string; from_account_id: string; kind: "accept" | "dismiss"; cursor: string };

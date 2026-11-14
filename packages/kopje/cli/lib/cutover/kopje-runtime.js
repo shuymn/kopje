@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
  *   & typeof import('../../../src/domain/conversation-rows.ts')
  *   & typeof import('../../../src/platform/identity-bounds.ts')
  *   & typeof import('../../../src/platform/stored-bounds.ts') & typeof import('../../../src/platform/media-files.ts')
+ *   & typeof import('../../../src/platform/dump-catalog.ts') & typeof import('../../../src/platform/dump-literals.ts')
  *   & { renderMaintenanceSnapshot?: unknown }} KopjeRuntime
  */
 
@@ -30,6 +31,8 @@ const runtime = fromSources
       ...(await import("../../../src/platform/identity-bounds.ts")),
       ...(await import("../../../src/platform/stored-bounds.ts")),
       ...(await import("../../../src/platform/media-files.ts")),
+      ...(await import("../../../src/platform/dump-catalog.ts")),
+      ...(await import("../../../src/platform/dump-literals.ts")),
     }
   : /** @type {KopjeRuntime} */ (await import(new URL("../../../dist/maintenance-render.js", import.meta.url).href));
 
@@ -70,4 +73,9 @@ export const {
   storedStatusUrl,
   storedText,
   storedTime,
+  readCatalog,
+  MAX_PROFILE_UPDATES,
+  quoteIdentifier,
+  readColumn,
+  valueLiteral,
 } = runtime;

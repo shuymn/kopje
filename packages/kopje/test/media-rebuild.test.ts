@@ -12,7 +12,7 @@ import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-im
 import { type EncodeOptions, IMAGE_SIZE_LIMIT, RGBA_MIN_CALL_MS } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
-import { admitFlags, type OperatorFlags } from "../src/platform/store-flags";
+import { admitFlags, type OperatorGate } from "../src/platform/store-flags";
 import { randomToken } from "../src/security/tokens";
 import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
@@ -445,29 +445,15 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 });
 
 describe("media rebuild and the operator gate (OPS-8)", () => {
-  function flags(overrides: Partial<OperatorFlags>): OperatorFlags {
-    return {
-      maintenance: null,
-      dump: null,
-      import: null,
-      import_receipt: null,
-      import_reset: null,
-      published: null,
-      unpublished: null,
-      media_rebuild_lease: null,
-      ...overrides,
-    };
-  }
-
   it("admits only the rebuild in readonly maintenance and while unpublished; never during an import or a dump", () => {
-    const readonly = flags({ maintenance: { mode: "readonly", at: NOW } });
-    const unpublished = flags({ unpublished: { at: NOW, import: "i" } });
+    const readonly = gate({ maintenance: true });
+    const unpublished = gate({ unpublished: true });
     for (const held of [readonly, unpublished]) {
       expect(() => admitFlags(held, "media-rebuild", NOW)).not.toThrow();
       expect(() => admitFlags(held, "write", NOW)).toThrow("kopje-maintenance: ");
     }
-    expect(() => admitFlags(flags({ import: {} as never }), "media-rebuild", NOW)).toThrow(/import-in-progress/);
-    const dump = flags({ dump: { leaseUntil: NOW + 60_000 } as never });
+    expect(() => admitFlags(gate({ import: true }), "media-rebuild", NOW)).toThrow(/import-in-progress/);
+    const dump = gate({ dump: { leaseUntil: NOW + 60_000 } });
     expect(() => admitFlags(dump, "media-rebuild", NOW)).toThrow(/dump-in-progress/);
   });
 
@@ -1112,17 +1098,12 @@ describe("media rebuild and PITR", () => {
   });
 });
 
-function flagsWith(lease: { until: number }): OperatorFlags {
-  return {
-    maintenance: null,
-    dump: null,
-    import: null,
-    import_receipt: null,
-    import_reset: null,
-    published: null,
-    unpublished: null,
-    media_rebuild_lease: { holder: "h", ...lease },
-  };
+function gate(overrides: Partial<OperatorGate>): OperatorGate {
+  return { maintenance: false, import: false, unpublished: false, dump: null, media_rebuild_lease: null, ...overrides };
+}
+
+function flagsWith(lease: { until: number }): OperatorGate {
+  return gate({ media_rebuild_lease: lease });
 }
 
 // A custom emoji's image (migration 0055_local_custom_emojis) is held to the emoji limits of platform/emoji-image.ts

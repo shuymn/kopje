@@ -1,8 +1,10 @@
+import { ACCOUNTS_ID_INDEX, CUSTOM_EMOJIS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import type { ImportAuthority } from "../platform/store-admin";
 import { MAX_ENABLED_EMOJIS, presentedCategory, storedMediaMeta } from "../platform/stored-bounds";
-import { accessAdminRefusal, oauthAdmin } from "./admin-authority";
+import { accessAdmin, oauthAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { emojiHref, type EmojiTag, emojiTag } from "./custom-emojis";
 import {
@@ -28,7 +30,7 @@ import { mediaDeleteOperation, readOperation, writeOperation } from "./operation
 // the reservation (abandonEmoji), which the sweep then deletes with a tombstone, as any upload's.
 //
 // Every write checks the Access admin in its transaction (AUTH-5) and logs it (moderation-log.ts, CustomEmoji
-// targets). Each runs at the Store's own time (store.ts), so the writer deadline is judged on one clock.
+// targets). Each runs at the Store's own time (atStoreTime), so the writer deadline is judged on one clock.
 
 export type AdminEmoji = {
   id: string;
@@ -61,16 +63,7 @@ function refusal(code: EmojiRefusal["code"], message: string): EmojiRefusal {
   return { ok: false, code, message };
 }
 
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
-
 const ACCESS_ONLY = "only an Access admin manages custom emoji";
-
-function authorityRefusal(db: Db, authority: ImportAuthority): EmojiRefusal | null {
-  const refused = accessAdminRefusal(db, authority, ACCESS_ONLY);
-  return refused === null && authority.kind === "access" ? null : refusal("wrong-authority", refused ?? ACCESS_ONLY);
-}
 
 type EmojiRow = {
   id: string;
@@ -99,7 +92,8 @@ function adminEmoji(row: EmojiRow): AdminEmoji {
 
 function emojiById(db: Db, id: string): AdminEmoji | null {
   const row = db.first<EmojiRow>(
-    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?`,
+    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX}
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id WHERE e.id = ?`,
     id,
   );
   return row === undefined ? null : adminEmoji(row);
@@ -135,13 +129,17 @@ export type EmojiReserved = { ok: true; id: string; deadline: number } | EmojiRe
 
 // Step 1 of an upload. `limit` is IMAGES_MONTHLY_TRANSFORMS: the two transformations are charged to the instance's
 // budget of the month `now` is in, as the media rebuild charges them (RES-6).
-export const reserveEmoji = writeOperation<
+export const reserveEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; token: string; shortcode: string; replace: boolean; limit: number; now: number },
   EmojiReserved
 >((db, { authority, token, shortcode, replace, limit, now }) => {
-  const refused = authorityRefusal(db, authority) ?? placeRefusal(db, shortcode, replace);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
+  }
+  const placed = placeRefusal(db, shortcode, replace);
+  if (placed !== null) {
+    return placed;
   }
   const owner = oauthAdmin(db);
   if (owner.accountId === null) {
@@ -174,7 +172,7 @@ export type EmojiCompleted = { ok: true; emoji: AdminEmoji } | EmojiRefusal;
 // deadline at `now`, unattached), the shortcode and cap are judged again, the row is promoted (URLs, type, sizes,
 // processed = 1, gc_at NULL), a replaced emoji is disabled, and the emoji row is written and logged. A refusal leaves
 // the reservation as it was, for abandonEmoji.
-export const completeEmoji = writeOperation<
+export const completeEmoji = writeOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
     id: string;
@@ -190,16 +188,16 @@ export const completeEmoji = writeOperation<
   },
   EmojiCompleted
 >((db, input) => {
-  const refused = authorityRefusal(db, input.authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, input.authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const done = emojiById(db, input.id);
   if (done !== null) {
     return { ok: true, emoji: done };
   }
   const row = db.first<{ uri: string }>(
-    `SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id
+    `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
 		WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL
 			AND m.scheduled_status_id IS NULL`,
     input.id,
@@ -223,11 +221,10 @@ export const completeEmoji = writeOperation<
     storedMediaMeta(JSON.stringify({ original: input.original, small: input.small })),
     input.id,
   );
-  const actor = input.authority as Extract<ImportAuthority, { kind: "access" }>;
   const replaced = enabledId(db, input.shortcode);
   if (replaced !== null) {
     db.run("UPDATE custom_emojis SET disabled = 1 WHERE id = ?", replaced);
-    logAction(db, actor, "disable", { type: "CustomEmoji", id: replaced }, { replacedBy: input.id }, input.now);
+    logAction(db, admin.actor, "disable", { type: "CustomEmoji", id: replaced }, { replacedBy: input.id }, input.now);
   }
   db.run(
     `INSERT INTO custom_emojis (id, shortcode, category, visible_in_picker, disabled, created_at)
@@ -240,7 +237,7 @@ export const completeEmoji = writeOperation<
   );
   logAction(
     db,
-    actor,
+    admin.actor,
     "create",
     { type: "CustomEmoji", id: input.id },
     { shortcode: input.shortcode, ...(replaced === null ? {} : { replaces: replaced }) },
@@ -256,11 +253,11 @@ export type EmojiAbandoned = "abandoned" | "kept" | "gone" | "denied";
 // A failed emoji upload, as abandonMedia dooms a failed upload: only the reservation of this id and token (the Worker's
 // own, so no other upload in flight is touched), refused while the media rebuild holds its lease (a
 // mediaDeleteOperation, platform/store-flags.ts).
-export const abandonEmoji = mediaDeleteOperation<
+export const abandonEmoji = mediaDeleteOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; token: string; now: number },
   EmojiAbandoned
 >((db, { authority, id, token, now }) => {
-  if (authorityRefusal(db, authority) !== null) {
+  if (!accessAdmin(db, authority, ACCESS_ONLY).ok) {
     return "denied";
   }
   const row = db.first<{ processed: number; url: string; emoji: number }>(
@@ -286,13 +283,13 @@ export type EmojiUpdated = { ok: true; emoji: AdminEmoji } | EmojiRefusal;
 // POST /admin/emojis/:id: the category and picker flag (logged `update`), and disabling or enabling (logged `disable`,
 // `enable`). Enabling is refused while another emoji of the shortcode is enabled, or at the cap. Changing nothing
 // answers the emoji and logs nothing.
-export const updateEmoji = writeOperation<
+export const updateEmoji = writeOperation.atStoreTime("now")<
   { authority: ImportAuthority; id: string; changes: EmojiChanges; now: number },
   EmojiUpdated
 >((db, { authority, id, changes, now }) => {
-  const refused = authorityRefusal(db, authority);
-  if (refused !== null) {
-    return refused;
+  const admin = accessAdmin(db, authority, ACCESS_ONLY);
+  if (!admin.ok) {
+    return admin;
   }
   const current = db.first<{ shortcode: string; category: string | null; visible_in_picker: number; disabled: number }>(
     "SELECT shortcode, category, visible_in_picker, disabled FROM custom_emojis WHERE id = ?",
@@ -301,7 +298,6 @@ export const updateEmoji = writeOperation<
   if (current === undefined) {
     return refusal("emoji-not-found", `no custom emoji has id ${id}`);
   }
-  const actor = authority as Extract<ImportAuthority, { kind: "access" }>;
   const target = { type: "CustomEmoji" as const, id };
   if (changes.disabled === false && current.disabled === 1) {
     const placed = placeRefusal(db, current.shortcode, false);
@@ -309,10 +305,10 @@ export const updateEmoji = writeOperation<
       return placed;
     }
     db.run("UPDATE custom_emojis SET disabled = 0 WHERE id = ?", id);
-    logAction(db, actor, "enable", target, { shortcode: current.shortcode }, now);
+    logAction(db, admin.actor, "enable", target, { shortcode: current.shortcode }, now);
   } else if (changes.disabled === true && current.disabled === 0) {
     db.run("UPDATE custom_emojis SET disabled = 1 WHERE id = ?", id);
-    logAction(db, actor, "disable", target, { shortcode: current.shortcode }, now);
+    logAction(db, admin.actor, "disable", target, { shortcode: current.shortcode }, now);
   }
   // The category is bound only when the change names one: a stored value is kept in SQL, never read into the Worker
   // and bound again (an imported value of malformed UTF-8 would come back as replacement characters, past its CHECK).
@@ -329,7 +325,7 @@ export const updateEmoji = writeOperation<
     );
     logAction(
       db,
-      actor,
+      admin.actor,
       "update",
       target,
       {
@@ -354,7 +350,8 @@ export const adminEmojis = readOperation<
 >((db, { after, limit }) => {
   const size = Math.min(Math.max(limit ?? ADMIN_EMOJI_PAGE, 1), MAX_ADMIN_EMOJI_PAGE);
   const rows = db.all<EmojiRow>(
-    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e JOIN media_attachments m ON m.id = e.id
+    `SELECT ${ADMIN_COLUMNS} FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX}
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id
 		WHERE e.id > ?1 ORDER BY e.id LIMIT ?2`,
     after ?? "",
     size,
@@ -379,7 +376,7 @@ export type ListedEmoji = {
 export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
   const rows = db.all<{ shortcode: string; category: string | null; url: string }>(
     `SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled
-		JOIN media_attachments m ON m.id = e.id
+		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id
 		WHERE e.disabled = 0 AND e.visible_in_picker = 1 ORDER BY e.shortcode LIMIT ?`,
     MAX_ENABLED_EMOJIS,
   );
@@ -405,7 +402,7 @@ export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
 export function localEmojiObjectOf(db: Db, id: string, origin: string): EmojiTag | null {
   const row = db.first<{ id: string; shortcode: string; created_at: string; content_type: string; url: string }>(
     `SELECT e.id, e.shortcode, e.created_at, m.content_type, m.url
-			FROM custom_emojis e JOIN media_attachments m ON m.id = e.id WHERE e.id = ?`,
+			FROM custom_emojis e INDEXED BY ${CUSTOM_EMOJIS_ID_INDEX} CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id WHERE e.id = ?`,
     id,
   );
   return row === undefined || emojiHref(row.url) !== row.url ? null : emojiTag(origin, row);

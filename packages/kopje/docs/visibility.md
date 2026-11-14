@@ -2,8 +2,9 @@
 
 Who may see a status or an account, what a viewer filters out, who is notified and whom an author may address are
 decided in one module: `src/domain/audience.ts`. It is plain SQL fragments, spliced into the queries that read and
-write. No read path, notification path or delivery path keeps its own copy of a rule. The threat model states the
-invariants (VIS-1 to VIS-19, NET-2, PUSH-3); this page describes how the code applies them.
+write. No read path, notification path or delivery path keeps its own copy of a rule.
+The threat model states the invariants (VIS-1 to VIS-20, VIS-22, VIS-23, VIS-25 to VIS-32, NET-2, PUSH-3); this page
+describes how the code applies them.
 
 ## The viewer context
 
@@ -128,11 +129,11 @@ received status that names its conversation (Mastodon's `conversation`, which `A
 takes that identifier, so the statuses of a thread delivered out of order share it; otherwise a reply to a status not
 stored takes the uri it names (`in_reply_to_uri`), and any other status its own uri (the trigger `statuses_thread`).
 Any identifier is taken, whatever its origin, as Mastodon takes it: a sender can only group its own statuses with
-others, and a conversation is also keyed by its participants, the sender among them. Deleting a status or a conversation changes no other status's thread, so a later reply joins
-the thread its parent was stored in. Migration `0009_conversations` gives the statuses already stored theirs by the
-same rule, from the start of each reply chain down (a status in a cycle of replies, or below one, takes what a start
-would), reading the conversation a received status named from the object it keeps (`raw`),
-with the same checks as the receive path. A status leaves its
+others, and a conversation is also keyed by its participants, the sender among them. Deleting a status or a conversation
+changes no other status's thread, so a later reply joins the thread its parent was stored in. Migration
+`0009_conversations` gives the statuses already stored theirs by the same rule, from the start of each reply chain down
+(a status in a cycle of replies, or below one, takes what a start would), reading the conversation a received status
+named from the object it keeps (`raw`), with the same checks as the receive path. A status leaves its
 conversations however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade,
 and the trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the
 newest left, or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the
@@ -193,20 +194,21 @@ index walk starts above what is hidden and never reads it; a read of every group
 dismissal by its key. The push target and an accepted request's job check both by key (`keptSql`), so a cleared
 notification is not pushed, unfiltered or added to a conversation. A notification written later has a higher id
 (notification ids are never reused) and shows as usual; `notify` does not join a group with no notification above them
-(a dismissed group is not remembered, as when its rows were deleted). A notification whose natural key a hidden row still holds
-replaces that row (`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then deleted in bounded
-batches, newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the request and the rest
-with the inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single dismissal
-(`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
+(a dismissed group is not remembered, as when its rows were deleted). A notification whose natural key a hidden row
+still holds replaces that row (`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then
+deleted in bounded batches, newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the
+request and the rest with the inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single
+dismissal (`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
 
 An account becomes unavailable when its deletion starts: a remote actor's `Delete` writes `accounts.deleted_at` in the
 transaction that writes its purge job (`deleteActor` in `src/domain/inbox.ts`), before the purge's batches remove its
 relationships, notifications and statuses, so none of them is shown while they are removed. Blocks and mutes of the
 account go last, once nothing they filter (its statuses, mentions of it, replies to it, its notifications) is left. The
 row goes with the purge's last batch; until then the actor's own activities are ignored, its document is not stored
-again, and no boost of its statuses is accepted nor any status of it fetched (its tombstone, `isDeletedActor`). `availableSql` finds a deleted account through the partial index
-`accounts_deleted`, which holds only such accounts, so for any other account the rule reads its `local_accounts` row
-alone. A local account is never marked (the schema refuses it), so `availableLocalSql` needs only that row.
+again, and no boost of its statuses is accepted nor any status of it fetched (its tombstone, `isDeletedActor`).
+`availableSql` finds a deleted account through the partial index `accounts_deleted`, which holds only such accounts, so
+for any other account the rule reads its `local_accounts` row alone. A local account is never marked (the schema refuses
+it), so `availableLocalSql` needs only that row.
 
 A remote account is a viewer when it acts on a local status: an inbound `Like` (a favourite, a Misskey reaction or
 an `EmojiReact`) or `Announce` is stored only if the actor may see the status by itself (`canView`, through
@@ -220,8 +222,8 @@ and notifications (R7, R15).
 
 A quote (R35, VIS-27; Mastodon 4.5's `REST::BaseQuoteSerializer` and `StatusFilter#filter_state_for_quote`) is shown
 with the status that makes it, and never widens what that status's rule passed: the quoted status is judged on its own
-by R2 for the same viewer. `quoteReads(viewer).of` in `src/domain/audience.ts` is the only read of `quotes` for a client.
-For each status it gives the quote's state and, when the viewer is shown it, the quoted status:
+by R2 for the same viewer. `quoteReads(viewer).of` in `src/domain/audience.ts` is the only read of `quotes` for a
+client. For each status it gives the quote's state and, when the viewer is shown it, the quoted status:
 
 - a status with no quote, or with a legacy quote (a Note without `quote`, a Misskey quote) that is not accepted, has
   none (`quote: null`), as Mastodon's `Quote#acceptable?`;
@@ -326,7 +328,7 @@ ${DISTRIBUTABLE_SQL}`, never the literals.
 | R34 reports                  | `reports` read and written only in `reports.ts` (the reporter's own report by `createReport`, answered once, a remote reporter's by `fileRemoteReports` from an inbound Flag, and the OAuth admin's reads and actions under R37), read by `report-presenter.ts` (the reporter's Report entity), counted for the OAuth admin by `admin-measures.ts` (R37) and deleted by a remote account's purge (`inbox.ts`) when its target or its reporter is purged; a local reporter's status passes `accountStatusIds` in `timelines.ts` (R11 less the reporter's own block of the account, as Mastodon's `AccountStatusesFilter`), a remote reporter's `remoteReportableSql` (`remoteReportStatusIds` in `audience.ts`); the Flag of a forwarded report goes to `reportForwardees` (R23), signed by the instance actor. A **remote** report's `status_ids` (the ids admitted when it was filed) are metadata shown only to the admin (R15, R37). A report's `admin.report` (`notifyStaff`) is written in its transaction and deleted before it by the purge.                                                                                                                                                                                                                                                                                                 |
 | R35 quotes                   | `quoteReads` (`audience.ts`): each quote's state and quoted status by `visibleSql`, `domainBlocksSql`, `blocksSql` and `mutesSql` for the viewer, read by the presenter (`status-presenter.ts`) for a response's statuses and originals, then for the quoted statuses it embeds; a `DELETE` response's source reads the quoted status in any state. The quotes list (`statusQuotes` in `statuses.ts`): `viewable` (R3) for the quoted status, then one window of accepted quotes (`acceptedQuoteWindow` in `quotes.ts`) under `listableSql` (R8), or `visibleSql` (R2) for the quoted author.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | R36 quote policies           | `quotePolicySql` (`audience.ts`) answers the policy flags (Mastodon's `Status#quote_policy_for_account`); `mayQuoteSql` checks visibility, ownership, boosts and account/domain blocks, and alone decides an inbound QuoteRequest. `storedQuotePolicy` stores nobody unless public or unlisted; `remoteQuotePolicy` stores a remote Note's; `quote_approval` shows the flags (a boost its original's) and `current_user` by `quoteApprovalReads` (R36 for the viewer). Posting a quote (`preparePost` in `statuses.ts`) applies `mayQuoteSql`. See the policy rules above.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R37 admin views              | Only the OAuth admin (`adminAccountId`, `admin-authority.ts`: the one local account whose email matches `admin_email`, failing closed), through a token covering the route's admin scope, reads or acts through `/api/v1/admin/*` (`adminReadOperation`, `adminWriteOperation` in `auth.ts`, checked in the operation's transaction, and only for the permissions in `ADMIN_PERMISSIONS`). The admin sees every report and its accounts (`presentAdminAccounts`, local emails included); a report's statuses only while its reporter may still see them (`accountStatusIds` with `viewerOf(admin, reporter)`, or for a remote reporter `remoteReportStatusIds` with its domain), presented with the admin as the viewer. With manage_users, the admin lists and shows every account, local and remote, with each local account's email (`listAdminAccounts`, `getAdminAccount` in `admin-accounts.ts`); an unavailable account (R1) is shown as suspended. It suspends and unsuspends local accounts other than its own (`actOnAccount`, `unsuspendAdminAccount`; `suspension.ts`), which makes them unavailable (R1) and fences their tokens; the Access admin unsuspends too (`unsuspendAccount`). An action of type `none` warns a local target other than its own (R42). The admin alone is shown a report's `admin.report` notification (R15). |
+| R37 admin views              | Only the OAuth admin (`adminAccountId`, `admin-authority.ts`: the one local account whose email matches `admin_email`, failing closed), through a token covering the route's admin scope, reads or acts through `/api/v1/admin/*` (`adminReadOperation`, `adminWriteOperation` in `auth.ts`, checked in the operation's transaction, and only for the permissions in `ADMIN_PERMISSIONS`). The admin sees every report and its accounts (`presentAdminAccount`, local emails included); a report's statuses only while its reporter may still see them (`accountStatusIds` with `viewerOf(admin, reporter)`, or for a remote reporter `remoteReportStatusIds` with its domain), presented with the admin as the viewer. With manage_users, the admin lists and shows every account, local and remote, with each local account's email (`listAdminAccounts`, `getAdminAccount` in `admin-accounts.ts`); an unavailable account (R1) is shown as suspended. It suspends and unsuspends local accounts other than its own (`actOnAccount`, `unsuspendAdminAccount`; `suspension.ts`), which makes them unavailable (R1) and fences their tokens; the Access admin unsuspends, too (`unsuspendAccount`). An action of type `none` warns a local target other than its own (R42). The admin alone is shown a report's `admin.report` notification (R15). |
 | R38 instance suspension      | `suspendRemote`/`unsuspendRemote` and the jobs in `remote-suspension.ts`; `availableSql` makes a suspended account unavailable (R1) from the commit, and a `suspend` block every account it covers by either key (a host's rule is its longest matching block). The inbox gate (`receive` in `inbox.ts`), `upsertRemoteActor` and `storeRemoteStatus` gate inbound work; a running `Move` from it stops, `answerFollowRequest` refuses it and `listFollowRequests` leaves it out. Unsuspension restores availability when no `suspend` block still covers the account, not what was severed; a `Follow` or `Accept` the send-time check dropped meanwhile is held and sent then (`handshake-replays.ts`). See the remote suspension paragraphs below, "Instance domain blocks" and "Held handshakes".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | R39 suggestions              | `suggestionSourceSql` and `suggestionCandidateSql`, then `listedForSql` (R12), in `suggestions` (`suggestions.ts`, `GET /api/v1/suggestions` and `/api/v2/suggestions`); see "Suggestions" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | R40 announcements            | `announcementShownSql` (`audience.ts`), in `announcements.ts` alone (the only module that reads or writes the three tables): a published announcement is shown to every signed-in local user alike, unpublished announcements are omitted from the list and answer 404 to dismiss and reaction requests; dismissals and a reaction's `me` are the viewer's own, counts are everyone's; mentions name available accounts only (R1); the text is the operator's own. No per-viewer filter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -340,7 +342,7 @@ x" is the REST read with `max_id` just above x and `limit` 1: its predicates, cu
 `only` for it, which adds `s.id = x` to every branch, cuts an author window to x's author and the followed hashtags to
 x's own; home's exclusive-list exclusion is read for x's author alone, from the viewer's lists, and each of x's followed
 hashtags is bounded at x, whose window it heads. Positioned membership agrees with a page read from the top for every
-per-row predicate. It differs only for home's followed-hashtag windows, which a page cuts at `tagCandidates` candidates
+per-row predicate. It differs only for home's followed-hashtag windows, which a page cuts at `streamWindow` candidates
 from its cursor: a post of a followed hashtag behind 40 or more newer posts the viewer's home hides is sent, though the
 first page of home leaves it out. That is what `max_id` paging returns, and the post passes R9; the difference is
 accepted. R32 differs from Mastodon in two accepted ways: at most 40 boosts of a deleted status are deleted on each
@@ -364,18 +366,19 @@ have been able to view the status at capture (R3): an author who blocks the view
 
 Pins and conversation mutes (`src/domain/status-actions.ts`, Mastodon's `StatusPin` and `ConversationMute`, migration
 `0018_status_pins_and_conversation_mutes`) act on a status the viewer may see by itself (R3; anything else is not
-found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`; the
-stored bound of migration `0089_pin_cap` holds five for a local account and 20 for a remote one, imports included);
-pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads the account's pins through their primary
-key (at most its limit of them) and applies the account statuses rule (R11), newest pin first; the actor's `featured` collection serves them as the
-object endpoint serves statuses (R4), the uri alone of a private one, as Mastodon's `CollectionsController` does; and
-pinning or unpinning records an `Add` or `Remove` for the followers (R23, kind `other`), after an `Update` of the
-actor before the account's first one, pin or featured hashtag (`announceFeatured` in `actor-update.ts`). A conversation mute is its
-owner's and names a thread (`statuses.thread`); only the policy module reads it (`conversationMutedSql`): the
-presenter shows it in the viewer's `muted` of each status (a boost's own thread, as Mastodon gives a boost its own
-conversation), and `notify` writes through `notifiedSql`, R15 less a notification about a status of a conversation
-the recipient mutes (`NotifyService#conversation_muted?`; a reblog notification names the original). Listing and
-pushes keep `shownSql`: a notification written before the mute stays, as Mastodon drops only new ones.
+found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`;
+storage holds five for a local account and 20 for a remote one, imports included: RES-4 in
+[threat-model.md](threat-model.md)); pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads at
+most the account's limit of pins through their primary key and applies the account statuses rule (R11), newest pin
+first; the actor's `featured` collection serves them as the object endpoint serves statuses (R4), the uri alone of a
+private one, as Mastodon's `CollectionsController` does; and pinning or unpinning records an `Add` or `Remove` for the
+followers (R23, kind `other`), after an `Update` of the actor before the account's first one, pin or featured hashtag
+(`announceFeatured` in `actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`);
+only the policy module reads it (`conversationMutedSql`): the presenter shows it in the viewer's `muted` of each status
+(a boost's own thread, as Mastodon gives a boost its own conversation), and `notify` writes through `notifiedSql`, R15
+less a notification about a status of a conversation the recipient mutes (`NotifyService#conversation_muted?`; a reblog
+notification names the original). Listing and pushes keep `shownSql`: a notification written before the mute stays, as
+Mastodon drops only new ones.
 
 Endorsements (`src/domain/endorsements.ts`, Mastodon's `AccountPin`, migration `0014_account_notes_and_pins`) are
 the accounts a local user features. An account is endorsed only while its endorser follows it (an accepted follow,
@@ -393,15 +396,15 @@ lists the discoverable accounts that R12 lists to the viewer: `accounts.discover
 (`update_credentials`) or what a remote actor published (an actor that published nothing is not listed), and
 `listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute (while the
 mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
-`not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that an account moved). A local account
-is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon. `order=active` orders by the
-account's newest public, unlisted or private status (`accounts.last_status_id`, which the triggers of migration
-`0021_directory` keep as statuses are stored, deleted or hidden), accounts without one last, then by id; `order=new` by
-id. A page reads the partial index of its order (discoverable accounts only, all or local) from the start, a window of
-`DIRECTORY_WINDOW` (2) times offset plus limit entries, judges each by key, and answers those R12 lists from the offset:
-so it never reads an account that is not discoverable nor one below the window, and when more than half the window is
-hidden from the viewer the page comes back short (a slice of the full directory, since the window is a prefix of it).
-An offset above `MAX_DIRECTORY_OFFSET` (400) answers no accounts.
+`not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that
+an account moved). A local account is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon.
+`order=active` orders by the account's newest public, unlisted or private status (`accounts.last_status_id`, which the
+triggers of migration `0021_directory` keep as statuses are stored, deleted or hidden), accounts without one last, then
+by id; `order=new` by id. A page reads the partial index of its order (discoverable accounts only, all or local) from
+the start, a window of `DIRECTORY_WINDOW` (2) times offset plus limit entries, judges each by key, and answers those R12
+lists from the offset: so it never reads an account that is not discoverable nor one below the window, and when more
+than half the window is hidden from the viewer the page comes back short (a slice of the full directory, since the
+window is a prefix of it). An offset above `MAX_DIRECTORY_OFFSET` (400) answers no accounts.
 
 A scheduled status (`src/domain/scheduled-statuses.ts`, migration `0011_scheduled_statuses`) is not a status: it is
 a row of `scheduled_statuses` with the post's parameters, and its owner's alone (R26, `scheduledOwnSql`). No read,
@@ -433,14 +436,14 @@ it (the architecture test below) but the OAuth admin of the Mastodon admin API (
 newest first, by state, reporter and reported account, and resolves, reopens, assigns and re-categorizes them; each such
 write is recorded in the moderation log in its transaction. The admin is shown a report's statuses only while its
 reporter may still see them by the rule the report was made under (R11, the reporter as the viewer); Mastodon shows
-them all, deleted ones included. A resolved report shows `action_taken` to its reporter. It names an available account (any other is not
-found) and only statuses of that account the reporter may see by the account statuses rule (R11, `accountStatusIds`):
-one they may not see, or of another account, makes the whole report not found, as Mastodon's `.find` does. Unlike the
-profile read, the reporter's own block of the account hides nothing there, as `AccountStatusesFilter#blocked?` is the
-account's block of the reporter alone. Forwarded, the report becomes a `Flag` from the instance actor (so it names no
-local account), carrying the reporter's comment and the uris of the account and its reported statuses, to the
-servers Mastodon chooses (`reportForwardees`, R23, below). A reported status deleted later stays named by its id;
-a remote account's purge deletes the reports of it, and the notification of each before it.
+them all, deleted ones included. A resolved report shows `action_taken` to its reporter. It names an available account
+(any other is not found) and only statuses of that account the reporter may see by the account statuses rule (R11,
+`accountStatusIds`): one they may not see, or of another account, makes the whole report not found, as Mastodon's
+`.find` does. Unlike the profile read, the reporter's own block of the account hides nothing there, as
+`AccountStatusesFilter#blocked?` is the account's block of the reporter alone. Forwarded, the report becomes a `Flag`
+from the instance actor (so it names no local account), carrying the reporter's comment and the uris of the account and
+its reported statuses, to the servers Mastodon chooses (`reportForwardees`, R23, below). A reported status deleted later
+stays named by its id; a remote account's purge deletes the reports of it, and the notification of each before it.
 
 A remote server reports by a `Flag` (Mastodon's `ActivityPub::Activity::Flag`): its actor, a remote account, is the
 reporter, and each local account it names (or remote one, with a named status replying to a local account) gets a
@@ -467,13 +470,13 @@ deletion has started) as suspended, its nested account redacted as everywhere. T
 
 The admin suspends a local account other than its own (`POST .../action` with `suspend`, `src/domain/suspension.ts`),
 which makes it unavailable (R1) at once, and unsuspends it. The suspension refuses every token and code issued before
-it, also after the unsuspension (the credential epoch, which a suspension moves and an unsuspension keeps), resolves the reports on the account frozen at its time, and sends an
-`Update` of the redacted actor; the unsuspension sends one of the full actor. Both go to the audience of Mastodon's
-`AccountReachFinder` (R23, `reachFollowers`, `reachMentioned` and `reachFollowing` in `audience.ts`): the accepted
-remote followers, the remote accounts its newest 200 statuses of the two days before the suspension mention (at most
-2,000), and the remote accounts it followed or asked to follow in those two days (at most 2,000 of each). The `Update`
-is neither content nor a retraction, so no one is left out. While the account is suspended, its lanes send only
-retractions and that `Update` (R1 above).
+it, also after the unsuspension (the credential epoch, which a suspension moves and an unsuspension keeps), resolves the
+reports on the account frozen at its time, and sends an `Update` of the redacted actor; the unsuspension sends one of
+the full actor. Both go to the audience of Mastodon's `AccountReachFinder` (R23, `reachFollowers`, `reachMentioned` and
+`reachFollowing` in `audience.ts`): the accepted remote followers, the remote accounts its newest 200 statuses of the
+two days before the suspension mention (at most 2,000), and the remote accounts it followed or asked to follow in those
+two days (at most 2,000 of each). The `Update` is neither content nor a retraction, so no one is left out. While the
+account is suspended, its lanes send only retractions and that `Update` (R1 above).
 
 The admin also suspends a remote account (R38, `src/domain/remote-suspension.ts`, migration `0045_remote_suspension`),
 as Mastodon's `SuspendAccountService` for a remote account: it is unavailable (R1) from the suspension's commit, shown
@@ -495,27 +498,27 @@ receivers of the `Accept`s it withdraws: a Follow's answer matters to the follow
 recorded, the job supersedes those earlier `Accept`s in bounded steps, so none still waiting is sent after it. Local
 accounts' follows of it are kept; a pending one's `Follow` is held and sent once the account is available again
 ("Held handshakes", below), as is a local account's `Reject` of its request, and any other content to it is dropped at
-send time (VIS-30). Each round writes at most
-`MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are deleted in bounded steps before the follow
-ends. Severing a remote follower's follow, or its request in a domain mode (a conversion, below, and
-the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow` id as retracted,
-under ID-7's rules for a pair id and the retraction cap.
+send time (VIS-30). Each round writes at most `MODERATION_ROUND_ROWS` rows: a follow notification's push deliveries are
+deleted in bounded steps before the follow ends. Severing a remote follower's follow, or its request in a domain mode (a
+conversion, below, and the domain job), deletes its `follow` and `follow_request` notifications and records its `Follow`
+id as retracted, under ID-7's rules for a pair id and the retraction cap.
 
 Once the account job ends, the account's availability and `suspension_source` are a function of the final decisions
 alone (the account's suspension source and the blocks), whatever the order of decisions and rounds; its exact
 `suspended_at` is not, since a suspension writes its own time and a conversion keeps the one it finds. What the job
 severed and resolved is not either: severing is monotone per follow generation (a follow row) and never reversed, as in
 Mastodon, so a generation severed while the job held stays severed after the suspension or block is lifted, and which
-generations were severed depends on the order of the decisions and the rounds. Reports are resolved a batch per round (`REPORT_ROUND`), each committed round
-under its job generation's fence: a job ended or reset meanwhile keeps the batches already resolved and leaves the
-rest open, or to the next generation's fence.
+generations were severed depends on the order of the decisions and the rounds. Reports are resolved a batch per round
+(`REPORT_ROUND`), each committed round under its job generation's fence: a job ended or reset meanwhile keeps the
+batches already resolved and leaves the rest open, or to the next generation's fence.
 
 Unsuspending an account that a `suspend` block still covers answers 200 and converts the suspension: the
 account keeps `suspended_at` with `suspension_source = 'domain'`, so it stays unavailable and the entity shows
 `suspended: true`, and the same transaction resets its job to mode `domain` with a fresh follow bound. In that mode
 each round requires the domain mark and live coverage, and the job severs both ways, its requests included, as the
 domain job severs a covered account (below). Suspending it again sets mode `account` back, which keeps local follows
-of it and its requests; a stale mode ends the job at its next round. An account held only by a domain mark answers 403: lowering the block lifts it.
+of it and its requests; a stale mode ends the job at its next round. An account held only by a domain mark answers 403:
+lowering the block lifts it.
 
 Inbound, the gate runs in every round after the deleted-actor check and before the actor upsert: a verified document
 of an individually suspended actor updates only its inbox and shared inbox, so the job's `Reject` reaches a current
@@ -540,8 +543,8 @@ R3, through `audience.ts`).
 Announcements (`announcements.ts`, migration `0056_announcements`) are the Access admin's: written only through
 `/admin/announcements` (AUTH-5) and shown, while published (`announcementShownSql`), to every signed-in local user
 alike, as Mastodon's `Announcement.published`. A draft, a scheduled or an unpublished announcement answers 404 to the
-dismiss and reaction routes. What a viewer is shown of its own is its dismissal (`read`) and its reactions (`me`); counts
-are everyone's. Mentions are resolved when read, to available accounts only (R1). The stream carries the same to
+dismiss and reaction routes. What a viewer is shown of its own is its dismissal (`read`) and its reactions (`me`);
+counts are everyone's. Mentions are resolved when read, to available accounts only (R1). The stream carries the same to
 every listener on `user` (R33). The rule has no per-viewer filter.
 
 ### Trends (R41)
@@ -625,13 +628,13 @@ selects what the rules let the viewer see, and the presenter then reports, in ea
 Mastodon's `StatusRelationshipsPresenter` does; a boost and its original report the same. Nothing is removed on the
 server: the client decides by context, so pages and cursors are those of the read. A filter matches a status by a
 keyword in its spoiler text, text (a remote status's lines as Mastodon's `PlainTextFormatter` extracts them), poll
-choices or media descriptions (of the original, for a boost), with `whole_word` as Mastodon's regex reads it, or by a status it names
-(the status or, for a boost, its original). A filter status can be added only for a status the viewer may view
-(`canView`); one they may not view is refused as a missing one is, and a filter status is listed by its ids alone,
-whatever the viewer may see of it later. `test/policy-filters.test.ts` checks the endpoints on generated worlds against
-a model of the matching. Matching is bounded: each status is matched on at most 10,000 code units of its text, and the
-statuses of one response on 400,000 together, by water-filling (short texts whole, long ones up to one level), so a
-keyword deep in a long status of a very large response may be missed; filter statuses always match.
+choices or media descriptions (of the original, for a boost), with `whole_word` as Mastodon's regex reads it, or by a
+status it names (the status or, for a boost, its original). A filter status can be added only for a status the viewer
+may view (`canView`); one they may not view is refused as a missing one is, and a filter status is listed by its ids
+alone, whatever the viewer may see of it later. `test/policy-filters.test.ts` checks the endpoints on generated worlds
+against a model of the matching. Matching is bounded: each status is matched on at most 10,000 code units of its text,
+and the statuses of one response on 400,000 together, by water-filling (short texts whole, long ones up to one level),
+so a keyword deep in a long status of a very large response may be missed; filter statuses always match.
 
 ## Outbound recipients
 
@@ -665,20 +668,22 @@ the cleanup in `blocks.ts`); until the cleanup reaches a follower there, it is s
 a silent recipient of an addressed activity by a copy of its own at its personal inbox (VIS-2), and the recipient of
 an activity without `to` by shared inbox, else personal inbox (R38's severing `Reject` by personal inbox alone, its
 `personalInbox` option). No other SQL turns follows into inboxes or reads an account's shared inbox (the architecture
-test below).
+test below). The signed `Delete` of a public or unlisted status is addressed to Public alone, so its targets follow
+the `to` and `cc` its unsigned form would have, which its envelope records (`addressing`) and staging reads as
+`stagedAddressing` validates them: it reaches the same inboxes with the same personal copies, each the signed body
+unchanged, which names nobody (VIS-2's exception and VIS-3 in [threat-model.md](threat-model.md)).
 
 A remote author's proven `Delete` of a public or unlisted original that local accounts boosted or quoted is forwarded
-through each of them (VIS-3 in [threat-model.md](threat-model.md)): its audience names only the owner's references,
-which `shareReaches`' rule resolves when the forward is staged (one at a time, RES-6 in
+through each of them (VIS-3 in [threat-model.md](threat-model.md), with its gaps): its audience names only the owner's
+references, which `shareReaches`' rule resolves when the forward is staged (one at a time, RES-6 in
 [threat-model.md](threat-model.md)): its boost and its public, unlisted or private quoting statuses (`Audience.shares`)
 into the owner's followers, by shared inbox, and every inbox that received each or may (`receiversOf`); its direct or
-limited quoting statuses (`Audience.receiptShares`) into their receipts alone (`receiptsOf`: the inboxes the quote
-was delivered to, never a row or unexpanded target of its `Create`, which may never have been sent), so no server that
-never received such a quote learns of it. _Gap (accepted):_ an inbox whose `Create` of such a quote is still in
-flight when the forward is staged is not reached; it may get the quote and later find the original gone. The forwarded activity is the remote author's, so its `to` never decides a target: no account it
-names is addressed and nobody gets a personal copy. It is a retraction, so `recipientsFor` leaves out no follower and
-the send-time check never drops it. A direct or limited boost (a converted one) is no member: its booster's followers
-may not see it, so it forwards nothing. A withdrawn quoting status is no member either.
+limited quoting statuses (`Audience.receiptShares`) into the inboxes the quote was delivered to alone (`receiptsOf`),
+so no server that never received such a quote learns of it. The forwarded activity is the remote author's, so its
+`to` never decides a target: no account it names is addressed and nobody gets a personal copy. It is a retraction, so
+`recipientsFor` leaves out no follower and the send-time check never drops it. A direct or limited boost (a converted
+one) is no member: its booster's followers may not see it, so it forwards nothing. A withdrawn quoting status is no
+member either.
 
 ### Instance domain blocks (R38, VIS-30)
 
@@ -740,8 +745,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   names: at most two unique seeks per suffix of 2 to 8 labels. No stored bound limits a host's length, so a host past
   1,012 bytes is never walked and is covered: no server's name has more in either form (DNS's longest is 253 octets,
   RFC 1035 §2.3.4, and its U-labels decode to no more code points than that, each of at most 4 UTF-8 bytes). A host
-  within them has at most a dot per byte, so its walk is at most 1,012 rows (`test/domain-suffix-walk.test.ts`). The check runs where the walk would: the
-  inbox gate and fetch refusals always, availability only while a `suspend` block exists (below).
+  within them has at most a dot per byte, so its walk is at most 1,012 rows (`test/domain-suffix-walk.test.ts`).
+  The check runs where the walk would: the inbox gate and fetch refusals always, availability only while a `suspend`
+  block exists (below).
 - **Availability.** `availableSql` makes a remote account unavailable when a block covers either key `inDomainSql`
   compares (its stored domain or its actor id's host), read live in every statement; no mark is read. While the
   instance has no `suspend` block the rule costs one constant seek per predicate a statement emits, and its `CASE`
@@ -760,16 +766,17 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     withdrawing `Reject` to its personal inbox, a request deleted without one, as Mastodon's `DeleteAccountService`
     purges `FollowRequest`s) and local accounts' follows and requests of it (each with its `Undo`), through
     `severFollow` with the account job's preparation. Before a local follower's follow ends, the preparation removes
-    the account from that follower's lists, writing at most the round's room (about 259 rows) a round, so the follow's final delete writes no list row. Its reads are not bounded the same way: each
-    preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all of the follower's
-    lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always removed in
-    one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round,
-    one resumed from the round before included. An individually suspended account is skipped, so its local follows
-    are kept (`account` wins; for Mastodon's rule, see [mastodon-deviations.md](mastodon-deviations.md), remote
-    suspension). **Limit (imported lists):** the memberships are removed before the follow ends,
-    and nothing restores them. A follower imported with more than about 259 lists that include a covered account
-    needs several rounds for them; if the block is lifted meanwhile (an unblock, or a conversion back to an
-    individual suspension), the follow can survive with some of those list memberships removed.
+    the account from that follower's lists, writing at most the round's room (257 rows,
+    `src/domain/remote-suspension.ts`) a round, so the follow's final delete writes no list row. Its reads are not
+    bounded the same way: each preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all
+    of the follower's lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always
+    removed in one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS`
+    (100) accounts are reconciled a round, one resumed from the round before included. An individually suspended account
+    is skipped, so its local follows are kept (`account` wins; for Mastodon's rule, see
+    [mastodon-deviations.md](mastodon-deviations.md), remote suspension). **Limit (imported lists):** the memberships
+    are removed before the follow ends, and nothing restores them. A follower imported with more than 257 lists that
+    include a covered account needs several rounds for them; if the block is lifted meanwhile (an unblock, or a
+    conversion back to an individual suspension), the follow can survive with some of those list memberships removed.
 
   No account is stored or moves into a covered domain, so the last walk after the last reset finds every covered
   account. Once the job ends, the domain marks (`suspension_source = 'domain'`; not their exact `suspended_at`) and
@@ -864,7 +871,7 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   Misskey by the pair alone), so the newest is enough. Its identity is taken by bytes: the `Follow`'s id within
   `ACTIVITY_ID_LIMIT`, or, for a `Reject` that names none, the edge id its own id ends with, only when that suffix is
   the canonical decimal of a 64-bit integer; anything else holds nothing. A local account holds at most
-  `HELD_REJECTS_PER_ACCOUNT` (100) pairs; past it a new pair's `Reject` is dropped as before and logged
+  `HELD_REJECTS_PER_ACCOUNT` (100) pairs; past it a new pair's `Reject` is dropped and logged
   (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated, and a slot a replay
   frees may go to any pair. The replay (`replayReject` in `handshake-replays.ts`) records the `Reject` again with its
   original id once, read live, both accounts are available and the follower's inbox is deliverable and uncovered; no
@@ -876,20 +883,19 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   follower is purged.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
-  held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local account's pending
-  follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account its `Accept`;
-  any other ends the hold. The handshake is recorded again with its original id (activities.ts: a `Follow`'s id is
-  `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without one) only when,
-  read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared inbox, else the
-  personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's rule
-  (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower nor
-  its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
+  held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local
+  account's pending follow of a remote account owes its `Follow`, a remote account's accepted follow of a local account
+  its `Accept`; any other ends the hold. The handshake is recorded again with its original id (activities.ts: a
+  `Follow`'s id is `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without
+  one) only when, read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared
+  inbox, else the personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's
+  rule (`followableBySql`) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower
+  nor its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
   moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
-- **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing, is confirmed for sending
+- **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing is confirmed for sending
   while its recipient is unavailable (a retraction, a `Reject` that withdraws an accepted follow included, is exempt);
   a POST confirmed before an unavailability commits may still finish, as for any row. Once its replay records it, a
-  held `Reject` is a queued answer under NET-2's keep rule, with that rule's accepted window: a newer `Follow` of the
-  pair arriving before its claim keeps it, so the older generation's `Reject` is still sent.
+  held `Reject` is a queued answer under NET-2's keep rule and its accepted window ([threat-model.md](threat-model.md)).
 - **Latency (an estimate, not a bound).** With an unloaded queue and no failures, a hold is sent 5 to 10 minutes after
   its recipient is available again (the cron and each jobs message run a round); backlog, maintenance and backoff
   make it longer.
@@ -981,65 +987,20 @@ the viewer blocks. A Store converted by an earlier release may hold a block with
 
 ## The architecture test
 
-`test-node/policy-boundary.test.ts` reads the source tree (as `test-node/layering.test.ts` does) and fails when SQL
-outside the policy module:
+`test-node/policy-boundary.test.ts` reads the source tree (as `test-node/layering.test.ts` does) and keeps the rules of
+this page in the policy module: SQL elsewhere calls its fragments instead of reading the tables they decide on. It pins
+the single writers of notifications, outbound activities and the audience rows the same way, and the selection of an
+activity's recipients: no other SQL turns follows into inboxes or picks an account's shared inbox. The inventory is the
+test's `RULES` array: each entry is a pattern and the files allowed to match it, each with its reason, and an allowed
+file that no longer matches fails the test too, so the list does not outlive its reason. Besides it:
 
-- reads `blocks`, `mutes` or `domain_blocks` (`FROM` or `JOIN`), except in the modules that write them, each listed
-  with its reason: `blocks.ts` (blocks, mutes, domain blocks and their cleanups) and `inbox.ts` (an inbound `Block`
-  and its `Undo`, the expired mute sweep, a `Move` carrying blocks and mutes, an actor purge);
-- judges suspension or deletion (`suspended_at` or `deleted_at IS [NOT] NULL`) or spells a set of visibilities
-  (`IN ('public', ...`);
-- inserts into `notifications` outside `notifications.ts`, or into `outbound_activities` or `deliveries` outside
-  `deliveries.ts`;
-- inserts into `status_mentions` outside its listed writers: `statuses.ts`, `remote-statuses.ts` and `inbox.ts`;
-- selects inboxes from `follows` (follower expansion) outside the policy module, except the ActivityPub followers and
-  following collections in `actors.ts`, whose items name an inbox and are not sent anything;
-- reads `shared_inbox_url` outside the policy module, except where `remote-actors.ts` stores a remote actor's inboxes
-  and where `deliveries.ts` moves a row its recipient's shared inbox refused to that recipient's personal inbox.
-- reads or writes `scheduled_statuses` outside `scheduled-statuses.ts`, whose every read is the owner's
-  (`scheduledOwnSql`, R26).
-- reads or writes `poll_votes` outside `polls.ts` and `poll-presenter.ts`, which show only counts and a viewer's own
-  votes, and `status-rows.ts`, which only counts the viewer's own votes of the current generation (R27).
-- reads or writes `tag_follows` outside `tags.ts` and home's windows in `timelines.ts`, each the viewer's own (R29).
-- reads `conversation_mutes` outside the policy module, except `status-actions.ts`, whose unmute deletes the viewer's
-  own mute (R31).
-- reads or writes `follow_recommendation_mutes` outside the policy module (`suggestionCandidateSql`, R39), except
-  `suggestions.ts`, which writes the viewer's own dismissals, and `inbox.ts`, whose actor purge deletes the dismissals
-  of the account.
-- reads `account_notes` outside `accounts.ts`, which reads only the viewer's own (R28) and writes them, and `inbox.ts`,
-  whose actor purge deletes the notes on the account.
-- reads or writes `announcements`, `announcement_reactions` or `announcement_dismissals` outside `announcements.ts`
-  (R40).
-- reads or writes `trend_tags`, `trend_statuses`, `trend_links`, `tag_trend_reviews`, `status_trend_reviews`,
-  `account_trend_reviews`, `link_trend_reviews` or `link_provider_reviews` outside `trends.ts` (R41).
-- reads or writes `account_warnings` outside `account-warnings.ts` and the policy module (R42).
-- reads or writes `status_cards` outside `link-cards.ts`, the image link and reference checks of `card-images.ts`,
-  `status-rows.ts` (the row-heap estimate R's term for a status's card, and `SHOWN_CARD_JOIN`, the presenter's card
-  join), and the reads of a link's public copies by the trends (`trends.ts`) and the link timeline's window
-  (`timelines.ts`) (R43).
-- writes `status_cards` outside `link-cards.ts` and the image link of `card-images.ts` (R43).
-- reads or writes `reports` outside `reports.ts`, which writes the reporter's report and answers it once (R34), files
-  a remote reporter's (`fileRemoteReports`), serves the OAuth admin's reads and actions (R37) and walks an account's
-  reporters for a suspension's reach (`reachReporters`), `report-presenter.ts`, which presents the reporter's Report
-  entity, `admin-measures.ts`, which counts reports for the OAuth admin's measures (R37), and `inbox.ts`, whose actor
-  purge deletes the reports of the account and by it.
-- writes `reports` outside `reports.ts` and the actor purge of `inbox.ts`, so its readers only read (R34).
-- reads or writes `quotes`, `quote_revocations` or `quote_requests` outside `quotes.ts`, which stores and verifies
-  received quotes, applies the `Delete` of a stamp (ID-6), answers QuoteRequests, serves and revokes Kopje's
-  authorizations (VIS-28) and reads the quotes list's window, `inbox.ts`, whose batched delete of a status detaches the
-  quotes of it and deletes its own, and the policy module, whose `quoteReads` is the only read of a quote for a client
-  (R35) and `reachQuoters` the only one for an audience.
-- writes `status_mentions` outside `statuses.ts`, `remote-statuses.ts`, `inbox.ts` and `quotes.ts` (an accepted
-  QuoteRequest's silent mention of the quoted author).
+- the status id brands (`VisibleStatusId`, `OwnStatusId`, `WithVisibleStatus`) are made by the policy module only:
+  elsewhere a brand may be named only in an import or as the type of a function parameter, and statuses are presented
+  only from `src/domain/`, where oxlint refuses an `any` argument (`.oxlintrc.json`) ("status id brands");
+- no source deletes a local account ("local accounts").
 
-An allowed file that no longer matches fails the test too, so the list does not outlive its reason.
-
-It also keeps the status id brands with the policy module. Elsewhere, `VisibleStatusId`, `OwnStatusId` and
-`WithVisibleStatus` may be named only in an import or as the type of a function parameter: a cast, a type argument
-(`db.all<{ id: VisibleStatusId }>`), a type predicate, an alias or an annotated variable or result could make one from
-a plain string. The presenter is called only from `src/domain/`, where oxlint refuses an `any` argument
-(`.oxlintrc.json`), so no `any` reaches its parameters. The test also checks the generated visibility sets and that
-`REACHES_FOLLOWERS_SQL` is the list of the `statuses_feed` index.
+`test/policy.test.ts` checks the generated visibility sets and that `REACHES_FOLLOWERS_SQL` is the list of the
+`statuses_feed` index.
 
 The fragments nest: Cloudflare's SQLite refuses an expression deeper than 100 levels, and each nested `EXISTS` and
 each term of an `AND` chain adds to it. The deepest fragment, `shownSql`, compiles at a depth of about 76; keep the
@@ -1088,10 +1049,11 @@ the viewer owns (their notifications, bookmarks, favourites, notification reques
 rule over what the row names: the viewer already knows their own relations and rows, and Mastodon paginates before
 filtering there. A candidate may also be left out by the request's own conditions (a post without media, a reply, a
 remote post on a local hashtag timeline), a status the viewer may see without them. Where a read cannot keep rows
-hidden by visibility out with an index, it walks past them: such rows cost their number, never a cursor. A public page's newer link from an empty page past its list's oldest is not an
-item's id but a boundary, `max_id` − 1 of that page's own request (`src/web/view/pager.ts`): it may equal a hidden
-status's id and discloses nothing, as it is derived from the request alone. A status page's replies list oldest first,
-and their earlier link from an empty page past their newest is the same kind of boundary, `min_id` + 1.
+hidden by visibility out with an index, it walks past them: such rows cost their number, never a cursor. A public page's
+newer link from an empty page past its list's oldest is not an item's id but a boundary, `max_id` − 1 of that page's own
+request (`src/web/view/pager.ts`): it may equal a hidden status's id and discloses nothing, as it is derived from the
+request alone. A status page's replies list oldest first, and their earlier link from an empty page past their newest is
+the same kind of boundary, `min_id` + 1.
 
 The windows, for a page of `limit` (`readWindow(limit)` = max(3 × limit, 40); `streamWindow(limit)` = max(2 ×
 limit, 40); statuses page by 20 and at most 40, accounts and notifications by 40 and at most 80):
@@ -1158,220 +1120,30 @@ from their statements, no match lost at a merge frontier, and continuations that
 A pull request that adds or changes a rule of this page changes `test/policy-model.ts` with it, and a new read or
 delivery path takes its rule from the policy module rather than its own SQL.
 
-`test/policy-oracle.test.ts` checks each fragment against a second statement of its rule. `test/policy-model.ts` states
-the rules of this page in plain TypeScript, without importing the module. `test/policy-world.ts` generates worlds with
-[fast-check](https://fast-check.dev/): four local accounts (one of them may be suspended, some may hide their network),
-two or three remote accounts on two domains (some with an actor id on a subdomain, with a port, with a trailing dot or
-on the other domain; one may be being deleted, with its statuses and edges still stored), up to 22 statuses of every
-visibility with mentions (some silent), boosts, replies and replies that continue the author's own thread (written
-with the conversation partner `statuses.ts` carries over), replies to a status never stored (no parent and no
-partner) and replies continuing those (a parent but no partner, as a purge leaves a reply to the account it removes),
-accepted and pending follows, blocks both ways, mutes that have expired, expire at the time of the read or later, or never, with or without notifications, and domain blocks in
-their stored form, including the instance's own domain and a domain nobody lives on, and lists of local accounts, exclusive or not, with each
-`replies_policy`, whose members are their owner and accounts it follows, accepted or pending, whatever else the owner
-blocks, mutes or domain-blocks (a Store holds no other member: the trigger, migration `0007_list_members` and the
-converter keep it so). Each property writes a world into one Store and evaluates its fragment over every pair the rule takes: every
-viewer (each account and the anonymous one) with every account or status (for the list rules, `listableSql` and
-`homeFilterSql`, the viewers their callers judge: each local account and the anonymous one), every owner with every
-account, for `followListedSql` every viewer with every owner and account, and, for `shownSql`, every local recipient
-with every notification type, sender and status (or none). The set of pairs it accepts must equal the model's. A failure
-prints the shrunk world, the pairs only one side accepts, and the seed; `FC_SEED=<seed> pnpm vitest run
-test/policy-oracle.test.ts` replays it. Worlds also hold local accounts' pins of their own statuses and their conversation mutes, and
-`notifiedSql` and `conversationMutedSql` are checked as `shownSql` is. Worlds hold quotes in every stored state
-(legacy quotes, self-quotes and gone quoted statuses among them), some statuses withdrawn, and policies with any
-flags; `quoteReads` (R35), with and without the source, and `quotePolicySql` (R36) are checked for every viewer with
-every status.
+`test/policy-model.ts` states the rules of this page in plain TypeScript, without importing the module.
+`test/policy-world.ts` generates the worlds the harnesses share with [fast-check](https://fast-check.dev/); what a world
+holds is its `World` type and `worldArb`. Each harness's header says what it builds and checks, and its cases are the
+inventory:
 
-`test/policy-bounds.test.ts` takes one generated world, for a fixed seed, in which every endpoint below shows the viewer
-something. It runs home, the public and tag feeds, account statuses, notifications (the list, a page of groups, a group
-and its accounts, and both unread counts), context, conversations, favourites, bookmarks, `favourited_by`,
-`reblogged_by`, relationships (with the viewer's endorsement of and note on each account), the followers and following
-of an account (one that no unrelated account follows), a list's timeline (a list of every account of the world), the
-viewer's timeline markers, status and hashtag search, the viewer's scheduled statuses, the viewer's endorsements (of
-every account it follows) through both endpoints, the world's accounts by id, the viewer's suggestions (an account
-outside the world that one of its follows follows), and account search among the viewer's follows (a search of every
-account reads the newest accounts the instance knows, a window that grows with them up to its limit) on that world
-alone, and again with 1,000 unrelated remote accounts and 100 unrelated local ones: their statuses (never public, though
-they carry the hashtag the tag feed reads), replies and boosts, their follows, blocks, mutes and domain blocks of the
-world's accounts and domains, their favourites, bookmarks and notifications, their exclusive lists of the world's
-accounts and their own, their endorsements of and notes on those accounts, and their timeline markers and scheduled
-statuses, together with the viewer's own blocks and mutes of those accounts and domain blocks of domains nobody lives
-on. Each endpoint must show the same with them as without (the same statuses, accounts, notifications and hashtags in
-the same order, and the same relationship flags), and the rows it reads (RES-7) may grow by at most 10 (home by 11: each
-followed hashtag's window judges its statuses again, and the probe of the viewer's blocks and mutes reads the next index
-entry, which the unrelated accounts provide; the same with ten times the unrelated rows). A second case grows the
-history of each author home and a list read instead: the viewer, who follows seven accounts and has a list of them, and
-those accounts, from 60 statuses each to 2,000, one of the accounts posting only direct statuses addressed to another
-account. The newest page, a page from the middle of the longer histories and the oldest page of home and of the list
-must each be full and read at most 10 rows more. A third case does the same for the conversation list, with 20 or 2,000
-conversations of the viewer, each a thread of three direct statuses.
-
-A third case grows the generated world's own history: the same world with every status replicated 100 and 400 times,
-each copy a new status older than every original, with its original's author, visibility, mentions, hashtag and
-reply or boost (to the copy of its parent or original in the same replica), and the viewer's favourite, bookmark and
-notification of it. Accounts, follows, blocks, mutes, domain blocks and list memberships are not replicated. Because
-the composition stays the same, a read that walks past what it hides or filters reads a constant multiple of a page
-once each author's history holds more than a page of what it shows, while a read that walks or sorts a whole history
-grows with the factor. Each endpoint that pages statuses or the viewer's edges is read on its newest page, a page from
-the middle of the replicated history and its oldest page, and the others once; every read must show the viewer
-something, the newest pages must be the same at both factors, and the rows read may grow by at most 10. Status and
-hashtag search are exempt (their windows grow with the history up to their documented limits). The case does not grow
-the author set (no follow cap bounds it yet), and it does not build skewed histories, where one author's statuses
-dominate. Another case grows the accounts that hold scheduled statuses, from 10 to 300 with 30 each: the viewer's
-page of scheduled statuses, the listing of the due ones and the publication of one must each read at most 10 rows more.
-A last case grows the histories the viewer never sees, from 20 statuses each to 2,000: an account the viewer
-does not follow sending them direct statuses, which home must not read, and an account that blocks the viewer, one the
-viewer blocks, a suspended one and one being deleted, whose statuses the account statuses endpoint must not read. Home
-must show a full page and the account statuses none, reading at most 10 rows more.
-A case grows the accounts the profile directory never lists first, from 20 to 2,000 of each kind: accounts that are not
-discoverable (with the newest statuses), and discoverable ones behind the page, with older statuses and ids, that the
-viewer blocks, mutes or domain-blocks, that block the viewer, that are suspended, or that nothing hides, with the
-viewer's blocks and mutes of them; in front, 10 accounts the viewer is shown and 3 it is not. The newest page of each
-order, all and local, for the viewer and anonymously, must show the same and read at most 10 rows more. Another grows
-the hidden accounts in front from a window's worth to 2,000: the page reads its window and no further.
-Another case grows the accounts with timeline markers from 10 to 2,000: the viewer's markers read at most 10 rows
-more. The world gives every original status a poll of four choices with the viewer's vote, and the unrelated accounts
-polls and votes of their own and votes in the target's poll (rows only); the target's poll (`GET /api/v1/polls/:id`) is
-an endpoint of both cases. A last poll case grows the votes in each of a page's 20 polls from 10 to 1,000: the account
-statuses page, the poll and a vote in it must each read at most 10 rows more. Another grows the accounts the viewer
-endorses and keeps notes on from 20 to 2,000: the newest, a middle and the oldest page of the viewer's endorsements
-through both endpoints, and the relationships of 20 of them, read at most 10 rows more. Another grows the notifications
-of one group (favourites of the viewer's status) from 2,500 to 5,000, past the walk's limit, between older follows and
-newer follow requests: the newest page of groups, one from the middle of the group and one above the follows, the group,
-a newest, a middle and the oldest page of its accounts and both unread counts read at most 10 rows more, since a walk
-reads at most 2,000 notifications it shows and a group counts at most 400. The viewer also follows the world's hashtag
-and another, and features both; the followed hashtags, the featured hashtags (the viewer's and their account's) and the
-suggestions are endpoints of both cases (the suggestions exempt from the history case: they read the viewer's newest
-1,000 statuses, a window that grows with the history up to that limit). The unrelated local accounts follow and feature
-hashtags too, and a case of its own grows the accounts that follow hashtags from 10 to 2,000: home and the followed
-hashtags must read at most 10 rows more. A last case follows `MAX_FOLLOWED_TAGS` hashtags, each with 40 or 400 public
-statuses: home's newest and oldest pages must read the same rows (at most 10 more), and at most a window per hashtag
-more than with none.
-The viewer pins its newest pinnable statuses and mutes the conversations of half the world's statuses, and the
-unrelated local accounts pin a status of their own and mute the world's conversations: the viewer's pinned statuses,
-the statuses by id and the viewer's `featured` collection are endpoints of both cases (pins are at most five, so they
-add no dimension). Another case grows the conversations the viewer mutes from 20 to 2,000: presenting 20 statuses (half
-of them muted) and a favourite of one (which notifies, or not, through `notifiedSql`) read at most 10 rows more. Another
-grows the remote boosts of one public pinned status from 20 to 2,000: its Note through the object endpoint, the outbox
-and the `featured` collection read at most 10 rows more.
-A last case grows the viewer's filtered notifications from 2,500 to 5,000 private mentions between older follows and
-newer follow requests, each from a sender of its own with a request, or all from one sender with one request: the
-newest page and the page below them of the notifications and of the grouped notifications, both unread counts, the
-newest page of requests, a request, the policy's summary and `merged` read at most 10 rows more, and so do accepting and
-dismissing a request (its batches walk at most 2,000 of the sender's notifications). Another grows the pending jobs of answered requests
-from 1,000 to 5,000: `merged` and a round of the jobs read at most 10 rows more.
-
-`test/policy-endpoints.test.ts` runs the read endpoints themselves on generated worlds, with favourites, bookmarks and
-notifications added, for each available local viewer and, where the endpoint answers without a token, the anonymous
-one. No endpoint may show a status or an account the model does not allow the viewer by the endpoint's rule, and a
-boost must come with its own original (never `reblog: null` on a read), which the viewer may see:
-
-| Endpoint                                                   | Asserted                                                                                                                                                                                                                                                |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| public feed, tag feed, account statuses (of every account) | exactly the model's members the rule allows (R10, R11), newest first, over pages of 3                                                                                                                                                                   |
-| favourites, bookmarks                                      | exactly the viewer's edges the list rule allows (R8), newest edge first, over pages                                                                                                                                                                     |
-| home                                                       | exactly the model's members home allows (R9: membership, exclusive lists, the follow's options and `homeFilterSql`), newest first, page by page (below)                                                                                                 |
-| list timeline (of each of the viewer's lists)              | exactly what the model allows of the list's members (R24), page by page as home; another account's list is not found                                                                                                                                    |
-| single status, context                                     | nothing for a status the viewer may not view (R3); context members listable (R8)                                                                                                                                                                        |
-| `favourited_by`, `reblogged_by`                            | nothing for a status the viewer may not view; only listed interactors (R12)                                                                                                                                                                             |
-| status search                                              | listable statuses only (R8)                                                                                                                                                                                                                             |
-| notifications                                              | only the viewer's, as written, that the rule shows (R15), with statuses they may view                                                                                                                                                                   |
-| grouped notifications, unread counts                       | the groups of exactly the notifications the list shows, each counting and sampling its own, newest first; the unread counts count those notifications and groups                                                                                        |
-| followers, following (of every account)                    | exactly the accepted follows the list rule shows (R13), newest first, over pages of 3                                                                                                                                                                   |
-| followers and following pages (of every local account)     | to an anonymous visitor, exactly the accepted follows R13 shows, of available members, newest first, over pages                                                                                                                                         |
-| status pages (of every status the page shows)              | to an anonymous visitor, exactly its thread's ancestors and replies (R8), its boosters (public and unlisted boosts, not withdrawn) and favouriters (R12) and its accepted quotes (R8), over pages                                                       |
-| endorsements, the Featured tab (of every account)          | to every viewer, and to an anonymous visitor on a local account's tab, exactly the available accounts R28 lists, by account id, newest first, over pages                                                                                                |
-| account search                                             | exactly the accounts the viewer may find (R14)                                                                                                                                                                                                          |
-| profile directory (both orders, all and local)             | exactly the discoverable accounts R12 lists to the viewer in the order's window, in order, from each offset (pages of 3 and one of 40), each account's `discoverable` generated as 1, 0 or unset                                                        |
-| suggestions (both versions)                                | exactly the model's (R39) over the Store's windows, in order, at offsets 0, 1, 39 and 40 with limits 1, 40 and 80; worlds add dismissals and more local follows, so some case suggests something                                                        |
-| conversations                                              | exactly the viewer's conversations the model makes of the direct statuses and the mentions seeded (R25), newest last status first, both ways over pages; each last status only if the viewer may see it (R2), else null; another account's is not found |
-| pinned statuses (of every account)                         | exactly the account statuses the model allows that the account pins, newest pin first (R11, R31)                                                                                                                                                        |
-| statuses by id (every status, 20 at a time)                | exactly the listable statuses (R8), in the order asked                                                                                                                                                                                                  |
-| hashtag history (single, followed, search, suggestions)    | the model's `tagHistory` (VIS-12) for every viewer: the whole range for the single hashtag, the newest 20 uses for a list                                                                                                                               |
-| search resolution (of every stored account and status)     | an account exactly when account search finds it (R14); a status exactly when the single-status read shows it (R3), unless the viewer blocks its author's domain                                                                                         |
-
-Home and each list are read page by page: by `max_id` in pages of 3 and by `min_id` from the oldest in pages of 2, each
-page exactly the next of the model's members, so a page cannot come back short while members remain; and the `since_id`
-and `min_id` pages above the middle member. Each endpoint must show something in some case, so a property cannot pass by
-showing nothing, and some case's home must hold a status only a followed hashtag brings.
-
-`test/policy-writes.test.ts` runs the write paths on generated worlds, with remote accounts given personal and some
-shared inboxes and local accounts given Web Push subscriptions (alerts, policy, valid or expired token). Each case
-runs 10 to 24 actions: local authors post with every visibility, mentions and replies, edit (a mention dropped by an
-edit stays silent), delete, boost and undo a boost, favourite and undo it, and change their profile; deliveries are
-made (claimed and completed); remote followers leave; authors block accounts (ending the follows) and domains (before
-the cleanup). After each action the model (`outboundKindOf`, `statusAudience`, `names`, `reaches`, `pushed` in
-`test/policy-model.ts`) judges what it recorded:
-
-- every target of each activity is an inbox of an account the activity reaches (R23), or, for a retraction, an inbox
-  something about its object was sent to before; a personal copy goes only to an addressed account it does not name;
-- `to` and `cc` (the activity's and its object's) name only Public, the signer's followers and the accounts R22 lets
-  it name: never a silent recipient, and for content never an account the author blocks or domain-blocks; a boost's
-  `Announce` names the author exactly when R22 allows, its `Undo` always;
-- a retraction is recorded, and reaches every inbox something about its object was delivered to, is still queued for
-  (a deliveries row in any state) or is still in a chunk of targets not yet expanded; a profile change reaches every
-  remote follower;
-- every notification written satisfies R15, and every push recorded R16, at the time of the action;
-- a list holds what it held before the action, less each account its owner no longer follows in either state; its
-  owner stays;
-- every local account endorses each account it follows (accepted), and keeps after the action what it endorsed
-  before, less each account it no longer follows (accepted);
-- the conversations hold what `AccountConversation.add_status` and `remove_status` make of the action (R25): a direct
-  status joins its author's conversation and that of each local account the notification rule lets it notify, by
-  thread and participants, and leaves each when it is deleted, the last status moving back or the conversation going.
-
-The property runs 500 cases from a fixed seed (`FC_SEED` replays another). Next to it, witnesses (cases written by
-hand) run each scenario it must check: content leaving out an account being deleted while its retraction reaches it,
-a delivered retraction reaching a blocked receiver, one reaching a target still
-queued after its follower left, one reaching targets not yet expanded (more followers than an expansion step, who
-leave before the `Delete`), the `Undo` of a boost naming a blocked author, a profile `Update` to a domain-blocked
-follower, content leaving one out, a personal copy, notifications and pushes, and list members leaving with a block
-either way. So coverage never depends on chance.
-
-`test/streaming-oracle.test.ts` checks R33 for the `user`, list, `public*` and `hashtag*` streams' statuses on generated worlds, with the mention
-notifications `notify` would write (some filtered by the recipient's policy): for every local viewer and every status,
-with each kind of token (`read`, `read:statuses`, `read:notifications`), the streams the unit sends an `update` and a
-`status.update` on must be those the references give: home read with `max_id` just above the status and `limit` 1,
-and the viewer's mention notifications listed in full. Its window cases pin the documented difference: a post of a
-followed hashtag behind 41 newer hidden posts (sent; a page from the top leaves it out), at the 40th candidate (both),
-with ascending `min_id` paging, and an empty home. `test/policy-bounds.test.ts` grows what a streamed status's checks
-could read, at once, from 20 statuses per author to 2,000, 10 follows to 1,000, no exclusive-list members to 1,000,
-none of 40 unrelated followed hashtags and 20 of the viewer's mention notifications to 2,000: the `update` of the
-author's newest, middle and oldest status, a followed account's, an exclusive member's (not sent) and a followed
-hashtag's newest and oldest, and the `status.update` of a status in home and of the newest and oldest mention, must
-each read at most 10 rows more. A delete's capture reads the same with 10 or 1,000 follows per listening account when
-the status has few boosts, a constant per listening account, and, past 2,000 boosts by unfollowed accounts, the same
-with 2,000 or 20,000; the journal's scan and a page of a delete's units read the same with 1 or 256 captured viewers.
-The same oracle compares each world's lists: for every viewer, every list (its own or another owner's) and every
-status, `update` and `status.update` go on `list:<id>` exactly when the list read with `max_id` just above the status
-and `limit` 1 returns it. A separate conversation oracle adds the conversations the world's direct statuses make and
-checks, for every viewer and every conversation, that `conversation` is sent exactly for the viewer's own, with the
-presentation of its whole conversation list read in one page; two conversations sharing a last status are each
-returned alone. `test/policy-bounds.test.ts` grows a list's members from 10 to 1,000, its author's statuses from 20 to
-2,000 and the owner's conversations from 20 to 2,000: a list's `update` and `status.update`, a delete's list capture,
-the subscription's ownership check, a conversation's unit and the read of an owner's newest changes each read at most
-10 rows more.
-The oracle also gives each world's originals shown and hidden media, and checks, for every viewer and every status,
-that `update` and `status.update` go on each of the six `public*` streams and on `hashtag` and `hashtag:local` (the
-world's hashtag) exactly when that timeline read with `max_id` just above the status and `limit` 1 returns it and the
-status mentions (not silently) no account the viewer blocks or mutes. `test/policy-bounds.test.ts` grows an author's
-public hashtag statuses, others' and those of accounts the viewer blocks, mutes or domain-blocks from 20 to 2,000: the
-`update` of the author's newest and oldest, a local status with media, a status mentioning a muted account and a
-filtered author's (neither sent), and the `status.update` of the oldest, over every feed at once, each read at most 10
-rows more, and so does a public status's tombstone capture. `test/streaming/public.test.ts` drives the streams over
-sockets: the feeds a local and a remote status with media reach, what the timelines leave out, the per-viewer filters
-(block, mute, domain block, an author's block, a mention of a blocked or muted account) and a keyword filter in
-`filtered`, the real-time window, edits, the tombstone's matching (local, remote, media, hashtag, never a boost or a
-non-public status), and 256 sockets on distinct tokens over several turns, each message once.
-`test/stream-delete.test.ts` checks R32's capture: once, when a remote `Delete`'s job is created, through every batch
-and a redelivery, for a direct status and a private one a mention authorizes; by its own id for a boost removed by
-`Delete` or `Undo`, and for a local boost removed by unreblog before it is hidden; without a booster whose purge has
-begun or one the viewer does not follow; at most 40 boosts, and a row over its bound truncated while the delete still
-happens; at its maxima (16 lists, each holding the status and 40 boosts) within its bound, and truncated boosts first,
-then lists. The tombstone holds local, media and the subscribed hashtags of a public status, for a listener on feeds
-alone (without boosts), and nothing for a boost, a non-public status or a feed the status would not reach; at its
-maxima (16 accounts on `user` and 15 hashtags of 256 bytes each, a status carrying 100 of them and 40 boosts each
-account follows) it holds the 100 hashtags within 27 KiB, with 16 rows of 40 boosts within theirs, and over its bound
-it drops its last hashtags while the delete still happens. `test/inbound-job-isolation.test.ts` keeps a remote
-`Delete`'s capture when its first batch fails, and captures nothing for a redelivered `Delete` whose job already
-exists while its status is still shown.
+- `test/policy-oracle.test.ts`: each fragment of the policy module accepts exactly the pairs the model's statement of
+  its rule accepts, over every pair the rule takes. A failure prints the shrunk world, the pairs only one side accepts,
+  and the seed; `FC_SEED=<seed> pnpm vitest run test/policy-oracle.test.ts` replays it.
+- `test/policy-endpoints.test.ts`: the read endpoints themselves show only the statuses and accounts the endpoint's
+  rule allows the viewer, and never a boost without its own visible original. The test names the lists whose ordered
+  membership it checks exactly; home, list and link timelines also compare each page with the model's expected slice,
+  so a page cannot come back short while members remain. Each endpoint must show something in some case, so a property
+  cannot pass by showing nothing.
+- `test/policy-writes.test.ts`: after each action of a generated sequence, what it recorded (targets, `to` and `cc`,
+  notifications, pushes, list members, endorsements, conversations) agrees with the model (R15, R16, R22, R23, R25,
+  VIS-30). Next to the property, witnesses written by hand run each scenario it must check, so coverage never depends
+  on chance.
+- `test/streaming-oracle.test.ts`: R33, each stream's statuses against the read positioned at the status, and the
+  conversations against the owner's list; its window cases pin the accepted difference of home's followed-hashtag
+  windows (the streaming API, above). `test/stream-delete.test.ts` checks R32's capture: when it is taken, whom it
+  names, and its bounds.
+- `test/policy-bounds.test.ts`, the bounds harness (RES-7): each read endpoint, streamed item and round stays within its
+  case's growth budget as data it should not read grows. Its first case adds unrelated accounts with their rows to one
+  generated world (an endpoint's extra rows are `UNRELATED_EXTRA`, each with its reason), its second replicates the
+  world's history (the endpoints whose windows grow with it up to their limits are `GROWING`); both fail when a read
+  shows the viewer nothing, or on its newest page something else than without the growth. Every other `describe` grows
+  the dimension its title names.

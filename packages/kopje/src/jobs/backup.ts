@@ -1,5 +1,5 @@
 import { type BackupConfig, readBackupConfig } from "../platform/backup-config";
-import { encryptBytes, encryptStream, sha256Of, toHex } from "../platform/backup-crypto";
+import { encryptBytes, encryptStream, sha256Of } from "../platform/backup-crypto";
 import {
   type BackupRun,
   type BackupState,
@@ -10,8 +10,9 @@ import {
   type MediaRow,
   type ObjectDigest,
 } from "../platform/backup-state";
-import { readConfig } from "../platform/config";
+import { envInMaintenance } from "../platform/config";
 import { errorFields } from "../platform/error-message";
+import { toHex } from "../platform/hex";
 import { consoleSink, type LogSink } from "../platform/log";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { S3Client, S3Error, type S3Fetch } from "../platform/s3";
@@ -165,8 +166,7 @@ function mediaPrefix(config: BackupConfig): string {
 
 // The cron entry point: nothing runs while the env sets maintenance or is invalid, as for the other jobs.
 export async function scheduledBackup(env: Env, deps: BackupDeps): Promise<BackupOutcome | null> {
-  const config = readConfig(env);
-  if (!config.ok || config.config.MAINTENANCE !== "off") {
+  if (envInMaintenance(env)) {
     return null;
   }
   try {

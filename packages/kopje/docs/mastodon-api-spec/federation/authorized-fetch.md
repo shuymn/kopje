@@ -1,12 +1,16 @@
 # Authorized Fetch Mode
 
-Authorized fetch (also known as "secure mode") requires HTTP signatures on ActivityPub GET requests for public resources. The exact enforcement depends on the endpoint and content type.
+Authorized fetch (also known as "secure mode") requires HTTP signatures on ActivityPub GET requests for public
+resources. The exact enforcement depends on the endpoint and content type.
 
 ## Overview
 
-By default, ActivityPub resources (actor profiles, outboxes, posts) are publicly accessible without authentication when requested with `Accept: application/activity+json`. Authorized fetch mode adds signature verification to these JSON requests, limiting access to authenticated federation partners.
+By default, ActivityPub resources (actor profiles, outboxes, posts) are publicly accessible without authentication when
+requested with `Accept: application/activity+json`. Authorized fetch mode adds signature verification to these JSON
+requests, limiting access to authenticated federation partners.
 
-> **Note**: HTML requests (browser views) are generally not affected by authorized fetch mode. Signature requirements apply specifically to ActivityPub/JSON endpoints.
+> **Note**: HTML requests (browser views) are generally not affected by authorized fetch mode. Signature requirements
+> apply specifically to ActivityPub/JSON endpoints.
 
 ## Configuration
 

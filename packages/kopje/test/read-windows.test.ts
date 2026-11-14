@@ -24,7 +24,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
-import { rowsRead } from "./read-helpers";
+import { type GrownRead, grownReads, rowsRead } from "./read-helpers";
 import { olderOf, postsTab } from "./web-helpers";
 
 // Candidate windows (src/domain/windows.ts, docs/visibility.md "Read bounds", RES-7): every paged read that filters
@@ -506,6 +506,14 @@ function pageOf(output: unknown): Page<{ id: string }> {
   return answerOf(output) as unknown as Page<{ id: string }>;
 }
 
+// A read of the first page over a window of hidden rows only: it must answer an empty page cut at its window.
+const cutEmpty = (r: Read): GrownRead => ({
+  name: r.name,
+  operation: r.operation,
+  input: r.input(PAGE),
+  shows: (output) => pageOf(output).items.length === 0 && pageOf(output).cut === true,
+});
+
 async function read(store: StoreStub, r: Read, page: PageQuery): Promise<Page<{ id: string }>> {
   return pageOf(
     await runInDurableObject(store, (_instance, state) => r.operation.run(state.storage.sql, r.input(page) as never)),
@@ -540,23 +548,14 @@ describe("filtered reads read a candidate window, however long the hidden range 
   // visible rows behind them.
   it("reads the same rows with 100 or 20,000 hidden rows of each kind before the visible ones", async () => {
     const short = await world(20);
-    const few = await world(100);
-    const many = await world(20_000);
-    const grown: string[] = [];
     for (const r of READS) {
       // The public timeline's three kinds of hidden rows fill its window even with 20 of each.
       const shortPage = await read(short, r, PAGE);
       expect([r.name, shortPage.items.length > 0 || r.name === "public"]).toEqual([r.name, true]);
-      for (const store of [few, many]) {
-        const page = await read(store, r, PAGE);
-        expect([r.name, page.items.length, page.cut]).toEqual([r.name, 0, true]);
-      }
-      const fewRows = await rowsRead({ store: few }, r.operation, r.input(PAGE) as never);
-      const manyRows = await rowsRead({ store: many }, r.operation, r.input(PAGE) as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${r.name}: ${fewRows} -> ${manyRows}`);
-      }
     }
+    const grown = await grownReads(await world(100), await world(20_000), READS.map(cutEmpty), {
+      allowance: ALLOWANCE,
+    });
     expect(grown).toEqual([]);
   }, 300_000);
 
@@ -564,22 +563,15 @@ describe("filtered reads read a candidate window, however long the hidden range 
   // suffixes with a seek of the blocks each (availableSql). Measured at 1.0 to 2.5 times the deletions' rows per read
   // (account statuses the most, as it judges each boost's original too); the budget is 3 times.
   it("reads the same rows when an instance domain block hides them, within a budget of the deletions", async () => {
-    const few = await world(100, 0, 0, "domain");
     const many = await world(20_000, 0, 0, "domain");
     const deleting = await world(20_000);
-    const grown: string[] = [];
+    const grown = await grownReads(await world(100, 0, 0, "domain"), many, READS.map(cutEmpty), {
+      allowance: ALLOWANCE,
+    });
     const over: string[] = [];
     for (const r of READS) {
-      for (const store of [few, many]) {
-        const page = await read(store, r, PAGE);
-        expect([r.name, page.items.length, page.cut]).toEqual([r.name, 0, true]);
-      }
-      const fewRows = await rowsRead({ store: few }, r.operation, r.input(PAGE) as never);
       const manyRows = await rowsRead({ store: many }, r.operation, r.input(PAGE) as never);
       const deletingRows = await rowsRead({ store: deleting }, r.operation, r.input(PAGE) as never);
-      if (manyRows > fewRows + ALLOWANCE) {
-        grown.push(`${r.name}: ${fewRows} -> ${manyRows}`);
-      }
       if (manyRows > DOMAIN_BUDGET * deletingRows) {
         over.push(`${r.name}: ${manyRows} > ${DOMAIN_BUDGET} × ${deletingRows}`);
       }
@@ -590,38 +582,54 @@ describe("filtered reads read a candidate window, however long the hidden range 
 
   // The grouped list's walk reads at most GROUP_WALK notifications, shown or hidden: it is compared beyond that.
   it("reads the same rows on the outbox, the notification policy, and the grouped notifications past their walk", async () => {
-    const reads: [string, StoreOperation<never, unknown>, unknown, number][] = [
-      ["outbox", getOutbox, { username: "local", before: "999999999999999999" }, 100],
-      // The collection itself: its totalItems is the account's stored count.
-      ["outbox collection", getOutbox, { username: "local", before: null }, 100],
-      // Its summary counts the newest 100 requests, then applies availability: GONE_i's are the newest.
-      ["notification policy", getNotificationPolicy, { credential }, 100],
+    // Each read with the hidden rows of its smaller world, and what it answers over hidden rows only.
+    const reads: [Omit<GrownRead, "shows">, number, (answer: Record<string, unknown>) => boolean][] = [
       [
-        "grouped notifications",
-        listGroupedNotifications,
+        { name: "outbox", operation: getOutbox, input: { username: "local", before: "999999999999999999" } },
+        100,
+        // An empty page that links on.
+        (answer) => (answer.items as unknown[]).length === 0 && answer.next !== null,
+      ],
+      // The collection itself: its totalItems is the account's stored count.
+      [
+        { name: "outbox collection", operation: getOutbox, input: { username: "local", before: null } },
+        100,
+        (answer) => typeof answer.total === "number" && answer.next === null,
+      ],
+      // Its summary counts the newest 100 requests, then applies availability: GONE_i's are the newest.
+      [
+        { name: "notification policy", operation: getNotificationPolicy, input: { credential } },
+        100,
+        (answer) =>
+          typeof answer.policy === "object" &&
+          (answer.summary as { pending_requests_count: number }).pending_requests_count === 0,
+      ],
+      [
         {
-          credential,
-          page: PAGE,
-          types: [],
-          excludeTypes: [],
-          groupedTypes: null,
-          includeFiltered: false,
-          expandAccounts: "full",
-          present: PRESENT,
+          name: "grouped notifications",
+          operation: listGroupedNotifications,
+          input: {
+            credential,
+            page: PAGE,
+            types: [],
+            excludeTypes: [],
+            groupedTypes: null,
+            includeFiltered: false,
+            expandAccounts: "full",
+            present: PRESENT,
+          },
         },
         2_500,
+        // An empty page that links on.
+        (answer) => (answer.notification_groups as unknown[]).length === 0 && answer.next !== null,
       ],
     ];
     const grown: string[] = [];
     for (const by of ["deleting", "domain"] as const) {
       const many = await world(20_000, 0, 0, by);
-      for (const [name, operation, input, hidden] of reads) {
-        const few = await world(hidden, 0, 0, by);
-        const fewRows = await rowsRead({ store: few }, operation, input as never);
-        const manyRows = await rowsRead({ store: many }, operation, input as never);
-        if (manyRows > fewRows + ALLOWANCE) {
-          grown.push(`${name} (${by}): ${fewRows} -> ${manyRows}`);
-        }
+      for (const [read, hidden, shows] of reads) {
+        const named = { ...read, name: `${read.name} (${by})`, shows: (output: unknown) => shows(answerOf(output)) };
+        grown.push(...(await grownReads(await world(hidden, 0, 0, by), many, [named], { allowance: ALLOWANCE })));
       }
     }
     expect(grown).toEqual([]);
@@ -631,17 +639,15 @@ describe("filtered reads read a candidate window, however long the hidden range 
 describe("the profile web page reads from its cursor, however many newer posts", () => {
   // A fixed cursor with 20 of LOCAL's public posts below it, and 100 or 20,000 newer public posts above it.
   it("reads the same rows below a cursor with 100 or 20,000 newer posts", async () => {
-    const input = postsTab("local", id(LOCAL_OLDER, 20), NOW);
-    const rows: number[] = [];
-    for (const newer of [100, 20_000]) {
-      const store = await world(0, newer);
-      const output = answerOf(
-        await runInDurableObject(store, (_instance, state) => webProfilePage.run(state.storage.sql, input)),
-      ) as { statuses: { id: string }[] };
-      expect(output.statuses.map((status) => status.id)).toEqual(range(LOCAL_OLDER, 20));
-      rows.push(await rowsRead({ store }, webProfilePage, input));
-    }
-    expect(rows[1]).toBeLessThanOrEqual((rows[0] ?? 0) + ALLOWANCE);
+    const below = JSON.stringify(range(LOCAL_OLDER, 20));
+    const read: GrownRead = {
+      name: "profile page",
+      operation: webProfilePage,
+      input: postsTab("local", id(LOCAL_OLDER, 20), NOW),
+      shows: (output) =>
+        JSON.stringify((answerOf(output) as { statuses: { id: string }[] }).statuses.map((s) => s.id)) === below,
+    };
+    expect(await grownReads(await world(0, 100), await world(0, 20_000), [read], { allowance: ALLOWANCE })).toEqual([]);
   }, 120_000);
 });
 

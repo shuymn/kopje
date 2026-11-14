@@ -8,6 +8,111 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-14
+
+A patch release, published under the npm dist-tag `latest`. One page of grouped notifications can no longer hold the
+Store for seconds while every other request to the instance waits, and a status's author can now delete it from servers
+that hold it only through another server's boost or quote. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: no migration. A rollback to 0.5.0 is a code-only rollback ([docs/upgrade.md](docs/upgrade.md)). No
+  `wrangler.jsonc` change.
+
+### Changed
+
+- A page of grouped notifications (`GET /api/v2/notifications`) now does its work within one budget. One page could
+  take seconds of the Store's time, during which every other request to the instance waited: a page of many groups
+  each favourited by hundreds of accounts, cut by its 8 MiB budget, read about 190,000 notifications, and now reads at
+  most 9,200. A page whose reads would pass the budget holds fewer groups, down to its first, and its `Link` goes on
+  from its last group, so the next page finds the rest; a page whose reads fit answers as before. A group's oldest
+  notification is also found with fewer reads. What a client sees is in
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md) ("Grouped notifications"), and the bounds are RES-7 in
+  [docs/threat-model.md](docs/threat-model.md). No Store migration and no `wrangler.jsonc` change; a code-only
+  rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+
+- A malformed `import_receipt`, `import_reset` or `published` record no longer fails every operation of the Store,
+  and an import record that is not JSON refuses every operation as an import in progress instead of failing it. For
+  well-formed records admission decides as before. The Store admits each operation, and answers health, from the five
+  operator records admission decides by (maintenance, the import, the unpublished import, the dump and the media
+  rebuild's lease) instead of all eight, so a completed dump's receipt, about 60 KB, is no longer handed to every
+  operation. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
+
+- `GET /api/v1/instance` no longer counts the remote accounts' domains on every request: `stats.domain_count` is the
+  count the 5-minute cron keeps, at most 10 minutes old, and is counted on request only when no kept count is that
+  fresh ([docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists when). `GET /api/v2/instance` reads only what
+  it presents (`usage.users.active_month`). No Store migration and no `wrangler.jsonc` change; a code-only rollback is
+  safe ([docs/upgrade.md](docs/upgrade.md)).
+
+- The `Delete` of a local public or unlisted status now carries its author's RsaSignature2017 signature and is
+  addressed to Public alone, as Mastodon sends it, so a booster or quoter can forward it with the author's proof, and
+  a server that holds the status only through that boost or quote removes its copy when it applies a relayed `Delete`
+  (Mastodon, Misskey and Kopje do) (VIS-3, ID-1). It reaches the same inboxes as before and is sent byte for byte on
+  every attempt. When the author's key cannot sign it, the DELETE answers 503 and the status stays; an imported status
+  whose uri or actor id can never be signed is deleted with an unsigned `Delete`, logged as
+  `kopje.delivery.delete_unsigned`. Private, direct and limited `Delete`s are unchanged, and `Delete`s recorded before
+  the upgrade stay unsigned. No Store migration and no `wrangler.jsonc` change; a code-only rollback is safe
+  ([docs/upgrade.md](docs/upgrade.md)).
+
+- A status's `Delete` that another server relays (a booster or quoter forwarding the author's `Delete`) is now applied
+  as the author's own, with the same effects and forwards, when it carries the author's proof, verified against the
+  author's current key, and the status is a public or unlisted original Kopje holds as that author's, on the author's
+  origin (ID-1, #1506). So a status its author deletes leaves a Kopje server that holds it only through another
+  server's boost or quote. A relayed `Delete` without a proof, of a private, direct or limited status, of a boost or
+  of an actor changes no status. An author's proof, on a relayed `Delete` or on an author's own `Delete` to forward,
+  is considered only in the sender profiles: Mastodon 4.5's and Kopje's own, their status `Delete` as a Mastodon 4.4
+  or 4.5 forwards it, and Fedify 2.4.5's with an FEP-8b32 proof
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Forwarded deletes"). A relayed `Delete` in any other
+  form, from Misskey for example, is refused, and an author's own `Delete` in such a form is no longer forwarded. No
+  Store migration and no `wrangler.jsonc` change; a code-only rollback is safe ([docs/upgrade.md](docs/upgrade.md)).
+
+- An import now refuses a `sqlite_sequence` row naming a table the schema does not declare AUTOINCREMENT
+  (`sequence-not-allowed`, with its chunk; RES-6, DATA-3). Kopje's own export, an upgraded Store's too, holds counters
+  of those tables only, so only a crafted or corrupted dump is refused. The inbound jobs read the counters by name on
+  every round, and an import could otherwise grow them without limit ([docs/dump-format.md](docs/dump-format.md)). No
+  Store migration and no `wrangler.jsonc` change.
+
+### Fixed
+
+- `POST /api/v1/statuses` answers 404 for a status replied to or quoted that is missing or hidden from the poster after
+  authentication and before validation and the `Idempotency-Key`, as Mastodon does: a reply that also fails validation
+  (its length, visibility, poll, media count, `quote_approval_policy` or `scheduled_at`) no longer answers 422, and a
+  repeated `Idempotency-Key` no longer answers the earlier status or scheduled status. A quote post that passes
+  validation is posted in one Store call instead of two. No Store migration and no `wrangler.jsonc` change.
+
+- `PUT /api/v1/statuses/:id` answers 404 for a status that is missing or not the caller's own before validation, as
+  Mastodon does: an edit that also fails validation (its length, media count, poll, `quote_approval_policy`, a media
+  description or a thumbnail) no longer answers 422. No Store migration and no `wrangler.jsonc` change.
+
+- An import of a dump that holds an accepted quote, a backup restore included, now verifies: verify keeps each quoted
+  status's dumped count instead of counting the quote twice ([docs/dump-format.md](docs/dump-format.md), "Bounded
+  work"). An import whose verification began before the upgrade starts its checksums again. No Store migration and no
+  `wrangler.jsonc` change.
+
+- NodeInfo's `activeMonth` and `activeHalfyear` count only local accounts that are not suspended, as `total` does, so
+  a suspended account that posted in the window no longer makes them exceed `total`. `localPosts` is unchanged and
+  still counts a suspended account's statuses, as `/api/v1/instance` does. No Store migration and no `wrangler.jsonc`
+  change.
+
+- [docs/setup.md](docs/setup.md) documents `IMAGES_ACCOUNT_MONTHLY_TRANSFORMS`, each local account's monthly share of
+  the Images transformations (a tenth of `IMAGES_MONTHLY_TRANSFORMS` when unset), and the instance template's settings
+  table points there for the settings it does not list.
+
+## [0.5.0] - 2026-11-13
+
+A minor release, published under the npm dist-tag `latest`. It adds two Store migrations: remote authors' deletions now
+reach the servers a local quote carried their status to, and a local `Reject` of a follow request is no longer lost
+while the requester is suspended. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: adds two migrations (0091 and 0092), applied on the first request after the deploy; a rollback to an
+  earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the
+  representative store defined in `test/bench/migration-cost.ts` they took 12,501–12,556 ms (median 12,512 ms) together
+  in three runs of the migration bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite,
+  including the Store-wide foreign-key check that 0092's new table requires. No `wrangler.jsonc` change.
+
 ### Added
 
 - A remote author's proven `Delete` of a public or unlisted status that local accounts quoted is now forwarded through
@@ -35,6 +140,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a table, the upgrade checks every reference of the Store (a median of 6,614 ms in three local runs of the migration
   bench for the file, 7,336 ms with `0091`). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release
   is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Reads of notifications, timelines, lists, follows and inbound follow edges that scanned a table under stale
+  statistics now seek by key (#1468), with the same results.
 
 ## [0.4.0] - 2026-11-12
 

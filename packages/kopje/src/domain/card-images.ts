@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { iso } from "../platform/iso-time";
 import { FILE_TOKEN } from "../platform/media-files";
 import {
   blurhashPastBoundSql,
@@ -15,6 +16,7 @@ import {
   storedCountSql,
 } from "../platform/stored-bounds";
 import { allocateLocalId } from "./ids";
+import { setState, state } from "./kopje-state";
 import { MEDIA_TOKEN_FREE_SQL, ORPHAN_GRACE_MS } from "./media";
 import { mediaDeleteOperation, writeOperation } from "./operation";
 
@@ -56,18 +58,6 @@ const GC_CURSOR = "card_images_gc_cursor";
 const CARD_TRANSFORMS = "images_card_transforms:";
 const DOMAIN = /^[a-z0-9.-]{1,253}$/;
 const SNOWFLAKE = /^\d{18}$/;
-
-function iso(ms: number): string {
-  return new Date(ms).toISOString();
-}
-
-function state(db: Db, name: string): string | undefined {
-  return db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", name)?.value;
-}
-
-function setState(db: Db, name: string, value: string): void {
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, value);
-}
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
 

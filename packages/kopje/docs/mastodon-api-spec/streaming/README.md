@@ -1,6 +1,7 @@
 # Streaming API Specification
 
-This document specifies the Mastodon Streaming API for real-time updates via WebSocket or Server-Sent Events (SSE) connections.
+This document specifies the Mastodon Streaming API for real-time updates via WebSocket or Server-Sent Events (SSE)
+connections.
 
 ## Status
 
@@ -8,7 +9,8 @@ This specification is normative for Mastodon v4.5.x implementations.
 
 ## Terminology
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and
+"OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
 ---
 
@@ -96,7 +98,8 @@ Clients MUST authenticate using one of the following methods (in order of prefer
    wss://streaming.example.com/api/v1/streaming?access_token=<access_token>
    ```
 
-> **Security Note**: The `access_token` query parameter SHOULD NOT be used in new implementations as query parameters may be logged in server access logs.
+> **Security Note**: The `access_token` query parameter SHOULD NOT be used in new implementations as query parameters
+> may be logged in server access logs.
 
 #### 2.2.2 Required OAuth Scopes
 
@@ -404,7 +407,8 @@ A new status has appeared in the timeline.
 
 **Payload**: JSON-encoded [Status](../entities/status.md) entity
 
-**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`, `public:remote:media`, `hashtag`, `hashtag:local`, `list`
+**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`,
+`public:remote:media`, `hashtag`, `hashtag:local`, `list`
 
 Example:
 ```json
@@ -421,7 +425,8 @@ A status has been edited.
 
 **Payload**: JSON-encoded [Status](../entities/status.md) entity with updated content
 
-**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`, `public:remote:media`, `hashtag`, `hashtag:local`, `list`
+**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`,
+`public:remote:media`, `hashtag`, `hashtag:local`, `list`
 
 Example:
 ```json
@@ -438,7 +443,8 @@ A status has been deleted.
 
 **Payload**: String ID of the deleted status
 
-**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`, `public:remote:media`, `hashtag`, `hashtag:local`, `list`
+**Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`,
+`public:remote:media`, `hashtag`, `hashtag:local`, `list`
 
 Example:
 ```json
@@ -765,7 +771,8 @@ ws.send(JSON.stringify({
 
 ### 9.1 Filtering
 
-For public timeline streams (`public`, `public:local`, `public:remote`, `hashtag`, `hashtag:local`), the streaming server applies:
+For public timeline streams (`public`, `public:local`, `public:remote`, `hashtag`, `hashtag:local`), the streaming
+server applies:
 
 1. **Language filtering**: Based on user's preferred languages
 2. **Block/Mute filtering**: Statuses from blocked or muted accounts are filtered

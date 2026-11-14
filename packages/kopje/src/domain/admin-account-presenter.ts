@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { type Account, accountsOf, type Present } from "./accounts";
 import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
@@ -47,8 +48,8 @@ export function* adminAccountStream(
     const rows = new Map(
       db
         .all<{ id: string; domain: string | null; email: string | null }>(
-          `SELECT a.id, a.domain, l.email FROM json_each(?1) c CROSS JOIN accounts a ON a.id = c.value
-						LEFT JOIN local_accounts l ON l.account_id = a.id`,
+          `SELECT a.id, a.domain, l.email FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
+						LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`,
           JSON.stringify([...new Set(slice)]),
         )
         .map((row) => [row.id, row]),

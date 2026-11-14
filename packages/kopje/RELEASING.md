@@ -98,11 +98,12 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    if the release notes say so, change `deploy/wrangler.jsonc` the same way. Renovate opens this pull request as soon
    as a stable version is on npm; for a release candidate the template should install, bump `deploy/package.json` by
    hand and run `npm install --package-lock-only` in `deploy/`. `pnpm run check:kopje-package` fails when the lockfile
-   does not pin what `deploy/package.json` does, since `npm ci` refuses it. The template must name a published version: CI
-   dry-runs it against the packed package, not against npm, so it passes even when the Deploy to Cloudflare button would
-   fail to install. This step is what makes the button install the new version. To try the button from a branch before
-   merging, open `https://deploy.workers.cloudflare.com/?url=https://github.com/shuymn/kopje/tree/<branch>/deploy`; the
-   branch name must not contain `/`, or the button cannot tell it from the directory path.
+   does not pin what `deploy/package.json` does, since `npm ci` refuses it. The template must name a published version:
+   CI dry-runs it against the packed package, not against npm, so it passes even when the Deploy to Cloudflare button
+   would fail to install. This step is what makes the button install the new version. To try the button from a branch
+   before merging, open
+   `https://deploy.workers.cloudflare.com/?url=https://github.com/shuymn/kopje/tree/<branch>/deploy`; the branch name
+   must not contain `/`, or the button cannot tell it from the directory path.
 5. Rotate the stylesheet and script: run `node scripts/build-assets.mjs` on `main` and commit what it changes in a
    pull request. Once the tag is reachable, `src/web/asset-versions.ts` must name the new release's files as the
    previous ones and `public/assets/` drops the release before it, so the Node suite (`test-node/stylesheet.test.ts`)

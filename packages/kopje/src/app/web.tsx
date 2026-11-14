@@ -48,7 +48,7 @@ type WebContext = Context<WebEnv>;
 type PageStatus = 200 | 400 | 403 | 404 | 410 | 422 | 429;
 
 function privatePage(c: WebContext, status: PageStatus, body: Parameters<WebContext["html"]>[0]) {
-  return c.html(body, status, PRIVATE_HEADERS);
+  return c.html(<>{body}</>, status, PRIVATE_HEADERS);
 }
 
 // The header and footer: the site facts the gate read.

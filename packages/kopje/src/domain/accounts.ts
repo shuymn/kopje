@@ -975,8 +975,8 @@ function relationshipsOf(
 			p.account_id IS NOT NULL AS endorsed, n.comment AS note
 		FROM json_each(?2) j
 		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = j.value
-		LEFT JOIN follows fo ON fo.account_id = ?1 AND fo.target_account_id = a.id
-		LEFT JOIN follows fb ON fb.account_id = a.id AND fb.target_account_id = ?1
+		LEFT JOIN follows fo INDEXED BY follows_pair ON fo.account_id = ?1 AND fo.target_account_id = a.id
+		LEFT JOIN follows fb INDEXED BY follows_pair ON fb.account_id = a.id AND fb.target_account_id = ?1
 		LEFT JOIN account_pins p ON p.account_id = ?1 AND p.target_account_id = a.id
 		LEFT JOIN account_notes n ON n.account_id = ?1 AND n.target_account_id = a.id
 		${activeMuteJoinSql("m", "?1", "a.id", "?3")}
@@ -1190,14 +1190,14 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
   const [exactUser = "", exactDomain] = query.toLowerCase().split("@");
   const exact =
     exactDomain === undefined
-      ? "SELECT id FROM accounts WHERE lower(username) = ?"
-      : "SELECT id FROM accounts WHERE domain = ? AND lower(username) = ?";
+      ? "SELECT id FROM accounts INDEXED BY accounts_username WHERE lower(username) = ?"
+      : "SELECT id FROM accounts INDEXED BY accounts_domain_username WHERE domain = ? AND lower(username) = ?";
   const exactParams: SqlStorageValue[] = exactDomain === undefined ? [exactUser] : [exactDomain, exactUser];
   const candidates = input.following
-    ? `SELECT target_account_id AS id FROM (SELECT target_account_id FROM follows
+    ? `SELECT target_account_id AS id FROM (SELECT target_account_id FROM follows INDEXED BY follows_accepted
 				WHERE account_id = ? AND state = 'accepted' LIMIT ${ACCOUNT_RECENT_LIMIT})
 			UNION SELECT e.id FROM (${exact} LIMIT ${ACCOUNT_PREFIX_LIMIT}) e
-				JOIN follows f ON f.account_id = ? AND f.target_account_id = e.id AND f.state = 'accepted'`
+				CROSS JOIN follows f INDEXED BY follows_accepted ON f.account_id = ? AND f.target_account_id = e.id AND f.state = 'accepted'`
     : `SELECT account_id AS id FROM local_accounts
 			UNION SELECT id FROM (${exact} LIMIT ${ACCOUNT_PREFIX_LIMIT})
 			UNION SELECT id FROM (SELECT id FROM accounts INDEXED BY accounts_username

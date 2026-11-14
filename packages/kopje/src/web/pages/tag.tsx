@@ -6,11 +6,10 @@ import type { PageCursor, Paging } from "../../domain/web-pages/paging";
 import type { ParentLink } from "../../domain/web-pages/parents";
 import type { Site } from "../../domain/web-pages/site";
 import { Layout } from "../components/layout";
-import { PostCard, PostFeed, PostStub } from "../components/post";
 import { useUi } from "../ui";
 import { emojiAllowance } from "../view/emoji";
 import { newestFirstPager } from "../view/pager";
-import { postView, stubView } from "../view/post";
+import { StatusFeed } from "./status";
 
 export type TagView = {
   // The hashtag's normalized name.
@@ -40,7 +39,6 @@ export const TagPage: FC<TagView> = ({ tag, statuses, stub, parents, cursor, pag
   const canonical = `https://${domain}${base}`;
   const title = m.tag.title(tag);
   const pager = newestFirstPager(base, cursor, paging);
-  const allowance = emojiAllowance();
   return (
     <Layout
       title={title}
@@ -57,26 +55,15 @@ export const TagPage: FC<TagView> = ({ tag, statuses, stub, parents, cursor, pag
       }
     >
       <h1>{title}</h1>
-      <PostFeed empty={statuses.length === 0 && stub === null} emptyText={m.tag.noPosts} pager={pager}>
-        {stub === null ? null : (
-          <li>
-            <PostStub stub={stubView(stub, domain)} />
-          </li>
-        )}
-        {statuses.map((status) => (
-          <li>
-            <PostCard
-              post={postView(
-                status,
-                status.in_reply_to_id === null ? null : (parents[status.in_reply_to_id] ?? null),
-                domain,
-                allowance,
-              )}
-              variant="feed"
-            />
-          </li>
-        ))}
-      </PostFeed>
+      <StatusFeed
+        statuses={statuses}
+        stub={stub}
+        parentOf={(status) => (status.in_reply_to_id === null ? null : (parents[status.in_reply_to_id] ?? null))}
+        emptyText={m.tag.noPosts}
+        pager={pager}
+        domain={domain}
+        allowance={emojiAllowance()}
+      />
     </Layout>
   );
 };
