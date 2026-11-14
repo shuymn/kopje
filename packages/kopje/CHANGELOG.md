@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-14
+
+A patch release, published under the npm dist-tag `latest`. One page of grouped notifications can no longer hold the
+Store for seconds while every other request to the instance waits, and a status's author can now delete it from servers
+that hold it only through another server's boost or quote. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: no migration. A rollback to 0.5.0 is a code-only rollback ([docs/upgrade.md](docs/upgrade.md)). No
+  `wrangler.jsonc` change.
+
 ### Changed
 
 - A page of grouped notifications (`GET /api/v2/notifications`) now does its work within one budget. One page could
