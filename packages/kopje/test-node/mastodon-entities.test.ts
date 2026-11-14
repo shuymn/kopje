@@ -95,24 +95,25 @@ const ACCOUNT: Record<string, Exception> = {
   ...accepted("MD-3", "email_subscriptions"),
 };
 
+// What a notification and a notification group share.
+const NOTIFICATION: Record<string, Exception> = {
+  // Moderation that severs relationships writes no severed_relationships notification.
+  ...accepted("MD-2", "event"),
+  ...open(1589, "collection notifications", "collection"),
+  ...open(1582, "supported_types and fallback", "fallback"),
+};
+
 const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
   "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
   "REST::PreviewCardSerializer": open(1586, "attribution of a link's author", "missing_attribution"),
   "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
-  "REST::NotificationSerializer": {
-    // Moderation that severs relationships writes no severed_relationships notification.
-    ...accepted("MD-2", "event"),
-    ...open(1589, "collection notifications", "collection"),
-    ...open(1582, "supported_types and fallback", "fallback"),
-  },
+  "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {
-    ...accepted("MD-2", "event"),
+    ...NOTIFICATION,
     // No annual report is made, so no notification carries one.
     ...accepted("MD-3", "annual_report"),
-    ...open(1589, "collection notifications", "collection"),
-    ...open(1582, "supported_types and fallback", "fallback"),
   },
   "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
   "REST::ReportSerializer": open(1589, "collections", "collection_ids"),

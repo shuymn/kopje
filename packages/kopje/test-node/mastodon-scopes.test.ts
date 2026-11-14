@@ -1116,19 +1116,11 @@ describe("mastodon-scopes.mjs entity fields", () => {
     expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({ fields: own, unresolved: [] });
   });
 
-  it("leaves a subclass that resets only its superclass's attributes unresolved", async () => {
-    await checkout(partial(["_attributes_data = {}"]));
-    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({
-      fields: own,
-      unresolved: [`${file}: superclass fields partly reset (_attributes_data alone)`],
-    });
-  });
-
-  it("leaves a subclass that resets only its superclass's associations unresolved", async () => {
-    await checkout(partial(["_reflections = []"]));
-    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({
-      fields: own,
-      unresolved: [`${file}: superclass fields partly reset (_reflections alone)`],
-    });
+  it.each([
+    ["_attributes_data = {}", `${file}: superclass fields partly reset (_attributes_data alone)`],
+    ["_reflections = []", `${file}: superclass fields partly reset (_reflections alone)`],
+  ])("leaves a subclass that resets only one of its superclass's tables unresolved: %s", async (reset, reason) => {
+    await checkout(partial([reset]));
+    expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({ fields: own, unresolved: [reason] });
   });
 });
