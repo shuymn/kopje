@@ -12,7 +12,7 @@ import { homeStatus, homeTimeline, listTimeline, tagTimeline } from "../../src/d
 // no suspend block, 100 that cover none of the accounts, and blocks that cover the original authors (the walks the
 // rule reaches last), each with every candidate passing ("pass"), the viewer blocking or muting every sender first
 // ("reject"), and the candidates at the caps the flows read ("max"). This module runs on main's code as on the
-// rewrite's (record.test.ts records both): it names nothing only one of them has.
+// rewrite's (test-node/witness-recording.test.ts records both): it names nothing only one of them has.
 
 export const BLOCKS = ["none", "noncovering", "covering"] as const;
 export const SHAPES = ["pass", "reject", "max"] as const;
@@ -21,7 +21,7 @@ export const WORLDS: World[] = BLOCKS.flatMap((blocks) => SHAPES.map((shape) => 
 export const worldName = (world: World) => `${world.blocks}/${world.shape}`;
 
 // The instant the worlds are built at and the flows run at. This module imports nothing of the Workers pool, so that
-// test-node/shown-walk-work.test.ts builds the same worlds on Node's SQLite.
+// the Node suites (test-node/witness-store.ts) build the same worlds on Node's SQLite.
 const NOW = Date.parse("2026-10-12T00:00:00.000Z");
 
 const id = (prefix: string, n: number) => `${prefix}${String(n).padStart(18 - prefix.length, "0")}`;

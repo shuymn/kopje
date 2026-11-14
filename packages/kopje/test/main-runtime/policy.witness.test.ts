@@ -14,9 +14,10 @@ import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-wor
 // returns main's rows (a window: main's Window, through each side's own post-processing), writes as many and changes
 // the same rows, and reads no more rows than main's, after ANALYZE and under the plan audit's singleton statistics, in
 // every world of witness-world.ts; and each flow runs as many statements as main's, each unchanged one as often.
-// main's statements are main's literal text, recorded from main's code with the flows' other statements
-// (recorded.json, record.test.ts): at the position where main's sequence and the rewrite's differ, main's statement is
-// the baseline and the rewrite's its text; every other statement is allowed as often as main's flow ran it.
+// main's statements are main's literal text, recorded from main's sources at the commit recorded.json names, with the
+// flows' other statements (test-node/witness-recording.test.ts checks both sides against the sources): at the
+// position where main's sequence and the rewrite's differ, main's statement is the baseline and the rewrite's its
+// text; every other statement is allowed as often as main's flow ran it.
 
 type Recorded = { statements: string[]; runs: Record<string, { main: number[]; mine: number[] }> };
 const { statements, runs } = RECORDED as Recorded;

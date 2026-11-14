@@ -1,4 +1,6 @@
 {
+  "base": "0616c3880354088a8f29b59927bc310c869e0b89",
+  "procedure": "test-node/witness-recording.test.ts: each flow of test/main-runtime/witness-world.ts in each world, on main's sources at `base` (mine: the current sources), on Node's SQLite; KOPJE_RECORD_WITNESS=1 rewrites this file",
   "statements": [
     "SELECT (CASE WHEN ?2 NOT IN ('mention', 'reblog', 'follow', 'follow_request', 'favourite', 'quote') OR EXISTS (SELECT 1 FROM main.notification_permissions pp WHERE pp.account_id = ?1 AND pp.from_account_id = ?3) THEN 'accept' WHEN (NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ?1 AND pf.target_account_id = ?3 AND pf.state = 'accepted') AND (coalesce((SELECT pp.for_not_following FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'drop' OR (coalesce((SELECT pp.for_new_accounts FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'drop' AND EXISTS (SELECT 1 FROM main.accounts pn INDEXED BY sqlite_autoindex_accounts_1 WHERE pn.id = ?3 AND pn.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', ?5, '-30 days'))) OR (coalesce((SELECT pp.for_private_mentions FROM main.notification_policies pp WHERE pp.account_id = ?1), 'filter') = 'drop' AND (?2 = 'mention' AND EXISTS (SELECT 1 FROM main.statuses pd INDEXED BY sqlite_autoindex_statuses_1 WHERE pd.id = ?4 AND pd.visibility = 'direct' AND NOT (pd.in_reply_to_id IS NOT NULL AND EXISTS ( WITH RECURSIVE pw(id, parent, hit, depth) AS ( SELECT ps.id, ps.in_reply_to_id, EXISTS (SELECT 1 FROM main.status_mentions pm WHERE pm.status_id = ps.id AND pm.account_id = ?3 AND pm.silent = 0), 0 FROM main.statuses ps INDEXED BY sqlite_autoindex_statuses_1 WHERE ps.id = pd.in_reply_to_id UNION ALL SELECT ps.id, ps.in_reply_to_id, ps.account_id = ?1 AND EXISTS (SELECT 1 FROM main.status_mentions pm WHERE pm.status_id = ps.id AND pm.account_id = ?3 AND pm.silent = 0), pw.depth + 1 FROM pw CROSS JOIN main.statuses ps INDEXED BY sqlite_autoindex_statuses_1 ON ps.id = pw.parent WHERE pw.hit = 0 AND pw.depth < 100) SELECT 1 FROM pw CROSS JOIN main.statuses pa INDEXED BY sqlite_autoindex_statuses_1 ON pa.id = pw.id WHERE pw.hit AND pa.account_id = ?1 AND pa.visibility = 'direct'))))))) OR (coalesce((SELECT pp.for_not_followers FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'drop' AND NOT EXISTS (SELECT 1 FROM main.follows pr WHERE pr.account_id = ?3 AND pr.target_account_id = ?1 AND pr.state = 'accepted' AND pr.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?5, '-3 days'))) THEN 'drop' WHEN (NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ?1 AND pf.target_account_id = ?3 AND pf.state = 'accepted') AND (coalesce((SELECT pp.for_not_following FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'filter' OR (coalesce((SELECT pp.for_new_accounts FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'filter' AND EXISTS (SELECT 1 FROM main.accounts pn INDEXED BY sqlite_autoindex_accounts_1 WHERE pn.id = ?3 AND pn.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', ?5, '-30 days'))) OR (coalesce((SELECT pp.for_private_mentions FROM main.notification_policies pp WHERE pp.account_id = ?1), 'filter') = 'filter' AND (?2 = 'mention' AND EXISTS (SELECT 1 FROM main.statuses pd INDEXED BY sqlite_autoindex_statuses_1 WHERE pd.id = ?4 AND pd.visibility = 'direct' AND NOT (pd.in_reply_to_id IS NOT NULL AND EXISTS ( WITH RECURSIVE pw(id, parent, hit, depth) AS ( SELECT ps.id, ps.in_reply_to_id, EXISTS (SELECT 1 FROM main.status_mentions pm WHERE pm.status_id = ps.id AND pm.account_id = ?3 AND pm.silent = 0), 0 FROM main.statuses ps INDEXED BY sqlite_autoindex_statuses_1 WHERE ps.id = pd.in_reply_to_id UNION ALL SELECT ps.id, ps.in_reply_to_id, ps.account_id = ?1 AND EXISTS (SELECT 1 FROM main.status_mentions pm WHERE pm.status_id = ps.id AND pm.account_id = ?3 AND pm.silent = 0), pw.depth + 1 FROM pw CROSS JOIN main.statuses ps INDEXED BY sqlite_autoindex_statuses_1 ON ps.id = pw.parent WHERE pw.hit = 0 AND pw.depth < 100) SELECT 1 FROM pw CROSS JOIN main.statuses pa INDEXED BY sqlite_autoindex_statuses_1 ON pa.id = pw.id WHERE pw.hit AND pa.account_id = ?1 AND pa.visibility = 'direct'))))))) OR (coalesce((SELECT pp.for_not_followers FROM main.notification_policies pp WHERE pp.account_id = ?1), 'accept') = 'filter' AND NOT EXISTS (SELECT 1 FROM main.follows pr WHERE pr.account_id = ?3 AND pr.target_account_id = ?1 AND pr.state = 'accepted' AND pr.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?5, '-3 days'))) THEN 'filter' ELSE 'accept' END) AS policy",
     "DELETE FROM notifications INDEXED BY notifications_natural WHERE account_id = ?1 AND type = ?2 AND from_account_id = ?3 AND IFNULL(status_id, '') = IFNULL(?4, '') AND IFNULL(report_id, 0) = IFNULL(CAST(?5 AS INTEGER), 0) AND IFNULL(account_warning_id, 0) = IFNULL(CAST(?6 AS INTEGER), 0) AND NOT (notifications.id > coalesce((SELECT kc.max_id FROM main.notification_clears kc WHERE kc.account_id = notifications.account_id), 0) AND notifications.id > coalesce((SELECT kd.max_id FROM main.notification_dismissals kd WHERE kd.account_id = notifications.account_id AND kd.group_key = notifications.group_key), 0))",
@@ -89,13 +91,34 @@
     "UPDATE notification_request_jobs SET cursor = CAST(? AS INTEGER) - 1 WHERE id = CAST(? AS INTEGER)"
   ],
   "runs": {
-    "none/pass notify mention": { "main": [0, 1, 2, 3, 4, 5], "mine": [0, 1, 6, 3, 4, 5] },
-    "none/pass notify favourite": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "none/pass notify reblog": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "none/pass notify status": { "main": [1, 2, 3, 4], "mine": [1, 6, 3, 4] },
-    "none/pass notify quoted_update": { "main": [8, 9, 1, 2, 3, 4], "mine": [10, 9, 1, 6, 3, 4] },
-    "none/pass notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "none/pass notify status fan-out": { "main": [11, 1, 2, 3, 4, 1, 2, 3, 4], "mine": [11, 1, 6, 3, 4, 1, 6, 3, 4] },
+    "none/pass notify mention": {
+      "main": [0, 1, 2, 3, 4, 5],
+      "mine": [0, 1, 6, 3, 4, 5]
+    },
+    "none/pass notify favourite": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "none/pass notify reblog": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "none/pass notify status": {
+      "main": [1, 2, 3, 4],
+      "mine": [1, 6, 3, 4]
+    },
+    "none/pass notify quoted_update": {
+      "main": [8, 9, 1, 2, 3, 4],
+      "mine": [10, 9, 1, 6, 3, 4]
+    },
+    "none/pass notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "none/pass notify status fan-out": {
+      "main": [11, 1, 2, 3, 4, 1, 2, 3, 4],
+      "mine": [11, 1, 6, 3, 4, 1, 6, 3, 4]
+    },
     "none/pass list v1": {
       "main": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 17, 18, 23, 24, 25, 26, 27, 28, 29, 17, 18],
       "mine": [12, 13, 14, 30, 16, 17, 18, 19, 20, 21, 22, 17, 18, 23, 24, 25, 26, 27, 28, 29, 17, 18]
@@ -118,7 +141,10 @@
         34, 30, 36, 30, 34, 30, 36, 30
       ]
     },
-    "none/pass mentioned status": { "main": [37], "mine": [38] },
+    "none/pass mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "none/pass request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -131,12 +157,30 @@
       "main": [55, 56, 14, 57, 58, 57, 58, 57, 58, 57, 58, 57, 58, 57, 58, 59],
       "mine": [55, 56, 14, 60, 58, 60, 58, 60, 58, 60, 58, 60, 58, 60, 58, 59]
     },
-    "none/pass home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "none/pass home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/pass home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "none/pass home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/pass home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "none/pass home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "none/pass home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/pass home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/pass home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/pass home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/pass home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/pass home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "none/pass home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
@@ -169,19 +213,58 @@
       "main": [12, 83, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 84, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "none/reject notify mention": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "none/reject notify favourite": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "none/reject notify reblog": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "none/reject notify status": { "main": [1, 2], "mine": [1, 6] },
-    "none/reject notify quoted_update": { "main": [8], "mine": [10] },
-    "none/reject notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "none/reject notify status fan-out": { "main": [11, 1, 2, 1, 2, 3, 4], "mine": [11, 1, 6, 1, 6, 3, 4] },
-    "none/reject list v1": { "main": [12, 13, 14, 15, 16], "mine": [12, 13, 14, 30, 16] },
-    "none/reject by id": { "main": [12, 14, 31, 16], "mine": [12, 14, 32, 16] },
-    "none/reject group single": { "main": [12, 33, 14, 15], "mine": [12, 33, 14, 30] },
-    "none/reject grouped list": { "main": [12, 35, 14, 15, 16], "mine": [12, 35, 14, 30, 16] },
-    "none/reject mentioned status": { "main": [37], "mine": [38] },
-    "none/reject request list": { "main": [12, 39, 40, 41, 16, 17, 18], "mine": [12, 39, 40, 42, 16, 17, 18] },
+    "none/reject notify mention": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "none/reject notify favourite": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "none/reject notify reblog": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "none/reject notify status": {
+      "main": [1, 2],
+      "mine": [1, 6]
+    },
+    "none/reject notify quoted_update": {
+      "main": [8],
+      "mine": [10]
+    },
+    "none/reject notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "none/reject notify status fan-out": {
+      "main": [11, 1, 2, 1, 2, 3, 4],
+      "mine": [11, 1, 6, 1, 6, 3, 4]
+    },
+    "none/reject list v1": {
+      "main": [12, 13, 14, 15, 16],
+      "mine": [12, 13, 14, 30, 16]
+    },
+    "none/reject by id": {
+      "main": [12, 14, 31, 16],
+      "mine": [12, 14, 32, 16]
+    },
+    "none/reject group single": {
+      "main": [12, 33, 14, 15],
+      "mine": [12, 33, 14, 30]
+    },
+    "none/reject grouped list": {
+      "main": [12, 35, 14, 15, 16],
+      "mine": [12, 35, 14, 30, 16]
+    },
+    "none/reject mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
+    "none/reject request list": {
+      "main": [12, 39, 40, 41, 16, 17, 18],
+      "mine": [12, 39, 40, 42, 16, 17, 18]
+    },
     "none/reject request accept": {
       "main": [12, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 47],
       "mine": [12, 43, 44, 45, 46, 47, 48, 54, 50, 51, 52, 53, 47]
@@ -190,32 +273,86 @@
       "main": [55, 56, 14, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 59],
       "mine": [55, 56, 14, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 59]
     },
-    "none/reject home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "none/reject home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/reject home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "none/reject home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/reject home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "none/reject home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "none/reject home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/reject home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/reject home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/reject home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/reject home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/reject home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "none/reject home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "none/reject list window max": { "main": [12, 67, 68, 16], "mine": [12, 67, 70, 16] },
-    "none/reject hashtag window max": { "main": [12, 71, 72, 16], "mine": [12, 73, 72, 16] },
-    "none/reject hashtag walked max": { "main": [12, 74, 75, 72, 16], "mine": [12, 76, 75, 72, 16] },
+    "none/reject list window max": {
+      "main": [12, 67, 68, 16],
+      "mine": [12, 67, 70, 16]
+    },
+    "none/reject hashtag window max": {
+      "main": [12, 71, 72, 16],
+      "mine": [12, 73, 72, 16]
+    },
+    "none/reject hashtag walked max": {
+      "main": [12, 74, 75, 72, 16],
+      "mine": [12, 76, 75, 72, 16]
+    },
     "none/reject home window min": {
       "main": [12, 77, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 78, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "none/reject list window min": { "main": [12, 67, 79, 16], "mine": [12, 67, 80, 16] },
-    "none/reject hashtag window min": { "main": [12, 81, 72, 16], "mine": [12, 82, 72, 16] },
-    "none/reject hashtag walked min": { "main": [12, 83, 75, 72, 16], "mine": [12, 84, 75, 72, 16] },
-    "none/max notify mention": { "main": [0, 1, 2, 3, 5], "mine": [0, 1, 6, 3, 5] },
-    "none/max notify favourite": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "none/max notify reblog": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "none/max notify status": { "main": [1, 2, 3], "mine": [1, 6, 3] },
-    "none/max notify quoted_update": { "main": [8, 9, 1, 2, 3, 4], "mine": [10, 9, 1, 6, 3, 4] },
-    "none/max notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
+    "none/reject list window min": {
+      "main": [12, 67, 79, 16],
+      "mine": [12, 67, 80, 16]
+    },
+    "none/reject hashtag window min": {
+      "main": [12, 81, 72, 16],
+      "mine": [12, 82, 72, 16]
+    },
+    "none/reject hashtag walked min": {
+      "main": [12, 83, 75, 72, 16],
+      "mine": [12, 84, 75, 72, 16]
+    },
+    "none/max notify mention": {
+      "main": [0, 1, 2, 3, 5],
+      "mine": [0, 1, 6, 3, 5]
+    },
+    "none/max notify favourite": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "none/max notify reblog": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "none/max notify status": {
+      "main": [1, 2, 3],
+      "mine": [1, 6, 3]
+    },
+    "none/max notify quoted_update": {
+      "main": [8, 9, 1, 2, 3, 4],
+      "mine": [10, 9, 1, 6, 3, 4]
+    },
+    "none/max notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
     "none/max notify status fan-out": {
       "main": [
         11, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3,
@@ -264,7 +401,10 @@
         25, 26, 27, 28, 29, 36, 30
       ]
     },
-    "none/max mentioned status": { "main": [37], "mine": [38] },
+    "none/max mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "none/max request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -315,12 +455,30 @@
         58, 60, 58, 60, 58, 60, 58, 59
       ]
     },
-    "none/max home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "none/max home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/max home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "none/max home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "none/max home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "none/max home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "none/max home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/max home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/max home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/max home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/max home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "none/max home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "none/max home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -353,12 +511,30 @@
       "main": [12, 83, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 84, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "noncovering/pass notify mention": { "main": [0, 1, 2, 3, 4, 5], "mine": [0, 1, 6, 3, 4, 5] },
-    "noncovering/pass notify favourite": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "noncovering/pass notify reblog": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "noncovering/pass notify status": { "main": [1, 2, 3, 4], "mine": [1, 6, 3, 4] },
-    "noncovering/pass notify quoted_update": { "main": [8, 9, 1, 2, 3, 4], "mine": [10, 9, 1, 6, 3, 4] },
-    "noncovering/pass notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
+    "noncovering/pass notify mention": {
+      "main": [0, 1, 2, 3, 4, 5],
+      "mine": [0, 1, 6, 3, 4, 5]
+    },
+    "noncovering/pass notify favourite": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "noncovering/pass notify reblog": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "noncovering/pass notify status": {
+      "main": [1, 2, 3, 4],
+      "mine": [1, 6, 3, 4]
+    },
+    "noncovering/pass notify quoted_update": {
+      "main": [8, 9, 1, 2, 3, 4],
+      "mine": [10, 9, 1, 6, 3, 4]
+    },
+    "noncovering/pass notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
     "noncovering/pass notify status fan-out": {
       "main": [11, 1, 2, 3, 4, 1, 2, 3, 4],
       "mine": [11, 1, 6, 3, 4, 1, 6, 3, 4]
@@ -385,7 +561,10 @@
         34, 30, 36, 30, 34, 30, 36, 30
       ]
     },
-    "noncovering/pass mentioned status": { "main": [37], "mine": [38] },
+    "noncovering/pass mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "noncovering/pass request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -398,12 +577,30 @@
       "main": [55, 56, 14, 57, 58, 57, 58, 57, 58, 57, 58, 57, 58, 57, 58, 59],
       "mine": [55, 56, 14, 60, 58, 60, 58, 60, 58, 60, 58, 60, 58, 60, 58, 59]
     },
-    "noncovering/pass home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/pass home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/pass home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/pass home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/pass home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/pass home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "noncovering/pass home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/pass home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/pass home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/pass home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/pass home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/pass home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "noncovering/pass home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
@@ -436,19 +633,58 @@
       "main": [12, 83, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 84, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "noncovering/reject notify mention": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "noncovering/reject notify favourite": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "noncovering/reject notify reblog": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "noncovering/reject notify status": { "main": [1, 2], "mine": [1, 6] },
-    "noncovering/reject notify quoted_update": { "main": [8], "mine": [10] },
-    "noncovering/reject notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "noncovering/reject notify status fan-out": { "main": [11, 1, 2, 1, 2, 3, 4], "mine": [11, 1, 6, 1, 6, 3, 4] },
-    "noncovering/reject list v1": { "main": [12, 13, 14, 15, 16], "mine": [12, 13, 14, 30, 16] },
-    "noncovering/reject by id": { "main": [12, 14, 31, 16], "mine": [12, 14, 32, 16] },
-    "noncovering/reject group single": { "main": [12, 33, 14, 15], "mine": [12, 33, 14, 30] },
-    "noncovering/reject grouped list": { "main": [12, 35, 14, 15, 16], "mine": [12, 35, 14, 30, 16] },
-    "noncovering/reject mentioned status": { "main": [37], "mine": [38] },
-    "noncovering/reject request list": { "main": [12, 39, 40, 41, 16, 17, 18], "mine": [12, 39, 40, 42, 16, 17, 18] },
+    "noncovering/reject notify mention": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "noncovering/reject notify favourite": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "noncovering/reject notify reblog": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "noncovering/reject notify status": {
+      "main": [1, 2],
+      "mine": [1, 6]
+    },
+    "noncovering/reject notify quoted_update": {
+      "main": [8],
+      "mine": [10]
+    },
+    "noncovering/reject notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "noncovering/reject notify status fan-out": {
+      "main": [11, 1, 2, 1, 2, 3, 4],
+      "mine": [11, 1, 6, 1, 6, 3, 4]
+    },
+    "noncovering/reject list v1": {
+      "main": [12, 13, 14, 15, 16],
+      "mine": [12, 13, 14, 30, 16]
+    },
+    "noncovering/reject by id": {
+      "main": [12, 14, 31, 16],
+      "mine": [12, 14, 32, 16]
+    },
+    "noncovering/reject group single": {
+      "main": [12, 33, 14, 15],
+      "mine": [12, 33, 14, 30]
+    },
+    "noncovering/reject grouped list": {
+      "main": [12, 35, 14, 15, 16],
+      "mine": [12, 35, 14, 30, 16]
+    },
+    "noncovering/reject mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
+    "noncovering/reject request list": {
+      "main": [12, 39, 40, 41, 16, 17, 18],
+      "mine": [12, 39, 40, 42, 16, 17, 18]
+    },
     "noncovering/reject request accept": {
       "main": [12, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 47],
       "mine": [12, 43, 44, 45, 46, 47, 48, 54, 50, 51, 52, 53, 47]
@@ -457,32 +693,86 @@
       "main": [55, 56, 14, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 59],
       "mine": [55, 56, 14, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 59]
     },
-    "noncovering/reject home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/reject home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/reject home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/reject home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/reject home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/reject home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "noncovering/reject home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/reject home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/reject home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/reject home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/reject home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/reject home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "noncovering/reject home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "noncovering/reject list window max": { "main": [12, 67, 68, 16], "mine": [12, 67, 70, 16] },
-    "noncovering/reject hashtag window max": { "main": [12, 71, 72, 16], "mine": [12, 73, 72, 16] },
-    "noncovering/reject hashtag walked max": { "main": [12, 74, 75, 72, 16], "mine": [12, 76, 75, 72, 16] },
+    "noncovering/reject list window max": {
+      "main": [12, 67, 68, 16],
+      "mine": [12, 67, 70, 16]
+    },
+    "noncovering/reject hashtag window max": {
+      "main": [12, 71, 72, 16],
+      "mine": [12, 73, 72, 16]
+    },
+    "noncovering/reject hashtag walked max": {
+      "main": [12, 74, 75, 72, 16],
+      "mine": [12, 76, 75, 72, 16]
+    },
     "noncovering/reject home window min": {
       "main": [12, 77, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 78, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "noncovering/reject list window min": { "main": [12, 67, 79, 16], "mine": [12, 67, 80, 16] },
-    "noncovering/reject hashtag window min": { "main": [12, 81, 72, 16], "mine": [12, 82, 72, 16] },
-    "noncovering/reject hashtag walked min": { "main": [12, 83, 75, 72, 16], "mine": [12, 84, 75, 72, 16] },
-    "noncovering/max notify mention": { "main": [0, 1, 2, 3, 5], "mine": [0, 1, 6, 3, 5] },
-    "noncovering/max notify favourite": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "noncovering/max notify reblog": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "noncovering/max notify status": { "main": [1, 2, 3], "mine": [1, 6, 3] },
-    "noncovering/max notify quoted_update": { "main": [8, 9, 1, 2, 3, 4], "mine": [10, 9, 1, 6, 3, 4] },
-    "noncovering/max notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
+    "noncovering/reject list window min": {
+      "main": [12, 67, 79, 16],
+      "mine": [12, 67, 80, 16]
+    },
+    "noncovering/reject hashtag window min": {
+      "main": [12, 81, 72, 16],
+      "mine": [12, 82, 72, 16]
+    },
+    "noncovering/reject hashtag walked min": {
+      "main": [12, 83, 75, 72, 16],
+      "mine": [12, 84, 75, 72, 16]
+    },
+    "noncovering/max notify mention": {
+      "main": [0, 1, 2, 3, 5],
+      "mine": [0, 1, 6, 3, 5]
+    },
+    "noncovering/max notify favourite": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "noncovering/max notify reblog": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "noncovering/max notify status": {
+      "main": [1, 2, 3],
+      "mine": [1, 6, 3]
+    },
+    "noncovering/max notify quoted_update": {
+      "main": [8, 9, 1, 2, 3, 4],
+      "mine": [10, 9, 1, 6, 3, 4]
+    },
+    "noncovering/max notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
     "noncovering/max notify status fan-out": {
       "main": [
         11, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3,
@@ -531,7 +821,10 @@
         25, 26, 27, 28, 29, 36, 30
       ]
     },
-    "noncovering/max mentioned status": { "main": [37], "mine": [38] },
+    "noncovering/max mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "noncovering/max request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -582,12 +875,30 @@
         58, 60, 58, 60, 58, 60, 58, 59
       ]
     },
-    "noncovering/max home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/max home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/max home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/max home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/max home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "noncovering/max home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "noncovering/max home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/max home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/max home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/max home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/max home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "noncovering/max home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "noncovering/max home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -620,18 +931,42 @@
       "main": [12, 83, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 84, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "covering/pass notify mention": { "main": [0, 1, 2, 3, 4, 5], "mine": [0, 1, 6, 3, 4, 5] },
-    "covering/pass notify favourite": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "covering/pass notify reblog": { "main": [0, 1, 7, 2, 3, 4], "mine": [0, 1, 7, 6, 3, 4] },
-    "covering/pass notify status": { "main": [1, 2], "mine": [1, 6] },
-    "covering/pass notify quoted_update": { "main": [8], "mine": [10] },
-    "covering/pass notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "covering/pass notify status fan-out": { "main": [11, 1, 2, 1, 2], "mine": [11, 1, 6, 1, 6] },
+    "covering/pass notify mention": {
+      "main": [0, 1, 2, 3, 4, 5],
+      "mine": [0, 1, 6, 3, 4, 5]
+    },
+    "covering/pass notify favourite": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "covering/pass notify reblog": {
+      "main": [0, 1, 7, 2, 3, 4],
+      "mine": [0, 1, 7, 6, 3, 4]
+    },
+    "covering/pass notify status": {
+      "main": [1, 2],
+      "mine": [1, 6]
+    },
+    "covering/pass notify quoted_update": {
+      "main": [8],
+      "mine": [10]
+    },
+    "covering/pass notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "covering/pass notify status fan-out": {
+      "main": [11, 1, 2, 1, 2],
+      "mine": [11, 1, 6, 1, 6]
+    },
     "covering/pass list v1": {
       "main": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 13, 14, 30, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "covering/pass by id": { "main": [12, 14, 31, 16], "mine": [12, 14, 32, 16] },
+    "covering/pass by id": {
+      "main": [12, 14, 31, 16],
+      "mine": [12, 14, 32, 16]
+    },
     "covering/pass group single": {
       "main": [12, 33, 14, 15, 16, 34, 15, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 33, 14, 30, 16, 34, 30, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -646,7 +981,10 @@
         30, 36, 30
       ]
     },
-    "covering/pass mentioned status": { "main": [37], "mine": [38] },
+    "covering/pass mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "covering/pass request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -659,12 +997,30 @@
       "main": [55, 56, 14, 57, 58, 57, 58, 57, 58, 57, 85, 57, 85, 57, 58, 59],
       "mine": [55, 56, 14, 60, 58, 60, 58, 60, 58, 60, 85, 60, 85, 60, 58, 59]
     },
-    "covering/pass home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "covering/pass home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/pass home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "covering/pass home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/pass home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "covering/pass home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "covering/pass home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/pass home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/pass home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/pass home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/pass home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/pass home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "covering/pass home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
@@ -697,19 +1053,58 @@
       "main": [12, 83, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 84, 75, 72, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
     },
-    "covering/reject notify mention": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "covering/reject notify favourite": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "covering/reject notify reblog": { "main": [0, 1, 7, 2], "mine": [0, 1, 7, 6] },
-    "covering/reject notify status": { "main": [1, 2], "mine": [1, 6] },
-    "covering/reject notify quoted_update": { "main": [8], "mine": [10] },
-    "covering/reject notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
-    "covering/reject notify status fan-out": { "main": [11, 1, 2, 1, 2], "mine": [11, 1, 6, 1, 6] },
-    "covering/reject list v1": { "main": [12, 13, 14, 15, 16], "mine": [12, 13, 14, 30, 16] },
-    "covering/reject by id": { "main": [12, 14, 31, 16], "mine": [12, 14, 32, 16] },
-    "covering/reject group single": { "main": [12, 33, 14, 15], "mine": [12, 33, 14, 30] },
-    "covering/reject grouped list": { "main": [12, 35, 14, 15, 16], "mine": [12, 35, 14, 30, 16] },
-    "covering/reject mentioned status": { "main": [37], "mine": [38] },
-    "covering/reject request list": { "main": [12, 39, 40, 41, 16, 17, 18], "mine": [12, 39, 40, 42, 16, 17, 18] },
+    "covering/reject notify mention": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "covering/reject notify favourite": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "covering/reject notify reblog": {
+      "main": [0, 1, 7, 2],
+      "mine": [0, 1, 7, 6]
+    },
+    "covering/reject notify status": {
+      "main": [1, 2],
+      "mine": [1, 6]
+    },
+    "covering/reject notify quoted_update": {
+      "main": [8],
+      "mine": [10]
+    },
+    "covering/reject notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
+    "covering/reject notify status fan-out": {
+      "main": [11, 1, 2, 1, 2],
+      "mine": [11, 1, 6, 1, 6]
+    },
+    "covering/reject list v1": {
+      "main": [12, 13, 14, 15, 16],
+      "mine": [12, 13, 14, 30, 16]
+    },
+    "covering/reject by id": {
+      "main": [12, 14, 31, 16],
+      "mine": [12, 14, 32, 16]
+    },
+    "covering/reject group single": {
+      "main": [12, 33, 14, 15],
+      "mine": [12, 33, 14, 30]
+    },
+    "covering/reject grouped list": {
+      "main": [12, 35, 14, 15, 16],
+      "mine": [12, 35, 14, 30, 16]
+    },
+    "covering/reject mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
+    "covering/reject request list": {
+      "main": [12, 39, 40, 41, 16, 17, 18],
+      "mine": [12, 39, 40, 42, 16, 17, 18]
+    },
     "covering/reject request accept": {
       "main": [12, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 47],
       "mine": [12, 43, 44, 45, 46, 47, 48, 54, 50, 51, 52, 53, 47]
@@ -718,32 +1113,86 @@
       "main": [55, 56, 14, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 57, 85, 59],
       "mine": [55, 56, 14, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 60, 85, 59]
     },
-    "covering/reject home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "covering/reject home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/reject home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "covering/reject home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/reject home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "covering/reject home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "covering/reject home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/reject home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/reject home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/reject home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/reject home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/reject home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "covering/reject home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "covering/reject list window max": { "main": [12, 67, 68, 16], "mine": [12, 67, 70, 16] },
-    "covering/reject hashtag window max": { "main": [12, 71, 72, 16], "mine": [12, 73, 72, 16] },
-    "covering/reject hashtag walked max": { "main": [12, 74, 75, 72, 16], "mine": [12, 76, 75, 72, 16] },
+    "covering/reject list window max": {
+      "main": [12, 67, 68, 16],
+      "mine": [12, 67, 70, 16]
+    },
+    "covering/reject hashtag window max": {
+      "main": [12, 71, 72, 16],
+      "mine": [12, 73, 72, 16]
+    },
+    "covering/reject hashtag walked max": {
+      "main": [12, 74, 75, 72, 16],
+      "mine": [12, 76, 75, 72, 16]
+    },
     "covering/reject home window min": {
       "main": [12, 77, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 78, 65, 16, 19, 20, 21, 22, 17, 18, 14, 23, 24, 25, 26, 27, 28, 29]
     },
-    "covering/reject list window min": { "main": [12, 67, 79, 16], "mine": [12, 67, 80, 16] },
-    "covering/reject hashtag window min": { "main": [12, 81, 72, 16], "mine": [12, 82, 72, 16] },
-    "covering/reject hashtag walked min": { "main": [12, 83, 75, 72, 16], "mine": [12, 84, 75, 72, 16] },
-    "covering/max notify mention": { "main": [0, 1, 2, 3, 5], "mine": [0, 1, 6, 3, 5] },
-    "covering/max notify favourite": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "covering/max notify reblog": { "main": [0, 1, 7, 2, 3], "mine": [0, 1, 7, 6, 3] },
-    "covering/max notify status": { "main": [1, 2], "mine": [1, 6] },
-    "covering/max notify quoted_update": { "main": [8], "mine": [10] },
-    "covering/max notify follow": { "main": [0, 1, 2], "mine": [0, 1, 6] },
+    "covering/reject list window min": {
+      "main": [12, 67, 79, 16],
+      "mine": [12, 67, 80, 16]
+    },
+    "covering/reject hashtag window min": {
+      "main": [12, 81, 72, 16],
+      "mine": [12, 82, 72, 16]
+    },
+    "covering/reject hashtag walked min": {
+      "main": [12, 83, 75, 72, 16],
+      "mine": [12, 84, 75, 72, 16]
+    },
+    "covering/max notify mention": {
+      "main": [0, 1, 2, 3, 5],
+      "mine": [0, 1, 6, 3, 5]
+    },
+    "covering/max notify favourite": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "covering/max notify reblog": {
+      "main": [0, 1, 7, 2, 3],
+      "mine": [0, 1, 7, 6, 3]
+    },
+    "covering/max notify status": {
+      "main": [1, 2],
+      "mine": [1, 6]
+    },
+    "covering/max notify quoted_update": {
+      "main": [8],
+      "mine": [10]
+    },
+    "covering/max notify follow": {
+      "main": [0, 1, 2],
+      "mine": [0, 1, 6]
+    },
     "covering/max notify status fan-out": {
       "main": [
         11, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2,
@@ -770,7 +1219,10 @@
         18, 17, 18, 17, 18, 17, 18, 17, 18, 17, 18, 17, 18
       ]
     },
-    "covering/max by id": { "main": [12, 14, 31, 16], "mine": [12, 14, 32, 16] },
+    "covering/max by id": {
+      "main": [12, 14, 31, 16],
+      "mine": [12, 14, 32, 16]
+    },
     "covering/max group single": {
       "main": [12, 33, 14, 15, 16, 34, 15, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 33, 14, 30, 16, 34, 30, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -785,7 +1237,10 @@
         25, 26, 27, 28, 29, 36, 30
       ]
     },
-    "covering/max mentioned status": { "main": [37], "mine": [38] },
+    "covering/max mentioned status": {
+      "main": [37],
+      "mine": [38]
+    },
     "covering/max request list": {
       "main": [12, 39, 40, 41, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 39, 40, 42, 16, 17, 18, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
@@ -836,12 +1291,30 @@
         58, 60, 58, 60, 58, 60, 58, 59
       ]
     },
-    "covering/max home status: followed author": { "main": [61, 62], "mine": [61, 63] },
-    "covering/max home status: followed author's boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/max home status: own": { "main": [61, 62], "mine": [61, 63] },
-    "covering/max home status: own boost": { "main": [61, 62], "mine": [61, 63] },
-    "covering/max home status: mention": { "main": [61, 62], "mine": [61, 63] },
-    "covering/max home status: hashtag": { "main": [61, 62], "mine": [61, 63] },
+    "covering/max home status: followed author": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/max home status: followed author's boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/max home status: own": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/max home status: own boost": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/max home status: mention": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
+    "covering/max home status: hashtag": {
+      "main": [61, 62],
+      "mine": [61, 63]
+    },
     "covering/max home window max": {
       "main": [12, 64, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29],
       "mine": [12, 66, 65, 16, 19, 20, 21, 17, 18, 23, 24, 25, 26, 27, 28, 29]
