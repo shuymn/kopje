@@ -132,14 +132,11 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   before it; and it expands a CTE's body once per reference, so each reference resolves the CTEs inside it again. Every
   statement the Workers suites run prepares at `CTE_GUARD_LIMIT` (96) on Node's 3.54.1 (`test-node/sql-depth.ts`), so
   a fragment holding a CTE (the coverage walks of `audience.ts`) keeps each reference within it: read rows in one pass
-  rather than through a CTE referenced several times (`mergedWindow` in `windows.ts`), and leave out a walk a sibling
-  term of the same `AND` already implies. To resolve a walk earlier without moving where it is evaluated, define it as
-  a column of a derived table SQLite flattens, over a row the statement reads first (`statusReads`' `hoisted`): SQLite
-  resolves the column where the table expands, copies it to each use and evaluates it there. Mark the CTEs of such a
-  copy `NOT MATERIALIZED`: SQLite counts the copies' uses together and would materialize them, and a materialized CTE
-  is read again from its table. A term that names no table of its query is evaluated once before the query's loop, not
-  per row. workerd from 1.20261111.1 backs the rule out; the Node guard keeps enforcing it, and a statement that
-  passes it prepares on either.
+  rather than through a CTE referenced several times (`mergedWindow` in `windows.ts`), leave out a walk a sibling term
+  of the same `AND` already implies, or resolve a walk ahead of the statement's other cursors without moving where it
+  is evaluated (`statusReads`' `hoisted` in `audience.ts`, whose comment gives the mechanism). workerd from
+  1.20261111.1 backs the rule out; the Node guard keeps enforcing it, and a statement that passes it prepares on
+  either.
 
 ## Tests
 

@@ -132,9 +132,7 @@ export function availableSql(x: string, covered?: string): string {
 }
 
 // The coverage term availableSql reads of the account `x`. `copied`: the term is a column of statusReads' hoisted row,
-// which SQLite copies to each place it is used; SQLite materializes the walk's CTEs of such copies (their uses counted
-// together), where each occurrence of its own runs them as co-routines, and a materialized CTE is read again from its
-// table, so the copies keep them co-routines (NOT MATERIALIZED): the same walk, without those reads.
+// which SQLite copies to each place it is used, so its walk's CTEs are NOT MATERIALIZED (statusReads' comment).
 function guardedAccountCoveredSql(x: string, copied = false): string {
   return guardedSql(accountCoveredSql(x, copied));
 }
@@ -698,7 +696,11 @@ type Row = Record<string, SqlStorageValue>;
 // `covered`), as an AuthorWindows' narrowing takes x's author (and onlyAuthor gives it to the caller's authors). SQLite
 // flattens hp, so each use of a column is its expression, evaluated where it is used, as the term it replaces: the
 // read evaluates the same walks, in the same places, while each walk's CTE is resolved within hp, ahead of the
-// branches' cursors (workerd's cursor rule, docs/engineering.md "Queries"). No fragment a branch holds names `hp`.
+// branches' cursors (workerd's cursor rule, docs/engineering.md "Queries"). SQLite counts the uses of the copies
+// together and would materialize their walks' CTEs, where each occurrence of its own runs them as co-routines, and a
+// materialized CTE is read again from its table; so the copies' CTEs are NOT MATERIALIZED (guardedAccountCoveredSql's
+// `copied`): the same walk, without those reads. No fragment a branch holds names `hp`
+// (test-node/hoisted-alias.test.ts).
 export type StatusReads = {
   // One SELECT, after an optional WITH clause its parts may read, with further columns (name: expression) after the id.
   // oxlint-disable-next-line typescript/no-generated-empty-object-type -- no further columns unless named
