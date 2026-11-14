@@ -36,11 +36,10 @@ The code is in `packages/kopje`, and `deploy/` is the instance template operator
 - `pnpm --filter kopje bench:migration` measures migration cost locally (see `packages/kopje/RELEASING.md`).
 
 lefthook runs oxlint on the staged files, the formatter (which restages the files it fixes), a secret scan and, for
-workflows, actionlint and ghalint on commit, and oxlint on the whole tree and the affected test suites on push
-(`scripts/test-affected.sh`; a change that is all Markdown runs only the suites that read it). Running
-`bash scripts/test-affected.sh` on a clean tree records the pass, and the push then skips those suites for that tree;
-its whole output is in `test-affected.log` in the Git directory. The repository's own source rules (layering, Fedify
-usage, page strings, log events, signing keys) are oxlint JS plugins in `packages/kopje/lint/`.
+workflows, actionlint and ghalint on commit, and oxlint on the whole tree on push. The tests run in CI, which runs only
+the suites a change can affect (`scripts/test-affected.sh`; a change that is all Markdown runs only the suites that
+read it); `bash scripts/test-affected.sh` runs the same suites locally. The repository's own source rules (layering,
+Fedify usage, page strings, log events, signing keys) are oxlint JS plugins in `packages/kopje/lint/`.
 
 ## Rules
 

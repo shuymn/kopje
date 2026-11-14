@@ -13,14 +13,14 @@ export default defineConfig({
       "packages/kopje/vitest.main-runtime.config.ts",
       "packages/kopje/vitest.node.config.ts",
     ],
-    // `--coverage` (CI's coverage-test shards) writes coverage/lcov.info, with paths from the repository root, for
-    // octocov (.octocov.yml), also when a test failed. V8 coverage reaches workerd through @cloudflare/vitest-plugin's
-    // inspector session and counts blocks in every module the isolate runs: the globs choose what is reported, not
-    // what is slowed. Every file they match is reported, one no test loads as uncovered.
+    // `--coverage`, run by hand to find code no test reaches, writes a summary and coverage/index.html. CI does not
+    // collect it. V8 coverage reaches workerd through @cloudflare/vitest-plugin's inspector session and counts blocks
+    // in every module the isolate runs, which slows a tight JavaScript loop many times over (a string's JSON bytes,
+    // char by char, about 30 times): the globs choose what is reported, not what is slowed. Every file they match is
+    // reported, one no test loads as uncovered.
     coverage: {
       provider: "v8",
-      reporter: ["lcovonly"],
-      reportOnFailure: true,
+      reporter: ["text-summary", "html"],
       include: [...covered, ...covered.map((glob) => `packages/kopje/${glob}`)],
       exclude: ["**/*.d.ts"],
     },

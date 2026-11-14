@@ -99,7 +99,7 @@ spec:
     can_approve_pull_requests: false
     selected_actions:
       github_owned_allowed: true
-      verified_allowed: true
+      verified_allowed: false
       patterns_allowed:
         - jdx/mise-action@*
         - oven-sh/setup-bun@*
