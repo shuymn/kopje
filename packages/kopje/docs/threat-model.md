@@ -246,7 +246,11 @@ against their own instance. TLS is assumed between all parties.
   must have its actor's origin and name no other author, and only its stored author updates or deletes it, so a local
   status is never created, updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
-  remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)").
+  remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
+  `atomUri` (Mastodon's `Create#find_existing_status`, `Delete#delete_status` and `Undo#undo_announce`) keeps the rule:
+  a `Create` whose `atomUri` names another author's status, a local one included, is refused, and a `Delete` or an
+  `Undo` falls back to `atomUri` only among the actor's own statuses or boosts (`namedStatus` in
+  `src/domain/inbox.ts`); `test/inbox-atom-uri.test.ts`.
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored
@@ -346,7 +350,12 @@ against their own instance. TLS is assumed between all parties.
   missing still refreshes the status's poll (counts, end, voters), its quote policy and the stamp of the same quote
   (Mastodon's `handle_implicit_update!`), and an older one changes nothing; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
-  `Delete` was recorded takes no `Update`. A `Delete` of an unknown object of the actor's origin is recorded for that
+  `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
+  the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
+  `Create` whose id or `atomUri` was retracted or deleted is not stored, and a `Delete` or `Undo` that found its status
+  by `atomUri` records both ids as retracted (a `Delete` also as deleted), both or neither within the cap
+  (`retractMatched` in `src/domain/retractions.ts`), so neither id brings it back (`test/inbox-atom-uri.test.ts`). A
+  `Delete` of an unknown object of the actor's origin is recorded for that
   actor only, so it cannot suppress another actor's objects never seen here; the `Delete` of a stored status or boost is
   also recorded for every actor (`ANY_ACTOR`), so nobody, another actor of the same origin included, creates or updates
   that uri again (bounded by the authors' caps: it is written only with the author's own retraction of the uri, which

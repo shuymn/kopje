@@ -886,8 +886,8 @@ Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NE
   domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
   has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
 
-Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
-`docs/threat-model.md`):
+Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create`, `Update` and `Undo`;
+ID-7 in `docs/threat-model.md`):
 
 - A retraction lasts 30 days, so a `Create` replayed after that is accepted again. Mastodon's `Tombstone` has no expiry
   (`delete.rb`, `create.rb`, `update.rb`) and is cleared when the account's key changes (`process_account_service.rb`).
@@ -904,6 +904,11 @@ Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Del
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.
+- Kopje reads `atomUri` only as an http(s) URI. An OStatus-era `tag:` identity, which Mastodon gave statuses before
+  ActivityPub (`OStatus::TagManager`, `app/lib/ostatus/tag_manager.rb:22`) and which a cutover may keep as a stored
+  status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
+  one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
+  the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):
