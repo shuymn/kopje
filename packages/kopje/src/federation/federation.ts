@@ -352,7 +352,7 @@ export function createKopjeFederation(
       }
       state.resolvedUsername = actor.username;
       state.source = { kind: "actor", username: actor.username, rendered: JSON.stringify(actor) };
-      return localActorObject(ctx, actor);
+      return localActorObject(ctx, actor, domain);
     })
     .mapHandle(async (_ctx, username) => (await localActor(username))?.username ?? null)
     .mapActorAlias("/actor", INSTANCE_ACTOR)
@@ -581,7 +581,7 @@ function instanceOwner(key: EncodedKey, keyId: URL): KeyOwner {
   return userOwner(decodeKey(key), keyId);
 }
 
-async function localActorObject(ctx: RequestContext<FederationState>, actor: LocalActor) {
+async function localActorObject(ctx: RequestContext<FederationState>, actor: LocalActor, domain: string) {
   const id = ctx.getActorUri(actor.username);
   const cls = ACTOR_CLASSES[actor.actorType as keyof typeof ACTOR_CLASSES] ?? Person;
   // A suspended actor, as Mastodon's ActivityPub::ActorSerializer presents one: no name, summary, icon, image, aliases
@@ -626,24 +626,25 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
     published: Temporal.Instant.from(actor.createdAt),
     ...profile,
   });
-  return withAttributionDomains(object, actor.attributionDomains);
+  return withMastodonTerms(object, `${actor.username}@${domain}`, actor.attributionDomains);
 }
 
-// Mastodon's `attributionDomains` (toot:attributionDomains), which Fedify's vocabulary does not have: added to the
-// compacted document with its context term, only when the account has one, as ActivityPub::ActorSerializer adds it
-// (a suspended account's too).
+// Mastodon's actor terms that Fedify's vocabulary does not have, added to the compacted document with their contexts as
+// ActivityPub::ActorSerializer adds them, a suspended account's too: `webfinger` (FEP-2c59, Mastodon 4.6: the stored
+// username's spelling at the domain fixed at setup, ID-5) with its named context, which Fedify preloads, and
+// `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance actor
+// declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
+const WEBFINGER_CONTEXT = "https://purl.archive.org/socialweb/webfinger";
 const ATTRIBUTION_DOMAINS_CONTEXT = {
   toot: "http://joinmastodon.org/ns#",
   attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
 };
 
-function withAttributionDomains<T extends { toJsonLd(options?: object): Promise<unknown> }>(
+function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unknown> }>(
   object: T,
+  webfinger: string,
   domains: string[],
 ): T {
-  if (domains.length === 0) {
-    return object;
-  }
   const toJsonLd = object.toJsonLd.bind(object);
   object.toJsonLd = async (options?: object) => {
     const json = await toJsonLd(options);
@@ -651,10 +652,12 @@ function withAttributionDomains<T extends { toJsonLd(options?: object): Promise<
       return json;
     }
     const context = json["@context"];
+    const attribution = domains.length === 0 ? [] : [ATTRIBUTION_DOMAINS_CONTEXT];
     return {
       ...json,
-      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), ATTRIBUTION_DOMAINS_CONTEXT],
-      attributionDomains: domains,
+      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), WEBFINGER_CONTEXT, ...attribution],
+      webfinger,
+      ...(domains.length === 0 ? {} : { attributionDomains: domains }),
     };
   };
   return object;

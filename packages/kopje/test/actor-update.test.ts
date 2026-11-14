@@ -1,5 +1,8 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { Db } from "../src/db/sql";
+import { moderationUpdate } from "../src/domain/actor-update";
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY } from "./federation-helpers";
@@ -176,6 +179,25 @@ describe("Update(Person)", () => {
     // The same list again changes nothing published.
     expect((await patch(h, { attribution_domains: [] })).status).toBe(200);
     expect(await updates(h)).toHaveLength(sent.length);
+  });
+
+  it("declares the handle in webfinger with its named context, in a suspension's Update too (FEP-2c59)", async () => {
+    const h = await setup();
+    expect((await patch(h, { display_name: "Alice A" })).status).toBe(200);
+    const [sent] = await updates(h);
+    expect(sent?.activity.object.webfinger).toBe("alice@kopje.test");
+    expect(sent?.activity["@context"]).toContain("https://purl.archive.org/socialweb/webfinger");
+    const suspension = await runInDurableObject(h.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      db.run(
+        "UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z' WHERE account_id = ?",
+        h.users.alice.id,
+      );
+      return moderationUpdate(db, h.users.alice.id, NOW);
+    });
+    const activity = suspension?.activity as { "@context": unknown[]; object: Record<string, unknown> };
+    expect(activity.object).toMatchObject({ webfinger: "alice@kopje.test", suspended: true });
+    expect(activity["@context"]).toContain("https://purl.archive.org/socialweb/webfinger");
   });
 
   it("sends the new avatar from the settings page", async () => {
