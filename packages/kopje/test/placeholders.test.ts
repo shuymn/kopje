@@ -36,8 +36,10 @@ describe("features without data yet", () => {
   const notFound = { error: "Not Found" };
   const userAnswers: [string, string, string, number, unknown][] = [
     ["GET", "/api/v1/annual_reports", "read:accounts", 200, { annual_reports: [], accounts: [], statuses: [] }],
-    ["GET", "/api/v1/annual_reports/2025", "write:accounts", 404, recordNotFound],
+    ["GET", "/api/v1/annual_reports/2025", "read:accounts", 404, recordNotFound],
+    ["GET", "/api/v1/annual_reports/2026/state", "read:accounts", 200, { state: "ineligible" }],
     ["POST", "/api/v1/annual_reports/2025/read", "write:accounts", 404, recordNotFound],
+    ["POST", "/api/v1/annual_reports/2026/generate", "write:accounts", 200, {}],
     ["GET", "/api/v1/emails/check_confirmation", "read:accounts", 200, true],
     ["POST", "/api/v1/statuses/123/translate", "read:statuses", 404, notFound],
     ["GET", "/api/v1_alpha/async_refreshes/abc", "read", 404, notFound],
@@ -67,6 +69,22 @@ describe("features without data yet", () => {
     const token = await scopedToken(h, scope);
     await sql(h.store, "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?", "2026-01-01", alice);
     expect((await send(h, method, route, token)).status).toBe(403);
+  });
+
+  it("generates no annual report: the list stays empty and the year's report is not found", async () => {
+    const h = await apiHarness();
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+    const token = await scopedToken(h, "read:accounts write:accounts");
+    expect(await send(h, "POST", "/api/v1/annual_reports/2026/generate", token)).toEqual({ status: 200, body: {} });
+    expect(await send(h, "GET", "/api/v1/annual_reports", token)).toEqual({
+      status: 200,
+      body: { annual_reports: [], accounts: [], statuses: [] },
+    });
+    expect(await send(h, "GET", "/api/v1/annual_reports/2026", token)).toEqual({ status: 404, body: recordNotFound });
+    expect(await send(h, "GET", "/api/v1/annual_reports/2026/state", token)).toEqual({
+      status: 200,
+      body: { state: "ineligible" },
+    });
   });
 
   it("/api/v1/emails/confirmations refuses every token with write:accounts, as no user signed up through an app", async () => {

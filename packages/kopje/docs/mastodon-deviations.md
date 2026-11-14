@@ -98,8 +98,9 @@ A pull request that fixes a gap removes the exceptions that cite it.
   no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
   never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Accepted,
-  2026-10-20.
+  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Annual reports
+  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Accepted,
+  2026-10-20; annual reports, 2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
   the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
   16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
@@ -391,12 +392,14 @@ Accounts (the `Account` and credential account entities):
 
   Accepted, 2026-11-15.
 
-Annual reports (`/api/v1/annual_reports`):
+Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-3):
 
-- No report is ever made: the list is `{"annual_reports": [], "accounts": [], "statuses": []}` and a year's report or
-  its read answers 404, as on a stock Mastodon 4.5.11, where nothing enqueues `GenerateAnnualReportWorker`. A Mastodon
-  admin can still generate a report by hand from a console, which its owner then reads and marks read; Kopje has no
-  such path.
+- Kopje answers as Mastodon 4.7.5 does with Wrapstodon off (its admin setting, on by default). No report is made:
+  the list is `{"annual_reports": [], "accounts": [], "statuses": []}`, a year's report and its `read` answer 404,
+  `state` answers `ineligible` for any year, `generate` answers 200 `{}` and starts nothing, and `wrapstodon` is
+  null. With Wrapstodon on, Mastodon lets a user generate the year's report from December 10 to 31 (UTC). A
+  Mastodon admin can also generate one by hand from a console, which its owner then reads and marks read; Kopje
+  has no such path.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

@@ -136,6 +136,8 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       url: null,
     },
     api_versions: API_VERSIONS,
+    // REST::InstanceSerializer#wrapstodon: the current campaign's year, nil with Wrapstodon off (MD-3).
+    wrapstodon: null,
     contact: { email: info.contactEmail ?? "", account: info.contactAccount },
     rules: info.rules,
   });

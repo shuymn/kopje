@@ -74,6 +74,8 @@ describe("instance contract", () => {
       rules: RULES,
     });
     expect(body).not.toHaveProperty("api_versions");
+    // REST::V1::InstanceSerializer has no wrapstodon.
+    expect(body).not.toHaveProperty("wrapstodon");
   });
 
   it("freezes /api/v2/instance with the VAPID public key", async () => {
@@ -124,6 +126,7 @@ describe("instance contract", () => {
         url: null,
       },
       api_versions: { mastodon: 7 },
+      wrapstodon: null,
       contact: { email: "admin@kopje.test", account: null },
       rules: RULES,
     });

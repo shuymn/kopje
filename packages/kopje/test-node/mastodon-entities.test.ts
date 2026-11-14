@@ -108,7 +108,8 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   },
   "REST::NotificationGroupSerializer": {
     ...accepted("MD-2", "event"),
-    ...open(1590, "no annual report is made", "annual_report"),
+    // No annual report is made, so no notification carries one.
+    ...accepted("MD-3", "annual_report"),
     ...open(1589, "collection notifications", "collection"),
     ...open(1582, "supported_types and fallback", "fallback"),
   },

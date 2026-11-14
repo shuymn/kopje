@@ -108,11 +108,6 @@ const EXCEPTIONS: Record<string, Exception> = {
     reason:
       "a token without a user owns no status, so StatusPolicy#update? refuses it there (403); Kopje refuses it at the route",
   },
-  "GET /api/v1/annual_reports/:id": {
-    kopje: "required token, scopes write write:accounts, user required",
-    mastodon: "required token, scopes read read:accounts, user required",
-    reason: "#1590's feature-off contract, commit 3",
-  },
   "GET /api/v1/accounts/relationships": {
     kopje: "required token, scopes follow read read:follows, user required",
     mastodon: "required token, scopes read read:follows, user required",

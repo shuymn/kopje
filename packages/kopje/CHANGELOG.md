@@ -8,6 +8,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Added
+
+- Annual reports answer as Mastodon 4.7.5 with Wrapstodon off. `GET /api/v1/annual_reports/:id/state` answers
+  `{"state":"ineligible"}`, `POST /api/v1/annual_reports/:id/generate` answers `{}` and starts nothing, and
+  `/api/v2/instance` has `wrapstodon: null`. Kopje makes no annual report yet.
+
 ### Changed
 
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
@@ -15,6 +21,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
   since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those features. No Store
   migration and no `wrangler.jsonc` change.
+- `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
+  `write:accounts`.
 - The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
   is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
   for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400
