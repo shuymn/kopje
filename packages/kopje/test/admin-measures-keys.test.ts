@@ -17,10 +17,11 @@ import { world, type World } from "./remote-suspension-helpers";
 
 // The measures of POST /api/v1/admin/measures besides instance_follows (test/admin-measures.test.ts), against
 // Mastodon 4.5.11's Admin::Metrics::Measure classes: new_users, opened_reports and resolved_reports with their windows
-// and previous_total (base_measure.rb:88-98), instance_accounts, instance_followers, instance_reports and
+// and previous_total (Mastodon 4.5.21's base_measure.rb:95-105), instance_accounts, instance_followers, instance_reports and
 // instance_media_attachments, the refused keys (MD-2), and stored times that cannot be read.
 
 const D = "d.example";
+const NOT_ALLOWED = { status: 403, body: { error: "This action is not allowed" } };
 const point = (date: string, value: string) => ({ date, value });
 
 async function only(w: World, body: Record<string, unknown>): Promise<Measure> {
@@ -59,20 +60,21 @@ describe("the measure new_users", () => {
       key: "new_users",
       unit: null,
       total: String(2 + 3 + 1 + 4),
-      previous_total: "2",
+      previous_total: "0",
       data: [point("2026-10-01", "5"), point("2026-10-02", "1"), point("2026-10-03", "9")],
     });
     // measure_serializer.rb: previous_total for a measure in the time range, no human_value.
     expect(Object.keys(m)).toEqual(["key", "unit", "total", "previous_total", "data"]);
-    // The previous window: each date moved back by the length (2 days), so 2026-09-29 to 2026-10-01 00:00 above,
-    // and here 2026-10-01 to 2026-10-03 00:00.
+    // The previous window: each date moved back by the period's days (L + 1 = 3), so 2026-09-28 to 2026-09-30 00:00
+    // above, and here 2026-09-30 to 2026-10-02 00:00, before 2026-10-02 12:00.
     const later = await only(w, newUsers("2026-10-03", "2026-10-05"));
-    expect(later.previous_total).toBe("10");
+    expect(later.previous_total).toBe(String(2 + 3));
     expect(later.total).toBe(String(4 + 5));
-    // A same-day range: the window is that midnight alone, the series that whole day.
+    // A same-day range: the window is that midnight alone, the previous window the midnight before, the series that
+    // whole day.
     expect(await only(w, newUsers("2026-10-03", "2026-10-03"))).toMatchObject({
       total: "4",
-      previous_total: "4",
+      previous_total: "0",
       data: [point("2026-10-03", "9")],
     });
     // The total's end date past the axis' last point: the axis ends at 2026-10-02 (12:00 + 1 day > 06:00), the
@@ -99,25 +101,23 @@ describe("the measure new_users", () => {
       total: "3",
       data: [point("2026-10-02", "2"), point("2026-10-03", "0")],
     });
-    // The previous window shifts by the exact length, then floors: 1.5 days back from 2026-10-10 and 2026-10-11 is
-    // 2026-10-08 and 2026-10-09.
-    expect(await only(w, newUsers("2026-10-10T12:00:00Z", "2026-10-12T00:00:00Z"))).toMatchObject({
-      previous_total: String(4 + 8),
-    });
-    // One nanosecond more than two days moves both dates back past a midnight: 2026-10-07 to 2026-10-09, which holds
-    // 2026-10-07 12:00, where two days exactly give 2026-10-08 to 2026-10-10.
-    expect(await only(w, newUsers("2026-10-10T00:00:00Z", "2026-10-12T00:00:00.000000001Z"))).toMatchObject({
-      previous_total: String(16 + 4 + 8),
-    });
-    expect(await only(w, newUsers("2026-10-10T00:00:00Z", "2026-10-12T00:00:00Z"))).toMatchObject({
-      previous_total: String(4 + 8),
-    });
-    expect(await only(w, newUsers("2026-10-10T00:00:00Z", "2026-10-11T00:00:00.000000001Z"))).toMatchObject({
-      previous_total: String(4 + 8),
-    });
-    expect(await only(w, newUsers("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z"))).toMatchObject({
-      previous_total: "8",
-    });
+    // The previous window moves the dates as written back by the period's days, whatever the times: 2026-10-10 to
+    // 2026-10-12 is 3 days, so 2026-10-07 to 2026-10-09 00:00, which holds 2026-10-07 12:00.
+    for (const [start, end] of [
+      ["2026-10-10T12:00:00Z", "2026-10-12T00:00:00Z"],
+      ["2026-10-10T00:00:00Z", "2026-10-12T00:00:00.000000001Z"],
+      ["2026-10-10T00:00:00Z", "2026-10-12T00:00:00Z"],
+    ]) {
+      expect(await only(w, newUsers(start!, end!)), `${start} ${end}`).toMatchObject({
+        previous_total: String(16 + 4 + 8),
+      });
+    }
+    // 2026-10-10 to 2026-10-11 is 2 days: 2026-10-08 to 2026-10-09 00:00.
+    for (const end of ["2026-10-11T00:00:00.000000001Z", "2026-10-11T00:00:00Z"]) {
+      expect(await only(w, newUsers("2026-10-10T00:00:00Z", end)), end).toMatchObject({
+        previous_total: String(4 + 8),
+      });
+    }
     // Microseconds, not milliseconds, end the axis: 0.5 ms after midnight to 0.4 ms after a later midnight takes
     // two steps, not three.
     expect(
@@ -152,7 +152,7 @@ describe("the measure new_users", () => {
 });
 
 describe("the dates a measure accepts", () => {
-  it("lie from 1583-01-01 to 9998-12-31, as written and as UTC instants; others answer 422 to every caller", async () => {
+  it("lie from 1583-01-01 to 9998-12-31, as written and as UTC instants; others answer the OAuth admin 422", async () => {
     const w = await world();
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
     const invalid = { status: 422, body: { error: "Invalid date supplied" } };
@@ -175,10 +175,13 @@ describe("the dates a measure accepts", () => {
       ["1583-01-01T01:00:00+02:00", "1583-01-02"],
       ["0001-01-01", "0001-01-02"],
     ]) {
-      for (const token of [w.admin, alice, null]) {
-        expect(await measure(w, newUsers(start!, end!), token), `${start} ${end}`).toEqual(invalid);
+      expect(await measure(w, newUsers(start!, end!)), `${start} ${end}`).toEqual(invalid);
+      expect(await measure(w, { ...instance("instance_follows", D), start_at: start, end_at: end })).toEqual(invalid);
+      // Mastodon 4.5.21's refusal order: anyone else is refused before the dates are read.
+      for (const token of [alice, null]) {
+        expect(await measure(w, newUsers(start!, end!), token)).toEqual(NOT_ALLOWED);
         expect(await measure(w, { ...instance("instance_follows", D), start_at: start, end_at: end }, token)).toEqual(
-          invalid,
+          NOT_ALLOWED,
         );
       }
     }
@@ -190,11 +193,11 @@ describe("the dates a measure accepts", () => {
     await localAccounts(w, 2, "1582-01-01T00:00:00.000Z");
     await localAccounts(w, 4, "1582-06-01T12:00:00.000Z");
     await localAccounts(w, 8, "1583-01-01T00:00:00.000Z");
-    // L is 365 days: Kopje's previous window is 1582-01-01 to 1583-01-01 00:00. Ruby's Date - 365 is Julian before
-    // 1582-10-15, so Mastodon's starts on 1581-12-22 and would count the 1581-12-25 account too (1 + 2 + 4 + 8).
+    // L is 365 days: Kopje's previous window is 1581-12-31 to 1582-12-31 00:00. Ruby's Date - 366 is Julian before
+    // 1582-10-15, so Mastodon 4.5.21's starts on 1581-12-21 and would count the 1581-12-25 account too (1 + 2 + 4).
     expect(await only(w, newUsers("1583-01-01", "1584-01-01"))).toMatchObject({
       total: "8",
-      previous_total: String(2 + 4 + 8),
+      previous_total: String(2 + 4),
     });
   });
 });

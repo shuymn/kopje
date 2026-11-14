@@ -4,9 +4,10 @@ import { isoTimeSql } from "../platform/stored-bounds";
 import { deletingSql } from "./audience";
 import { ADMIN_PERMISSION, adminReadOperation } from "./auth";
 
-// The measures Kopje serves of Mastodon's Admin::Metrics::Measure (app/lib/admin/metrics/measure/*.rb, v4.5.11), to
-// the OAuth admin with view_dashboard (VIS-29). Each is computed exactly or refused: a walk reads at most
-// MEASURE_ROWS + 1 raw candidates, and one more than MEASURE_ROWS answers `too_many` (422), never an undercount.
+// The measures Kopje serves of Mastodon's Admin::Metrics::Measure (app/lib/admin/metrics/measure/*.rb, v4.5.11; the
+// ranges v4.5.21's, below), to the OAuth admin with view_dashboard (VIS-29). Each is computed exactly or refused: a
+// walk reads at most MEASURE_ROWS + 1 raw candidates, and one more than MEASURE_ROWS answers `too_many` (422), never
+// an undercount.
 //
 // - new_users: the local accounts by local_accounts.created_at (new_users_measure.rb).
 // - opened_reports: the reports, local and inbound, by created_at (opened_reports_measure.rb).
@@ -23,12 +24,13 @@ import { ADMIN_PERMISSION, adminReadOperation } from "./auth";
 // - instance_media_attachments: always 0 bytes: Kopje does not count its cache of remote attachments' files, which
 //   kopje.remote_media.usage reports for the whole cache (docs/mastodon-deviations.md).
 //
-// Ranges (base_measure.rb:88-98): an in-range measure (IN_RANGE_MEASURES) totals its rows from the start date's 00:00
-// UTC to the end date's 00:00 UTC, both included, the dates as the caller wrote them (DateTime#to_date keeps the
-// offset); previous_total the same window moved back by the period's length L = end_at − start_at, each date floored
-// (Date − Rational). The series is QueryHelper's axis (measurePeriod), each day with its rows (date_trunc('day', t)).
-// The instance_* totals count all time, with include_subdomains the subdomains' rows too; their series count the
-// domain itself only, as 4.5.11's account_domain_sql compares with a LIKE that has no wildcard (query_helper.rb:26-32).
+// Ranges (Mastodon 4.5.21's base_measure.rb:95-105): an in-range measure (IN_RANGE_MEASURES) totals its rows from the
+// start date's 00:00 UTC to the end date's 00:00 UTC, both included, the dates as the caller wrote them
+// (DateTime#to_date keeps the offset); previous_total the same window moved back by L + 1 days, L = end date − start
+// date, so the time of day does not move it. The series is QueryHelper's axis (measurePeriod), each day with its rows
+// (date_trunc('day', t)). The instance_* totals count all time, with include_subdomains the subdomains' rows too;
+// their series count the domain itself only, as 4.5.11's account_domain_sql compares with a LIKE that has no wildcard
+// (query_helper.rb:26-32).
 //
 // Stored times are read through isoTimeSql (the 24-byte form Kopje writes): a candidate whose needed time is anything
 // else (an import's 'now', a NUL, an oversized value) makes the measure `unreadable` (422) rather than drop it.
@@ -156,12 +158,11 @@ export function measurePeriod(start: MeasureTime, end: MeasureTime): MeasurePeri
   if (axis.length > MEASURE_DAYS) {
     return "too_long";
   }
-  const length = end.ns - start.ns;
-  const shifted = (day: number) => Number(floorDiv(BigInt(day) * DAY_NS - length, DAY_NS));
+  const shift = end.date - start.date + 1;
   return {
     axis,
     current: { first: start.date, last: end.date },
-    previous: { first: shifted(start.date), last: shifted(end.date) },
+    previous: { first: start.date - shift, last: end.date - shift },
   };
 }
 
