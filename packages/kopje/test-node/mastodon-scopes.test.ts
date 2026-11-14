@@ -34,6 +34,9 @@ async function checkout(files: Record<string, string>) {
 type Entry = {
   method: string;
   path: string;
+  controller?: string | null;
+  action?: string | null;
+  guards?: string[];
   unresolved?: string[];
   params?: { names: string[]; unresolved: string[] };
 };
@@ -151,6 +154,179 @@ describe("mastodon-scopes.mjs", () => {
       "GET /oauth/userinfo",
       "POST /oauth/userinfo",
     ]);
+  });
+});
+
+// The routing and callback forms Mastodon v4.7's config/routes/api.rb and admin API controllers use.
+describe("mastodon-scopes.mjs concerns and with_options", () => {
+  const drawn = () =>
+    (mastodonAccessTable(dir).routes as Entry[]).map((r) => `${r.method} ${r.path} ${r.controller}#${r.action}`);
+
+  it("draws a concern where a resource names it, after the resource's block and before its own routes", async () => {
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    concern :approvable do",
+        "      member do",
+        "        post :approve",
+        "        post :reject",
+        "      end",
+        "    end",
+        "",
+        "    resources :tags, only: [:index], concerns: :approvable",
+        "    resources :links, only: [:index], concerns: [:approvable] do",
+        "      collection do",
+        "        get :featured",
+        "      end",
+        "    end",
+        "    resources :statuses, only: [:index], concerns: :reviewable",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(drawn()).toEqual([
+      "POST /api/v1/tags/:id/approve api/v1/tags#approve",
+      "POST /api/v1/tags/:id/reject api/v1/tags#reject",
+      "GET /api/v1/tags api/v1/tags#index",
+      "GET /api/v1/links/featured api/v1/links#featured",
+      "POST /api/v1/links/:id/approve api/v1/links#approve",
+      "POST /api/v1/links/:id/reject api/v1/links#reject",
+      "GET /api/v1/links api/v1/links#index",
+      "? /api/v1/statuses null#null",
+      "GET /api/v1/statuses api/v1/statuses#index",
+    ]);
+    // Rails refuses a concern that is not defined: what it would draw is unknown.
+    expect(route("/api/v1/statuses", "?")?.unresolved).toEqual([
+      "config/routes/api.rb: concerns: :reviewable names no concern defined before it",
+    ]);
+  });
+
+  it("passes with_options' options to the resources in its block, theirs first, but not into a concern", async () => {
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    concern :reviewable do",
+        "      member do",
+        "        post :approve",
+        "      end",
+        "      resources :reviews, except: [:new, :edit, :show, :update, :destroy]",
+        "    end",
+        "",
+        "    with_options only: [:index], concerns: :reviewable do",
+        "      resources :tags",
+        "      resources :links, only: [:show]",
+        "    end",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    // The concern runs on the mapper itself: the reviews it draws take neither only: [:index] nor the concern again.
+    expect(drawn()).toEqual([
+      "POST /api/v1/tags/:id/approve api/v1/tags#approve",
+      "GET /api/v1/tags/:tag_id/reviews api/v1/reviews#index",
+      "POST /api/v1/tags/:tag_id/reviews api/v1/reviews#create",
+      "GET /api/v1/tags api/v1/tags#index",
+      "POST /api/v1/links/:id/approve api/v1/links#approve",
+      "GET /api/v1/links/:link_id/reviews api/v1/reviews#index",
+      "POST /api/v1/links/:link_id/reviews api/v1/reviews#create",
+      "GET /api/v1/links/:id api/v1/links#show",
+    ]);
+  });
+
+  it("reads the callbacks a concern's included block registers, its own includes first, as guards and policies", async () => {
+    await checkout({
+      "config/routes/api.rb":
+        "namespace :api do\n  namespace :v1 do\n    namespace :admin do\n      resources :tags, only: [:index, :show]\n      resources :reports, only: [:index]\n    end\n  end\nend\n",
+      // Mastodon v4.7.5's Admin::PermissionsConcern.
+      "app/controllers/concerns/admin/permissions_concern.rb": [
+        "# frozen_string_literal: true",
+        "",
+        "module Admin::PermissionsConcern",
+        "  extend ActiveSupport::Concern",
+        "",
+        "  included do",
+        "    before_action :require_moderator_or_admin_permissions",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def require_moderator_or_admin_permissions",
+        "    # not using #authorize here, so #verify_authorized still makes sure more fine-grained rules are enforced down the line",
+        "    forbidden unless Admin::BasePolicy.new(current_account, :base).access?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/concerns/reviewing.rb": [
+        "module Reviewing",
+        "  extend ActiveSupport::Concern",
+        "  include Admin::PermissionsConcern",
+        "",
+        "  included do",
+        "    before_action :check_reviewer",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def check_reviewer",
+        "    authorize :report, :review?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/admin/tags_controller.rb": [
+        "class Api::V1::Admin::TagsController < Api::BaseController",
+        "  include Authorization",
+        "  include Admin::PermissionsConcern",
+        "",
+        "  before_action -> { authorize_if_got_token! :'admin:read' }",
+        "  after_action :verify_authorized, except: :index",
+        "",
+        "  def index",
+        "    render json: []",
+        "  end",
+        "",
+        "  def show",
+        "    authorize :tag, :show?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/admin/reports_controller.rb": [
+        "class Api::V1::Admin::ReportsController < Api::BaseController",
+        "  include Reviewing",
+        "",
+        "  before_action -> { authorize_if_got_token! :'admin:read' }",
+        "",
+        "  def index",
+        "    render json: []",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    // The guard decides by Admin::BasePolicy without Pundit's authorize (the comment is not a call): a guard, which the
+    // access comparison does not read, and no policy.
+    const index = route("/api/v1/admin/tags");
+    expect(index).toMatchObject({
+      token: "optional",
+      scopes: ["admin:read"],
+      user: false,
+      guards: ["require_moderator_or_admin_permissions"],
+    });
+    expect(index?.unresolved).toBeUndefined();
+    expect(route("/api/v1/admin/tags/:id")?.unresolved).toEqual([
+      "Pundit policy: authorize :tag, :show?; verify_authorized",
+    ]);
+    // A concern's callback that authorizes is a policy like the controller's own; the guard comes from the concern
+    // Reviewing includes.
+    const reports = route("/api/v1/admin/reports");
+    expect(reports?.guards).toEqual(["require_moderator_or_admin_permissions"]);
+    expect(reports?.unresolved).toEqual(["Pundit policy: authorize :report, :review?"]);
   });
 });
 

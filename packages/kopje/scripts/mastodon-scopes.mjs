@@ -198,13 +198,18 @@ const VERBS = new Set(["get", "post", "put", "patch", "delete", "match"]);
  *   kind: 'scope' | 'resources' | 'member' | 'collection' | 'opaque',
  *   path: string,
  *   module: string,
- *   defaults?: Record<string, unknown>,
+ *   defaults?: ReturnType<typeof callArgs>["options"],
  *   controller?: string | undefined,
  *   param?: string,
  *   unknown?: string | undefined,
  *   pendingDefaults?: RawRoute[],
+ *   concerns?: string[],
+ *   isolated?: boolean,
  * }} Frame
  */
+
+// A statement that opens a block closed by its own `end`, apart from `do`.
+const KEYWORD_BLOCK = /^(if|unless|case|begin|def|class|module|while)\b/;
 
 // Interprets the routing DSL of config/routes.rb and the files it draws. Statements outside an /api path are
 // interpreted as far as needed to keep the block structure; an unknown one under /api makes its routes unresolved.
@@ -219,55 +224,91 @@ function readRoutes(checkout) {
   }
   /** @type {Frame[]} */
   const stack = [{ kind: "scope", path: "", module: "" }];
-  interpret(main.slice(start).split("\n").slice(1).join("\n"), stack, routes, checkout, "config/routes.rb");
+  const body = main.slice(start).split("\n").slice(1).join("\n");
+  interpret(body, stack, routes, { checkout, file: "config/routes.rb", concerns: new Map() });
   return routes;
 }
+
+/**
+ * @typedef {{ checkout: string, file: string, concerns: Map<string, string> }} RoutesContext
+ * concerns: the body of each `concern :name do ... end` defined so far, by name.
+ */
 
 /**
  * @param {string} text
  * @param {Frame[]} stack
  * @param {RawRoute[]} routes
- * @param {string} checkout
- * @param {string} file
+ * @param {RoutesContext} ctx
  */
-function interpret(text, stack, routes, checkout, file) {
+function interpret(text, stack, routes, ctx) {
   const base = stack.length;
+  /** @type {{ name: string, depth: number, body: string[] } | null} */
+  let concern = null;
   for (const { text: stmt } of statements(text)) {
     const top = /** @type {Frame} */ (stack.at(-1));
     const head = stmt.replace(/\s*\bdo(\s*\|[^|]*\|)?$/, "");
     const opensBlock = head !== stmt;
+    const opensKeywordBlock = KEYWORD_BLOCK.test(stmt) && !/\bend$/.test(stmt);
+    if (concern !== null) {
+      // A concern's body draws nothing where it is defined; it is kept to be drawn where a resource names it.
+      if (stmt === "end" && concern.depth === 0) {
+        ctx.concerns.set(concern.name, concern.body.join("\n"));
+        concern = null;
+        continue;
+      }
+      concern.depth += stmt === "end" ? -1 : opensBlock || opensKeywordBlock ? 1 : 0;
+      concern.body.push(stmt);
+      continue;
+    }
     if (stmt === "end") {
       if (stack.length <= base) {
         // The `end` of Rails.application.routes.draw.
         return;
       }
-      // A resource's own routes follow the ones of its block, as Rails draws them.
+      // Rails draws a resource's block, then the concerns it names, then its own routes.
+      drawConcerns(stack, routes, ctx);
       routes.push(...(stack.pop()?.pendingDefaults ?? []));
       continue;
     }
-    if (/^(if|unless|case|begin|def|class|module|while)\b/.test(stmt) && !/\bend$/.test(stmt)) {
+    if (opensKeywordBlock) {
       stack.push({ kind: "opaque", path: top.path, module: top.module, unknown: stmt });
       continue;
     }
     const m = /^(\w+)\((.*)\)$/s.exec(head) ?? /^(\w+)(?:\s+(.*))?$/s.exec(head);
     const name = m?.[1] ?? "";
     const args = callArgs(m?.[2] ?? "");
-    const draw = name === "draw" ? args.positional[0] : undefined;
-    if (typeof draw === "string") {
-      const drawn = join(checkout, "config", "routes", `${draw}.rb`);
-      interpret(readFileSync(drawn, "utf8"), stack, routes, checkout, `config/routes/${draw}.rb`);
+    const first = args.positional[0];
+    if (name === "concern" && opensBlock && typeof first === "string" && args.positional.length === 1) {
+      concern = { name: first, depth: 0, body: [] };
+      continue;
+    }
+    if (name === "draw" && typeof first === "string") {
+      const drawn = `config/routes/${first}.rb`;
+      interpret(readFileSync(join(ctx.checkout, drawn), "utf8"), stack, routes, { ...ctx, file: drawn });
       continue;
     }
     if (VERBS.has(name)) {
       routes.push(...verbRoutes(name, args, stack));
       continue;
     }
-    const frame = enter(name, args, top, stmt);
+    // with_options passes its options to every call in its block (ActiveSupport::OptionMerger), the call's own taking
+    // precedence: a resource reads them here, a verb in verbRoutes.
+    const resourceArgs =
+      name === "resources" || name === "resource"
+        ? { ...args, options: { ...inherited(stack).defaults, ...args.options } }
+        : args;
+    const frame = enter(name, resourceArgs, top, stmt);
     if (frame !== null && "defaultRoutes" in frame) {
-      if (opensBlock) {
-        stack.push({ ...frame.frame, pendingDefaults: frame.defaultRoutes });
-      } else {
+      const concerns = resourceArgs.options.concerns;
+      const named = concerns === undefined ? [] : list(concerns);
+      if (named === null && frame.frame.path.startsWith("/api")) {
+        routes.push(unknownRoute(frame.frame.path, `${ctx.file}: unreadable concerns: in \`${stmt}\``));
+      }
+      stack.push({ ...frame.frame, pendingDefaults: frame.defaultRoutes, concerns: named ?? [] });
+      if (!opensBlock) {
+        drawConcerns(stack, routes, ctx);
         routes.push(...frame.defaultRoutes);
+        stack.pop();
       }
       continue;
     }
@@ -276,17 +317,47 @@ function interpret(text, stack, routes, checkout, file) {
       continue;
     }
     if (top.path.startsWith("/api") || stmt.includes("/api")) {
-      routes.push({ method: "?", path: top.path, controller: null, action: null, unresolved: [`${file}: ${stmt}`] });
+      routes.push(unknownRoute(top.path, `${ctx.file}: ${stmt}`));
     }
   }
 }
 
+// A route standing for what a statement under /api may draw, with the reason it is not read.
+/** @param {string} path @param {string} reason @returns {RawRoute} */
+function unknownRoute(path, reason) {
+  return { method: "?", path, controller: null, action: null, unresolved: [reason] };
+}
+
+// Draws the concerns the resource on top of the stack names (`concerns:`), inside the resource. Rails runs a concern's
+// body on the mapper itself (instance_exec), not through a with_options' OptionMerger: its frame is isolated.
+/** @param {Frame[]} stack @param {RawRoute[]} routes @param {RoutesContext} ctx */
+function drawConcerns(stack, routes, ctx) {
+  const resource = /** @type {Frame} */ (stack.at(-1));
+  for (const name of resource.concerns ?? []) {
+    const body = ctx.concerns.get(name);
+    if (body === undefined) {
+      if (resource.path.startsWith("/api")) {
+        routes.push(unknownRoute(resource.path, `${ctx.file}: concerns: :${name} names no concern defined before it`));
+      }
+      continue;
+    }
+    stack.push({ ...resource, pendingDefaults: [], concerns: [], isolated: true });
+    interpret(body, stack, routes, ctx);
+    stack.pop();
+  }
+}
+
+// The with_options options a statement receives, and the unknown blocks it sits in. A concern drawn in a resource
+// (an isolated frame) receives none of the with_options around the resource.
 /** @param {Frame[]} stack */
 function inherited(stack) {
-  /** @type {Record<string, unknown>} */
-  const defaults = {};
+  /** @type {ReturnType<typeof callArgs>["options"]} */
+  let defaults = {};
   const unresolved = [];
   for (const frame of stack) {
+    if (frame.isolated) {
+      defaults = {};
+    }
     Object.assign(defaults, frame.defaults ?? {});
     if (frame.kind === "opaque" && frame.path.startsWith("/api")) {
       unresolved.push(`inside \`${frame.unknown}\``);
@@ -362,7 +433,7 @@ function resourceFrame(isPlural, name, options, top, stmt) {
   const unresolved = [];
   const known = ["only", "except", "controller", "path", "param", "module", "as", "concerns", "constraints"];
   for (const key of Object.keys(options)) {
-    if (!known.includes(key) || (key === "concerns" && top.path.startsWith("/api"))) {
+    if (!known.includes(key)) {
       unresolved.push(`option ${key}: in \`${stmt}\``);
     }
   }
@@ -535,48 +606,16 @@ function readController(checkout, file, cache) {
       classIndent = indent + 2;
       continue;
     }
-    const m = /^(prepend_before_action|before_action|skip_before_action|after_action)\s+(.*)$/s.exec(stmt);
-    if (m === null) {
+    const nested = classIndent !== null && indent > classIndent;
+    const include = /^include\s+([\w:]+)$/.exec(stmt);
+    if (include !== null) {
+      callbacks.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), nested, unresolved));
       continue;
     }
-    const skip = m[1] === "skip_before_action";
-    const after = m[1] === "after_action";
-    const parts = splitArgs(/** @type {string} */ (m[2]));
-    const target = parts[0] ?? "";
-    let callback = "";
-    let cbArgs = "";
-    const lambda = /^->\s*\{\s*([\w!?]+)\s*(.*?)\s*\}$/s.exec(target);
-    if (lambda) {
-      callback = /** @type {string} */ (lambda[1]);
-      cbArgs = /** @type {string} */ (lambda[2]);
-    } else if (/^:[\w!?]+$/.test(target)) {
-      callback = target.slice(1);
-    } else {
-      // Any form that may check a token, a user or a Pundit policy; the tracked names alone would miss `authorize`.
-      if (/doorkeeper|authorize|require_user|require_authenticated_user/.test(target)) {
-        unresolved.push(`${file}: callback \`${stmt}\``);
-      }
-      continue;
+    const cb = readCallback(stmt, file, nested, unresolved);
+    if (cb !== null) {
+      callbacks.push(cb);
     }
-    const { options } = callArgs(parts.slice(1).join(", "));
-    const conditionKeys = Object.keys(options).filter((k) => k === "if" || k === "unless");
-    const conditional =
-      conditionKeys.length > 0 ? conditionKeys.map((k) => `${k}: ${JSON.stringify(options[k])}`).join(", ") : null;
-    callbacks.push({
-      callback,
-      args: cbArgs,
-      only: options.only === undefined ? null : list(options.only),
-      except: options.except === undefined ? null : list(options.except),
-      // only:/except: literal() cannot read (a constant, an expression): the actions it runs for are unknown.
-      unreadable: [options.only, options.except].some((v) => v !== undefined && list(v) === null) ? stmt : null,
-      conditional,
-      // The methods an if:/unless: names; they run (and read parameters) whenever the callback is considered.
-      conditions: conditionKeys.flatMap((k) => list(options[k]) ?? []),
-      nested: classIndent !== null && indent > classIndent,
-      file,
-      skip,
-      after,
-    });
   }
   const controller = {
     callbacks: [...parent.callbacks, ...callbacks],
@@ -585,6 +624,112 @@ function readController(checkout, file, cache) {
   };
   cache.set(file, controller);
   return controller;
+}
+
+// A callback declaration (before_action and the like), or null for any other statement. A form that may check a token,
+// a user or a Pundit policy but names no method is unresolved.
+/**
+ * @param {string} stmt @param {string} file @param {boolean} nested @param {string[]} unresolved
+ * @returns {Callback | null}
+ */
+function readCallback(stmt, file, nested, unresolved) {
+  const m = /^(prepend_before_action|before_action|skip_before_action|after_action)\s+(.*)$/s.exec(stmt);
+  if (m === null) {
+    return null;
+  }
+  const parts = splitArgs(/** @type {string} */ (m[2]));
+  const target = parts[0] ?? "";
+  let callback = "";
+  let cbArgs = "";
+  const lambda = /^->\s*\{\s*([\w!?]+)\s*(.*?)\s*\}$/s.exec(target);
+  if (lambda) {
+    callback = /** @type {string} */ (lambda[1]);
+    cbArgs = /** @type {string} */ (lambda[2]);
+  } else if (/^:[\w!?]+$/.test(target)) {
+    callback = target.slice(1);
+  } else {
+    // The tracked names alone would miss `authorize`.
+    if (/doorkeeper|authorize|require_user|require_authenticated_user/.test(target)) {
+      unresolved.push(`${file}: callback \`${stmt}\``);
+    }
+    return null;
+  }
+  const { options } = callArgs(parts.slice(1).join(", "));
+  const conditionKeys = Object.keys(options).filter((k) => k === "if" || k === "unless");
+  const conditional =
+    conditionKeys.length > 0 ? conditionKeys.map((k) => `${k}: ${JSON.stringify(options[k])}`).join(", ") : null;
+  return {
+    callback,
+    args: cbArgs,
+    only: options.only === undefined ? null : list(options.only),
+    except: options.except === undefined ? null : list(options.except),
+    // only:/except: literal() cannot read (a constant, an expression): the actions it runs for are unknown.
+    unreadable: [options.only, options.except].some((v) => v !== undefined && list(v) === null) ? stmt : null,
+    conditional,
+    // The methods an if:/unless: names; they run (and read parameters) whenever the callback is considered.
+    conditions: conditionKeys.flatMap((k) => list(options[k]) ?? []),
+    nested,
+    file,
+    skip: m[1] === "skip_before_action",
+    after: m[1] === "after_action",
+  };
+}
+
+// The callbacks an `include` of a concern in app/controllers/concerns registers on the class, in the order Rails does
+// (ActiveSupport::Concern#append_features): the concerns it includes in its module body first, then the statements of
+// its `included do` block, where an `include` registers that concern's in place. A concern elsewhere (a helper, a gem)
+// registers none this script reads.
+/**
+ * @param {string} checkout
+ * @param {string} name
+ * @param {boolean} nested the include sits inside a block of the class
+ * @param {string[]} unresolved
+ * @param {Set<string>} [seen] concerns already followed for this include
+ * @returns {Callback[]}
+ */
+function concernCallbacks(checkout, name, nested, unresolved, seen = new Set()) {
+  const file = classFile(name).replace("app/controllers/", "app/controllers/concerns/");
+  if (seen.has(file) || !existsSync(join(checkout, file))) {
+    return [];
+  }
+  seen.add(file);
+  /** @type {Callback[]} */
+  const dependencies = [];
+  /** @type {Callback[]} */
+  const block = [];
+  let moduleIndent = null;
+  let blockIndent = null;
+  for (const { indent, text: stmt } of statements(readFileSync(join(checkout, file), "utf8"))) {
+    if (blockIndent === null && /^module\b/.test(stmt)) {
+      // The innermost of `module A` / `module B` holds the body.
+      moduleIndent = indent + 2;
+      continue;
+    }
+    const include = /^include\s+([\w:]+)$/.exec(stmt);
+    if (blockIndent === null) {
+      if (stmt === "included do" && indent === moduleIndent) {
+        blockIndent = indent + 2;
+      } else if (include !== null && indent === moduleIndent) {
+        dependencies.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), nested, unresolved, seen));
+      }
+      continue;
+    }
+    if (indent < blockIndent) {
+      // The `end` of the included block.
+      blockIndent = null;
+      continue;
+    }
+    const inner = nested || indent > blockIndent;
+    if (include !== null) {
+      block.push(...concernCallbacks(checkout, /** @type {string} */ (include[1]), inner, unresolved, seen));
+      continue;
+    }
+    const cb = readCallback(stmt, file, inner, unresolved);
+    if (cb !== null) {
+      block.push(cb);
+    }
+  }
+  return [...dependencies, ...block];
 }
 
 /** @param {Callback} cb @param {string} action */
@@ -691,8 +836,15 @@ function access(route, checkout, cache) {
   }
   const validToken = body !== null && /valid_doorkeeper_token\?/.test(body);
   // A Pundit policy (authorize in the action or in a callback it runs, or verify_authorized after it) decides on the
-  // viewer in Ruby this script does not read: unless a user is required anyway, the route is not resolved.
-  const policies = [body, ...active.filter((cb) => !cb.after).map((cb) => methodBody(texts, cb.callback))]
+  // viewer in Ruby this script does not read: unless a user is required anyway, the route is not resolved. A callback a
+  // concern registers runs the method Ruby finds first along the classes and the concerns they include.
+  const sources = methodSources(checkout, controller.chain);
+  /** @param {Callback} cb */
+  const callbackBody = (cb) =>
+    cb.file.startsWith("app/controllers/concerns/")
+      ? (findMethod(sources, cb.callback)?.body ?? null)
+      : methodBody(texts, cb.callback);
+  const policies = [body, ...active.filter((cb) => !cb.after).map(callbackBody)]
     .flatMap((b) => b?.match(/\bauthorize(?:_with)?[ (][^\n]*/g) ?? [])
     .map((call) => call.trim());
   if (active.some((cb) => cb.after && cb.callback === "verify_authorized")) {
