@@ -453,11 +453,27 @@ const COVERED_WITH_BODY = [...COVERED, "content-digest"];
 // Signature-Input header, and reports the label of the member it verified; that member is read with the parser Fedify
 // reads it with. A required component counts only as a string item of that name without parameters: Mastodon 4.7
 // compares a component with its parameters serialized, so `"@method";req` is not `@method` there.
+// ID-1: a draft-cavage signature verifies with an RSA key only, as Mastodon's (rsa-sha256 and hs2019,
+// SignedRequest::HttpSignature). Fedify 2.4.5 verifies it with RSASSA-PKCS1-v1_5 whatever key it found, served, fetched
+// or refetched, and WebCrypto's verify throws InvalidAccessError for a key of another algorithm; on that path it is
+// the only WebCrypto call on a remote key, so the exception means exactly that the key cannot verify the signature,
+// which is answered as a signature that does not verify. Any other error propagates.
 async function verifyHttpSignature(
   signed: Request,
   options: VerifyRequestOptions,
 ): Promise<VerifyRequestDetailedResult> {
-  const verified = await verifyRequestDetailed(signed, options);
+  let verified: VerifyRequestDetailedResult;
+  try {
+    verified = await verifyRequestDetailed(signed, options);
+  } catch (error) {
+    if (
+      signed.headers.has("Signature-Input") ||
+      !(error instanceof DOMException && error.name === "InvalidAccessError")
+    ) {
+      throw error;
+    }
+    return { verified: false, reason: { type: "invalidSignature" } };
+  }
   if (!verified.verified || !signed.headers.has("Signature-Input") || covers(signed, verified.signatureLabel)) {
     return verified;
   }

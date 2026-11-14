@@ -64,6 +64,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A status or stamp `Delete` signed by a Mastodon 4.7 author (its signature carries `expires`), and a status `Delete`
   forwarded by a Mastodon 4.6 or 4.7 server that holds a boost or quote of the status, are applied as the author's and
   forwarded through local boosts and quotes again; an `expires` already past when the request arrived does not prove.
+- A request signed with draft-cavage by a key that is not RSA (an Ed25519 key, which only RFC 9421 signatures use) is
+  answered 401, as one whose signature does not verify. It failed with an error (500), a queued one was retried until
+  dropped, and the cutover rollback's drain stopped at it.
 
 ## [0.5.2] - 2026-11-14
 

@@ -15,6 +15,7 @@ import { inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, migratedStore, rejectionOf } from "./helpers";
 import { mastodonActor, RemoteWeb, signedInit, type TestActor } from "./inbox-helpers";
+import { cavageByKeyId, ed25519Key } from "./key-forms-helpers";
 import { ACCESS, ADMIN_AUD, ADMIN_EMAIL, importChunks, importViaRpc, memoryIO, splitDump } from "./ops-helpers";
 import { QueueSim } from "./queue-sim";
 
@@ -444,6 +445,28 @@ describe("the rollback drain (OPS-9)", () => {
     });
     expect((await full.post(adminClaims(), "/admin/cutover/discard-kept", { confirm: true })).status).toBe(200);
     expect((await resetToEmpty(full)).status).toBe(200);
+  });
+
+  it("sets aside a draft-cavage request naming a key that is not RSA, and goes on to the next (ID-1)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    // carol lists a key document of its own, an Ed25519 key, by reference; Fedify 2.4.5 throws on it (InvalidAccessError).
+    const keyUrl = "https://mastodon.example/keys/carol";
+    r.web.serve(r.carol.uri, { ...r.carol.document, publicKey: keyUrl });
+    r.web.serve(keyUrl, {
+      "@context": "https://w3id.org/security/v1",
+      id: keyUrl,
+      type: "CryptographicKey",
+      owner: r.carol.uri,
+      publicKeyPem: (await ed25519Key(keyUrl)).pem,
+    });
+    const path = "/ap/users/alice/inbox";
+    await r.post(path, await cavageByKeyId(keyUrl, path, follow(r.carol.uri, 1)));
+    await r.spool(path, follow(r.dave.uri, 1), r.dave);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+    r.ackLegacy();
+    expect(r.handed.map((m) => m.signerId)).toEqual([r.dave.uri]);
   });
 
   it("bounds the journal under a flood of signed-looking requests; the rest stays in the Queue", async () => {
