@@ -34,6 +34,9 @@ async function checkout(files: Record<string, string>) {
 type Entry = {
   method: string;
   path: string;
+  controller?: string | null;
+  action?: string | null;
+  guards?: string[];
   unresolved?: string[];
   params?: { names: string[]; unresolved: string[] };
 };
@@ -150,6 +153,332 @@ describe("mastodon-scopes.mjs", () => {
     expect((mastodonAccessTable(dir).routes as Entry[]).map((r) => `${r.method} ${r.path}`)).toEqual([
       "GET /oauth/userinfo",
       "POST /oauth/userinfo",
+    ]);
+  });
+});
+
+// The routing and callback forms Mastodon v4.7's config/routes/api.rb and admin API controllers use.
+describe("mastodon-scopes.mjs concerns and with_options", () => {
+  const drawn = () =>
+    (mastodonAccessTable(dir).routes as Entry[]).map((r) => `${r.method} ${r.path} ${r.controller}#${r.action}`);
+
+  it("draws a concern where a resource names it, after the resource's block and before its own routes", async () => {
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    concern :approvable do",
+        "      member do",
+        "        post :approve",
+        "        post :reject",
+        "      end",
+        "    end",
+        "",
+        "    resources :tags, only: [:index], concerns: :approvable",
+        "    resources :links, only: [:index], concerns: [:approvable] do",
+        "      collection do",
+        "        get :featured",
+        "      end",
+        "    end",
+        "    resources :statuses, only: [:index], concerns: :reviewable",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(drawn()).toEqual([
+      "POST /api/v1/tags/:id/approve api/v1/tags#approve",
+      "POST /api/v1/tags/:id/reject api/v1/tags#reject",
+      "GET /api/v1/tags api/v1/tags#index",
+      "GET /api/v1/links/featured api/v1/links#featured",
+      "POST /api/v1/links/:id/approve api/v1/links#approve",
+      "POST /api/v1/links/:id/reject api/v1/links#reject",
+      "GET /api/v1/links api/v1/links#index",
+      "? /api/v1/statuses null#null",
+      "GET /api/v1/statuses api/v1/statuses#index",
+    ]);
+    // Rails refuses a concern that is not defined: what it would draw is unknown.
+    expect(route("/api/v1/statuses", "?")?.unresolved).toEqual([
+      "config/routes/api.rb: concerns: :reviewable names no concern defined before it",
+    ]);
+  });
+
+  it("passes with_options' options to the resources in its block, theirs first, but not into a concern", async () => {
+    await checkout({
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    concern :reviewable do",
+        "      member do",
+        "        post :approve",
+        "      end",
+        "      resources :reviews, except: [:new, :edit, :show, :update, :destroy]",
+        "    end",
+        "",
+        "    with_options only: [:index], concerns: :reviewable do",
+        "      resources :tags",
+        "      resources :links, only: [:show]",
+        "    end",
+        "",
+        "    with_options only: [:show] do",
+        "      resource :profile",
+        "    end",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    // The concern runs on the mapper itself: the reviews it draws take neither only: [:index] nor the concern again.
+    expect(drawn()).toEqual([
+      "POST /api/v1/tags/:id/approve api/v1/tags#approve",
+      "GET /api/v1/tags/:tag_id/reviews api/v1/reviews#index",
+      "POST /api/v1/tags/:tag_id/reviews api/v1/reviews#create",
+      "GET /api/v1/tags api/v1/tags#index",
+      "POST /api/v1/links/:id/approve api/v1/links#approve",
+      "GET /api/v1/links/:link_id/reviews api/v1/reviews#index",
+      "POST /api/v1/links/:link_id/reviews api/v1/reviews#create",
+      "GET /api/v1/links/:id api/v1/links#show",
+      "GET /api/v1/profile api/v1/profiles#show",
+    ]);
+  });
+
+  it("reads the callbacks a concern's included block registers, its own includes first, as guards and policies", async () => {
+    await checkout({
+      "config/routes/api.rb":
+        "namespace :api do\n  namespace :v1 do\n    namespace :admin do\n      resources :tags, only: [:index, :show]\n      resources :reports, only: [:index]\n    end\n  end\nend\n",
+      // Mastodon v4.7.5's Admin::PermissionsConcern.
+      "app/controllers/concerns/admin/permissions_concern.rb": [
+        "# frozen_string_literal: true",
+        "",
+        "module Admin::PermissionsConcern",
+        "  extend ActiveSupport::Concern",
+        "",
+        "  included do",
+        "    before_action :require_moderator_or_admin_permissions",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def require_moderator_or_admin_permissions",
+        "    # not using #authorize here, so #verify_authorized still makes sure more fine-grained rules are enforced down the line",
+        "    forbidden unless Admin::BasePolicy.new(current_account, :base).access?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/concerns/reviewing.rb": [
+        "module Reviewing",
+        "  extend ActiveSupport::Concern",
+        "  include Admin::PermissionsConcern",
+        "",
+        "  included do",
+        "    before_action :check_reviewer",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def check_reviewer",
+        "    authorize :report, :review?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/admin/tags_controller.rb": [
+        "class Api::V1::Admin::TagsController < Api::BaseController",
+        "  include Authorization",
+        "  include Admin::PermissionsConcern",
+        "",
+        "  before_action -> { authorize_if_got_token! :'admin:read' }",
+        "  after_action :verify_authorized, except: :index",
+        "",
+        "  def index",
+        "    render json: []",
+        "  end",
+        "",
+        "  def show",
+        "    authorize :tag, :show?",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/admin/reports_controller.rb": [
+        "class Api::V1::Admin::ReportsController < Api::BaseController",
+        "  include Reviewing",
+        "",
+        "  before_action -> { authorize_if_got_token! :'admin:read' }",
+        "",
+        "  def index",
+        "    render json: []",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    // The guard decides by Admin::BasePolicy without Pundit's authorize (the comment is not a call): a guard, which the
+    // access comparison does not read, and no policy.
+    const index = route("/api/v1/admin/tags");
+    expect(index).toMatchObject({
+      token: "optional",
+      scopes: ["admin:read"],
+      user: false,
+      guards: ["require_moderator_or_admin_permissions"],
+    });
+    expect(index?.unresolved).toBeUndefined();
+    expect(route("/api/v1/admin/tags/:id")?.unresolved).toEqual([
+      "Pundit policy: authorize :tag, :show?; verify_authorized",
+    ]);
+    // A concern's callback that authorizes is a policy like the controller's own; the guard comes from the concern
+    // Reviewing includes.
+    const reports = route("/api/v1/admin/reports");
+    expect(reports?.guards).toEqual(["require_moderator_or_admin_permissions"]);
+    expect(reports?.unresolved).toEqual(["Pundit policy: authorize :report, :review?"]);
+  });
+
+  // A controller including Reviewing (the given module body); PolicyChecks registers a callback that authorizes.
+  const reviewing = (concern: string[], classBody = ["  include Reviewing"]) => ({
+    "config/routes/api.rb":
+      "namespace :api do\n  namespace :v1 do\n    resources :things, only: [:index]\n  end\nend\n",
+    "app/controllers/api/v1/things_controller.rb": [
+      "class Api::V1::ThingsController < Api::BaseController",
+      ...classBody,
+      "",
+      "  def index",
+      "    render json: []",
+      "  end",
+      "end",
+      "",
+    ].join("\n"),
+    "app/controllers/concerns/reviewing.rb": [
+      "module Reviewing",
+      "  extend ActiveSupport::Concern",
+      ...concern,
+      "end",
+      "",
+    ].join("\n"),
+    "app/controllers/concerns/policy_checks.rb": [
+      "module PolicyChecks",
+      "  extend ActiveSupport::Concern",
+      "",
+      "  included do",
+      "    before_action :check_review",
+      "  end",
+      "",
+      "  def check_review",
+      "    authorize :thing, :index?",
+      "  end",
+      "end",
+      "",
+    ].join("\n"),
+  });
+  const policy = "Pundit policy: authorize :thing, :index?";
+
+  it("registers a dependency's callbacks before the included block's, as Rails does", async () => {
+    // The skip only removes check_review once PolicyChecks has registered it.
+    await checkout(
+      reviewing([
+        "  include PolicyChecks",
+        "",
+        "  included do",
+        "    skip_before_action :check_review",
+        "    before_action :require_reviewer!",
+        "  end",
+      ]),
+    );
+    const things = route("/api/v1/things");
+    expect(things?.guards).toEqual(["require_reviewer!"]);
+    expect(things?.unresolved).toBeUndefined();
+  });
+
+  it("reads an included block with a block argument as one without", async () => {
+    await checkout(reviewing(["  included do |base|", "    include PolicyChecks", "  end"]));
+    expect(route("/api/v1/things")?.unresolved).toEqual([policy]);
+  });
+
+  it.each([
+    {
+      where: "the concern's module body",
+      concern: ["  if Rails.configuration.x.reviews", "    include PolicyChecks", "  end"],
+      classBody: undefined,
+      reason: "app/controllers/concerns/reviewing.rb: `include PolicyChecks` inside a block registers callbacks",
+    },
+    {
+      where: "the concern's included block",
+      concern: [
+        "  included do",
+        "    if Rails.configuration.x.reviews",
+        "      include PolicyChecks",
+        "    end",
+        "  end",
+      ],
+      classBody: undefined,
+      reason: "app/controllers/concerns/reviewing.rb: `include PolicyChecks` inside a block registers callbacks",
+    },
+    {
+      where: "the class",
+      concern: ["  include PolicyChecks"],
+      classBody: ["  if Rails.configuration.x.reviews", "    include Reviewing", "  end"],
+      reason: "app/controllers/api/v1/things_controller.rb: `include Reviewing` inside a block registers callbacks",
+    },
+  ])(
+    "leaves the callbacks of an include inside a block of $where unresolved",
+    async ({ concern, classBody, reason }) => {
+      await checkout(reviewing(concern, classBody));
+      // The callbacks are still read, so the policy they run is listed too.
+      expect(route("/api/v1/things")?.unresolved).toEqual([reason, policy]);
+    },
+  );
+
+  it("reads an include inside a block that registers no callbacks as nothing", async () => {
+    await checkout(
+      reviewing(
+        ["  def helper", "  end"],
+        ["  include PolicyChecks", "  if Rails.configuration.x.reviews", "    include Reviewing", "  end"],
+      ),
+    );
+    expect(route("/api/v1/things")?.unresolved).toEqual([policy]);
+  });
+
+  it.each([
+    {
+      form: "an included block in braces",
+      concern: ["  included { include PolicyChecks }"],
+      stmt: "included { include PolicyChecks }",
+    },
+    {
+      form: "an included block passed as a proc",
+      concern: ["  included(&POLICY_CHECKS)"],
+      stmt: "included(&POLICY_CHECKS)",
+    },
+    {
+      form: "a self.included hook",
+      concern: ["  def self.included(base)", "    base.include PolicyChecks", "  end"],
+      stmt: "def self.included(base)",
+    },
+    {
+      form: "an included block inside a block",
+      concern: [
+        "  if Rails.configuration.x.reviews",
+        "    included do",
+        "      before_action :check_review",
+        "    end",
+        "  end",
+      ],
+      stmt: "included do",
+    },
+  ])("leaves $form unresolved", async ({ concern, stmt }) => {
+    await checkout(reviewing(concern));
+    expect(route("/api/v1/things")?.unresolved).toEqual([
+      `app/controllers/concerns/reviewing.rb: unreadable \`${stmt}\``,
+    ]);
+  });
+
+  it.each([
+    { form: "an include of several modules", stmt: "include PolicyChecks, Auditing" },
+    { form: "a prepend", stmt: "prepend PolicyChecks" },
+  ])("leaves $form in a class unresolved", async ({ stmt }) => {
+    await checkout(reviewing([], [`  ${stmt}`]));
+    expect(route("/api/v1/things")?.unresolved).toEqual([
+      `app/controllers/api/v1/things_controller.rb: unreadable \`${stmt}\``,
     ]);
   });
 });
