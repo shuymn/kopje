@@ -4,7 +4,7 @@ import type { Db } from "../db/sql";
 import { DEFAULT_AVATAR, DEFAULT_HEADER } from "../platform/brand-assets";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
-import { ACTOR_URI_LIMIT, DOMAIN_BYTES, withinIdentityBound } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
   cutCodePoints,
@@ -820,11 +820,16 @@ export const getAccounts = readOperation<{ ids: string[]; present: Present }, Ac
 // usernameSql's projection: a matching row's username has the bytes of `username` (SQLite's lower changes ASCII
 // letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
 // (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
+// Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
+// invalidated handle ('! <id>', shownHandle) is never matched by an address.
 function addressRow(
   db: Db,
   username: string,
   domain: string | null,
 ): (AccountRow & { stored_username: string }) | undefined {
+  if (!isRemoteUsername(username)) {
+    return undefined;
+  }
   return domain === null
     ? db.first(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
@@ -873,12 +878,28 @@ export const emailSubscriptionTarget = readOperation<
   return local === undefined ? "missing" : "local";
 });
 
+// The presented account an address names as lookup finds it (an unavailable one redacted, VIS-30), or null: by
+// accountByAddress, but `<id>@handle.invalid` names the remote account of that id while its handle is invalidated
+// (shownHandle; Mastodon's ResolveAccountService special case), one primary-key seek. `domain` is normalized.
+export function accountByLookup(db: Db, username: string, domain: string | null, present: Present): Account | null {
+  if (domain !== INVALID_HANDLE_DOMAIN) {
+    return accountByAddress(db, username, domain, present);
+  }
+  // The prefix is a prefilter; shownHandle decides on the row as presented.
+  const row = db.first<AccountRow>(
+    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
+			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! '`,
+    username,
+  );
+  return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
+}
+
 // domain null means a local account.
 export const lookupAccount = readOperation<
   { username: string; domain: string | null; present: Present },
   Account | null
 >((db, { username, domain, present }) =>
-  accountByAddress(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
 );
 
 // source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
@@ -1247,8 +1268,11 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
   const where = terms.map((variants) => `(${variants.map(() => "instr(a.search_text, ?) > 0").join(" OR ")})`);
   const exactUsername = (query.split("@")[0] ?? "").toLowerCase();
   const prefix = (terms[0]?.[0] ?? "").replace(/^@/, "").split("@")[0] ?? "";
-  // The exact address: "user" is any account with that username, "user@domain" that one remote account.
-  const [exactUser = "", exactDomain] = query.toLowerCase().split("@");
+  // The exact address: "user" is any account with that username, "user@domain" that one remote account. Only a
+  // username addressRow would match names one: any other (an invalidated handle's '! <id>') is bound as NULL, which
+  // equals nothing.
+  const [user = "", exactDomain] = query.toLowerCase().split("@");
+  const exactUser = isRemoteUsername(user) ? user : null;
   const exact =
     exactDomain === undefined
       ? "SELECT id FROM accounts INDEXED BY accounts_username WHERE lower(username) = ?"

@@ -2,18 +2,20 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { partialAccountsOf } from "../src/domain/accounts";
+import { ACCOUNT_PREFIX_LIMIT, ACCOUNT_RECENT_LIMIT, partialAccountsOf } from "../src/domain/accounts";
 import { statusLinks } from "../src/domain/status-presenter";
 import type { StoreStub } from "../src/platform/store-client";
 import { announcementHarness, seedAnnouncement } from "./announcement-helpers";
 import { bearer, json, login, registerApp, seedAccount, sql } from "./api-helpers";
+import { offline } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { ADMIN_EMAIL } from "./ops-helpers";
-import { getJson, remoteAccount, seedStatus } from "./status-helpers";
+import { community, getJson, post, remoteAccount, seedStatus } from "./status-helpers";
 
 // Invalidated handles (docs/mastodon-deviations.md, Accounts; accounts.ts shownHandle): a remote account whose stored
 // username is '! <id>' (Mastodon's invalidate_username!) shows its id as username and `<id>@handle.invalid` as acct
-// wherever an account's handle is presented. No writer stores '! <id>' yet, so the rows are written here.
+// wherever an account's handle is presented, and no address names it (addressRow, findAccountIds); lookup finds it
+// by that placeholder. No writer stores '! <id>' yet, so the rows are written here.
 
 const ORIGIN = "https://kopje.test";
 const DAVE_ACTOR = "https://remote.example/users/dave";
@@ -123,7 +125,7 @@ describe("an invalidated handle, presented", () => {
     });
   });
 
-  it("names a featured hashtag's URL by the placeholder", async () => {
+  it("names a featured hashtag's URL by the placeholder, which the web sends on to the profile", async () => {
     const { h, carol, dave, token } = await world();
     await sql(
       h.store,
@@ -140,6 +142,14 @@ describe("an invalidated handle, presented", () => {
     expect((await getJson<Body[]>(h, `/api/v1/accounts/${carol}/featured_tags`, token)).body).toMatchObject([
       { url: valid },
     ]);
+    for (const [url, location] of [
+      [invalid, DAVE_ACTOR],
+      [valid, "https://remote.example/@carol"],
+    ] as const) {
+      const response = await h.send(new Request(url));
+      expect(response.status, url).toBe(302);
+      expect(response.headers.get("location"), url).toBe(location);
+    }
   });
 
   it("links an announcement's mention of the old handle to its current holder, or to none", async () => {
@@ -165,4 +175,73 @@ describe("an invalidated handle, presented", () => {
       { id: holder, username: "dave", url: "https://remote.example/@dave", acct: "dave@remote.example" },
     ]);
   });
+});
+
+describe("an invalidated handle, addressed", () => {
+  it("looks up <id>@handle.invalid while the handle is invalidated, and 404 for a valid row's id", async () => {
+    const { h, carol, dave } = await world();
+    const lookup = (acct: string) => getJson<Body>(h, `/api/v1/accounts/lookup?acct=${encodeURIComponent(acct)}`);
+    expect(await lookup(`${dave}@handle.invalid`)).toMatchObject({
+      status: 200,
+      body: { id: dave, ...placeholder(dave) },
+    });
+    expect(await lookup(`@${dave}@HANDLE.INVALID`)).toMatchObject({ status: 200, body: { id: dave } });
+    expect((await lookup(`${carol}@handle.invalid`)).status).toBe(404);
+    expect((await lookup(`${dave}0@handle.invalid`)).status).toBe(404);
+  });
+
+  it("matches no address naming the stored '! <id>': lookup, the web's tagged page and a new post's mention", async () => {
+    const { h, dave } = await world();
+    const stored = `! ${dave}@remote.example`;
+    const lookup = (acct: string) => h.request(`/api/v1/accounts/lookup?acct=${encodeURIComponent(acct)}`);
+    // The same lookup reaches the address: a valid handle is found.
+    expect((await lookup("carol@remote.example")).status).toBe(200);
+    expect((await lookup(stored)).status).toBe(404);
+    expect((await h.request(`/@${encodeURIComponent(stored)}/tagged/kopje`)).status).toBe(404);
+    expect((await h.request("/@carol@remote.example/tagged/kopje")).status).toBe(302);
+    // The parser reads no mention of '! <id>', and the old handle names no account.
+    const status = await post(h, h.users.alice, { status: `@${stored} @dave@remote.example @carol@remote.example` });
+    expect(status.mentions.map((m) => m.acct)).toEqual(["carol@remote.example"]);
+  });
+
+  it("finds no invalidated handle by an exact search, where a valid one past the other windows is found", async () => {
+    const h = await community(["alice"], undefined, { federation: offline });
+    const search = async (q: string, resolve = false) =>
+      (
+        await getJson<{ accounts: { id: string }[] }>(
+          h,
+          `/api/v2/search?type=accounts&resolve=${resolve}&q=${encodeURIComponent(q)}`,
+          h.users.alice.token,
+        )
+      ).body.accounts.map((a) => a.id);
+    // ACCOUNT_PREFIX_LIMIT older accounts named vv fill the prefix window of "vv" before the one searched for.
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO accounts (id, uri, username, domain, search_text)
+				SELECT CAST(500000000000000000 + i AS TEXT), 'https://d' || i || '.example/users/vv', 'vv', 'd' || i || '.example',
+					'other'
+				FROM n`,
+      ACCOUNT_PREFIX_LIMIT,
+    );
+    const valid = await remoteAccount(h.store, "vv");
+    const dave = await remoteAccount(h.store, "dave");
+    await invalidate(h.store, dave);
+    // Then ACCOUNT_RECENT_LIMIT newer accounts fill the newest window, the first ACCOUNT_PREFIX_LIMIT of them in the
+    // reserved form sorting before dave's, so they fill the prefix window of "!" too; none matches the terms.
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO accounts (id, uri, username, domain, search_text)
+				SELECT CAST(600000000000000000 + i AS TEXT), 'https://e' || i || '.example/users/x',
+					CASE WHEN i < ?2 THEN '! !' || i ELSE 'other' END, 'e' || i || '.example', 'other'
+				FROM n`,
+      ACCOUNT_RECENT_LIMIT,
+      ACCOUNT_PREFIX_LIMIT,
+    );
+    expect(await search("vv@remote.example")).toEqual([valid]);
+    expect(await search(`! ${dave}@remote.example`)).toEqual([]);
+    // Resolving the placeholder looks it up by WebFinger, which cannot answer: as without resolve.
+    expect(await search(`${dave}@handle.invalid`, true)).toEqual([]);
+  }, 60_000);
 });
