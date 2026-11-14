@@ -440,8 +440,8 @@ const COVERED_WITH_BODY = [...COVERED, "content-digest"];
 // Fedify's verifyRequestDetailed, which refuses as an invalid signature a verified RFC 9421 signature that leaves out
 // a component COVERED or COVERED_WITH_BODY names (ID-1). Fedify verifies as RFC 9421 exactly the requests with a
 // Signature-Input header, and reports the label of the member it verified; that member is read with the parser Fedify
-// reads it with, and its components are matched as Fedify builds the signature base from them (string items, by name,
-// whatever their parameters).
+// reads it with. A required component counts only as a string item of that name without parameters: Mastodon 4.7
+// compares a component with its parameters serialized, so `"@method";req` is not `@method` there.
 async function verifyHttpSignature(
   signed: Request,
   options: VerifyRequestOptions,
@@ -470,8 +470,13 @@ function covers(signed: Request, label: string | undefined): boolean {
   const required = signed.method === "GET" || signed.method === "HEAD" ? COVERED : COVERED_WITH_BODY;
   return (
     Array.isArray(components) &&
-    required.every((name) => components.some((item: unknown) => item instanceof Item && item.value === name))
+    required.every((name) => components.some((item: unknown) => item instanceof Item && isBare(item, name)))
   );
+}
+
+function isBare(item: Item, name: string): boolean {
+  const params: unknown = item.params;
+  return item.value === name && (params == null || (typeof params === "object" && Object.keys(params).length === 0));
 }
 
 type Verified = { key: CryptographicKey; pem: string } | InboxOutcome;

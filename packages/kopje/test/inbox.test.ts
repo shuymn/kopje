@@ -109,13 +109,30 @@ async function untouched(store: StoreStub): Promise<void> {
   expect(await sql(store, "SELECT uri FROM accounts WHERE domain IS NOT NULL")).toEqual([]);
 }
 
-// RFC 9421 signatures of a POST that leave out a component Mastodon 4.7 requires (ID-1), and the one Mastodon 4.7
-// makes itself (Request#sign!: @method, @target-uri and, with a body, content-digest).
+// RFC 9421 signatures of a POST that leave out a component Mastodon 4.7 requires (ID-1), or cover it only with
+// parameters (which Mastodon 4.7 compares as part of the name), and the one Mastodon 4.7 makes itself (Request#sign!:
+// @method, @target-uri and, with a body, content-digest).
 const UNDER_COVERED: [string, NonNullable<SignOptions["rfc9421"]>][] = [
   ["content-digest", { components: ["@method", "@target-uri"], digest: false }],
   ["@method", { components: ["@target-uri"] }],
   ["@target-uri", { components: ["@method"] }],
   ["any component", { components: [], digest: false }],
+  ['a bare @method (only "@method";req)', { components: [{ value: "@method", params: { req: true } }, "@target-uri"] }],
+  [
+    'a bare @target-uri (only "@target-uri";bs)',
+    { components: ["@method", { value: "@target-uri", params: { bs: true } }] },
+  ],
+  [
+    'a bare content-digest (only "content-digest";sf)',
+    { components: ["@method", "@target-uri", { value: "content-digest", params: { sf: true } }], digest: false },
+  ],
+  [
+    'a bare content-digest (only "content-digest";key="sha-256")',
+    {
+      components: ["@method", "@target-uri", { value: "content-digest", params: { key: "sha-256" } }],
+      digest: false,
+    },
+  ],
 ];
 const MASTODON_47 = { components: ["@method", "@target-uri"] };
 
