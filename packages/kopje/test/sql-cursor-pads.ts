@@ -1,5 +1,5 @@
 // Statements that resolve a CTE after exactly `k` numbered cursors, for calibrating SQLite's cursor rule
-// (docs/engineering.md "Queries"): from 3.54.1, the reference of a CTE fails to prepare ("VIEWs and/or subqueries
+// (docs/engineering.md "Queries"): in 3.54.1, the reference of a CTE fails to prepare ("VIEWs and/or subqueries
 // nested too deep") once the cursors numbered before it reach the expression depth limit, less 2 for a flat CTE and
 // less 3 for a recursive one. The pads are FROM subqueries of up to PAD_TABLES tables each (a subquery and its tables,
 // one cursor each, numbered before the CTE that ends the FROM list), with no expression depth; each subquery's LIMIT

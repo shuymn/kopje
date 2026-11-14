@@ -8,6 +8,7 @@ import { migratedStore } from "./helpers";
 import { flatCteAfter } from "./sql-cursor-pads";
 import { measure, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
+import { WINDOW_FAMILIES, windowVariants } from "./window-variants";
 
 // The guard of test/sql-depth-setup.ts: it sees the statements the Store runs, and it reports one nested too deep or
 // resolving a CTE after too many cursors (test-node/sql-depth.ts, CTE_GUARD_LIMIT).
@@ -79,6 +80,16 @@ describe("expression depth guard", () => {
     expect(await measure([flatCteAfter(94, "accounts"), flatCteAfter(95, "accounts")])).toEqual([
       { limit: 97, sql: flatCteAfter(95, "accounts") },
     ]);
+  });
+
+  // W1: every candidate window statement, in its largest variant, prepares at the guard's limit.
+  it("passes each candidate window statement in its largest variant", { timeout: 120_000 }, async () => {
+    await windowVariants();
+    for (const [family, member] of Object.entries(WINDOW_FAMILIES)) {
+      const recorded = [...statements.keys()].filter(member);
+      expect(recorded.length, family).toBeGreaterThanOrEqual(2);
+      expect(await measure(recorded), family).toEqual([]);
+    }
   });
 
   it("refuses a batch, whose later statements it would not measure", async () => {

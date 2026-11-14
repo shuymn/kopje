@@ -1,7 +1,10 @@
 // The depth guard of the Store's SQL, measured on Node: the SQLite of Durable Objects refuses a statement whose
-// expression tree is deeper than 100, and, from SQLite 3.54.1, one that resolves a CTE after 100 numbered cursors less
-// 2 (less 3 for a recursive CTE; docs/engineering.md "Queries"). workerd cannot lower that limit, while node:sqlite
-// can, and both rules read it. The Workers suites send every statement they run through Db here
+// expression tree is deeper than 100, and SQLite 3.54.1 one that resolves a CTE after 100 numbered cursors less 2
+// (less 3 for a recursive CTE; docs/engineering.md "Queries"). workerd cannot lower that limit, while node:sqlite
+// can, and both rules read it. The cursor rule is enforced here only: mise.lock pins a Node whose SQLite (3.54.1) has
+// it, while workerd from 1.20261111.1 backs it out (test/sql-cursor-calibration.test.ts checks the runtime's success
+// side). A Node update that loses the rule fails the calibration below, and is decided then: keep a Node with the rule
+// for the guard, or retire the guard by the owner's decision. The Workers suites send every statement they run through Db here
 // (test/sql-depth-setup.ts, through the SQL_DEPTH binding of vitest.config.ts), so a statement nearing either refusal
 // fails the suite that runs it, not a request in production.
 

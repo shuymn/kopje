@@ -2,14 +2,16 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { migratedStore } from "./helpers";
-import { CURSOR_REFUSAL, flatCteAfter, recursiveCteAfter } from "./sql-cursor-pads";
+import { flatCteAfter, recursiveCteAfter } from "./sql-cursor-pads";
+import { windowVariants } from "./window-variants";
 
-// The Store's own cursor rule (docs/engineering.md "Queries"), at the runtime's limit of 100: a flat CTE resolves after
-// at most 98 numbered cursors and a recursive one after at most 97. The guard (test-node/sql-depth.ts) prepares every
-// statement at CTE_GUARD_LIMIT on Node and calibrates itself the same way; should the runtime stop refusing past these
-// counts, or refuse earlier, this fails.
+// The cursor rule on the Store's own runtime (docs/engineering.md "Queries"), its success side only: at the runtime's
+// limit of 100, a flat CTE resolved after 98 numbered cursors and a recursive one after 97 prepare, and so does every
+// candidate window statement in its largest variant. The refusal side is enforced on Node alone
+// (test-node/sql-depth.ts: SQLite 3.54.1 refuses past these counts; workerd from 1.20261111.1 backs the rule out), so
+// a workerd that carries the backout passes here.
 describe("the runtime's cursor rule", () => {
-  it("refuses a CTE resolved past its count, and prepares one at it", async () => {
+  it("prepares a CTE resolved at its count", async () => {
     const store = await migratedStore();
     const outcomes = await runInDurableObject(store, (_instance, state) => {
       const outcome = (sql: string) => {
@@ -17,14 +19,15 @@ describe("the runtime's cursor rule", () => {
           state.storage.sql.exec(sql).toArray();
           return "prepares";
         } catch (error) {
-          return error instanceof Error && error.message.includes(CURSOR_REFUSAL) ? "refused" : String(error);
+          return String(error);
         }
       };
-      return {
-        flat: [outcome(flatCteAfter(98, "accounts")), outcome(flatCteAfter(99, "accounts"))],
-        recursive: [outcome(recursiveCteAfter(97, "accounts")), outcome(recursiveCteAfter(98, "accounts"))],
-      };
+      return [outcome(flatCteAfter(98, "accounts")), outcome(recursiveCteAfter(97, "accounts"))];
     });
-    expect(outcomes).toEqual({ flat: ["prepares", "refused"], recursive: ["prepares", "refused"] });
+    expect(outcomes).toEqual(["prepares", "prepares"]);
+  });
+
+  it("prepares every candidate window statement in its largest variant", { timeout: 120_000 }, async () => {
+    await windowVariants();
   });
 });
