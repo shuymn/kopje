@@ -304,7 +304,9 @@ function searchText(input: RemoteStatusInput): string {
 }
 
 // Mastodon's ActivityPub::Activity::Create#create_status for an object whose author is `author` (already stored and
-// verified: the actor of the activity, or the fetched author of a fetched object).
+// verified: the actor of the activity, or the fetched author of a fetched object). A stored status is found as
+// Create#find_existing_status finds it: by the object's id, else by its atomUri; the outcome's statusId names the row
+// found or created, which the stored document's own id may not (a match by atomUri).
 export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   // ID-6: the object is the author's, on the author's origin; ID-3: so it is never a local object.
   if (!sameOrigin(input.uri, author.uri)) {
@@ -313,9 +315,13 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
     return { applied: false, reason: "not-author" };
   }
+  const atomUri = input.atomUri === undefined || input.atomUri === input.uri ? null : input.atomUri;
   // ID-7: a Delete that arrived first keeps the object from appearing, and a deleted stored object is not created
-  // again by anyone (ID-6).
-  if (isDeleted(db, author.uri, input.uri, ctx.now)) {
+  // again by anyone (ID-6), under its id or under another id naming it by atomUri.
+  if (
+    isDeleted(db, author.uri, input.uri, ctx.now) ||
+    (atomUri !== null && isDeleted(db, author.uri, atomUri, ctx.now))
+  ) {
     return { applied: false, reason: "retracted" };
   }
   // R38, VIS-30: nothing is stored for an unavailable author (an account the instance suspended), whichever path
@@ -336,7 +342,8 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     });
     return { applied: counted, reason: counted ? "vote" : "vote-refused" };
   }
-  const existing = statusByUri(db, input.uri);
+  // ID-3, ID-6: a status found by atomUri is matched only when it is the author's own (Create, mastodon#39916).
+  const existing = statusByUri(db, input.uri) ?? (atomUri === null ? undefined : statusByUri(db, atomUri));
   if (existing !== undefined) {
     if (existing.account_id !== author.id) {
       return { applied: false, reason: "not-author" };

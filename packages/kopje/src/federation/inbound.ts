@@ -50,7 +50,14 @@ import {
   requireObjectRoot,
 } from "./loader";
 import { fetchActor } from "./remote-actor";
-import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STATUS_TYPES } from "./remote-status";
+import {
+  ACTOR_TYPES,
+  CONVERTED_TYPES,
+  fetchRemoteStatus,
+  parseRemoteStatus,
+  STATUS_TYPES,
+  statusIdentity,
+} from "./remote-status";
 
 // Inbound activities: verification, identity, and the shape of each activity, in the Worker; the effects in
 // one Store operation (domain/inbox.ts). The same path serves a live POST and the replay of a spooled one.
@@ -172,7 +179,7 @@ const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiRea
 
 function refOf(value: unknown): ActivityRef {
   if (!isObject(value)) {
-    return { id: idOf(value), type: null, actor: null, object: null, instrument: null };
+    return { id: idOf(value), type: null, actor: null, object: null, instrument: null, atomUri: null };
   }
   const type = typeof value.type === "string" ? value.type : null;
   return {
@@ -181,6 +188,7 @@ function refOf(value: unknown): ActivityRef {
     actor: idOf(value.actor),
     object: idOf(value.object),
     instrument: idOf(value.instrument),
+    atomUri: statusIdentity(value.atomUri),
   };
 }
 
@@ -322,9 +330,16 @@ function activityOf(
       if (object === null) {
         return null;
       }
+      // The embedded object's atomUri names the status too (Delete#delete_status), read as its id is.
       return object === actor
         ? { type: "DeleteActor", id }
-        : { type: "Delete", id, object, ...(hasAuthorProof(json) ? { signed: true } : {}) };
+        : {
+            type: "Delete",
+            id,
+            object,
+            atomUri: isObject(json.object) ? statusIdentity(json.object.atomUri) : null,
+            ...(hasAuthorProof(json) ? { signed: true } : {}),
+          };
     // The target is matched against the actor's own collections by the Store. A Hashtag is named by its name; anything
     // else by its id, as a status (Mastodon's Add and Remove read any other object as one).
     case "Add":
@@ -858,6 +873,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       type: "RelayedDelete",
       id: activity.id,
       object: activity.object,
+      atomUri: activity.atomUri ?? null,
       proven,
       ...(proven ? { body: json } : {}),
     },
