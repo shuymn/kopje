@@ -3622,10 +3622,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cron's turn resumes it from the persisted position after a lost continuation, and that a drain after the barrier runs
   no turn; a new event kind joins its table (`KINDS`). `src/stream-hub.ts`, `src/domain/streaming.ts`;
   `test/streaming/streaming.test.ts`. _Gap:_ the budgets count work, not CPU time; a turn at the limits is to be
-  measured on a deployed instance. The platform closes a hibernated socket that carries no frame either way: on a
-  deployed instance (#1211), four silent sockets each closed at 6,010 s of age with a TCP FIN and no close frame (1006
-  to the client), and a socket the client pinged every 20 minutes outlived them, to 6,393 s. Kopje sends no server
-  ping; a client reconnects, as Mastodon's clients do, and REST stays the source of truth.
+  measured on a deployed instance. The platform closes a hibernated socket that carries no frame either way: measured
+  from one home network against a deployed instance (#1211), four silent sockets started at different times each
+  closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client), and a socket the client pinged every
+  20 minutes outlived them, to 6,393 s. Kopje sends no server ping; a client reconnects, as Mastodon's clients do, and
+  REST stays the source of truth.
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
   a restore are paid indefinitely ([backup.md](backup.md)).
