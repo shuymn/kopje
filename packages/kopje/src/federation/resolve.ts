@@ -181,7 +181,7 @@ function splitAcct(subject: string | null): { username: string; domain: string }
 }
 
 // The canonical domain of an actor's address, as Mastodon's ActivityPub::ProcessAccountService#check_webfinger! and
-// ResolveAccountService#process_webfinger! decide it (v4.7.3): the actor's own host declares the address in the subject
+// ResolveAccountService#process_webfinger! decide it (v4.7.5): the actor's own host declares the address in the subject
 // of its WebFinger for acct:<preferredUsername>@<host>, and a subject on another domain is only a candidate, which
 // that domain must confirm: its WebFinger for the subject names the same actor id as self. Confirmed: the candidate;
 // the host's answer naming the actor under its own name, or any answer that does not confirm: the host. undefined

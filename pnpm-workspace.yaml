@@ -19,16 +19,19 @@ catalog:
   temporal-polyfill: 1.0.8
   valibot: 1.5.0
 
-  # Fedify, one version for all of its packages.
+  # Fedify, one version for all of its packages, and the structured-field parser it reads Signature-Input with, at the
+  # version @fedify/fedify resolves: src/federation/inbound.ts reads the member Fedify verified with the same copy
+  # (test-node/fedify-usage.test.ts).
   "@fedify/fedify": 2.4.5
   "@fedify/testing": 2.4.5
   "@fedify/vocab": 2.4.5
+  structured-field-values: 2.0.4
 
   # Cloudflare Workers: the bundler and dev server, the runtime types and the workerd test pool. deploy/package.json
   # pins the same wrangler.
-  "@cloudflare/vitest-plugin": 1.7.0
+  "@cloudflare/vitest-plugin": 1.8.0
   "@cloudflare/workers-types": 5.20261110.1
-  wrangler: 4.160.0
+  wrangler: 4.160.1
   # The workerd test pool on SQLite 3.53.4 (workerd 1.20261023.1), for the kopje-main-runtime project
   # (vitest.main-runtime.config.ts): main's statements prepare there, so the rewritten policy statements are compared
   # with them. .github/renovate.json holds it.

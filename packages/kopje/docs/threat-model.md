@@ -114,15 +114,27 @@ against their own instance. TLS is assumed between all parties.
 
 - **ID-1: an inbound activity acts only for its signer.** It is processed only if its HTTP signature verifies, the key's
   owner equals `activity.actor`, and that actor is not local. An unsigned or unverifiable request changes nothing and
-  answers 401. The owner is the actor whose document lists the key, by id and key material, and the key names no
-  other owner. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
-  trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
-  document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
-  the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with the stored
-  key at any age. A live actor is never deleted with a key its current document does not list (401), and a transient
-  failure answers 503. _Enforced (main):_ `receiveInbound` in `src/federation/inbound.ts`; `test/inbox.test.ts` ("ID-1:
-  an inbound activity acts only for its signer"), `test/inbox-regressions.test.ts` ("stored keys, rotation and
-  ownership"). A stored key list (with the profile, `movedTo` and routing beside it) is replaced only by a document
+  answers 401. A signature verifies only if it covers the request, and one that covers less is answered as one that
+  does not verify: a draft-cavage signature covers `(request-target)` and `date`, and `digest` when the request has a
+  body (Fedify's check); an RFC 9421 signature covers `@method` and `@target-uri`, and `content-digest` unless the
+  method is GET or HEAD, each without parameters, as Mastodon 4.7 requires, besides the `keyid` and `created` Fedify
+  requires. Of a request's RFC 9421 signatures, the rule applies to the `Signature-Input` member Fedify verified, the
+  first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
+  `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
+  request (`verifySpooledRequest`, OPS-9) holds to the same rule. The owner is the actor whose document lists the key,
+  by id and key material, and the key names no other owner. A stored key (`remote_keys`, kept per key id with its owner,
+  whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that, or when its
+  signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one exception is
+  an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document both answer
+  404 or 410: it is verified with the stored key at any age. A live actor is never deleted with a key its current
+  document does not list (401), and a transient failure answers 503.
+  _Enforced (main):_ `receiveInbound`, `verifyHttpSignature` and `verifySpooledRequest` in `src/federation/inbound.ts`;
+  `test/inbox.test.ts` ("ID-1: an inbound activity acts only for its signer", "refuses a draft-cavage signature
+  without", "refuses an RFC 9421 signature without", "accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them",
+  "RFC 9421 signature leaves out a required component", "holds the rollback drain's check of a spooled request to the
+  same rule"), `test-node/fedify-usage.test.ts` ("reads Signature-Input with the one structured-field-values Fedify
+  resolves"), `test/inbox-regressions.test.ts` ("stored keys, rotation and ownership"). A stored key list (with the
+  profile, `movedTo` and routing beside it) is replaced only by a document
   fetched after the last one stored: every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
@@ -1377,9 +1389,24 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and a token sent must be valid; such a route may declare no scope (`GET /api/v1/tags/:id`: any valid token, app tokens
   read as anonymous), and a `token` route may still require a user (`GET /api/v1/announcements`: any user token,
   whatever its scopes; app tokens 422: `tokenUserReadOperation` in `src/domain/auth.ts`, which
-  `announcements.listAnnouncements` declares); `test/tags.test.ts`, `test/announcements.test.ts`. _Enforced (main):_ the
-  admin API's routes are optional-token routes with admin scopes (Mastodon's `authorize_if_got_token!`): a token sent
-  must be valid and cover the route's scope, and who may act is decided in the Store (VIS-29);
+  `announcements.listAnnouncements` declares); `test/tags.test.ts`, `test/announcements.test.ts`. One exception:
+  `GET /api/v1/donation_campaigns` and `POST /api/v1/accounts/:account_id/email_subscriptions`, which answer as
+  Mastodon with the feature off (MD-3), are optional routes on which a token that is not valid (unknown, revoked, past
+  its expiry, or of an earlier epoch with its owner available) reads as anonymous, as an app token does. Mastodon's
+  `Api::BaseController` reads the owner of an expired or revoked token there too; Kopje does not
+  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held,
+  unexpired token of an earlier epoch whose owner is suspended answers 403, since suspension is checked before the
+  epoch. Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
+  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held, unexpired
+  token of a suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
+  show nothing of the token's owner (a successful authenticated donation request keeps the ordinary activity
+  recording of the access middleware, RES-6). _Enforced (main):_ `donationCampaigns` and `emailSubscription` in
+  `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`
+  (`src/domain/accounts.ts`); `test/placeholders.test.ts` (the donation and e-mail subscriptions cases, and "answers
+  an expired or revoked token as no token on the feature-off routes"), and `test/mastodon-access.test.ts` (the two
+  routes' access exceptions). _Enforced (main):_ the admin API's routes are optional-token routes with admin scopes
+  (Mastodon's `authorize_if_got_token!`): a token sent must be valid and cover the route's scope, and who may act is
+  decided in the Store (VIS-29);
   `test/mastodon-access.test.ts` compares them with Mastodon's, setting aside only each admin route's role policy, and
   `test/admin-api.test.ts` ("admin routes").
 - **AUTH-3: OAuth follows the supported contract.** _Enforced (main):_ `src/app/authorize.tsx`, `src/mastodon/oauth.ts`,
@@ -2075,7 +2102,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
   hands over no signer or key; a write refused while resolving (the final store, or the instance key's creation) also
   leaves the answer to the plain search (`resolveQuery` in `src/mastodon/search.ts`). An account's canonical address is
-  decided as Mastodon 4.7.3's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
+  decided as Mastodon 4.7.5's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
   it: the actor's own host
   declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
   candidate, which must answer for that subject with the same actor id; otherwise the address is on the host

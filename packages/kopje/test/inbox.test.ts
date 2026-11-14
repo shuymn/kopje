@@ -1,4 +1,4 @@
-import { signRequest } from "@fedify/fedify";
+import { signRequest, verifyRequestDetailed } from "@fedify/fedify";
 import { runInDurableObject } from "cloudflare:test";
 import { Temporal } from "temporal-polyfill";
 import { describe, expect, it, vi } from "vitest";
@@ -8,9 +8,12 @@ import { forwardSubject } from "../src/domain/deliveries";
 import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
+import { verifySpooledRequest } from "../src/federation/inbound";
 import { handleQueue } from "../src/jobs/queue";
 import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
+import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
+import { requestSigner } from "../src/security/keyring";
 import { bearer, seedFollows, settle, sql } from "./api-helpers";
 import { countingStore, harness, heldStore, inboxDeps, NOW, seedInstanceKey, type StoreCall } from "./app-helpers";
 import { mastodon47Signed, mastodonDelete, signTime } from "./author-proof-helpers";
@@ -130,6 +133,69 @@ async function untouched(store: StoreStub): Promise<void> {
     expect(await sql(store, `SELECT * FROM ${table}`), table).toEqual([]);
   }
   expect(await sql(store, "SELECT uri FROM accounts WHERE domain IS NOT NULL")).toEqual([]);
+}
+
+// RFC 9421 signatures of a POST that leave out a component Mastodon 4.7 requires (ID-1), or cover it only with
+// parameters (which Mastodon 4.7 compares as part of the name), and the one Mastodon 4.7 makes itself (Request#sign!:
+// @method, @target-uri and, with a body, content-digest).
+const UNDER_COVERED: [string, NonNullable<SignOptions["rfc9421"]>][] = [
+  ["content-digest", { components: ["@method", "@target-uri"], digest: false }],
+  ["@method", { components: ["@target-uri"] }],
+  ["@target-uri", { components: ["@method"] }],
+  ["any component", { components: [], digest: false }],
+  ['a bare @method (only "@method";req)', { components: [{ value: "@method", params: { req: true } }, "@target-uri"] }],
+  [
+    'a bare @target-uri (only "@target-uri";bs)',
+    { components: ["@method", { value: "@target-uri", params: { bs: true } }] },
+  ],
+  [
+    'a bare content-digest (only "content-digest";sf)',
+    { components: ["@method", "@target-uri", { value: "content-digest", params: { sf: true } }], digest: false },
+  ],
+  [
+    'a bare content-digest (only "content-digest";key="sha-256")',
+    {
+      components: ["@method", "@target-uri", { value: "content-digest", params: { key: "sha-256" } }],
+      digest: false,
+    },
+  ],
+];
+const MASTODON_47 = { components: ["@method", "@target-uri"] };
+
+// A POST of `activity` to /inbox with a draft-cavage signature by `actor` over exactly `names` (Fedify's signer always
+// covers (request-target), host, date and, with a body, digest), at NOW.
+async function cavageInit(actor: TestActor, activity: unknown, names: string[]): Promise<RequestInit> {
+  const body = JSON.stringify(activity);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)));
+  const headers = new Headers({
+    "content-type": AP,
+    host: "kopje.test",
+    date: new Date(NOW).toUTCString(),
+    digest: `SHA-256=${bytesToBase64(digest)}`,
+  });
+  const lines = names.map((name) =>
+    name === "(request-target)" ? "(request-target): post /inbox" : `${name}: ${headers.get(name)}`,
+  );
+  const signature = await crypto.subtle.sign(
+    RSA_ALGORITHM,
+    actor.privateKey,
+    new TextEncoder().encode(lines.join("\n")),
+  );
+  const value = bytesToBase64(new Uint8Array(signature));
+  headers.set(
+    "signature",
+    `keyId="${actor.keyId}",algorithm="rsa-sha256",headers="${names.join(" ")}",signature="${value}"`,
+  );
+  return { method: "POST", headers, body };
+}
+
+// What Fedify alone answers for a request to /inbox, against the actor's document: a refusal of a request it verifies
+// is Kopje's.
+function fedifyAlone(actor: TestActor, init: RequestInit) {
+  return verifyRequestDetailed(new Request(`${LOCAL}/inbox`, init), {
+    documentLoader: (url) => Promise.resolve({ contextUrl: null, documentUrl: url, document: actor.document }),
+    currentTime: Temporal.Instant.fromEpochMilliseconds(NOW),
+  });
 }
 
 // Our pending follow of a remote actor, as the follow API leaves it.
@@ -736,6 +802,60 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
     expect(await t.post(bob, follow(bob))).toBe(503);
     await untouched(t.store);
   });
+
+  // Fedify's own rule for draft-cavage signatures; the full set, signed the same way, verifies.
+  it("refuses a draft-cavage signature without (request-target), date or, with a body, digest with 401", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const all = ["(request-target)", "host", "date", "digest"];
+    for (const missing of ["(request-target)", "date", "digest"]) {
+      const init = await cavageInit(
+        bob,
+        follow(bob),
+        all.filter((name) => name !== missing),
+      );
+      expect((await t.request("/inbox", init)).status, missing).toBe(401);
+    }
+    await untouched(t.store);
+    expect((await t.request("/inbox", await cavageInit(bob, follow(bob), all))).status).toBe(202);
+  });
+
+  it.each(UNDER_COVERED)(
+    "refuses an RFC 9421 signature without %s with 401, as Mastodon 4.7 does",
+    async (_, rfc9421) => {
+      const t = await setup();
+      const bob = await mastodonActor(t.web, "bob");
+      const init = await signedInit(bob, "/inbox", follow(bob), { rfc9421 });
+      expect(await fedifyAlone(bob, init)).toMatchObject({ verified: true, signatureLabel: "sig1" });
+      expect((await t.request("/inbox", init)).status).toBe(401);
+      await untouched(t.store);
+    },
+  );
+
+  it("accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them, and Kopje's own; a swapped body fails", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const mastodon = await signedInit(bob, "/inbox", follow(bob), { rfc9421: MASTODON_47 });
+    expect(new Headers(mastodon.headers).get("signature-input")).toMatch(
+      /^sig1=\("@method" "@target-uri" "content-digest"\);/,
+    );
+    expect((await t.request("/inbox", { ...mastodon, body: JSON.stringify(follow(bob, DAVE_URI)) })).status).toBe(401);
+    await untouched(t.store);
+    expect((await t.request("/inbox", mastodon)).status).toBe(202);
+    // Fedify's default covers @method, @target-uri, @authority, host, date and content-digest.
+    expect(await t.post(bob, follow(bob, DAVE_URI), { rfc9421: {} })).toBe(202);
+    expect(await follows(t.store)).toHaveLength(2);
+    // Kopje signs what it sends with draft-cavage (requestSigner, at the current time), which this rule leaves alone:
+    // the Follow under a new id is applied (Mastodon's fast-forward).
+    const live = harness(t.store, {}, BUILD, { keygen: fixtureKeyGen, loader: t.web.loader }, () => Date.now());
+    const again = follow(bob);
+    const body = JSON.stringify(again);
+    const unsigned = new Request(`${LOCAL}/inbox`, { method: "POST", headers: { "content-type": AP }, body });
+    const kopje = await requestSigner(new URL(bob.keyId), bob.privateKey)(unsigned);
+    expect(kopje.headers.has("signature-input")).toBe(false);
+    expect((await live.request("/inbox", { method: "POST", headers: kopje.headers, body })).status).toBe(202);
+    expect((await follows(t.store)).map((f) => f.uri)).toContain(again.id);
+  });
 });
 
 describe("ID-6: the authorization table, one negative case per row", () => {
@@ -1018,12 +1138,12 @@ describe("ID-7: replay changes nothing twice", () => {
 });
 
 describe("OPS-1: spooled requests are verified on replay against their spool time", () => {
-  async function spooledFollow(t: Setup, bob: TestActor, at = NOW) {
+  async function spooledFollow(t: Setup, bob: TestActor, options: SignOptions = {}) {
     const maintenance = harness(t.store, { MAINTENANCE: "readonly" }, BUILD, {
       keygen: fixtureKeyGen,
       loader: t.web.loader,
     });
-    const response = await maintenance.request("/inbox", await signedInit(bob, "/inbox", follow(bob), { at }));
+    const response = await maintenance.request("/inbox", await signedInit(bob, "/inbox", follow(bob), options));
     expect(response.status).toBe(202);
     return maintenance.queue;
   }
@@ -1047,7 +1167,7 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
   it("drops a spooled request whose signature was already stale when spooled", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
-    const queue = await spooledFollow(t, bob, NOW - 2 * 60 * 60 * 1000);
+    const queue = await spooledFollow(t, bob, { at: NOW - 2 * 60 * 60 * 1000 });
     await queue.deliver((batch) =>
       handleQueue(
         batch,
@@ -1112,6 +1232,41 @@ describe("OPS-1: spooled requests are verified on replay against their spool tim
     // The forward is recorded in the request (inbox.ts recordForwards), staged by the job.
     expect(await spooledDelete("author", NOW)).toEqual({ held: false, forwards: 1 });
     expect(await spooledDelete("author", NOW + 2 * HOUR)).toEqual({ held: false, forwards: 0 });
+  });
+
+  it("drops a spooled request whose RFC 9421 signature leaves out a required component (ID-1)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const [, rfc9421] = UNDER_COVERED[0]!;
+    const deps = inboxDeps(() => t.store, t.web.loader);
+    const queue = await spooledFollow(t, bob, { rfc9421 });
+    await queue.deliver((batch) => handleQueue(batch, { ...t.env, MAINTENANCE: "off" } as Env, deps));
+    expect(queue.pending).toEqual([]);
+    expect(queue.retries).toBe(0);
+    await untouched(t.store);
+    const covered = await spooledFollow(t, bob, { rfc9421: MASTODON_47 });
+    await covered.deliver((batch) => handleQueue(batch, { ...t.env, MAINTENANCE: "off" } as Env, deps));
+    expect(await follows(t.store)).toHaveLength(1);
+  });
+
+  it("holds the rollback drain's check of a spooled request to the same rule (ID-1, OPS-9)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const check = async (rfc9421: NonNullable<SignOptions["rfc9421"]>) => {
+      const init = await signedInit(bob, "/inbox", follow(bob), { rfc9421 });
+      expect(await fedifyAlone(bob, init)).toMatchObject({ verified: true });
+      return verifySpooledRequest({ ...t.web.loader, userAgent: "Kopje/test" }, "kopje.test", {
+        url: `${LOCAL}/inbox`,
+        method: "POST",
+        headers: [...new Headers(init.headers)],
+        body: new TextEncoder().encode(init.body as string),
+        receivedAt: NOW,
+      });
+    };
+    for (const [missing, rfc9421] of UNDER_COVERED) {
+      expect(await check(rfc9421), missing).toEqual({ ok: false, transient: false, reason: "invalidSignature" });
+    }
+    expect(await check(MASTODON_47)).toMatchObject({ ok: true, actor: bob.uri });
   });
 
   it("retries a replay whose remote fetch failed transiently", async () => {

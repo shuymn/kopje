@@ -1,7 +1,7 @@
 {
-  "mastodon": "4.5.11",
+  "mastodon": "4.7.5",
   "generated": false,
-  "method": "hand-written; each value's extraction checked with Nokogiri 1.13.8's HTML5 fragment parser (Mastodon 4.5.11 locks 1.19.3) under Account::Field#sanitize then #extract_url_from_html; verifiable? judged by the rules of mastodon-4.5.11-verifiable.json (every extracted https href here is of its accepted forms); not run against Mastodon",
+  "method": "hand-written; each value's extraction checked with Nokogiri 1.13.8's HTML5 fragment parser (Mastodon 4.7.5 locks 1.19.7; the HTML5 changes from 1.19.3 to 1.19.7 are `noscript` in fragments, linear attribute parsing and serializer escaping, which none of these cases reaches) under Account::Field#sanitize then #extract_url_from_html; verifiable? judged by the rules of mastodon-4.7.5-verifiable.json (every extracted https href here is of its accepted forms); not run against Mastodon",
   "predicate": "Account::Field#value_for_verification and #verifiable? for a remote account (app/models/account/field.rb:16-20, 27-51, 67-93): `link` is the href Mastodon verifies, or null",
   "cases": [
     {
@@ -179,7 +179,7 @@
     }
   ],
   "attachments": {
-    "predicate": "ActivityPub::ProcessAccountService#property_values (app/services/activitypub/process_account_service.rb:260-267): `links` are the indexes whose field Mastodon would verify",
+    "predicate": "ActivityPub::ProcessAccountService#property_values (app/services/activitypub/process_account_service.rb:466-473): `links` are the indexes whose field Mastodon would verify",
     "cases": [
       {
         "attachment": [

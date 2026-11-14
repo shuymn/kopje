@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
-import mastodon from "../test/fixtures/mastodon-4.5.11-api-access.json" with { type: "json" };
+import mastodon from "../test/fixtures/mastodon-4.7.5-api-access.json" with { type: "json" };
 import {
+  accepted,
   deviationIds,
   deviationsCited,
   type Exception,
@@ -13,18 +14,21 @@ import {
   unresolvedFailures,
 } from "../test/mastodon-conformance.js";
 import { PARAM_EXCEPTIONS } from "../test/mastodon-params-exceptions.js";
+import { UNROUTED } from "../test/mastodon-routes-exceptions.js";
 import { guardFixtures, parse, sources, type Source } from "./source-scan.js";
 
 // Every field Mastodon's serializers emit (the fixture's entities, read from Mastodon's source by
 // scripts/mastodon-scopes.mjs) is a property of Kopje's response type for that entity, and no property of those types
 // is typed as a constant placeholder (`null`, `[]`, `never[]`), which a client reads as "always empty". A field whose
-// type is right but whose value is wrong is out of reach: Instance and Preferences are not entities of the fixture,
-// so their values (usage.users.active_month, languages, reading:autoplay:gifs) are guarded by their contract tests
-// (test/instance.test.ts, test/account-reads.test.ts) alone.
+// type is right but whose value is wrong is out of reach: Instance, Preferences, the annual report state and donation
+// campaigns are not entities of the fixture, so their values (usage.users.active_month, languages,
+// reading:autoplay:gifs, the report state) are guarded by their contract tests (test/instance.test.ts,
+// test/account-reads.test.ts, test/placeholders.test.ts) alone.
 // Departures are exceptions of the same shape as the parameter check's (test/mastodon-conformance.ts).
 
 type Target = { file: string; typeName: string; property?: string };
-type Mapping = Target | { deferred: string };
+// `deferred`: the gap issue that adds the Kopje type and maps it.
+type Mapping = Target | { deferred: number };
 type FixtureEntity = { fields: readonly { name: string; optional: boolean }[]; unresolved: readonly string[] };
 
 // Each entity's Kopje type; a nested entity names the property of its parent type that holds it. Explicit: nothing is
@@ -55,22 +59,67 @@ const MAPPING: Record<string, Mapping> = {
     typeName: "AnnouncementMention",
   },
   "REST::ReactionSerializer": { file: "src/domain/announcements.ts", typeName: "Reaction" },
+  "REST::ReportSerializer": { file: "src/domain/report-presenter.ts", typeName: "Report" },
+  "REST::RoleSerializer": { file: "src/domain/auth.ts", typeName: "Role" },
+  "REST::SearchSerializer": { file: "src/domain/search.ts", typeName: "SearchResults" },
+  "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
+  // No Kopje type yet. PartialAccount is a Pick<...> the reader cannot follow; #1583 writes it as a literal.
+  "REST::ProfileSerializer": { deferred: 1583 },
+  "REST::PartialAccountSerializer": { deferred: 1583 },
+  "REST::CollectionSerializer": { deferred: 1589 },
+  "REST::CollectionItemSerializer": { deferred: 1589 },
+  "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
+  "REST::ShallowTagSerializer": { deferred: 1589 },
+  // Their response types are inferred over Record<...>, which the reader cannot follow.
+  "REST::NotificationPolicySerializer": { deferred: 1582 },
+  "REST::V1::NotificationPolicySerializer": { deferred: 1582 },
+  // No report is made until #1590 builds generation.
+  "REST::AnnualReportSerializer": { deferred: 1590 },
 };
 
 const ACCOUNT: Record<string, Exception> = {
-  ...open("missing (Mastodon emits it for a limited or memorial account)", "limited", "memorial"),
+  // No silencing or memorializing.
+  ...accepted("MD-2", "limited", "memorial"),
+  ...open(
+    1583,
+    "the profile fields of Mastodon 4.6",
+    "avatar_description",
+    "header_description",
+    "show_featured",
+    "show_media",
+    "show_media_replies",
+  ),
+  ...open(1587, "verified and invalid handles", "invalid_handle"),
+  ...open(1589, "collections", "feature_approval"),
+  // Left out, as with e-mail subscriptions off.
+  ...accepted("MD-3", "email_subscriptions"),
+};
+
+// What a notification and a notification group share.
+const NOTIFICATION: Record<string, Exception> = {
+  // Moderation that severs relationships writes no severed_relationships notification.
+  ...accepted("MD-2", "event"),
+  ...open(1589, "collection notifications", "collection"),
+  ...open(1582, "supported_types and fallback", "fallback"),
 };
 
 const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
-  "REST::MediaAttachmentSerializer": { text_url: { status: "accepted", deviation: "MD-6" } },
-  "REST::NotificationSerializer": open("the notification types that carry them are not sent", "event"),
+  "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
+  "REST::PreviewCardSerializer": open(1586, "attribution of a link's author", "missing_attribution"),
+  "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
+  "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {
-    ...open("the notification type that carries it is not sent", "event"),
-    ...open("no annual report is generated, as on a stock Mastodon 4.5.11", "annual_report"),
+    ...NOTIFICATION,
+    // No annual report is made, so no notification carries one.
+    ...accepted("MD-3", "annual_report"),
   },
-  "REST::AnnouncementSerializer": { statuses: { status: "accepted", deviation: "MD-4" } },
+  "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
+  "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
+  "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
+  "REST::SearchSerializer": open(1589, "collections", "collections"),
+  "REST::CustomEmojiSerializer": open(1585, "no category has a featured emoji", "featured"),
 };
 
 // Entities whose fixture entry has unresolved extraction, with exactly the reasons acknowledged.
@@ -260,9 +309,9 @@ describe(`entity fields match Mastodon v${mastodon.mastodon}`, () => {
     expect(findings(ALL, MAPPING, mastodon.entities, ENTITY_EXCEPTIONS, UNRESOLVED_ENTITIES)).toEqual([]);
   });
 
-  it("cites only defined deviations, and every deviation is cited by an exception of either check", () => {
+  it("cites only defined deviations, and every deviation is cited by an exception of the checks", () => {
     const defined = deviationIds(readFileSync(new URL("../docs/mastodon-deviations.md", import.meta.url), "utf8"));
-    const cited = new Set(deviationsCited(PARAM_EXCEPTIONS, ENTITY_EXCEPTIONS));
+    const cited = new Set(deviationsCited(PARAM_EXCEPTIONS, ENTITY_EXCEPTIONS, { routes: UNROUTED }));
     expect([...cited].filter((id) => !defined.includes(id))).toEqual([]);
     expect(defined.filter((id) => !cited.has(id))).toEqual([]);
   });

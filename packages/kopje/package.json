@@ -106,6 +106,7 @@
     "oxc-parser": "catalog:",
     "parse5": "catalog:",
     "sanitize-html": "catalog:",
+    "structured-field-values": "catalog:",
     "temporal-polyfill": "catalog:",
     "typescript": "catalog:",
     "valibot": "catalog:",

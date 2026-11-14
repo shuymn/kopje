@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { RuleTester } from "oxlint/plugins-dev";
 import { describe, expect, it } from "vitest";
 
@@ -79,5 +81,14 @@ describe("Fedify usage", () => {
 
   it("signs Linked Data in ld-sign.ts", () => {
     expect(names("src/federation/ld-sign.ts", /\b(signJsonLd|signObject)\b/)).toBe(true);
+  });
+
+  // ID-1: inbound.ts (verifyHttpSignature) reads the Signature-Input member Fedify verified with structured-field-values,
+  // the parser Fedify reads it with; one version in the lockfile keeps both readings the same.
+  it("reads Signature-Input with the one structured-field-values Fedify resolves", () => {
+    const lock = readFileSync(new URL("../../../pnpm-lock.yaml", import.meta.url), "utf8");
+    const versions = new Set([...lock.matchAll(/^ {2}structured-field-values@([^:(]+)/gm)].map((m) => m[1]));
+    expect(versions.size).toBe(1);
+    expect(names("src/federation/inbound.ts", /from "structured-field-values"/)).toBe(true);
   });
 });

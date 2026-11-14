@@ -307,6 +307,7 @@ export const STORE_RPC = {
   instancePeers,
   searchPeers,
   getAccount: accounts.getAccount,
+  emailSubscriptionTarget: accounts.emailSubscriptionTarget,
   lookupAccount: accounts.lookupAccount,
   verifyCredentials: accounts.verifyCredentials,
   userinfo: accounts.userinfo,

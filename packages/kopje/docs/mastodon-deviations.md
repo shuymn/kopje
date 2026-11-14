@@ -5,24 +5,29 @@ Other documents point here rather than repeat the release.
 
 ## What Kopje follows
 
-- **Client API.** Kopje follows the client API as **Mastodon v4.5.11** serves it, the reference release, apart from
+- **Client API.** Kopje follows the client API as **Mastodon v4.7.5** serves it, the reference release, apart from
   the departures below and the gaps open issues track. The claim is for that tag. A fix that a later Mastodon release
   makes may be followed before the reference release moves; the entry or code comment that describes the fixed
-  behaviour names that release (for example, "Mastodon 4.5.21 counts …"). The conformance checks compare Kopje with the
-  reference release's source: the routes and their access (`test/mastodon-access.test.ts`), the request parameters each
-  route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
+  behaviour names that release. The conformance checks compare Kopje with the reference release's source: the routes
+  and their access (`test/mastodon-access.test.ts`), the routes Mastodon serves that Kopje does not route (the same
+  test), the request parameters each route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
   (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
   and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
 - **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
-  They rise only when every feature a client switches on at the higher value is served.
-- **Streaming.** Kopje serves the WebSocket streaming API of the reference release, without Server-Sent Events and
-  without a token in the query string, and with bounds on the subscriptions a socket and an account hold, past which a
-  subscription is refused (`src/mastodon/streaming.ts`, `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
+  They rise only when every feature a client switches on at the higher value is served. Mastodon v4.7.5 advertises
+  `api_versions.mastodon` 11. Each step signals a feature:
+  - 8, `exclude_direct` (`mastodon#37763`);
+  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
+  - 10, collections under `/api/v1` (`mastodon#39210`);
+  - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
+- **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
+  the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
+  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.3, with Kopje's canonical-address
+  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
   fallback and failure handling under NET-4. A supported series whose activities Kopje refuses or misreads is a gap.
 
 ## Following a Mastodon release
@@ -37,11 +42,11 @@ implement it, since a change there (what an account's deletion removes, say) sho
   access, required parameters and values without changing a route, a field or `api_versions`. To move the reference
   release, regenerate the access fixture from the new tag with `scripts/mastodon-scopes.mjs` (and add any new entity to
   its `ENTITIES`), rename the hand-written fixtures and their imports after re-checking them against it, review each
-  new exception, and change the release on this page.
+  new exception and each route the route check reports, and change the release on this page.
 - **A new minor series.** Whether to follow it is decided on what it adds to the surface Kopje already serves, judged
   at its latest patch. Following it is the same move with a larger inventory (routes, parameters, entities, behaviour);
   raising `version` and `api_versions` is a separate step, as above. Before the reference series leaves upstream
-  support (4.5: 2027-02-20), decide whether to follow a supported one.
+  support (4.7: no date in v4.7.5's `SECURITY.md`), decide whether to follow a supported one.
 - **Federation in any supported series.** Read the diff of `app/lib/activitypub`, `app/services/activitypub`,
   `app/serializers/activitypub`, `app/controllers/concerns/signature_verification.rb`, `app/lib/request*`,
   `app/helpers/context_helper.rb` and `app/helpers/json_ld_helper.rb`: what is sent and received, contexts, signatures
@@ -90,10 +95,18 @@ A pull request that fixes a gap removes the exceptions that cite it.
   API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
   422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
   a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
-  caller is refused (403) before the body is read. Accepted, 2026-10-22.
+  caller is refused (403) before the body is read. Accepted, 2026-10-22. Kopje does not offer silencing or
+  memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships writes
+  no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
+  never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Accepted,
-  2026-10-20.
+  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Annual reports
+  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Donation
+  campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
+  user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
+  answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
+  `email_subscriptions`. Accepted, 2026-10-20; annual reports, donation campaigns and e-mail subscriptions,
+  2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
   the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
   16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
@@ -139,6 +152,20 @@ A pull request that fixes a gap removes the exceptions that cite it.
 - **MD-6: Media have no short link.** MediaAttachment `text_url` is always null. Mastodon shows it only for a local
   attachment with a shortcode, and has assigned no shortcode to new media since v3.5.0, so only its older local media
   show one; Kopje assigns none and serves no short link route. Accepted, 2026-10-22.
+- **MD-7: Mastodon's web app API and FASP are not served.** `/api/web/*` (the settings, embeds and push subscriptions
+  of Mastodon's web app) and `/api/fasp/*` (the registration, data sharing and debug callbacks of Fediverse Auxiliary
+  Service Providers) answer 404. Kopje has no Mastodon web app: its pages are its own ([web-pages.md](web-pages.md)),
+  and clients use `/api/v1/push/subscription` and `/api/oembed`. Kopje uses no FASP for search or discovery.
+  Accepted, 2026-11-15.
+- **MD-8: Streaming is WebSocket only.** Kopje serves the streaming API at `/api/v1/streaming` and any path below it
+  as a WebSocket only: a request that is not an upgrade answers 404, so Server-Sent Events are not served. The one
+  exception is `/api/v1/streaming/health`, which answers 200 `OK` as Mastodon's streaming server does. The token is
+  read from the `Authorization` header or `Sec-WebSocket-Protocol`, never from the `access_token` query parameter
+  (`src/mastodon/streaming.ts`). Mastodon's streaming server serves SSE and reads the query token too. From v4.5.11 to
+  v4.7.5 it changed how it parses the request URL and how it ends an SSE heartbeat, and nothing a WebSocket client
+  sees. No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are
+  enabled without query-string redaction; the shipped configuration records neither (DATA-5 in
+  [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
 
 ## Differences the checks cannot see
 
@@ -385,12 +412,33 @@ Accounts (the `Account` and credential account entities):
 
   Accepted, 2026-11-15.
 
-Annual reports (`/api/v1/annual_reports`):
+Remote collections (an account's featured statuses and hashtags, and the collections its counts come from;
+Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-model.md)):
 
-- No report is ever made: the list is `{"annual_reports": [], "accounts": [], "statuses": []}` and a year's report or
-  its read answers 404, as on a stock Mastodon 4.5.11, where nothing enqueues `GenerateAnnualReportWorker`. A Mastodon
-  admin can still generate a report by hand from a console, which its owner then reads and marks read; Kopje has no
-  such path.
+- Kopje reads an account's collections only on its actor's origin, within one request's fetch budget per round
+  (`src/federation/collections.ts`):
+  - the featured collection and its first page, of whose items the first 20 are pinned;
+  - the `featuredTags` collection and at most 3 of its pages;
+  - one document each of the following, followers and outbox collections, for their counts (Accounts, above).
+
+  Mastodon 4.7.5 reads every item of the featured collection's first page, and the featured hashtags until it has 10
+  or has read 10 pages, both only on the actor's host. Accepted, 2026-11-15.
+
+Followers synchronisation (Mastodon's `Collection-Synchronization` header and
+`/users/:username/followers_synchronization`):
+
+- Kopje neither sends nor reads the header and serves no partial followers collection. A follow one side lost is not
+  repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
+  also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
+
+Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-3):
+
+- Kopje answers as Mastodon 4.7.5 does with Wrapstodon off (its admin setting, on by default). No report is made:
+  the list is `{"annual_reports": [], "accounts": [], "statuses": []}`, a year's report and its `read` answer 404,
+  `state` answers `ineligible` for any year, `generate` answers 200 `{}` and starts nothing, and `wrapstodon` is
+  null. With Wrapstodon on, Mastodon lets a user generate the year's report from December 10 to 31 (UTC). A
+  Mastodon admin can also generate one by hand from a console, which its owner then reads and marks read; Kopje
+  has no such path.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
@@ -437,7 +485,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
 - The operator's documents (the privacy policy, the terms of service, the extended description) are HTML, sanitized by
   `sanitizeDocumentHtml` (`src/security/html.ts`) in `/api/v1/instance/*` and on their pages alike. Their headings are
   kept only as h2 to h4, without attributes (h1 becomes h2, h5 and h6 become h4), and a link that is not an absolute
-  http(s) URL loses its href and stays as text (HTML-3; [setup.md](setup.md), Instance details). Mastodon 4.5.11
+  http(s) URL loses its href and stays as text (HTML-3; [setup.md](setup.md), Instance details). Mastodon 4.7.5
   renders each from Markdown with Redcarpet (`REST::PrivacyPolicySerializer`, `REST::TermsOfServiceSerializer`,
   `REST::ExtendedDescriptionSerializer`, without `safe_links_only`), keeping h1 to h6 and relative links as written.
   `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the pages show them"), `test/html.test.ts`
@@ -464,6 +512,20 @@ OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
   deletes revoked tokens (Mastodon: `active: false`). A suspended or stale-epoch caller is refused with
   `invalid_token`, and an authorization code presented as the caller is `invalid_token` where Doorkeeper finds no
   caller (400). `invalid_client` carries Kopje's Basic challenge and text, as at `/oauth/token`.
+
+Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campaigns`,
+`POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
+[threat-model.md](threat-model.md)):
+
+- A token past its expiry or revoked is answered as no token, whatever its owner's state: donation campaigns answers
+  422 and e-mail subscriptions its 404. A token of an earlier credential epoch is answered the same way while its owner
+  is available, and 403 while its owner is suspended, as on every route. Mastodon reads these two routes' token only
+  through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its value,
+  expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token of an
+  available owner gets donation campaigns' 204, and one of a suspended owner gets 403 on both. In Kopje a token past
+  its expiry or revoked is no credential on any route: the Store refuses an expired one inside the operation and
+  deletes a revoked one. The visible difference is only the status code of a feature-off answer. Accepted,
+  2026-11-15.
 
 Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
 
@@ -647,13 +709,22 @@ Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces
   when the rule hides some of their oldest), or one cut by bytes after more than 40 groups. Mastodon has no such
   bound. Accepted, 2026-11-14.
 
+Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their streams; Mastodon's
+`FeedManager#add_to_feed`):
+
+- Every boost by a followed account that passes the follow's options is shown and streamed, also when the original or
+  another boost of it is among the newer entries. Mastodon leaves such a boost out, unstreamed, when the original or a
+  boost of it is among the 80 newest entries of the feed as the boost arrives (`REBLOG_FALLOFF`; 40 before 4.7), unless
+  the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
+  statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
+
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
 - An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts.
 - `include_subdomains` is read as a boolean: empty, `0`, `f`, `false` and `off` (any case) are false; Mastodon takes
-  any value sent as true, `"false"` included. The series counts the domain itself only, as 4.5.11 does.
+  any value sent as true, `"false"` included. The series counts the domain itself only, as Mastodon 4.7.5 does.
 - `new_users`, `opened_reports` and `resolved_reports` without both dates answer 422; Mastodon answers 500.
 - `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
   written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date
@@ -797,6 +868,14 @@ Removing a favourite or bookmark (`POST /api/v1/statuses/:id/unfavourite` and `/
   visibility, where Mastodon's `show?` still shows a private, direct or limited status to a mentioned viewer. Accepted,
   2026-10-27.
 
+Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`; ID-1 in `docs/threat-model.md`):
+
+- A request whose `Signature-Input` names several signatures is judged by the first of them, of at most three, that
+  verifies; Mastodon refuses a request whose `Signature-Input` names more than one signature, before verifying any
+  (`signed_request.rb:150-153`). The signature Kopje selects meets Mastodon's required parameters and covered
+  components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
+  components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
+
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
 `docs/threat-model.md`):
 
@@ -885,6 +964,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
+
+Relayed activities (an activity whose HTTP signer is not its actor; ID-1 in [threat-model.md](threat-model.md)):
+
+- Of the activities another server relays, Kopje applies only a status's `Delete` that carries its author's proof
+  (Forwarded deletes, above); any other answers 401 and changes nothing. Mastodon applies a relayed activity of any
+  type whose RsaSignature2017 signature by its actor verifies (`ActivityPub::ProcessActivityService`; before 4.7,
+  `ProcessCollectionService#verify_account!`), and from 4.7.0 one whose FEP-8b32 proof by its actor verifies
+  (`process_activity_service.rb:42-75`). An inbound activity acts only for its signer, and Kopje weighs an author's
+  proof only on a body it has a profile for (`src/federation/author-proof.ts`). Accepted, 2026-11-15.
 
 Deletes of local statuses (`DELETE /api/v1/statuses/:id`; Mastodon's `RemoveStatusService` and
 `ActivityPub::DeleteSerializer`; VIS-3 in `docs/threat-model.md`):
