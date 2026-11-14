@@ -200,6 +200,16 @@ The public block list has no count cap; RES-3 bounds its response bytes.
 | `publicDomainBlocks` | Budget: whole blocks in domain order, read in chunks of 500 suspend blocks | None         |
 | `instanceInfo`       | Unit: the contact account                                                  |              |
 
+## Annual reports
+
+| Operation                                                           | Mechanism                                                                                                     | Continuation |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------ |
+| `annualReports`                                                     | Budget: at most 40 pending reports, then the owner's account, then the top statuses the owner may view, whole | None         |
+| `annualReport`                                                      | Unit: one report, the owner's account and its top status                                                      |              |
+| `annualReportState`, `generateAnnualReport`, `markAnnualReportRead` | Unit                                                                                                          |              |
+
+Each report is at most `REPORT_JSON_BYTES` (`test/annual-report-bounds.test.ts`); the reports are admitted first.
+
 ## Announcements
 
 | Operation            | Mechanism                                                                                         | Continuation |
