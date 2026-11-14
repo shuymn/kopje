@@ -25,6 +25,12 @@ import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platf
 //     (isActivityPubMediaType, GHSA-jhrq-qvrm-qr36); the context loader alone takes plain JSON-LD or JSON, since JSON-LD
 //     contexts are served that way and a context is never trusted as an object
 //   - a host the instance's domain policy covers (refusesHost, R38) is not requested at all
+//   - a signed request answered 400 or 401 (RETRY_STATUSES) is sent once more at once, signed with RFC 9421 by the same
+//     key (Signing.retry), hop by hop: the hop so answered is sent again, and the next hop starts with draft-cavage.
+//     Mastodon 4.7's Request#perform resends the whole request from its first URL instead (docs/mastodon-deviations.md,
+//     "Outbound HTTP signatures"); here each hop stays one this loop has checked. The retry passes the same checks as
+//     any request (shape, policy, DNS) and is charged to the same budget, inside the same load's timeout; the first
+//     answer's body is cancelled unread, and the second is read as any response
 export const DOCUMENT_BODY_LIMIT = 1024 * 1024;
 export const DOCUMENT_TIMEOUT_MS = 5000;
 export const MAX_REDIRECTS = 5;
@@ -104,8 +110,8 @@ export function loadFailureOf(error: unknown, depth = 0): FetchError | undefined
   return loadFailureOf(cause, depth + 1) ?? loadFailureOf(details?.cause, depth + 1);
 }
 
-// What one inbound request may fetch in all (RES-6): documents, JSON-LD contexts and redirect hops share one count,
-// one byte allowance and one deadline. Cache hits and preloaded contexts cost nothing.
+// What one inbound request may fetch in all (RES-6): documents, JSON-LD contexts, redirect hops and RFC 9421 retries
+// share one count, one byte allowance and one deadline. Cache hits and preloaded contexts cost nothing.
 export type FetchBudget = { fetches: number; bytes: number; deadline: number };
 
 export const REQUEST_MAX_FETCHES = 8;
@@ -137,11 +143,19 @@ export type DocumentCaps = { documentBytes?: number; maxRedirects?: number };
 
 export type RequestSigner = (request: Request) => Promise<Request>;
 
+// How a loader signs: `sign` signs every request; `retry`, when given, signs the one more send of a request answered
+// with one of RETRY_STATUSES. Each signs an unsigned request.
+export type Signing = { sign: RequestSigner; retry?: RequestSigner | undefined };
+
+// Mastodon 4.7 sends a signed request answered with one of these once more with an RFC 9421 signature (request.rb
+// Request#perform); so does the delivery sink, and the loader for each redirect hop.
+export const RETRY_STATUSES: ReadonlySet<number> = new Set([400, 401]);
+
 export const dnsCheckHost = (url: URL): Promise<void> => validatePublicUrl(url.href);
 
 // The loader of documents trusted as ActivityPub objects or keys (Fedify's document loaders).
-export function createSafeLoader(deps: LoaderDeps, sign?: RequestSigner): DocumentLoader {
-  return createLoader(deps, DOCUMENT, sign);
+export function createSafeLoader(deps: LoaderDeps, signing?: Signing): DocumentLoader {
+  return createLoader(deps, DOCUMENT, signing);
 }
 
 // ID-8: an ActivityPub document must be a JSON object. JSON-LD reads a string root as the URL of the real document and
@@ -169,7 +183,7 @@ export function createWebFingerLoader(deps: LoaderDeps): DocumentLoader {
   return createLoader(deps, WEBFINGER);
 }
 
-function createLoader(deps: LoaderDeps, kind: Kind, sign?: RequestSigner): DocumentLoader {
+function createLoader(deps: LoaderDeps, kind: Kind, signing?: Signing): DocumentLoader {
   const timeoutMs = deps.timeoutMs ?? DOCUMENT_TIMEOUT_MS;
   return async (url, options) => {
     // A signal aborted before the call never fires 'abort' again, so it is checked up front.
@@ -193,7 +207,7 @@ function createLoader(deps: LoaderDeps, kind: Kind, sign?: RequestSigner): Docum
     const aborted = new Promise<never>((_, reject) => {
       controller.signal.addEventListener("abort", () => reject(controller.signal.reason as Error), { once: true });
     });
-    const loading = load(deps, kind, sign, target, controller.signal);
+    const loading = load(deps, kind, signing, target, controller.signal);
     // After a timeout the abandoned load may still reject; that rejection is not this call's result.
     loading.catch(() => {});
     try {
@@ -206,34 +220,13 @@ function createLoader(deps: LoaderDeps, kind: Kind, sign?: RequestSigner): Docum
   };
 }
 
-async function load(deps: LoaderDeps, kind: Kind, sign: RequestSigner | undefined, target: URL, signal: AbortSignal) {
+async function load(deps: LoaderDeps, kind: Kind, signing: Signing | undefined, target: URL, signal: AbortSignal) {
   let current = target;
   for (let redirects = 0; ; redirects++) {
-    // The policy is asked before every request, a redirect's included, and no answer outlives an awaited response
-    // (a prepared verdict serves only a request with none before it): a block that commits while a response is
-    // awaited stops the next request.
-    assertPublicShape(current);
-    if (deps.refusesHost !== undefined && (await deps.refusesHost(hostDomain(current.href)))) {
-      throw new RefusedFetchError(current, `Refused host ${current.hostname}: blocked by the instance`);
-    }
-    await assertFetchable(current, deps.checkHost ?? dnsCheckHost);
-    if (deps.budget !== undefined) {
-      if (deps.budget.fetches <= 0) {
-        throw new BudgetExceededError(current, "Request fetch budget exhausted");
-      }
-      deps.budget.fetches--;
-    }
-    const unsigned = new Request(current, {
-      headers: { accept: kind.accept, "user-agent": deps.userAgent },
-      redirect: "manual",
-      signal,
-    });
-    const request = sign === undefined ? unsigned : await sign(unsigned);
-    let response: Response;
-    try {
-      response = await deps.fetch(request);
-    } catch {
-      throw signal.aborted ? (signal.reason as Error) : new TransientFetchError(current, "Network error");
+    let response = await send(deps, kind, current, signing?.sign, signal);
+    if (signing?.retry !== undefined && RETRY_STATUSES.has(response.status)) {
+      await response.body?.cancel();
+      response = await send(deps, kind, current, signing.retry, signal);
     }
     if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
       await response.body?.cancel();
@@ -252,6 +245,40 @@ async function load(deps: LoaderDeps, kind: Kind, sign: RequestSigner | undefine
     }
     const final = response.url === "" ? current : new URL(response.url);
     return readDocument(response, kind, final, target, deps.budget, deps.documentBytes ?? DOCUMENT_BODY_LIMIT);
+  }
+}
+
+// One request to `current`. The policy is asked before every request, a redirect's and a retry's included, and no
+// answer outlives an awaited response (a prepared verdict serves only a request with none before it): a block that
+// commits while a response is awaited stops the next request.
+async function send(
+  deps: LoaderDeps,
+  kind: Kind,
+  current: URL,
+  sign: RequestSigner | undefined,
+  signal: AbortSignal,
+): Promise<Response> {
+  assertPublicShape(current);
+  if (deps.refusesHost !== undefined && (await deps.refusesHost(hostDomain(current.href)))) {
+    throw new RefusedFetchError(current, `Refused host ${current.hostname}: blocked by the instance`);
+  }
+  await assertFetchable(current, deps.checkHost ?? dnsCheckHost);
+  if (deps.budget !== undefined) {
+    if (deps.budget.fetches <= 0) {
+      throw new BudgetExceededError(current, "Request fetch budget exhausted");
+    }
+    deps.budget.fetches--;
+  }
+  const unsigned = new Request(current, {
+    headers: { accept: kind.accept, "user-agent": deps.userAgent },
+    redirect: "manual",
+    signal,
+  });
+  const request = sign === undefined ? unsigned : await sign(unsigned);
+  try {
+    return await deps.fetch(request);
+  } catch {
+    throw signal.aborted ? (signal.reason as Error) : new TransientFetchError(current, "Network error");
   }
 }
 

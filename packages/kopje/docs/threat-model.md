@@ -1275,10 +1275,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
   resolution's `resolutionGate` and its `actorRevision` before the actor's fetch) comes with that answer and is spent
-  on that request alone; every other request, redirect hops included, reads it anew (`fetchPreparation` in
-  `src/domain/inbox.ts`, `refusesHost` in
-  `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", `test/inbox.test.ts`
-  "Store calls on the inbox cold path", `test/search-resolution-store-calls.test.ts`). Its inbound
+  on that request alone; every other request, redirect hops and RFC 9421 retries included, reads it anew
+  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
+  policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
+  `test/search-resolution-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -1296,7 +1297,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   inbox host, none of its listed accounts exists and is available (R1: a recipient the instance suspended, or one being
   deleted or purged), or a block covers every listed host. The check runs at the claim and again in `confirmDelivery`,
   which the Worker calls under the claim's lease after the signer is loaded and the host checked, right before signing
-  and the POST; the body sent is read there, never from the claim. A change that commits after confirmation does not
+  and the POST, and again before the RFC 9421 retry of a POST answered 400 or 401 (NET-2); the body sent is read there,
+  never from the claim (`test/delivery-post.test.ts` ("sends no retry for a row its second confirmation drops")). A
+  change that commits after confirmation does not
   stop that POST; a confirmation that fails, or finds the lease taken over, sends nothing, and the lease expires.
   Accepted residuals: a shared inbox serving an available recipient besides unavailable ones is sent (content expansion
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
@@ -1825,7 +1828,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **NET-1: document fetches are bounded and public-only.** The safe loader fetches https only, refuses URLs with
   credentials, literal IPs, `localhost` and single-label hosts, checks that the name resolves to public addresses,
   re-checks every redirect hop (same origin, at most 5), stops at 1 MiB and 5 s for the whole load, and honours abort
-  signals. _Enforced (main):_ `src/federation/loader.ts`; `test/loader.test.ts`. Every global `fetch()` (documents,
+  signals. A signed request answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
+  (`@method`, `@target-uri`), after the same checks and within the same load, hop by hop: the hop so answered is sent
+  again and the next starts with draft-cavage, where Mastodon 4.7's `Request#perform` resends the whole request from
+  its first URL ([mastodon-deviations.md](mastodon-deviations.md), "Outbound HTTP signatures"). _Enforced (main):_
+  `src/federation/loader.ts`;
+  `test/loader.test.ts`. Every global `fetch()` (documents,
   deliveries, Web Push, backups, the Access and Cloudflare APIs) is also strictly public: the compatibility flag
   `global_fetch_strictly_public` routes it through Cloudflare's front door like a request from the Internet, so a host
   in the instance's own zone gets the Workers and security settings of its route instead of reaching the zone's origin
@@ -1841,16 +1849,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the same origin (same lane, within the row's attempts) if the shared inbox answers 404, 405 or 410; targets pass
   NET-3; a non-public activity is never sent to a redirect target. Claims serialize each lane; the POST timeout (30 s)
   is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
-  a later claim. A lane is `(actor, inbox origin)`: everything an actor sends one server, to shared and personal inboxes
+  a later claim. A POST answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
+  (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform` does, after the deadline and host
+  checks and the Store's confirmation again, within the same 30 s; its answer settles the delivery, and a retry the
+  deadline leaves no room for fails as transient, never as the first answer. A lane is `(actor, inbox origin)`:
+  everything an actor sends one server, to shared and personal inboxes
   alike, arrives in order, so a later `Update` or `Delete` cannot overtake the `Create`. A forwarded `Delete` (VIS-3) is
   one intent per local booster or quoter, signed by it in its own lanes, never by one owner for another's audience,
   behind the `Create` of its quoting statuses in each lane; its
   shared-inbox fallback moves a row in place, keeping its place in the lane, for a single recipient behind the inbox
-  only. The whole path from claim to POST (key loading, DNS, signing, the POST) runs under one absolute deadline, the
+  only. The whole path from claim to POST (key loading, DNS, signing, each POST) runs under one absolute deadline, the
   earlier of 30 s and 10 s before the lease ends; the clock is checked against it after the key is loaded and right
-  before the POST, so a late timer cannot let a POST through. _Enforced (main):_
+  before each POST, so a late timer cannot let a POST through. _Enforced (main):_
   `src/domain/deliveries.ts` (expansion, lanes, claims, completions), `src/federation/delivery.ts` (the POST);
-  `test/deliveries.test.ts` ("NET-2: delivers a public status once per shared inbox", "NET-2: a recipient outside the
+  `test/delivery-post.test.ts` ("the RFC 9421 retry", "sends no retry past the deadline"), `test/deliveries.test.ts`
+  ("NET-2: delivers a public status once per shared inbox", "NET-2: a recipient outside the
   audience gets nothing", "NET-2: an expired lease is claimed again", "moves a Follow and its Undo to the personal
   inbox once when the shared inbox answers 404"), `test/delivery-post.test.ts` ("NET-2: never
   follows a redirect", "NET-2: times out the POST before the lease ends"), `test/delivery-regressions.test.ts` ("keeps a
@@ -1908,9 +1921,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Credentials and signatures never follow a redirect to another origin. Fedify's sending and queueing are not used.
   _Enforced (main)_ for documents and the Fedify rule: the fedify-usage lint rule
   (`packages/kopje/lint/fedify-usage.js`), which refuses sending or queueing through Fedify. Deliveries: _Enforced
-  (main):_ `assertPublicShape` and the DNS check before every POST, no redirects, 30 s (`postActivity` in
-  `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3: refuses inboxes that fail the public-host
-  rules"). Web Push: _Enforced (main):_ the same sink before every POST (`sendPush` in `src/jobs/push.ts`), and the
+  (main):_ `assertPublicShape` and the DNS check before every POST, the RFC 9421 retry's included, no redirects, 30 s
+  (`postActivity` in `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3: refuses inboxes that fail the
+  public-host rules", "runs the host check again before the retry"). Web Push: _Enforced (main):_ the same sink before
+  every POST (`sendPush` in `src/jobs/push.ts`), and the
   rules that need no lookup at registration (`publicShapeRefusal` in `src/platform/http-url.ts`, shared with
   `assertPublicShape`); `test/push.test.ts` ("NET-3: refuses endpoints that are not public https URLs"),
   `test/push-send.test.ts` ("PUSH-2: the endpoint is an outbound sink at every send", "never follows a redirect, and
@@ -2087,10 +2101,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   late", "reads one attachment file at a time while profile images go on beside it").
   Kopje fetches nothing for local emoji; peers fetch `/media/…` and `/emojis/:id`.
 - **NET-4: signed fetches stay with their signer.** A document fetched with a signature is cached under a key that
-  includes the signing key id and is never served to another key or to the unsigned path. _Enforced (main):_
-  `signedLoader` in `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("caches signed documents per signing
-  key"). Expiry within 5 minutes: _Enforced (main):_ an entry carries Fedify `kvCache`'s default lifetime of 5
-  minutes, and the KV store reads an expired entry as absent (`src/federation/kv-store.ts`, `src/domain/fedify-kv.ts`);
+  includes the signing key id and is never served to another key or to the unsigned path. The RFC 9421 retry of a
+  signed fetch answered 400 or 401 (NET-1) signs with the same key, so its document is cached under the same key id.
+  _Enforced (main):_ `signedLoader` in `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("caches signed
+  documents per signing key", "caches a document fetched through the retry under its signing key"). Expiry within 5
+  minutes: _Enforced (main):_ an entry carries Fedify `kvCache`'s default lifetime of 5 minutes, and the KV store
+  reads an expired entry as absent (`src/federation/kv-store.ts`, `src/domain/fedify-kv.ts`);
   `test/kv-store.test.ts` ("honors expires_at with the injected clock"). _Gap:_ no test pins the 5 minutes, Fedify's
   default. A sweep of expired rows: _Planned (KV sweep):_ nothing deletes expired `fedify_kv` rows yet.
   _Enforced (main)_ for the fetches of inbound processing and search:
@@ -3055,7 +3071,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
-  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501), and are listed and retried through
+  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501) to the RFC 9421 retry when the draft-cavage
+  POST is answered 400 or 401 (NET-2; `test/delivery-post.test.ts` ("settles by the second answer", "knocks again on
+  the next attempt")), and are listed and retried through
   `/admin/deliveries` and `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
   activity a later one about the same object follows (an `Undo`, `Delete` or `Update`) is superseded and never sent
   again: naming it answers 409 `superseded`, and `--all` skips it, choosing eligible rows before its batch limit and
@@ -3412,22 +3430,29 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Gap: computing an activity's targets reads all of the signer's remote followers in one transaction (a read, then one
   row per chunk)._
   _Enforced (main)_ for relationship activities: one request's fetches share a budget of 8 fetches
-  (documents, JSON-LD contexts and each redirect hop), 2 MiB and 15 seconds (`requestBudget` in
-  `src/federation/loader.ts`; cached contexts cost nothing; icons are taken only when embedded). Running out of the
+  (documents, JSON-LD contexts, each redirect hop and each RFC 9421 retry), 2 MiB and 15 seconds (`requestBudget` in
+  `src/federation/loader.ts`; cached contexts cost nothing; icons are taken only when embedded; `test/loader.test.ts`
+  ("charges the retry to the request's budget")). Running out of the
   budget is retryable: the request answers 503, records nothing and its spooled copy is retried; a document refused for
   itself stays a permanent refusal. A key an actor lists by reference is taken from the verification that just resolved
   it, not fetched again. _Enforced (main)_ for remote accounts' collection syncs (`src/federation/collections.ts`,
   `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
-  `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect on each of its
-  documents (featured 2 documents, network 3: the following, followers and outbox collections, featuredTags 4), and
-  the network part's documents are read with at most one redirect and 512 KiB each (`NETWORK_CAPS`): 6 fetches and
-  1.5 MiB, so its outbox never starves behind the other two. A generation starts with every stored actor document (an
+  `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
+  retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
+  featuredTags 4), and the network part's documents are read with at most one redirect and 512 KiB each
+  (`NETWORK_CAPS`): with a redirect or the retry on each document, 6 fetches and 1.5 MiB, so its outbox then never
+  starves behind the other two. Accepted: a document that needs both a redirect and the retry takes 3 or 4 fetches, so
+  such documents can pass a round's budget before their part is read through (three network documents that each
+  redirect and then refuse draft-cavage need 9 of the 8), and the part is retried until `MAX_SYNC_ATTEMPTS`; only a
+  server that refuses draft-cavage needs the retry, and Mastodon 4.7, Fedify and Misskey accept it. A generation starts
+  with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
   document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
   pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches; the network part takes at most 6 a round and
-  54 a generation, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds them before and after
-  the network part reads the outbox", "the network part within one round")).
+  54 a generation while no document needs the RFC 9421 retry, a round's whole budget (8 a round, 72 a generation) when
+  each needs a redirect and the retry, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds
+  them before and after the network part reads the outbox", "the network part within one round")).
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice
@@ -3608,14 +3633,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
   without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
   leased one to be checked once more, so replays never keep a genuine 404 from applying. A job round (Queue or cron)
-  verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops and contexts
-  included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget or deadline
-  that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author, whose failure
-  other than 404/410 falls back to the stored account uncharged: a stage that never fits a budget is given up after the
-  last attempt, and a round that only failed asks for no other (the backoff says when the work is due). A status stored
-  for a verification gets one hop less of work, so one traversal stops two levels below the status that arrived, however
-  long a chain of quotes; a failed verification is retried five times (1, 5, 30, 120 and 720 minutes later), then given
-  up until its status arrives
+  verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
+  and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
+  or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,
+  whose failure other than 404/410 falls back to the stored account uncharged: a stage that never fits a budget is
+  given up after the last attempt, and a round that only failed asks for no other (the backoff says when the work is
+  due). A status stored for a verification gets one hop less of work, so one traversal stops two levels below the
+  status that arrived, however long a chain of quotes; a failed verification is retried five times (1, 5, 30, 120 and
+  720 minutes later), then given up until its status arrives
   again. A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
   500 rows counted with `total_changes()` (a row and its count trigger), the first in the request and the rest in the
   inbound job rounds, each of which runs at most 100 revocation batches (`REVOCATION_BATCHES`) within one 500-row
@@ -4376,9 +4401,11 @@ heap).
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
   signs is a forwarded report's `Flag`, whose actor is the instance actor (Mastodon's `Account.representative`).
   _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches").
-  Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, unwrapped once per round
-  (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author key"). _Enforced (main):_
-  an intent recorded with `signedBy: 'instance'` (only `flagActivity` in `src/domain/activities.ts` makes one, with the
+  Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, its RFC 9421 retry included,
+  unwrapped once per round (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author
+  key", "confirms the row again right before the retry and sends the body it returns, signed by the author").
+  _Enforced (main):_ an intent recorded with `signedBy: 'instance'` (only `flagActivity` in `src/domain/activities.ts`
+  makes one, with the
   instance actor as its actor) is signed with the instance key, which the delivery round loads through
   `instanceActorKey` (`src/federation/federation.ts`, the race-safe initialization signed fetches and `/actor` use),
   creating it if nothing has yet (`deliveryRound` in `src/jobs/deliver.ts`); `test/reports.test.ts` ("posts the Flag

@@ -124,7 +124,8 @@ type Signing = { jwk: JsonWebKey; publicKey: string; subject: string; deadline: 
 // One push through the delivery sink. After the host check and right before the POST (where a delivery is signed),
 // the Store confirms the push under its lease and hands over what to send (PUSH-3, confirmPush); a push it drops is
 // not sent. The encrypted message and its headers then replace the sink's request, keeping its URL (a row's endpoint
-// never changes: a new subscription is a new row), redirect rule and abort signal.
+// never changes: a new subscription is a new row), redirect rule and abort signal. A push carries no HTTP signature, so
+// it has no RFC 9421 retry (PostTarget.retry): it is sent once whatever its answer.
 async function sendPush(
   post: PostDeps,
   push: ClaimedPush,

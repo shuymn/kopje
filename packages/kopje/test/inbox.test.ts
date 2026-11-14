@@ -843,7 +843,7 @@ describe("ID-1: an inbound activity acts only for its signer", () => {
     const again = follow(bob);
     const body = JSON.stringify(again);
     const unsigned = new Request(`${LOCAL}/inbox`, { method: "POST", headers: { "content-type": AP }, body });
-    const kopje = await requestSigner(new URL(bob.keyId), bob.privateKey)(unsigned);
+    const kopje = await requestSigner(new URL(bob.keyId), bob.privateKey).sign(unsigned);
     expect(kopje.headers.has("signature-input")).toBe(false);
     expect((await live.request("/inbox", { method: "POST", headers: kopje.headers, body })).status).toBe(202);
     expect((await follows(t.store)).map((f) => f.uri)).toContain(again.id);
