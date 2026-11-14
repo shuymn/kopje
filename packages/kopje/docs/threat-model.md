@@ -160,27 +160,27 @@ against their own instance. TLS is assumed between all parties.
   `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`; `test/inbox-actor-revision.test.ts`,
   `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
-  quoting server forwarding the quoted author's revocation of a quote's stamp, as Mastodon forwards both). Its HTTP
-  signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that actor's
-  own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before
-  the Store is called, against a key the actor's current document embeds, that document fetched anew in the request,
-  never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
+  server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
+  Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
+  actor's own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the
+  Worker, before the Store is called, against a key the actor's current document embeds, that document fetched anew in
+  the request, never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
-  Mastodon's status and stamp `Delete` (the same bodies from 4.4 to 4.7, signed by `LinkedDataSignature#sign!`, which
-  writes `expires` from 4.7.0); Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a
-  Mastodon 4.4 to 4.7 holding a boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an
-  FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`,
-  `object`, `to` and `cc`, and a single proof). Mastodon forwards a body compacted under its `full_context`, so a
-  forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
-  activitystreams and security/v1, then webfinger from 4.6, cid/v1 and webfinger from 4.7) and one object whose every
-  term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
-  `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or
-  cid/v1 defines, is or aliases one the decision reads (cid/v1's scoped contexts apply only under keys and types a
-  profile body cannot have). A stamp's `Delete` has no forwarded profile yet (#1599): Mastodon 4.7.5 forwards it with
-  its author's signature, compacted under its `full_context`, and such a relay is dropped (202, logged), the quote
-  staying accepted. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL
-  in it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI
-  or the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's shape, Mastodon's
+  Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
+  `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and
+  Kopje's status and stamp `Delete` as a Mastodon 4.4 to 4.7 holding a boost or quote of the status (for a stamp, of the
+  quoting status) forwards it; and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context,
+  the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single proof).
+  Mastodon forwards a body compacted under its `full_context`, so a forwarded profile's `@context` is one release line's
+  named contexts in order (`MASTODON_NAMED_CONTEXTS`: activitystreams and security/v1, then webfinger from 4.6, cid/v1
+  and webfinger from 4.7) and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a definition some release
+  gave it: the union of `full_context` in `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5,
+  none of whose terms, nor any webfinger or cid/v1 defines, is or aliases one the decision reads (cid/v1's scoped
+  contexts apply only under keys and types a profile body cannot have). A Mastodon before 4.5.10, whose `full_context`
+  lacks the stamp's terms, forwards Mastodon's stamp `Delete` without its signature (`safe_for_forwarding?`): a relay
+  without a proof. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL in
+  it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI or
+  the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's shape, Mastodon's
   signature with an optional `expires`, a string in the form `sign!` writes, a proof's own `@context` the body's), so
   the body's JSON-LD meaning is its literal JSON:
   no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
@@ -218,13 +218,19 @@ against their own instance. TLS is assumed between all parties.
   profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
   not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion
   cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an `expires`
-  changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded form refused
-  under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or aliases a decision
-  term; no network fetch while verifying, and an actor document naming a context that is not preloaded refused; the
-  request's shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s
-  exception)": Mastodon's stamp `Delete`, signed with or without `expires`, a missing proof, a forged signature, a proof
-  by another actor's key, a proof covering another object, a valid proof on another activity type, a signed graph with
-  no `Delete` type, a signed `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts`
+  changed, added or removed after signing refused by Fedify and by Kopje; Mastodon's and Kopje's stamp `Delete`s in the
+  forwarded form passing under each release's context, and refused with a key added to the object or a `cc`, another
+  object type, the other sender's signature form or a redefined stamp term; no allowed term, nor any term webfinger or
+  cid/v1 defines, that is or aliases a decision term; no network fetch while verifying, and an actor document naming a
+  context that is not preloaded refused; the request's shared context cache is not observed by a test),
+  `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, signed with or without
+  `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a
+  valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a
+  `Delete` through a nested signature; a stamp `Delete` forwarded under each release's context revoking with no fetch of
+  the stamp, "applies a stamp's Delete as a Mastodon forwards it"; one whose proof does not hold dropped, the quote kept
+  although its stamp is gone, "drops a forwarded stamp Delete whose proof does not hold"; its `expires` judged at the
+  spool time, "judges a forwarded stamp Delete's expires at its spool time"), `test/forward-delete.test.ts` ("a stamp's
+  Delete forwarded by a Mastodon revokes the local quote and forwards the body as received"), `test/inbox.test.ts`
   ("records no retraction for input that fails ID-1", "judges a relayed author proof's expires against the spool time").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.

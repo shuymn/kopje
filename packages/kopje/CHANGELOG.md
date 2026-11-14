@@ -67,6 +67,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A status or stamp `Delete` signed by a Mastodon 4.7 author (its signature carries `expires`), and a status `Delete`
   forwarded by a Mastodon 4.6 or 4.7 server that holds a boost or quote of the status, are applied as the author's and
   forwarded through local boosts and quotes again; an `expires` already past when the request arrived does not prove.
+- A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
+  author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
+  `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

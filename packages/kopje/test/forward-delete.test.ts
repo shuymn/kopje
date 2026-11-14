@@ -36,8 +36,10 @@ import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
 import {
+  MASTODON_47_FORWARDED_CONTEXT,
   mastodon47Signed,
   mastodonDelete,
+  mastodonForwarded,
   mastodonSigned,
   mastodonStampDelete,
   signTime,
@@ -1169,6 +1171,49 @@ describe("the body from the request to the POST", () => {
     expect(sent.map((d) => d.inbox)).toContain(`${MASTODON}/users/bob/inbox`);
     for (const d of sent) {
       expect(d.body).toBe(JSON.stringify(body));
+    }
+  });
+
+  it("a stamp's Delete forwarded by a Mastodon revokes the local quote and forwards the body as received", async () => {
+    const w = await world();
+    const stamp = `${w.bob.uri}/quote_authorizations/${nextId()}`;
+    const mine = await quotedWithStamp(w, stamp);
+    const quoteRow = () =>
+      sql<{ state: string; quoted_uri: string }>(
+        w.t.store,
+        "SELECT q.state, q.quoted_uri FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
+        mine,
+      );
+    const quoted = (await quoteRow())[0]!.quoted_uri;
+    // dan's server holds alice's quoting status and forwards bob's revocation as Mastodon 4.7.5 does.
+    const dan = await mastodonActor(w.t.web, "dan", { origin: "https://relay.example", key: 6 });
+    const signed = await mastodon47Signed(mastodonStampDelete(w.bob, { uri: stamp, quoting: mine, quoted }), w.bob);
+    const body = mastodonForwarded(signed, MASTODON_47_FORWARDED_CONTEXT);
+    expect(await w.post(dan, body)).toBe(202);
+    expect(await quoteRow()).toEqual([{ state: "revoked", quoted_uri: quoted }]);
+    const recorded = () =>
+      sql<{ account_id: string; body: string }>(
+        w.t.store,
+        "SELECT account_id, body FROM outbound_activities WHERE object_uri = ?",
+        stamp,
+      );
+    const [forward, ...others] = await recorded();
+    expect(others).toEqual([]);
+    expect(forward!.account_id).toBe(ALICE);
+    const envelope = JSON.parse(forward!.body) as { activity: unknown; immutable?: boolean };
+    expect(envelope.immutable).toBe(true);
+    expect(JSON.stringify(envelope.activity)).toBe(JSON.stringify(body));
+    // Forwarded again (by another sharer's server, or replayed): nothing more is recorded.
+    expect(await w.post(dan, body)).toBe(202);
+    expect(await recorded()).toHaveLength(1);
+    // POSTed as received, and a Kopje receiver accepts its proof (the forwarded profile).
+    const sent = (await deliver(w)).filter((d) => d.json.type === "Delete" && objectOf(d.json) === stamp);
+    expect(sent.map((d) => d.inbox)).toContain(`${FANS}/inbox`);
+    for (const d of sent) {
+      expect(d.body).toBe(JSON.stringify(body));
+      expect(d.signer).toBe(ALICE_URI);
+      const expected = { id: body.id as string, actor: w.bob.uri, object: stamp };
+      expect(await verifyAuthorProof(d.json, expected, w.bob.document, NOW)).toBe(true);
     }
   });
 });
