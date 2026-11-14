@@ -354,6 +354,32 @@ describe("the measure instance_follows", () => {
   });
 });
 
+describe("the metrics' refusal order", () => {
+  it("refuse every caller but the OAuth admin before reading the body, a malformed one included", async () => {
+    const w = await world();
+    const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
+    const app = await appTokenWith(w.h, "admin:read");
+    const narrow = await userToken(w.h, "alice@example.com", "read");
+    const malformed = async (path: string, token: string | null) => {
+      const init = { method: "POST", headers: { "content-type": "application/json" }, body: "{" };
+      const response = await w.h.request(path, token === null ? init : bearer(token, init));
+      return { status: response.status, body: await response.json<unknown>() };
+    };
+    for (const path of [MEASURES, "/api/v1/admin/retention"]) {
+      // The body is parsed for the OAuth admin alone, so only the admin learns it is malformed.
+      expect(await malformed(path, w.admin)).toEqual({ status: 400, body: { error: "Malformed request body" } });
+      expect((await malformed(path, "not-a-token")).status).toBe(401);
+      expect(await malformed(path, narrow)).toEqual({
+        status: 403,
+        body: { error: "This action is outside the authorized scopes" },
+      });
+      for (const token of [alice, app, null]) {
+        expect(await malformed(path, token), `${path} ${token}`).toEqual(NOT_ALLOWED);
+      }
+    }
+  });
+});
+
 describe("dimensions and retention", () => {
   it("retention requires start_at and end_at of the OAuth admin", async () => {
     const w = await world();

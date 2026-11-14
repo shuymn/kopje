@@ -546,6 +546,18 @@ async function dashboardGranted(c: ApiContext, deps: ApiDeps, credential: UserCr
   authorized(await storeCall(c, deps, (s, b) => s.adminDashboardGranted(b, { credential })));
 }
 
+// A metric handler given the OAuth admin's parameters: dashboardGranted refuses every other caller before the body is
+// parsed (withParams), so no other caller's body, a malformed one included, is read.
+function dashboardParams(
+  handler: (c: ApiContext, deps: ApiDeps, p: Params) => Response | Promise<Response>,
+): ApiHandler {
+  const read = withParams((c, deps, p) => Promise.resolve(handler(c, deps, p)));
+  return async (c, deps) => {
+    await dashboardGranted(c, deps, optionalCredential(c, deps));
+    return read(c, deps);
+  };
+}
+
 // params.require(name) of a scalar (ActionController::ParameterMissing, 400).
 const paramMissing = (name: string) => mastodonError(400, `param is missing or the value is empty or invalid: ${name}`);
 
@@ -561,8 +573,7 @@ export const emptyMetric: ApiHandler = async (c, deps) => {
 // start_at.to_date, then end_at.to_date). No sign-in is recorded (MD-2), so the cohorts are `[]`, whatever the
 // frequency. Kopje reads both dates as measureTime does (ISO 8601 only), where Mastodon reads any date Date.parse
 // reads (docs/mastodon-deviations.md, "Admin measures and retention").
-export const retention: ApiHandler = withParams(async (c, deps, p) => {
-  await dashboardGranted(c, deps, optionalCredential(c, deps));
+export const retention: ApiHandler = dashboardParams((c, _deps, p) => {
   const dates = (["start_at", "end_at"] as const).map((name) => ({ name, value: p.get(name) }));
   const missing = dates.find(({ value }) => value === undefined || railsBlank(value));
   if (missing !== undefined) {
@@ -676,9 +687,8 @@ function presentMeasure(key: ServedMeasure, measure: MeasureValue) {
 //   stored time answers 422.
 // Fediblockhole sends instance_follows with no dates (fetch_instance_follows, __init__.py:529-567), so its data is
 // empty, as generate_series of NULLs is.
-export const measures: ApiHandler = withParams(async (c, deps, p) => {
+export const measures: ApiHandler = dashboardParams(async (c, deps, p) => {
   const credential = optionalCredential(c, deps);
-  await dashboardGranted(c, deps, credential);
   const scalar = p.get("keys");
   if ((p.list("keys")?.length ?? 0) === 0 && (scalar === undefined || railsBlank(scalar)) && !p.hasObject("keys")) {
     return paramMissing("keys");
