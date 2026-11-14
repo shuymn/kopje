@@ -10,9 +10,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
-- Annual reports answer as Mastodon 4.7.5 with Wrapstodon off. `GET /api/v1/annual_reports/:id/state` answers
-  `{"state":"ineligible"}`, `POST /api/v1/annual_reports/:id/generate` answers `{}` and starts nothing, and
-  `/api/v2/instance` has `wrapstodon: null`. Kopje makes no annual report yet.
+- Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
+  year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
+  `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in
+  `wrapstodon`. An account whose year holds more than 200,000 statuses, 200,000 hashtag uses or 8 MiB of hashtag names,
+  or that has more than 200,000 followers, gets no report (`state` answers `ineligible`). The operator switches the
+  campaign off with `kopje-admin instance wrapstodon=false`. Reports have no share page
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), MD-9 and "Annual reports"). Migration
+  `0093_annual_reports`: an empty table, its index and two triggers on `instance_settings`, and it deletes a
+  `wrapstodon` setting row other than `true` or `false`; as it creates a table, the upgrade checks every reference of
+  the Store (7,003 ms for this file in one local run of the migration bench, at a load average of 3 to 10).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.

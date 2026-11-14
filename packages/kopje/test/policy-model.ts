@@ -426,6 +426,13 @@ export class PolicyModel {
     );
   }
 
+  // R44: a status counts for its author's annual report when the owner wrote it and it is not withdrawn: of any
+  // visibility, boosts included (Mastodon's kept scope over the author's statuses).
+  reportCounted(s: number, owner: number): boolean {
+    const { author, withdrawn } = this.status(s);
+    return author === owner && withdrawn !== true;
+  }
+
   // R41's list (StatusTrend.allowed, trendingStatuses): of the stored trend rows, each author's top-scoring ones (the
   // maximum over every stored row of the author, taken before allowance), allowed (the status's review, else the
   // author's, else `byDefault`) and trendable, by score then id (newest first), the first 200; then for `viewer`,
