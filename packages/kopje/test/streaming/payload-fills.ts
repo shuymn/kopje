@@ -2,11 +2,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect } from "vitest";
 
 import { Db } from "../../src/db/sql";
+import { MAX_DISPLAY_NAME, MAX_NOTE } from "../../src/domain/accounts";
 import { MAX_OPTION_CHARS, MAX_OPTIONS, writePoll } from "../../src/domain/polls";
 import { postStatus } from "../../src/domain/scheduled-statuses";
 import { MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../../src/domain/status-text";
-import { MAX_DISPLAY_NAME, MAX_NOTE } from "../../src/mastodon/accounts";
 import { utf8Length } from "../../src/platform/dump-format";
 import {
   MAX_FIELD_NAME,

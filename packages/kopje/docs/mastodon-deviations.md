@@ -118,10 +118,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
   `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
-- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
-  the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
-  16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
-  hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
+- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds the
+  statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most 16
+  mentions (of available accounts, among the first 64 references, each the account that holds the handle when the
+  announcement is read, as Mastodon's `Announcement#mentions` resolves it) and 16 hashtags are listed; `content` links
+  every hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
   mentioned account's URL grew) is shown escaped with no link. A scheduled announcement is published by the 5-minute
   cron within 5 minutes after `scheduled_at`, with `published_at` = `scheduled_at`. At most 16 are published or
   scheduled and 1,000 kept. Reactions are grouped by name (Mastodon groups by name and emoji), and a Unicode reaction is
@@ -212,6 +213,9 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
+  `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
+  once, as the HTML it presents and federates.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
@@ -359,6 +363,16 @@ Accounts (the `Account` and credential account entities):
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is
   available, otherwise `[]`: Kopje has no other role to highlight. A remote account shows none, as in Mastodon.
 - `uri` is `''` for an imported actor id whose JSON passes 2,048 bytes; ingestion stores none.
+- An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
+  `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
+  as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
+  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
+  `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
+  search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
+  where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
+  hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
+  username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
@@ -572,6 +586,21 @@ Remote interaction (`/authorize_interaction`, the subscribe template of WebFinge
   server's search, for a server whose template is another path. The server is accepted only as a bounded DNS name.
 - The status page's embed code is offered in a dialog with a copy button (Mastodon's web client: the post's menu,
   "Embed"); the code is the oEmbed `html`, the same as Mastodon's.
+
+WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `WebfingerSerializer`):
+
+- The instance actor answers for its URI (`/actor`) and for its handle, `acct:<domain>@<domain>`, whose username must
+  be the domain exactly, as Mastodon's `account_from_acct` matches its own instance actor. Its `preferredUsername` is
+  the domain, where Mastodon's is `mastodon.internal`, so its subject is `acct:<domain>@<domain>`. Account lookup,
+  search, mentions and the public pages never find it. Mastodon asks for the instance actor before any local account;
+  Kopje asks after, so a local account whose username is the domain (which conversion, import and configuration now
+  refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
+- Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
+  type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
+  there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its
+  aliases are the actor id alone (Mastodon adds a local account's profile URL); asked for a URI, its subject is that
+  URI, where Mastodon's is always the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a
+  400, 404 or 410).
 
 Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
@@ -940,8 +969,8 @@ Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NE
   domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
   has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
 
-Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
-`docs/threat-model.md`):
+Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create`, `Update` and `Undo`;
+ID-7 in `docs/threat-model.md`):
 
 - A retraction lasts 30 days, so a `Create` replayed after that is accepted again. Mastodon's `Tombstone` has no expiry
   (`delete.rb`, `create.rb`, `update.rb`) and is cleared when the account's key changes (`process_account_service.rb`).
@@ -958,6 +987,11 @@ Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Del
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.
+- Kopje reads `atomUri` only as an http(s) URI. An OStatus-era `tag:` identity, which Mastodon gave statuses before
+  ActivityPub (`OStatus::TagManager`, `app/lib/ostatus/tag_manager.rb:22`) and which a cutover may keep as a stored
+  status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
+  one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
+  the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):

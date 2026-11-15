@@ -388,7 +388,7 @@ export async function verifyConversion(options) {
       acceptDeletions: options.acceptDeletions,
     });
     const dump = readFileSync(options.dumpPath, "utf8");
-    const { records, overLimit, images, dropped, identities } = expectedFromLegacy(db, {
+    const { records, overLimit, images, dropped, identities, localUsernameIsDomain } = expectedFromLegacy(db, {
       originalActorIds,
       source: addressing,
       notificationSequence: source.notificationSequence,
@@ -404,9 +404,10 @@ export async function verifyConversion(options) {
     if (overLimit > 0 && options.acceptTruncation !== true) {
       report.result = "FAIL";
     }
-    // Identities the Worker would refuse, which the conversion refuses: no dump carries one.
-    report.identities = { overBound: identities };
-    if (identities > 0) {
+    // Identities the Worker would refuse, which the conversion refuses: no dump carries one. A local username that is
+    // the domain would hold the instance actor's handle (ID-5).
+    report.identities = { overBound: identities, localUsernameIsDomain };
+    if (identities > 0 || localUsernameIsDomain > 0) {
       report.result = "FAIL";
     }
     // Rows the conversion leaves out, counted here on their own: a dump made with --accept-deletions passes only

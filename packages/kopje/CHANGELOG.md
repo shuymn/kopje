@@ -28,6 +28,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
+  `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
+- A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to
+  it, as Mastodon does: an `Update` edits it, replies waiting on the other id are linked to it, and a boost, pin or
+  quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
+  handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -65,6 +72,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
+  characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - A media description may have 10,000 characters on upload, media update and status edit, and
   `configuration.media_attachments.description_limit` is 10000, as in Mastodon 4.6 (`mastodon#39306`); the limit was
   1,500. A post and its quote with long descriptions can pass the streaming API's 512 KiB event limit, together with
@@ -74,6 +83,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
+  subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
+  before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
+  The instance actor is still no account to lookup, search, mentions or the public pages, and never takes the handle
+  of a local account whose username is the domain. No Store migration and no `wrangler.jsonc` change.
+- A local account whose username is the instance domain, in any case, is refused: the cutover's conversion stops on
+  it (`accounts:local-username-is-domain`) and verification fails on it, a Store import fails its verification, and
+  the configuration refuses such a domain. It would hold the instance actor's WebFinger handle.
 - `source.follow_requests_count` (`verify_credentials`, `update_credentials`) counts only requests from available
   accounts, at most 40, as Mastodon 4.5.21 does. It counted every pending request, those of suspended accounts
   included, without a limit, and read all of them. It counts among the newest 120 requests, as the first page of
@@ -97,6 +114,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
+  spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
+  every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
+  display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
+  paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
   media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
 - The streaming API's turns count each event in UTF-8 bytes, as its 512 KiB limit does; an event of characters past

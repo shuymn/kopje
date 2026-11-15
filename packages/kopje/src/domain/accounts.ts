@@ -4,7 +4,7 @@ import type { Db } from "../db/sql";
 import { DEFAULT_AVATAR, DEFAULT_HEADER } from "../platform/brand-assets";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
-import { ACTOR_URI_LIMIT, DOMAIN_BYTES, withinIdentityBound } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
   cutCodePoints,
@@ -106,6 +106,8 @@ export type Account = {
   // A local account's only: its highlighted role, the OAuth admin's Owner while it is available; [] otherwise.
   roles?: AccountRole[];
   suspended?: true;
+  // Present, true, only while the account's handle is invalidated (shownHandle).
+  invalid_handle?: true;
   // The account it moved to (Account#moved_to_account), one level deep (MOVED_ACCOUNT_COLUMNS), when it has one
   // stored; null while it is unavailable (REST::AccountSerializer#moved_to_account).
   moved?: Account | null;
@@ -131,6 +133,11 @@ export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-
 
 // Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
 export const MAX_ATTRIBUTION_DOMAINS = 100;
+
+// Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
+// name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
+export const MAX_DISPLAY_NAME = 40;
+export const MAX_NOTE = 500;
 
 export type Visibility = "public" | "unlisted" | "private" | "direct";
 
@@ -399,21 +406,25 @@ export function admitAccounts(
 
 // An account's profile URL. A stored url is used only when it is http(s) (HTML-3); otherwise it is derived from the
 // actor URI, which carries the account's origin (a local account's carries the instance origin), or from this
-// instance's origin when the URI is not http(s) either. Each is used only within PROFILE_URL_LIMIT as serialized
-// (RES-2): a longer one falls back to the next, and to '' when none fits (a converted row of a long host and name).
-// `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
+// instance's origin when the URI is not http(s) either. An invalidated handle (shownHandle) names no page, so such an
+// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Each is used only within
+// PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when none fits (a converted
+// row of a long host and name). `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
 export function accountUrl(
-  row: { url: string | null; uri: string; username: string; domain: string | null },
+  row: { id: string; url: string | null; uri: string; username: string; domain: string | null },
   origin: string,
   href = ACCOUNT_BOUNDS.href,
 ): string {
+  const stored = href(row.url);
+  if (stored !== null) {
+    return stored;
+  }
+  const handle = shownHandle(row);
+  if (handle.invalid) {
+    return href(row.uri) ?? "";
+  }
   const actor = httpUrl(row.uri);
-  return (
-    href(row.url) ??
-    (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ??
-    href(`${origin}/@${acctOf(row)}`) ??
-    ""
-  );
+  return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${handle.acct}`) ?? "";
 }
 
 // How a presenter bounds an account's URLs and actor id (RES-2): `href` serializes an http(s) URL within its bound or
@@ -465,8 +476,32 @@ function shownImage(
   return { image: href, still: bounds.image(still) ?? href };
 }
 
-export function acctOf(row: { username: string; domain: string | null }): string {
-  return row.domain === null ? row.username : `${row.username}@${row.domain}`;
+// The domain of an invalidated handle's address (Account#pretty_acct): reserved (RFC 6761), so it names no server.
+const INVALID_HANDLE_DOMAIN = "handle.invalid";
+
+// How every presenter shows an account's username and acct (Mastodon's pretty_username and pretty_acct). A remote
+// account whose handle another account has taken is invalidated: its stored username starts with '! ' (Mastodon's
+// invalidated_username?), which no username Kopje matches by address can (addressRow), and it shows its id as
+// username and `<id>@handle.invalid` as acct, within the bounds a valid row's fill (accounts.id is 18 digits, the
+// CHECK of 0000_initial). A local account is never invalidated. `row.username` is the read's projection
+// (usernameSql), whose cut keeps the prefix.
+export function shownHandle(row: { id: string; username: string; domain: string | null }): {
+  username: string;
+  acct: string;
+  invalid: boolean;
+} {
+  if (row.domain !== null && row.username.startsWith("! ")) {
+    return { username: row.id, acct: `${row.id}@${INVALID_HANDLE_DOMAIN}`, invalid: true };
+  }
+  return {
+    username: row.username,
+    acct: row.domain === null ? row.username : `${row.username}@${row.domain}`,
+    invalid: false,
+  };
+}
+
+export function acctOf(row: { id: string; username: string; domain: string | null }): string {
+  return shownHandle(row).acct;
 }
 
 // An unavailable account (R1: suspended, or a remote account whose deletion has started, as the row's query read it
@@ -525,7 +560,6 @@ function presentIdentity(
   profile: () => Profile,
 ): Account {
   const suspended = row.available === 0;
-  // Stored URLs are shown only when they are http(s) (httpUrl); anything else reads as unset.
   const url = accountUrl(row, origin, bounds.href);
   const own = cached.get(row.id);
   const avatar = shownImage(
@@ -543,10 +577,11 @@ function presentIdentity(
     cachedImageUrls(own?.header ?? null, origin),
   );
   const shown: Profile = suspended ? { display_name: "", note: "", emojis: [], fields: [] } : profile();
+  const handle = shownHandle(row);
   return {
     id: row.id,
-    username: row.username,
-    acct: acctOf(row),
+    username: handle.username,
+    acct: handle.acct,
     display_name: shown.display_name,
     locked: !suspended && row.locked === 1,
     bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
@@ -574,6 +609,7 @@ function presentIdentity(
       ? { noindex: false, roles: !suspended && adminAccountIdOnce(db) === row.id ? [OWNER_BADGE] : [] }
       : {}),
     ...(suspended ? { suspended: true as const } : {}),
+    ...(handle.invalid ? { invalid_handle: true as const } : {}),
   };
 }
 
@@ -789,11 +825,16 @@ export const getAccounts = readOperation<{ ids: string[]; present: Present }, Ac
 // usernameSql's projection: a matching row's username has the bytes of `username` (SQLite's lower changes ASCII
 // letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
 // (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
+// Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
+// invalidated handle ('! <id>', shownHandle) is never matched by an address.
 function addressRow(
   db: Db,
   username: string,
   domain: string | null,
 ): (AccountRow & { stored_username: string }) | undefined {
+  if (!isRemoteUsername(username)) {
+    return undefined;
+  }
   return domain === null
     ? db.first(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
@@ -842,12 +883,28 @@ export const emailSubscriptionTarget = readOperation<
   return local === undefined ? "missing" : "local";
 });
 
+// The presented account an address names as lookup finds it (an unavailable one redacted, VIS-30), or null: by
+// accountByAddress, but `<id>@handle.invalid` names the remote account of that id while its handle is invalidated
+// (shownHandle; Mastodon's ResolveAccountService special case), one primary-key seek. `domain` is normalized.
+export function accountByLookup(db: Db, username: string, domain: string | null, present: Present): Account | null {
+  if (domain !== INVALID_HANDLE_DOMAIN) {
+    return accountByAddress(db, username, domain, present);
+  }
+  // The prefix is a prefilter; shownHandle decides on the row as presented.
+  const row = db.first<AccountRow>(
+    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
+			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! '`,
+    username,
+  );
+  return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
+}
+
 // domain null means a local account.
 export const lookupAccount = readOperation<
   { username: string; domain: string | null; present: Present },
   Account | null
 >((db, { username, domain, present }) =>
-  accountByAddress(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
 );
 
 // source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
@@ -1214,10 +1271,13 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
     return [];
   }
   const where = terms.map((variants) => `(${variants.map(() => "instr(a.search_text, ?) > 0").join(" OR ")})`);
-  const exactUsername = (query.split("@")[0] ?? "").toLowerCase();
+  const [user = "", exactDomain] = query.toLowerCase().split("@");
+  const exactUsername = user;
   const prefix = (terms[0]?.[0] ?? "").replace(/^@/, "").split("@")[0] ?? "";
-  // The exact address: "user" is any account with that username, "user@domain" that one remote account.
-  const [exactUser = "", exactDomain] = query.toLowerCase().split("@");
+  // The exact address: "user" is any account with that username, "user@domain" that one remote account. Only a
+  // username addressRow would match names one: any other (an invalidated handle's '! <id>') is bound as NULL, which
+  // equals nothing.
+  const exactUser = isRemoteUsername(user) ? user : null;
   const exact =
     exactDomain === undefined
       ? "SELECT id FROM accounts INDEXED BY accounts_username WHERE lower(username) = ?"

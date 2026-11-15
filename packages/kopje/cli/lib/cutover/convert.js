@@ -20,6 +20,7 @@ import {
   isRemoteUsername,
   isStorableActorId,
   languageOf,
+  localUsernameIsDomain,
   mediaUrl,
   normalizeTag,
   normalizeSearchText,
@@ -595,6 +596,10 @@ export function convertLegacy(
         count(problems, "local-actor-uri-differs-from-username");
       }
       username = segment;
+      // ID-5: the instance actor's handle is the domain at the domain; no local account may hold it.
+      if (localUsernameIsDomain(username, domain)) {
+        count(problems, "accounts:local-username-is-domain");
+      }
     } else {
       try {
         host = new URL(uri).host.toLowerCase();
