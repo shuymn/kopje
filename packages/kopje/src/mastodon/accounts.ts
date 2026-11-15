@@ -56,8 +56,9 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
   return account === null ? recordNotFound() : c.json(account);
 };
 
-const MAX_DISPLAY_NAME = 30;
-const MAX_NOTE = 500;
+// In code points; /api/v2/instance advertises both.
+export const MAX_DISPLAY_NAME = 30;
+export const MAX_NOTE = 500;
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
 
