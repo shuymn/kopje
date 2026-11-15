@@ -2776,7 +2776,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main):_ each strip scans the ends it strips by index (`src/platform/strip.ts`); `test/accounts.test.ts`
   ("filling the body within a generous time"), `test/polls.test.ts` ("reads a choice filling the body within a generous
   time"), `test/error-pages.test.ts` ("reads an Accept header at the request header limit within a generous time"),
-  `test/link-details.test.ts` ("reads a round of headlines at the JSON-LD cap within a generous time").
+  `test/link-details.test.ts` ("reads a round of headlines at the JSON-LD cap within a generous time"). Removing the
+  CDATA lines of a card's JSON-LD: _Enforced (main):_ `removeCdataJunk` (`src/federation/link-details.ts`) passes over a
+  script in linear time; `test/link-details.test.ts` ("removes CDATA lines from a round of scripts at the JSON-LD cap
+  within a generous time", "removes CDATA lines as the pattern does").
   _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
