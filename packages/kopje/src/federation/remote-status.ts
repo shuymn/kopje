@@ -356,6 +356,16 @@ function cardCandidate(anchor: RawAnchor): CardCandidate | null {
   return { raw, url: { href: url.href.length > CARD_URL_LIMIT ? null : url.href, host: url.host } };
 }
 
+// A status identity as Kopje reads one, an object's id or its atomUri: an http(s) URI within STATUS_URI_LIMIT, measured
+// as the projection measures a stored one (identity-bounds.ts), kept as written; else null. An OStatus-era `tag:`
+// atomUri (OStatus::TagManager, app/lib/ostatus/tag_manager.rb:22) is not read (docs/mastodon-deviations.md,
+// "Retractions and edits of remote statuses").
+export function statusIdentity(value: unknown): string | null {
+  return typeof value === "string" && withinIdentityBound(value, STATUS_URI_LIMIT) && httpString(value) !== null
+    ? value
+    : null;
+}
+
 // The status an object describes, or null if it is not one Kopje stores. `activity` supplies to and cc when the
 // object has none (StatusParser falls back to the activity's addressing). embedQuote: keep a Note embedded as the
 // quoted status (false for an embedded one itself).
@@ -371,11 +381,7 @@ export function parseRemoteStatus(
   if (!typeIs(object.type, STATUS_TYPES) && !converted) {
     return null;
   }
-  // The id is stored as written, so its bound is measured as the projection measures it (identity-bounds.ts).
-  const uri =
-    typeof object.id === "string" && withinIdentityBound(object.id, STATUS_URI_LIMIT) && httpString(object.id) !== null
-      ? object.id
-      : null;
+  const uri = statusIdentity(object.id);
   if (uri === null) {
     return null;
   }
@@ -407,6 +413,7 @@ export function parseRemoteStatus(
   const conversation = isConversationId(object.conversation) ? object.conversation : null;
   return {
     uri,
+    atomUri: statusIdentity(object.atomUri),
     url,
     attributedTo: idOf(asArray(object.attributedTo)[0]),
     content,

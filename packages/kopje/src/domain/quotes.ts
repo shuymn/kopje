@@ -1188,8 +1188,8 @@ export function answerQuoteRequest(
     recordOutbound(db, quoted.account_id, quoteAnswerActivity("Reject", quoted.author_uri, ref), now);
     return { kind: "answered", reason: "quote-rejected" };
   }
-  let quoting = statusByUri(db, request.instrument);
-  if (quoting === undefined) {
+  let quotingId = statusByUri(db, request.instrument)?.id;
+  if (quotingId === undefined) {
     const embedded = request.embedded;
     const document =
       embedded !== null &&
@@ -1210,8 +1210,10 @@ export function answerQuoteRequest(
       deliveredTo: ctx.deliveredTo,
       fetched: true,
     });
-    quoting = statusByUri(db, request.instrument);
-    if (quoting === undefined) {
+    // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
+    // than the instrument's is not it.
+    quotingId = document.uri === request.instrument ? stored.statusId : undefined;
+    if (quotingId === undefined) {
       return { kind: "ignored", reason: stored.reason };
     }
   }
@@ -1220,7 +1222,7 @@ export function answerQuoteRequest(
 		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.status_id = ?1 AND q.quoted_status_id = ?2 AND s.account_id = ?3 AND s.reblog_of_id IS NULL
 			AND NOT EXISTS (SELECT 1 FROM inbound_jobs j WHERE j.kind = 'delete' AND j.key = ?1 AND j.done_at IS NULL)`,
-    quoting.id,
+    quotingId,
     quoted.id,
     actor.id,
   );
@@ -1238,20 +1240,20 @@ export function answerQuoteRequest(
     `UPDATE quotes SET state = 'accepted', authorization_id = ?3, activity_uri = ?4, verify_after = NULL,
 			lease_until = NULL, recheck = 0, need_author = NULL, generation = ${NEW_GENERATION}, updated_at = ?5
 		WHERE status_id = ?1 AND quoted_status_id = ?2`,
-    quoting.id,
+    quotingId,
     quoted.id,
     authorization,
     request.id,
     iso(now),
   );
-  ensureQuotedAccess(db, quoting.id, quoted.account_id);
+  ensureQuotedAccess(db, quotingId, quoted.account_id);
   recordOutbound(
     db,
     quoted.account_id,
     quoteAnswerActivity("Accept", quoted.author_uri, ref, stampUri(quoted.author_uri, authorization)),
     now,
   );
-  notify(db, { recipientId: quoted.account_id, type: "quote", fromId: actor.id, statusId: quoting.id, now });
+  notify(db, { recipientId: quoted.account_id, type: "quote", fromId: actor.id, statusId: quotingId, now });
   return { kind: "answered", reason: "quote-accepted" };
 }
 

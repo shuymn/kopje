@@ -247,7 +247,7 @@ describe("error order", () => {
     const h = await apiHarness();
     const response = await h.request(
       "/api/v1/accounts/update_credentials",
-      bearer("nope", json({ display_name: "x".repeat(31) }, { method: "PATCH" })),
+      bearer("nope", json({ display_name: "x".repeat(41) }, { method: "PATCH" })),
     );
     expect(response.status).toBe(401);
     expect((await h.request("/api/v1/accounts/search", bearer("nope"))).status).toBe(401);

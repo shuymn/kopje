@@ -23,6 +23,9 @@ export type RemoteMediaInput = {
 // A remote Note (or a converted Article, Page, Image, Audio, Video or Event) as the Worker read it.
 export type RemoteStatusInput = {
   uri: string;
+  // The object's atomUri (ostatus:atomUri), read as its id is (federation/remote-status.ts statusIdentity), or null;
+  // a stored status of that uri is this one when none has the id (remote-statuses.ts storeRemoteStatus).
+  atomUri?: string | null;
   url: string | null;
   attributedTo: string | null;
   // Sanitized HTML (HTML-1), and its text for search.

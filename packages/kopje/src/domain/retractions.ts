@@ -69,17 +69,38 @@ export function canRetract(db: Db, actorUri: string, targetUris: readonly string
 // is recorded (another origin's activity could never be the actor's to retract), and at most
 // MAX_RETRACTIONS_PER_ACTOR live ones per actor.
 export function retract(db: Db, actorUri: string, targetUri: string, now: number): boolean {
-  if (!recordable(actorUri, targetUri) || !canRetract(db, actorUri, [targetUri], now)) {
+  return retractAll(db, actorUri, [targetUri], now);
+}
+
+function retractAll(db: Db, actorUri: string, targetUris: readonly string[], now: number): boolean {
+  if (!targetUris.every((uri) => recordable(actorUri, uri)) || !canRetract(db, actorUri, targetUris, now)) {
     return false;
   }
-  db.run(
-    `INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) VALUES (?, ?, ?)
-		ON CONFLICT DO UPDATE SET expires_at = excluded.expires_at`,
-    actorUri,
-    targetUri,
-    now + RETRACTION_TTL_MS,
-  );
+  for (const uri of targetUris) {
+    db.run(
+      `INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) VALUES (?, ?, ?)
+			ON CONFLICT DO UPDATE SET expires_at = excluded.expires_at`,
+      actorUri,
+      uri,
+      now + RETRACTION_TTL_MS,
+    );
+  }
   return true;
+}
+
+// The retraction of a removal (a Delete, an Undo) by actorUri of the status it found under objectId, or, when
+// matchedUri is not null, under the object's atomUri (inbox.ts namedStatus): every id the status was named by, both or
+// neither (ID-7), so neither brings it back. One canRetract of both decides; false when they cannot all be recorded
+// (the per-actor cap), with nothing written. Both have the actor's origin (undo and deleteObject check the object's id,
+// namedStatus the atomUri).
+export function retractMatched(
+  db: Db,
+  actorUri: string,
+  objectId: string,
+  matchedUri: string | null,
+  now: number,
+): boolean {
+  return retractAll(db, actorUri, matchedUri === null ? [objectId] : [objectId, matchedUri], now);
 }
 
 // Records a Follow id as retracted: the one way every path (Undo, Block, a refused or superseded Follow, a local
