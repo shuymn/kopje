@@ -156,6 +156,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
+  media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
 - The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
   there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
   way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account

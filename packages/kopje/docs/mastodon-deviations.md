@@ -911,6 +911,11 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   answers 422 `Media 0 not found or already attached to another post` for the form's.
 - Media a scheduled status holds cannot be attached by another post (422, not found); Mastodon attaches it, and the
   scheduled post is then lost when it is published.
+- `GET /api/v1/scheduled_statuses` answers within 8 MiB: a page cut there holds fewer scheduled statuses and its
+  `Link` continues after the last one shown. A scheduled status shows at most 4 of the media it holds (Mastodon holds no
+  more).
+- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`; Mastodon cannot store such
+  a row.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
