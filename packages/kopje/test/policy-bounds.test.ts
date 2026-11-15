@@ -775,7 +775,7 @@ const ENDPOINTS: [string, StoreOperation<never, unknown>, unknown, Paging?][] = 
   ["poll", getPoll, { credential, id: statusId(TARGET), now: NOW, present: PRESENT }],
   ["followed tags", followedTags, { credential, page: PAGE, present: PRESENT }],
   ["featured tags", listFeaturedTags, { credential, present: PRESENT }],
-  ["account featured tags", accountFeaturedTags, { id: accountId(VIEWER), present: PRESENT }],
+  ["account featured tags", accountFeaturedTags, { id: accountId(VIEWER), present: PRESENT, credential: null }],
   ["featured tag suggestions", featuredTagSuggestions, { credential, present: PRESENT }],
   ["endorsements", listEndorsements, { credential, page: PAGE, present: PRESENT }],
   [
@@ -783,7 +783,11 @@ const ENDPOINTS: [string, StoreOperation<never, unknown>, unknown, Paging?][] = 
     accountEndorsements,
     { credential, now: NOW, account: accountId(VIEWER), page: PAGE, present: PRESENT },
   ],
-  ["accounts by id", getAccounts, { ids: WORLD.accounts.map((_, x) => accountId(x)), present: PRESENT }],
+  [
+    "accounts by id",
+    getAccounts,
+    { ids: WORLD.accounts.map((_, x) => accountId(x)), present: PRESENT, credential: null },
+  ],
   ["suggestions", suggestions, { credential, version: 2, offset: 0, limit: 40, present: PRESENT }],
   ["pinned statuses", accountStatuses, { ...accountStatusesInput, account: accountId(VIEWER), pinned: true }],
   [
@@ -3926,8 +3930,8 @@ describe("a remote account's learned collections cost a bounded read (RES-7)", (
       [
         "featured tags",
         accountFeaturedTags,
-        { id: OWNER, present: PRESENT },
-        (output) => expect(output).toEqual([expect.objectContaining({ name: "Tag" })]),
+        { id: OWNER, present: PRESENT, credential: null },
+        (output) => expect(output).toEqual({ status: "ok", value: [expect.objectContaining({ name: "Tag" })] }),
       ],
       [
         "followers",
@@ -4036,7 +4040,7 @@ describe("a remote account's featured hashtags cost a window of its statuses (RE
     const cases: [string, boolean, StoreOperation<never, unknown>, (count: number) => unknown][] = [
       ["learn", false, learn, () => ({ now: NOW })],
       ["feature again", true, toggle, () => ({ now: NOW })],
-      ["read", true, accountFeaturedTags, () => ({ id: OWNER, present: PRESENT })],
+      ["read", true, accountFeaturedTags, () => ({ id: OWNER, present: PRESENT, credential: null })],
     ];
     for (const [name, featured, operation, input] of cases) {
       const few = await rowsTouched(await history(400, featured), operation, input(400) as never);
@@ -4050,9 +4054,12 @@ describe("a remote account's featured hashtags cost a window of its statuses (RE
     const store = await history(4000, false);
     await runInDurableObject(store, (_instance, state) => learn.run(state.storage.sql, { now: NOW }));
     const read = await runInDurableObject(store, (_instance, state) =>
-      accountFeaturedTags.run(state.storage.sql, { id: OWNER, present: PRESENT }),
+      accountFeaturedTags.run(state.storage.sql, { id: OWNER, present: PRESENT, credential: null }),
     );
-    expect(read).toEqual([expect.objectContaining({ statuses_count: "1", last_status_at: "2026-01-03" })]);
+    expect(read).toEqual({
+      status: "ok",
+      value: [expect.objectContaining({ statuses_count: "1", last_status_at: "2026-01-03" })],
+    });
   }, 120_000);
 });
 

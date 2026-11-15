@@ -268,6 +268,7 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
             website: null,
             scopes: ["read"],
             now: NOW,
+            credential: null,
           },
           true,
         ),

@@ -6,6 +6,7 @@ import {
   boundedLocalFieldsSql,
   byteBoundSql,
   byteCut,
+  displayNameReadSql,
   EMOJI_CACHE_BYTES,
   emojiCacheSql,
   isoTimeSql,
@@ -17,6 +18,7 @@ import {
   REMOTE_VERIFIED_SHOWN,
   STATIC_URL_LIMIT,
   statusPublishedSql,
+  textCut,
 } from "../platform/stored-bounds";
 import { availableJoinedSql, REACHES_FOLLOWERS_SQL } from "./audience";
 import { REMOTE_FIELD_SOURCE_BYTES } from "./field-verification";
@@ -96,15 +98,16 @@ const REMOTE_VERIFIED_SQL = `CASE WHEN a.domain IS NOT NULL THEN (SELECT CASE WH
 	FROM remote_field_links r WHERE r.account_id = a.id) END`;
 
 // RES-2: stored profile bounds: platform/stored-bounds.ts; username and actor id read projections: profile-bounds.ts;
-// fields: REMOTE_ATTACHMENT_SQL and remoteFields. Maxima: the account occurrence in docs/threat-model.md, "Maxima of
-// presented units".
+// fields: REMOTE_ATTACHMENT_SQL and remoteFields. The display name is read by its stored bytes (displayNameReadSql),
+// and it and the note are bounded again after decoding (presentedDisplayName, presentedNote). Maxima: the account
+// occurrence in docs/threat-model.md, "Maxima of presented units".
 export const ACCOUNT_COLUMN_MAP = {
   id: "a.id",
   uri: actorUriSql("a.uri"),
   username: usernameSql("a.username"),
   domain: "a.domain",
   actor_type: "a.actor_type",
-  display_name: "a.display_name",
+  display_name: displayNameReadSql("a.display_name"),
   note: "a.note",
   url: "a.url",
   avatar_url: "a.avatar_url",
@@ -160,8 +163,6 @@ export const MOVED_LAST_STATUS_AT_LIMIT = 10;
 const POINT_BYTES = 4;
 
 const movedFlag = (column: string) => `CASE ${column} WHEN 1 THEN 1 WHEN 0 THEN 0 END`;
-// byteCut of a NOT NULL column: substr of an empty BLOB is NULL, read as ''.
-const textCut = (column: string, bytes: number) => `coalesce(${byteCut(column, bytes)}, '')`;
 
 const MOVED_COLUMN_MAP = {
   id: "m.id",

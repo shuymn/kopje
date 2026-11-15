@@ -99,8 +99,11 @@ describe("config", () => {
     const { post, as } = adminHarness(store, team);
     const domain = async () =>
       (await (await as(adminClaims(), "/admin/config")).json<{ values: Record<string, string> }>()).values.domain;
+    // DNS's 253 octets, which WHATWG URL does not enforce.
+    const dnsLongest = ["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(".");
     for (const [given, stored] of [
       [" Kopje.EXAMPLE ", "kopje.example"],
+      [dnsLongest, dnsLongest],
       ["köpje.example", "xn--kpje-5qa.example"],
     ] as const) {
       expect((await post(adminClaims(), "/admin/config", { values: { domain: given } })).status, given).toBe(200);
@@ -113,6 +116,7 @@ describe("config", () => {
       "kopje.example.",
       "kopje",
       "a b.example",
+      `e${dnsLongest}`,
     ]) {
       const refused = await post(adminClaims(), "/admin/config", { values: { domain: given } });
       expect(refused.status, given).toBe(400);

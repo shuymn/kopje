@@ -227,6 +227,10 @@ describe("/setup step 1: the domain", () => {
     expect(hostProblem("workers.dev")).toMatch(/workers\.dev/);
     expect(hostProblem("192.0.2.1")).not.toBeNull();
     expect(hostProblem("kopje.test:8443")).not.toBeNull();
+    // DNS's 253 octets, which WHATWG URL does not enforce.
+    const dnsLongest = ["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(".");
+    expect(hostProblem(dnsLongest)).toBeNull();
+    expect(hostProblem(`e${dnsLongest}`)).toMatch(/more than 253 characters/);
 
     const h = await setupHarness();
     const browser = await setupLogin(h);

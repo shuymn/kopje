@@ -990,8 +990,12 @@ describe("dump", () => {
         present: { origin: "https://kopje.test" },
       });
       expect(followed.status === "ok" && followed.value.items.map((tag) => tag.name)).toEqual(["kept"]);
-      const featured = accountFeaturedTags.run(sql, { id: local, present: { origin: "https://kopje.test" } });
-      expect(featured?.map((tag) => tag.name)).toEqual(["Kept"]);
+      const featured = accountFeaturedTags.run(sql, {
+        id: local,
+        present: { origin: "https://kopje.test" },
+        credential: null,
+      });
+      expect(featured.status === "ok" && featured.value?.map((tag) => tag.name)).toEqual(["Kept"]);
     });
   }, 60_000);
 
