@@ -282,6 +282,26 @@ describe("each pair", () => {
     );
   });
 
+  it("passes a rewrite that reads more within its stated row allowance, and fails one past it or without one", async () => {
+    const id = await statementId(SELECT);
+    const scan = "SELECT id FROM t NOT INDEXED WHERE k = ? ORDER BY id";
+    const entries = { [id]: { sql: SELECT, pins: (text: string) => text.replace(" NOT INDEXED", "") } };
+    const run = await witnessed(entries, () => [id], [[scan, 3]], { statistics: "analyzed" });
+    const extra = run.sides[0]!.mine.rows - run.sides[0]!.main.rows;
+    expect(extra).toBeGreaterThan(1);
+    const reason = "a test of the allowance";
+    expectBeside("analyzed", run, { rowAllowances: { [id]: { rows: extra, reason } } });
+    // One row short of what it reads more, or an allowance of another statement, fails as none does.
+    for (const rowAllowances of [
+      { [id]: { rows: extra - 1, reason } },
+      { [`${id.slice(1)}0`]: { rows: extra, reason } },
+    ]) {
+      expect(() => expectBeside("analyzed", run, { rowAllowances })).toThrow(
+        /expected \d+ to be less than or equal to/,
+      );
+    }
+  });
+
   it("compares each side as its caller reads it, and fails a rewrite whose caller answers other candidates", async () => {
     const id = await statementId(SELECT);
     // The rewrite returns each row's key too, which its caller drops.

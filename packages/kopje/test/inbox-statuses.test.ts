@@ -292,6 +292,54 @@ describe("Create (Mastodon and Misskey)", () => {
     expect((await statusRow(t.store, note.id))?.visibility).toBe("limited");
   });
 
+  it("a bot's mention and follow follow for_bots", async () => {
+    const t = await setup();
+    const robo = await mastodonActor(t.web, "robo", { extra: { type: "Service" } });
+    // Public, addressing alice in cc: neither a private nor a limited mention.
+    const note = () =>
+      mastodonNote(robo, {
+        cc: [`${robo.uri}/followers`, ALICE_URI],
+        tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+      });
+    const rows = () =>
+      sql<{ type: string; filtered: number }>(
+        t.store,
+        "SELECT type, filtered FROM notifications WHERE account_id = ? ORDER BY id",
+        ALICE,
+      );
+    const setBots = async (choice: string) => {
+      const response = await t.request("/api/v2/notifications/policy", {
+        method: "PUT",
+        headers: { authorization: `Bearer ${t.tokens.alice}`, "content-type": "application/json" },
+        body: JSON.stringify({ for_bots: choice }),
+      });
+      expect(response.status).toBe(200);
+    };
+    await t.post(robo, create(robo, note()));
+    expect(await sql(t.store, "SELECT actor_type FROM accounts WHERE uri = ?", robo.uri)).toEqual([
+      { actor_type: "Service" },
+    ]);
+    // Accepted by default.
+    expect(await rows()).toEqual([{ type: "mention", filtered: 0 }]);
+    await setBots("filter");
+    await t.post(robo, create(robo, note()));
+    await t.post(robo, {
+      "@context": AS,
+      id: `${robo.uri}#follows/${nextId()}`,
+      type: "Follow",
+      actor: robo.uri,
+      object: ALICE_URI,
+    });
+    expect(await rows()).toEqual([
+      { type: "mention", filtered: 0 },
+      { type: "mention", filtered: 1 },
+      { type: "follow", filtered: 1 },
+    ]);
+    await setBots("drop");
+    await t.post(robo, create(robo, note()));
+    expect(await rows()).toHaveLength(3);
+  });
+
   it("a direct note mentions its recipients and notifies them; a direct note to nobody local is not stored", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

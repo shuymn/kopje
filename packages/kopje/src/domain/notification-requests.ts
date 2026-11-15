@@ -57,7 +57,8 @@ export type PolicyView = { policy: Policy; summary: PolicySummary };
 
 function policyOf(db: Db, accountId: string): Policy {
   const row = db.first<Policy>(
-    `SELECT for_not_following, for_not_followers, for_new_accounts, for_private_mentions, for_limited_accounts
+    `SELECT for_not_following, for_not_followers, for_new_accounts, for_private_mentions, for_limited_accounts,
+			for_bots
 		FROM notification_policies WHERE account_id = ?`,
     accountId,
   );
@@ -95,12 +96,12 @@ export const updateNotificationPolicy = userWriteOperation<{ changes: Partial<Po
     const at = new Date(now).toISOString();
     db.run(
       `INSERT INTO notification_policies (account_id, for_not_following, for_not_followers, for_new_accounts,
-				for_private_mentions, for_limited_accounts, created_at, updated_at)
-			VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+				for_private_mentions, for_limited_accounts, for_bots, created_at, updated_at)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8, ?7, ?7)
 			ON CONFLICT (account_id) DO UPDATE SET for_not_following = excluded.for_not_following,
 				for_not_followers = excluded.for_not_followers, for_new_accounts = excluded.for_new_accounts,
 				for_private_mentions = excluded.for_private_mentions, for_limited_accounts = excluded.for_limited_accounts,
-				updated_at = excluded.updated_at`,
+				for_bots = excluded.for_bots, updated_at = excluded.updated_at`,
       accountId,
       policy.for_not_following,
       policy.for_not_followers,
@@ -108,6 +109,7 @@ export const updateNotificationPolicy = userWriteOperation<{ changes: Partial<Po
       policy.for_private_mentions,
       policy.for_limited_accounts,
       at,
+      policy.for_bots,
     );
     return { policy, summary: summaryOf(db, accountId) };
   },

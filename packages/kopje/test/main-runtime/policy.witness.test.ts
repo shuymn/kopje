@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { boundedWindow, type MergedRow, type Window } from "../../src/domain/windows";
 import { migratedStore } from "../helpers";
 import { statementId } from "../plan-audit";
-import { type Baseline, type Count, expectBeside, PlanWitness, STATISTICS } from "../plan-witness";
+import { type Baseline, type Count, expectBeside, PlanWitness, type RowAllowance, STATISTICS } from "../plan-witness";
 import type { SqlRow } from "../read-helpers";
 import { normalized } from "../sql-text";
 import RECORDED from "./recorded.json";
@@ -22,6 +22,14 @@ import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-wor
 
 type Recorded = { statements: string[]; runs: Record<string, { main: number[]; mine: number[] }> };
 const { statements, runs } = RECORDED as Recorded;
+
+// main's statements, by id, that a later change gave a new meaning as well, and the rows a run of each may read beyond
+// main's for it (expectBeside's rowAllowances); every other rewritten statement reads no more than main's.
+const ROW_ALLOWANCES: Readonly<Record<string, RowAllowance>> = {
+  // notificationPolicySql (audience.ts): the bot condition's key lookup of the recipient's for_bots, one arm's
+  // (#1582 D4).
+  ba1325440a987793: { rows: 1, reason: "#1582 D4: the for_bots key lookup" },
+};
 const ROLLBACK = new Error("rolled back");
 
 // A window statement's rows as its caller reads them: main's, cut by the bound it returned (main's mergedWindow, its
@@ -92,6 +100,12 @@ beforeAll(async () => {
 
 describe("the rewritten statements beside main's", () => {
   it("are main's audited statements, each paired with one rewrite", async () => {
+    // Each row allowance is a baseline's, so none outlives the statement it was given for.
+    const baselineIds = new Set([...plans.values()].flatMap(({ expected }) => expected));
+    expect(
+      Object.keys(ROW_ALLOWANCES).filter((id) => !baselineIds.has(id)),
+      [...baselineIds].join(" "),
+    ).toEqual([]);
     for (const { witness, expected } of plans.values()) {
       expect(expected.length).toBeGreaterThan(0);
       await witness.expectAudited();
@@ -123,7 +137,7 @@ describe("the rewritten statements beside main's", () => {
                 run: (wrapped, inner) => run(wrapped, inner, context),
               });
               populations = measured.populations;
-              expectBeside(statistics, measured, { singletonRows: true });
+              expectBeside(statistics, measured, { singletonRows: true, rowAllowances: ROW_ALLOWANCES });
               for (const side of measured.sides) {
                 lines.push(`FIG\t${name}\t${statistics}\t${flow}\t${side.id}\t${side.main.rows}\t${side.mine.rows}`);
               }

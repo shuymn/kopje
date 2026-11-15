@@ -28,6 +28,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- The notification policy has Mastodon 4.6's bot condition: `for_bots` in `/api/v2/notifications/policy` and
+  `filter_bots` in `/api/v1/notifications/policy`, accept by default. It matches a sender whose actor type is
+  `Application` or `Service` that the user does not follow. Migration `0094_notification_policy_bots` adds the column
+  with its default, which decides every stored policy as before; the upgrade checks no reference (34 ms for this file
+  in one local run of the migration bench, at a load average of 14 to 24). `wrangler.jsonc`: unchanged. This adds a
+  Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 

@@ -1059,16 +1059,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from a shown one. Their cost is bounded (RES-6, RES-7): the lists and counts read the partial index of unfiltered
   notifications (`notifications_unfiltered`), so a sender's filtered notifications cost them nothing; the requests are
   paged by their index and the summary reads at most 100; a request's count is kept as it is written; the private
-  mention walk reads at most 101 statuses; answering a request, or a bulk form of at most 100 ids, walks at most 2,000
-  of the senders' notifications in the request and the rest in the inbound job rounds; and a remote sender's purge
-  deletes its requests, permissions and jobs within its batches. _Enforced (main):_
-  `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS` and
-  `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
+  mention walk reads at most 101 statuses; the bot condition reads the sender by key; answering a request, or a bulk
+  form of at most 100 ids, walks at most 2,000 of the senders' notifications in the request and the rest in the inbound
+  job rounds; and a remote sender's purge deletes its requests, permissions and jobs within its batches. _Enforced
+  (main):_ `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS`
+  and `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
   `src/domain/notification-groups.ts`, `src/domain/push.ts`, `purgeRelationships` and `STATUS_CHILDREN` in
-  `src/domain/inbox.ts`, migration `0020_notification_policies`; `test/notification-policy.test.ts` (among others,
-  "dismisses in bulk a sender with more filtered notifications than the request’s batches; the job rounds delete the
-  rest"), `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`,
-  `test/policy-bounds.test.ts`, `test/migrations.test.ts`, `test/cascade-guard.test.ts`.
+  `src/domain/inbox.ts`, migrations `0020_notification_policies` and `0094_notification_policy_bots`;
+  `test/notification-policy.test.ts` (among others, "dismisses in bulk a sender with more filtered notifications than
+  the request’s batches; the job rounds delete the rest"), `test/streaming/streaming.test.ts`,
+  `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`, `test/policy-bounds.test.ts`,
+  `test/migrations.test.ts`, `test/notification-policy-dump.test.ts`, `test/cascade-guard.test.ts`.
 
 - **VIS-25: a report reveals to the servers it is forwarded to only what its reporter may see, and never its reporter.**
   A report (`Report`) is its reporter's: it is read only where it is written and answered once to its reporter (R34,

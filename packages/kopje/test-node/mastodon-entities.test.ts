@@ -71,9 +71,14 @@ const MAPPING: Record<string, Mapping> = {
   "REST::CollectionItemSerializer": { deferred: 1589 },
   "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
   "REST::ShallowTagSerializer": { deferred: 1589 },
-  // Their response types are inferred over Record<...>, which the reader cannot follow.
-  "REST::NotificationPolicySerializer": { deferred: 1582 },
-  "REST::V1::NotificationPolicySerializer": { deferred: 1582 },
+  "REST::NotificationPolicySerializer": {
+    file: "src/mastodon/notification-requests.ts",
+    typeName: "NotificationPolicyV2",
+  },
+  "REST::V1::NotificationPolicySerializer": {
+    file: "src/mastodon/notification-requests.ts",
+    typeName: "NotificationPolicyV1",
+  },
 };
 
 const ACCOUNT: Record<string, Exception> = {
