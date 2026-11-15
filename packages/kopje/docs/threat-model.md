@@ -1340,10 +1340,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Announcements are the Access admin's (AUTH-5), never the OAuth admin's; each write logs its row in its own transaction
   (`test/admin-announcements.test.ts`, `test/cli.test.ts`).
   Trends reviews are the Access admin's too (`/admin/trends`, `kopje-admin trends`: AUTH-5), hashtags, statuses, links
-  and publishers alike; through the Mastodon admin API the OAuth admin is shown the public trends and its approve and
-  reject, and the link publishers' list and reviews, answer 403 (MD-2). Each review logs its row in its own transaction
-  (a link as `PreviewCard`, a publisher as `PreviewCardProvider`; `test/admin-trends.test.ts`, `test/cli.test.ts`,
-  `test/trends.test.ts`, `test/trend-links.test.ts`).
+  and publishers alike; through the Mastodon admin API the OAuth admin alone is shown the public trends, past the gate
+  and never cached publicly, and its approve and reject, and the link publishers' list and reviews, answer 403 (MD-2).
+  Each review logs its row in its own transaction (a link as `PreviewCard`, a publisher as `PreviewCardProvider`;
+  `test/admin-trends.test.ts`, `test/cli.test.ts`, `test/trends.test.ts`, `test/trend-links.test.ts`).
 - **VIS-30: an instance-suspended account is shown to nobody and gets no new content.** An account the instance
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
   nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,

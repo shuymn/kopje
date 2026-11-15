@@ -53,6 +53,7 @@ import {
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
+import * as trends from "./trends";
 
 // The Mastodon admin API (/api/v1/admin/*, /api/v2/admin/*). Every route is gated as Mastodon's admin controllers
 // are (VIS-29): require_not_suspended!, then Admin::PermissionsConcern refuses anyone but the OAuth admin with 403
@@ -72,10 +73,10 @@ import { reportResponse } from "./reports";
 const NOT_ALLOWED = "This action is not allowed";
 
 const afterGate =
-  (answer: (c: ApiContext) => Response): ApiHandler =>
+  (answer: (...args: Parameters<ApiHandler>) => Response | Promise<Response>): ApiHandler =>
   async (c, deps) => {
     await checkAdminCredential(c, deps);
-    return answer(c);
+    return answer(c, deps);
   };
 
 // Mastodon's policy refusal for a role without the route's permission (ApplicationPolicy, Api::ErrorHandling's
@@ -86,6 +87,13 @@ export const notAllowed = afterGate(() => mastodonError(403, NOT_ALLOWED));
 // set_ip_block, set_email_domain_block, set_canonical_email_block): RecordNotFound, since Kopje stores no domain
 // allows, IP blocks, email domain blocks or canonical email blocks.
 export const recordNotFound = afterGate(notFound);
+
+// GET /api/v1/admin/trends/{tags,statuses,links} (Api::V1::Admin::Trends::*Controller#index): past the gate, the public
+// trends (`super`, as the OAuth admin has no manage_taxonomies), answered as to a signed-in caller, so not cached
+// publicly (cache_if_unauthenticated!).
+export const trendTags = afterGate(trends.trendTags);
+export const trendStatuses = afterGate(trends.trendStatuses);
+export const trendLinks = afterGate(trends.trendLinks);
 
 // ---- Reports (Api::V1::Admin::ReportsController, app/controllers/api/v1/admin/reports_controller.rb;
 // domain/reports.ts). Mastodon's set_report precedes manage_reports policy, after the gate; Kopje's operation checks

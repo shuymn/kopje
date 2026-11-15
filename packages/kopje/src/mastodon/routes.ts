@@ -273,8 +273,8 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/markers", { scope: "write:statuses" }, markers.saveMarkers),
   // Reports (mastodon/reports.ts).
   post("/api/v1/reports", { scope: "write:reports" }, reports.createReport),
-  // The Mastodon admin API (mastodon/admin.ts): all 63 routes, each with its admin scope, all but the trends lists
-  // behind the admin gate (Mastodon's Admin::PermissionsConcern, then authorize_if_got_token!).
+  // The Mastodon admin API (mastodon/admin.ts): all 63 routes, each with its admin scope behind the admin gate
+  // (Mastodon's Admin::PermissionsConcern, then authorize_if_got_token!).
   get("/api/v1/admin/accounts", { scope: "admin:read:accounts", admin: true }, admin.adminAccounts(1)),
   get("/api/v2/admin/accounts", { scope: "admin:read:accounts", admin: true }, admin.adminAccounts(2)),
   get("/api/v1/admin/accounts/:id", { scope: "admin:read:accounts", admin: true }, admin.adminAccount),
@@ -391,9 +391,9 @@ export const ROUTES: readonly Route[] = [
     { scope: "admin:write:canonical_email_blocks", admin: true },
     admin.recordNotFound,
   ),
-  get("/api/v1/admin/trends/links", { scope: "admin:read", optional: true }, trends.trendLinks),
-  get("/api/v1/admin/trends/statuses", { scope: "admin:read", optional: true }, trends.trendStatuses),
-  get("/api/v1/admin/trends/tags", { scope: "admin:read", optional: true }, trends.trendTags),
+  get("/api/v1/admin/trends/links", { scope: "admin:read", admin: true }, admin.trendLinks),
+  get("/api/v1/admin/trends/statuses", { scope: "admin:read", admin: true }, admin.trendStatuses),
+  get("/api/v1/admin/trends/tags", { scope: "admin:read", admin: true }, admin.trendTags),
   get("/api/v1/admin/trends/links/publishers", { scope: "admin:read", admin: true }, admin.notAllowed),
   post("/api/v1/admin/trends/links/:id/approve", { scope: "admin:write", admin: true }, admin.notAllowed),
   post("/api/v1/admin/trends/links/:id/reject", { scope: "admin:write", admin: true }, admin.notAllowed),

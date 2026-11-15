@@ -55,9 +55,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The admin API refuses every caller other than the OAuth admin with 403 `{"error":"Forbidden"}` first, as Mastodon
   4.7.5 does: no token, an unknown or app token, or another account's token, whatever its scopes or expiry, before any
   token check (401), lookup (404) or parameter error (400, 422), where such a caller was answered those or 403 "This
-  action is not allowed"; a suspended user's token is still answered 403 "Your login is currently disabled" first. To
-  the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400 without
-  `start_at` or `end_at`, as Mastodon 4.7.5 does, and 422 for a date that is not ISO 8601, as measures does
+  action is not allowed"; a suspended user's token is still answered 403 "Your login is currently disabled" first.
+  `GET /api/v1/admin/trends/{links,statuses,tags}` no longer answer such callers the public trends. To the OAuth
+  admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400 without `start_at` or
+  `end_at`, as Mastodon 4.7.5 does, and 422 for a date that is not ISO 8601, as measures does
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)); both answered `[]` before. No Store migration and no
   `wrangler.jsonc` change.
 - Day ranges follow Mastodon 4.5.21. `GET /api/v1/instance/activity` counts 7 days a week, so the day before a week's

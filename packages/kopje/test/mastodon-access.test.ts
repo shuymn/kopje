@@ -346,9 +346,7 @@ describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
     const gated = ROUTES.filter((route) => typeof route.access === "object" && route.access.admin === true).map(
       (route) => `${route.method} ${mastodonRoute(route.method, route.path)?.path ?? route.path}`,
     );
-    // The trends lists still answer the public trends to anyone.
-    const UNGATED = /^GET \/api\/v1\/admin\/trends\/(links|statuses|tags)$/;
-    expect(gated.toSorted()).toEqual(guarded.filter((name) => !UNGATED.test(name)).toSorted());
+    expect(gated.toSorted()).toEqual(guarded.toSorted());
   });
 
   it("lists exceptions only for routes of the table", () => {

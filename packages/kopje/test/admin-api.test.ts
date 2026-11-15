@@ -454,9 +454,9 @@ describe("admin routes (AUTH-2, VIS-29)", () => {
     return { h, alice, tokens, ids, send, callsOf };
   }
 
-  it("are all 63 routed, all but the trends lists behind the admin gate", () => {
+  it("are all 63 routed, each behind the admin gate", () => {
     expect(adminRoutes).toHaveLength(63);
-    expect(gatedRoutes.map(route)).toEqual(adminRoutes.filter((r) => !TRENDS.test(r.path)).map(route));
+    expect(gatedRoutes.map(route)).toEqual(adminRoutes.map(route));
     const answers = adminRoutes.map((r) => adminAnswer(r.path, r.method).status);
     expect(answers.filter((status) => status === 200)).toHaveLength(9);
     expect(answers.filter((status) => status === 400)).toHaveLength(2);
