@@ -8,9 +8,10 @@ import { PROFILE_IMAGES } from "../domain/media";
 import type { Site } from "../domain/web-pages/site";
 import { INTERACTION_PATH, interactionTarget, SESSION_LIFETIME_MS, WEB_SCOPES } from "../domain/web-session";
 import { notSetUp } from "../federation/setup-gate";
-import { credentialChanges, profileFiles, storeProfileImages } from "../mastodon/accounts";
+import { credentialChanges, profileFiles, storeProfileImages, UPLOAD_EXPIRED } from "../mastodon/accounts";
 import { noteActivitySoon } from "../mastodon/activity";
 import { type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/context";
+import { fullMessage, validationBody } from "../mastodon/errors";
 import { discardProfileUploads, type ProfileUpload, sweepSoon } from "../mastodon/media";
 import { Params, readParams } from "../mastodon/params";
 import { PROFILE_IMAGE_LIMIT } from "../platform/images";
@@ -345,7 +346,7 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
       headerDescription,
     } = changes;
     if (problems.length > 0) {
-      return renderSettings(c, checked.session, problems);
+      return renderSettings(c, checked.session, problems.map(fullMessage));
     }
     const credential = await credentialOf(checked.session, "write:accounts");
     const result = await storeCall(c, deps, (s, b) =>
@@ -408,11 +409,9 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
       // The API's checks and pipeline (mastodon/accounts.ts), with the page's one file as the image.
       const file = read.params.file("file");
       const files = file === undefined ? "string" : await profileFiles(new Params([], new Map([[kind, file]])));
-      if (files === "string" || files.problems.length > 0) {
+      if (files === "string" || files.problems[kind].length > 0) {
         const problem =
-          files === "string"
-            ? "Validation failed: File can't be blank"
-            : `Validation failed: ${files.problems.join(", ")}`;
+          files === "string" ? "Validation failed: File can't be blank" : validationBody(files.problems[kind]).error;
         return message(c, 422, STRINGS.errors.uploadFailedTitle, problem, BACK);
       }
       const owned: ProfileUpload[] = [];
@@ -425,8 +424,9 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
           files.images,
           owned,
         );
-        if ("error" in stored) {
-          return await message(c, 422, STRINGS.errors.uploadFailedTitle, stored.error, BACK);
+        if (Array.isArray(stored) || "error" in stored) {
+          const problem = Array.isArray(stored) ? validationBody(stored).error : stored.error;
+          return await message(c, 422, STRINGS.errors.uploadFailedTitle, problem, BACK);
         }
         const result = await storeCall(c, deps, (s, b) =>
           s.updateCredentials(b, {
@@ -441,7 +441,8 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
           return toLogin(c);
         }
         if (result.value.status !== "ok") {
-          return await message(c, 422, STRINGS.errors.uploadFailedTitle, "Validation failed: The upload expired", BACK);
+          const expired = validationBody([UPLOAD_EXPIRED]).error;
+          return await message(c, 422, STRINGS.errors.uploadFailedTitle, expired, BACK);
         }
         committed = true;
         sweepSoon(c, deps);

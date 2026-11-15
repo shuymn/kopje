@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { API_BODY_LIMIT } from "../src/mastodon/params";
-import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
+import { credentialChanges, profileFiles } from "../src/mastodon/accounts";
+import { validationBody, type ValidationBody } from "../src/mastodon/errors";
+import { API_BODY_LIMIT, Params } from "../src/mastodon/params";
+import { utf8Length } from "../src/platform/dump-format";
+import { PROFILE_IMAGE_LIMIT } from "../src/platform/images";
+import { ATTRIBUTION_DOMAIN_BYTES, MAX_ATTRIBUTION_DOMAINS } from "../src/platform/stored-bounds";
 import {
   type ApiHarness,
   apiHarness,
@@ -254,14 +258,24 @@ describe("credentials", () => {
       attribution_domains: ["ok.example", "under_score.example", "writer.example/path", ".lead.example", "a b"],
     });
     expect(invalid.status).toBe(422);
+    const line = (domain: string) => ({
+      error: "ERR_INVALID_DOMAIN_ON_LINE",
+      description: `${domain} is not a valid domain name`,
+    });
     expect(await invalid.json()).toEqual({
       error:
         "Validation failed: Attribution domains under_score.example is not a valid domain name, Attribution domains writer.example/path is not a valid domain name, Attribution domains .lead.example is not a valid domain name, Attribution domains a b is not a valid domain name",
+      details: {
+        attribution_domains: ["under_score.example", "writer.example/path", ".lead.example", "a b"].map(line),
+      },
     });
     const many = await patch({ attribution_domains: Array.from({ length: 101 }, (_, i) => `d${i}.example`) });
     expect(many.status).toBe(422);
     expect(await many.json()).toEqual({
       error: "Validation failed: Attribution domains is too long (maximum is 100 characters)",
+      details: {
+        attribution_domains: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 100 characters)" }],
+      },
     });
     const hundred = await patch({ attribution_domains: Array.from({ length: 100 }, (_, i) => `d${i}.example`) });
     expect(hundred.status).toBe(200);
@@ -289,7 +303,7 @@ describe("credentials", () => {
     ]);
     const refused = await patch({ attribution_domains: ["ok.example", over] });
     expect(refused.status).toBe(422);
-    expect(await refused.json()).toEqual({
+    expect(await refused.json()).toMatchObject({
       error: `Validation failed: Attribution domains ${over} is not a valid domain name`,
     });
     const accepted = await patch({ attribution_domains: ["ok.example", at] });
@@ -313,7 +327,7 @@ describe("credentials", () => {
     for (const value of ["😀".repeat(41), "x".repeat(41), `${"😀".repeat(20)}${"x".repeat(21)}`]) {
       const refused = await patch(value);
       expect(refused.status, value).toBe(422);
-      expect(await refused.json()).toEqual({
+      expect(await refused.json()).toMatchObject({
         error: "Validation failed: Display name is too long (maximum is 40 characters)",
       });
     }
@@ -350,13 +364,15 @@ describe("credentials", () => {
     ]) {
       const refused = await patch({ display_name: value });
       expect(refused.status, JSON.stringify(value)).toBe(422);
-      expect(await refused.json()).toEqual({
+      expect(await refused.json()).toMatchObject({
         error: "Validation failed: Display name is too long (maximum is 40 characters)",
       });
     }
     const note = await patch({ note: `${"x".repeat(500)}\u3000` });
     expect(note.status).toBe(422);
-    expect(await note.json()).toEqual({ error: "Validation failed: Note is too long (maximum is 500 characters)" });
+    expect(await note.json()).toMatchObject({
+      error: "Validation failed: Note is too long (maximum is 500 characters)",
+    });
     expect(await stored()).toEqual(kept);
     expect((await patch({ display_name: `${"😀".repeat(20)}\u0000${"😀".repeat(19)}` })).status).toBe(200);
     expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
@@ -424,6 +440,209 @@ describe("credentials", () => {
     const me = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
     expect(await me.json()).toMatchObject({ display_name: "Alice", source: { privacy: "public" } });
   });
+});
+
+// update_credentials' 422 as Mastodon 4.7.5 answers it (ValidationErrorFormatter, app/lib/validation_error_formatter.rb):
+// the bodies below are M1's, byte for byte, each a request that changed nothing there.
+describe("update_credentials validation errors", () => {
+  const M1 = {
+    note: '{"error":"Validation failed: Note is too long (maximum is 500 characters)","details":{"note":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 500 characters)"}]}}',
+    domain:
+      '{"error":"Validation failed: Attribution domains exa mple.com is not a valid domain name","details":{"attribution_domains":[{"error":"ERR_INVALID_DOMAIN_ON_LINE","description":"exa mple.com is not a valid domain name"}]}}',
+    avatar:
+      '{"error":"Validation failed: Avatar content type is invalid, Avatar is invalid","details":{"avatar_content_type":[{"error":"ERR_INVALID","description":"is invalid"}],"avatar":[{"error":"ERR_IS INVALID","description":"is invalid"}]}}',
+  };
+
+  async function refused(h: ApiHarness & { token: string }, init: RequestInit): Promise<string> {
+    const before = await (await h.request("/api/v1/accounts/verify_credentials", bearer(h.token))).text();
+    const response = await h.request("/api/v1/accounts/update_credentials", bearer(h.token, init));
+    expect(response.status).toBe(422);
+    const body = await response.text();
+    expect(await (await h.request("/api/v1/accounts/verify_credentials", bearer(h.token))).text()).toBe(before);
+    return body;
+  }
+
+  it("answers validation errors with Mastodon's details", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, unknown>) => json(body, { method: "PATCH" });
+    const thirtyOne = "a".repeat(31);
+    expect(await refused(h, patch({ note: "b".repeat(501) }))).toBe(M1.note);
+    expect(
+      await refused(h, patch({ display_name: thirtyOne, attribution_domains: ["exa mple.com", "ok.example"] })),
+    ).toBe(M1.domain);
+    const avatar = new FormData();
+    avatar.set("avatar", new File(["not an image"], "x.txt", { type: "text/plain" }));
+    avatar.set("display_name", thirtyOne);
+    expect(await refused(h, { method: "PATCH", body: avatar })).toBe(M1.avatar);
+  });
+
+  // Account::Avatar's validations (the file's content type and size, as Paperclip adds them, then its description's),
+  // Account::Header's, Account::AttributionDomains', then the display name, the note and the fields (account.rb:33-50,
+  // 131-134), then Kopje's own refusals of the user's settings.
+  it("orders problems as Mastodon validates", async () => {
+    const h = await aliceSession();
+    const body = new FormData();
+    body.set("source[language]", "english");
+    body.set("source[quote_policy]", "everyone");
+    body.set("source[privacy]", "secret");
+    for (let i = 0; i < 5; i++) {
+      body.set(`fields_attributes[${i}][name]`, `n${i}`);
+      body.set(`fields_attributes[${i}][value]`, "v");
+    }
+    body.set("note", "b".repeat(501));
+    body.set("display_name", "a".repeat(41));
+    body.append("attribution_domains[]", "a b");
+    body.set("header_description", "d".repeat(151));
+    body.set("avatar_description", "d".repeat(151));
+    body.set("header", new File(["not an image"], "h.txt"));
+    body.set("avatar", new File([new Uint8Array(PROFILE_IMAGE_LIMIT)], "a.bin"));
+    const answer = JSON.parse(await refused(h, { method: "PATCH", body })) as ValidationBody;
+    expect(answer.error.slice("Validation failed: ".length).split(", ")).toEqual([
+      "Avatar content type is invalid",
+      "Avatar is invalid",
+      "Avatar must be less than 8 MB",
+      "Avatar file size must be less than 8 MB",
+      "Avatar description is too long (maximum is 150 characters)",
+      "Header content type is invalid",
+      "Header is invalid",
+      "Header description is too long (maximum is 150 characters)",
+      "Attribution domains a b is not a valid domain name",
+      "Display name is too long (maximum is 40 characters)",
+      "Note is too long (maximum is 500 characters)",
+      "Fields is too long (maximum is 4 fields)",
+      "Privacy is not included in the list",
+      "Quote policy is not included in the list",
+      "Language is not a valid language code",
+    ]);
+    expect(Object.keys(answer.details)).toEqual([
+      "avatar_content_type",
+      "avatar",
+      "avatar_file_size",
+      "avatar_description",
+      "header_content_type",
+      "header",
+      "header_description",
+      "attribution_domains",
+      "display_name",
+      "note",
+      "fields",
+      "privacy",
+      "quote_policy",
+      "language",
+    ]);
+    expect(answer.details.avatar).toEqual([
+      { error: "ERR_IS INVALID", description: "is invalid" },
+      { error: "ERR_LESS_THAN", description: "must be less than 8 MB" },
+    ]);
+  }, 60_000);
+
+  // The 422 echoes each invalid attribution domain twice (its message and its details), at most MAX_ATTRIBUTION_DOMAINS
+  // of them. Its maximum: every other problem credentialChanges and profileFiles can report, once each, the reported
+  // domains' entries without their text (both read from the formatter's own output), and the text itself, at most the
+  // form text readParams admits (API_BODY_LIMIT), each byte at most 6 in JSON (a control character as \u00XX), twice.
+  const DOMAIN = "attribution_domains[]";
+  const domainLine = / is not a valid domain name$/;
+
+  async function invalidDomainMaximum(): Promise<number> {
+    const many = (n: number) => Array.from({ length: n }, (_, i): [string, string] => [DOMAIN, `z${i}\u0001`]);
+    const entries: [string, string][] = [
+      ["avatar_description", "d".repeat(151)],
+      ["header_description", "d".repeat(151)],
+      ...many(MAX_ATTRIBUTION_DOMAINS + 1),
+      ["display_name", "a".repeat(41)],
+      ["note", "b".repeat(501)],
+      ...Array.from({ length: 5 }, (_, i): [string, string][] => [
+        [`fields_attributes[${i}][name]`, i === 0 ? "n".repeat(256) : `n${i}`],
+        [`fields_attributes[${i}][value]`, "v"],
+      ]).flat(),
+      ["source[privacy]", "secret"],
+      ["source[quote_policy]", "everyone"],
+      ["source[language]", "english"],
+    ];
+    const big = (name: string) => new File([new Uint8Array(PROFILE_IMAGE_LIMIT)], name);
+    const p = new Params(
+      entries,
+      new Map([
+        ["avatar", big("a")],
+        ["header", big("h")],
+      ]),
+    );
+    const files = await profileFiles(p);
+    if (files === "string") {
+      throw new Error("files read as text");
+    }
+    const { problems } = credentialChanges(p, files.problems);
+    // Every problem the two can report together: none left out.
+    const kinds = problems.map(({ attribute, type }) => `${attribute} ${type}`);
+    expect([...new Set(kinds)]).toEqual([
+      "avatar_content_type invalid",
+      "avatar is invalid",
+      "avatar less_than",
+      "avatar_file_size less_than",
+      "avatar_description too_long",
+      "header_content_type invalid",
+      "header is invalid",
+      "header less_than",
+      "header_file_size less_than",
+      "header_description too_long",
+      "attribution_domains invalid_domain_on_line",
+      "attribution_domains too_long",
+      "display_name too_long",
+      "note too_long",
+      "fields too_long",
+      "privacy inclusion",
+      "quote_policy inclusion",
+      "language invalid",
+    ]);
+    const reported = problems.filter((problem) => problem.type === "invalid_domain_on_line");
+    expect(reported).toHaveLength(MAX_ATTRIBUTION_DOMAINS);
+    const textless = problems.map((problem) =>
+      problem.type === "invalid_domain_on_line"
+        ? { ...problem, description: domainLine.exec(problem.description)![0].trimStart() }
+        : problem,
+    );
+    return utf8Length(JSON.stringify(validationBody(textless))) + 12 * API_BODY_LIMIT;
+  }
+
+  // The witness: 101 domains through a multipart body whose form text is exactly API_BODY_LIMIT, 100 of them x<i> and
+  // U+0001 filling the text, the 101st y and one U+0001; one more byte of text is refused before any check.
+  function witness(extra: number): FormData {
+    const prefixes = Array.from({ length: MAX_ATTRIBUTION_DOMAINS }, (_, i) => `x${i}`);
+    const last = "y\u0001";
+    const fixed = (MAX_ATTRIBUTION_DOMAINS + 1) * utf8Length(DOMAIN) + utf8Length(prefixes.join("")) + utf8Length(last);
+    const fill = API_BODY_LIMIT - fixed + extra;
+    const body = new FormData();
+    prefixes.forEach((prefix, i) => {
+      const share = Math.floor(fill / MAX_ATTRIBUTION_DOMAINS) + (i < fill % MAX_ATTRIBUTION_DOMAINS ? 1 : 0);
+      body.append(DOMAIN, prefix + "\u0001".repeat(share));
+    });
+    body.append(DOMAIN, last);
+    return body;
+  }
+
+  it("reports at most 100 invalid domains, within the derived maximum", async () => {
+    const h = await aliceSession();
+    const over = await h.request(
+      "/api/v1/accounts/update_credentials",
+      bearer(h.token, { method: "PATCH", body: witness(1) }),
+    );
+    expect(over.status).toBe(413);
+    const text = await refused(h, { method: "PATCH", body: witness(0) });
+    const answer = JSON.parse(text) as ValidationBody;
+    const lines = answer.details.attribution_domains!;
+    expect(lines).toHaveLength(MAX_ATTRIBUTION_DOMAINS + 1);
+    const prefixes = lines.slice(0, -1).map((line) => {
+      const [domain] = line.description.split(" ");
+      return domain?.replaceAll("\u0001", "");
+    });
+    expect(prefixes).toEqual(Array.from({ length: MAX_ATTRIBUTION_DOMAINS }, (_, i) => `x${i}`));
+    expect(lines.at(-1)).toEqual({ error: "ERR_TOO_LONG", description: "is too long (maximum is 100 characters)" });
+    expect(text).not.toContain("y\\u0001");
+    const maximum = await invalidDomainMaximum();
+    const bytes = utf8Length(text);
+    expect(bytes).toBeLessThanOrEqual(maximum);
+    expect(bytes).toBeGreaterThanOrEqual(0.99 * maximum);
+  }, 60_000);
 });
 
 describe("account lookup", () => {

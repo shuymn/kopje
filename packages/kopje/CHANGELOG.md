@@ -278,6 +278,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
 - The settings page's bio shows a stored note that starts with a line break whole, where the browser dropped that
   line break. No Store migration and no `wrangler.jsonc` change.
+- `PATCH /api/v1/accounts/update_credentials` answers validation errors with Mastodon's `details` and messages, in
+  the order Mastodon validates: an avatar or header that is too large or not an image is reported as Paperclip reports
+  it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

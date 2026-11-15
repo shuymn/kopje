@@ -16,7 +16,7 @@ import type { UserCredential } from "../domain/auth";
 import { DIRECTORY_DEFAULT_LIMIT, DIRECTORY_MAX_LIMIT } from "../domain/directory";
 import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
-import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
+import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageAccepted, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { PROFILE_DESCRIPTION_LIMIT, withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -38,10 +38,11 @@ import {
   userCredential,
   withParams,
 } from "./context";
-import { mastodonError, recordNotFound, validationFailed } from "./errors";
+import { mastodonError, type Problem, recordNotFound, validationDetails, validationFailed } from "./errors";
 import {
   discardProfileUploads,
   type Failure,
+  PIXELS_PROBLEM,
   type ProfileUpload,
   storeProfileImage,
   sweepSoon,
@@ -63,33 +64,69 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
 
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
+// ActiveModel's inclusion error on `attribute`.
+function notIncluded(attribute: string): Problem {
+  return { attribute, type: "inclusion", description: "is not included in the list" };
+}
+
+// ActiveModel's too_long error on `attribute`.
+function tooLong(attribute: string, maximum: number, unit = "characters"): Problem {
+  return { attribute, type: "too_long", description: `is too long (maximum is ${maximum} ${unit})` };
+}
+
+// The validation problems of a form's avatar and header files (profileFiles), by image.
+export type ImageProblems = Readonly<Record<ProfileImage, readonly Problem[]>>;
+
+const NO_IMAGE_PROBLEMS: ImageProblems = { avatar: [], header: [] };
 
 // The changes both update_credentials and the profile update ask for (Mastodon's account_params), and the validation
-// problems with them, with Mastodon's messages in its order (Account::Avatar's and Account::Header's description
-// checks come before the display name's).
-function accountChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
+// problems with them, as Mastodon validates them: Account::Avatar's (the file's, then its description's) and
+// Account::Header's, Account::AttributionDomains', then the display name's, the note's and the fields'
+// (app/models/account.rb:33-50, 131-134).
+function accountChanges(p: Params, images: ImageProblems): { changes: CredentialChanges; problems: Problem[] } {
   const changes: CredentialChanges = {};
-  const problems: string[] = [];
+  const problems: Problem[] = [];
   // Stored as sent: Mastodon strips neither. '' clears one; an absent one is kept.
   const avatarDescription = p.get("avatar_description");
   const headerDescription = p.get("header_description");
-  for (const [attribute, description] of [
-    ["Avatar", avatarDescription],
-    ["Header", headerDescription],
+  for (const [kind, description] of [
+    ["avatar", avatarDescription],
+    ["header", headerDescription],
   ] as const) {
+    problems.push(...images[kind]);
     if (description !== undefined && yieldsMoreThan(description, PROFILE_DESCRIPTION_LIMIT)) {
-      problems.push(`${attribute} description is too long (maximum is ${PROFILE_DESCRIPTION_LIMIT} characters)`);
+      problems.push(tooLong(`${kind}_description`, PROFILE_DESCRIPTION_LIMIT));
     }
   }
   changes.avatarDescription = avatarDescription;
   changes.headerDescription = headerDescription;
+  const attribution = p.list("attribution_domains");
+  if (attribution !== undefined) {
+    const domains = normalizeAttributionDomains(attribution);
+    // A domain past ATTRIBUTION_DOMAIN_BYTES (a host padded with characters IDNA ignores) is refused as not valid,
+    // so every stored domain is presented (presentedAttributionDomains; docs/mastodon-deviations.md). Each invalid
+    // domain is reported with its text, as DomainValidator reports it, but only the first MAX_ATTRIBUTION_DOMAINS:
+    // the cap bounds the answer (test/accounts.test.ts derives its maximum).
+    const invalid = domains.filter((d) => !compliantDomain(d) || !withinAttributionDomainBound(d));
+    for (const domain of invalid.slice(0, MAX_ATTRIBUTION_DOMAINS)) {
+      problems.push({
+        attribute: "attribution_domains",
+        type: "invalid_domain_on_line",
+        description: `${domain} is not a valid domain name`,
+      });
+    }
+    if (domains.length > MAX_ATTRIBUTION_DOMAINS) {
+      problems.push(tooLong("attribution_domains", MAX_ATTRIBUTION_DOMAINS));
+    }
+    changes.attributionDomains = domains;
+  }
   // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
   // dropped when stored (storedText).
   const rawName = p.get("display_name");
   if (rawName !== undefined) {
     const displayName = rubyStrip(rawName);
     if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
-      problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
+      problems.push(tooLong("display_name", MAX_DISPLAY_NAME));
     }
     changes.displayName = displayName;
   }
@@ -97,7 +134,7 @@ function accountChanges(p: Params): { changes: CredentialChanges; problems: stri
   if (rawNote !== undefined) {
     const note = rubyStrip(rawNote);
     if (yieldsMoreThan(note, MAX_NOTE)) {
-      problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
+      problems.push(tooLong("note", MAX_NOTE));
     }
     changes.note = note;
   }
@@ -109,25 +146,12 @@ function accountChanges(p: Params): { changes: CredentialChanges; problems: stri
       .map((field) => ({ name: (field.name ?? "").trim(), value: (field.value ?? "").trim() }))
       .filter((field) => field.name !== "" || field.value !== "");
     if (fields.length > MAX_FIELDS) {
-      problems.push(`Fields is too long (maximum is ${MAX_FIELDS} fields)`);
+      problems.push(tooLong("fields", MAX_FIELDS, "fields"));
     }
     if (fields.some((f) => yieldsMoreThan(f.name, MAX_FIELD_NAME) || yieldsMoreThan(f.value, MAX_FIELD_VALUE))) {
-      problems.push(`Fields is too long (maximum is ${MAX_FIELD_NAME} characters each)`);
+      problems.push(tooLong("fields", MAX_FIELD_NAME, "characters each"));
     }
     changes.fields = fields;
-  }
-  const attribution = p.list("attribution_domains");
-  if (attribution !== undefined) {
-    const domains = normalizeAttributionDomains(attribution);
-    // A domain past ATTRIBUTION_DOMAIN_BYTES (a host padded with characters IDNA ignores) is refused as not valid,
-    // so every stored domain is presented (presentedAttributionDomains; docs/mastodon-deviations.md).
-    for (const domain of domains.filter((d) => !compliantDomain(d) || !withinAttributionDomainBound(d))) {
-      problems.push(`Attribution domains ${domain} is not a valid domain name`);
-    }
-    if (domains.length > MAX_ATTRIBUTION_DOMAINS) {
-      problems.push(`Attribution domains is too long (maximum is ${MAX_ATTRIBUTION_DOMAINS} characters)`);
-    }
-    changes.attributionDomains = domains;
   }
   changes.locked = parseBoolean(p.get("locked"));
   changes.bot = parseBoolean(p.get("bot"));
@@ -138,30 +162,35 @@ function accountChanges(p: Params): { changes: CredentialChanges; problems: stri
 }
 
 // The changes update_credentials asks for: accountChanges and its source[...] (Mastodon's user_params), with their
-// validation problems. Shared by the API and the settings page (app/web.tsx), which posts the same names. Avatar and
-// header come through the media pipeline on the settings page only.
-export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
-  const { changes, problems } = accountChanges(p);
+// validation problems, the form's image files' (profileFiles) among them. Shared by the API and the settings page
+// (app/web.tsx), which posts the same names. Avatar and header come through the media pipeline on the settings page
+// only.
+export function credentialChanges(
+  p: Params,
+  images: ImageProblems = NO_IMAGE_PROBLEMS,
+): { changes: CredentialChanges; problems: Problem[] } {
+  const { changes, problems } = accountChanges(p, images);
+  // Mastodon saves the account first and raises on another value of these (500); Kopje refuses it with the account's
+  // problems, as a Rails inclusion error.
   const privacy = p.get("source[privacy]");
   if (privacy !== undefined) {
     if (!VISIBILITIES.includes(privacy)) {
-      problems.push("Privacy is not included in the list");
+      problems.push(notIncluded("privacy"));
     }
     changes.privacy = privacy as Visibility;
   }
-  // UserSettings' default_quote_policy (public, followers or nobody). Mastodon raises on any other value (an error
-  // answered 500); Kopje refuses it as it refuses another privacy.
+  // UserSettings' default_quote_policy (public, followers or nobody).
   const quotePolicy = p.get("source[quote_policy]");
   if (quotePolicy !== undefined) {
     if (!QUOTE_POLICY_NAMES.includes(quotePolicy as QuotePolicyName)) {
-      problems.push("Quote policy is not included in the list");
+      problems.push(notIncluded("quote_policy"));
     }
     changes.quotePolicy = quotePolicy as QuotePolicyName;
   }
   const language = p.get("source[language]");
   if (language !== undefined) {
     if (language !== "" && !LANGUAGE.test(language)) {
-      problems.push("Language is not a valid language code");
+      problems.push({ attribute: "language", type: "invalid", description: "is not a valid language code" });
     }
     changes.language = language === "" ? null : language;
   }
@@ -211,16 +240,24 @@ function compliantDomain(value: string): boolean {
 
 const PROFILE_FILES = { names: PROFILE_IMAGES, maxBytes: PROFILE_IMAGE_LIMIT };
 
-const IMAGE_ATTRIBUTE: Record<ProfileImage, string> = { avatar: "Avatar", header: "Header" };
+// Paperclip's content type validation of an image (validators/attachment_content_type_validator.rb): its error on the
+// content type, copied to the image as the message string it is (add_validation_errors_to: :both).
+function contentTypeProblems(kind: ProfileImage): Problem[] {
+  return [
+    { attribute: `${kind}_content_type`, type: "invalid", description: "is invalid" },
+    { attribute: kind, type: "is invalid", description: "is invalid" },
+  ];
+}
 
 // The avatar and header files of a credentials form (multipart), checked as Paperclip validates them before anything
-// is reserved, each problem with Mastodon's message; or 'string' for a file parameter sent as a non-empty text value
-// (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file's first bytes are read here.
+// is reserved, each problem as Paperclip adds it (the content type's, then the size's: attachment_size_validator.rb
+// adds less_than to the image and then to its file size); or 'string' for a file parameter sent as a non-empty text
+// value (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file's first bytes are read.
 export async function profileFiles(
   p: Params,
-): Promise<{ images: Partial<Record<ProfileImage, File>>; problems: string[] } | "string"> {
+): Promise<{ images: Partial<Record<ProfileImage, File>>; problems: ImageProblems } | "string"> {
   const images: Partial<Record<ProfileImage, File>> = {};
-  const problems: string[] = [];
+  const problems: Record<ProfileImage, Problem[]> = { avatar: [], header: [] };
   for (const kind of PROFILE_IMAGES) {
     if ((p.get(kind) ?? "") !== "") {
       return "string";
@@ -229,28 +266,36 @@ export async function profileFiles(
     if (file === undefined) {
       continue;
     }
-    const problem =
-      file.size >= PROFILE_IMAGE_LIMIT
-        ? PROFILE_TOO_LARGE
-        : profileImageProblem(new Uint8Array(await file.slice(0, SIGNATURE_BYTES).arrayBuffer()));
-    if (problem !== null) {
-      problems.push(`${IMAGE_ATTRIBUTE[kind]} ${problem}`);
-    } else {
+    if (!profileImageAccepted(new Uint8Array(await file.slice(0, SIGNATURE_BYTES).arrayBuffer()))) {
+      problems[kind].push(...contentTypeProblems(kind));
+    }
+    if (file.size >= PROFILE_IMAGE_LIMIT) {
+      problems[kind].push(
+        { attribute: kind, type: "less_than", description: PROFILE_TOO_LARGE },
+        { attribute: `${kind}_file_size`, type: "less_than", description: PROFILE_TOO_LARGE },
+      );
+    }
+    if (problems[kind].length === 0) {
       images[kind] = file;
     }
   }
   return { images, problems };
 }
 
+// A base error, as an unsaved Account answers an expired upload.
+export const UPLOAD_EXPIRED: Problem = { attribute: "base", type: "invalid", description: "The upload expired" };
+
 // Each image through the upload pipeline (mastodon/media.ts storeProfileImage), in turn, its bytes read only then; the
-// uploads made so far are passed to `owned` as they complete, so the caller can discard them if the request fails.
+// uploads made so far are passed to `owned` as they complete, so the caller can discard them if the request fails. A
+// validation failure is its problems: the content type's as profileFiles reports it, the pixel limit as the image's
+// invalid, an expired upload as UPLOAD_EXPIRED.
 export async function storeProfileImages(
   c: UploadContext,
   deps: ApiDeps,
   credential: () => UserCredential,
   images: Partial<Record<ProfileImage, File>>,
   owned: ProfileUpload[],
-): Promise<ProfileImages | Failure> {
+): Promise<ProfileImages | Failure | Problem[]> {
   const ids: ProfileImages = {};
   for (const kind of PROFILE_IMAGES) {
     const file = images[kind];
@@ -259,7 +304,7 @@ export async function storeProfileImages(
     }
     const stored = await storeProfileImage(c, deps, credential, new Uint8Array(await file.arrayBuffer()));
     if (!stored.ok) {
-      return { status: stored.status, error: profileFailure(kind, stored.error) };
+      return profileFailure(kind, stored);
     }
     owned.push(stored.upload);
     ids[kind] = stored.upload.id;
@@ -267,8 +312,17 @@ export async function storeProfileImages(
   return ids;
 }
 
-function profileFailure(kind: ProfileImage, error: string): string {
-  return error.replace("Validation failed: File ", `Validation failed: ${IMAGE_ATTRIBUTE[kind]} `);
+function profileFailure(kind: ProfileImage, failure: Failure): Failure | Problem[] {
+  switch (failure.problem) {
+    case "content_type":
+      return contentTypeProblems(kind);
+    case "pixels":
+      return [{ attribute: kind, type: "invalid", description: PIXELS_PROBLEM }];
+    case "expired":
+      return [UPLOAD_EXPIRED];
+    default:
+      return failure;
+  }
 }
 
 // PATCH /api/v1/accounts/update_credentials. A multipart body may carry the avatar and header files, so its token is
@@ -289,19 +343,21 @@ export const updateCredentials: ApiHandler = async (c, deps) => {
     return multipart ? response : refuseAfterAuth(c, deps, response);
   }
   const p = read.params;
-  const { changes, problems } = credentialChanges(p);
   const files = await profileFiles(p);
   if (files === "string") {
     return refuseAfterAuth(c, deps, mastodonError(400, "Bad Request"));
   }
-  problems.push(...files.problems);
+  const { changes, problems } = credentialChanges(p, files.problems);
   if (problems.length > 0) {
-    return refuseAfterAuth(c, deps, validationFailed(problems));
+    return refuseAfterAuth(c, deps, validationDetails(problems, "flat"));
   }
   const owned: ProfileUpload[] = [];
   let committed = false;
   try {
     const images = await storeProfileImages(c, deps, () => userCredential(c, deps), files.images, owned);
+    if (Array.isArray(images)) {
+      return validationDetails(images, "flat");
+    }
     if ("error" in images) {
       return mastodonError(images.status, images.error);
     }
@@ -312,7 +368,7 @@ export const updateCredentials: ApiHandler = async (c, deps) => {
       ),
     );
     if (result.status === "upload_gone") {
-      return mastodonError(422, "Validation failed: The upload expired");
+      return validationDetails([UPLOAD_EXPIRED], "flat");
     }
     if (result.status === "not_found") {
       return recordNotFound();

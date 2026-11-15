@@ -13,6 +13,56 @@ export function validationFailed(errors: readonly string[]): Response {
   return mastodonError(422, `Validation failed: ${errors.join(", ")}`);
 }
 
+// One error of a Rails model (ActiveModel::Error): the attribute it is on ("base" for the record), its type (a symbol
+// such as too_long, or a message string such as the "is invalid" Paperclip adds) and its message.
+export interface Problem {
+  readonly attribute: string;
+  readonly type: string;
+  readonly description: string;
+}
+
+// ActiveModel::Error#full_message: the description alone on base, else the attribute as Rails' humanize writes it and
+// the description. No attribute of Account or Collection has a label in Mastodon's activerecord locale
+// (config/locales/activerecord.en.yml), so humanize alone names it.
+export function fullMessage(problem: Problem): string {
+  return problem.attribute === "base" ? problem.description : `${humanize(problem.attribute)} ${problem.description}`;
+}
+
+// ActiveSupport's humanize of an attribute name as full_message passes it ('.' read as '_'): leading underscores and a
+// trailing _id dropped, '_' as a space, the first letter capitalized.
+function humanize(attribute: string): string {
+  const words = attribute
+    .replaceAll(".", "_")
+    .replace(/^_+/, "")
+    .replace(/_id$/, "")
+    .replaceAll("_", " ")
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+export type ValidationBody = {
+  error: string;
+  details: Record<string, { error: string; description: string }[]>;
+};
+
+// ValidationErrorFormatter#as_json (app/lib/validation_error_formatter.rb): error is RecordInvalid's message, every full
+// message in the order added; details groups the problems by attribute in the order each was first added, each as
+// ERR_ and its type upcased.
+export function validationBody(problems: readonly Problem[]): ValidationBody {
+  const details: ValidationBody["details"] = {};
+  for (const { attribute, type, description } of problems) {
+    (details[attribute] ??= []).push({ error: `ERR_${type.toUpperCase()}`, description });
+  }
+  return { error: `Validation failed: ${problems.map(fullMessage).join(", ")}`, details };
+}
+
+// The 422 of a controller that answers with ValidationErrorFormatter: flat (update_credentials, /api/v1/profile) or
+// nested in error (collections).
+export function validationDetails(problems: readonly Problem[], form: "flat" | "nested"): Response {
+  const body = validationBody(problems);
+  return Response.json(form === "flat" ? body : { error: body }, { status: 422 });
+}
+
 export const INVALID_TOKEN = "The access token is invalid";
 
 // A missing, unknown or expired bearer token, answered as Mastodon's Doorkeeper answers it: 401 with an RFC 6750 §3
