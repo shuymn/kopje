@@ -4,12 +4,14 @@ import { describe, expect, it } from "vitest";
 import { postStatus, type ScheduleInput } from "../src/domain/scheduled-statuses";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
+import { API_BODY_LIMIT } from "../src/mastodon/params";
 import type { StoreStub } from "../src/platform/store-client";
-import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT } from "../src/platform/stored-bounds";
+import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT, MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
 import { countingStore, NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
   plannedRun,
   type PlannedStatement,
@@ -796,7 +798,7 @@ describe("editing", () => {
       { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
       { status: "x", poll: { options: ["a"], expires_in: 3600 } },
       { status: "x", quote_approval_policy: "everyone" },
-      { status: "x", media_attributes: [{ id: "1", description: "x".repeat(1501) }] },
+      { status: "x", media_attributes: [{ id: "1", description: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }] },
       { status: "x", media_attributes: [{ id: "1", thumbnail: "data:image/png;base64,AA==" }] },
     ];
     const editing = (h: ApiHarness, token: string, id: string, body: Record<string, unknown>) =>
@@ -1205,23 +1207,86 @@ describe("review regressions", () => {
     expect(await sql(h.store, "SELECT description FROM media_attachments WHERE id = '100000000000000002'")).toEqual([
       { description: "old" },
     ]);
-    // Form encoding works too, and a too-long description is refused.
-    const tooLong = await h.request(
-      `/api/v1/statuses/${status.id}`,
-      bearer(
-        alice.token,
-        form(
-          {
-            status: "pic",
-            "media_ids[]": "100000000000000001",
-            "media_attributes[][id]": "100000000000000001",
-            "media_attributes[][description]": "x".repeat(1501),
-          },
-          { method: "PUT" },
+    // Form encoding works too, and a too-long description is refused, whatever its plane.
+    for (const description of OVERLONG_DESCRIPTIONS) {
+      const tooLong = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(
+          alice.token,
+          form(
+            {
+              status: "pic",
+              "media_ids[]": "100000000000000001",
+              "media_attributes[][id]": "100000000000000001",
+              "media_attributes[][description]": description,
+            },
+            { method: "PUT" },
+          ),
         ),
-      ),
+      );
+      expect([description.length, tooLong.status, await tooLong.json()]).toEqual([
+        description.length,
+        422,
+        DESCRIPTION_TOO_LONG,
+      ]);
+    }
+    expect(await sql(h.store, "SELECT description FROM media_attachments WHERE id = '100000000000000001'")).toEqual([
+      { description: "new" },
+    ]);
+  });
+
+  // MediaAttachment::MAX_DESCRIPTION_LENGTH in code points on an edit's media_attributes: four descriptions of that
+  // many four-byte code points fit API_BODY_LIMIT even sent with every character `\u`-escaped (a surrogate pair, 12
+  // bytes), beside the text at its raw bound escaped the same; one code point more is refused and changes nothing.
+  it("takes four of the longest descriptions in one edit, every character escaped, and refuses a longer one", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const ids = ["100000000000000001", "100000000000000002", "100000000000000003", "100000000000000004"];
+    for (const id of ids) {
+      await sql(
+        h.store,
+        "INSERT INTO media_attachments (id, account_id, type, url, description) VALUES (?, ?, 'image', 'https://kopje.test/m.png', 'old')",
+        id,
+        alice.id,
+      );
+    }
+    const status = await post(h, alice, { status: "pic", media_ids: ids });
+    const longest = "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+    // Three URLs padded with '&': MAX_RAW_LENGTH code units, 71 counted characters.
+    const url = (length: number) => "https://example.com/".padEnd(length, "&");
+    const text = [url(3332), url(3333), url(3333)].join(" ");
+    expect(text.length).toBe(MAX_RAW_LENGTH);
+    const escaped = (value: string) =>
+      Array.from({ length: value.length }, (_, i) => `\\u${value.charCodeAt(i).toString(16).padStart(4, "0")}`).join(
+        "",
+      );
+    const attributes = ids.map((id) => `{"id":"${id}","description":"${escaped(longest)}"}`).join(",");
+    const body = `{"status":"${escaped(text)}","media_ids":${JSON.stringify(ids)},"media_attributes":[${attributes}]}`;
+    const bytes = new TextEncoder().encode(body).length;
+    expect(bytes).toBe(540_312);
+    expect(bytes).toBeLessThanOrEqual(API_BODY_LIMIT);
+    const response = await h.request(
+      `/api/v1/statuses/${status.id}`,
+      bearer(alice.token, { method: "PUT", headers: { "content-type": "application/json" }, body }),
     );
-    expect(tooLong.status).toBe(422);
+    expect(response.status).toBe(200);
+    const edited = await response.json<{ media_attachments: { description: string }[] }>();
+    expect(edited.media_attachments.map((m) => m.description)).toEqual(ids.map(() => longest));
+    const lengths = () => sql(h.store, "SELECT length(description) AS n FROM media_attachments ORDER BY id");
+    expect(await lengths()).toEqual(ids.map(() => ({ n: MAX_MEDIA_DESCRIPTION_LENGTH })));
+    for (const description of OVERLONG_DESCRIPTIONS) {
+      const refused = await put(h, alice.token, status.id, {
+        status: "pic",
+        media_ids: ids,
+        media_attributes: [{ id: ids[0], description }],
+      });
+      expect([description.length, refused.status, await refused.json()]).toEqual([
+        description.length,
+        422,
+        DESCRIPTION_TOO_LONG,
+      ]);
+    }
+    expect(await lengths()).toEqual(ids.map(() => ({ n: MAX_MEDIA_DESCRIPTION_LENGTH })));
   });
 
   it("bounds the edit history at write time", async () => {

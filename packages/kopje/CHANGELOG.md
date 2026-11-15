@@ -65,6 +65,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- A media description may have 10,000 characters on upload, media update and status edit, and
+  `configuration.media_attachments.description_limit` is 10000, as in Mastodon 4.6 (`mastodon#39306`); the limit was
+  1,500. A post and its quote with long descriptions can pass the streaming API's 512 KiB event limit, together with
+  formatted text that expands as it is sent (links, profile fields, poll choices) or with descriptions of control
+  characters such as U+0001; such an event is not streamed and shows on the next refresh
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

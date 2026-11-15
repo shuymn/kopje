@@ -1,5 +1,6 @@
 import { PIN_LIMIT } from "../domain/activities";
 import { DEFAULT_THUMBNAIL, INSTANCE_ICONS } from "../platform/brand-assets";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../platform/stored-bounds";
 import {
   type ApiContext,
   type ApiHandler,
@@ -11,7 +12,6 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { LANGUAGES } from "./languages";
-import { MAX_DESCRIPTION } from "./media";
 
 // /api/v1/instance and /api/v2/instance in their Mastodon 4.5 shapes. The payloads are frozen by a contract test.
 //
@@ -117,7 +117,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
       accounts: { ...CONFIGURATION.accounts, max_pinned_statuses: PIN_LIMIT },
-      media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_DESCRIPTION },
+      media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_MEDIA_DESCRIPTION_LENGTH },
       translation: { enabled: false },
       // Who may read the public, hashtag and link timelines: anyone, as Kopje serves them without a token.
       timelines_access: {

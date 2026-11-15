@@ -65,7 +65,8 @@ export const STREAM_LIMITS = {
   attachmentBytes: 12 * 1024,
   // A hashtag stream's `tag`, as sent and normalized, at most this many UTF-8 bytes.
   tagBytes: 256,
-  // A presented subject larger than this is skipped and logged.
+  // A presented subject whose payload passes this many UTF-8 bytes is skipped and logged; the events media descriptions
+  // at their length can push past it are an accepted departure (docs/mastodon-deviations.md, "Streaming.").
   payloadBytes: 512 * 1024,
 };
 

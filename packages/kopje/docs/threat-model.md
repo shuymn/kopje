@@ -2962,11 +2962,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. The
-  raw presenters (`present` and `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in
-  accounts.ts) are not exported, so the compiler refuses direct use outside their module; the exported paths present one
-  unit or admit within a budget. _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS`
-  hold their stored bounds (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
+  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
+  length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
+  bounds do (remote ones, or local content filled by mentions). The skip is an accepted departure
+  (`docs/mastodon-deviations.md`, "Streaming."; `test/streaming/public.test.ts`). The raw presenters (`present` and
+  `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
+  compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
+  _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
+  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. Columns that keep a read-time projection are read through their helper in

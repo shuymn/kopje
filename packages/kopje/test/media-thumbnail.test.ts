@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import { sweepMedia } from "../src/mastodon/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
+import { IMAGE_SIZE_LIMIT } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { bearer, json, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
@@ -180,13 +182,13 @@ describe.each(["v1", "v2"] as const)("POST /api/%s/media with a thumbnail", (ver
     const both = () =>
       multipartForm([
         ["file", png()],
-        ["description", "x".repeat(1501)],
+        ["description", "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1)],
         ["thumbnail", png()],
       ]);
     const described = await send(h, both());
     expect([described.status, await described.json()]).toEqual([
       422,
-      { error: "Validation failed: Description is too long (maximum is 1500 characters)" },
+      { error: `Validation failed: Description is too long (maximum is ${MAX_MEDIA_DESCRIPTION_LENGTH} characters)` },
     ]);
     const thumbnailOnly = () =>
       multipartForm([
@@ -197,6 +199,22 @@ describe.each(["v1", "v2"] as const)("POST /api/%s/media with a thumbnail", (ver
     const reader = await userToken(h, "alice@example.com", "read");
     expect((await send(h, thumbnailOnly(), "", reader)).status).toBe(403);
     expect(h.codec.calls).toBe(0);
+  });
+
+  // MEDIA_BODY_LIMIT's allowance above IMAGE_SIZE_LIMIT holds a description of MAX_MEDIA_DESCRIPTION_LENGTH four-byte
+  // code points with its part headers: the body is read whole, the description admitted, and the thumbnail, checked
+  // after it, refused before Images is called.
+  it("reads a file at the size limit beside the longest description, and then refuses the thumbnail", async () => {
+    const h = await users();
+    const form = multipartForm([
+      ["file", new File([new Uint8Array(IMAGE_SIZE_LIMIT)], "big.png", { type: "image/png" })],
+      ["description", "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH)],
+      ["thumbnail", "x"],
+    ]);
+    const response = await send(h, form);
+    expect([response.status, await response.json()]).toEqual([422, REFUSED]);
+    expect(h.codec.calls).toBe(0);
+    expect(h.puts).toEqual([]);
   });
 });
 
