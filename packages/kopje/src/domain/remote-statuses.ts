@@ -47,14 +47,7 @@ import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import {
-  LOCAL_BOOSTERS_SQL,
-  MAX_STATUS_EDITS,
-  notifyQuotedUpdate,
-  recordEdit,
-  recountStatus,
-  writeTags,
-} from "./statuses";
+import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them. The Worker has parsed the object as
@@ -623,8 +616,9 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //   - The visibility never changes, and the audience of a private, direct or limited status never widens: a mention
 //     the edit adds is linked in the content but adds no recipient (as an outbound edit does). Public and unlisted
 //     statuses take new mentions, as Mastodon does. A mention the edit removes stays as a silent mention.
-//   - A significant change (content, spoiler, media) is recorded in status_edits, the original first, and local
-//     boosters are notified; history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last one.
+//   - A significant change (content, spoiler, media, poll) is recorded in status_edits, the original first, and runs
+//     the update fan-out (notifyEdited); history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last
+//     one.
 //   - An Update of an unknown status creates it if it is recent (Create and Update out of order), unless its atomUri
 //     names a stored status: Update#update_status reaches Create#create_status, which finds that status
 //     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
@@ -740,14 +734,11 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     statusEmojis(input),
     existing.id,
   );
-  // A newly mentioned local account is notified as an ordinary mention, addressed or not: update_mentions! makes every
-  // tagged account an active mention (process_status_update_service.rb:299 in v4.7.5) and broadcast_updates! fans out
-  // without silenced ids (:453). The addressed accounts only order the cap's eviction (updateMentions).
+  // update_mentions! makes every tagged account an active mention (process_status_update_service.rb:299 in v4.7.5),
+  // addressed or not; the addressed accounts only order the cap's eviction (updateMentions).
   const audience = knownAccounts(db, [...input.to, ...input.cc].slice(0, MAX_STATUS_AUDIENCE));
   const addressed = new Set([...audience.local, ...(ctx.deliveredTo === null ? [] : [ctx.deliveredTo])]);
-  for (const id of updateMentions(db, existing, input, addressed)) {
-    notify(db, { recipientId: id, type: "mention", fromId: author.id, statusId: existing.id, now: ctx.now });
-  }
+  updateMentions(db, existing, input, addressed);
   writeTags(db, existing.id, input.tags.slice(0, MAX_STATUS_TAGS));
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
@@ -766,23 +757,15 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
       db.run("DELETE FROM status_edits WHERE id = (SELECT max(id) FROM status_edits WHERE status_id = ?)", existing.id);
     }
     recordEdit(db, existing.id, editedAt);
-    const boosters = db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, existing.id);
-    for (const booster of boosters) {
-      notify(db, {
-        recipientId: booster.account_id,
-        type: "update",
-        fromId: author.id,
-        statusId: existing.id,
-        now: ctx.now,
-      });
-    }
-    notifyQuotedUpdate(db, existing.id, author.id, ctx.now);
+    // handle_explicit_update! broadcasts only a significant change (:64, :452-454), so an Update that is not notifies
+    // no one, an account it newly tags included; broadcast_updates! fans out without silenced ids (:453), so each
+    // mention is notified as an ordinary one.
+    notifyEdited(db, existing.id, author.id, ctx.now);
   }
   return { applied: true, reason: significant ? "edited" : "updated", statusId: existing.id };
 }
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
-// Returns the local accounts that are mentioned now and were not before (silent recipients included).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
 // in place of a remote recipient no longer mentioned (silent ones first); a non-public audience stays frozen.
 function updateMentions(
@@ -790,7 +773,7 @@ function updateMentions(
   existing: StoredStatus,
   input: RemoteStatusInput,
   addressed: ReadonlySet<string>,
-): string[] {
+): void {
   const hrefs = input.mentions.slice(0, MAX_STATUS_MENTION_TAGS);
   const known = knownAccounts(db, hrefs);
   const rows = db.all<{ account_id: string; silent: number }>(
@@ -798,7 +781,6 @@ function updateMentions(
     existing.id,
   );
   const present = new Set(rows.map((row) => row.account_id));
-  const mentionedBefore = new Set(rows.filter((row) => row.silent === 0).map((row) => row.account_id));
   let room = Math.max(MAX_STATUS_MENTION_ROWS - present.size, 0);
   const current = [...new Set(hrefs.flatMap((uri) => known.byUri.get(uri) ?? []))];
   const added = current.filter((id) => !present.has(id));
@@ -829,7 +811,6 @@ function updateMentions(
     existing.id,
     JSON.stringify(allowed),
   );
-  return allowed.filter((id) => !mentionedBefore.has(id) && known.local.has(id));
 }
 
 // ---------------------------------------------------------------------------------------------------------------

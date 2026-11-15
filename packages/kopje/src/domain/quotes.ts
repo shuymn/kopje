@@ -1688,6 +1688,20 @@ function revokeLocalStamp(
   return true;
 }
 
+// The local quoted account of the status's accepted quote, which an update of the status notifies again
+// (FanOutOnWriteService#notify_quoted_account!; statuses.ts notifyEdited): the quote by its key, its quoted account
+// sought among the local accounts; at most one row.
+export function localQuotedAccount(db: Db, statusId: string): string | null {
+  return (
+    db.first<{ quoted_account_id: string }>(
+      `SELECT q.quoted_account_id FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = q.quoted_account_id
+			WHERE q.status_id = ?1 AND q.state = 'accepted'`,
+      statusId,
+    )?.quoted_account_id ?? null
+  );
+}
+
 // Local accounts an edit of a status notifies with quoted_update at most (row 16): the authors of its newest accepted
 // local quotes.
 export const MAX_QUOTED_UPDATES = 100;

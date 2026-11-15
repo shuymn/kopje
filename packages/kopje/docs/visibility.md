@@ -197,7 +197,12 @@ inbound jobs. Requests, the policy and permissions are their recipient's alone: 
 A remote status's mentions and post notifications are written when it is delivered, or when Kopje fetches it, on any
 path, within the real-time window (published at most six hours before it arrived; `withinRealTimeWindow` in
 `src/domain/real-time-window.ts`, the window the streaming `update` event uses); a fetched status's limited condition
-counts only its `to` and `cc`. A status that arrives again notifies no one.
+counts only its `to` and `cc`. A status that arrives again notifies no one. Mastodon's update fan-out (`notifyEdited`
+in `src/domain/statuses.ts`) notifies the local quoted account of the status's accepted quote and each active local
+mention, each when it has no kept notification (the mentions without the limited condition), then the local boosters
+and quoters: on a significant remote edit (text, spoiler text, media or poll) and on every accepted local edit. So a
+quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
+cleared, is notified then.
 
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
 (`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the
