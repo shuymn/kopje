@@ -15,6 +15,7 @@ import { tagTimeline } from "../src/domain/timelines";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH } from "../src/platform/json-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { REMOTE_HTML_RAW_LIMIT } from "../src/security/html";
 import { seedAccount, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
@@ -1681,6 +1682,132 @@ describe("profile fields of remote accounts (HTML-1, HTML-3)", () => {
       },
       { name: "Bad", value: '<a rel="nofollow noopener" target="_blank">x</a>', verified_at: null },
     ]);
+  });
+});
+
+// MediaAttachmentParser#description (`mastodon#39590`): first_lang_string of the summary, else the name, present,
+// stripped, cut at 10,000 code points (federation/lang-string.ts).
+describe("remote attachment descriptions", () => {
+  const image = (n: number, extra: Record<string, unknown>) => ({
+    type: "Document",
+    mediaType: "image/png",
+    url: `${MASTODON}/system/media/${n}.png`,
+    ...extra,
+  });
+  const described = [
+    image(1, { summary: { "@value": "alt", "@language": "en" } }),
+    image(2, { name: ["n"] }),
+    image(3, { summary: "  ", name: "n" }),
+  ];
+  const descriptions = (t: Setup, statusId: string) =>
+    sql<{ description: string }>(
+      t.store,
+      "SELECT description FROM media_attachments WHERE status_id = ? ORDER BY position",
+      statusId,
+    );
+
+  it("reads them as Mastodon 4.7 does", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const long = "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1);
+    const notes = [
+      mastodonNote(bob, { attachment: [...described, image(4, { summary: " a", name: "n" })] }),
+      // Ruby's strip keeps a leading NBSP (U+00A0), which JavaScript's trim() would remove.
+      mastodonNote(bob, { attachment: [image(5, { summary: long }), image(6, { summary: "\u00a0a", name: "n" })] }),
+    ];
+    for (const note of notes) {
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+    }
+    const [first, second] = await Promise.all(notes.map(async (note) => (await statusRow(t.store, note.id))!.id));
+    expect(await descriptions(t, first!)).toEqual([
+      { description: "alt" },
+      { description: "n" },
+      { description: "n" },
+      { description: "a" },
+    ]);
+    const [cut, nbsp] = await descriptions(t, second!);
+    // Cut in code points: an astral character counts once.
+    expect([...cut!.description]).toHaveLength(MAX_MEDIA_DESCRIPTION_LENGTH);
+    expect(nbsp).toEqual({ description: "\u00a0a" });
+  });
+
+  // A status's content, content warning and a converted title keep StatusParser's reading: the property when it is a
+  // non-empty string, else the map's first value.
+  it("leaves the reading of content and the content warning as it was", () => {
+    const input = parseRemoteStatus({
+      id: `${MASTODON}/users/bob/statuses/lang`,
+      type: "Note",
+      attributedTo: `${MASTODON}/users/bob`,
+      content: ["x"],
+      summary: { "@value": "cw", "@language": "en" },
+      to: [PUBLIC],
+    })!;
+    expect([input.content, input.spoilerText]).toEqual(["", ""]);
+  });
+
+  // D13 of the design: a status stored before these readings holds "" for each description above. Its next explicit
+  // Update counts as significant once, and never again for the same attachments.
+  it("counts one edit for media stored before @value was read, and no more", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const undescribed = described.map((m, i) => image(i + 1, { url: m.url }));
+    const note = mastodonNote(bob, { attachment: undescribed });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(await descriptions(t, row.id)).toEqual([{ description: "" }, { description: "" }, { description: "" }]);
+    // A status with media holds no card (R43); an imported attached row stands for one, which a reset removes.
+    const attach = () =>
+      sql(
+        t.store,
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+				VALUES (?, 'https://cards.example/page', 1, 1, 't', 7)`,
+        row.id,
+      );
+    const card = () => sql(t.store, "SELECT fetched_at FROM status_cards WHERE status_id = ?", row.id);
+    await attach();
+    await t.request(`/api/v1/statuses/${row.id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    const versions = async () =>
+      (
+        await sql<{ media_json: string }>(
+          t.store,
+          "SELECT media_json FROM status_edits WHERE status_id = ? ORDER BY id",
+          row.id,
+        )
+      ).map((v) => (JSON.parse(v.media_json) as { description: string | null }[]).map((m) => m.description));
+    const updates = () =>
+      sql<{ id: string }>(
+        t.store,
+        "SELECT CAST(id AS TEXT) AS id FROM notifications WHERE type = 'update' AND account_id = ?",
+        ALICE,
+      );
+    const withDescriptions = { ...note, attachment: described };
+
+    expect(await t.post(bob, update(bob, withDescriptions, "2026-10-11T13:00:00Z"))).toBe(202);
+    expect(await descriptions(t, row.id)).toEqual([{ description: "alt" }, { description: "n" }, { description: "n" }]);
+    // The earlier version shows its descriptions as Mastodon presents an empty one: null.
+    expect(await versions()).toEqual([
+      [null, null, null],
+      ["alt", "n", "n"],
+    ]);
+    const notified = await updates();
+    expect(notified).toHaveLength(1);
+    expect(await card()).toEqual([]);
+
+    await attach();
+    expect(await t.post(bob, update(bob, withDescriptions, "2026-10-11T14:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({ edited_at: "2026-10-11T13:00:00.000Z" });
+    expect(await versions()).toEqual([
+      [null, null, null],
+      ["alt", "n", "n"],
+    ]);
+    // notify replaces an update notification by a newer id, so the same id shows that the booster was not notified.
+    expect(await updates()).toEqual(notified);
+    expect(await card()).toEqual([{ fetched_at: 7 }]);
   });
 });
 
