@@ -199,6 +199,12 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
+  domain name, where Mastodon accepts it: a compliant host is shorter than 256 characters, so only one padded with
+  characters IDNA ignores (U+00AD) is that long. Domains and lists past the presented bounds, whether saved before this
+  check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's `attributionDomains`:
+  an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all (100 such domains
+  pass it) is shown as none. Accepted, 2026-11-15.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
