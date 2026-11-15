@@ -303,6 +303,16 @@ function searchText(input: RemoteStatusInput): string {
   return normalizeSearchText(`${input.spoilerText} ${input.text}`);
 }
 
+// The object's atomUri when it names another status than its id, else null (RemoteStatusInput.atomUri).
+function otherAtomUri(input: RemoteStatusInput): string | null {
+  return input.atomUri === undefined || input.atomUri === input.uri ? null : input.atomUri;
+}
+
+// ID-7: whether `uri`, or the atomUri naming the status it may be, was retracted by the author or deleted.
+function isDeletedUnder(db: Db, authorUri: string, uri: string, atomUri: string | null, now: number): boolean {
+  return isDeleted(db, authorUri, uri, now) || (atomUri !== null && isDeleted(db, authorUri, atomUri, now));
+}
+
 // Mastodon's ActivityPub::Activity::Create#create_status for an object whose author is `author` (already stored and
 // verified: the actor of the activity, or the fetched author of a fetched object). A stored status is found as
 // Create#find_existing_status finds it: by the object's id, else by its atomUri; the outcome's statusId names the row
@@ -315,13 +325,10 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
     return { applied: false, reason: "not-author" };
   }
-  const atomUri = input.atomUri === undefined || input.atomUri === input.uri ? null : input.atomUri;
+  const atomUri = otherAtomUri(input);
   // ID-7: a Delete that arrived first keeps the object from appearing, and a deleted stored object is not created
   // again by anyone (ID-6), under its id or under another id naming it by atomUri.
-  if (
-    isDeleted(db, author.uri, input.uri, ctx.now) ||
-    (atomUri !== null && isDeleted(db, author.uri, atomUri, ctx.now))
-  ) {
+  if (isDeletedUnder(db, author.uri, input.uri, atomUri, ctx.now)) {
     return { applied: false, reason: "retracted" };
   }
   // R38, VIS-30: nothing is stored for an unavailable author (an account the instance suspended), whichever path
@@ -582,7 +589,9 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     statuses take new mentions, as Mastodon does. A mention the edit removes stays as a silent mention.
 //   - A significant change (content, spoiler, media) is recorded in status_edits, the original first, and local
 //     boosters are notified; history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last one.
-//   - An Update of an unknown status creates it if it is recent (Create and Update out of order).
+//   - An Update of an unknown status creates it if it is recent (Create and Update out of order), unless its atomUri
+//     names a stored status, which it updates as by its id, under that status's uri (Update#update_status reaches
+//     ProcessStatusUpdateService with the status Create#find_existing_status found).
 export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
@@ -590,8 +599,10 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
     return { applied: false, reason: "not-author" };
   }
-  // ID-7: a status whose Delete was recorded (possibly still being removed) takes no Update, from anyone.
-  if (isDeleted(db, author.uri, input.uri, ctx.now)) {
+  const atomUri = otherAtomUri(input);
+  // ID-7: a status whose Delete was recorded (possibly still being removed) takes no Update, from anyone, under its id
+  // or under another id naming it by atomUri.
+  if (isDeletedUnder(db, author.uri, input.uri, atomUri, ctx.now)) {
     return { applied: false, reason: "retracted" };
   }
   // A version too far ahead changes nothing, an unknown status included: no row, history or notification.
@@ -599,14 +610,22 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (version === Infinity) {
     return { applied: false, reason: "future" };
   }
-  const existing = statusByUri(db, input.uri);
+  let existing = statusByUri(db, input.uri);
+  // The stored status's own uri, which an atomUri match keeps (its quote is recorded under it).
+  let uri = input.uri;
   if (existing === undefined) {
     const published = input.published === null ? NaN : Date.parse(input.published);
     if (!Number.isNaN(published) && published < ctx.now - UPDATE_CREATES_WITHIN_MS) {
       return { applied: false, reason: "unknown-object" };
     }
-    return storeRemoteStatus(db, author, input, ctx);
+    const matched = atomUri === null ? undefined : statusByUri(db, atomUri);
+    if (atomUri === null || matched === undefined) {
+      return storeRemoteStatus(db, author, input, ctx);
+    }
+    existing = matched;
+    uri = atomUri;
   }
+  // ID-3, ID-6: found by its id or by atomUri, only the author's own original is updated.
   if (existing.account_id !== author.id || existing.reblog_of_id !== null) {
     return { applied: false, reason: "not-author" };
   }
@@ -622,7 +641,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     // a poll's counts, which names none, or the same one) still refreshes the counts, the end and the voters of its
     // poll, and verifies a changed stamp of the same quote again; the quoted status itself changes only with a newer
     // version.
-    refreshQuote(db, { id: existing.id, uri: input.uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -690,7 +709,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri: input.uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again (a quote's change alone is not
     // significant here, so it resets nothing).

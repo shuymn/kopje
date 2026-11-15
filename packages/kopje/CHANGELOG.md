@@ -16,10 +16,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
-- A `Create`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to it, as
-  Mastodon does, and a boost, pin or quote request of it acts on that status; one naming another author's status is
-  refused. Local actors declare their handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents
-  and profile `Update`s. No Store migration and no `wrangler.jsonc` change.
+- A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched
+  to it, as Mastodon does: an `Update` edits it, and a boost, pin or quote request of it acts on that status; one
+  naming another author's status is refused. Local actors declare their handle in `webfinger` (FEP-2c59), as
+  Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store migration and no `wrangler.jsonc`
+  change.
 
 ### Changed
 

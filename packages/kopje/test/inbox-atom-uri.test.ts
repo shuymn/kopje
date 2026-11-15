@@ -28,14 +28,15 @@ import {
   setup,
   type Setup,
   undo,
+  update,
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { quoting } from "./quote-helpers";
 
-// atomUri (Mastodon's Create#find_existing_status, Delete#delete_status and Undo#undo_announce, mastodon#39916): a
-// status known under one id is matched by another object's atomUri, the author's own only, and every caller that goes
-// on from the stored status acts on the one matched (remote-statuses.ts storeRemoteStatus, inbox.ts namedStatus,
-// retractions.ts retractMatched; ID-3, ID-7). Only an http(s) atomUri is read (docs/mastodon-deviations.md,
+// atomUri (Mastodon's Create#find_existing_status, which Update#update_status also reaches, Delete#delete_status and
+// Undo#undo_announce, mastodon#39916): a status known under one id is matched by another object's atomUri, the
+// author's own only, and every caller that goes on from the stored status acts on the one matched (remote-statuses.ts
+// storeRemoteStatus and updateRemoteStatus, inbox.ts namedStatus, retractions.ts retractMatched; ID-3, ID-7). Only an http(s) atomUri is read (docs/mastodon-deviations.md,
 // "Retractions and edits of remote statuses").
 
 const RELAY = "https://relay.example";
@@ -172,6 +173,70 @@ describe("a Create naming a stored status by atomUri (Create#find_existing_statu
       object: parseRemoteStatus(c)!,
     });
     expect(result).toMatchObject({ applied: false, reason: "retracted" });
+  });
+});
+
+describe("an Update naming a stored status by atomUri (Update#update_status, ProcessStatusUpdateService)", () => {
+  const rowOf = (t: Setup, id: string) =>
+    sql<{ uri: string; content: string; edited: number }>(
+      t.store,
+      "SELECT uri, content, edited_at IS NOT NULL AS edited FROM statuses WHERE id = ?",
+      id,
+    );
+  const edit = { content: "<p>edited</p>", contentMap: { en: "<p>edited</p>" } };
+
+  // `actor`'s Update of `note` at `updated`, as the Store receives it.
+  const updating = (t: Setup, actor: TestActor, note: Note, updated: string) =>
+    storeReceive(t.store, actor.uri, {
+      type: "UpdateStatus",
+      id: `${note.id}#updates/${Date.parse(updated)}`,
+      object: parseRemoteStatus({ ...note, updated })!,
+    });
+
+  it("edits the author's own status as by its id, under its own uri, and stores no B", async () => {
+    const { t, bob } = await world();
+    const a = await stored(t, bob);
+    // B quotes A: under A's own uri that is A quoting itself, which records no quote (quotes.ts recordQuote).
+    const b = quoting(bob, a.note.id, null, { atomUri: a.note.id, ...edit });
+    expect(await t.post(bob, update(bob, b, "2026-10-11T13:00:00Z"))).toBe(202);
+    // Without the match, the Update is a Create of a known status and changes nothing.
+    expect(await idOf(t, b.id)).toBeUndefined();
+    expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: "<p>edited</p>", edited: 1 }]);
+    expect(await sql(t.store, "SELECT quoted_uri FROM quotes WHERE status_id = ?", a.id)).toEqual([]);
+  });
+
+  it("keeps the author and version checks: another author's or an older version changes nothing", async () => {
+    const { t, bob, erin } = await world();
+    const a = await stored(t, bob);
+    expect(await updating(t, bob, naming(bob, a.note.id, edit), "2026-10-11T14:00:00Z")).toMatchObject({
+      applied: true,
+    });
+    const other = naming(erin, a.note.id, { content: "<p>erin's</p>" });
+    expect(await updating(t, erin, other, "2026-10-11T15:00:00Z")).toMatchObject({
+      applied: false,
+      reason: "not-author",
+    });
+    const older = naming(bob, a.note.id, { content: "<p>older</p>" });
+    expect(await updating(t, bob, older, "2026-10-11T13:00:00Z")).toMatchObject({ applied: false, reason: "stale" });
+    expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: "<p>edited</p>", edited: 1 }]);
+    expect([await idOf(t, other.id), await idOf(t, older.id)]).toEqual([undefined, undefined]);
+  });
+
+  it("refuses an Update of B once A's Delete is recorded, while A is still being removed", async () => {
+    const { t, bob } = await world();
+    const a = await stored(t, bob);
+    await sql(
+      t.store,
+      "INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) VALUES (?, ?, ?)",
+      bob.uri,
+      a.note.id,
+      NOW + 86_400_000,
+    );
+    expect(await updating(t, bob, naming(bob, a.note.id, edit), "2026-10-11T13:00:00Z")).toMatchObject({
+      applied: false,
+      reason: "retracted",
+    });
+    expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: a.note.content, edited: 0 }]);
   });
 });
 
