@@ -2093,10 +2093,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   after a rel past REL_CHARS")); `links[].rel` is lowercased for card extraction. Search resolution's HTML page
   (NET-4) is a document fetch (NET-1), not this sink's, but its body is decoded as this sink decodes a page
   (`readHtmlBody` in `src/platform/html-body.ts`: the same Content-Encodings and charset), read whole within 1 MiB, and
-  scanned by `scanAlternate` in `src/platform/html-scan.ts`, which returns one href of at most 2,048 decoded units: the
+  scanned by `scanAlternate` in `src/platform/html-scan.ts`, which returns one href of at most 2,048 decoded units
+  (and 8,192 as written): the
   first alternate `<link>` as Mastodon's `FetchResourceService#process_html` selects it, and none at or after a
-  `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>` start tag or a rel past 2,048 decoded units,
-  or on a page with `<frameset>` bytes, where lol-html cannot place a `<link>` as an HTML5 tree does. Its time witness
+  `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>` start tag or a rel past 2,048 decoded units
+  or 8,192 as written, or on a page with `<frameset>` bytes, where lol-html cannot place a `<link>` as an HTML5 tree does. Its time witness
   is this sink's, through the resolve path: a 1 MiB page of `<link>` elements none of which matches, with and without
   a refused context first, is read and scanned within the request's deadline (`test/resolve-alternate.test.ts` ("reads
   and scans a 1 MiB page of <link> elements, %s, within the request's deadline"); `test/resolve-extractor.test.ts`

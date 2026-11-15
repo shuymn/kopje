@@ -562,19 +562,19 @@ async function pump(
 // where the tree's document order is B, A) or every foreign-content rule (an <svg> or <math> <link> is no HTML link).
 const ALTERNATE_CONTEXTS = ["noscript", "select", "template", "table", "svg", "math"] as const;
 
-// What ended an alternate search before a match: one of the start tags above, a <link> rel past REL_CHARS, or the
-// page's <frameset> bytes.
+// What ended an alternate search before a match: one of the start tags above, a <link> rel past RAW_VALUE_CHARS raw
+// or REL_CHARS decoded units, or the page's <frameset> bytes.
 type AlternateRefusal = (typeof ALTERNATE_CONTEXTS)[number] | "long-rel" | "frameset";
 
 // The page's alternate link for search resolution (federation/resolve.ts), as Mastodon's
 // FetchResourceService#process_html selects it (v4.7.5): the first <link> in document order whose rel holds the token
 // "alternate" among all its tokens (split on ASCII whitespace, ASCII-lowercased, as NokogiriHandler.link_rel_include
 // downcases them; the rel decoded up to REL_CHARS units) and whose decoded type equals one of `types` exactly (case and
-// whitespace kept). `link` is that match, its href decoded (null when it has none or one past SCAN_LIMITS.valueChars),
-// or null. Only an element in the HTML namespace counts, and the first of duplicate attributes wins, as in an HTML5
+// whitespace kept). `link` is that match, its href decoded (null when it has none or one past RAW_VALUE_CHARS raw or
+// SCAN_LIMITS.valueChars decoded units, however short it decodes), or null. Only an element in the HTML namespace counts, and the first of duplicate attributes wins, as in an HTML5
 // tree. Where lol-html cannot place a <link> as Nokogiri's HTML5 tree does (scripting off), in presence or in order,
 // nothing is taken and `refused` names why: at or after the first ALTERNATE_CONTEXTS start tag (in any namespace), at
-// or after a <link> whose rel is past REL_CHARS, and on a page with <frameset> bytes; so Kopje may resolve nothing
+// or after a <link> whose rel is past RAW_VALUE_CHARS raw or REL_CHARS decoded units, and on a page with <frameset> bytes; so Kopje may resolve nothing
 // where Mastodon resolves, never a different link. A match before any of them is taken. No link-count cap: the
 // caller's 1 MiB body and the rewriter's 3 MiB budget bound the scan, which fails whole as scanHtml does.
 export type AlternateScan = { link: { href: string | null } | null; refused: AlternateRefusal | null };

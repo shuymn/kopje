@@ -84,6 +84,11 @@ describe("scanAlternate contexts (T10.18)", () => {
       `<link rel="${"x ".repeat(REL_CHARS / 2)}alternate" type=text/html href=l>LINK`,
       "long-rel",
     ],
+    [
+      "after a rel past RAW_VALUE_CHARS as written, however short it decodes",
+      `<link rel="&#${"0".repeat(RAW_VALUE_CHARS)}97;lternate" type="${AP}" href=l>LINK`,
+      "long-rel",
+    ],
   ])("takes no alternate %s", async (_label, page, refused) => {
     const result = await alternate(page.replace("LINK", link("after")));
     expect(result).toEqual({ link: null, refused });
@@ -148,6 +153,9 @@ describe("scanAlternate attributes (T10.19)", () => {
     });
     const long = "x".repeat(SCAN_LIMITS.valueChars + 1);
     expect(await alternate(`${link(long)}${link("later")}`)).toEqual({ link: { href: null }, refused: null });
+    // Past RAW_VALUE_CHARS as written, though it decodes to one character.
+    const padded = `&#${"0".repeat(RAW_VALUE_CHARS)}120;`;
+    expect(await alternate(`${link(padded)}${link("later")}`)).toEqual({ link: { href: null }, refused: null });
   });
 
   it("counts only HTML <link> elements", async () => {
