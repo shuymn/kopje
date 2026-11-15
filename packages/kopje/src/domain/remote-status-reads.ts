@@ -2,7 +2,7 @@ import type { Db } from "../db/sql";
 import { statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
 import { type EmojiCandidate } from "./custom-emojis";
-import { type CardCandidate } from "./link-cards";
+import { type CardCandidate, type CardLink } from "./link-cards";
 import { type RemotePollInput } from "./polls";
 
 // A received status as the federation layer hands it over, and the reads of stored remote statuses that quotes.ts
@@ -54,6 +54,9 @@ export type RemoteStatusInput = {
   quote?: RemoteQuoteInput | null;
   // Who the Note's author lets quote it (interactionPolicy.canQuote), or null when it states nothing.
   quotePolicy?: RemoteQuotePolicyInput | null;
+  // The card's link its FEP-8967 Link attachments give, or null for none (federation/remote-status.ts cardLinkOf);
+  // undefined from an earlier build. The anchors decide only without one (link-cards.ts remoteCardLink).
+  cardLink?: CardLink | null;
   // The content's anchors a link card may take, at most CARD_CANDIDATES, in document order (link-cards.ts).
   cardCandidates?: CardCandidate[];
   // The object as received.
