@@ -35,6 +35,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
   handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
   migration and no `wrangler.jsonc` change.
+- `GET /api/v1/accounts/:id/statuses` takes `exclude_direct`, leaving out direct posts, as Mastodon 4.7.5 does. Its
+  `Link` keeps the parameter, where Mastodon's drops it
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). `api_versions.mastodon` stays 7. No Store migration and
+  no `wrangler.jsonc` change.
 
 ### Changed
 

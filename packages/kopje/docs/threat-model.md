@@ -3866,11 +3866,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stale statistics", "name no withdrawn boost as a cursor where it would end a full window")). _Gap:_ the number of
   streams is the viewer's follows (their own choice), and the bounds harness (`test/policy-bounds.test.ts`) grows
   histories evenly, never a skewed one where one author's statuses dominate a merged read; rows hidden by visibility are
-  walked past, not windowed (account statuses read by a non-follower of an account that posts mostly to followers: a
-  remote account's private statuses are stored only while a local account follows it, so no outside party can grow it at
-  will; accepted); the public timeline's request conditions (`local`, `remote`, `only_media`) and its reply predicate
-  are tested inside its `LIMIT` on `statuses_public`, so on an instance whose public rows are mostly remote a
-  `local=true` or `only_media` page may walk them all.
+  walked past, not windowed (account statuses read by a non-follower of an account that posts mostly to followers, with
+  `exclude_direct` or without it, as `statuses_feed` holds private statuses too: a remote account's private statuses are
+  stored only while a local account follows it, so no outside party can grow it at will; accepted;
+  `test/exclude-direct-reads.test.ts`); the public timeline's request conditions (`local`, `remote`, `only_media`) and
+  its reply predicate are tested inside its `LIMIT` on `statuses_public`, so on an instance whose public rows are mostly
+  remote a `local=true` or `only_media` page may walk them all.
   _Enforced (main)_ for search: statuses pass `listableSql` before `LIMIT`, each library source reads at most 2,500 rows
   through an index ordered by the status id it returns (cursors applied inside it), hashtags come from at most 500
   entries per library source plus the newest 2,000 public statuses, and an account search matches the exact address
