@@ -14,7 +14,8 @@ import { CARD_URL_LIMIT, cardDimension, iframeDimension, presentedEmbedSrc } fro
 //   - a meta is the first whose property or name equals the key ASCII case-insensitively (opengraph_tag), or whose
 //     name does (meta_tag), its content then; the texts are entity-decoded a second time (HTMLEntities, :317-319);
 //   - JSON-LD: each script in order, CDATA lines removed (CDATA_JUNK_PATTERN), entity-decoded, parsed; the first
-//     object of a supported @type (NewsArticle, WebPage) in the first script that holds one;
+//     object of a supported @type (NewsArticle, WebPage) in the first script that holds one; its headline and
+//     description as a language-tagged value's @value too (taggedText);
 //   - URLs: blank, "null" and "undefined" refused before they are resolved against the page (valid_url_or_nil);
 //   - a language matched exactly first, its region stripped only on a miss (valid_locale_or_nil);
 //   - twitter:player (:135-157): a valid URL makes a video whose iframe src it is, when the src passes the stored
@@ -52,6 +53,13 @@ const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+// Ruby's truthiness: anything but absent, null and false ("" and 0 included).
+const truthy = (value: unknown): boolean => value !== undefined && value !== null && value !== false;
+// StructuredData#text_or_language_tagged_string (:99-101, `mastodon#39190`, 4.6.0): an object whose @value and
+// @language are both truthy reads as its @value, then as `text` reads any value. Every string is truthy, and `text`
+// reads anything else as absent, the @value and the object alike, so only @language needs the test.
+const taggedText = (value: unknown): string | null =>
+  text(isObject(value) && truthy(value["@language"]) ? value["@value"] : value);
 
 // HTMLEntities :expanded's decode (:317-319; htmlentities' Decoder): only references closed by a semicolon, a numeric
 // one mapped straight to its code point (NUL, C1 and the rest, with no HTML5 replacement), a named one by its name. A
@@ -150,8 +158,8 @@ function structuredData(scripts: readonly string[]): Structured | null {
     const name = author.name;
     return {
       type: json["@type"] as string,
-      headline: text(json.headline),
-      description: text(json.description),
+      headline: taggedText(json.headline),
+      description: taggedText(json.description),
       datePublished: text(json.datePublished),
       language: text(language),
       authorName: Array.isArray(name)

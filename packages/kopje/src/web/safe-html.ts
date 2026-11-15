@@ -1,9 +1,9 @@
-import { remoteHtmlText, sanitizeDocumentHtml, sanitizeRemoteHtml, sanitizeRemoteHtmlFiltered } from "../security/html";
+import { remoteHtmlText, sanitizeDocumentHtml, sanitizeStoredHtml, sanitizeStoredHtmlFiltered } from "../security/html";
 import type { EmojiField } from "./view/emoji";
 
 // HTML-1 at the sink: the only HTML the web pages emit unescaped is a SafeHtml, and the only way to make one is to pass
-// the stored HTML (bios, status content, field values) through the sanitizer again here. Everything else in a page is
-// text that hono/jsx escapes.
+// the stored HTML (bios, status content, field values) through the sanitizer again here, cut at STORED_HTML_LIMIT,
+// which no stored value passes (security/html.ts). Everything else in a page is text that hono/jsx escapes.
 
 declare const SAFE: unique symbol;
 
@@ -17,7 +17,7 @@ export function sanitizedDocument(html: string): SafeHtml {
 // Stored HTML sanitized in one pass that also turns the field's emoji references into images: the sanitizer hands each
 // run of text, escaped, to the field, which adds only its own escaped image markup (emoji.ts).
 export function sanitizedWithEmoji(html: string, emoji: EmojiField): SafeHtml {
-  return { html: sanitizeRemoteHtmlFiltered(html, (text) => emoji.html(text)) } as SafeHtml;
+  return { html: sanitizeStoredHtmlFiltered(html, (text) => emoji.html(text)) } as SafeHtml;
 }
 
 // A profile field's value as Mastodon renders it on the profile, with its emoji: its links carry rel="me", so a site
@@ -33,7 +33,7 @@ export function sanitizedField(html: string, emoji: EmojiField): SafeHtml {
 // Plain text of stored HTML, for meta descriptions (which hono/jsx escapes): the sanitizer drops the tags and keeps
 // paragraph and line breaks as spaces (remoteHtmlText). Bounded for a description.
 export function plainText(html: string, max = 200): string {
-  return shortText(remoteHtmlText(sanitizeRemoteHtml(html)), max);
+  return shortText(remoteHtmlText(sanitizeStoredHtml(html)), max);
 }
 
 // A status in a line of text (a page's description, the handoff's preview): its warning when it has one, as the

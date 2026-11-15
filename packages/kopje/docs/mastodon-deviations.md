@@ -349,8 +349,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - The endpoint cache holds at most 2,048 hosts (a new host past them is not cached), for 24 hours from when the page
   declared it; a failed cached endpoint does not renew it.
 - JSON-LD shapes Mastodon fails on or reads oddly (an `@type` that is an array, a number in the root array, a string
-  author read as a substring) are skipped; a value that is not a string reads as absent; times are read as ISO 8601
-  only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
+  author read as a substring) are skipped; a language-tagged `headline` or `description` is read as its `@value`, as
+  Mastodon does, and a value that is not a string, such an `@value` included, reads as absent; times are read as ISO
+  8601 only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
   reference to its code point, a double-escaped NUL then removed), but keeps a reference to a surrogate or past
   U+10FFFF as written, where Mastodon raises, and reads names by the HTML5 table. The texts are cut to their bounds,
   Kopje's own (Mastodon bounds only the url): a title of 512 JSON-escaped UTF-8 bytes, a description of 1,024, an
@@ -929,6 +930,9 @@ Media (the `MediaAttachment` entity):
   each accepted explicit `Update` (an Update whose version is missing or not newer may refresh only a poll, which
   leaves it as it was); an attachment stored by an earlier release shows null until its next accepted explicit
   `Update`.
+- A remote attachment's description is read as Mastodon 4.7 reads it (its `summary`, else its `name`, each a string,
+  an array's first element or a language-tagged value, then a language map), except that one Mastodon cannot read (a
+  numeric `@value` or language-map value) is none, where Mastodon fails the activity.
 - A remote attachment's `url` is Kopje's cached copy of its file on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
@@ -963,6 +967,9 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
   (an upgrade, a cutover, an import) or whose text an import holds as another type counts at an upper bound of its
   text (its bytes, markup and entities included, or 10,000), so an answer of such statuses may be cut, and a keyword
   missed, though its text would fit.
+- A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
+  (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
+  and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 
