@@ -2036,7 +2036,10 @@ describe("the inbox gate reads the same rows however many keys and domain blocks
           },
           ticket: { host: "x.example", refused: false },
         },
-        revisions: { actor: 0, target: null },
+        states: {
+          actor: { revision: 0, handle: { username: "u", domain: "x.example" } },
+          target: { revision: null, handle: null },
+        },
       };
       const read: GrownRead = {
         name: "inbox gate",
@@ -5119,7 +5122,7 @@ describe("the admin's report list reads a page, however many reports do not matc
       }
       for (const id of [T, U]) {
         sql.exec(
-          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 't', 'far.example')",
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, ?2, 't' || ?1, 'far.example')",
           id,
           `https://far.example/users/${id}`,
         );

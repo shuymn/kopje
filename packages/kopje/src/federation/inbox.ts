@@ -151,7 +151,7 @@ export async function processInbox(
       domainBlocked: gate.domainBlocked === true,
       key: gate.key,
       prefetch: gate.prefetch,
-      revisions: gate.revisions,
+      states: gate.states,
     },
   );
   if (outcome.status !== 202 || outcome.dropped === true) {

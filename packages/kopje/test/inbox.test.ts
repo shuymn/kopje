@@ -7,6 +7,7 @@ import { Db } from "../src/db/sql";
 import { forwardSubject } from "../src/domain/deliveries";
 import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
+import { webfingerUrl } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { verifySpooledRequest } from "../src/federation/inbound";
 import { handleQueue } from "../src/jobs/queue";
@@ -27,6 +28,7 @@ import {
   LOCAL,
   loggedRefusals,
   MASTODON,
+  confirmedAs,
   mastodonActor,
   MISSKEY,
   MISSKEY_CONTEXT,
@@ -329,7 +331,11 @@ describe("Follow of a local account (Mastodon and Misskey)", () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     expect(await t.post(bob, follow(bob), { path: "/ap/users/alice/inbox" })).toBe(202);
-    expect(new Set(t.web.signers)).toEqual(new Set([`${ALICE_URI}#main-key`]));
+    // The handle's WebFinger confirmation is unsigned, as Mastodon's (federation/resolve.ts confirmHandle).
+    expect(t.web.fetched.map((url, i) => [url, t.web.signers[i]])).toEqual([
+      [bob.uri, `${ALICE_URI}#main-key`],
+      [webfingerUrl("bob", "mastodon.example"), "unsigned"],
+    ]);
     expect(await follows(t.store)).toHaveLength(1);
   });
 });
@@ -983,8 +989,7 @@ describe("ID-6: the authorization table, one negative case per row", () => {
       actorRevision: null,
       actor: {
         uri: ALICE_URI,
-        username: "alice",
-        domain: "kopje.test",
+        ...confirmedAs("alice", "kopje.test"),
         actorType: "Person",
         displayName: "pwned",
         note: "",
@@ -1683,8 +1688,7 @@ describe("account moves", () => {
     const input = (target: string): RemoteActorInput => ({
       ...actorDefaults(),
       uri: bob.uri,
-      username: "bob",
-      domain: "mastodon.example",
+      ...confirmedAs("bob", "mastodon.example"),
       displayName: "bob",
       inboxUrl: `${bob.uri}/inbox`,
       movedTo: target,
@@ -2032,13 +2036,15 @@ describe("Store calls on the inbox cold path", () => {
   it.each([
     ["/inbox", INSTANCE_KEY],
     ["/ap/users/alice/inbox", `${ALICE_URI}#main-key`],
-  ])("applies an unknown actor’s Follow to %s in two calls, its fetch signed by %s", async (path, signer) => {
-    const { t, bob, calls, records, send, signerOf } = await cold();
+  ])("applies an unknown actor’s Follow to %s in three calls, its fetch signed by %s", async (path, signer) => {
+    const { t, bob, calls, records, send, signerOf, asked } = await cold();
     expect(await send(follow(bob), path)).toBe(202);
-    expect(calls).toEqual(["inboxGate", "receiveActivity"]);
+    // The gate's verdict is spent on the actor's document; its handle's WebFinger asks the Store again (NET-1).
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity"]);
     expect(gateOf(records).prefetch?.ticket).toEqual({ host: "mastodon.example", refused: false });
-    // Mastodon's key and actor are one document, fetched once.
-    expect(t.web.fetched).toEqual([bob.uri]);
+    expect(asked()).toEqual(["mastodon.example"]);
+    // Mastodon's key and actor are one document, fetched once, and its handle confirmed.
+    expect(t.web.fetched).toEqual([bob.uri, webfingerUrl("bob", "mastodon.example")]);
     expect(signerOf(bob.uri)).toBe(signer);
     expect(await follows(t.store)).toHaveLength(1);
   });
@@ -2052,7 +2058,7 @@ describe("Store calls on the inbox cold path", () => {
       ALICE,
     );
     expect(await send(follow(bob), "/ap/users/alice/inbox")).toBe(202);
-    expect(calls).toEqual(["inboxGate", "receiveActivity"]);
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity"]);
     expect(gateOf(records).prefetch?.signer.username).toBeNull();
     expect(signerOf(bob.uri)).toBe(INSTANCE_KEY);
   });
@@ -2060,7 +2066,7 @@ describe("Store calls on the inbox cold path", () => {
   it("creates the instance key on its first use, with the one write that stores it", async () => {
     const { t, bob, calls, send, signerOf } = await cold({ seedKey: false });
     expect(await send(follow(bob))).toBe(202);
-    expect(calls).toEqual(["inboxGate", "ensureInstanceActorKey", "receiveActivity"]);
+    expect(calls).toEqual(["inboxGate", "ensureInstanceActorKey", "fetchRefused", "receiveActivity"]);
     expect(signerOf(bob.uri)).toBe(INSTANCE_KEY);
     expect(await sql(t.store, "SELECT 1 AS x FROM instance_settings WHERE name = 'instance_actor_key'")).toHaveLength(
       1,
@@ -2116,9 +2122,9 @@ describe("Store calls on the inbox cold path", () => {
     t.web.redirect(bob.uri, moved);
     t.web.serve(moved, bob.document);
     expect(await send(follow(bob))).toBe(202);
-    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity"]);
-    expect(asked()).toEqual(["mastodon.example"]);
-    expect(t.web.fetched).toEqual([bob.uri, moved]);
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "fetchRefused", "receiveActivity"]);
+    expect(asked()).toEqual(["mastodon.example", "mastodon.example"]);
+    expect(t.web.fetched).toEqual([bob.uri, moved, webfingerUrl("bob", "mastodon.example")]);
   });
 
   it("stops a redirect hop for a block committed while the first response was awaited (VIS-30)", async () => {
@@ -2154,9 +2160,9 @@ describe("Store calls on the inbox cold path", () => {
     t.web.serve(uri, document);
     t.web.serve(keyId, document);
     expect(await send(follow(gts), "/inbox", { as: gts, keyId })).toBe(202);
-    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity"]);
-    expect(asked()).toEqual(["mastodon.example"]);
-    expect(t.web.fetched).toEqual([keyId, uri]);
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "fetchRefused", "receiveActivity"]);
+    expect(asked()).toEqual(["mastodon.example", "mastodon.example"]);
+    expect(t.web.fetched).toEqual([keyId, uri, webfingerUrl("gts", "mastodon.example")]);
   });
 
   it("spends the verdict on a key on another host, and asks the Store before the actor’s document", async () => {
@@ -2215,15 +2221,15 @@ describe("Store calls on the inbox cold path", () => {
   });
 
   // A boost of a status Kopje does not have: the Store asks for the original, then for its author, and each need
-  // carries its fetch's preparation, so no other call is made.
-  it("fetches a boosted unknown status and its author with what each need prepared, in four calls", async () => {
+  // carries its fetch's preparation, so the only other call is the verdict for the author's WebFinger.
+  it("fetches a boosted unknown status and its author with what each need prepared, in five calls", async () => {
     const { t, bob, calls, records, send, signerOf, fetched } = await followedWarm();
     const carol = await mastodonActor(t.web, "carol", { origin: "https://other.example", key: 2 });
     const note = mastodonNote(carol);
     t.web.serve(note.id, { "@context": AS, ...note });
     const boost = { "@context": AS, id: activityId(MASTODON), type: "Announce", actor: bob.uri, object: note.id };
     expect(await send({ ...boost, to: [`${AS}#Public`], cc: [] })).toBe(202);
-    expect(calls).toEqual(["inboxGate", "receiveActivity", "receiveActivity", "receiveActivity"]);
+    expect(calls).toEqual(["inboxGate", "receiveActivity", "receiveActivity", "fetchRefused", "receiveActivity"]);
     // The warm gate prepared nothing; the first need's preparation gave the request's loaders their signer.
     expect(gateOf(records).prefetch).toBeNull();
     const needs = records
@@ -2234,7 +2240,7 @@ describe("Store calls on the inbox cold path", () => {
       { host: "other.example", refused: false },
       undefined,
     ]);
-    expect(t.web.fetched.slice(fetched)).toEqual([note.id, carol.uri]);
+    expect(t.web.fetched.slice(fetched)).toEqual([note.id, carol.uri, webfingerUrl("carol", "other.example")]);
     expect(signerOf(note.id)).toBe(INSTANCE_KEY);
     expect(await sql(t.store, "SELECT uri FROM statuses WHERE uri = ?", note.id)).toHaveLength(1);
   });

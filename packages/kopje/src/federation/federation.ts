@@ -76,7 +76,7 @@ const INSTANCE_ACTOR = "kopje:instance";
 // dispatched actor resolved to, what the answer was rendered from (for the snapshot's freshness check), and a Store
 // failure. Fedify answers 500 for any error a dispatcher throws, so the caller rethrows storeError to get maintenance
 // handling (spool, snapshot, 503) instead. ticket: the domain policy's verdict a Store answer that decided a fetch
-// carried (domain/inbox.ts FetchPreparation, or a search resolution's actor revision read, getActorRevision), spent by
+// carried (domain/inbox.ts FetchPreparation, or a search resolution's actor state read, getActorState), spent by
 // the next policy check whatever its host (refusesHost).
 export type FederationState = {
   resolvedUsername: string | null;

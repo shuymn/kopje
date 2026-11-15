@@ -40,8 +40,8 @@ Other documents point here rather than repeat the release.
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
-  fallback and failure handling under NET-4. A supported series whose activities Kopje refuses or misreads is a gap.
+  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A
+  supported series whose activities Kopje refuses or misreads is a gap.
 
 ## Following a Mastodon release
 
@@ -394,6 +394,21 @@ Accounts (the `Account` and credential account entities):
   where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
   hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
   username.
+- A remote account's handle is the one its actor document claims, its `webfinger` (FEP-2c59), else its
+  `preferredUsername` at its host, once WebFinger confirms it for that actor, as Mastodon 4.7's
+  `ProcessAccountService#check_webfinger!` does (threat model NET-4). Where Mastodon drops a whole document whose new
+  handle it cannot confirm, Kopje keeps the stored handle and stores the rest of the document (profile, keys, inboxes,
+  `movedTo`), as Mastodon's key-only refresh does (`process_account_service.rb:49-51`), so an unconfirmed rename never
+  blocks a key rotation. A new actor id that confirms a handle another account holds gets an account of its own, and
+  the holder's handle is invalidated (above); Mastodon moves the held account to the new id and has its local
+  followers follow it again (`process_account_service.rb:53-55`). Kopje keys an account's identity, its revision fence
+  (ID-1) and its tombstones (ID-7) by actor id, and a WebFinger answer alone does not move local follows to another
+  actor: the old account keeps its followers, and a server that changes implementation can send `Move`. An invalidated
+  account is refreshed as Mastodon's `AccountRefreshWorker` refreshes it, by a refetch of its document that the
+  invalidation asks for, and a status fetched by it refetches it first however recently it was fetched; the refetches
+  an invalidation asks for run at most once per account a day, where Mastodon bounds none, so two actors whose
+  WebFinger answers alternate stop taking the handle from each other, the last one invalidated staying so until its
+  own document, a search or the next day's invalidation refreshes it.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
   Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
@@ -449,20 +464,22 @@ Accounts (the `Account` and credential account entities):
   followers collection past them hides the network. Mastodon also refreshes a remote account in the background a week
   after its last fetch, up to six hours later, when a `Create` or `Update` of it arrives (`account.rb:69-70,258-261`;
   `create.rb:5`); Kopje refreshes only when it stores the actor's document, and before storing a status it fetched by a
-  stale account (below). Mastodon signs the count fetches as `Account.representative` (`json_ld_helper.rb:232-235`);
-  Kopje signs them as its other collection fetches (DATA-7: a local follower's key, else the instance actor's).
+  stale account (below), an account with an invalidated handle included. Mastodon signs the count fetches as
+  `Account.representative` (`json_ld_helper.rb:232-235`); Kopje signs them as its other collection fetches (DATA-7: a
+  local follower's key, else the instance actor's).
 - Before storing a status it fetched by another account than the activity's sender (the original of a boost, a quoted
   status), Kopje refetches that account when its document was stored at least a day ago, as
   `FetchRemoteStatusService#account_from_uri` refetches a `possibly_stale?` account
   (`fetch_remote_status_service.rb:67-71`, `account.rb:71,254-256`). An account the instance suspended or a domain block
-  covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch does not look the account
-  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon, and a 410 at
-  its URI deletes it (above); a 404 or 410 that arrives after another request's failed refetch of the same account is
-  not applied. Where any other failure would make Mastodon store nothing or retry the job, Kopje stores the status
-  under the stored account and tries that account again only a day later. A sender's own statuses are stored under the
-  sender, as fresh as its key (24 hours, ID-1). The pinned statuses a collection sync fetches use the stored account
-  however long ago the sync was asked for, where Mastodon checks the account when it fetches them. Search always
-  fetches the account.
+  covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch confirms a handle its
+  document claims by WebFinger when it is not the stored one, as `ProcessAccountService` does; an account with an
+  invalidated handle is refetched whenever it was last fetched (`possibly_stale?`). An account whose refetch answers 404
+  or 410 has no new status stored, as in Mastodon, and a 410 at its URI deletes it (above); a 404 or 410 that arrives
+  after another request's failed refetch of the same account is not applied. Where any other failure would make Mastodon
+  store nothing or retry the job, Kopje stores the status under the stored account and tries that account again only a
+  day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The pinned
+  statuses a collection sync fetches use the stored account however long ago the sync was asked for, where Mastodon
+  checks the account when it fetches them. Search always fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
   Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
@@ -689,8 +706,10 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     Nokogiri HTML5 tree does (in presence or in order), so Kopje resolves nothing where Mastodon may resolve, never
     another document. An href past 2,048 characters decoded or 8,192 as written resolves nothing too, however short its
     character references decode (Mastodon decodes any length).
-  - The page and both alternates are charged to the request's 2 MiB of fetched bytes, so a page alternate after a
-    large header alternate can be refused for that budget; Mastodon has no request-wide byte budget.
+  - The page and both alternates are charged to the request's 8 fetches and 2 MiB of fetched bytes, as are the
+    actor's fetch and the WebFinger answers that confirm its handle after them, so a page alternate after a large
+    header alternate, or a confirmation after them, can be refused for that budget, and a new actor whose
+    confirmation is refused so is not stored; Mastodon has no request-wide budget.
   - A failure Kopje adds to Mastodon's on a header alternate (the domain policy, which Mastodon applies only after
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops

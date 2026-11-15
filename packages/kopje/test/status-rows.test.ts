@@ -206,7 +206,7 @@ describe("R bounds the rows of a status (RES-3)", () => {
       for (const raw of [null, JSON.stringify({ attachment: [], padding: "p".repeat(2 * 1024 * 1024 - 40) })]) {
         const author = nextId();
         sql.exec(
-          "INSERT INTO accounts (id, uri, username, domain, raw) VALUES (?, ?, 'a', 'remote.example', ?)",
+          "INSERT INTO accounts (id, uri, username, domain, raw) VALUES (?1, ?2, 'a' || ?1, 'remote.example', ?3)",
           author,
           `https://remote.example/users/${"u".repeat(2048 - 29)}`.slice(0, 2048 - author.length) + author,
           raw,

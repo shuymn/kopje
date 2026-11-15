@@ -2,13 +2,15 @@ import { ACCOUNTS_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
-import { ACCOUNT_EMOJIS_BYTES, isoTimeSql, nextDocumentRevisionSql } from "../platform/stored-bounds";
+import { DOMAIN_BYTES, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
+import { ACCOUNT_EMOJIS_BYTES, cutSql, isoTimeSql, nextDocumentRevisionSql } from "../platform/stored-bounds";
 import { presentedRemoteFields } from "./accounts";
 import { availableSql, deletingSql, domainCoveredSql, individuallySuspendedSql } from "./audience";
 import { actorCollections, requestCollectionSync } from "./collection-requests";
 import { type EmojiCandidate, emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { hostCovered } from "./instance-domain-blocks";
+import { usernameSql } from "./profile-bounds";
 import { armRemoteFieldLinks, remoteLinkBack } from "./remote-field-links";
 import { noteEmojiSnapshot, syncProfileFiles } from "./remote-media";
 import { accountSearchText } from "./search-text";
@@ -24,13 +26,21 @@ export const SWEEP_BATCH = 100;
 // before a status Kopje fetched by it is stored (staleAccount): Mastodon's Account::STALE_THRESHOLD and
 // possibly_stale? (account.rb:71,254-256), a policy separate from KEY_REFRESH_MS.
 export const ACCOUNT_STALE_MS = 24 * 60 * 60 * 1000;
+// An account's address: a username and a normalized domain (platform/domain-name.ts normalizeDomain).
+export type Handle = { username: string; domain: string };
+
 // A remote actor as the Worker extracted it from a fetched, origin-checked document (ID-2). Text is bounded,
 // display_name is plain text, note is sanitized HTML (HTML-1) and URLs are http(s) or null (HTML-3). keys are the
 // public keys the document lists whose owner is this actor and whose id has its origin.
 export type RemoteActorInput = {
   uri: string;
-  username: string;
-  domain: string;
+  // The handle the document claims (federation/remote-actor.ts claimedHandle: its FEP-2c59 webfinger, else its
+  // preferredUsername at its host).
+  claim: Handle;
+  // The handle WebFinger confirmed for this actor id (federation/resolve.ts confirmHandle), or null when none was:
+  // not looked up (the claim is the stored handle), refused or not answered. Only a confirmed handle is ever stored
+  // (acceptedHandle).
+  confirmed: Handle | null;
   actorType: string;
   displayName: string;
   note: string;
@@ -51,10 +61,6 @@ export type RemoteActorInput = {
   raw: string;
   // The actor id the document's movedTo names (Fedify's successorId), when Kopje stores such an id; else null.
   movedTo: string | null;
-  // The canonical domain of the actor's address for this username, set by the search resolver only after the actor's
-  // host declared it and that domain confirmed it (declaredDomain in federation/resolve.ts); the host itself when
-  // the host's own answer names it there. Never set from a document.
-  confirmedDomain?: string;
 };
 
 // A refusal that must leave no trace: thrown out of the operation, so its transaction rolls back (the actor's
@@ -106,10 +112,29 @@ function storedRevision(db: Db, uri: string): { revision: number | null } | unde
   );
 }
 
-// The stored revision of the remote actor `uri`, or null when it has no remote row. A local row reads as null too: no
-// document of it is ever stored (ID-3).
-export function actorRevision(db: Db, uri: string): DocumentRevision {
-  return storedRevision(db, uri)?.revision ?? null;
+// What a writer reads of the remote actor `uri` before it fetches its document: the revision it stores the document
+// under (DocumentRevision, null when no remote row of the uri is stored; a local row reads as none, ID-3), and the
+// stored handle, which the Worker compares with the document's claim to skip a WebFinger confirmation that could only
+// keep it (D4; acceptedHandle decides in the Store whatever the Worker skipped). handle is null when no remote row is
+// stored. The stored username and domain are unconstrained (imports): a part that is not TEXT within what a claim can
+// be (REMOTE_USERNAME_LIMIT, DOMAIN_BYTES) is read as '', which equals no claim.
+export type ActorState = { revision: DocumentRevision; handle: Handle | null };
+
+// The state of an actor with no remote row, or of none named.
+export const NO_ACTOR_STATE: ActorState = { revision: null, handle: null };
+
+export function actorState(db: Db, uri: string): ActorState {
+  const row = db.first<{ revision: number | null; username: string | null; domain: string | null }>(
+    `SELECT CASE WHEN typeof(document_revision) = 'integer' THEN document_revision END AS revision,
+			CASE WHEN typeof(username) = 'text' AND length(CAST(username AS BLOB)) <= ${REMOTE_USERNAME_LIMIT}
+				THEN username END AS username,
+			CASE WHEN typeof(domain) = 'text' AND length(CAST(domain AS BLOB)) <= ${DOMAIN_BYTES} THEN domain END AS domain
+		FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ? AND domain IS NOT NULL`,
+    uri,
+  );
+  return row === undefined
+    ? NO_ACTOR_STATE
+    : { revision: row.revision, handle: { username: row.username ?? "", domain: row.domain ?? "" } };
 }
 
 // Whether a document of `uri` fetched under the expectation `expected` may be stored (the table at DocumentRevision).
@@ -138,29 +163,71 @@ export function isDeletedActor(db: Db, uri: string, now: number): boolean {
   );
 }
 
-// The domain of a remote account's address (its acct), decided here for every path that stores an actor. A domain
-// other than the actor's host holds only for the (username, domain, actor id) it was confirmed for: the actor id is
-// the row's own, and confirmed_username the username. So:
-//   - a confirmation in hand (confirmedDomain) sets it: another domain with this username, or the host (clearing any);
-//   - otherwise a stored confirmation is kept while the username is unchanged;
-//   - otherwise, a changed username included, the address falls back to the actor's host until it is confirmed again.
-// Inbound documents never carry a confirmation (Gap: inbound processing does not look up WebFinger), so they keep a
-// confirmed address while the username is unchanged and never set one. Domain blocks also match the actor's host
-// (inDomainSql in audience.ts).
-function accountDomain(
-  stored: { domain: string; confirmed_username: string | null } | undefined,
-  actor: RemoteActorInput,
-): { domain: string; confirmedUsername: string | null } {
-  const host = hostDomain(actor.uri);
-  if (actor.confirmedDomain !== undefined) {
-    return actor.confirmedDomain === host
-      ? { domain: host, confirmedUsername: null }
-      : { domain: actor.confirmedDomain, confirmedUsername: actor.username };
+// The handle (username and domain) of a remote account, decided here for every path that stores an actor (NET-4): a
+// handle WebFinger confirmed for this actor id is taken, unless it is on this instance's domain; otherwise a stored row
+// keeps its handle, whatever the document claims (an invalidated one included); otherwise nothing is stored. Mastodon
+// 4.7 drops the whole document when the confirmation fails (ProcessAccountService#check_webfinger!); Kopje stores the
+// rest of a stored account's document, as Mastodon's only_key path does (docs/mastodon-deviations.md, Accounts).
+// A kept handle stays in SQL: upsertRemoteActor's UPSERT keeps the stored columns, and `stored` (actorState's
+// projection) serves only the Worker-side bookkeeping. Domain blocks also match the actor's host (inDomainSql in
+// audience.ts).
+function acceptedHandle(stored: Handle | null, actor: RemoteActorInput, instanceDomain: string): Handle | null {
+  if (actor.confirmed !== null && actor.confirmed.domain !== instanceDomain) {
+    return actor.confirmed;
   }
-  if (stored !== undefined && stored.confirmed_username !== null && stored.confirmed_username === actor.username) {
-    return { domain: stored.domain, confirmedUsername: stored.confirmed_username };
+  return stored;
+}
+
+// The handle a kept row is found by (search_text), in the projection presenters show (usernameSql, which keeps a
+// long imported username's prefix, and the domain cut to DOMAIN_BYTES): actorState's projection, which reads either
+// past what a claim can be as '', would drop such an account from search. Read for the search text only; the stored
+// handle itself stays in SQL.
+function searchedHandle(db: Db, uri: string): Handle {
+  const row = db.first<{ username: SqlStorageValue; domain: SqlStorageValue }>(
+    `SELECT ${usernameSql("username")} AS username,
+			CASE WHEN typeof(domain) = 'text' THEN ${cutSql("domain", DOMAIN_BYTES)} ELSE '' END AS domain
+		FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ? AND domain IS NOT NULL`,
+    uri,
+  );
+  // An imported username that is not TEXT (a number or a blob) is found by nothing.
+  const text = (value: SqlStorageValue | undefined) => (typeof value === "string" ? value : "");
+  return { username: text(row?.username), domain: text(row?.domain) };
+}
+
+// D7, Mastodon's rename_conflicting_account!: the remote row other than `uri` that holds the address a confirmed handle
+// takes (at most one, accounts_domain_username being UNIQUE, migration 0096_remote_handles) is invalidated, whatever
+// its state: its username becomes '! ' and its id (invalidate_username!; accounts.ts shownHandle presents it), its
+// search_text follows, and a refresh of it is asked for (collection_syncs.refresh, the sync's document part), as
+// Mastodon queues an AccountRefreshWorker. Each account is asked for at most once per ACCOUNT_STALE_MS by an
+// invalidation (accounts.handle_refreshed_at, written only here): two actors whose WebFinger answers alternate would
+// otherwise invalidate each other through their refreshes forever. A stored time that is not a number, or in the
+// future, does not hold the request back. Writes the holder's row and, when asked, its collection_syncs row.
+function invalidateHolder(db: Db, handle: Handle, uri: string, now: number): void {
+  const holder = db.first<{ id: string; display_name: string; due: number }>(
+    `SELECT id, display_name, CASE WHEN typeof(handle_refreshed_at) IN ('integer', 'real')
+				AND handle_refreshed_at > ?4 - ${ACCOUNT_STALE_MS} AND handle_refreshed_at <= ?4 THEN 0 ELSE 1 END AS due
+		FROM accounts INDEXED BY accounts_domain_username
+		WHERE domain = ?1 AND lower(username) = lower(?2) AND uri <> ?3`,
+    handle.domain,
+    handle.username,
+    uri,
+    now,
+  );
+  if (holder === undefined) {
+    return;
   }
-  return { domain: host, confirmedUsername: null };
+  db.run(
+    `UPDATE accounts SET username = '! ' || id, search_text = ?2,
+			handle_refreshed_at = CASE WHEN ?3 THEN ?4 ELSE handle_refreshed_at END
+		WHERE id = ?1 AND domain IS NOT NULL`,
+    holder.id,
+    accountSearchText(`! ${holder.id}`, handle.domain, holder.display_name),
+    holder.due,
+    now,
+  );
+  if (holder.due === 1) {
+    requestCollectionSync(db, holder.id, now, true);
+  }
 }
 
 // R38 (Mastodon's set_immediate_protocol_attributes!): a verified document of an individually suspended account updates
@@ -239,14 +306,23 @@ export function upsertRemoteActor(
   }
   const published = actor.published === null ? NaN : Date.parse(actor.published);
   const createdAt = new Date(Number.isNaN(published) || published > now ? now : published).toISOString();
-  const stored = db.first<{ domain: string; confirmed_username: string | null }>(
-    "SELECT domain, confirmed_username FROM accounts WHERE uri = ? AND domain IS NOT NULL",
-    actor.uri,
-  );
-  const { domain, confirmedUsername } = accountDomain(stored, actor);
+  // The stored handle as actorState projects it, for the search text, the presented fields, the blocks and the emoji
+  // only: a kept handle is copied in SQL (`keep` below), never written back from this decoded copy, since an imported
+  // username or domain need not be valid UTF-8 (D5: the stored handle stays unchanged).
+  const stored = actorState(db, actor.uri).handle;
+  const handle = acceptedHandle(stored, actor, new URL(origin).host);
+  if (handle === null) {
+    return undefined;
+  }
+  const keep = handle !== actor.confirmed;
+  const { username, domain } = handle;
+  const searched = keep ? searchedHandle(db, actor.uri) : handle;
   if (hostCovered(db, hostDomain(actor.uri)) || hostCovered(db, domain)) {
     const row = remoteAccount(db, actor.uri);
     return row === undefined ? undefined : { ...row, syncWaiting: false, frozen: true };
+  }
+  if (handle === actor.confirmed) {
+    invalidateHolder(db, handle, actor.uri, now);
   }
   // The snapshot of the emoji the stored name, bio and presented fields reference (custom-emojis.ts), replaced by
   // every refresh and Update(Person).
@@ -258,7 +334,7 @@ export function upsertRemoteActor(
   );
   const values = [
     actor.uri,
-    actor.username,
+    username,
     domain,
     actor.actorType,
     actor.displayName,
@@ -273,9 +349,8 @@ export function upsertRemoteActor(
     actor.sharedInboxUrl,
     actor.raw,
     new Date(now).toISOString(),
-    accountSearchText(actor.username, domain, actor.displayName),
+    accountSearchText(searched.username, searched.domain, actor.displayName),
     createdAt,
-    confirmedUsername,
     emojis,
   ];
   insertWithFreshId(
@@ -285,22 +360,23 @@ export function upsertRemoteActor(
       db.run(
         `INSERT INTO accounts (id, uri, username, domain, actor_type, display_name, note, url, avatar_url, header_url,
 					locked, discoverable, indexable, inbox_url, shared_inbox_url, raw, fetched_at, search_text, created_at,
-					confirmed_username, emojis, document_revision)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nextDocumentRevisionSql(null)})
-				ON CONFLICT (uri) DO UPDATE SET username = excluded.username,
+					emojis, document_revision)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nextDocumentRevisionSql(null)})
+				ON CONFLICT (uri) DO UPDATE SET username = CASE WHEN ?21 THEN accounts.username ELSE excluded.username END,
 					document_revision = ${nextDocumentRevisionSql("accounts.document_revision")}, actor_type = excluded.actor_type,
 					display_name = excluded.display_name, note = excluded.note, url = excluded.url,
 					avatar_url = excluded.avatar_url, header_url = excluded.header_url, locked = excluded.locked,
 					discoverable = excluded.discoverable, indexable = excluded.indexable, inbox_url = excluded.inbox_url,
 					shared_inbox_url = excluded.shared_inbox_url, raw = excluded.raw, fetched_at = excluded.fetched_at,
-					search_text = excluded.search_text, domain = excluded.domain,
-					confirmed_username = excluded.confirmed_username, emojis = excluded.emojis,
+					search_text = excluded.search_text, domain = CASE WHEN ?21 THEN accounts.domain ELSE excluded.domain END,
+					emojis = excluded.emojis,
 					suspended_at = CASE WHEN accounts.suspension_source = 'domain' THEN NULL ELSE accounts.suspended_at END,
 					suspension_source = CASE WHEN accounts.suspension_source = 'domain' THEN NULL
 						ELSE accounts.suspension_source END
 				WHERE accounts.domain IS NOT NULL`,
         id,
         ...values,
+        keep ? 1 : 0,
       ),
   );
   const row = remoteAccount(db, actor.uri);
@@ -348,14 +424,16 @@ export function upsertRemoteActor(
 }
 
 // Whether the remote account `id` is fetched again before a status Kopje fetched by it is stored (ACCOUNT_STALE_MS,
-// Mastodon's possibly_stale?): a remote row that is available (R38, VIS-30: never refetched) and whose fetched_at is
-// ACCOUNT_STALE_MS old or older, or not a stored time (NULL, or an imported value isoTimeSql does not read).
+// Mastodon's possibly_stale?): a remote row that is available (R38, VIS-30: never refetched) and whose handle is
+// invalidated (D9: whatever its fetched_at, as possibly_stale? is true for an invalidated username), or whose
+// fetched_at is ACCOUNT_STALE_MS old or older, or not a stored time (NULL, or an imported value isoTimeSql does not
+// read). The prefix test is accounts.ts shownHandle's on the stored username.
 export function staleAccount(db: Db, id: string, now: number): boolean {
   return (
     db.first(
       `SELECT 1 AS x FROM accounts a
 			WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("a.id")}
-				AND COALESCE(${isoTimeSql("a.fetched_at")} <= ?2, 1)`,
+				AND (substr(a.username, 1, 2) = '! ' OR COALESCE(${isoTimeSql("a.fetched_at")} <= ?2, 1))`,
       id,
       new Date(now - ACCOUNT_STALE_MS).toISOString(),
     ) !== undefined

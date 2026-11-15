@@ -477,7 +477,9 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
   };
   /** @type {Map<string, Json>} */
   const actors = new Map();
-  for (const actor of all("SELECT id, type, properties FROM actors")) {
+  /** @type {Set<string>} the remote addresses taken so far, as `<host> <lowercased username>` */
+  const handles = new Set();
+  for (const actor of all("SELECT id, type, properties FROM actors ORDER BY rowid")) {
     const uri = String(actor.id);
     const p = parse(actor.properties);
     actors.set(uri, p);
@@ -487,6 +489,15 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
       text(p.preferredUsername) || uri.replace(/\/+$/, "").slice(uri.replace(/\/+$/, "").lastIndexOf("/") + 1);
     if (!isLocal && (!isStorableActorId(uri) || !isRemoteUsername(username))) {
       identities++;
+    } else if (!isLocal) {
+      // One remote account per address (migration 0096_remote_handles): a row after the first of its address is
+      // invalidated, and its refresh is requested (collection_syncs.refresh).
+      const handle = `${new URL(uri).host.toLowerCase()} ${username.toLowerCase()}`;
+      if (handles.has(handle)) {
+        put("handle_refreshes", uri, 1);
+      } else {
+        handles.add(handle);
+      }
     }
     // ID-5: a local username, the last segment of its actor id as Kopje keeps it, that is the domain.
     if (isLocal && localUsernameIsDomain(uri.slice(uri.lastIndexOf("/") + 1), domain)) {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { FEATURED_COUNT_WINDOW, MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
+import { PURGE_BATCH } from "../src/domain/inbox";
 import {
   QUOTE_AUTHOR_FETCHES,
   QUOTE_BACKOFF_MS,
@@ -20,12 +21,14 @@ import {
   SYNC_LEASE_MS,
   SYNC_RETRY_MS,
 } from "../src/domain/remote-collections";
+import { webfingerUrl } from "../src/domain/remote-statuses";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import {
   COLLECTION_SYNCS_PER_ROUND,
   MAX_FEATURED_TAG_PAGES,
   NETWORK_CAPS,
   PART_DOCUMENTS,
+  partsFitRound,
   syncCollections,
 } from "../src/federation/collections";
 import { DOCUMENT_BODY_LIMIT, MAX_REDIRECTS, REQUEST_MAX_BYTES, REQUEST_MAX_FETCHES } from "../src/federation/loader";
@@ -38,7 +41,7 @@ import { countingStore, harness, inboxDeps, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
-import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import { LOCAL, MASTODON, mastodonActor, serveWebFinger, signedInit, type TestActor } from "./inbox-helpers";
 import {
   accountId,
   ALICE,
@@ -1940,5 +1943,178 @@ describe("the requests of one generation", () => {
       after: { networkPerRound: 6, networkPerGeneration: 54, networkHealthy: 3, perCall: 16, perGeneration: 552 },
       retried: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 552 },
     });
+  });
+});
+
+// D9, Mastodon's AccountRefreshWorker: a sync asked for with refresh refetches the account's document and confirms its
+// claim (federation/collections.ts refetchDocument) while its handle is invalidated, before the collections are read.
+describe("the document part of a refresh (D9)", () => {
+  const webfinger = webfingerUrl("bob", "mastodon.example");
+
+  // bob stored, then invalidated with a refresh asked for, as an invalidation leaves him (remote-actors.ts).
+  async function invalidated(t: Setup, bob: TestActor): Promise<string> {
+    const id = await followed(t, bob);
+    await sql(t.store, "DELETE FROM collection_syncs");
+    await sql(t.store, "UPDATE accounts SET username = '! ' || id WHERE id = ?", id);
+    await sql(t.store, "INSERT INTO collection_syncs (account_id, due_at, refresh) VALUES (?, 0, 1)", id);
+    t.web.fetched.length = 0;
+    return id;
+  }
+
+  const account = async (t: Setup, id: string) =>
+    (
+      await sql<{ username: string; domain: string; display_name: string }>(
+        t.store,
+        "SELECT username, domain, display_name FROM accounts WHERE id = ?",
+        id,
+      )
+    )[0];
+
+  it("renames an invalidated account once WebFinger confirms its claim, and then reads its collections", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    await sync(t);
+    expect(await account(t, id)).toMatchObject({ username: "bob", domain: "mastodon.example" });
+    expect(t.web.fetched.slice(0, 2)).toEqual([bob.uri, webfinger]);
+    expect(t.web.fetched).toContain(featuredOf(bob));
+  });
+
+  it("fits one round with a redirect on each of its documents, as the module-load check requires", async () => {
+    expect(partsFitRound(PART_DOCUMENTS, REQUEST_MAX_FETCHES)).toBe(true);
+    // Fails the check (and the module's load) for a part of 5 documents.
+    expect(partsFitRound({ ...PART_DOCUMENTS, document: 5 }, REQUEST_MAX_FETCHES)).toBe(false);
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const answer = (subject: string) => ({
+      subject,
+      links: [{ rel: "self", type: "application/activity+json", href: bob.uri }],
+    });
+    const hop = (url: string) => (url.includes("?") ? `${url}&hop=1` : `${url}/hop`);
+    const other = webfingerUrl("bob", "else.example");
+    t.web.serve(hop(bob.uri), bob.document);
+    t.web.serve(hop(webfinger), answer("acct:bob@else.example"), "application/jrd+json");
+    t.web.serve(hop(other), answer("acct:bob@else.example"), "application/jrd+json");
+    for (const url of [bob.uri, webfinger, other]) {
+      t.web.redirect(url, hop(url));
+    }
+    await sync(t);
+    expect(await account(t, id)).toMatchObject({ username: "bob", domain: "else.example" });
+    expect(t.web.fetched.slice(0, 6)).toEqual([bob.uri, hop(bob.uri), webfinger, hop(webfinger), other, hop(other)]);
+  });
+
+  it("ends the part with the handle still invalidated when WebFinger refuses the claim, storing the rest", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    t.web.serve(bob.uri, { ...bob.document, name: "renamed" });
+    t.web.fail(webfinger, 404);
+    await sync(t);
+    expect(await account(t, id)).toMatchObject({ username: `! ${id}`, display_name: "renamed" });
+    expect(t.web.fetched.filter((url) => url === bob.uri || url === webfinger)).toEqual([bob.uri, webfinger]);
+  });
+
+  // More statuses of the account than one purge batch removes, so a deletion is still running after its first batch;
+  // returns the first one's id.
+  async function seedStatuses(t: Setup, id: string): Promise<string> {
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+			SELECT printf('3%017d', i), ?2 || '/seeded/' || i, ?3, 'public', '2026-10-01T00:00:00.000Z' FROM n`,
+      PURGE_BATCH * 2 + 1,
+      MASTODON,
+      id,
+    );
+    return `3${"1".padStart(17, "0")}`;
+  }
+
+  // The account and one of its statuses, as the API answers them: 200 while shown, 404 once its deletion started.
+  const shown = async (t: Setup, id: string, statusId: string) => [
+    (await t.api(`/api/v1/accounts/${id}`)).status,
+    (await t.api(`/api/v1/statuses/${statusId}`)).status,
+  ];
+
+  it("ends the part with the handle still invalidated when the document is gone", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
+    t.web.fail(bob.uri, 404);
+    await sync(t);
+    expect(await account(t, id)).toMatchObject({ username: `! ${id}` });
+    expect(t.web.fetched.filter((url) => url === bob.uri)).toHaveLength(1);
+    expect(t.web.fetched).not.toContain(webfinger);
+    // A 404 deletes nothing.
+    expect(await shown(t, id, statusId)).toEqual([200, 200]);
+  });
+
+  // A 410 at the account's own URI deletes it, as any fetch of a stored actor does (federation/actor-gone.ts), under
+  // the revision read at the claim; the round answers that the purge has a batch left, which asks for another round.
+  it("deletes the account when its own URI answers 410", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
+    t.web.fail(bob.uri, 410);
+    expect(await syncCollections(t.env, deps(t))).toBe(true);
+    expect(t.web.fetched).toEqual([bob.uri]);
+    expect(await rows(t, "collection_syncs")).toEqual([{ n: 0 }]);
+    expect(await shown(t, id, statusId)).toEqual([404, 404]);
+  });
+
+  // The safe loader follows a same-origin redirect: the 410 at its end is not the account URI's own.
+  it("deletes nothing when the 410 ends a redirect", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
+    t.web.redirect(bob.uri, `${MASTODON}/retired`);
+    t.web.fail(`${MASTODON}/retired`, 410);
+    await sync(t);
+    expect(t.web.fetched.slice(0, 2)).toEqual([bob.uri, `${MASTODON}/retired`]);
+    expect(await account(t, id)).toMatchObject({ username: `! ${id}` });
+    expect(await shown(t, id, statusId)).toEqual([200, 200]);
+  });
+
+  it("retries a failure that may pass, for MAX_SYNC_ATTEMPTS claims, and then gives the part up", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    t.web.fail(webfinger, 503);
+    for (let round = 0; round <= MAX_SYNC_ATTEMPTS + 1; round++) {
+      await sql(t.store, "UPDATE collection_syncs SET due_at = ?", NOW);
+      await syncCollections(t.env, deps(t));
+    }
+    expect(t.web.fetched.filter((url) => url === webfinger)).toHaveLength(MAX_SYNC_ATTEMPTS);
+    expect(await account(t, id)).toMatchObject({ username: `! ${id}` });
+    expect(await rows(t, "collection_syncs")).toEqual([{ n: 0 }]);
+  });
+
+  // As 0096_remote_handles and the cutover's conversion ask for it: on a sync whose collections are read through.
+  it("keeps a refresh asked of a sync read through until its part ends, past a failure that may pass", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    await sql(t.store, "UPDATE collection_syncs SET read_through = generation");
+    t.web.fail(webfinger, 503);
+    await syncCollections(t.env, deps(t));
+    expect(await sql(t.store, "SELECT refresh FROM collection_syncs")).toEqual([{ refresh: 1 }]);
+    serveWebFinger(t.web, "acct:bob@mastodon.example", "acct:bob@mastodon.example", bob.uri);
+    await sql(t.store, "UPDATE collection_syncs SET due_at = ?", NOW);
+    await sync(t);
+    expect(await account(t, id)).toMatchObject({ username: "bob" });
+  });
+
+  it("skips the part for an account whose handle is not invalidated any more", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    await sql(t.store, "UPDATE accounts SET username = 'bob' WHERE id = ?", id);
+    await sync(t);
+    expect(t.web.fetched).not.toContain(bob.uri);
+    expect(t.web.fetched).not.toContain(webfinger);
+    expect(t.web.fetched).toContain(featuredOf(bob));
   });
 });
