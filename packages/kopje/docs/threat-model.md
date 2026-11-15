@@ -3128,7 +3128,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `0097_profile_descriptions`, for imports too), and read as stored; since 0xFF and 599 continuation bytes pass as one
   character and decode to 600 U+FFFD, each description is cut again at 150 code points after decoding
   (`presentedProfileDescription`), at most 902 JSON bytes, and is `''` while the account is unavailable
-  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` read both as stored (#1583). Mentions
+  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` take the same read and presenters
+  wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in `src/domain/actor-row.ts`, `localActorOf`, `documentOf`:
+  the endpoint, every Update and the maintenance snapshot; `test/actor-update.test.ts`). Mentions
   read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
   from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and

@@ -1,11 +1,17 @@
+import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
-import { ACCOUNT_EMOJIS_BYTES, presentedAttributionDomains } from "../platform/stored-bounds";
+import {
+  ACCOUNT_EMOJIS_BYTES,
+  presentedAttributionDomains,
+  presentedDisplayName,
+  presentedNote,
+} from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
-import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
+import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
 import { PUBLIC_COLLECTION } from "./audience";
 import { localEmojiTags } from "./custom-emojis";
 import type { DeliveryEnvelope } from "./deliveries";
@@ -48,7 +54,7 @@ function image(stored: string | null): { type: "Image"; url: string } | undefine
 
 function actorRow(db: Db, accountId: string): ActorRow | undefined {
   return db.first<ActorRow>(
-    `SELECT ${ACTOR_ROW_COLUMNS}
+    `SELECT ${selectSql(ACTOR_ROW_COLUMN_MAP)}
 		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
@@ -70,7 +76,7 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
     webfinger: `${row.username}@${actorId.host}`,
     type: row.actor_type,
     preferredUsername: row.username,
-    ...(suspended ? {} : { name: row.display_name, summary: row.note }),
+    ...(suspended ? {} : { name: presentedDisplayName(row.display_name), summary: presentedNote(row.note) }),
     url: `${origin}/@${row.username}`,
     inbox: `${row.uri}/inbox`,
     outbox: `${row.uri}/outbox`,
