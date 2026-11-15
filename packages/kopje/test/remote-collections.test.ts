@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { FEATURED_COUNT_WINDOW, MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
+import { PURGE_BATCH } from "../src/domain/inbox";
 import {
   QUOTE_AUTHOR_FETCHES,
   QUOTE_BACKOFF_MS,
@@ -2014,15 +2015,67 @@ describe("the document part of a refresh (D9)", () => {
     expect(t.web.fetched.filter((url) => url === bob.uri || url === webfinger)).toEqual([bob.uri, webfinger]);
   });
 
+  // More statuses of the account than one purge batch removes, so a deletion is still running after its first batch;
+  // returns the first one's id.
+  async function seedStatuses(t: Setup, id: string): Promise<string> {
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+			SELECT printf('3%017d', i), ?2 || '/seeded/' || i, ?3, 'public', '2026-10-01T00:00:00.000Z' FROM n`,
+      PURGE_BATCH * 2 + 1,
+      MASTODON,
+      id,
+    );
+    return `3${"1".padStart(17, "0")}`;
+  }
+
+  // The account and one of its statuses, as the API answers them: 200 while shown, 404 once its deletion started.
+  const shown = async (t: Setup, id: string, statusId: string) => [
+    (await t.api(`/api/v1/accounts/${id}`)).status,
+    (await t.api(`/api/v1/statuses/${statusId}`)).status,
+  ];
+
   it("ends the part with the handle still invalidated when the document is gone", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
     t.web.fail(bob.uri, 404);
     await sync(t);
     expect(await account(t, id)).toMatchObject({ username: `! ${id}` });
     expect(t.web.fetched.filter((url) => url === bob.uri)).toHaveLength(1);
     expect(t.web.fetched).not.toContain(webfinger);
+    // A 404 deletes nothing.
+    expect(await shown(t, id, statusId)).toEqual([200, 200]);
+  });
+
+  // A 410 at the account's own URI deletes it, as any fetch of a stored actor does (federation/actor-gone.ts), under
+  // the revision read at the claim; the round answers that the purge has a batch left, which asks for another round.
+  it("deletes the account when its own URI answers 410", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
+    t.web.fail(bob.uri, 410);
+    expect(await syncCollections(t.env, deps(t))).toBe(true);
+    expect(t.web.fetched).toEqual([bob.uri]);
+    expect(await rows(t, "collection_syncs")).toEqual([{ n: 0 }]);
+    expect(await shown(t, id, statusId)).toEqual([404, 404]);
+  });
+
+  // The safe loader follows a same-origin redirect: the 410 at its end is not the account URI's own.
+  it("deletes nothing when the 410 ends a redirect", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const id = await invalidated(t, bob);
+    const statusId = await seedStatuses(t, id);
+    t.web.redirect(bob.uri, `${MASTODON}/retired`);
+    t.web.fail(`${MASTODON}/retired`, 410);
+    await sync(t);
+    expect(t.web.fetched.slice(0, 2)).toEqual([bob.uri, `${MASTODON}/retired`]);
+    expect(await account(t, id)).toMatchObject({ username: `! ${id}` });
+    expect(await shown(t, id, statusId)).toEqual([200, 200]);
   });
 
   it("retries a failure that may pass, for MAX_SYNC_ATTEMPTS claims, and then gives the part up", async () => {

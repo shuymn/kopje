@@ -15,6 +15,7 @@ import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import { readConfig, userKek } from "../platform/config";
 import { callStore } from "../platform/store-client";
 import { storedCount } from "../platform/stored-bounds";
+import { goneSettler, type SettleGone } from "./actor-gone";
 import { createRemoteLoaders, type FederationState, type RemoteLoaders } from "./federation";
 import type { InboxDeps } from "./inbox";
 import {
@@ -344,25 +345,32 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
 }
 
 // The document part (D9): the account's document, fetched as the sync's other documents are, and its claim confirmed
-// against the handle read at the claim (an invalidated one, which equals no claim). A failure of the fetch or of the
-// confirmation that may pass is 'transient', for a later round.
+// against the handle read at the claim (an invalidated one, which equals no claim). A 410 at the account's own URI
+// deletes it under the revision read at the claim, as any fetch of a stored actor does (actor-gone.ts); jobsPending:
+// its purge has a batch for a round. A failure of the fetch or of the confirmation that may pass is 'transient', for a
+// later round.
 async function refetchDocument(
   sync: CollectionSync,
   loaders: RemoteLoaders,
   instanceDomain: string,
-): Promise<DocumentRefreshInput["document"]> {
+  settle: SettleGone,
+): Promise<{ document: DocumentRefreshInput["document"]; jobsPending: boolean }> {
   const fetched = await fetchActor(sync.accountUri, loaders.document, loaders.context);
+  if (fetched.kind === "gone") {
+    return { document: "gone", jobsPending: (await settle(fetched, sync.accountUri, sync.state.revision)).jobsPending };
+  }
   if (fetched.kind !== "ok") {
-    return fetched.kind === "unusable" ? null : fetched.kind;
+    return { document: fetched.kind === "unusable" ? null : fetched.kind, jobsPending: false };
   }
   if (fetched.input === null) {
-    return null;
+    return { document: null, jobsPending: false };
   }
   const checked = await confirmedInput(loaders, fetched.input, sync.state.handle, instanceDomain);
-  return checked.outcome === "transient" ? "transient" : checked.input;
+  return { document: checked.outcome === "transient" ? "transient" : checked.input, jobsPending: false };
 }
 
-// One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. Returns whether another waits.
+// One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. Returns whether another
+// waits, or a purge a document part started (refetchDocument) has a batch left.
 // A Store refusal (maintenance) surfaces as StoreUnavailableError for the caller; a claimed sync whose round died is
 // claimed again after its lease.
 export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolean> {
@@ -374,13 +382,15 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
   }
   const origin = `https://${domain}`;
   const config = readConfig(env);
+  const settle = goneSettler(store, build, deps.now);
   let pending = false;
+  let goneJobs = false;
   for (let round = 0; round < COLLECTION_SYNCS_PER_ROUND; round++) {
     const sync = await callStore<CollectionSync | "more" | null>(() =>
       store().claimCollectionSync(build, { now: deps.now() }),
     );
     if (sync === null) {
-      return false;
+      return goneJobs;
     }
     if (sync === "more") {
       // The claim spent its allowance dropping syncs; more are due.
@@ -405,10 +415,11 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
     );
     const round = { origin, accountUri: sync.accountUri, generation: sync.generation, token: sync.token };
     if (sync.phase === "document") {
-      const document = await refetchDocument(sync, loaders, domain);
+      const { document, jobsPending } = await refetchDocument(sync, loaders, domain, settle);
       if (state.storeError !== null) {
         throw state.storeError;
       }
+      goneJobs ||= jobsPending;
       pending = await callStore(() =>
         store().completeDocumentRefresh(build, { ...round, now: deps.now(), revision: sync.state.revision, document }),
       );
@@ -429,5 +440,5 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       pending = await callStore(() => store().completePinFetches(build, { ...round, now: deps.now(), fetched }));
     }
   }
-  return pending;
+  return pending || goneJobs;
 }

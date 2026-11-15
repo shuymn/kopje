@@ -165,9 +165,10 @@ against their own instance. TLS is assumed between all parties.
   of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
   `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
   revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe found
-  again after reading its revision, so a probe is never stored), and the refresh of a stale
-  boosted or quoted author (the revision read when the refresh was decided travels with the need or the quote's work;
-  staleness stays the refresh policy, since a `Move` changes the revision but not `fetched_at`). A document stored under
+  again after reading its revision, so a probe is never stored), the refresh of a stale boosted or quoted author (the
+  revision read when the refresh was decided travels with the need or the quote's work; staleness stays the refresh
+  policy, since a `Move` changes the revision but not `fetched_at`), and a collection sync's document part, the refresh
+  of an invalidated account (by the revision read at its claim). A document stored under
   an expectation is fetched after it was read: an expectation read before the request's first fetch (the inbox gate's, a
   quote stage's) pairs with the request's loaders, and one read later (a refresh need's, a search resolution's) takes a
   document loader with a memo of its own (`afterRevisionRead` in `src/federation/federation.ts`), so no response cached
@@ -187,8 +188,10 @@ against their own instance. TLS is assumed between all parties.
   deletes too, and the request is answered 202, as for a document whose 410 deletes. _Enforced (main):_
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
-  `src/federation/actor-gone.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`, `test/quotes.test.ts`
-  ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
+  `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
+  `src/domain/remote-collections.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`,
+  `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
+  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
   server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
   Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
