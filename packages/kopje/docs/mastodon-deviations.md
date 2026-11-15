@@ -446,6 +446,14 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   Mastodon 4.7.5 reads every item of the featured collection's first page, and the featured hashtags until it has 10
   or has read 10 pages, both only on the actor's host. Accepted, 2026-11-15.
 
+- A pinned status a sync stores, or finds already stored, has its quote verified only when the status reaches Kopje
+  another way (a delivery, a boost, an `Add`, a search); until then its quote stays pending. Mastodon 4.7.5 verifies a
+  pinned status's quote as any status's (`fetch_featured_collection_service.rb:34`, `create.rb:417-419`) and bounds
+  the fetches that follow from one only per request (`DISCOVERIES_PER_REQUEST`, 1,000 accounts and 1,000 statuses,
+  each count expiring 5 minutes after its last increment). Kopje gives quote verification work only to statuses that a
+  delivery or a user's request brought, so that reading an account's collections leads to no other account (RES-6).
+  Accepted, 2026-11-15.
+
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
 

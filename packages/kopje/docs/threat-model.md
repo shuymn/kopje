@@ -3793,7 +3793,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   due). A status stored for a verification gets one hop less of work, so one traversal stops two levels below the
   status that arrived, however long a chain of quotes; a failed verification is retried five times (1, 5, 30, 120 and
   720 minutes later), then given up until its status arrives
-  again. A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
+  again. Only a delivered activity or a user's request gives a status's quote its budget or renews it; a collection
+  sync's pin, newly fetched or already stored, gets none and renews none (`completePinFetches`, `replacePins` in
+  `src/domain/remote-collections.ts`), so a sync stores only its account's own statuses and leads to no other account
+  (`test/quotes.test.ts` ("gives or renews a quote budget only from outside paths"), `test/remote-collections.test.ts`
+  ("ends discovery at a synced pin")). Every author stage of a verification that stores, refreshes or (on a failed
+  refetch) stamps the quoted status's author counts in its quote's `author_fetches`, apart from its attempts:
+  at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author stage with none left
+  fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed once the author is
+  stale again, still applies at most 6 author documents (the column's CHECK holds the same bound). Each author
+  document stored requests one collection sync generation (at most 552 requests, above). So a status arriving from
+  outside at `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13 author documents
+  and sync generations (at most 7,176 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing further
+  (`test/remote-collections.test.ts` ("counts each author document a quote applies, interrupted rounds included",
+  "ends a quote's work with no fetch once its author fetches are spent", "stores one author an attempt for a quoted
+  status whose author changes at each fetch", "keeps a quote's retries after its author is stored")).
+  A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
   500 rows counted with `total_changes()` (a row and its count trigger), the first in the request and the rest in the
   inbound job rounds, each of which runs at most 100 revocation batches (`REVOCATION_BATCHES`) within one 500-row
   allowance, every batch's rows counted against it (a failed one's rolled-back writes included) and its retry state's

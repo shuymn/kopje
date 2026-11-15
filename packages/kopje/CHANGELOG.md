@@ -145,6 +145,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
+  there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
+  way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"; RES-6 in
+  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. A quote's verification now applies its
+  quoted status's author document at most 6 times however its rounds end, and then ends; its retries are unchanged.
+  Migration `0094_quote_author_fetches`: a column of `quotes` with a CHECK, which the upgrade tests against every
+  stored quote (745 ms for this file in one local run of the migration bench, at a load average of 30 to 40).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - A boost answered on its own (the reblog response, `GET /api/v1/statuses/:id`, `GET /api/v1/statuses`, its deletion
   and its interaction-policy update), a reported boost in the admin API's reports, and a boost named by a notification
   or a notification request shown alone (`GET /api/v1/notifications/:id`, `GET /api/v2/notifications/:group_key`, a

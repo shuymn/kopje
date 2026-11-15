@@ -46,6 +46,17 @@ export const QUOTE_CONTEXT = [
   },
 ];
 
+// `actor`'s featured collection, an OrderedCollection listing `items` inline, served at the address mastodonActor's
+// document names.
+export function serveFeatured(web: RemoteWeb, actor: TestActor, items: string[]): void {
+  web.serve(`${actor.uri}/collections/featured`, {
+    "@context": AS,
+    id: `${actor.uri}/collections/featured`,
+    type: "OrderedCollection",
+    orderedItems: items,
+  });
+}
+
 // A stamp as Mastodon's QuoteAuthorizationSerializer renders it, served on the web.
 export function serveStamp(
   web: RemoteWeb,
