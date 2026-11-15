@@ -31,6 +31,7 @@ import {
   SESSION_COOKIE,
 } from "../web/session";
 import { noticeOf, STRINGS } from "../web/strings";
+import { textareaText } from "../web/textarea";
 import { PRIVATE_HEADERS } from "./web-headers";
 
 // The web UI's signed-in part: sign-in through Access and the settings page. Posting and reading happen in
@@ -311,14 +312,38 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
     return result.status === "ok" ? then(result.value) : toLogin(c);
   }
 
+  // The form's image descriptions as their textareas hold them (textareaText), before their code points are counted;
+  // the API stores a description as it is sent, as Mastodon does.
+  const DESCRIPTIONS = new Set(PROFILE_IMAGES.map((kind) => `${kind}_description`));
+  function withTextareaDescriptions(params: Params): Params {
+    return new Params(
+      params.entries.map(([name, value]) => [name, DESCRIPTIONS.has(name) ? textareaText(value) : value] as const),
+      params.files,
+      params.objectPrefixes,
+      params.emptyLists,
+    );
+  }
+
   app.post("/settings/profile", setup, async (c) => {
     const checked = await checkForm(c);
     if (checked instanceof Response) {
       return checked;
     }
-    const { changes, problems } = credentialChanges(checked.params);
-    // Only what the form edits; anything else a forged or stale form sends is ignored.
-    const { displayName, note, fields, locked, discoverable, indexable, hideCollections, privacy } = changes;
+    const { changes, problems } = credentialChanges(withTextareaDescriptions(checked.params));
+    // Only what the profile form and the image cards' description forms edit (an absent name keeps its value); anything
+    // else a forged or stale form sends is ignored.
+    const {
+      displayName,
+      note,
+      fields,
+      locked,
+      discoverable,
+      indexable,
+      hideCollections,
+      privacy,
+      avatarDescription,
+      headerDescription,
+    } = changes;
     if (problems.length > 0) {
       return renderSettings(c, checked.session, problems);
     }
@@ -326,7 +351,18 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
     const result = await storeCall(c, deps, (s, b) =>
       s.updateCredentials(b, {
         credential,
-        changes: { displayName, note, fields, locked, discoverable, indexable, hideCollections, privacy },
+        changes: {
+          displayName,
+          note,
+          fields,
+          locked,
+          discoverable,
+          indexable,
+          hideCollections,
+          privacy,
+          avatarDescription,
+          headerDescription,
+        },
         present: present(c),
         now: deps.now(),
       }),
