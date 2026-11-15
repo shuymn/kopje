@@ -157,6 +157,45 @@ describe("GET /authorize_interaction (WEB-4)", () => {
       expect(await prefill(refused), refused).toBe("");
     }
   });
+
+  // The username pattern is linear (platform/domain-name.ts USERNAME): an address at INTERACTION_TARGET_BYTES whose
+  // username is a run of underscores ending in a character a username cannot hold is read within a generous time by
+  // the page (uri and acct) and the form, without a session. The same run ending in a letter is kept by each, so each
+  // read the address.
+  it("reads an address at INTERACTION_TARGET_BYTES within a generous time, without a session", async () => {
+    const t = await world();
+    const address = (last: string) =>
+      `x${"_".repeat(INTERACTION_TARGET_BYTES - "x@a.example".length - 1)}${last}@a.example`;
+    expect(new TextEncoder().encode(address("!")).length).toBe(INTERACTION_TARGET_BYTES);
+    const reads = async (target: string) => {
+      const page = (query: string) => t.request(`/authorize_interaction?${query}=${encodeURIComponent(target)}`);
+      const uri = formOf(await (await page("uri")).text(), "/authorize_interaction").get("uri");
+      const acct = formOf(await (await page("acct")).text(), "/authorize_interaction").get("uri");
+      const posted = await t.request("/authorize_interaction", {
+        method: "POST",
+        headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ uri: target }).toString(),
+      });
+      return [uri, acct, posted.status, posted.headers.get("location")];
+    };
+    const started = performance.now();
+    const refused = await reads(address("!"));
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(refused).toEqual([
+      "",
+      "",
+      303,
+      `/login?${new URLSearchParams({ return: "/authorize_interaction" }).toString()}`,
+    ]);
+    const kept = address("x");
+    expect(await reads(kept)).toEqual([
+      kept,
+      kept,
+      303,
+      `/login?${new URLSearchParams({ return: "/authorize_interaction", interaction: kept }).toString()}`,
+    ]);
+    expect(t.web.fetched).toEqual([]);
+  });
 });
 
 // Mastodon 4.7.5's remote interaction helper, which reads another server's WebFinger answer from the browser, ported

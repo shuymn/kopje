@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
-import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
+import {
+  type ApiHarness,
+  apiHarness,
+  bearer,
+  form,
+  json,
+  login,
+  seedAccount,
+  sql,
+  STORED_ACTOR_TYPES,
+} from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { appToken, scopedToken } from "./read-helpers";
@@ -346,6 +357,32 @@ describe("credentials", () => {
     expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
   });
 
+  // The strip is linear (platform/strip.ts): a run inside one value filling the body (API_BODY_LIMIT) is read within a
+  // generous time, with an invalid token (checked after the values are read) and with alice's, whose 422 shows the
+  // value reached its check.
+  it.each([
+    ["display_name", (value: string) => ({ display_name: value }), "Display name is too long"],
+    ["note", (value: string) => ({ note: value }), "Note is too long"],
+    ["attribution_domains", (value: string) => ({ attribution_domains: [value] }), "is not a valid domain name"],
+  ])("reads %s filling the body within a generous time", async (_name, body, problem) => {
+    const h = await aliceSession();
+    const value = `x${" ".repeat(API_BODY_LIMIT - JSON.stringify(body("xx")).length)}x`;
+    expect(JSON.stringify(body(value))).toHaveLength(API_BODY_LIMIT);
+    for (const [token, status] of [
+      ["nope", 401],
+      [h.token, 422],
+    ] as const) {
+      const started = performance.now();
+      const init = bearer(token, json(body(value), { method: "PATCH" }));
+      const response = await h.request("/api/v1/accounts/update_credentials", init);
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(response.status).toBe(status);
+      if (status === 422) {
+        expect((await response.json<{ error: string }>()).error).toContain(problem);
+      }
+    }
+  });
+
   // Mastodon's TextFormatter for a local note (app/lib/text_formatter.rb:34, :48): '' for a blank note, else Rails'
   // simple_format (split_paragraphs), which trims no paragraph or line: what Ruby's strip leaves is kept, Unicode spaces
   // included, and source.note gives it back. A blank note is stored empty (docs/mastodon-deviations.md).
@@ -445,6 +482,18 @@ describe("account lookup", () => {
       fields: [],
       suspended: true,
     });
+  });
+
+  // Account#bot?, by the list the notification policy's bot condition reads (audience.ts).
+  it("presents bot by the exact stored actor type", async () => {
+    const h = await apiHarness();
+    const id = await seedAccount(h.store, { username: "maybe" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, id);
+      expect(await (await h.request(`/api/v1/accounts/${id}`)).json<{ bot: boolean }>(), label).toMatchObject({
+        bot,
+      });
+    }
   });
 
   // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.

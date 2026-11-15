@@ -405,10 +405,10 @@ a snapshot: the next cron round works the links out again, and since a dump hold
 qualifies and a link trends again only from cards recorded after the restore. A file built from legacy data has no
 row.
 
-Card attribution (migration `0095_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
+Card attribution (migration `0098_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
 NULL or 18 ASCII digits as text (no foreign key: a restored one may name no account, and then no viewer sees the flag),
 NULL on a pending row; anything else fails with `status_cards: a value past its stored bound`. A row of a dump taken
-before 0095 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
+before 0098 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
 fetch.
 
 Instance activity (migration `0072_activity_tracking`): an `activity_counts` row holds a `kind` (`statuses` or
@@ -451,6 +451,12 @@ in a TEXT column as its decimal text, before the CHECK runs. A chunk past these 
 `FOREIGN KEY` failure. A restored report is presented as it was dumped, `created_at` included; nothing recomputes it.
 A dump taken before 0093 has no such table: it restores into a Store at its own migrations, which then upgrades. A
 file built from legacy data has no row. An `instance_settings` row named `wrapstodon` holds `true` or `false`.
+
+Notification policies' bot condition (migration `0095_notification_policy_bots`): `notification_policies.for_bots` is
+`accept`, `filter` or `drop`, as each of the policy's other conditions is; anything else fails with the CHECK's text
+(`CHECK constraint failed: for_bots IN ('accept', 'filter', 'drop')`). A dump taken before 0095 has no such column: it
+restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
+legacy data has no row.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a

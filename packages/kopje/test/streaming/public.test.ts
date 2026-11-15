@@ -1,7 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
+import { statusLength } from "../../src/domain/status-text";
 import { streamDelete } from "../../src/domain/streaming";
 import { ACCOUNT_EMOJIS_BYTES, STATUS_EMOJIS_BYTES } from "../../src/platform/stored-bounds";
 import { sha256Hex } from "../../src/security/tokens";
@@ -15,6 +17,7 @@ import {
   block,
   community,
   domainBlock,
+  follow,
   getJson,
   mute,
   post,
@@ -22,6 +25,16 @@ import {
   seedStatus,
   type Status,
 } from "../status-helpers";
+import {
+  described,
+  describedMedia,
+  encodedTwice,
+  type Fill,
+  FILLS,
+  fillProfile,
+  payloadBytes,
+  writeFilled,
+} from "./payload-fills";
 import { connect, drained, echo, type Inbox, settled, type StreamMessage, subscribed, takeAll } from "./stream-helpers";
 
 // The `public*` and `hashtag*` streams: `update` and `status.update` when the public
@@ -498,6 +511,234 @@ describe("feeds at the caps", () => {
         ["public", "delete", status.id],
         ["hashtag cats", "delete", status.id],
       ]);
+    }
+  }, 120_000);
+});
+
+// docs/mastodon-deviations.md, "Streaming." (D8 of #1584): local statuses with descriptions at
+// MAX_MEDIA_DESCRIPTION_LENGTH (payload-fills.ts) beside text, a poll and profiles at their limits. An event is sent
+// while its payload (the presented subject encoded twice) is within STREAM_LIMITS.payloadBytes, and skipped and logged
+// past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
+describe("payloads with descriptions at their length (D8)", () => {
+  // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
+  const PLAIN_R = { quote: 83_759, boost: 93_262 };
+
+  // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
+  // spied for the hub's skips.
+  async function world(fill: Fill) {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    await fillProfile(h, alice, fill);
+    await fillProfile(h, carol, fill);
+    await follow(h, bob, carol.id);
+    const inbox = await subscribed(h, bob.token, "public:local", "user");
+    await takeAll(inbox);
+    return { h, alice, bob, carol, inbox };
+  }
+  type World = Awaited<ReturnType<typeof world>>;
+
+  const skips = (warn: { mock: { calls: unknown[][] } }) =>
+    warn.mock.calls.filter(([entry]) => (entry as { event?: string })?.event === "kopje.stream.payload-skipped");
+
+  // The status `id` as REST presents it to bob, as sent.
+  async function shownJson(w: World, id: string): Promise<string> {
+    const response = await w.h.request(`/api/v1/statuses/${id}`, bearer(w.bob.token));
+    expect(response.status).toBe(200);
+    return response.text();
+  }
+
+  // alice's S1 with the first four descriptions and S2 quoting it with the last four, both of the fill, written
+  // straight to the Store; then carol's boost of S2 through the API. Each is streamed by its own turn, and read through
+  // REST once streamed (S2 before it is boosted, as its frame shows it).
+  async function scene(w: World, fill: Fill, descriptions: readonly string[]) {
+    const media = await describedMedia(w.h, w.alice, descriptions);
+    await drained(w.h, w.inbox);
+    const quoted = await writeFilled(w.h, w.alice, fill, media.slice(0, MAX_STATUS_MEDIA));
+    const quote = await writeFilled(w.h, w.alice, fill, media.slice(MAX_STATUS_MEDIA), quoted);
+    await w.h.store.streamTick(BUILD);
+    await drained(w.h, w.inbox);
+    const quoteJson = await shownJson(w, quote);
+    const response = await act(w.h, w.carol, `/api/v1/statuses/${quote}/reblog`);
+    expect(response.status).toBe(200);
+    const boost = (await response.json<Status>()).id;
+    await drained(w.h, w.inbox);
+    return { quoted, quote, boost, json: { quote: quoteJson, boost: await shownJson(w, boost) } };
+  }
+
+  // A status's JSON as REST presents it to bob: the payload the hub makes of it, R, and its descriptions.
+  function measured(json: string, descriptions: readonly string[]) {
+    const payload = payloadBytes(json);
+    const parsed = JSON.parse(json) as Status & { reblog: Status | null };
+    const shown = parsed.reblog ?? parsed;
+    const quotedShown = (shown as { quote?: { quoted_status?: Status } | null }).quote?.quoted_status;
+    const attached = (s: Status | undefined) =>
+      ((s?.media_attachments ?? []) as { description: string }[]).map((m) => m.description);
+    return {
+      json,
+      payload,
+      rest: payload - descriptions.reduce((sum, d) => sum + encodedTwice(d), 0),
+      descriptions: [...attached(quotedShown), ...attached(shown)],
+    };
+  }
+
+  // The update frames bob received, by status id.
+  const frames = (inbox: Inbox) =>
+    new Map(
+      inbox
+        .rest()
+        .filter((m) => m.event === "update")
+        .map((m) => [idOf(m), m]),
+    );
+
+  it("sends a status and its quote with ordinary descriptions beside plain text, a poll and profiles", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u{1F600}"), ...described("\u{1F600}")];
+      const { quote, boost, json } = await scene(w, FILLS.plain, descriptions);
+      const sent = frames(w.inbox);
+      const rests: Record<string, number> = {};
+      for (const [name, id, stream] of [
+        ["quote", quote, "public:local"],
+        ["boost", boost, "user"],
+      ] as const) {
+        const shown = measured(json[name], descriptions);
+        expect(sent.get(id)?.stream).toEqual([stream]);
+        expect(sent.get(id)?.payload).toBe(shown.json);
+        expect(shown.descriptions).toEqual(descriptions);
+        expect(shown.payload).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes);
+        rests[name] = shown.rest;
+      }
+      expect(rests).toEqual(PLAIN_R);
+      expect(skips(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
+  // Past the limit, the frame is missing and the skip logged; S1 alone still fits. Expanding text: three long links in
+  // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
+  // 320,000 bytes.
+  it.each([
+    ["links", FILLS.links, { quote: 223_929, boost: 233_432 }],
+    ["every", FILLS.every, { quote: 234_809, boost: 249_556 }],
+  ] as const)(
+    "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
+    async (_name, fill, rests) => {
+      expect(statusLength(fill.text, fill.spoiler)).toBe(71);
+      const w = await world(fill);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const descriptions = [...described("\u{1F600}"), ...described("\u{1F600}")];
+        const { quoted, json } = await scene(w, fill, descriptions);
+        expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+        expect(skips(warn)).toHaveLength(2);
+        const shown = { quote: measured(json.quote, descriptions), boost: measured(json.boost, descriptions) };
+        expect(shown.quote.descriptions).toEqual(descriptions);
+        expect(shown.boost.descriptions).toEqual(descriptions);
+        expect({ quote: shown.quote.rest, boost: shown.boost.rest }).toEqual(rests);
+        // Within the limit in UTF-16 code units: admission measures UTF-8 bytes.
+        expect(JSON.stringify(shown.quote.json).length).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+    120_000,
+  );
+
+  it("skips a status and its quote whose descriptions are control characters", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u0001"), ...described("\u0001")];
+      const { quoted, json } = await scene(w, FILLS.plain, descriptions);
+      expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+      expect(skips(warn)).toHaveLength(2);
+      const shown = measured(json.quote, descriptions);
+      expect(shown.descriptions).toEqual(descriptions);
+      expect({ quote: shown.rest, boost: measured(json.boost, descriptions).rest }).toEqual(PLAIN_R);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
+  // From the plain fill's payload P, `a` descriptions' characters U+1F600 become U+0001 (+3 bytes each) and 3a - (t - P)
+  // more become U+3042 (-1 each), description by description, each keeping its MAX_MEDIA_DESCRIPTION_LENGTH code
+  // points: the payload is t, sent at the limit and skipped one byte past it.
+  it.each([
+    ["at", 0],
+    ["one byte past", 1],
+  ] as const)(
+    "sends an event %s the limit, measured in UTF-8 bytes, and skips one past it",
+    async (_name, past) => {
+      const plain =
+        PLAIN_R.quote + 2 * MAX_STATUS_MEDIA * encodedTwice("\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH));
+      const target = STREAM_LIMITS.payloadBytes + past;
+      const gap = target - plain;
+      const controls = Math.ceil(gap / 3);
+      const kana = 3 * controls - gap;
+      expect(gap).toBeGreaterThan(0);
+      expect(gap).toBeLessThanOrEqual(2 * MAX_STATUS_MEDIA * 3 * MAX_MEDIA_DESCRIPTION_LENGTH);
+      expect(controls + kana).toBeLessThanOrEqual(2 * MAX_STATUS_MEDIA * MAX_MEDIA_DESCRIPTION_LENGTH);
+      let left = { controls, kana };
+      const descriptions = Array.from({ length: 2 * MAX_STATUS_MEDIA }, () => {
+        const c = Math.min(left.controls, MAX_MEDIA_DESCRIPTION_LENGTH);
+        const k = Math.min(left.kana, MAX_MEDIA_DESCRIPTION_LENGTH - c);
+        left = { controls: left.controls - c, kana: left.kana - k };
+        return "\u0001".repeat(c) + "あ".repeat(k) + "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH - c - k);
+      });
+      const w = await world(FILLS.plain);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { quoted, quote, json } = await scene(w, FILLS.plain, descriptions);
+        const shown = measured(json.quote, descriptions);
+        expect([shown.payload, shown.rest]).toEqual([target, PLAIN_R.quote]);
+        expect(shown.descriptions).toEqual(descriptions);
+        const sent = frames(w.inbox);
+        expect(sent.has(quote)).toBe(past === 0);
+        expect(sent.has(quoted)).toBe(true);
+        if (past === 0) {
+          expect(sent.get(quote)?.payload).toBe(shown.json);
+        } else {
+          expect(skips(warn).length).toBeGreaterThanOrEqual(1);
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    },
+    120_000,
+  );
+
+  // A status that quotes nothing has four descriptions: control characters at their length (280,000 bytes) fit beside
+  // every fill while R is at most 244,288.
+  it("sends a status without a quote, and its boost, with every fill and control-character descriptions", async () => {
+    const w = await world(FILLS.every);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = described("\u0001");
+      const media = await describedMedia(w.h, w.alice, descriptions);
+      await drained(w.h, w.inbox);
+      const status = await writeFilled(w.h, w.alice, FILLS.every, media);
+      await w.h.store.streamTick(BUILD);
+      await drained(w.h, w.inbox);
+      const statusJson = await shownJson(w, status);
+      const response = await act(w.h, w.carol, `/api/v1/statuses/${status}/reblog`);
+      const boost = (await response.json<Status>()).id;
+      await drained(w.h, w.inbox);
+      const json = { [status]: statusJson, [boost]: await shownJson(w, boost) };
+      const sent = frames(w.inbox);
+      const rests: number[] = [];
+      for (const id of [status, boost]) {
+        const shown = measured(json[id]!, descriptions);
+        expect(sent.get(id)?.payload).toBe(shown.json);
+        expect(shown.descriptions).toEqual(descriptions);
+        expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
+        rests.push(shown.rest);
+      }
+      expect(rests).toEqual([117_226, 131_973]);
+      expect(skips(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
     }
   }, 120_000);
 });

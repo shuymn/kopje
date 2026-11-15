@@ -29,7 +29,8 @@ states the rules every page follows.
   dates and numbers are formatted with `Intl`. The page's `lang` is the UI language, and user-written content carries
   its own `lang`: a post's language where it has one, and `lang=""` (unknown) where it has none, so the text does not
   take the UI language's glyphs and hyphenation. An account records no language, so its name, bio and fields, and an
-  edit history's versions, are always `lang=""`.
+  edit history's versions, are always `lang=""`. Remote HTML inside them keeps the `lang` its elements declare
+  (HTML-1).
 - **No text that describes the page.** Pages do not explain what they show or leave out (for example "showing only
   …"). Headings, labels and navigation names are allowed; other UI text states an action, a result or a condition for
   acting. The edit history's notice that older versions are left out is the one exception (VIS-4).

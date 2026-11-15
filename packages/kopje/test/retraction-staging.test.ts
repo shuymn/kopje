@@ -930,9 +930,10 @@ describe("a staged retraction’s malformed and oversized values (RES-6, DATA-6)
 function followers(sql: SqlStorage, n: number, inbox = (i: number) => `https://f${i}.example/inbox`, from = 1): void {
   for (let i = from; i < from + n; i++) {
     sql.exec(
-      `INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES (?, ?, 'f', 'f.example', ?)`,
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES (?, ?, ?, 'f.example', ?)`,
       `9${String(i).padStart(17, "0")}`,
       `https://f.example/u/${i}`,
+      `f${i}`,
       inbox(i),
     );
     sql.exec(

@@ -10,6 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
+  `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
+- A local post's ActivityPub Note lists its link card as a `Link` attachment once the card is fetched, as Mastodon 4.7
+  does. No Store migration and no `wrangler.jsonc` change.
 - Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
   year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
   `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in
@@ -25,7 +31,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Link cards carry `missing_attribution` for a signed-in viewer, as Mastodon 4.6 does: `true` when the linked page names
   the viewer's account as `fediverse:creator` and none of its attribution domains covers the page, in statuses (their
   streams included) and trend links. A creator naming the instance by another spelling or an alias names no account
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0095_card_attribution`: a
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0098_card_attribution`: a
   column of `status_cards` and its two triggers, reading no row; as the triggers name `main.statuses`, the upgrade
   checks every reference of the Store (6,985 ms for this file in one local run of the migration bench, at a load
   average of 9 to 20). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
@@ -36,6 +42,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- The notification policy has Mastodon 4.6's bot condition: `for_bots` in `/api/v2/notifications/policy` and
+  `filter_bots` in `/api/v1/notifications/policy`, accept by default. It matches a sender whose actor type is
+  `Application` or `Service` that the user does not follow. Migration `0095_notification_policy_bots` adds the column
+  with its default, which decides every stored policy as before; the upgrade checks no reference (34 ms for this file
+  in one local run of the migration bench, at a load average of 14 to 24). `wrangler.jsonc`: unchanged. This adds a
+  Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Notification reads take `supported_types[]` (`GET /api/v1/notifications`, `/api/v1/notifications/:id`,
   `/api/v2/notifications`, `/api/v2/notifications/:group_key`), as in Mastodon 4.6: an `admin.report` or
   `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
@@ -63,9 +75,26 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
   is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   WebFinger). No Store migration and no `wrangler.jsonc` change.
+- A remote post's FEP-8967 `Link` attachment is the link its card is fetched from, as Mastodon 4.7 reads it; the
+  content's links are used only without one. An attachment with an empty `href` is now read as media. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
+- Breaking: a remote account's handle is taken only once WebFinger confirms it, as Mastodon 4.7 does: the handle an
+  actor claims is its `webfinger` (FEP-2c59), else its `preferredUsername` at its host, and WebFinger at that address
+  must name the actor, following one other subject at most. A new actor whose handle cannot be confirmed is not stored
+  (an inbox activity from it answers 503 while the confirmation may still pass); a stored account whose new handle
+  cannot be confirmed keeps its old one, and the rest of its document is stored. One remote account holds an address:
+  when another confirms it, the old holder shows an invalid handle until it is refreshed, which Kopje asks for at most
+  once a day per account ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A new actor costs one
+  or two WebFinger requests. Migration `0096_remote_handles`: accounts that shared an address keep their rows, all but
+  the oldest of each address show an invalid handle until refreshed, and a refresh is asked for each of them (the
+  cutover's conversion does the same, and `verify-conversion` checks the requests); the address index becomes UNIQUE,
+  and as it recreates an index, the upgrade checks every reference of the Store (for this file in local runs of the
+  migration bench, each started at a load average below 5: 8,891 ms as seeded, and 11,846 to 12,436 ms in three runs
+  with one remote account in ten sharing the address of another). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
@@ -73,6 +102,22 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
+- A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
+  accounts they limit) notifies its local account, under the notification policy's limited accounts condition:
+  filtered by default unless the account follows the author. Such a mention was never notified. A mention an edit adds
+  is notified as an ordinary one, whether or not the edit addresses the account. No Store migration and no
+  `wrangler.jsonc` change.
+- A remote status Kopje fetches (a search result, a boost's original, a pinned or a quoted status) notifies its
+  mentioned local accounts and the author's subscribers when it was published within six hours of arriving, as
+  Mastodon's real-time window does; such a status notified no one. A status that arrives again later notifies no one
+  again. No Store migration and no `wrangler.jsonc` change.
+- An edit notifies every mentioned local account, and the local author of a status it quotes with approval, that has
+  no notification of the mention or quote, as Mastodon does: one whose notification the policy dropped, or that was
+  dismissed or cleared, is notified again. A remote edit notifies only when it changes the text, content warning,
+  media or poll (a new mention included), or, without a new version, when it changes its quote's approval stamp; a
+  local edit whenever it is accepted, a change of the quote policy alone through `PUT /api/v1/statuses/:id` included,
+  which now also notifies the status's boosters and quoters (the `/interaction_policy` endpoint notifies no one). No
+  Store migration and no `wrangler.jsonc` change.
 - Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage
@@ -117,6 +162,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A media description may have 10,000 characters on upload, media update and status edit, and
+  `configuration.media_attachments.description_limit` is 10000, as in Mastodon 4.6 (`mastodon#39306`); the limit was
+  1,500. A post and its quote with long descriptions can pass the streaming API's 512 KiB event limit, together with
+  formatted text that expands as it is sent (links, profile fields, poll choices) or with descriptions of control
+  characters such as U+0001; such an event is not streamed and shows on the next refresh
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
   leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
   migration and no `wrangler.jsonc` change.
@@ -147,9 +198,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   languages, translation languages, privacy policy and terms of service), until the suspension's cleanup deletes the
   token. Any other token on those routes is still ignored; streaming still answers with 401. No Store migration and no
   `wrangler.jsonc` change.
+- Remote posts, bios and profile fields keep the `lang` attributes of their HTML, a heading's on the bold paragraph it
+  becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
+  post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
+  as one without does. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
+  and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
+  an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
 - WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
   subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
   before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
@@ -192,6 +250,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
   media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
+- The streaming API's turns count each event in UTF-8 bytes, as its 512 KiB limit does; an event of characters past
+  U+007F was counted at a half to a third of its size, so a turn could send up to three times its budget. No Store
+  migration and no `wrangler.jsonc` change.
 - The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
   there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
   way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
@@ -209,6 +270,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
   `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
   Mastodon's streaming does.
+- A link card's title and description are read from a page's language-tagged JSON-LD values, as Mastodon 4.6 does
+  (`mastodon#39190`), and a remote attachment's description from a `summary` or `name` given as an array or a
+  language-tagged value, or from `name` when `summary` is blank, and stripped as Mastodon strips it, as Mastodon 4.7
+  does (`mastodon#39590`). A post whose attachments now read differently counts its next update as an edit once. No
+  Store migration and no `wrangler.jsonc` change.
+- Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
+  linear time on long input. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

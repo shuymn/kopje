@@ -30,6 +30,8 @@ import {
   pollOptionsSql,
   tagNameSql,
 } from "./status-bounds";
+import { shownCardUrl } from "./status-presenter";
+import { CARD_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
 // for in outbound_activities, in the transaction of the change. Nothing is delivered here: the delivery rounds
@@ -153,6 +155,8 @@ export type StatusFacts = {
   emojis: EmojiTag[];
   // The status's poll, which makes its object a Question.
   poll: PollFacts | null;
+  // The URL of the card the status shows (status-presenter.ts shownCardUrl), which the Note lists as a Link.
+  cardUrl: string | null;
 };
 
 // A poll as its Question shows it (ActivityPub::NoteSerializer): the choices with their counts (none while hide_totals
@@ -269,6 +273,13 @@ export function statusFacts(
 		ORDER BY position, id LIMIT ${MAX_STATUS_MEDIA}`,
     statusId,
   );
+  // The attached card, by its key, its url and title projected as the presenter projects them (CARD_COLUMN_MAP): a
+  // pending row (fetched_at NULL) is no card, whatever an import gave it.
+  const card = db.first<{ url: SqlStorageValue; title: SqlStorageValue }>(
+    `SELECT ${CARD_COLUMN_MAP.url} AS url, ${CARD_COLUMN_MAP.title} AS title
+		FROM status_cards c WHERE c.status_id = ?1 AND c.fetched_at IS NOT NULL`,
+    statusId,
+  );
   return {
     id: row.id,
     uri: row.uri,
@@ -291,6 +302,7 @@ export function statusFacts(
     poll: pollFacts(db, statusId),
     quotePolicy: row.quote_policy,
     quote: readQuote(db, statusId),
+    cardUrl: card === undefined ? null : shownCardUrl(row.visibility, card.url, card.title),
   };
 }
 
@@ -313,9 +325,10 @@ function questionOf(poll: PollFacts): Record<string, unknown> {
 }
 
 // The Note's attachments: only http(s) URLs are published (HTML-3), and a blurhash only when there is one, where
-// Mastodon writes null (docs/mastodon-deviations.md, "Media").
+// Mastodon writes null (docs/mastodon-deviations.md, "Media"); then the card the status shows as a FEP-8967 Link
+// (ActivityPub::NoteSerializer#virtual_attachments, note_serializer.rb:137-139, :251-261).
 function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
-  return facts.media.flatMap((m) => {
+  const media = facts.media.flatMap((m) => {
     const url = m.url === null ? null : httpUrl(m.url);
     return url === null
       ? []
@@ -329,6 +342,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
           },
         ];
   });
+  return facts.cardUrl === null ? media : [...media, { type: "Link", href: facts.cardUrl }];
 }
 
 export function noteOf(facts: StatusFacts): Record<string, unknown> {

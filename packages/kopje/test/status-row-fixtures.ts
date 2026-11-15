@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 
 import { Db, rowHeapBytes } from "../src/db/sql";
 import { type VisibleStatusId } from "../src/domain/audience";
+import { activeFilters } from "../src/domain/filters";
 import { MAX_STATUS_MENTION_ROWS } from "../src/domain/status-bounds";
 import { type ChunkPlan, presentation, presentStatusesWithin, type Status } from "../src/domain/status-presenter";
 import { statusRowBoundSql } from "../src/domain/status-rows";
@@ -173,7 +174,7 @@ export function build(sql: SqlStorage, f: Fixture, item: Item): string {
       remote = nextId();
       sql.exec(
         `INSERT INTO accounts (id, uri, username, domain, display_name, raw, emojis)
-				VALUES (?, ?, 'author', 'remote.example', ?, ?, ?)`,
+				VALUES (?1, ?2, 'author' || ?1, 'remote.example', ?3, ?4, ?5)`,
         remote,
         `https://remote.example/users/${remote}`,
         (item.wide ? "名" : "n").repeat(item.text % 300),
@@ -307,7 +308,7 @@ function movedTarget(sql: SqlStorage, f: Fixture, item: Item): string {
       const id = nextId();
       sql.exec(
         `INSERT INTO accounts (id, uri, username, domain, display_name, url, emojis)
-				VALUES (?, ?, 'target', 'new.example', ?, ?, ?)`,
+				VALUES (?1, ?2, 'target' || ?1, 'new.example', ?3, ?4, ?5)`,
         id,
         `https://new.example/users/${id}`,
         (item.wide ? "名" : "n").repeat(item.text % 150),
@@ -388,6 +389,13 @@ export function heap(rows: readonly SqlRow[]): number {
 }
 
 export const rowsOf = (reads: readonly Read[]) => reads.flatMap((read) => read.rows);
+
+// The count of `viewer`'s filters that name statuses, as the planner reads it (plannedChunks, from the presentation's
+// activeFilters at VIEWER_NOW): R's bounds of a plan's chunks use it.
+export function plannedFilterRows(state: DurableObjectState, viewer: string): number {
+  const active = activeFilters(new Db(state.storage.sql), { accountId: viewer, now: VIEWER_NOW });
+  return active?.filters.filter((filter) => filter.hasStatuses).length ?? 0;
+}
 
 export function boundsOf(state: DurableObjectState, viewer: string | null, ids: readonly string[], filterRows: number) {
   const bounds = new Map<string, number>();

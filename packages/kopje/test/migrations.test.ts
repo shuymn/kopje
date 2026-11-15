@@ -9,6 +9,7 @@ import { followAnswerActivity, PIN_LIMIT, recordOutbound } from "../src/domain/a
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { claimDeliveries, HELD_REJECTS_PER_ACCOUNT, heldFollowUriSql } from "../src/domain/deliveries";
+import { HANDLE_REFRESH_REQUESTS } from "../src/domain/handle-refreshes";
 import { instanceInfo } from "../src/domain/instance";
 import {
   HANDSHAKE_REPLAYS,
@@ -27,6 +28,7 @@ import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
@@ -12568,8 +12570,218 @@ describe("0094_quote_author_fetches", () => {
   });
 });
 
-describe("0095_card_attribution", () => {
-  const NAME = "0095_card_attribution";
+describe("0095_notification_policy_bots", () => {
+  const NAME = "0095_notification_policy_bots";
+  const at = NAMES.indexOf(NAME);
+  const [SAVED, UNSAVED] = ["100000000000000001", "100000000000000002"];
+
+  it("follows 0094, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0094_quote_author_fetches");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("gives every stored policy for_bots accept, and holds the column to its three choices", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [id, name] of [
+        [SAVED, "saved"],
+        [UNSAVED, "unsaved"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          id,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          id,
+          `${name}@x.test`,
+        );
+      }
+      // A policy saved by the previous release, every condition chosen; the other account has none.
+      sql.exec(
+        `INSERT INTO notification_policies (account_id, for_not_following, for_not_followers, for_new_accounts,
+					for_private_mentions, for_limited_accounts) VALUES (?, 'drop', 'filter', 'drop', 'accept', 'drop')`,
+        SAVED,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(sql.exec("SELECT * FROM notification_policies").toArray()).toEqual([
+        expect.objectContaining({
+          account_id: SAVED,
+          for_not_following: "drop",
+          for_not_followers: "filter",
+          for_new_accounts: "drop",
+          for_private_mentions: "accept",
+          for_limited_accounts: "drop",
+          for_bots: "accept",
+        }),
+      ]);
+      // A new row takes the default; each choice is stored; anything else is refused by the CHECK.
+      sql.exec("INSERT INTO notification_policies (account_id) VALUES (?)", UNSAVED);
+      expect(sql.exec("SELECT for_bots FROM notification_policies WHERE account_id = ?", UNSAVED).one()).toEqual({
+        for_bots: "accept",
+      });
+      for (const choice of ["filter", "drop", "accept"]) {
+        sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", choice, SAVED);
+      }
+      const refused = /CHECK constraint failed: for_bots IN \('accept', 'filter', 'drop'\)/;
+      for (const value of ["block", "Filter", "", null, 1]) {
+        expect(
+          () => sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", value, SAVED),
+          String(value),
+        ).toThrow(value === null ? /NOT NULL constraint failed/ : refused);
+      }
+      sql.exec("DELETE FROM notification_policies WHERE account_id = ?", UNSAVED);
+      expect(() =>
+        sql.exec("INSERT INTO notification_policies (account_id, for_bots) VALUES (?, 'block')", UNSAVED),
+      ).toThrow(refused);
+    });
+  });
+});
+
+describe("0096_remote_handles", () => {
+  const NAME = "0096_remote_handles";
+  const at = NAMES.indexOf(NAME);
+  const id = (n: number) => String(100000000000000000n + BigInt(n));
+  // Rows in rowid order: [n, username, domain, search_text (undefined: as accountSearchText writes it)].
+  const ROWS: [number, string, string | null, string | undefined][] = [
+    // One handle in mixed case on one domain, a fourth on another domain, and a local row of the same username.
+    [1, "alice", "d.example", undefined],
+    [2, "Alice", "d.example", undefined],
+    [3, "ALICE", "d.example", undefined],
+    [4, "alice", "e.example", undefined],
+    [5, "alice", null, undefined],
+    // An imported nonconforming username, alone at its address; and one sharing an address with a search_text that is
+    // not the derived one.
+    [6, "not a username", "d.example", undefined],
+    [7, "aLiCe", "d.example", "imported text"],
+    // A reserved-form row naming its own id already.
+    [8, "! " + String(100000000000000008n), "d.example", undefined],
+    // The collision: '! <id11>' as row 9, then alice as 10 and Alice as 11 on one domain.
+    [9, "! " + String(100000000000000011n), "c.example", undefined],
+    [10, "alice", "c.example", undefined],
+    [11, "Alice", "c.example", undefined],
+  ];
+  const seed = (sql: SqlStorage) => {
+    for (const [n, username, domain, search] of ROWS) {
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain, display_name, search_text, raw, fetched_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id(n),
+        domain === null ? `https://kopje.test/ap/users/${username}` : `https://${domain}/actors/${n}`,
+        username,
+        domain,
+        `Name ${n}`,
+        search ?? accountSearchText(username, domain, `Name ${n}`),
+        domain === null ? null : JSON.stringify({ id: `https://${domain}/actors/${n}`, preferredUsername: username }),
+        domain === null ? null : "2026-01-01T00:00:00.000Z",
+      );
+    }
+    // A sync waiting for an account the file invalidates, and one for an account it leaves.
+    sql.exec("INSERT INTO collection_syncs (account_id, due_at, generation) VALUES (?, 5000, 3)", id(2));
+    sql.exec("INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 7000)", id(4));
+  };
+
+  it("follows 0095, runs the refresh requests the cutover runs, and checks every reference", () => {
+    expect(NAMES[at - 1]).toBe("0095_notification_policy_bots");
+    expect(MIGRATIONS[at]?.sql).toContain(HANDLE_REFRESH_REQUESTS);
+    // The index is recreated UNIQUE, which a file declared foreignKeys: 'unchanged' may not do.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+  });
+
+  it("keeps each address on its oldest row, invalidates the others and asks for their refresh", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      const rows = sql
+        .exec<{ id: string; username: string; search_text: string; handle_refreshed_at: number | null }>(
+          "SELECT id, username, search_text, handle_refreshed_at FROM accounts ORDER BY rowid",
+        )
+        .toArray();
+      const invalid = (n: number) => `! ${id(n)}`;
+      expect(rows.map((row) => row.username)).toEqual([
+        "alice",
+        invalid(2),
+        invalid(3),
+        "alice",
+        "alice",
+        "not a username",
+        invalid(7),
+        invalid(8),
+        invalid(9),
+        "alice",
+        invalid(11),
+      ]);
+      // search_text as accountSearchText writes it for the new username, or as it was when it is not the derived one.
+      expect(rows.map((row) => row.search_text)).toEqual(
+        ROWS.map(([n, , domain, search], i) => search ?? accountSearchText(rows[i]!.username, domain, `Name ${n}`)),
+      );
+      expect(rows[6]?.search_text).toBe("imported text");
+      expect(rows.every((row) => row.handle_refreshed_at === null)).toBe(true);
+      // A refresh request for exactly the reserved-form remote rows, due at once; a waiting sync gains it.
+      expect(
+        sql.exec("SELECT account_id, due_at, generation, refresh FROM collection_syncs ORDER BY account_id").toArray(),
+      ).toEqual([
+        { account_id: id(2), due_at: 5000, generation: 3, refresh: 1 },
+        { account_id: id(3), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(4), due_at: 7000, generation: 1, refresh: 0 },
+        { account_id: id(7), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(8), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(9), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(11), due_at: 0, generation: 1, refresh: 1 },
+      ]);
+      // The index is UNIQUE under its name: a second remote row of an address is refused, a local one is not.
+      expect(
+        sql.exec("SELECT \"unique\" FROM pragma_index_list('accounts') WHERE name = 'accounts_domain_username'").one(),
+      ).toEqual({ unique: 1 });
+      // accounts_local_username is unchanged and again the newer of the two (pragma_index_list lists the newest first).
+      expect(
+        sql
+          .exec(
+            `SELECT name, "unique", partial FROM pragma_index_list('accounts')
+						WHERE name IN ('accounts_domain_username', 'accounts_local_username')`,
+          )
+          .toArray(),
+      ).toEqual([
+        { name: "accounts_local_username", unique: 1, partial: 1 },
+        { name: "accounts_domain_username", unique: 1, partial: 0 },
+      ]);
+      expect(() =>
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://e.example/x', 'ALICE', 'e.example')",
+          id(20),
+        ),
+      ).toThrow(/UNIQUE constraint failed/);
+      expect(() => sql.exec("UPDATE collection_syncs SET refresh = 2 WHERE account_id = ?", id(4))).toThrow(
+        /CHECK constraint failed/,
+      );
+    });
+  });
+
+  it("fails on the collision when reserved-form usernames are not given their own id first", async () => {
+    // The file without its first statement: row 9's '! <id11>' and row 11's invalidation share an address.
+    const sql = MIGRATIONS[at]!.sql;
+    const first = sql.indexOf("UPDATE accounts");
+    const withoutFirst = sql.slice(0, first) + sql.slice(sql.indexOf("UPDATE accounts", first + 1));
+    expect(withoutFirst).not.toBe(sql);
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      seed(state.storage.sql);
+      expect(() => state.storage.transactionSync(() => state.storage.sql.exec(withoutFirst))).toThrow(
+        /UNIQUE constraint failed/,
+      );
+      expect(state.storage.transactionSync(() => state.storage.sql.exec(sql).toArray())).toEqual([]);
+    });
+  });
+});
+
+describe("0098_card_attribution", () => {
+  const NAME = "0098_card_attribution";
   const at = NAMES.indexOf(NAME);
   const [ACCOUNT, STATUS, PENDING] = ["100000000000000001", "100000000000000002", "100000000000000003"];
   const REFUSED = /status_cards: a value past its stored bound/;
@@ -12582,8 +12794,8 @@ describe("0095_card_attribution", () => {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-  it("follows 0094, checks every reference, and writes the generator's statements and triggers", () => {
-    expect(NAMES[at - 1]).toBe("0094_quote_author_fetches");
+  it("follows 0096, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0096_remote_handles");
     // Its triggers read main.statuses, a name the narrow dialect of foreignKeys: 'unchanged' refuses.
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     const sql = MIGRATIONS[at]?.sql ?? "";

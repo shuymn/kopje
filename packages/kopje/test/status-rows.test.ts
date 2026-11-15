@@ -52,6 +52,7 @@ import {
   nextId,
   observedPresentation,
   planCounts,
+  plannedFilterRows,
   type Read,
   recordingSql,
   ORIGIN,
@@ -148,7 +149,9 @@ describe("R bounds the rows of a status (RES-3)", () => {
         const result = await runInDurableObject(h.store, (_instance, state) => {
           // Two small statuses first, so each plan reads a chunk of several.
           const ids = [TINY, TINY, ...items].map((item) => build(state.storage.sql, f, item));
-          const bounds = boundsOf(state, f.viewer, ids, 1);
+          // With the filter count the planner uses: the viewer's filter names statuses only once an item has had
+          // `viewer`, so it may be none.
+          const bounds = boundsOf(state, f.viewer, ids, plannedFilterRows(state, f.viewer));
           // Each status alone, in a chunk of one.
           const alone = observedPresentation(state, f.viewer, ids, 1);
           const whole = observedPresentation(state, f.viewer, ids, ids.length);
@@ -203,7 +206,7 @@ describe("R bounds the rows of a status (RES-3)", () => {
       for (const raw of [null, JSON.stringify({ attachment: [], padding: "p".repeat(2 * 1024 * 1024 - 40) })]) {
         const author = nextId();
         sql.exec(
-          "INSERT INTO accounts (id, uri, username, domain, raw) VALUES (?, ?, 'a', 'remote.example', ?)",
+          "INSERT INTO accounts (id, uri, username, domain, raw) VALUES (?1, ?2, 'a' || ?1, 'remote.example', ?3)",
           author,
           `https://remote.example/users/${"u".repeat(2048 - 29)}`.slice(0, 2048 - author.length) + author,
           raw,

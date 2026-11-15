@@ -48,6 +48,7 @@ import {
   followListsShownSql,
   foundSql,
   hidesCollectionsSql,
+  isBotActorType,
   type QuotePolicyName,
   type ViewerContext,
 } from "./audience";
@@ -387,7 +388,7 @@ export function* partialAccountsOf(
         id: row.id,
         acct: acctOf(row),
         locked: !suspended && row.locked === 1,
-        bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
+        bot: !suspended && isBotActorType(row.actor_type),
         url: accountUrl(row, present.origin),
         avatar: avatar.image,
         avatar_static: avatar.still,
@@ -588,7 +589,7 @@ function presentIdentity(
     acct: handle.acct,
     display_name: shown.display_name,
     locked: !suspended && row.locked === 1,
-    bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
+    bot: !suspended && isBotActorType(row.actor_type),
     discoverable: suspended ? false : row.discoverable === null ? null : row.discoverable === 1,
     indexable: !suspended && row.indexable === 1,
     group: row.actor_type === "Group",
@@ -851,11 +852,10 @@ export const getAccounts = readOperation<
 // Account.find_remote: by accounts_local_username or accounts_domain_username, named so the seek does not rest on the
 // Store's statistics (RES-7), as is the account's local row. stored_username is the username as stored, not
 // usernameSql's projection: a matching row's username has the bytes of `username` (SQLite's lower changes ASCII
-// letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
-// (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
-// Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
-// invalidated handle ('! <id>', shownHandle) is never matched by an address. found: whether the account reads find it
-// (foundSql).
+// letters only), so it is bounded by the caller's. At most one remote row holds an address (the UNIQUE
+// accounts_domain_username, 0096_remote_handles), so at most one row matches. Only a username of Mastodon's format
+// (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an invalidated handle ('! <id>',
+// shownHandle) is never matched by an address. found: whether the account reads find it (foundSql).
 function addressRow(
   db: Db,
   username: string,

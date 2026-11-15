@@ -21,6 +21,16 @@ export function serveWebFinger(web: RemoteWeb, resource: string, subject: string
     "application/jrd+json",
   );
 }
+
+// The WebFinger answer that confirms an actor document's handle (federation/resolve.ts confirmHandle): its
+// preferredUsername at its host (without a trailing dot), naming the actor itself, as the actor's own server answers.
+export function serveOwnHandle(web: RemoteWeb, document: Record<string, unknown>): void {
+  const { id, preferredUsername } = document;
+  if (typeof id === "string" && typeof preferredUsername === "string") {
+    const handle = `acct:${preferredUsername}@${new URL(id).hostname.replace(/\.$/, "")}`;
+    serveWebFinger(web, handle, handle, id);
+  }
+}
 export const LOCAL = "https://kopje.test";
 export const MASTODON = "https://mastodon.example";
 export const MISSKEY = "https://misskey.example";
@@ -212,6 +222,7 @@ export async function mastodonActor(
     ...options.extra,
   };
   web.serve(uri, document);
+  serveOwnHandle(web, document);
   return { uri, keyId: `${uri}#main-key`, privateKey: pair.privateKey, pem, document };
 }
 
@@ -295,6 +306,7 @@ export async function misskeyActor(
     ...options.extra,
   };
   web.serve(uri, document);
+  serveOwnHandle(web, document);
   return { uri, keyId: `${uri}#main-key`, privateKey: pair.privateKey, pem, document };
 }
 
@@ -351,11 +363,17 @@ export async function signedInit(
   return { method: "POST", headers: signed.headers, body };
 }
 
+// A test RemoteActorInput's claim, confirmed as WebFinger would confirm it for its actor: the Store stores a new actor
+// only under a confirmed handle (domain/remote-actors.ts acceptedHandle).
+export function confirmedAs(username: string, domain: string): Pick<RemoteActorInput, "claim" | "confirmed"> {
+  return { claim: { username, domain }, confirmed: { username, domain } };
+}
+
 // What a test's RemoteActorInput leaves at its defaults: a Person with no profile text or images, flags off, no shared
 // inbox, keys or emoji, and an empty document. A fresh object each call.
 export function actorDefaults(): Omit<
   RemoteActorInput,
-  "uri" | "username" | "domain" | "displayName" | "inboxUrl" | "movedTo"
+  "uri" | "claim" | "confirmed" | "displayName" | "inboxUrl" | "movedTo"
 > {
   return {
     actorType: "Person",

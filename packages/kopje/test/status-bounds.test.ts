@@ -64,6 +64,7 @@ import {
 import { statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
 import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
+import { streamUnit } from "../src/domain/streaming";
 import {
   LINK_ACCT_JSON_BYTES,
   LINK_URL_JSON_BYTES,
@@ -119,7 +120,7 @@ import {
   STATUS_CONTENT_BYTES,
 } from "../src/security/html";
 import { sha256Hex } from "../src/security/tokens";
-import { STREAM_LIMITS } from "../src/stream-hub";
+import { STREAM_LIMITS, TURN_BUDGET, UNIT_WORST } from "../src/stream-hub";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
@@ -1392,7 +1393,7 @@ async function maximalStatuses(fill: Fill) {
 // CARD_DIMENSION_MAX whose iframe src is at its raw bound in ASCII (the raw fill) or at its escaped bound with as many
 // & as fit (the others), and its iframe dimensions at CARD_DIMENSION_MAX; and (0070_card_images) a stored image of a
 // 64-byte token at CARD_IMAGE_EDGE_MAX by CARD_IMAGE_EDGE_MAX with a blurhash at BLURHASH_BYTES, its source URL at its
-// bound and its alt text at its JSON bound; and (0095_card_attribution) an unverified author at its stored bound (18
+// bound and its alt text at its JSON bound; and (0098_card_attribution) an unverified author at its stored bound (18
 // digits), an account other than the viewer's (ALICE), so its missing_attribution is false.
 async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void> {
   const text = (bytes: number) =>
@@ -1468,6 +1469,9 @@ type FillMeasure = {
   // The moderation_warning notification as a stream payload: its JSON, which carries no fallback, encoded again as a
   // string (stream-hub.ts).
   warningPayload: number;
+  // The escaped fill's streamed witnesses of the turn's hard bound: the conversation and the notification whose status
+  // is the boost of the quote, as the stream presents them (their JSON), and the conversation's payload.
+  streamed: { conversation: number; conversationPayload: number; notification: number } | undefined;
 };
 const fills = new Map<Fill, Promise<FillMeasure>>();
 
@@ -1807,8 +1811,49 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
     [one, grouped, notified, warned, warnedGroup, filteredList].map((m) => filteredReads(m)),
     fill,
   ).toEqual([0, 10, 1, 1, 1, 9]);
+  // The escaped fill's streamed witnesses of the turn's hard bound (stream-hub.ts): a conversation of alice's with the
+  // table's participants whose last status is the boost of the quote, and a favourite notification of alice's whose
+  // status is that boost, each presented as a stream unit presents it (unfiltered, as R33 reads it).
+  let streamed: FillMeasure["streamed"];
+  if (fill === "escaped") {
+    const [conversation] = await sql<{ id: string }>(
+      t.store,
+      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-boost', ?, ?)
+			RETURNING CAST(id AS TEXT) AS id`,
+      ALICE,
+      JSON.stringify(participants.toSorted()),
+      boost,
+    );
+    const [notification] = await sql<{ id: string }>(
+      t.store,
+      `INSERT INTO notifications (account_id, type, from_account_id, status_id, created_at)
+			VALUES (?, 'favourite', ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+      ALICE,
+      await maximalAccount(t, false, fill),
+      boost,
+      new Date(NOW).toISOString(),
+    );
+    const tokenHashes = [await sha256Hex(t.tokens.alice)];
+    const unit = async (kind: string, subject: string) => {
+      const made = await runInDurableObject(t.store, (_instance, state) =>
+        streamUnit.run(state.storage.sql, { kind, subject, accountId: ALICE, tokenHashes, now: NOW }),
+      );
+      expect(made.payload, kind).not.toBeNull();
+      return made.payload as Record<string, unknown>;
+    };
+    const talkOfBoost = await unit("conversation", conversation!.id);
+    expect((talkOfBoost.last_status as { id: string }).id).toBe(boost);
+    const notified = await unit("notification", notification!.id);
+    expect((notified.status as { id: string }).id).toBe(boost);
+    streamed = {
+      conversation: jsonBytes(talkOfBoost),
+      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfBoost))),
+      notification: jsonBytes(notified),
+    };
+  }
   const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
   return {
+    streamed,
     warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
     accountFields: jsonBytes((account as { fields: unknown }).fields),
     moved: Object.fromEntries(
@@ -2680,6 +2725,38 @@ describe("the table of maxima (RES-3)", () => {
     expect(witnesses.map((stored) => presented(stored).length)).toEqual([0, 4, 4]);
   }, 600_000);
 
+  // The most a stream turn presents (stream-hub.ts, RES-6): a turn starts a unit while UNIT_WORST is left of
+  // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
+  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
+  // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
+  // status, which a stored row may make a boost of a quote; `notification` its account, its status and a report and
+  // a warning (their conservative figures count a fallback each, which a streamed notification does not carry); an
+  // announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
+    const c = await conservativeJson();
+    const ANNOUNCEMENT = 248_997;
+    const kinds = {
+      status: c.boostOfQuote!,
+      conversation: c.conversation! - c.quote! + c.boostOfQuote!,
+      notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
+      announcement: ANNOUNCEMENT,
+    };
+    const most = Math.max(...Object.values(kinds));
+    expect({ ...kinds, most }).toEqual({
+      status: 5_812_734,
+      conversation: 7_537_523,
+      notification: 6_611_868,
+      announcement: ANNOUNCEMENT,
+      most: 7_537_523,
+    });
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_745_064);
+    const { streamed } = await measureFill("escaped");
+    expect(streamed).toEqual({ conversation: 7_455_264, conversationPayload: 8_269_955, notification: 5_910_675 });
+    expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
+    expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
+    expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
+  }, 600_000);
+
   // What an answer of many accounts reads past its budget (one chunk of accounts.ts ANSWER_CHUNK, 50, each with its
   // static images and its verification times at their bounds and its moved-to account) and what a page of 80 accounts
   // serializes to at most, from the account occurrence.
@@ -2779,7 +2856,9 @@ describe("the table of maxima (RES-3)", () => {
 });
 
 describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
-  // A converted local status with every part at its bound,
+  // A converted local status with every part at its bound, an attached card on it (an imported row beside its media)
+  // whose url (CARD_URL_LIMIT bytes of ASCII, which JSON does not escape) and title (CARD_TEXTS.title less its quotes,
+  // in ASCII: the most bytes its projection reads) are at their bounds,
   // built as statusFacts and noteOf build the object endpoint's Note, the outbox's Create and the featured
   // collection's Notes. docs/threat-model.md "Maxima of presented units" states the Note and the Create.
   it("measures the Note and the Create, within OUTBOX_BYTES, and five Notes of the featured collection", async () => {
@@ -2808,6 +2887,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
     const ids: string[] = [];
     for (let i = 0; i < PIN_LIMIT; i++) {
       const id = await storedStatus(t, ALICE, parts);
+      await maximalCard(t, id, "raw");
       await sql(t.store, "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", ALICE, id);
       ids.push(id);
     }
@@ -2836,6 +2916,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         media: facts.media.length,
         emojis: facts.emojis.length,
         emojiTags: jsonBytes(facts.emojis),
+        link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
       };
     });
     expect(measuredNote).toMatchObject({ tags: MAX_PRESENTED_TAGS, mentions: MAX_STATUS_MENTION_ROWS, media: 4 });
@@ -2879,7 +2960,9 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       media: 4,
       emojis: 61,
       emojiTags: 14_850,
-      featured: 4_454_568,
+      // The Link and its comma: `,{"type":"Link","href":""}` and the url.
+      link: 26 + CARD_URL_LIMIT,
+      featured: 4_456_650,
       whole: 1,
     });
   }, 300_000);

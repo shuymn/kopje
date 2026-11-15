@@ -10,7 +10,7 @@ import { getNotification, listNotifications, type NotificationType, notify } fro
 import { writeOperation } from "../src/domain/operation";
 import { utf8Length } from "../src/platform/dump-format";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, form, json, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, sql, STORED_ACTOR_TYPES } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { observedSql } from "./read-helpers";
@@ -117,7 +117,20 @@ const defaults = {
   for_new_accounts: "accept",
   for_private_mentions: "filter",
   for_limited_accounts: "filter",
+  for_bots: "accept",
 };
+
+// Marks `user` as a bot through the API (actor_type Service, as Mastodon's `bot` attribute does).
+async function makeBot(h: ApiHarness, user: User): Promise<void> {
+  const response = await h.request(
+    "/api/v1/accounts/update_credentials",
+    bearer(user.token, json({ bot: true }, { method: "PATCH" })),
+  );
+  expect(response.status).toBe(200);
+  expect(await sql(h.store, "SELECT actor_type FROM accounts WHERE id = ?", user.id)).toEqual([
+    { actor_type: "Service" },
+  ]);
+}
 
 describe("the notification policy", () => {
   it("shows Mastodon's defaults through both versions, with an empty summary", async () => {
@@ -132,6 +145,7 @@ describe("the notification policy", () => {
       filter_not_followers: false,
       filter_new_accounts: false,
       filter_private_mentions: true,
+      filter_bots: false,
       summary: { pending_requests_count: 0, pending_notifications_count: 0 },
     });
   });
@@ -153,6 +167,18 @@ describe("the notification policy", () => {
       bearer(alice.token, form({ for_new_accounts: "2", unknown: "x" }, { method: "PATCH" })),
     );
     expect(await patched.json()).toMatchObject({ for_not_following: "filter", for_new_accounts: "drop" });
+    // for_bots takes the three names and the enum's integers, 0 to 2.
+    for (const [sent, stored] of [
+      ["filter", "filter"],
+      ["drop", "drop"],
+      ["accept", "accept"],
+      ["1", "filter"],
+      ["2", "drop"],
+      ["0", "accept"],
+    ] as const) {
+      const set = await setPolicy(h, alice, { for_bots: sent });
+      expect([set.status, (await set.json<{ for_bots: string }>()).for_bots], sent).toEqual([200, stored]);
+    }
     // An unknown choice changes nothing, the other values sent included.
     const refused = await setPolicy(h, alice, { for_not_followers: "filter", for_private_mentions: "block" });
     expect({ status: refused.status, body: await refused.json() }).toEqual({
@@ -179,13 +205,23 @@ describe("the notification policy", () => {
       filter_not_followers: false,
       filter_new_accounts: true,
       filter_private_mentions: false,
+      filter_bots: false,
       summary: { pending_requests_count: 0, pending_notifications_count: 0 },
     });
     expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body).toMatchObject({
       for_not_following: "filter",
       for_new_accounts: "drop",
       for_private_mentions: "accept",
+      for_bots: "accept",
     });
+    // filter_bots: true filters; a v2 drop shows as true.
+    await h.request(
+      "/api/v1/notifications/policy",
+      bearer(alice.token, json({ filter_bots: true }, { method: "PUT" })),
+    );
+    expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body).toMatchObject({ for_bots: "filter" });
+    await setPolicy(h, alice, { for_bots: "drop" });
+    expect((await getJson(h, "/api/v1/notifications/policy", alice.token)).body).toMatchObject({ filter_bots: true });
     // A form's "false" and "0" accept; filter_new_accounts=false turns drop into accept.
     await h.request(
       "/api/v1/notifications/policy",
@@ -194,6 +230,52 @@ describe("the notification policy", () => {
     expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body).toMatchObject({
       for_not_following: "accept",
       for_new_accounts: "accept",
+    });
+  });
+
+  // A departure (docs/mastodon-deviations.md, "Notification policy"): Mastodon's v1 setters take Ruby's truthiness, so
+  // these strings filter there.
+  it("maps the v1 booleans as Rails casts them", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    for (const value of ["false", "0", "off", "f", ""]) {
+      await setPolicy(h, alice, { for_bots: "filter" });
+      const response = await h.request(
+        "/api/v1/notifications/policy",
+        bearer(alice.token, form({ filter_bots: value }, { method: "PATCH" })),
+      );
+      expect([response.status, (await response.json<{ filter_bots: boolean }>()).filter_bots], value).toEqual([
+        200,
+        false,
+      ]);
+      expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body, value).toMatchObject({
+        for_bots: "accept",
+      });
+    }
+    // Control: a value Rails casts true filters.
+    await h.request(
+      "/api/v1/notifications/policy",
+      bearer(alice.token, form({ filter_bots: "on" }, { method: "PATCH" })),
+    );
+    expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body).toMatchObject({ for_bots: "filter" });
+  });
+
+  // A departure (docs/mastodon-deviations.md, "Notification policy"): Mastodon's enum raises an unrescued error (500).
+  it("refuses an unknown for_bots with 422 and changes nothing", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Control: a known value is stored.
+    expect((await setPolicy(h, alice, { for_bots: "filter" })).status).toBe(200);
+    for (const value of ["block", "3", "-1", "Filter", ""]) {
+      const refused = await setPolicy(h, alice, { for_not_following: "drop", for_bots: value });
+      expect({ status: refused.status, body: await refused.json() }, value).toEqual({
+        status: 422,
+        body: { error: `'${value}' is not a valid for_bots` },
+      });
+    }
+    expect((await getJson(h, "/api/v2/notifications/policy", alice.token)).body).toMatchObject({
+      for_not_following: "accept",
+      for_bots: "filter",
     });
   });
 
@@ -383,14 +465,59 @@ describe("the policy as notify writes", () => {
     ]);
   });
 
+  it("filters or drops a bot sender the recipient does not follow (for_bots)", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    await makeBot(h, bob);
+    // Accepted by default.
+    await post(h, bob, { status: "@alice one" });
+    expect(await stored(h, alice)).toEqual([["mention", bob.id, 0]]);
+    await setPolicy(h, alice, { for_bots: "filter" });
+    await post(h, bob, { status: "@alice two" });
+    expect((await stored(h, alice))[0]).toEqual(["mention", bob.id, 1]);
+    expect((await requests(h, alice)).map((r) => [r.account.id, r.notifications_count])).toEqual([[bob.id, "1"]]);
+    // A follow from the bot is filtered too.
+    await follow(h, bob, alice.id);
+    expect((await stored(h, alice))[0]).toEqual(["follow", bob.id, 1]);
+    await setPolicy(h, alice, { for_bots: "drop" });
+    await post(h, bob, { status: "@alice three" });
+    expect(await stored(h, alice)).toHaveLength(3);
+    // Control: the same post under accept writes one.
+    await setPolicy(h, alice, { for_bots: "accept" });
+    await post(h, bob, { status: "@alice four" });
+    expect(await stored(h, alice)).toHaveLength(4);
+    // Following the bot lets it through under filter and drop.
+    await follow(h, alice, bob.id);
+    for (const choice of ["filter", "drop"]) {
+      await setPolicy(h, alice, { for_bots: choice });
+      await post(h, bob, { status: `@alice followed ${choice}` });
+      expect((await stored(h, alice))[0], choice).toEqual(["mention", bob.id, 0]);
+    }
+    expect(await stored(h, alice)).toHaveLength(6);
+  });
+
+  it("matches the stored actor type exactly", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    await setPolicy(h, alice, { for_bots: "drop" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, bob.id);
+      const before = (await stored(h, alice)).length;
+      await post(h, bob, { status: `@alice ${label}` });
+      expect((await stored(h, alice)).length - before, label).toBe(bot ? 0 : 1);
+    }
+  });
+
   it("lets a sender with a permission through whatever the policy chooses", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
+    await makeBot(h, bob);
     await setPolicy(h, alice, {
       for_not_following: "drop",
       for_not_followers: "drop",
       for_new_accounts: "drop",
       for_private_mentions: "drop",
+      for_bots: "drop",
     });
     await post(h, bob, { status: "@alice dropped", visibility: "direct" });
     expect(await stored(h, alice)).toEqual([]);
@@ -407,11 +534,13 @@ describe("the policy as notify writes", () => {
   it("never filters or drops a type that is not filterable", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
+    await makeBot(h, bob);
     await setPolicy(h, alice, {
       for_not_following: "drop",
       for_not_followers: "drop",
       for_new_accounts: "drop",
       for_private_mentions: "drop",
+      for_bots: "drop",
     });
     const status = await post(h, bob, { status: "mine" });
     // Bob's boost of it, which a reblog notification needs.
@@ -433,6 +562,7 @@ describe("the policy as notify writes", () => {
       for_not_followers: "filter",
       for_new_accounts: "filter",
       for_private_mentions: "filter",
+      for_bots: "filter",
     });
     for (const type of ["favourite", "reblog", "follow", "follow_request"] as const) {
       await runInDurableObject(h.store, (_instance, state) =>

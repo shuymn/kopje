@@ -41,6 +41,7 @@ import {
   storedCountSql,
   storedText,
 } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { cutJsonString } from "../security/html";
 import { cardEligibleSql, cardPublicSql } from "./audience";
 import { linkCardImage } from "./card-images";
@@ -57,10 +58,12 @@ import { parseStatusText } from "./status-text";
 //   unlisted (Mastodon fetches every visibility), by an available author (R1), with no shown attachment and no
 //   quote row (Mastodon's with_media? and quote.present?).
 // - A write picks the link and enqueues it in its own transaction (enqueueCard): a local post's or a text edit's first
-//   http(s) link that is not the instance's (localCardLink); a remote status's first captured anchor that is not a
-//   mention's or the instance's (remoteCardLink), on its creation and on a significant update. A pick that the stored
-//   URL rule refuses (http, too long, a refused character) is no card; nothing later is taken. The round refuses what
-//   else the sink does (web-page.ts webPageUrlRefusal: a port, an IP literal) before any network step.
+//   http(s) link that is not the instance's (localCardLink); a remote status's first usable FEP-8967 Link, else its
+//   first captured anchor that is not a mention's or the instance's (remoteCardLink), on its creation and on a
+//   significant update (a change of its Links alone is not one: process_status_update_service.rb:64-66). A pick
+//   that the stored URL rule refuses (http, too long, a refused character) is no card; nothing later is taken. The
+//   round refuses what else the sink does (web-page.ts webPageUrlRefusal: a port, an IP literal) before any network
+//   step.
 // - A claim (claimCards, one per cron round) first expires at most CARD_EXPIRE_BATCH pending rows enqueued more than
 //   CARD_EXPIRE_MS ago (never one whose hold is open), then walks at most CARD_CLAIM_WALK due rows by
 //   (due_at, status_id), in order, until CARD_ROUND_CLAIMS are claimed; the rows after that point are untouched. Each
@@ -87,7 +90,7 @@ import { parseStatusText } from "./status-text";
 //   its DNS check (NET-3).
 // - The hide step of a remote status's delete (inbox.ts deleteStatusBatch), the one place a stored status's visibility
 //   becomes ineligible, deletes its row in the same step (deleteCard).
-// - The unverified author (migration 0095_card_attribution; Mastodon's PreviewCard#unverified_author_account, its
+// - The unverified author (migration 0098_card_attribution; Mastodon's PreviewCard#unverified_author_account, its
 //   API's missing_attribution): judged once, by recordCard, for a card made from a page that names a fediverse:creator
 //   (unverifiedAuthor); an oEmbed card names none. A copy carries its donor's, a reset clears it, and nothing else
 //   writes it.
@@ -147,10 +150,26 @@ function mentionLink(db: Db, statusId: string, raw: string, domain: string): boo
   );
 }
 
-// The link of a remote status's card (parse_urls, :79-90): the first candidate that is not a mention's, has a host
-// and an http(s) scheme, and is not the instance's (`domain`, its authority: TagManager#local_url?). It is final:
-// an unparsable or over-long one means no card (null), and nothing later is taken.
-export function remoteCardLink(db: Db, statusId: string, candidates: unknown, domain: string): string | null {
+// A status's FEP-8967 Link as an input names it (federation/remote-status.ts cardLinkOf): its href, null for no card.
+export type CardLink = { href: string | null };
+
+// The link of a remote status's card. With a Link (`link` neither undefined, as from an earlier build, nor null), its
+// href as given, final: LinkCrawlWorker hands it to FetchLinkCardService#call, which skips parse_urls (:18-24), so
+// neither the mention test nor the instance's is applied; one that is not a string within CARD_URL_LIMIT is no card.
+// Without one (parse_urls, :79-90): the first candidate that is not a mention's, has a host and an http(s) scheme, and
+// is not the instance's (`domain`, its authority: TagManager#local_url?). It is final: an unparsable or over-long one
+// means no card (null), and nothing later is taken.
+export function remoteCardLink(
+  db: Db,
+  statusId: string,
+  candidates: unknown,
+  domain: string,
+  link: unknown,
+): string | null {
+  if (link !== undefined && link !== null) {
+    const href = typeof link === "object" ? (link as Record<string, unknown>).href : undefined;
+    return typeof href === "string" && href.length <= CARD_URL_LIMIT ? href : null;
+  }
   const list = Array.isArray(candidates) ? candidates.slice(0, CARD_CANDIDATES) : [];
   for (const value of list) {
     const candidate = boundedCandidate(value);
@@ -538,9 +557,6 @@ function cacheEndpoint(db: Db, endpoint: unknown, now: number): void {
 // recordCard.
 export const CARD_CREATOR_CHARS = SCAN_LIMITS.valueChars;
 
-// Ruby's String#strip: NUL, tab, LF, VT, FF, CR and space at either end.
-const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
-
 // Ruby's String#split on a string separator, without a limit: its trailing empty fields dropped.
 function rubySplit(value: string, separator: string): string[] {
   const fields = value.split(separator);
@@ -561,7 +577,7 @@ export function creatorUsername(creator: string, domain: string): string | null 
   if (railsBlank(creator)) {
     return null;
   }
-  const [username, host] = rubySplit(creator.replace(RUBY_STRIP, "").replace(/^@/, ""), "@");
+  const [username, host] = rubySplit(rubyStrip(creator).replace(/^@/, ""), "@");
   if (username === undefined || username === "") {
     return null;
   }

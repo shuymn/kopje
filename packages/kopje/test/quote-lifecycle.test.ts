@@ -39,7 +39,7 @@ import { remoteAccount } from "./status-helpers";
 // R (VIS-28, R35 and R36 in docs/visibility.md, ID-6, ID-7 and NET-2 in docs/threat-model.md). Generated sequences of
 // R's server's actions (posting, revoking, policy changes, deletes), L's API actions, Kopje's delivery steps and job
 // rounds run through the Store and the API; after every step the Store's projection, the API's reads and each answer
-// must equal the policy's (test/quote-model.ts), and once everything has settled Kopje and the peer, a Mastodon v4.5.11
+// must equal the policy's (test/quote-model.ts), and once everything has settled Kopje and the peer, a Mastodon v4.7.5
 // model fed the bytes Kopje confirmed, must agree on which quotes are live and accepted, and on their stamps, except
 // where an accepted risk (X1, X2, X3) names the events that differ. A second property sends what Mastodon would not,
 // from R and two other actors, checked against the policy alone.

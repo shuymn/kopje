@@ -91,8 +91,15 @@ describe("ID generator", () => {
   it("regenerates on an ID collision and lets other UNIQUE violations through", async () => {
     await runInDurableObject(await migratedStore(), (_instance, state) => {
       const sql = state.storage.sql;
+      // Each attempt under a username of its own, so that only the id or the uri can collide.
+      let attempt = 0;
       const insert = (uri: string) => (id: string) => {
-        sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'a', 'x.test')", id, uri);
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'x.test')",
+          id,
+          uri,
+          `a${++attempt}`,
+        );
         return id;
       };
       const taken = remoteId("2026-10-12T00:00:00Z", NOW, fixed(1));

@@ -4,7 +4,7 @@ import jsonld from "jsonld/dist/jsonld.esm.js";
 
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { NOW } from "./app-helpers";
-import { MASTODON, mastodonActor, type RemoteWeb, type TestActor } from "./inbox-helpers";
+import { MASTODON, mastodonActor, type RemoteWeb, serveOwnHandle, type TestActor } from "./inbox-helpers";
 import { AS, PUBLIC } from "./inbox-status-helpers";
 import { contexts } from "./quote-helpers";
 
@@ -334,6 +334,7 @@ export async function fepActor(web: RemoteWeb, username: string) {
   });
   const document = (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Json;
   web.serve(uri, document);
+  serveOwnHandle(web, document);
   const actor: TestActor = {
     uri,
     keyId: `${uri}#main-key`,

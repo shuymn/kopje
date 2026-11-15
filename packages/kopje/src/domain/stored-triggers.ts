@@ -229,7 +229,7 @@ const STATEMENTS: readonly string[] = [
     cardImagePastBoundSql("NEW"),
     "card_images: a value past its stored bound",
   ),
-  // 0095_card_attribution (status_cards' triggers recreated over every column 0067, 0069, 0070, 0071 and 0095 add)
+  // 0098_card_attribution (status_cards' triggers recreated over every column 0067, 0069, 0070, 0071 and 0098 add)
   ...boundTriggers(
     "status_cards_bounds",
     "status_cards",

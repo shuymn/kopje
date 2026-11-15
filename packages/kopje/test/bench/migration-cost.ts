@@ -26,6 +26,9 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   pnpm --filter kopje bench:migration                            the newest migration
 //   KOPJE_BENCH_MIGRATION=0029_admin_reports pnpm --filter kopje bench:migration
 //   KOPJE_BENCH_SCALE=0.01 pnpm --filter kopje bench:migration     a quick check of the script itself (not a measure)
+//   KOPJE_BENCH_SHARED_HANDLES=0.1 pnpm --filter kopje bench:migration
+//                                                                  one remote account in ten sharing an address (the
+//                                                                  rows 0096_remote_handles rewrites)
 //   KOPJE_BENCH_FROM=0040_report_notifications pnpm --filter kopje bench:migration
 //                                                                  a release: every file from 0040 to the newest (or
 //                                                                  to KOPJE_BENCH_MIGRATION) in one upgrade. Run it
@@ -68,6 +71,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   - 100,000 featured hashtags (from migration 0025_remote_collections on), MAX_FEATURED_TAGS of each of the first
 //     10,000 accounts;
 //   - 10,000 inbound jobs, status deletions of the first statuses, every other one finished;
+//   - a notification policy of each local account (from migration 0020_notification_policies on), every condition at
+//     its default;
 //   - the other job families' rows: 10,000 stamp revocations (from 0033_quotes on), every other one done, by the
 //     remote accounts in turn; 1,000 domain blocks of the local accounts in turn, each with its cleanup; 1,000
 //     notification request jobs of the local accounts in turn, each from another remote account; a clear of each
@@ -108,11 +113,15 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
 // instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_quote_author_fetches
-// adds a checked column to quotes, which SQLite tests against every quote; 0095_card_attribution adds a column to
-// status_cards and recreates its triggers (no row read, the attached and pending cards seeded). A migration that
-// reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
-// bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
-// an await on each side.
+// adds a checked column to quotes, which SQLite tests against every quote; 0095_notification_policy_bots tests its
+// column's CHECK on every notification_policies row; 0096_remote_handles reads every remote account twice (its
+// reserved-form pass, and its shared-address pass with a seek of accounts_domain_username each), rebuilds that index
+// UNIQUE and reads the pending collection syncs (10,000 seeded while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also
+// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts);
+// 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached and pending
+// cards seeded). A migration that reads another table must add it here before it is measured. The measured time is the
+// whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only between I/O
+// events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -127,6 +136,7 @@ declare module "vitest" {
     benchScale: string;
     benchReportOnly: boolean;
     benchWithdrawnQuotes: string;
+    benchSharedHandles: string;
   }
 }
 
@@ -162,6 +172,7 @@ const SHAPE = {
   inboundJobs: 10_000,
   revocations: 10_000,
   familyJobs: 1_000,
+  collectionSyncs: 10_000,
   // Rows past their stored bounds (not scaled).
   longContent: 100,
   longSpoilers: 10,
@@ -194,6 +205,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
   const localQuotes = Math.round(SHAPE.localQuotes * scale);
   const withdrawnQuotes = Number(inject("benchWithdrawnQuotes") || WITHDRAWN_QUOTES);
   expect([0, 0.5, 1], "KOPJE_BENCH_WITHDRAWN_QUOTES is 0, 0.5 or 1").toContain(withdrawnQuotes);
+  const sharedHandles = Number(inject("benchSharedHandles") || "0");
+  expect([0, 0.1], "KOPJE_BENCH_SHARED_HANDLES is 0 or 0.1").toContain(sharedHandles);
   const favourites = Math.min(Math.round(SHAPE.favourites * scale), statuses);
   const boosts = Math.min(Math.round(SHAPE.boosts * scale), Math.floor(statuses / 10));
   const outbound = Math.round(SHAPE.outbound * scale);
@@ -740,6 +753,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.domains,
       Date.parse(now),
     );
+    // A policy of each local account, the rows 0095_notification_policy_bots tests its CHECK on.
+    const hasPolicies = has("notification_policies");
+    if (hasPolicies) {
+      run("INSERT INTO notification_policies (account_id) SELECT account_id FROM local_accounts");
+    }
     // The other job families (0084_family_job_attempts): stamp revocations, every other one done; local accounts'
     // domain blocks with their cleanups, notification request jobs from remote accounts, clears and dismissals.
     if (has("quote_revocations")) {
@@ -887,6 +905,43 @@ it("applies the migration to the benchmark store within the budget", async () =>
         statuses,
       );
     }
+    // While 0096_remote_handles is pending: SHAPE.collectionSyncs syncs waiting, of the first remote accounts; and with
+    // KOPJE_BENCH_SHARED_HANDLES = 0.1 one remote account in ten sharing the handle of the one before it (the address
+    // the migration invalidates on it), each with a raw document of 2,000 bytes and the search_text accountSearchText
+    // writes, and one in a thousand stored as '! <id>' naming the second row after it, which shares an address (the
+    // collision its reserved-form pass fixes).
+    const handlesPending = pending("0096_remote_handles");
+    const collectionSyncs = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local);
+    if (handlesPending && has("collection_syncs")) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO collection_syncs (account_id, due_at) SELECT CAST(100000000000000000 + ?2 + i AS TEXT), i FROM n`,
+        collectionSyncs,
+        SHAPE.local,
+      );
+    }
+    if (handlesPending && sharedHandles > 0) {
+      run(
+        `UPDATE accounts SET username = p.username, domain = p.domain,
+					raw = json_object('id', accounts.uri, 'preferredUsername', p.username, 'summary', ${filler(2_000, "'x'")}),
+					search_text = 'account ' || (CAST(accounts.id AS INTEGER) - 100000000000000000) || ' ' || lower(p.username)
+						|| '@' || p.domain
+				FROM accounts p
+				WHERE accounts.domain IS NOT NULL AND (CAST(accounts.id AS INTEGER) - 100000000000000000 - ?1) % ?2 = 1
+					AND p.id = CAST(CAST(accounts.id AS INTEGER) - 1 AS TEXT)`,
+        SHAPE.local,
+        Math.round(1 / sharedHandles),
+      );
+      run(
+        `UPDATE accounts SET username = '! ' || CAST(CAST(id AS INTEGER) + 2 AS TEXT),
+					search_text = 'account ' || (CAST(id AS INTEGER) - 100000000000000000) || ' ! '
+						|| CAST(CAST(id AS INTEGER) + 2 AS TEXT) || '@' || domain
+				WHERE domain IS NOT NULL AND (CAST(id AS INTEGER) - 100000000000000000 - ?1) % 1000 = 9
+					AND CAST(id AS INTEGER) + 2 < 100000000000000000 + ?2`,
+        SHAPE.local,
+        accounts,
+      );
+    }
     const count = (table: string) => sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n;
     // The pins past a local account's limit, which 0089_pin_cap deletes.
     const excessPins = () =>
@@ -928,6 +983,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       cards: hasCards ? count("status_cards WHERE fetched_at IS NOT NULL") : 0,
       pendingCards: hasCards ? count("status_cards WHERE fetched_at IS NULL") : 0,
       featuredTags: hasFeatured ? count("featured_tags") : 0,
+      policies: hasPolicies ? count("notification_policies") : 0,
       inboundJobs: count("inbound_jobs"),
       revocations: has("quote_revocations") ? count("quote_revocations") : 0,
       familyJobs: [
@@ -940,6 +996,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
       jamoKeys: jamoKeys(),
       pins: pinsPending ? count("status_pins") : 0,
       excessPins: excessPins(),
+      collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
+      // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
+      sharedHandles: handlesPending
+        ? count(
+            `accounts a WHERE a.domain IS NOT NULL AND EXISTS (SELECT 1 FROM accounts k INDEXED BY accounts_domain_username
+							WHERE k.domain = a.domain AND lower(k.username) = lower(a.username) AND k.rowid < a.rowid)`,
+          )
+        : 0,
+      reservedHandles: handlesPending
+        ? count("accounts WHERE domain IS NOT NULL AND substr(username, 1, 2) = '! '")
+        : 0,
     };
     expect(sql.exec("SELECT count(*) AS n FROM kopje_migrations").one().n).toBe(at);
 
@@ -979,7 +1046,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
-    // 0095_card_attribution: the column, and the cards holding NULL.
+    // 0098_card_attribution: the column, and the cards holding NULL.
     const cardAuthors = has("status_cards", "unverified_author_account_id")
       ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
       : undefined;
@@ -995,6 +1062,23 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => `${row.type} ${row.name}`),
         }
       : undefined;
+    // 0095_notification_policy_bots: the policies holding the new column's default.
+    const botPolicies = has("notification_policies", "for_bots")
+      ? count("notification_policies WHERE for_bots = 'accept'")
+      : undefined;
+    // 0096_remote_handles: the remote rows invalidated (each naming its own id), the refresh requests, and whether
+    // accounts_domain_username is UNIQUE.
+    const remoteHandles = has("accounts", "handle_refreshed_at")
+      ? {
+          invalidated: count("accounts WHERE domain IS NOT NULL AND username = '! ' || id"),
+          refresh: count("collection_syncs WHERE refresh = 1"),
+          unique: sql
+            .exec<{ unique: number }>(
+              "SELECT \"unique\" FROM pragma_index_list('accounts') WHERE name = 'accounts_domain_username'",
+            )
+            .one().unique,
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
@@ -1008,6 +1092,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
           liveQuotes,
           rejectReplays,
           authorFetches,
+          botPolicies,
+          remoteHandles,
           cardAuthors,
         },
       };
@@ -1040,6 +1126,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
         liveQuotes,
         rejectReplays,
         authorFetches,
+        botPolicies,
+        remoteHandles,
         cardAuthors,
       },
     };
@@ -1111,14 +1199,40 @@ it("applies the migration to the benchmark store within the budget", async () =>
     expect(seeded.quotes).toBeGreaterThan(0);
     expect(measured.authorFetches).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
   }
-  // 0095 added the column to every seeded card, attached and pending, each holding NULL.
-  if (applied.includes("0095_card_attribution")) {
+  // 0095 tested its CHECK on a policy of each local account, which kept the default.
+  if (applied.includes("0095_notification_policy_bots")) {
+    expect([seeded.policies, measured.botPolicies]).toEqual([SHAPE.local, SHAPE.local]);
+  }
+  // 0096 rewrote every seeded shared or reserved-form remote row to its own id, asked for each one's refresh, made
+  // the address index UNIQUE, and its upgrade checked every reference.
+  if (applied.includes("0096_remote_handles")) {
+    expect(seeded.collectionSyncs).toBe(Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local));
+    if (sharedHandles > 0) {
+      expect([seeded.sharedHandles > 0, seeded.reservedHandles > 0]).toEqual([true, true]);
+    }
+    const rewritten = seeded.sharedHandles + seeded.reservedHandles;
+    expect(measured.remoteHandles).toEqual({ invalidated: rewritten, refresh: rewritten, unique: 1 });
+    expect(measured.foreignKeyCheck).toBe("store");
+  }
+  // 0098 added the column to every seeded card, attached and pending, each holding NULL.
+  if (applied.includes("0098_card_attribution")) {
     expect(seeded.cards).toBeGreaterThan(0);
     const cards = seeded.cards + seeded.pendingCards;
     expect(measured.cardAuthors).toEqual({ cards, none: cards });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
-  console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));
+  console.log(
+    JSON.stringify({
+      migrations: applied,
+      scale,
+      sharedHandles,
+      seeded,
+      ms,
+      budgetMs,
+      foreignKeyCheck,
+      retryEstimateMs,
+    }),
+  );
   if (scale >= 1 && foreignKeyCheck === "skipped") {
     // The retry's whole-Store check reads every reference of the full store: a retry no slower than the upgrade
     // did not run it.

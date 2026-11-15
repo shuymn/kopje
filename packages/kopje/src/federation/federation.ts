@@ -52,12 +52,14 @@ import { createKeyring, type KeyOwner, requestSigner, type Signer } from "../sec
 import { DoKvStore } from "./kv-store";
 import {
   createContextLoader,
+  createResolveLoader,
   createSafeLoader,
   createWebFingerLoader,
   type DocumentCaps,
   type FetchBudget,
   type LoaderDeps,
   RefusedFetchError,
+  type ResolveAnswer,
   type Signing,
   requireObjectRoot,
 } from "./loader";
@@ -74,7 +76,7 @@ const INSTANCE_ACTOR = "kopje:instance";
 // dispatched actor resolved to, what the answer was rendered from (for the snapshot's freshness check), and a Store
 // failure. Fedify answers 500 for any error a dispatcher throws, so the caller rethrows storeError to get maintenance
 // handling (spool, snapshot, 503) instead. ticket: the domain policy's verdict a Store answer that decided a fetch
-// carried (domain/inbox.ts FetchPreparation, or a search resolution's actor revision read, getActorRevision), spent by
+// carried (domain/inbox.ts FetchPreparation, or a search resolution's actor state read, getActorState), spent by
 // the next policy check whatever its host (refusesHost).
 export type FederationState = {
   resolvedUsername: string | null;
@@ -236,13 +238,17 @@ export type RemoteLoaders = {
   offerSigner: (signer: FetchSigner) => void;
 };
 
+// Search resolution's requests (loader.ts createResolveLoader) on the loaders' signer and budget, unmemoized, a
+// document held to the JSON bounds as `document`'s are.
+export type ResolveLoader = (url: string, terminal: boolean) => Promise<ResolveAnswer>;
+
 export function createRemoteLoaders(
   deps: FederationDeps,
   state: FederationState,
   recipient: string | FollowerSigner | null,
   budget: FetchBudget,
   prefetched: FetchSigner | null = null,
-): RemoteLoaders {
+): RemoteLoaders & { resolve: ResolveLoader } {
   const parts = federationParts(deps, state);
   const loaderDeps = { ...parts.loaderDeps, budget };
   let offered = prefetched;
@@ -267,6 +273,10 @@ export function createRemoteLoaders(
     context: boundedContexts(loaderDeps, parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
+    resolve: async (url, terminal) => {
+      const answer = await createResolveLoader(loaderDeps, await signer())(url, terminal);
+      return answer.kind === "document" ? { kind: "document", remote: withinBounds(answer.remote) } : answer;
+    },
     offerSigner: (chosen) => {
       if (resolved === undefined) {
         offered = chosen;

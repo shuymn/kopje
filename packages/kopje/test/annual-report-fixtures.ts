@@ -84,7 +84,7 @@ export function insertAccounts(sql: SqlStorage, count: number, base: bigint): vo
   sql.exec(
     `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
 		INSERT INTO accounts (id, uri, username, domain)
-		SELECT CAST(?2 + i AS TEXT), 'https://r.example/users/f' || (?2 + i), 'f' || i, 'r.example' FROM n`,
+		SELECT CAST(?2 + i AS TEXT), 'https://r.example/users/f' || (?2 + i), 'f' || (?2 + i), 'r.example' FROM n`,
     count,
     String(base),
   );

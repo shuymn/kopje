@@ -412,9 +412,10 @@ function importShapedDomains(sql: SqlStorage) {
     "é.example",
   ].entries()) {
     sql.exec(
-      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'i', ?)",
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, ?)",
       id18("88", i),
       `https://imported.example/u/${i}`,
+      `i${i}`,
       domain,
     );
   }

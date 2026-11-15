@@ -103,7 +103,7 @@ export async function authors(store: StoreStub, n: number, base = 500_000_000_00
     store,
     `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
 		INSERT INTO accounts (id, uri, username, domain, discoverable)
-		SELECT CAST(?2 + i AS TEXT), 'https://d' || (i % ?3) || '.example/users/u' || ?2 || i, 'u' || i,
+		SELECT CAST(?2 + i AS TEXT), 'https://d' || (i % ?3) || '.example/users/u' || ?2 || i, 'u' || ?2 || i,
 			'd' || (i % ?3) || '.example', 1
 		FROM n`,
     n,

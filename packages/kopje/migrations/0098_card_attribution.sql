@@ -1,4 +1,4 @@
--- Kopje Store schema 0095: a link card's unverified author (Mastodon 4.6's PreviewCard#unverified_author_account, which
+-- Kopje Store schema 0098: a link card's unverified author (Mastodon 4.6's PreviewCard#unverified_author_account, which
 -- REST::PreviewCardSerializer presents as missing_attribution). Never edit after release (checksummed).
 --
 --   status_cards.unverified_author_account_id   NULL, or the local account the card's page names as its

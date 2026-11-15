@@ -26,7 +26,8 @@ export const MEDIA_URL_LIMIT = 2048;
 export const MEDIA_URL_JSON_BYTES = 2 * MEDIA_URL_LIMIT + 2;
 // A media row's meta, in UTF-8 bytes: the stored dimensions ({"original":{...},"small":{...}}) take about 80.
 export const MEDIA_META_BYTES = 1024;
-// A media description, in code points, as Mastodon's MAX_DESCRIPTION_HARD_LENGTH_LIMIT.
+// A media description, in code points: Mastodon's MediaAttachment::MAX_DESCRIPTION_LENGTH (a local one's validation)
+// and MAX_DESCRIPTION_HARD_LENGTH_LIMIT (a remote one's cut), both 10,000 in v4.7.5.
 export const MAX_MEDIA_DESCRIPTION_LENGTH = 10_000;
 // A poll's choices (RES-4): at most this many, each at most this many code points as read.
 export const MAX_REMOTE_OPTIONS = 100;
@@ -1668,7 +1669,7 @@ function snowflakePastSql(value: string): string {
 	ELSE 0 END`;
 }
 
-// True when `value` is no card author (status_cards.unverified_author_account_id, migration 0095_card_attribution):
+// True when `value` is no card author (status_cards.unverified_author_account_id, migration 0098_card_attribution):
 // NULL is one; else an 18-digit snowflake as TEXT. The triggers and the writer (domain/link-cards.ts recordCard)
 // share it.
 export function cardAuthorPastSql(value: string): string {
@@ -1679,7 +1680,7 @@ export function cardAuthorPastSql(value: string): string {
 // width and height, embed_src (cardEmbedSrcPastSql), iframe_width and iframe_height (0069), then image_url ('' or a
 // card URL, cardUrlPastSql), image_id (NULL or a snowflake) and image_description (a card text of
 // CARD_IMAGE_DESCRIPTION_JSON_BYTES) of 0070, then link_type (LINK_TYPES), final_url ('' or a card URL) and public (0
-// or 1) of 0071, then unverified_author_account_id (cardAuthorPastSql) of 0095, then the invariants: a video card and
+// or 1) of 0071, then unverified_author_account_id (cardAuthorPastSql) of 0098, then the invariants: a video card and
 // only one holds an embed_src, no iframe dimension is kept without one, no image id without an image URL, public = 1
 // only on an attached row with a final URL whose status is public (the membership of status_cards_public_link: one key
 // seek of statuses), and no author on a pending row. The CHECKs of the table hold the row's structure (pending or
@@ -1709,7 +1710,7 @@ export function statusCardPastBoundSql(row: string): string {
 	ELSE 0 END`;
 }
 
-// The statements of 0095_card_attribution before its triggers (domain/stored-triggers.ts): the column, added to the
+// The statements of 0098_card_attribution before its triggers (domain/stored-triggers.ts): the column, added to the
 // schema only, and status_cards' two triggers dropped; test/migrations.test.ts compares the file with it.
 export function cardAttributionMigrationSql(): string {
   return `ALTER TABLE status_cards ADD COLUMN unverified_author_account_id TEXT;

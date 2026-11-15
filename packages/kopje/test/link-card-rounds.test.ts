@@ -1556,7 +1556,7 @@ describe("the trend identity of a card (0071_link_trends: link_type, final_url, 
   });
 });
 
-describe("the unverified author (0095_card_attribution)", () => {
+describe("the unverified author (0098_card_attribution)", () => {
   type CardWorld = Awaited<ReturnType<typeof world>>;
   type Author = { author: string | null; title: string; fetched_at: number | null };
   const authorOf = async (w: CardWorld, id: string) =>

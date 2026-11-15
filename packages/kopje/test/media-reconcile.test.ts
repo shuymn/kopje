@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { DETACHED_GRACE_MS, ORPHAN_GRACE_MS, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
-import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
+import { MAX_FIELD_LENGTH, reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, sql } from "./api-helpers";
@@ -350,25 +350,32 @@ describe("completion fence", () => {
 });
 
 describe("field bounds cover the query string (RES-1)", () => {
+  const FIELD_TOO_LONG = { error: "Validation failed: A form field is too long" };
+
   it("refuses an over-long field sent in the query", async () => {
     const h = await users();
     const response = await h.request(
-      `/api/v2/media?focus=${"0".repeat(7000)}`,
+      `/api/v2/media?focus=${"0".repeat(MAX_FIELD_LENGTH + 1)}`,
       bearer(h.users.alice.token, { method: "POST", body: png() }),
     );
-    expect(response.status).toBe(422);
+    expect([response.status, await response.json()]).toEqual([422, FIELD_TOO_LONG]);
     expect(h.codec.calls).toBe(0);
   });
 
-  it("allows 16 fields of 6,000 characters and refuses a 17th field or a 6,001st character", async () => {
+  // MAX_FIELD_LENGTH is the longest valid description in UTF-16 code units, so every valid one passes.
+  it(`allows 16 fields of ${MAX_FIELD_LENGTH} code units and refuses a 17th field or one code unit more`, async () => {
     const h = await users();
     const fields = (count: number, length: number) =>
       Object.fromEntries(Array.from({ length: count }, (_, i) => [`f${i}`, "x".repeat(length)]));
     const send = (extra: Record<string, string>) =>
       upload(h, h.users.alice, mediaForm(bytes(PNG_PLAIN), extra, "a.png", "image/png"));
-    expect((await send(fields(16, 6000))).status).toBe(200);
-    expect((await send(fields(17, 1))).status).toBe(422);
-    expect((await send({ f: "x".repeat(6001) })).status).toBe(422);
+    expect((await send(fields(16, MAX_FIELD_LENGTH))).status).toBe(200);
+    const calls = h.codec.calls;
+    for (const extra of [fields(17, 1), { f: "x".repeat(MAX_FIELD_LENGTH + 1) }]) {
+      const response = await send(extra);
+      expect([response.status, await response.json()]).toEqual([422, FIELD_TOO_LONG]);
+    }
+    expect(h.codec.calls).toBe(calls);
   });
 });
 
