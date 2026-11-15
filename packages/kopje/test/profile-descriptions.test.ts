@@ -179,6 +179,17 @@ describe("profile image descriptions through update_credentials", () => {
     expect(await stored()).toEqual(["", "A field"]);
   });
 
+  // A JSON scalar reads as JSON writes it, as every text parameter does: a number as Mastodon stores it too, a boolean
+  // where Mastodon casts it to `t` or `f` (docs/mastodon-deviations.md).
+  it("store a JSON boolean or number as JSON writes it", async () => {
+    const { patch, stored } = await writer();
+    const written = await patch({ avatar_description: true, header_description: 42 });
+    expect(written.status).toBe(200);
+    expect(descriptions(written.body)).toEqual(["true", "42"]);
+    expect(await stored()).toEqual(["true", "42"]);
+    expect(descriptions((await patch({ avatar_description: false })).body)).toEqual(["false", "42"]);
+  });
+
   it("refuse past PROFILE_DESCRIPTION_LIMIT code points with Mastodon's messages, before the display name's", async () => {
     const { patch, stored } = await writer();
     const refused = await patch({

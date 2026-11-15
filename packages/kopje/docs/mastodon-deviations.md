@@ -223,6 +223,10 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
   `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
   (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
+- A JSON `true` or `false` sent as `avatar_description` or `header_description` is stored and shown as `true` or
+  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores it
+  too); Mastodon casts a boolean to `t` or `f`. Either is a client's error, `true` is what the client sent, and a
+  description reads JSON as the other text parameters do. Accepted, 2026-11-16.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
   once, as the HTML it presents and federates.
