@@ -784,8 +784,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
-Custom emoji (the `CustomEmoji` entities of a status, its poll and an account):
+Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, and `GET /api/v1/custom_emojis`):
 
+- A local emoji's category is a name with no featured emoji, so the listing shows `featured: false` beside each
+  `category`.
 - A remote emoji's `url` is Kopje's cached copy on the instance's own origin (`/media/r/…`) once the cron has fetched
   it, kept per (domain, url), the domain being the account's whose object named it; `static_url` is a still remuxed
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a

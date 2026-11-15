@@ -50,9 +50,15 @@ describe("GET /api/v1/custom_emojis", () => {
     await h.set(off.id, { disabled: true });
     const response = await h.request("/api/v1/custom_emojis");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual([
+    const list = await response.json<Record<string, unknown>[]>();
+    expect(list).toEqual([
       entity("alpha", alpha.url),
-      { ...entity("zeta", zeta.url), category: "Greek" },
+      { ...entity("zeta", zeta.url), category: "Greek", featured: false },
+    ]);
+    // featured right after category, as Mastodon's serializer adds them; neither without a category.
+    expect(list.map((item) => Object.keys(item))).toEqual([
+      ["shortcode", "url", "static_url", "visible_in_picker"],
+      ["shortcode", "url", "static_url", "visible_in_picker", "category", "featured"],
     ]);
   });
 
@@ -68,9 +74,12 @@ describe("GET /api/v1/custom_emojis", () => {
     );
     await sql(h.store, "UPDATE custom_emojis SET category = CAST(X'EDA080' AS TEXT) WHERE id = ?", short.id);
     const list = await (await h.request("/api/v1/custom_emojis")).json<Record<string, unknown>[]>();
-    expect(list).toEqual([entity("long", long.url), { ...entity("short", short.url), category: "�".repeat(3) }]);
+    expect(list).toEqual([
+      entity("long", long.url),
+      { ...entity("short", short.url), category: "�".repeat(3), featured: false },
+    ]);
     for (const item of list) {
-      expect(new TextEncoder().encode(JSON.stringify(item)).length + 1).toBeLessThanOrEqual(1489);
+      expect(new TextEncoder().encode(JSON.stringify(item)).length + 1).toBeLessThanOrEqual(1506);
     }
     const admin = await h.store.adminEmojis(BUILD, {});
     expect(admin.emojis.map((e) => e.category)).toEqual([null, "�".repeat(3)]);
@@ -87,7 +96,7 @@ describe("GET /api/v1/custom_emojis", () => {
     expect(await raw()).toEqual([{ hex: "EDA080".repeat(64) }, { hex: "EDA080" }]);
   });
 
-  it("answers 1,000 entries at their bounds within 1,489,001 UTF-8 bytes, 1,489 each with its separator", async () => {
+  it("answers 1,000 entries at their bounds within 1,506,001 UTF-8 bytes, 1,506 each with its separator", async () => {
     const h = await emojiHarness();
     const [admin] = await sql<{ id: string }>(h.store, "SELECT id FROM accounts WHERE username = 'admin'");
     // Imported rows: shortcodes of 128, urls of 512 (EMOJI_URL_LIMIT) and categories of 64 four-byte code points.
@@ -113,7 +122,7 @@ describe("GET /api/v1/custom_emojis", () => {
     const body = new Uint8Array(await (await h.request("/api/v1/custom_emojis")).arrayBuffer());
     const list = JSON.parse(new TextDecoder().decode(body)) as unknown[];
     expect(list).toHaveLength(1000);
-    expect(body.length).toBe(1_489_001);
+    expect(body.length).toBe(1_506_001);
   }, 60_000);
 });
 

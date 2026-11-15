@@ -31,8 +31,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
   `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
 - `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
-  profile fields and their name and value lengths) and a description of the default thumbnail, as Mastodon 4.7.5
-  does. No Store migration and no `wrangler.jsonc` change.
+  profile fields and their name and value lengths) and a description of the default thumbnail, and
+  `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
