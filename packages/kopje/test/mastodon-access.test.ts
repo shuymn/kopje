@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RouteAccess } from "../src/mastodon/access";
+import { ANONYMOUS, ANONYMOUS_LONG, type Caching, EVERYONE, PRIVATE } from "../src/mastodon/caching";
 import { ROUTES } from "../src/mastodon/routes";
 import { grants, type RequiredScope, SCOPES } from "../src/security/scopes";
 import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
@@ -415,5 +416,182 @@ describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
     const leaky: typeof grants = (granted, required) =>
       grants(granted, required) || (granted.includes("push") && required === "read:bookmarks");
     expect(sides(bookmarks!, leaky).kopje).toBe(mastodon.replace("scopes read", "scopes push read"));
+  });
+});
+
+// WEB-7: each route's caching declaration (src/mastodon/caching.ts) as Mastodon's same route sets it, read from its
+// source into the fixture's `cache`: `public`, the helper the action runs (anonymous: cache_if_unauthenticated!, 15 s
+// to a request without a user; everyone: cache_even_if_authenticated!, 5 min to every request; private: neither), and
+// `vary`, its vary_by. Kopje's declaration is shown in the same terms; its 5 minutes to a request without
+// Authorization (ANONYMOUS_LONG) is no helper of Mastodon's, so a route declaring it is always an exception. As for
+// access, a difference is listed in CACHING_EXCEPTIONS with both sides and the reason.
+
+type MastodonCaching = { public: string | null; vary: string | null; unresolved?: string[] };
+
+const showCaching = (shared: string, vary: string | null) => `${shared}, vary ${vary ?? "none"}`;
+
+function kopjeCaching(caching: Caching): string {
+  if (caching.shared === null) {
+    return showCaching("private", caching.vary);
+  }
+  const { to, control } = caching.shared;
+  const seconds = Number(/^max-age=(\d+),/.exec(control)?.[1]);
+  const helper =
+    to === "anonymous" && seconds === 15 ? "anonymous" : to === "everyone" && seconds === 300 ? "everyone" : null;
+  return showCaching(helper ?? `${to} for ${seconds} s`, caching.vary);
+}
+
+function mastodonCaching(cache: MastodonCaching): string {
+  const shown = showCaching(cache.public ?? "private", cache.vary);
+  return cache.unresolved === undefined ? shown : `unresolved (${cache.unresolved.join("; ")}): ${shown}`;
+}
+
+const READS_TOKEN =
+  "reads the token: a suspended owner's 403 (AUTH-2) and any token's answer stay out of shared caches (WEB-7)";
+const LONG = "anonymous for 300 s, vary Authorization";
+const EVERYONE_NO_VARY = "everyone, vary none";
+// Mastodon's admin trend lists fall back to the public lists (`super`, which runs cache_if_unauthenticated!) for a
+// caller without manage_taxonomies; Kopje's admin gate answers anyone but the OAuth admin 403 first (VIS-29).
+const ADMIN_FALLBACK = "unresolved (cache_if_unauthenticated! under a condition)";
+const ADMIN_LIST_REASON =
+  "the admin gate refuses every caller Mastodon's public fallback serves (VIS-29), so the answer is never public";
+const REVIEW_REASON =
+  "Mastodon's review actions inherit the public trend list's vary_by; Kopje answers them 403 to everyone (MD-2)";
+
+const CACHING_EXCEPTIONS: Record<string, Exception> = {
+  "GET /api/v1/custom_emojis": {
+    kopje: LONG,
+    mastodon:
+      "unresolved (app/controllers/api/v1/custom_emojis_controller.rb: `vary_by '', unless: " +
+      ":disallow_unauthenticated_api_access?`; cache_even_if_authenticated! under a condition): private, vary none",
+    reason: `${READS_TOKEN}; Mastodon's caching depends on a setting Kopje lacks (unauthenticated API access)`,
+  },
+  "GET /api/v1/instance/languages": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/privacy_policy": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/terms_of_service": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/terms_of_service/:date": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/translation_languages": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/activity": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/peers/search": { kopje: LONG, mastodon: EVERYONE_NO_VARY, reason: READS_TOKEN },
+  "GET /api/v1/instance/domain_blocks": {
+    kopje: LONG,
+    mastodon:
+      "unresolved (app/controllers/api/v1/instances/domain_blocks_controller.rb: `vary_by '', if: -> { " +
+      "Setting.show_domain_blocks == 'all' }`; cache_even_if_authenticated! under a condition; " +
+      "cache_if_unauthenticated! under a condition): private, vary none",
+    reason:
+      `${READS_TOKEN}; Mastodon's caching depends on show_domain_blocks, and with users only (or comments to users ` +
+      "only) the answer depends on the token too",
+  },
+  "GET /api/v1/admin/trends/tags": {
+    kopje: "private, vary Authorization",
+    mastodon: `${ADMIN_FALLBACK}: private, vary Authorization`,
+    reason: ADMIN_LIST_REASON,
+  },
+  "GET /api/v1/admin/trends/links": {
+    kopje: "private, vary Authorization, Accept-Language",
+    mastodon: `${ADMIN_FALLBACK}: private, vary Authorization, Accept-Language`,
+    reason: ADMIN_LIST_REASON,
+  },
+  "GET /api/v1/admin/trends/statuses": {
+    kopje: "private, vary Authorization, Accept-Language",
+    mastodon: `${ADMIN_FALLBACK}: private, vary Authorization, Accept-Language`,
+    reason: ADMIN_LIST_REASON,
+  },
+  "POST /api/v1/admin/trends/links/:id/approve": {
+    kopje: "private, vary Authorization",
+    mastodon: "private, vary Authorization, Accept-Language",
+    reason: REVIEW_REASON,
+  },
+  "POST /api/v1/admin/trends/links/:id/reject": {
+    kopje: "private, vary Authorization",
+    mastodon: "private, vary Authorization, Accept-Language",
+    reason: REVIEW_REASON,
+  },
+  "POST /api/v1/admin/trends/statuses/:id/approve": {
+    kopje: "private, vary Authorization",
+    mastodon: "private, vary Authorization, Accept-Language",
+    reason: REVIEW_REASON,
+  },
+  "POST /api/v1/admin/trends/statuses/:id/reject": {
+    kopje: "private, vary Authorization",
+    mastodon: "private, vary Authorization, Accept-Language",
+    reason: REVIEW_REASON,
+  },
+};
+
+// Both sides of a route's caching as compared, or undefined for a route Mastodon does not have.
+function cachingSides(route: (typeof ROUTES)[number]) {
+  const theirs = mastodonRoute(route.method, route.path);
+  if (theirs === undefined) {
+    return undefined;
+  }
+  return {
+    kopje: kopjeCaching(route.caching),
+    mastodon: mastodonCaching(theirs.cache),
+    source: `${theirs.controller}#${theirs.action}`,
+  };
+}
+
+describe(`route caching matches Mastodon v${mastodon.mastodon}`, () => {
+  const compared = ROUTES.flatMap((route) => {
+    const now = cachingSides(route);
+    return now === undefined ? [] : [[`${route.method} ${route.path}`, now] as const];
+  });
+
+  it.each(compared)("%s", (name, now) => {
+    const exception = CACHING_EXCEPTIONS[name];
+    if (exception === undefined) {
+      if (now.kopje !== now.mastodon) {
+        expect.fail(
+          `${describeSides(name, now)}\nMatch Mastodon, or add the route to CACHING_EXCEPTIONS with the reason.`,
+        );
+      }
+      return;
+    }
+    if (now.kopje === now.mastodon) {
+      expect.fail(`${name} matches Mastodon now: remove its exception (${exception.reason})`);
+    }
+    if (now.kopje !== exception.kopje || now.mastodon !== exception.mastodon) {
+      expect.fail(
+        `${describeSides(name, now)}\nThe exception was written for\n  Kopje:    ${exception.kopje}\n` +
+          `  Mastodon: ${exception.mastodon}\nRevisit it (${exception.reason}).`,
+      );
+    }
+  });
+
+  it("declares nothing public on a route Mastodon does not have", () => {
+    const absent = ROUTES.filter((route) => cachingSides(route) === undefined);
+    expect(absent.map((route) => `${route.method} ${route.path}`)).toEqual(
+      Object.entries(EXCEPTIONS)
+        .filter(([, exception]) => exception.mastodon === "absent")
+        .map(([name]) => name),
+    );
+    for (const route of absent) {
+      expect(route.caching, `${route.method} ${route.path}`).toBe(PRIVATE);
+    }
+  });
+
+  it("lists caching exceptions only for routes compared", () => {
+    const names = new Set<string>(compared.map(([name]) => name));
+    expect(Object.keys(CACHING_EXCEPTIONS).filter((name) => !names.has(name))).toEqual([]);
+  });
+
+  it("reads the caching of every route Mastodon has", () => {
+    // A tripwire for a generator that loses the field.
+    expect(mastodon.routes.filter((route) => !("cache" in route))).toEqual([]);
+    expect(mastodon.routes.filter((route) => route.cache.public !== null)).toHaveLength(40);
+  });
+
+  it("sees a declaration moved to or from ANONYMOUS_LONG, and one public to the wrong callers", () => {
+    const languages = ROUTES.find((route) => route.path === "/api/v1/instance/languages")!;
+    const timeline = ROUTES.find((route) => route.path === "/api/v1/timelines/public")!;
+    // Moved off ANONYMOUS_LONG, the route would match and its exception would fail as stale.
+    expect(cachingSides({ ...languages, caching: EVERYONE })?.kopje).toBe(EVERYONE_NO_VARY);
+    expect(cachingSides(languages)?.kopje).toBe(LONG);
+    // Moved onto it, or made public to everyone, a matching route differs.
+    expect(cachingSides({ ...timeline, caching: ANONYMOUS_LONG })?.kopje).not.toBe(cachingSides(timeline)?.mastodon);
+    expect(cachingSides({ ...timeline, caching: EVERYONE })?.kopje).not.toBe(cachingSides(timeline)?.mastodon);
+    expect(cachingSides(timeline)).toMatchObject({ kopje: kopjeCaching(ANONYMOUS), mastodon: kopjeCaching(ANONYMOUS) });
   });
 });
