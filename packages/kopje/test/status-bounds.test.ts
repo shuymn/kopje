@@ -2,9 +2,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { parseFragment } from "parse5";
 import { describe, expect, it } from "vitest";
 
-import { selectSql } from "../src/db/columns";
-import { Db, VALUE_BYTES } from "../src/db/sql";
+import { rowHeapSql, selectSql } from "../src/db/columns";
+import { Db, rowHeapBytes, VALUE_BYTES } from "../src/db/sql";
 import {
+  ACCOUNT_COLUMN_MAP,
   MAX_REMOTE_FIELDS,
   MOVED_ACCOUNT_COLUMNS,
   MOVED_CREATED_AT_LIMIT,
@@ -16,6 +17,7 @@ import {
   REMOTE_VERIFIED_JSON_BYTES,
 } from "../src/domain/account-columns";
 import {
+  ACCOUNT_FROM,
   fieldSources,
   getAccount,
   MAX_FIELD_NAME,
@@ -2407,6 +2409,95 @@ describe("remote field verification (RES-3)", () => {
       VALUE_BYTES + 2 * (REMOTE_VERIFIED_JSON_BYTES - REMOTE_VERIFIED_SHOWN),
     );
   }, 120_000);
+});
+
+// An Account whose imported display name and note hold malformed UTF-8 that passes 0048's triggers (D14 of RES-3).
+// measured counts the UTF-8 of decoded values, which triples such a byte (the projected name re-encodes to 24,576
+// bytes, the note to 196,602), so this is a check of its own, not a fill, in the three units the bounds are in: the
+// stored bytes read (SQL octet_length of each projected value), the heap (rowHeapBytes of the decoded row against
+// rowHeapSql of the same row) and the presented JSON (UTF-8 of the answer).
+describe("an account of malformed imported text (RES-3)", () => {
+  it("reads and presents within the fills' maxima", async () => {
+    const t = await setup();
+    // A conversation of MAX_PRESENTED_PARTICIPANTS accounts of the raw fill, each display name 0xFF and 1,048,575
+    // continuation bytes (one character to 0048's cut) and each note 65,534 continuation bytes (within noteSql's
+    // bound, as json_quote copies them); its last status is by an account of the raw fill as it is, the reference.
+    const participants: string[] = [];
+    for (let i = 0; i < MAX_PRESENTED_PARTICIPANTS; i++) {
+      participants.push(await maximalAccount(t, false, "raw"));
+    }
+    const reference = await maximalAccount(t, false, "raw");
+    const name = new Uint8Array(1_048_576).fill(0x80);
+    name[0] = 0xff;
+    await sql(
+      t.store,
+      `UPDATE accounts SET display_name = CAST(?1 AS TEXT), note = CAST(?2 AS TEXT)
+			WHERE id IN (SELECT value FROM json_each(?3))`,
+      name.buffer,
+      new Uint8Array(65_534).fill(0x80).buffer,
+      JSON.stringify(participants),
+    );
+    const last = await storedStatus(t, reference, {
+      content: "",
+      spoiler: "",
+      media: [],
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    await sql(
+      t.store,
+      "INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th', ?, ?)",
+      ALICE,
+      JSON.stringify(participants.toSorted()),
+      last,
+    );
+    const rows = await runInDurableObject(t.store, (_instance, state) =>
+      [...participants, reference].map((id) => {
+        const bounds = state.storage.sql
+          .exec<{ stored: number; name: number; note: number; heap: number }>(
+            `SELECT octet_length(a.display_name) AS stored, octet_length(${ACCOUNT_COLUMN_MAP.display_name}) AS name,
+							octet_length(${ACCOUNT_COLUMN_MAP.note}) AS note, ${rowHeapSql(ACCOUNT_COLUMN_MAP)} AS heap
+						FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
+            id,
+          )
+          .one();
+        const row = state.storage.sql
+          .exec<{ display_name: string; note: string }>(
+            `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
+            id,
+          )
+          .one();
+        return { ...bounds, decoded: rowHeapBytes(row), names: row.display_name.length, notes: row.note.length };
+      }),
+    );
+    const own = rows.pop()!;
+    expect(own).toMatchObject({ stored: 4 * 2048, name: 4 * 2048, note: utf8Length(RAW_BIO) });
+    for (const row of rows) {
+      // Read: the raw fill's bytes, of the 1,048,576 stored.
+      expect(row).toMatchObject({ stored: 1_048_576, name: own.name, note: own.note });
+      // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
+      // that bound is the reference's.
+      expect({ names: row.names, notes: row.notes }).toEqual({ names: row.name, notes: row.note });
+      expect(row.decoded).toBeLessThanOrEqual(row.heap);
+      expect(row.heap).toBeLessThanOrEqual(own.heap);
+    }
+    // Presented: each account within the escaped fill's account occurrence, its display name within the escaped
+    // fill's (2,048 code points of six JSON bytes) and its note within BIO_JSON_BYTES.
+    const listed = await measured(
+      t,
+      listConversations as never,
+      { credential: await credential(t), page: { limit: 1 }, present: { origin: ORIGIN } } as never,
+    );
+    const [talk] = (listed.answer as { items: { accounts: Record<string, unknown>[] }[] }).items;
+    expect(talk!.accounts.map((a) => a.id)).toEqual(participants.toSorted());
+    for (const account of talk!.accounts) {
+      expect(jsonBytes(account.display_name)).toBeLessThanOrEqual(jsonBytes(C.repeat(2048)));
+      expect(jsonBytes(account.note)).toBeLessThanOrEqual(REMOTE_BIO_BYTES);
+      expect(jsonBytes(account)).toBeLessThanOrEqual(FILL_SHAPES.escaped.account.json);
+      expect({ name: account.display_name, note: account.note }).toEqual({ name: "\uFFFD".repeat(2048), note: "" });
+    }
+  }, 300_000);
 });
 
 describe("the table of maxima (RES-3)", () => {
