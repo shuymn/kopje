@@ -70,7 +70,7 @@ describe("card images in dumps", () => {
           JSON.stringify([stored, pending]),
         )
         .toArray()
-        .map((row) => presentCard({ visibility: "public" }, row, "https://kopje.test")),
+        .map((row) => presentCard({ visibility: "public" }, row, "https://kopje.test", null)),
     );
     expect(presented.map((card) => [card?.image, card?.blurhash, card?.image_description])).toEqual([
       [null, null, "Stored alt"],

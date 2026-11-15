@@ -268,6 +268,11 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   account's attribution domains cover the page's host. An Account in every status's card would take the status lists
   past their answer budgets (RES-3), and Kopje stores neither the handle nor remote accounts' attribution domains.
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
+- `missing_attribution` is `true` only for the local account a page's `fediverse:creator` names directly: by its
+  username alone or with the instance's domain (in any ASCII case, with one trailing `/`). A creator naming the
+  instance by another spelling (the Unicode form of its domain, an explicit port) or by an alias domain names no
+  account, so the card's `missing_attribution` is `false` for everyone, where Mastodon's WebFinger lookup may resolve
+  such a name to the local account.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
 - Only public and unlisted originals get a card, a privacy choice: Mastodon fetches the link of every visibility,

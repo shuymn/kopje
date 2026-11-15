@@ -1469,11 +1469,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
   public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
   whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). _Enforced (main):_ `cardEligibleSql` in
-  `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
+  as decoded (`presentCard` in `src/domain/status-presenter.ts`). Its `missing_attribution` is presented to a
+  signed-in viewer only, and is `true` only for the viewer the card's unverified author is: no viewer learns that a
+  page names another account. _Enforced (main):_ `cardEligibleSql` in `src/domain/audience.ts`,
+  `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
   status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide
-  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row"),
+  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row",
+  "shows missing_attribution to a signed-in viewer only, true for the card's unverified author"),
+  `test/trend-links.test.ts` ("shows it to a signed-in viewer at both routes, true for the copy's unverified author
+  only"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
@@ -4276,37 +4281,37 @@ each nested account counts at the conservative JSON its caps derive, the table's
 its derived 2,399 bytes (a name of 60 code points escaped to six bytes each and a website of 2,000 bytes, which JSON
 writes unescaped, with the key), witnessed by a local original and a local quote whose apps are at those bounds,
 escaped, raw and as malformed imported bytes (`test/status-bounds.test.ts` ("status applications")). Each status and
-boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill; the boost's
-own row one too, which is not read), and each status a shape shows that may show one (not a boost, and not a quoted
-status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image
-URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). The notification shapes are read
-with every fallback type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group
-counts its `fallback` at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two
-links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six, and the instance origin
-at a domain of 253 octets: the origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets
-and which a request reaches only as a DNS name of at most 253, so a Store configured earlier with a longer name
-receives no request for it). Through the real Store
-RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget,
-return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost
-of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns within
-`ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and
-the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements,
-not asserted.
+boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill, and an
+unverified author other than the viewer; the boost's own row one too, which is not read), and each status a shape shows
+that may show one (not a boost, and not a quoted status, which shows none) counts it at its derived 9,927 bytes
+(`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image URL at 342 bytes, its blurhash at 54, its alt text at 256 JSON
+bytes and a signed-in viewer's `missing_attribution` included). The notification shapes are read with every fallback
+type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group counts its `fallback`
+at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two links, each href at 2,048
+characters and username at 255 bytes, every byte escaped to six, and the instance origin at a domain of 253 octets: the
+origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets and which a request reaches only
+as a DNS name of at most 253, so a Store configured earlier with a longer name receives no request for it). Through the
+real Store RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the
+budget, return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the
+boost of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns
+within `ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the
+escaped and the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are
+measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 123,267           | 140,430         | 147,990           | 1         | 204   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,432            |                 | 11,021            | 1         |       | 0.1%           |
-| Status                                                           | 4,453,581         | 2,697,497       | 2,703,965         | 1,490     | 2,723 | 32.2%          |
-| Quote (the status and its quoted status)                         | 6,828,568         | 5,385,375       | 5,398,068         | 1,927     | 5,428 | 64.3%          |
-| Boost of a quote                                                 | 7,123,563         | 5,794,309       | 5,812,706         | 1,988     | 6,499 | 69.3%          |
-| Conversation: 12 participants presented, its last status a quote | 8,510,724         | 7,070,504       | 7,122,857         | 2,001     | 7,867 | 84.9%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,893,450         | 6,509,239       | 6,548,372         | 1,994     | 7,072 | 78.1%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,209,180         | 5,981,808       | 6,001,111         | 1,948     | 6,423 | 71.5%          |
+| Status                                                           | 4,453,599         | 2,697,525       | 2,703,993         | 1,490     | 2,723 | 32.2%          |
+| Quote (the status and its quoted status)                         | 6,828,586         | 5,385,403       | 5,398,096         | 1,927     | 5,428 | 64.4%          |
+| Boost of a quote                                                 | 7,123,581         | 5,794,337       | 5,812,734         | 1,988     | 6,499 | 69.3%          |
+| Conversation: 12 participants presented, its last status a quote | 8,510,742         | 7,070,532       | 7,122,885         | 2,001     | 7,867 | 84.9%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,893,468         | 6,509,267       | 6,548,400         | 1,994     | 7,072 | 78.1%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,209,198         | 5,981,836       | 6,001,139         | 1,948     | 6,423 | 71.5%          |
 | An admin.report notification of that report                      | 2,366,450         | 406,117         | 438,407           | 1,070     | 521   | 5.2%           |
 | A moderation_warning notification, its local account at bounds   | 133,178           | 290,594         | 360,727           | 7         | 682   | 4.3%           |
 | Its notification group                                           | 133,178           | 290,783         | 360,916           | 7         | 689   | 4.3%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,962,609         | 5,525,959       | 5,541,957         | 1,952     | 5,636 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
@@ -4327,7 +4332,7 @@ fields shown at the most a value presents, 7,822 bytes derived from the value bo
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
 as a string, it is at most 332,952 bytes measured and 471,650 conservative (the encoding at most doubles a byte), under
 the hub's 512 KiB. The
-conversation's conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above the 4,096 bytes a change may not
+conversation's conservative JSON is 7,431 bytes within 85% of 8 MiB (7,130,316), above the 4,096 bytes a change may not
 cross without a review (#1142). Every remote account shown but the account occurrence counts its fields at 33,485 JSON
 bytes, derived from the constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31
 bytes and 12 nulls: 565 bytes past the fill's 8 fields); the account occurrence keeps the larger of the local and remote
@@ -4344,8 +4349,8 @@ escaped to six bytes (a malformed one decodes to a three-byte U+FFFD), a 200-uni
 supported language and a 24-byte time. Pages: 20 hashtags (91,461 bytes at most; 90,178 filled through the Store
 RPC), 20 admin hashtags, 40 admin statuses (1,162,440 at most; 1,093,041 filled through the Store RPC by imported
 rows whose parents pass every bound, half of them with malformed bytes in the username, domain and content). A
-trending link is its card at `CARD_JSON_MAX` (9,899 bytes) with its history (seven days at 400 uses: 358 bytes) and
-the key (11), 10,268 bytes, so a page of 20 is at most 205,381 bytes; 20 links of 2,048-byte URLs with texts of
+trending link is its card at `CARD_JSON_MAX` (9,927 bytes) with its history (seven days at 400 uses: 358 bytes) and
+the key (11), 10,296 bytes, so a page of 20 is at most 205,941 bytes; 20 links of 2,048-byte URLs with texts of
 control characters at their bounds fill 95,681 through the Store RPC. An admin link takes a 2,048-byte URL, the
 title and provider name at their JSON bounds, a 253-byte domain, its publisher's review and the history. A listed
 hashtag (v2 search, `followed_tags`, `featured_tags/suggestions`) takes the lists' name bound instead: 256 code points
@@ -4528,7 +4533,7 @@ reports. Normal: the rows are the larger of 1.25 × the target and the item's ro
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
 the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to
-spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 7,459 under its
+spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 7,431 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
 each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
 the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their

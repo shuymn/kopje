@@ -1392,7 +1392,8 @@ async function maximalStatuses(fill: Fill) {
 // CARD_DIMENSION_MAX whose iframe src is at its raw bound in ASCII (the raw fill) or at its escaped bound with as many
 // & as fit (the others), and its iframe dimensions at CARD_DIMENSION_MAX; and (0070_card_images) a stored image of a
 // 64-byte token at CARD_IMAGE_EDGE_MAX by CARD_IMAGE_EDGE_MAX with a blurhash at BLURHASH_BYTES, its source URL at its
-// bound and its alt text at its JSON bound.
+// bound and its alt text at its JSON bound; and (0095_card_attribution) an unverified author at its stored bound (18
+// digits), an account other than the viewer's (ALICE), so its missing_attribution is false.
 async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void> {
   const text = (bytes: number) =>
     fill === "raw" ? "a".repeat(bytes - 2) : C.repeat(Math.floor((bytes - 2) / 6)) + "a".repeat((bytes - 2) % 6);
@@ -1431,11 +1432,13 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
   );
   await sql(
     t.store,
-    "UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4 WHERE status_id = ?1",
+    `UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4, unverified_author_account_id = ?5
+		WHERE status_id = ?1`,
     statusId,
     atLimit("https://img.example/", CARD_URL_LIMIT),
     imageId,
     text(CARD_IMAGE_DESCRIPTION_JSON_BYTES),
+    "222222222222222222",
   );
 }
 
@@ -2627,7 +2630,7 @@ describe("the table of maxima (RES-3)", () => {
       );
     }
     // The conversation's spare under the ceiling (one card in that shape): at least 4,096 bytes (#1142).
-    expect(Math.floor(LIMIT - conservative.conversation!)).toBe(7_459);
+    expect(Math.floor(LIMIT - conservative.conversation!)).toBe(7_431);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
   }, 600_000);
 

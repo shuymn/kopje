@@ -129,8 +129,9 @@ type QuoteApproval = {
 
 // Mastodon's REST::PreviewCardSerializer (v4.5.11) (domain/link-cards.ts): its type, dimensions and, for a video, the
 // iframe html (CARD_IFRAME); its stored image (domain/card-images.ts) on the instance origin, with its blurhash and alt
-// text; no embed_url ('', which Mastodon's web client never reads); its authors (PreviewCard#authors: one when the name
-// or the URL is not blank) without an account.
+// text; no embed_url ('', which Mastodon's web client never reads); missing_attribution for a signed-in viewer only
+// (Mastodon 4.6, preview_card_serializer.rb:18, :32-38: true when the card's unverified author is the viewer); its
+// authors (PreviewCard#authors: one when the name or the URL is not blank) without an account.
 export type PreviewCard = {
   url: string;
   title: string;
@@ -149,18 +150,19 @@ export type PreviewCard = {
   embed_url: "";
   blurhash: string | null;
   published_at: string | null;
+  missing_attribution?: boolean;
   authors: { name: string; url: string; account: null }[];
 };
 
 // The most JSON a presented card takes (RES-3), from the bounds of stored-bounds.ts at the worst escaping: every text
 // at its JSON bound, the url at CARD_URL_LIMIT, the author's and provider's URLs at CARD_OPTIONAL_URL_LIMIT (the
 // author's twice, in authors), mn-Mong and a time, "video", both dimensions at CARD_DIMENSION_MAX, the iframe html at
-// its src's escaped bound and both dimensions, the image URL at CARD_IMAGE_URL_BYTES, a blurhash at BLURHASH_BYTES and
-// the alt text at CARD_IMAGE_DESCRIPTION_JSON_BYTES (test/link-cards.test.ts derives it). A status shows at most one
-// (its own, or its boost's original's), in place of null: a quoted status shows none, where Mastodon's
-// ShallowStatusSerializer shows its card (docs/mastodon-deviations.md, "Link previews"), so a status with its quote
-// stays within RES-3's budgets.
-export const CARD_JSON_MAX = 9_899;
+// its src's escaped bound and both dimensions, the image URL at CARD_IMAGE_URL_BYTES, a blurhash at BLURHASH_BYTES,
+// the alt text at CARD_IMAGE_DESCRIPTION_JSON_BYTES and a signed-in viewer's missing_attribution false
+// (test/link-cards.test.ts derives it). A status shows at most one (its own, or its boost's original's), in place of
+// null: a quoted status shows none, where Mastodon's ShallowStatusSerializer shows its card
+// (docs/mastodon-deviations.md, "Link previews"), so a status with its quote stays within RES-3's budgets.
+export const CARD_JSON_MAX = 9_927;
 
 // Mastodon's REST::StatusSerializer application (ApplicationSerializer): the app a local status was posted through.
 type StatusApplication = { name: string; website: string | null };
@@ -872,7 +874,10 @@ function hydrate(
         manual: quotePolicyFlags(policy, "manual"),
         current_user: approvals.get(proper.id) ?? "denied",
       },
-      card: row.reblog_of_id === null && kind !== "quoted" ? presentCard(row, cards.get(row.id), options.origin) : null,
+      card:
+        row.reblog_of_id === null && kind !== "quoted"
+          ? presentCard(row, cards.get(row.id), options.origin, viewerId)
+          : null,
       poll: poll === undefined ? null : withStatusEmojis(poll, emojis),
     };
   };
@@ -925,6 +930,7 @@ export type CardRow = {
   image_width: number | null;
   image_height: number | null;
   blurhash: string | null;
+  unverified_author_account_id: string | null;
 } & { [K in Exclude<keyof typeof CARD_COLUMN_MAP, "status_id">]: unknown };
 
 // A card image's URL as presented (HTML-3): the served file of a stored token (media-files.ts mediaUrl) on the
@@ -962,11 +968,13 @@ const CARD_TYPE_NAMES = {
 // unlisted, without a URL, or whose title is blank; each text and URL judged as decoded (presentedCardText,
 // presentedCardUrl), an optional URL refused shown as '', a language outside Mastodon's locales and a time not
 // in the ISO form as null. Its type and dimensions as read (link and 0 past their bounds); a video's iframe from its
-// src as decoded (presentedEmbedSrc), else a link without html. Viewer-independent.
+// src as decoded (presentedEmbedSrc), else a link without html. missing_attribution only for a signed-in viewer
+// (`viewerId`; null: anonymous or an app token), true when the card's unverified author is that viewer.
 export function presentCard(
   row: Pick<StatusRow, "visibility">,
   card: CardRow | undefined,
   origin: string,
+  viewerId: string | null,
 ): PreviewCard | null {
   if (card === undefined || (row.visibility !== "public" && row.visibility !== "unlisted")) {
     return null;
@@ -1007,6 +1015,7 @@ export function presentCard(
     embed_url: "",
     blurhash: image === null ? null : storedBlurhash(card.blurhash),
     published_at: card.published_at !== null && isIsoTime(card.published_at) ? card.published_at : null,
+    ...(viewerId === null ? {} : { missing_attribution: card.unverified_author_account_id === viewerId }),
     authors:
       railsBlank(authorName) && railsBlank(authorUrl) ? [] : [{ name: authorName, url: authorUrl, account: null }],
   };
