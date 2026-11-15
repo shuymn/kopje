@@ -12,6 +12,7 @@ import { ownList } from "./lists";
 import { mentionedStatus, streamedNotification } from "./notifications";
 import { readOperation, sessionOperation } from "./operation";
 import { instanceOrigin } from "./push";
+import { withinRealTimeWindow } from "./real-time-window";
 import { presentStatus } from "./status-presenter";
 import { journalFull } from "./stream-journal";
 import { homeStatus, listStatus, ownListStatus, type PublicFeed, publicStatus, tagStatus } from "./timelines";
@@ -26,7 +27,7 @@ import { homeStatus, listStatus, ownListStatus, type PublicFeed, publicStatus, t
 //     - `notification` on `user` (with a notification scope) and `user:notification`: V's notification list
 //       positioned at x (streamedNotification in notifications.ts: R15, unfiltered, kept);
 //     - `update` on `user`: home positioned at x (homeStatus in timelines.ts), for a status published within 6 hours
-//       of its arrival (Mastodon's real-time window);
+//       of its arrival (Mastodon's real-time window, real-time-window.ts);
 //     - `status.update` on `user`: home positioned at x or, with a notification scope, the mention reference (V's
 //       notification read restricted to V's mention of x: mentionedStatus in notifications.ts); on
 //       `user:notification`, the mention reference alone;
@@ -171,10 +172,6 @@ export function mayCarry(kind: string, grant: StreamGrant, key: string): boolean
       return false;
   }
 }
-
-// The `update` event's real-time window (Mastodon's Status::REAL_TIME_WINDOW): a status published more than this long
-// before it arrived (a remote post fetched late) is not streamed.
-const REAL_TIME_WINDOW = "-6 hours";
 
 // A delete's capture (R32): at most this many boosts per viewer, a viewer row of at most this many bytes, and a
 // tombstone of at most this many bytes of hashtags (100 hashtags, each a subscribed key's, at most 256 bytes, quoted).
@@ -477,12 +474,9 @@ function unitOf(
           };
     }
     case "status": {
-      const fresh =
-        db.first(
-          `SELECT 1 AS x FROM statuses
-					WHERE id = ? AND published_at >= strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '${REAL_TIME_WINDOW}')`,
-          subject,
-        ) !== undefined;
+      // A status published more than the real-time window before it arrived (a remote post fetched late) is not
+      // streamed.
+      const fresh = withinRealTimeWindow(db, subject);
       const home = fresh ? homeStatus(db, context, subject) : null;
       const listed = fresh ? listedIn(db, context, lists, subject) : [];
       const fed = fresh ? fedIn(db, context, feeds, subject) : NOT_FED;

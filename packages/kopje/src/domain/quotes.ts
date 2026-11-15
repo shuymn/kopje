@@ -175,6 +175,8 @@ function quoteRow(db: Db, statusId: string): QuoteRow | undefined {
 // is the status's author's own (its attributedTo is the author, its id on the author's origin): the author vouches for
 // it as for the status itself, so a private self-quote that its server serves nobody is still known. A withdrawn status
 // (its Delete recorded, its removal under way) is never linked as the quoted status.
+// Answers whether it rewrote the stamp: wrote the quote back with an approval URI other than the stored one (after its
+// normalization). A legacy form alone, a deleted quote named again, a new or removed quote and a promotion do not.
 export function recordQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },
@@ -182,7 +184,7 @@ export function recordQuote(
   arrival: QuoteArrival,
   ctx: { now: number; origin: string },
   store: StoreRemoteStatus,
-): void {
+): boolean {
   const named = quote === undefined || quote === null || (!quote.tombstone && quote.uri === status.uri) ? null : quote;
   const existing = db.first<{
     quoted_uri: string | null;
@@ -194,7 +196,7 @@ export function recordQuote(
     if (existing !== undefined) {
       db.run("DELETE FROM quotes WHERE status_id = ?", status.id);
     }
-    return;
+    return false;
   }
   // The embedded quoted Note is taken first, whether or not the quote changed: an Update may embed what an earlier
   // version only named.
@@ -237,7 +239,7 @@ export function recordQuote(
         db.first("SELECT 1 AS x FROM statuses WHERE uri = ? AND withdrawn = 0", named.uri) === undefined))
   ) {
     promoteQuote(db, status.id, arrival, ctx.now);
-    return;
+    return false;
   }
   // A quote of a local status is decided by Kopje's answer to its QuoteRequest alone (answerQuoteRequest), never by a
   // verification round: it gets no work.
@@ -266,11 +268,15 @@ export function recordQuote(
     named.tombstone ? null : arrival.fetchAs,
     iso(ctx.now),
   );
+  return existing !== undefined && existing.approval_uri !== approval;
 }
 
 // ProcessStatusUpdateService#handle_implicit_update!: an Update that names no newer version never changes which status
 // is quoted, but a changed stamp of the same quote is recorded (and verified again); anything else only promotes the
-// quote, the status having arrived again as a root.
+// quote, the status having arrived again as a root. Answers whether it rewrote the stamp: Mastodon broadcasts the
+// update when it moved the quote's state (process_status_update_service.rb:73-83 in v4.7.5), which
+// update_quote_approval! does when the approval URI changes (:346), whatever the legacy form; Kopje verifies the stamp
+// in later rounds, so its write-back is where the state is known to move (remote-statuses.ts).
 export function refreshQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },
@@ -278,16 +284,16 @@ export function refreshQuote(
   arrival: QuoteArrival,
   ctx: { now: number; origin: string },
   store: StoreRemoteStatus,
-): void {
+): boolean {
   const stored = db.first<{ quoted_uri: string | null }>(
     "SELECT quoted_uri FROM quotes WHERE status_id = ?",
     status.id,
   );
   if (stored !== undefined && quote?.tombstone === false && quote.uri === stored.quoted_uri) {
-    recordQuote(db, status, quote, arrival, ctx, store);
-  } else {
-    promoteQuote(db, status.id, arrival, ctx.now);
+    return recordQuote(db, status, quote, arrival, ctx, store);
   }
+  promoteQuote(db, status.id, arrival, ctx.now);
+  return false;
 }
 
 // A root re-arrival renews a pending quote's full budget and due time (a new work: its attempts and author fetches
@@ -1690,6 +1696,20 @@ function revokeLocalStamp(
     );
   }
   return true;
+}
+
+// The local quoted account of the status's accepted quote, which an update of the status notifies again
+// (FanOutOnWriteService#notify_quoted_account!; statuses.ts notifyEdited): the quote by its key, its quoted account
+// sought among the local accounts; at most one row.
+export function localQuotedAccount(db: Db, statusId: string): string | null {
+  return (
+    db.first<{ quoted_account_id: string }>(
+      `SELECT q.quoted_account_id FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
+			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = q.quoted_account_id
+			WHERE q.status_id = ?1 AND q.state = 'accepted'`,
+      statusId,
+    )?.quoted_account_id ?? null
+  );
 }
 
 // Local accounts an edit of a status notifies with quoted_update at most (row 16): the authors of its newest accepted

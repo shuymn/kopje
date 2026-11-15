@@ -97,6 +97,7 @@ import {
   acceptedQuoteWindow,
   answeredRequests,
   ensureQuotedAccess,
+  localQuotedAccount,
   localQuoteOf,
   noteQuote,
   type QuotedForPost,
@@ -362,9 +363,38 @@ export function recountStatuses(db: Db, accountId: string): void {
 // The local accounts whose kept boost of the status ?1 an edit of it notifies: one unique seek of
 // statuses_account_reblogs_kept per local account (RES-7), so neither the status's remote boosts nor withdrawn
 // generations are read.
-export const LOCAL_BOOSTERS_SQL = `SELECT l.account_id FROM local_accounts l
+const LOCAL_BOOSTERS_SQL = `SELECT l.account_id FROM local_accounts l
 	CROSS JOIN statuses r INDEXED BY statuses_account_reblogs_kept
 		ON r.account_id = l.account_id AND r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0`;
+
+// The local accounts the status ?1 mentions, not silently: the local accounts drive, each one's mention sought by the
+// mention's key, so the status's other mention rows are never read; nothing caps them in the schema (a converted or
+// imported status may hold any number), and local accounts are operator-sized (RES-4).
+const LOCAL_MENTIONS_SQL = `SELECT l.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = l.account_id
+	WHERE m.silent = 0`;
+
+// Mastodon's update fan-out, run wherever Mastodon broadcasts an update (each caller says which): FanOutOnWriteService's
+// notifications for `update: true` (fan_out_on_write_service.rb:31-35 in v4.7.5), in its order: the local quoted account of the status's accepted quote (`quote`, notify_quoted_account!, :62-66), each
+// local account the status mentions not silently (`mention`, notify_mentioned_accounts!, :68-75, never limited: an
+// update passes no silenced ids), the local boosters (`update`) and the accepted local quoters (`quoted_update`,
+// notify_about_update!, :87-98). Each goes through LocalNotificationWorker, which writes nothing for a notification
+// that exists (local_notification_worker.rb:15-16): notify's natural key keeps a kept `quote` or `mention`, and one
+// that was dismissed or cleared, or never written (the policy dropped it, R15 refused it), is written now.
+export function notifyEdited(db: Db, statusId: string, fromId: string, now: number): void {
+  const quoted = localQuotedAccount(db, statusId);
+  if (quoted !== null) {
+    notify(db, { recipientId: quoted, type: "quote", fromId, statusId, now });
+  }
+  for (const mention of db.all<{ account_id: string }>(LOCAL_MENTIONS_SQL, statusId)) {
+    notify(db, { recipientId: mention.account_id, type: "mention", fromId, statusId, now });
+  }
+  // A withdrawn boost's booster is not notified (Mastodon discards it).
+  for (const booster of db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, statusId)) {
+    notify(db, { recipientId: booster.account_id, type: "update", fromId, statusId, now });
+  }
+  notifyQuotedUpdate(db, statusId, fromId, now);
+}
 
 // replies_count counts public and unlisted replies, as Mastodon does; reblogs_count the boosts not withdrawn (a
 // withdrawn one is gone for everyone, as its unboost counted it off: removeReblog), read through statuses_reblog: the
@@ -660,7 +690,7 @@ export function writePost(
     input.applicationId,
   );
   countStatus(db, visibility, input.now);
-  writeMentions(db, id, composed.mentions, []);
+  writeMentions(db, id, composed.mentions);
   if (quoted !== null) {
     writeQuote(db, { id, uri: `${origin}/ap/o/${input.objectId}`, authorId: accountId }, quoted, input.now);
   }
@@ -822,13 +852,9 @@ function replyParent(db: Db, viewerId: string, id: string): ReplyParent | null {
 }
 
 // Writes the mention set of a status. Mentions that disappear from the text stay as silent mentions (Mastodon's
-// ProcessMentionsService): whoever could see the status keeps seeing it, and nobody is notified again.
-function writeMentions(
-  db: Db,
-  statusId: string,
-  mentions: readonly ResolvedMention[],
-  previous: readonly string[],
-): string[] {
+// ProcessMentionsService): whoever could see the status keeps seeing it. An edit notifies every active mention without
+// a notification (notifyEdited).
+function writeMentions(db: Db, statusId: string, mentions: readonly ResolvedMention[]): void {
   const current = JSON.stringify(mentions.map((m) => m.id));
   db.run(
     `UPDATE status_mentions SET silent = 1 WHERE status_id = ?1 AND account_id NOT IN (SELECT value FROM json_each(?2))`,
@@ -842,7 +868,6 @@ function writeMentions(
     statusId,
     current,
   );
-  return mentions.map((m) => m.id).filter((id) => !previous.includes(id));
 }
 
 // The status's hashtags, and the counts of its author's featured hashtags that it gains or loses (featured-tags.ts).
@@ -974,7 +999,8 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // as the first history entry. A quote policy sent with the edit is stored (Mastodon 4.5.5: only when one is sent),
 // nobody for a status that is not public or unlisted. Where Kopje differs from Mastodon, which counts a changed policy
 // as an edit: the policy is not part of the history, so a change of the policy alone is stored as
-// PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy).
+// PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy); it notifies
+// as an edit does (notifyEdited), which the interaction policy endpoint does not.
 //
 // Deliberate difference from Mastodon: the audience of a private, direct or limited status never widens. A mention
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
@@ -1047,8 +1073,10 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   };
   const policy = input.quotePolicy === undefined ? null : storedQuotePolicy(input.quotePolicy, current.visibility);
   if (unchanged) {
-    if (policy !== null) {
-      setQuotePolicy(db, accountId, current.id, policy, input.now);
+    // UpdateStatusService counts a changed policy as a change (update_status_service.rb:121, :174-176 in v4.7.5), so
+    // the edit broadcasts (:37, :143-146).
+    if (policy !== null && setQuotePolicy(db, accountId, current.id, policy, input.now)) {
+      notifyEdited(db, current.id, accountId, input.now);
     }
     return status();
   }
@@ -1091,7 +1119,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   const mentions = isDistributable(current.visibility)
     ? composed.mentions
     : composed.mentions.filter((mention) => previous.includes(mention.id));
-  const added = writeMentions(db, current.id, mentions, previous);
+  writeMentions(db, current.id, mentions);
   // A mention of an account the author has blocked since goes, rather than staying silent (ProcessMentionsService).
   db.run(
     `DELETE FROM status_mentions WHERE status_id = ?1 AND ${blockedSql("?2", "status_mentions.account_id")}`,
@@ -1119,22 +1147,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     enqueueCard(db, current.id, localCardLink(composed.source, new URL(author.uri).host), input.now);
   }
   const editId = recordEdit(db, current.id, editedAt);
-  for (const mentioned of added) {
-    notify(db, { recipientId: mentioned, type: "mention", fromId: accountId, statusId: current.id, now: input.now });
-  }
-  // Mastodon notifies the local accounts that boosted an edited status, a withdrawn boost's booster not (it is
-  // discarded there).
-  const boosters = db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, current.id);
-  for (const booster of boosters) {
-    notify(db, {
-      recipientId: booster.account_id,
-      type: "update",
-      fromId: accountId,
-      statusId: current.id,
-      now: input.now,
-    });
-  }
-  notifyQuotedUpdate(db, current.id, accountId, input.now);
+  // UpdateStatusService#broadcast_updates!.
+  notifyEdited(db, current.id, accountId, input.now);
   const facts = statusFacts(db, current.id, noteQuote);
   if (facts !== null) {
     recordOutbound(db, accountId, updateActivity(facts, editId), input.now);
@@ -1144,22 +1158,24 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
 
 // FanOutOnWriteService#notify_about_update!'s quoted_update: each local quoter (quotes.ts quotedUpdates) about their
 // own quoting status, from the quoted author; a later one replaces the earlier (notify).
-export function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: number): void {
+function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: number): void {
   for (const quote of quotedUpdates(db, quotedId)) {
     notify(db, { recipientId: quote.account_id, type: "quoted_update", fromId, statusId: quote.status_id, now });
   }
 }
 
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update
-// (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones.
-function setQuotePolicy(db: Db, accountId: string, id: string, policy: number, now: number): void {
+// (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones. Answers
+// whether the stored policy changed.
+function setQuotePolicy(db: Db, accountId: string, id: string, policy: number, now: number): boolean {
   if (db.run("UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1", policy, id) === 0) {
-    return;
+    return false;
   }
   const facts = statusFacts(db, id, noteQuote);
   if (facts !== null) {
     recordOutbound(db, accountId, updateActivity(facts, `quote-policy-${crypto.randomUUID()}`), now);
   }
+  return true;
 }
 
 // quotePolicy: the policy sent; none is the author's default, and 'invalid' one the Worker could not read.
@@ -1173,7 +1189,8 @@ export type InteractionPolicyInput = {
 // must be one the viewer may see by itself (R3, else not found) and their own (else forbidden), then the policy must be
 // one of the three (else "Record invalid"). The policy sent, or the author's default_quote_policy when none is, is
 // stored as on posting (storedQuotePolicy). A boost has no policy of its own (its original's is shown): it is answered
-// unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy).
+// unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy); it notifies
+// no one, as the controller broadcasts with skip_notifications (interaction_policies_controller.rb:24-26 in v4.7.5).
 export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput, Acted<Status>>(
   (db, input, { accountId }, viewer) => {
     const visible = viewable(db, accountId, input.id);

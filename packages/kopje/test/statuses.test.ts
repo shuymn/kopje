@@ -848,6 +848,60 @@ describe("editing", () => {
     expect(body.map((n) => [n.type, n.status.content])).toEqual([["update", "<p>v3</p>"]]);
   });
 
+  // UpdateStatusService#broadcast_updates!: the update fan-out notifies every active mention without a kept
+  // notification (notifyEdited; fan_out_on_write_service.rb:68-75, local_notification_worker.rb:15-16 in v4.7.5).
+  describe("an edit's mention notifications", () => {
+    const mentionsOf = (h: ApiHarness, user: User) =>
+      sql<{ id: string }>(
+        h.store,
+        "SELECT CAST(id AS TEXT) AS id FROM notifications WHERE account_id = ? AND type = 'mention' ORDER BY id",
+        user.id,
+      );
+    const edit = (h: ApiHarness, user: User, id: string, text: string) =>
+      h.request(`/api/v1/statuses/${id}`, bearer(user.token, json({ status: text }, { method: "PUT" })));
+
+    it("notifies again a mention its recipient dismissed, and pushes it", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      await sql(
+        h.store,
+        `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
+				SELECT token_hash, 'https://push.example/1', 'p', 'a', '{"mention":true}', 'all' FROM oauth_tokens
+				WHERE account_id = ?`,
+        bob.id,
+      );
+      const status = await post(h, alice, { status: "@bob hi" });
+      const [first] = await mentionsOf(h, bob);
+      expect((await act(h, bob, `/api/v1/notifications/${first!.id}/dismiss`)).status).toBe(200);
+      expect(await mentionsOf(h, bob)).toEqual([]);
+      expect((await edit(h, alice, status.id, "@bob hi again")).status).toBe(200);
+      const again = await mentionsOf(h, bob);
+      expect(again).toHaveLength(1);
+      expect(
+        await sql(h.store, "SELECT CAST(notification_id AS TEXT) AS id FROM push_deliveries ORDER BY notification_id"),
+      ).toEqual(again);
+    });
+
+    it("notifies a mention the policy dropped once it accepts", async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      const policy = (choice: string) =>
+        h.request(
+          "/api/v2/notifications/policy",
+          bearer(bob.token, json({ for_not_following: choice }, { method: "PUT" })),
+        );
+      expect((await policy("drop")).status).toBe(200);
+      const status = await post(h, alice, { status: "@bob hi" });
+      expect(await sql(h.store, "SELECT silent FROM status_mentions WHERE account_id = ?", bob.id)).toEqual([
+        { silent: 0 },
+      ]);
+      expect(await mentionsOf(h, bob)).toEqual([]);
+      expect((await policy("accept")).status).toBe(200);
+      expect((await edit(h, alice, status.id, "@bob hi again")).status).toBe(200);
+      expect(await mentionsOf(h, bob)).toHaveLength(1);
+    });
+  });
+
   // Api::V1::StatusesController#update finds the status among the caller's own before UpdateStatusService validates
   // anything: a status that is missing or not the caller's own answers 404 before any 422.
   describe("the edited status comes first (StatusesController#update)", () => {

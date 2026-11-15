@@ -99,6 +99,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   filtered by default unless the account follows the author. Such a mention was never notified. A mention an edit adds
   is notified as an ordinary one, whether or not the edit addresses the account. No Store migration and no
   `wrangler.jsonc` change.
+- A remote status Kopje fetches (a search result, a boost's original, a pinned or a quoted status) notifies its
+  mentioned local accounts and the author's subscribers when it was published within six hours of arriving, as
+  Mastodon's real-time window does; such a status notified no one. A status that arrives again later notifies no one
+  again. No Store migration and no `wrangler.jsonc` change.
+- An edit notifies every mentioned local account, and the local author of a status it quotes with approval, that has
+  no notification of the mention or quote, as Mastodon does: one whose notification the policy dropped, or that was
+  dismissed or cleared, is notified again. A remote edit notifies only when it changes the text, content warning,
+  media or poll (a new mention included), or, without a new version, when it changes its quote's approval stamp; a
+  local edit whenever it is accepted, a change of the quote policy alone through `PUT /api/v1/statuses/:id` included,
+  which now also notifies the status's boosters and quoters (the `/interaction_policy` endpoint notifies no one). No
+  Store migration and no `wrangler.jsonc` change.
 - Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage

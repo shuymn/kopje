@@ -448,6 +448,7 @@ describe("VIS-2: edits never add recipients to a direct or limited status", () =
         bob,
         {
           ...note,
+          content: "<p>now @alice and @dave</p>",
           cc: [...note.cc, ALICE_URI],
           tag: [
             { type: "Mention", href: ALICE_URI },
@@ -457,8 +458,9 @@ describe("VIS-2: edits never add recipients to a direct or limited status", () =
         at(60),
       ),
     );
-    // alice is addressed and mentioned; dave, only tagged and not following bob, is notified all the same, never
-    // limited (ProcessStatusUpdateService#update_mentions! and broadcast_updates!, #1582 D6).
+    // A significant edit (its text names them) broadcasts: alice is addressed and mentioned; dave, only tagged and not
+    // following bob, is notified all the same, never limited (ProcessStatusUpdateService#update_mentions! and
+    // broadcast_updates!).
     expect(await sql(t.store, "SELECT account_id, type, filtered FROM notifications ORDER BY account_id")).toEqual([
       { account_id: ALICE, type: "mention", filtered: 0 },
       { account_id: DAVE, type: "mention", filtered: 0 },
@@ -804,7 +806,16 @@ describe("RES-4: a public edit at the mention cap", () => {
     expect(await count()).toEqual([{ n: MAX_STATUS_MENTION_ROWS }]);
     await t.post(
       bob,
-      update(bob, { ...note, cc: [...many, ALICE_URI], tag: [{ type: "Mention", href: ALICE_URI }] }, at(60)),
+      update(
+        bob,
+        {
+          ...note,
+          content: "<p>now @alice</p>",
+          cc: [...many, ALICE_URI],
+          tag: [{ type: "Mention", href: ALICE_URI }],
+        },
+        at(60),
+      ),
     );
     expect(await count()).toEqual([{ n: MAX_STATUS_MENTION_ROWS }]);
     expect(
