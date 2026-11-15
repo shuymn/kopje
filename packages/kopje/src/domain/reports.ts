@@ -424,7 +424,7 @@ function* adminReportStream(
   const shared = presentation(
     db,
     shown.flatMap((statuses) => statuses.map((status) => status.id)),
-    { ...present, viewer: admin.context },
+    { ...present, viewer: admin.context, proper: true },
   );
   for (const [i, row] of rows.entries()) {
     const ids = [

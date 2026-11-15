@@ -487,7 +487,7 @@ function unitOf(
       const listed = fresh ? listedIn(db, context, lists, subject) : [];
       const fed = fresh ? fedIn(db, context, feeds, subject) : NOT_FED;
       const shown = home ?? listed[0]?.status ?? fed.status;
-      const status = shown === null ? null : presentStatus(db, shown, { origin, viewer: context });
+      const status = shown === null ? null : presentStatus(db, shown, { origin, viewer: context, streamed: true });
       const checks = fresh ? 1 + lists.length + fed.checks : 0;
       if (status === null) {
         return { ...none, checks };
@@ -507,7 +507,7 @@ function unitOf(
       const listed = listedIn(db, context, lists, subject);
       const fed = fedIn(db, context, feeds, subject);
       const shown = home ?? mention ?? listed[0]?.status ?? fed.status;
-      const status = shown === null ? null : presentStatus(db, shown, { origin, viewer: context });
+      const status = shown === null ? null : presentStatus(db, shown, { origin, viewer: context, streamed: true });
       const checks = (notified ? 2 : 1) + lists.length + fed.checks;
       if (status === null) {
         return { ...none, checks };
