@@ -3,7 +3,7 @@ import type { DocumentLoader } from "@fedify/fedify";
 import { isPublicCollection } from "../domain/audience";
 import { isConversationId } from "../domain/conversation-rows";
 import { languageOf } from "../domain/language";
-import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate } from "../domain/link-cards";
+import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate, type CardLink } from "../domain/link-cards";
 import { MAX_REMOTE_OPTION_LENGTH, MAX_REMOTE_OPTIONS, type RemotePollInput } from "../domain/polls";
 import type {
   RemoteMediaInput,
@@ -24,6 +24,7 @@ import { hashtagObjectName } from "../domain/tag-name";
 import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
+import { railsBlank } from "../platform/rails-blank";
 import {
   CARD_URL_LIMIT,
   storedBlurhash,
@@ -168,14 +169,77 @@ function focusOf(value: unknown): { x: number; y: number } | null {
   return valid(x) && valid(y) ? { x, y } : null;
 }
 
-// Create#process_attachments: links (an href) are preview cards, not media; at most MAX_STATUS_MEDIA with a usable url.
+// Whether an attachment's href is a link's (Create#process_attachments, create.rb:306: Rails' present?): a string that
+// is not blank, or any value but null, false, [] and {}.
+function hrefPresent(href: unknown): boolean {
+  if (typeof href === "string") {
+    return !railsBlank(href);
+  }
+  if (Array.isArray(href)) {
+    return href.length > 0;
+  }
+  if (typeof href === "object" && href !== null) {
+    return Object.keys(href).length > 0;
+  }
+  return href !== undefined && href !== null && href !== false;
+}
+
+// A FEP-8967 Link's href as Mastodon 4.7 collects it (PreviewCardParser#url, preview_card_parser.rb:15-20, and
+// unsupported_uri_scheme?, json_ld_helper.rb:95-97, over Addressable 2.9.2's parse and normalize), judged on the raw
+// text before WHATWG parsing, which would invent an authority Addressable keeps absent: "skip" for one Mastodon does
+// not collect, else the card's link ({ href: null }: no card). In order: http(s) in any case at the very start and
+// followed at once by `//`, else skipped (another scheme, no authority, leading whitespace, a blank href); an empty
+// authority ending the href or before `?` or `#` (Addressable raises), skipped; past CARD_RAW_HREF_LIMIT, no card; an
+// empty authority before a path (kept by Addressable, so Mastodon's fetch fails), no card; unparsable by WHATWG
+// (which parses no http(s) URL without a host), skipped; else its WHATWG href, no card past CARD_URL_LIMIT.
+function cardLinkHref(href: string): CardLink | "skip" {
+  const prefix = /^https?:\/\/([^/?#]*)/i.exec(href);
+  if (prefix === null) {
+    return "skip";
+  }
+  const emptyAuthority = prefix[1] === "";
+  if (emptyAuthority && href[prefix[0].length] !== "/") {
+    return "skip";
+  }
+  if (href.length > CARD_RAW_HREF_LIMIT || emptyAuthority) {
+    return { href: null };
+  }
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return "skip";
+  }
+  return { href: url.href.length > CARD_URL_LIMIT ? null : url.href };
+}
+
+// The card's link a status's FEP-8967 Link attachments give (Create#process_attachments, create.rb:306-310, and
+// LinkCrawlWorker of @links.first, :89): the first attachment, in order and past the media's cap, whose href is a
+// string that cardLinkHref does not skip (a blank one, media for mediaOf, fails its prefix); null: none, and the
+// anchors decide (domain/link-cards.ts remoteCardLink). A present href that is not a string is skipped, where
+// Addressable raises a TypeError that fails the whole activity (docs/mastodon-deviations.md, "Link previews").
+function cardLinkOf(object: Json): CardLink | null {
+  for (const attachment of asArray(object.attachment)) {
+    if (!isObject(attachment) || typeof attachment.href !== "string") {
+      continue;
+    }
+    const link = cardLinkHref(attachment.href);
+    if (link !== "skip") {
+      return link;
+    }
+  }
+  return null;
+}
+
+// Create#process_attachments: links (a present href) are preview cards, not media; at most MAX_STATUS_MEDIA with a
+// usable url.
 function mediaOf(object: Json): RemoteMediaInput[] {
   const media: RemoteMediaInput[] = [];
   for (const attachment of asArray(object.attachment)) {
     if (media.length >= MAX_STATUS_MEDIA) {
       break;
     }
-    if (!isObject(attachment) || attachment.href !== undefined) {
+    if (!isObject(attachment) || hrefPresent(attachment.href)) {
       continue;
     }
     const url = storedMediaLink(urlOf(attachment.url));
@@ -439,6 +503,7 @@ export function parseRemoteStatus(
     poll: converted ? null : pollOf(object),
     quote: quoteOf(object, embedQuote),
     quotePolicy: quotePolicyOf(object),
+    cardLink: cardLinkOf(object),
     cardCandidates,
     raw: JSON.stringify(object),
   };

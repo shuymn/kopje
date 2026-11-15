@@ -283,13 +283,22 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
+- A local status's Note lists its card as a FEP-8967 `Link` after its media, as Mastodon 4.7 does, only where the API
+  shows the card (a public or unlisted status, the card fetched, its title not blank), so a Note of another visibility
+  lists none, where Mastodon lists the card it fetched for any visibility.
 - Only public and unlisted originals get a card, a privacy choice: Mastodon fetches the link of every visibility,
   which tells the linked site that the instance holds the post. A status with a shown attachment or any quote, a boost,
   and one whose author is unavailable get none.
-- A remote status's link is the first of its first 16 anchors that is not a hashtag's (`rel` holding `tag`), a
-  microformats one (`class` holding `u-url` or `h-card`), a mentioned account's URL, relative, of another scheme or the
-  instance's own (by host and non-default port); anchors inside the elements the sanitizer drops whole are not seen. A
-  local status's is the first `http(s)` link of its text that is not the instance's. That link is final: when it is
+- A remote status's link is its first `Link` attachment (an `attachment` with a non-blank `href`) whose `href` is an
+  `http(s)` URL with an authority (`https://`), as Mastodon 4.7 reads FEP-8967: one of another scheme, without an
+  authority (`https:b.example`) or with an empty one that ends the `href` or precedes a query or fragment
+  (`https://?x`), whatever its length, or one that does not parse is skipped; one with an empty authority before a
+  path (`https:///b`) is taken and gives no card; one whose `href` is not a string is skipped, where Mastodon fails the
+  activity. A `Link` naming a mentioned account's URL or the instance is taken, as Mastodon takes it. Only without one
+  is the link the first of its first 16 anchors that is not a hashtag's (`rel` holding `tag`), a microformats one
+  (`class` holding `u-url` or `h-card`), a mentioned account's URL, relative, of another scheme or the instance's own
+  (by host and non-default port); anchors inside the elements the sanitizer drops whole are not seen. A local status's
+  is the first `http(s)` link of its text that is not the instance's. That link is final: when it is
   `http`, has a port, names an IP literal or a local name, passes 2,048 characters, holds a character outside printable
   ASCII or one of ``"<>\^`{|}``, or does not parse, there is no card (Mastodon fetches `http` links and other ports).
   Hosts the domain policy refuses are never contacted, after any redirect either.
@@ -361,7 +370,8 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - Each status keeps its own copy: a status that links a URL another status fetched within 14 days copies that card
   without a request, but a later fetch does not update earlier copies, and an edit that keeps the URL fetches it again
   unless another status holds a fresh copy. A local edit resets the card only when the text changes, a remote update
-  only when it is significant; a change of the quote alone resets nothing.
+  only when it is significant; a change of the quote alone resets nothing, and neither does a change of the `Link`
+  attachments alone, as in Mastodon.
 
 Accounts (the `Account` and credential account entities):
 
