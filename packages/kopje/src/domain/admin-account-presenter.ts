@@ -12,7 +12,10 @@ import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 //   - a remote account (no User): email, confirmed, disabled, approved, locale and role null, which is what
 //     Account's delegation to a missing user gives (app/models/account.rb:173-191, allow_nil);
 //   - both: ip null and ips [], invite_request null; created_by_application_id and invited_by_account_id absent (their
-//     conditions never hold); suspended when the account is unavailable (R1), as the nested account shows it.
+//     conditions never hold); suspended when the account is unavailable (R1), as the nested account shows it;
+//     username as the nested account shows it, but '! <id>' for an invalidated handle (accounts.ts shownHandle): the
+//     username Mastodon's invalidate_username! stores and its serializer shows (Account#username), where the nested
+//     account shows the placeholder.
 export type AdminAccount = {
   id: string;
   username: string;
@@ -65,7 +68,7 @@ export function* adminAccountStream(
       const local = row.domain === null;
       yield {
         id: row.id,
-        username: account.username,
+        username: account.invalid_handle === true ? `! ${account.id}` : account.username,
         domain: row.domain,
         created_at: account.created_at,
         email: local ? row.email : null,

@@ -18,6 +18,7 @@ import {
   jsonStringBytes,
   isRemoteUsername,
   isStorableActorId,
+  localUsernameIsDomain,
   mediaUrl,
   REMOTE_BIO_BYTES,
   STATUS_URI_LIMIT,
@@ -350,14 +351,16 @@ export function threadsOf(replies, statuses, conversations = new Map()) {
  *   baseTime?: string | null }} options baseTime: the conversion's base time (the converted dump's createdAt), the
  *   publication time of a status with no time in the writers' form, as the converter stores it
  * @returns {{ records: Records, overLimit: number, images: { missing: number, unmapped: number },
- *   dropped: Record<string, number>, identities: number }} dropped: rows the conversion must leave out, which need
- *   --accept-deletions; identities: actor ids, remote usernames and status uris the Worker would refuse
+ *   dropped: Record<string, number>, identities: number, localUsernameIsDomain: number }} dropped: rows the
+ *   conversion must leave out, which need --accept-deletions; identities: actor ids, remote usernames and status uris
+ *   the Worker would refuse; localUsernameIsDomain: local accounts whose username is the domain (ID-5)
  */
 export function expectedFromLegacy(db, { originalActorIds, source, notificationSequence, images, baseTime = null }) {
   /** @type {Records} */
   const out = {};
   let overLimit = 0;
   let identities = 0;
+  let localUsernameIsDomainCount = 0;
   /** @type {Record<string, number>} */
   const dropped = {};
   /** @param {string} category @param {string} key @param {unknown} value */
@@ -484,6 +487,10 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
       text(p.preferredUsername) || uri.replace(/\/+$/, "").slice(uri.replace(/\/+$/, "").lastIndexOf("/") + 1);
     if (!isLocal && (!isStorableActorId(uri) || !isRemoteUsername(username))) {
       identities++;
+    }
+    // ID-5: a local username, the last segment of its actor id as Kopje keeps it, that is the domain.
+    if (isLocal && localUsernameIsDomain(uri.slice(uri.lastIndexOf("/") + 1), domain)) {
+      localUsernameIsDomainCount++;
     }
     /** @param {unknown} value @param {string} kind */
     const profileImage = (value, kind) => {
@@ -1138,5 +1145,12 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
       typeof c.website === "string" ? c.website : null,
     ]);
   }
-  return { records: out, overLimit, images: imageCounts, dropped, identities };
+  return {
+    records: out,
+    overLimit,
+    images: imageCounts,
+    dropped,
+    identities,
+    localUsernameIsDomain: localUsernameIsDomainCount,
+  };
 }

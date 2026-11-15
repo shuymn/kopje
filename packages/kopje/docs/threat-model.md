@@ -274,9 +274,13 @@ against their own instance. TLS is assumed between all parties.
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
-  written", "an actor updates only itself"). _Enforced (main)_ for statuses, favourites and boosts: a remote object
-  must have its actor's origin and name no other author, and only its stored author updates or deletes it, so a local
-  status is never created, updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
+  written", "an actor updates only itself"). An actor document on the instance's origin, the instance actor's
+  included, is never stored as a remote account, even when another server's WebFinger names it, and search resolution
+  fetches nothing for an address or URL on the instance's domain (`upsertRemoteActor`, `resolutionTarget` in
+  `src/domain/remote-statuses.ts`); `test/instance-actor-handle.test.ts`. _Enforced (main)_ for statuses, favourites
+  and boosts: a remote object must have its actor's origin and name no other author, and only its stored author
+  updates or deletes it, so a local status is never created, updated or deleted from outside (`storeRemoteStatus` and
+  `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)").
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
@@ -291,8 +295,20 @@ against their own instance. TLS is assumed between all parties.
   (`test/inbox-actor-revision.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
-  no key pair. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently cased path",
-  "another host, an unknown user, and the request host"), `test/signed-fetch.test.ts` ("no key pairs for a spelling").
+  no key pair. The instance actor is served at `/actor` only, and WebFinger answers it for that URI and for its handle,
+  `acct:<domain>@<domain>` with the domain exactly as the username (`isInstanceHandle`); it has no `accounts` row, so
+  it is no account to lookup, search, mentions or the public pages. A local account keeps its own WebFinger identity:
+  no local username is the domain in any case (`localUsernameIsDomain` in `src/platform/identity-bounds.ts`, compared
+  as local usernames are looked up): the cutover's conversion and verification, the Store's import verification
+  (against the domain the Store keeps) and its configuration of the domain refuse one, and invitations and `/setup`
+  take only `LOCAL_USERNAME`, which has no `.`. A Store that holds one from before these refusals answers WebFinger for
+  that handle with the account (`mapHandle` asks for a local account first), and its instance actor then has no handle
+  answer, only its URI one. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently
+  cased path", "another host, an unknown user, and the request host", "by its handle, the domain at the domain", "no
+  other handle at the domain", "never answers its handle for a local account whose username is the domain"),
+  `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/instance-actor-handle.test.ts` ("names no account
+  in lookup, mentions or the public pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance
+  domain"), `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require
@@ -2185,6 +2201,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   activities do not look up WebFinger, so an account first seen inbound shows its actor's host until it is resolved, and
   a renamed actor keeps its host until it is resolved again. `test/inbox-canonical-address.test.ts` ("the canonical
   address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
+  invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
+  by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
   `createRemoteLoaders` in `src/federation/federation.ts`, `src/federation/resolve.ts`; `test/inbox-statuses.test.ts`
   ("signed by the instance actor (NET-4)", "resolves a status URL as the instance actor", "answers 401 without a token
   and fetches nothing", "account search with resolve=true (NET-4, VIS-1)"), `test/inbox-statuses-edge.test.ts` ("NET-4:
@@ -4735,9 +4754,10 @@ heap).
   snapshot rule; `maintenance-worker` refuses unless one KEK unwraps every local key and verifies against its public key
   (DATA-14), and every actor document publishes exactly its legacy public key, under `<actor>#main-key`, owned by that
   actor, at that actor's path, for every local actor. The snapshot holds no private key, no email and no instance
-  actor (its key does not exist before the import; `/actor` is 503). _Enforced (main):_
-  `src/maintenance-render.ts`, `cli/lib/cutover/maintenance.js`; `test/maintenance-worker.test.ts` ("serves byte for
-  byte what the Store serves after the import, keys included"), `test-node/cutover-maintenance.test.ts` ("refuses a
+  actor (its key does not exist before the import; `/actor` and its WebFinger by URI or handle are 503,
+  `src/maintenance.ts`). _Enforced (main):_ `src/maintenance-render.ts`, `cli/lib/cutover/maintenance.js`;
+  `test/maintenance-worker.test.ts` ("serves byte for byte what the Store serves after the import, keys included",
+  "answers anything it cannot tell exactly with 503"), `test-node/cutover-maintenance.test.ts` ("refuses a
   snapshot with …": another public key, key id, owner or actor at the path; "leaves a local actor out", mixed KEKs,
   another domain, "the snapshot is fresh when it is deployed": a profile changed or keys swapped make
   `maintenance-worker-check` say stale).
