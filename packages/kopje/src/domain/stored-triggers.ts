@@ -16,6 +16,9 @@ import {
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
   oembedEndpointPastBoundSql,
+  PROFILE_DESCRIPTION_COLUMNS,
+  PROFILE_SETTING_COLUMNS,
+  profileSettingsPastBoundSql,
   remoteFieldLinkRowPastBoundSql,
   remoteMediaObjectPastBoundSql,
   remoteMediaSlotPastBoundSql,
@@ -334,6 +337,14 @@ END;`,
     "name, value",
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
+  ),
+  // 0097_profile_descriptions
+  ...boundTriggers(
+    "accounts_profile_settings",
+    "accounts",
+    [...PROFILE_DESCRIPTION_COLUMNS, ...PROFILE_SETTING_COLUMNS].join(", "),
+    profileSettingsPastBoundSql("NEW"),
+    "accounts: profile setting past its stored bound",
   ),
 ];
 

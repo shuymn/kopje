@@ -22,6 +22,7 @@ import { getStatus } from "../src/domain/statuses";
 import { remoteActorInput } from "../src/federation/remote-actor";
 import { utf8Length } from "../src/platform/dump-format";
 import type { StoreOperation } from "../src/platform/store-kernel";
+import { PROFILE_DESCRIPTION_LIMIT } from "../src/platform/stored-bounds";
 import { jsonStringBytes, REMOTE_BIO_BYTES, sanitizeRemoteBio, sanitizeRemoteHtml } from "../src/security/html";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
@@ -45,6 +46,8 @@ type Profile = {
   avatar: string;
   header: string;
   attachment: unknown[];
+  // Both image descriptions; '' for none.
+  description?: string;
 };
 
 const link = (href: string) =>
@@ -87,8 +90,8 @@ const large = (i: number): Profile => ({
 });
 
 // Every variable part an account presents at its bound (RES-2): a bio of REMOTE_BIO_BYTES (MAX_BIO), a display name of
-// DISPLAY_NAME_LIMIT characters that escape to six bytes each, URLs of PROFILE_URL_LIMIT, and fields of about
-// REMOTE_FIELDS_BYTES (maxFields).
+// DISPLAY_NAME_LIMIT characters that escape to six bytes each, URLs of PROFILE_URL_LIMIT, fields of about
+// REMOTE_FIELDS_BYTES (maxFields), and image descriptions of PROFILE_DESCRIPTION_LIMIT such characters.
 const atLimit = (prefix: string) => prefix.padEnd(PROFILE_URL_LIMIT, "u");
 const maximal = (i: number): Profile => ({
   displayName: "\u0001".repeat(DISPLAY_NAME_LIMIT),
@@ -97,6 +100,7 @@ const maximal = (i: number): Profile => ({
   avatar: atLimit(`https://max.example/a${i}/`),
   header: atLimit(`https://max.example/h${i}/`),
   attachment: maxFields(),
+  description: "\u0001".repeat(PROFILE_DESCRIPTION_LIMIT),
 });
 // What one such account is at most as read from SQLite and as serialized (ACCOUNT_COLUMN_MAP's comment); read with
 // the account it moved to (movedAtCaps), MOVED_ROW_SQLITE_MAX more.
@@ -119,6 +123,7 @@ async function accounts(t: Setup, count: number, base: bigint, profile: (i: numb
       p.avatar,
       p.header,
       JSON.stringify({ type: "Person", attachment: p.attachment }),
+      p.description ?? "",
     ];
   });
   // In batches of JSON within SQLite's largest string in a Durable Object (2 MB).
@@ -136,9 +141,10 @@ async function accounts(t: Setup, count: number, base: bigint, profile: (i: numb
   for (const batch of batches) {
     await sql(
       t.store,
-      `INSERT INTO accounts (id, uri, username, domain, display_name, note, url, avatar_url, header_url, raw)
+      `INSERT INTO accounts (id, uri, username, domain, display_name, note, url, avatar_url, header_url, raw,
+				avatar_description, header_description)
 			SELECT r.value ->> 0, r.value ->> 1, r.value ->> 2, 'm.example', r.value ->> 3, r.value ->> 4, r.value ->> 5,
-				r.value ->> 6, r.value ->> 7, r.value ->> 8
+				r.value ->> 6, r.value ->> 7, r.value ->> 8, r.value ->> 9, r.value ->> 9
 			FROM json_each(?) r`,
       JSON.stringify(batch),
     );
@@ -417,8 +423,8 @@ describe("answers of many accounts are bounded in bytes (RES-3)", () => {
     const answer = await membersAnswer(t, `/api/v1/lists/${LIST}/accounts?limit=0`);
     expect(answer.ids).toEqual([...ids].toReversed());
     expect(answer.next).toBeNull();
-    // 2,101 bytes a member.
-    expect(answer.bytes).toBeLessThan((ANSWER_BYTES * 26) / 100);
+    // 2,266 bytes a member.
+    expect(answer.bytes).toBeLessThan((ANSWER_BYTES * 28) / 100);
   }, 60_000);
 
   it(`cuts ${MAX_LIST_MEMBERS_ANSWERED} members at Misskey's limits and links next to the rest`, async () => {
