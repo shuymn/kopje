@@ -82,6 +82,20 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
 
    Replace `0049_instance_bounds` with the first migration absent from the previous release.
 
+   If the version changes the compatibility date (`wrangler.jsonc`, `deploy/wrangler.jsonc`) or the workerd versions
+   in `pnpm-lock.yaml` since the previous `kopje-v*` tag, run the held-output bench (`bench/held-output/run.mjs`,
+   #1610). It takes about five hours and uses your wrangler login: it deploys temporary Workers named
+   `kopje-bench-held-<random>` and deletes them when it ends, printing the delete command if that fails.
+
+   ```sh
+   pnpm --filter kopje bench:held-output
+   ```
+
+   Compare its outcomes and the runtime's WebSocket surface (`outcomes.json` in the `held-output-<time>` directory it
+   prints) with RES-6 in `docs/threat-model.md`. A change in an observation the streaming hub's slow-consumer policy
+   rests on, or a new signal of unsent output (`bufferedAmount`, `ping`, or a promise from `send`), changes
+   `STREAM_LIMITS` or the policy before the release.
+
    Merge it.
 
 2. Tag the merge commit on `main` and push the tag:
