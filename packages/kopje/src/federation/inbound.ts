@@ -181,7 +181,7 @@ const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiRea
 
 function refOf(value: unknown): ActivityRef {
   if (!isObject(value)) {
-    return { id: idOf(value), type: null, actor: null, object: null, instrument: null, atomUri: null };
+    return { id: idOf(value), type: null, actor: null, object: null, atomUri: null };
   }
   const type = typeof value.type === "string" ? value.type : null;
   return {
@@ -189,7 +189,6 @@ function refOf(value: unknown): ActivityRef {
     type: type !== null && LIKE_TYPES.has(type) ? "Like" : type,
     actor: idOf(value.actor),
     object: idOf(value.object),
-    instrument: idOf(value.instrument),
     atomUri: statusIdentity(value.atomUri),
   };
 }

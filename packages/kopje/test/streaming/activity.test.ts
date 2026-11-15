@@ -34,6 +34,7 @@ describe("activity and the streams", () => {
       website: null,
       scopes: ["read"],
       now: NOW,
+      credential: null,
     });
     expect((await drained(h, inbox)).turns).toBeGreaterThan(before);
   });

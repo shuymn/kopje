@@ -592,11 +592,13 @@ describe("the policy fragments agree with the model of their rules", () => {
           sql.exec("DELETE FROM oauth_tokens WHERE client_id = 'oracle'");
           const answers: string[] = [];
           for (const id of ids) {
-            if (getAccount.run(sql, { id, present }) !== null) {
+            const found = getAccount.run(sql, { id, present, credential: null });
+            if (found.status === "ok" && found.value !== null) {
               answers.push(`found ${named(id)}`);
             }
           }
-          for (const account of getAccounts.run(sql, { ids, present })) {
+          const listed = getAccounts.run(sql, { ids, present, credential: null });
+          for (const account of listed.status === "ok" ? listed.value : []) {
             answers.push(`listed ${named(account.id)}`);
           }
           for (const viewer of viewersWithTokens) {

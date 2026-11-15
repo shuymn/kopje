@@ -80,7 +80,6 @@ import {
   continueRevocations,
   holdsLocalStamp,
   promoteQuote,
-  type QuoteAnswerRef,
   quotesDue,
   quoteArrival,
   recheckStamp,
@@ -225,14 +224,13 @@ export const MAX_TRACKED_LIKES = 4;
 // room.
 export const LIKE_RETIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
-// The object of an Accept, Reject or Undo: an id, or an embedded activity (id optional; instrument: an inlined
-// QuoteRequest's, by id; atomUri: its atomUri, read as a status's, which an Undo of a boost falls back to).
+// The object of an Accept, Reject or Undo: an id, or an embedded activity (id optional; atomUri: its atomUri,
+// read as a status's, which an Undo of a boost falls back to).
 export type ActivityRef = {
   id: string | null;
   type: string | null;
   actor: string | null;
   object: string | null;
-  instrument?: string | null;
   atomUri?: string | null;
 };
 
@@ -814,7 +812,7 @@ function ourFollow(
 
 const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
   if (isQuoteAnswer(activity.object)) {
-    return acceptOurQuote(db, actor, quoteAnswerRef(activity.object), activity.result ?? null, now)
+    return acceptOurQuote(db, actor, activity.object.id, activity.result ?? null, now)
       ? applied("quote-accepted")
       : ignored("quote-unchanged");
   }
@@ -833,9 +831,7 @@ const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
 // Mastodon's Reject removes our Follow, including an accepted one; quote handling: quotes.ts rejectOurQuote.
 const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
   if (isQuoteAnswer(activity.object)) {
-    return rejectOurQuote(db, actor, quoteAnswerRef(activity.object), now)
-      ? applied("quote-rejected")
-      : ignored("quote-unchanged");
+    return rejectOurQuote(db, actor, activity.object.id, now) ? applied("quote-rejected") : ignored("quote-unchanged");
   }
   const edge = ourFollow(db, actor, activity.object, true);
   if (edge === null || edge === "not-target") {
@@ -847,13 +843,10 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
 };
 
 // An answer to our QuoteRequest: an inlined QuoteRequest, or its id (the quoting status's uri with #quote-request,
-// activities.ts quoteRequestUri), which no Follow of ours carries.
+// activities.ts quoteRequestUri), which no Follow of ours carries. Either is matched by its id only (quotes.ts
+// answeredQuote), so an inlined QuoteRequest under another id changes nothing (quote-unchanged).
 function isQuoteAnswer(ref: ActivityRef): boolean {
   return ref.type === "QuoteRequest" || (ref.type === null && ref.id !== null && ref.id.endsWith("#quote-request"));
-}
-
-function quoteAnswerRef(ref: ActivityRef): QuoteAnswerRef {
-  return { id: ref.id, type: ref.type, object: ref.object, instrument: ref.instrument ?? null };
 }
 
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,

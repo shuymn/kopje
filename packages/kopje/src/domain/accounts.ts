@@ -48,12 +48,14 @@ import {
   type ViewerContext,
 } from "./audience";
 import {
-  authorize,
   type Credential,
+  type Judged,
   localRole,
   optionalUserReadOperation,
   OWNER_ROLE,
+  refuseSuspended,
   type Role,
+  unlessSuspended,
   userReadOperation,
   userWriteOperation,
 } from "./auth";
@@ -815,21 +817,34 @@ function accountRow(db: Db, id: string): AccountRow | undefined {
   return db.first<AccountRow>(`SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`, id);
 }
 
-export const getAccount = readOperation<{ id: string; present: Present }, Account | null>((db, { id, present }) => {
-  const resolved = routeAccountId(db, id);
-  return resolved === null ? null : (presentAccountById(db, resolved, present) ?? null);
-});
+// GET /api/v1/accounts/:id, and the API's other reads of one account by id. credential: the token an anonymous route
+// was sent (AUTH-2), whose suspended owner is refused first.
+export const getAccount = readOperation<
+  { id: string; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { id, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = routeAccountId(db, id);
+    return resolved === null ? null : (presentAccountById(db, resolved, present) ?? null);
+  }),
+);
 
 // GET /api/v1/accounts?id[]= (AccountsController#index): the accounts getAccount shows one by one, read in one query,
 // in the order asked, each once; an id that names no account, or one getAccount does not find, is left out. Kopje has
-// no unapproved accounts (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID).
+// no unapproved accounts (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID). A suspended owner of
+// the token sent is refused first (AUTH-2's anonymous routes).
 export const MAX_ACCOUNTS_BY_ID = 40;
 
-export const getAccounts = readOperation<{ ids: string[]; present: Present }, Account[]>((db, { ids, present }) => {
-  const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
-  const accounts = presentAccountsById(db, resolved, present);
-  return resolved.flatMap((id) => accounts.get(id) ?? []);
-});
+export const getAccounts = readOperation<
+  { ids: string[]; present: Present; credential: Credential | null },
+  Judged<Account[]>
+>((db, { ids, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
+    const accounts = presentAccountsById(db, resolved, present);
+    return resolved.flatMap((id) => accounts.get(id) ?? []);
+  }),
+);
 
 // The account an address names, domain null for a local one, matched case-insensitively as Mastodon's
 // Account.find_remote: by accounts_local_username or accounts_domain_username, named so the seek does not rest on the
@@ -880,14 +895,14 @@ export function storedAddress(db: Db, username: string, domain: string | null): 
 
 // POST /api/v1/accounts/:account_id/email_subscriptions with e-mail subscriptions off (MD-3): Mastodon's
 // require_not_suspended! reads a sent token first, then set_account finds the id among local accounts
-// (Account.local.find), suspended ones included. Only a held, unexpired token of a suspended user counts; any other
-// token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
+// (Account.local.find), suspended ones included. Only a held token of a suspended user counts, expired or not (AUTH-1's
+// order); any other token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
 // local row.
 export const emailSubscriptionTarget = readOperation<
   { credential: Credential | null; id: string },
   "suspended" | "missing" | "local"
 >((db, { credential, id }) => {
-  if (credential !== null && authorize(db, credential).status === "suspended") {
+  if (refuseSuspended(db, credential) !== null) {
     return "suspended";
   }
   const resolved = resolveAccountId(db, id);
@@ -914,12 +929,15 @@ export function accountByLookup(db: Db, username: string, domain: string | null,
   return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
 }
 
-// GET /api/v1/accounts/lookup: domain null means a local account.
+// GET /api/v1/accounts/lookup: domain null means a local account. credential: the token an anonymous route was sent
+// (AUTH-2), whose suspended owner is refused first; null for a public page.
 export const lookupAccount = readOperation<
-  { username: string; domain: string | null; present: Present },
-  Account | null
->((db, { username, domain, present }) =>
-  accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  { username: string; domain: string | null; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { username, domain, present, credential }) =>
+  unlessSuspended(db, credential, () =>
+    accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  ),
 );
 
 // source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
