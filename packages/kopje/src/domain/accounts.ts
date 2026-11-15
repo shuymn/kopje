@@ -134,6 +134,11 @@ export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-
 // Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
 export const MAX_ATTRIBUTION_DOMAINS = 100;
 
+// Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
+// name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
+export const MAX_DISPLAY_NAME = 40;
+export const MAX_NOTE = 500;
+
 export type Visibility = "public" | "unlisted" | "private" | "direct";
 
 export type CredentialAccount = Account & {
