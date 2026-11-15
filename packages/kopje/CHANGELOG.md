@@ -156,9 +156,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   languages, translation languages, privacy policy and terms of service), until the suspension's cleanup deletes the
   token. Any other token on those routes is still ignored; streaming still answers with 401. No Store migration and no
   `wrangler.jsonc` change.
+- Remote posts, bios and profile fields keep the `lang` attributes of their HTML, a heading's on the bold paragraph it
+  becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
+  post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
+  as one without does. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
+  and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
+  an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
 - WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
   subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
   before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.

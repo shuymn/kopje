@@ -2308,29 +2308,42 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the stored actor document and sanitized when presented, at most 16 fields): the same `sanitizeRemoteHtml`;
   `test/inbox-statuses.test.ts` ("sanitizes content by allowlist with http(s) links only", "shows PropertyValue fields
   with sanitized values").
+  As `MASTODON_STRICT` does (`mastodon#39114`), every kept element keeps its `lang`, any value, an empty one included,
+  and a heading's goes on the `strong` it becomes. The sanitizer writes it double-quoted and escaped, the `br` and
+  heading rewrites included; it has no bound of its own beyond the output's (RES-1, RES-2). _Enforced (main):_
+  `test/html.test.ts` ("keeps a hostile lang as one attribute of one %s", "keeps lang on every kept element"),
+  `test/inbox-statuses.test.ts` ("keeps it in a status’s content, a bio and a field value"), `test/web-pages.test.ts`
+  ("keeps the lang of stored HTML at the sink").
   The web UI sanitizes again at the sink: bios, status content and field values reach a page only as the sanitizer's
-  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. _Enforced (main):_ `test/web-pages.test.ts`
-  ("sanitizes stored HTML at the sink and drops non-http links"). Only `Rich` (`src/web/components/basics.tsx`) sets
-  `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`, only the doctype
-  (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never a string:
+  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. That pass cuts its input at
+  `STORED_HTML_LIMIT` (`src/security/html.ts`: 131,072 UTF-16 code units, the largest stored bound of status content,
+  bios and presented field values), not at the raw cap: sanitizing lengthens its input (`"` in an attribute value
+  becomes `&quot;`), and a cut inside an attribute would drop the element and everything after it.
+  _Enforced (main):_ `test/web-pages.test.ts` ("sanitizes stored HTML at the sink and drops non-http links", "shows
+  stored HTML that sanitizing lengthened past the raw cap"), `test/html.test.ts` ("keeps a stored value whose %s
+  sanitizing lengthened past the raw cap", "cuts at a bound that admits every stored value"). Only `Rich`
+  (`src/web/components/basics.tsx`) sets `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`,
+  only the doctype (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never
+  a string:
   _Enforced (main):_ `test-node/raw-html.test.ts`.
   Custom emoji in that HTML are added in the same pass (`sanitizedWithEmoji`): sanitize-html hands each run of text it
   keeps, already escaped, to a filter whose output it writes unescaped, and the filter keeps the text as given and adds
   only an image whose attributes it escapes, for a shortcode within `EMOJI_SHORTCODE` and a url that passes the
   stored bounds again at the sink; attribute values and dropped elements never reach it. In names, warnings, field
   names and poll choices, which are text, an emoji is an element hono/jsx escapes. _Enforced (main):_
-  `src/security/html.ts` (`sanitizeRemoteHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
+  `src/security/html.ts` (`sanitizeStoredHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
   each run of text escaped and writes what it returns unescaped", "are refused at the sink for a shortcode or url the
   stored bounds would refuse").
   The operator's documents (the extended description, the privacy policy and the terms of service) are stored as the
   admin wrote them or the cutover converted them and sanitized once per sink by `sanitizeDocumentHtml`, the same
-  allowlist with h2 to h4 kept as headings, without attributes ([mastodon-deviations.md](mastodon-deviations.md),
-  Instance and apps): in the Store for the API (`instanceDocument` in `src/domain/instance.ts`), at the page for the
-  web (`webDocument`, then `SafeHtml`). A link that is not absolute http(s) loses its href and stays as text (HTML-3).
-  At most 50,000 UTF-8 bytes each (RES-2, the instance's public settings), so the sanitizer's raw cap never cuts one,
-  however sanitizing lengthens it.
+  allowlist with h2 to h4 kept as headings, without attributes (`lang` included; the other elements keep it)
+  ([mastodon-deviations.md](mastodon-deviations.md), Instance and apps): in the Store for the API (`instanceDocument`
+  in `src/domain/instance.ts`), at the page for the web (`webDocument`, then `SafeHtml`). A link that is not absolute
+  http(s) loses its href and stays as text (HTML-3). At most 50,000 UTF-8 bytes each (RES-2, the instance's public
+  settings), so the sanitizer's raw cap never cuts one, however sanitizing lengthens it.
   _Enforced (main):_ `test/html.test.ts` (the vector suites through it too, "keeps headings as h2 to h4, without
-  attributes, under the page’s own h1"), `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
+  attributes, under the page’s own h1", "keeps lang on its other elements and none on its headings"),
+  `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
   pages show them", "serves the privacy policy sanitized", "keeps the end of a document that sanitizing lengthens past
   the raw cap"), `test/web-pages.test.ts` ("serve the privacy policy and
   the terms of service as stored, sanitized at the sink", "shows the extended description sanitized at the sink").
@@ -2789,7 +2802,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
   image metadata walk: `test/image-bytes.test.ts` ("walks a worst-case file at the upload bound"). Remote HTML:
-  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"). _Enforced (main)_ for JSON-LD
+  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"), and for stored HTML sanitized again
+  at the web sink, at `STORED_HTML_LIMIT` (HTML-1): `test/html.test.ts` ("at the stored cap within a generous time").
+  _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
