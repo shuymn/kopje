@@ -19,6 +19,7 @@ import {
   domainBlock,
   follow,
   getJson,
+  interactWith,
   mute,
   post,
   remoteAccount,
@@ -316,6 +317,67 @@ describe("update on public and hashtag streams", () => {
       ["hashtag #Cats", "status.update", status.id],
       ["hashtag:local #Cats", "status.update", status.id],
     ]);
+  });
+
+  // A departure (mastodon-deviations.md, feed streams): Mastodon renders these streams once with no viewer.
+  it("a feed carries the subscriber's own fields, as REST shows them", async () => {
+    const h = await community(["alice", "bob"]);
+    const status = await post(h, h.users.bob, {
+      status: "before #cats",
+      visibility: "public",
+      quote_approval_policy: "public",
+      poll: { options: ["yes", "no"], expires_in: 3600 },
+    });
+    const poll = (status as Status & { poll: { id: string } }).poll.id;
+    await interactWith(h, h.users.alice, status.id);
+    expect((await act(h, h.users.alice, `/api/v1/polls/${poll}/votes`, { choices: [1] })).status).toBe(200);
+    const filter = await h.request(
+      "/api/v2/filters",
+      bearer(
+        h.users.alice.token,
+        json({
+          title: "Later",
+          context: ["public"],
+          filter_action: "warn",
+          keywords_attributes: [{ keyword: "after" }],
+        }),
+      ),
+    );
+    expect(filter.status).toBe(200);
+    const inbox = await subscribed(h, h.users.alice.token, "public:local");
+    inbox.send({ type: "subscribe", stream: "hashtag", tag: "cats" });
+    await settled(h, inbox);
+    // The fan-out presents at the Store's clock, the API at NOW: the same instant, so the poll reads the same.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    try {
+      const edited = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(
+          h.users.bob.token,
+          json({ status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600 } }, { method: "PUT" }),
+        ),
+      );
+      expect(edited.status).toBe(200);
+      await drained(h, inbox);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(events(inbox)).toEqual([
+      ["public:local", "status.update", status.id],
+      ["hashtag cats", "status.update", status.id],
+    ]);
+    const rest = await getJson<Status>(h, `/api/v1/statuses/${status.id}`, h.users.alice.token);
+    expect(rest.body).toMatchObject({
+      favourited: true,
+      reblogged: true,
+      bookmarked: true,
+      poll: { voted: true, own_votes: [1] },
+      quote_approval: { current_user: "automatic" },
+      filtered: [{ filter: { title: "Later" }, keyword_matches: ["after"] }],
+    });
+    for (let i = 0; i < 2; i++) {
+      expect(JSON.parse((await inbox.next()).payload!)).toEqual(rest.body);
+    }
   });
 });
 
