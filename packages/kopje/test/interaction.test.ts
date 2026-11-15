@@ -6,6 +6,7 @@ import { INTERACTION_TARGET_BYTES, interactionTarget, SESSION_LIFETIME_MS } from
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { csrfToken } from "../src/web/session";
+import { STRINGS } from "../src/web/strings";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { countingStore, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
@@ -987,6 +988,19 @@ describe("POST /authorize_interaction (look-up)", () => {
     expect((await lookUp(t, browser, other)).html).toContain("the note");
     expect(await sql(t.store, "SELECT content, edited_at FROM statuses WHERE uri = ?", note.id)).toEqual([
       { content: "<p>the note</p>", edited_at: null },
+    ]);
+  });
+
+  // As search's: a 410 finds nothing (resolve_url_service.rb:44), and the stored status stays.
+  it("finds nothing for a stored status whose fetch answers 410, and keeps it", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    t.web.fail(note.id, 410);
+    expect((await lookUp(t, browser, note.id)).html).toContain(STRINGS.interact.notFoundTitle);
+    expect(await sql(t.store, "SELECT content FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the note</p>" },
     ]);
   });
 });

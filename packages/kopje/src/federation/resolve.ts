@@ -71,6 +71,7 @@ export type ResolverDeps = {
 export type Resolver = (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
 
 const NONE: Resolved = { kind: "none" };
+const GONE: Resolved = { kind: "none", gone: true };
 
 export function createResolver(deps: ResolverDeps): Resolver {
   return async (env, query, start) => {
@@ -313,13 +314,32 @@ async function resolveAddress(loaders: Resolving, username: string, domain: stri
 
 // A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
 // remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
-// probed: a 200 answer that is not ActivityPub is followed to the document its alternate names (alternateOf), and a
-// document is taken as ownDocument takes it.
+// probed (probeUrl). Nothing resolved after a 410, the last answer of the probe's fetches, is `gone`: the search then
+// answers no stored object (storeResolved), as Mastodon's process_url_from_db answers a stored status only after a 401,
+// 403 or 404 (resolve_url_service.rb:44), its response code the last fetch's (fetch_resource_service.rb:47).
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const stored = await loaders.stateOf(url);
   if (stored.revision !== null) {
     return resolveAccount(loaders, url, stored);
   }
+  const last = { gone: false };
+  const resolve: ResolveLoader = async (href, terminal) => {
+    try {
+      const answer = await loaders.resolve(href, terminal);
+      last.gone = false;
+      return answer;
+    } catch (error) {
+      last.gone = error instanceof FetchError && error.response?.status === 410;
+      throw error;
+    }
+  };
+  const resolved = await probeUrl({ ...loaders, resolve }, url);
+  return resolved.kind === "none" && last.gone ? GONE : resolved;
+}
+
+// A URL that names no stored actor, probed: a 200 answer that is not ActivityPub is followed to the document its
+// alternate names (alternateOf), and a document is taken as ownDocument takes it.
+async function probeUrl(loaders: Resolving, url: string): Promise<Resolved> {
   let document: unknown;
   try {
     const answer = await loaders.resolve(url, false);

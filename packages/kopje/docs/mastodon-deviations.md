@@ -714,6 +714,13 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
     to any origin; the alternates follow none, as Mastodon's.
+- With `resolve=true`, a URL whose fetches resolve nothing is answered with the stored status or account whose uri it
+  is, unless the last of them answered 410, after which nothing is answered (`src/federation/resolve.ts` resolveUrl);
+  nothing stored is removed. Mastodon answers a stored status only after a 401, 403 or 404 and a stored account only
+  after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
+  HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
+  other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
+  path (`:50-55`).
 
 Hashtags (the `Tag` entity):
 

@@ -200,7 +200,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Searching the URL of a remote post Kopje already holds, or looking it up on the interaction page, applies the
   version its server serves now as an edit, as Mastodon does: a newer version replaces the post and adds to its
   history, and a poll's counts are refreshed. As in Mastodon, a document served at another URL than its `id`, or
-  reached through a redirect, is taken only as its `id` serves it. No Store migration and no `wrangler.jsonc` change.
+  reached through a redirect, is taken only as its `id` serves it, and a post whose URL answers 410 is not shown (it
+  stays stored). No Store migration and no `wrangler.jsonc` change.
 - An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
   approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,

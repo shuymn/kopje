@@ -435,9 +435,10 @@ against their own instance. TLS is assumed between all parties.
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
   author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
   that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
-  not store is its `Create`, its document taken only from its `id` (ID-2); a 404 to such a fetch removes nothing
-  (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version of a stored status it finds
-  again")).
+  not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
+  nothing, and a 410 answers nothing, as Mastodon answers a stored status only after a 401, 403 or 404
+  (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version
+  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it")).
   A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`

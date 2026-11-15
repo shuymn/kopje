@@ -21,8 +21,9 @@ import { quoting } from "./quote-helpers";
 // A search with resolve=true of a remote status Kopje already stores (docs/threat-model.md ID-7, VIS-30): the fetched
 // document is applied as its author's Update (storeFetchedStatus in src/domain/remote-statuses.ts), as Mastodon
 // 4.7.5's ResolveURLService hands it to FetchRemoteStatusService, which turns a stored status's Create into an Update
-// (fetch_remote_status_service.rb:48), under the Update's version rules; a 404 keeps and answers the stored status
-// (resolve_url_service.rb:38-61). /authorize_interaction shares the path: test/interaction.test.ts.
+// (fetch_remote_status_service.rb:48), under the Update's version rules; a 404 keeps and answers the stored status, a
+// 410 keeps it and answers nothing (resolve_url_service.rb:38-61). /authorize_interaction shares the path:
+// test/interaction.test.ts.
 
 const at = (minutes: number) => new Date(Date.parse("2026-10-11T12:00:00Z") + minutes * 60_000).toISOString();
 
@@ -169,6 +170,17 @@ describe("search of a stored status applies the served document as an Update", (
     t.web.fail(note.id, 404);
     t.web.fetched.length = 0;
     expect((await search(t, note.id)).body.statuses).toMatchObject([{ id }]);
+    expect(t.web.fetched).toContain(note.id);
+    expect(await row(t, id)).toMatchObject({ content: note.content });
+  });
+
+  // A 410 answers nothing, as Mastodon's process_url_from_db answers a stored status only after a 401, 403 or 404
+  // (resolve_url_service.rb:44), and removes nothing (D8).
+  it("answers nothing for a stored status whose fetch answers 410, and keeps it", async () => {
+    const { t, note, id } = await stored();
+    t.web.fail(note.id, 410);
+    t.web.fetched.length = 0;
+    expect((await search(t, note.id)).body.statuses).toEqual([]);
     expect(t.web.fetched).toContain(note.id);
     expect(await row(t, id)).toMatchObject({ content: note.content });
   });

@@ -855,12 +855,13 @@ function updateMentions(
 
 // What the Worker fetched for a resolve query (federation/resolve.ts): an account, or a status with its author, each
 // fetched through the safe loader signed by the instance actor and parsed as inbound documents are. none: nothing was
-// fetched (a local URL, an unusable answer, a failed fetch); the query is then looked up by uri in stored data only.
-// revision: the actor's (the author's) as read before its document was fetched (remote-actors.ts DocumentRevision).
+// fetched (a local URL, an unusable answer, a failed fetch); the query is then looked up by uri in stored data only,
+// unless `gone`: the URL's last fetch answered 410. revision: the actor's (the author's) as read before its document was
+// fetched (remote-actors.ts DocumentRevision).
 export type Resolved =
   | { kind: "account"; actor: RemoteActorInput; revision: DocumentRevision }
   | { kind: "status"; status: RemoteStatusInput; author: RemoteActorInput; revision: DocumentRevision }
-  | { kind: "none" };
+  | { kind: "none"; gone?: true };
 
 // The queries resolve=true fetches (Mastodon's SearchService#url_query? and AccountSearchService's address forms): an
 // http(s) URL, or an address (parseAddress in platform/domain-name.ts: user@domain, @user@domain or acct:user@domain).
@@ -916,7 +917,8 @@ export type StoredResolution =
 // storeFetchedStatus, so one Kopje stores is applied as its author's Update (Mastodon's ResolveURLService hands the
 // fetched body to FetchRemoteStatusService, resolve_url_service.rb:28). With nothing fetched (a 404 included), the
 // query is looked up by uri in stored data and nothing is removed (process_url_from_db, :38-61); a stored status found
-// so arrives as a root, and its quote is verified as any root's.
+// so arrives as a root, and its quote is verified as any root's. After a 410 (`gone`) nothing is answered and nothing
+// is removed: Mastodon answers a stored status only after a 401, 403 or 404 (:44).
 export function storeResolved(
   db: Db,
   { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
@@ -946,6 +948,9 @@ export function storeResolved(
       };
     }
     case "none": {
+      if (resolved.gone === true) {
+        return { kind: "none" };
+      }
       const byUri = db.first<{ kind: string; id: string }>(
         `SELECT 'status' AS kind, id FROM statuses WHERE uri = ?1 AND reblog_of_id IS NULL
 				UNION ALL SELECT 'account', id FROM accounts WHERE uri = ?1
