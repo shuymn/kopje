@@ -1,7 +1,9 @@
 import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 
 // A bounded scan of a fetched HTML page (federation/web-page.ts, NET-3) for what Mastodon's link verification and link
-// cards read: rel=me links, <link> elements, <meta> properties, the first <title>, the root's lang and JSON-LD scripts.
+// cards read: rel=me links, <link> elements, <meta> properties, the first <title>, the root's lang and JSON-LD scripts;
+// and, as a collector of its own beside rel=me (scanAlternate), the alternate <link> search resolution follows
+// (federation/resolve.ts), which refuses the contexts below and also <template> and <table> (ALTERNATE_CONTEXTS).
 // It runs on workerd's HTMLRewriter (lol-html): a spec tokenizer with a tree-builder simulator that tracks namespaces,
 // foreign content and integration points, streaming natively. Facts it rests on are pinned by
 // test/html-rewriter-facts.test.ts: attribute values and text chunks come raw (references undecoded, CR kept), the
@@ -128,13 +130,18 @@ const TRANSCODED = new Set(["utf-16le", "utf-16be", "iso-2022-jp"]);
 const asciiLower = (value: string) => value.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
 
 // A raw attribute value or title text, normalized as the tokenizer would (CR and CRLF to LF, NUL to U+FFFD) and then
-// decoded once, or null past RAW_VALUE_CHARS or `cap` decoded units. An encoded &#13; stays a CR.
+// decoded once. An encoded &#13; stays a CR.
+function decodedWhole(raw: string, attribute: boolean): string {
+  const normalized = raw.replace(/\r\n?/g, "\n").replaceAll("\0", "�");
+  return attribute ? decodeHTMLAttribute(normalized) : decodeHTML(normalized);
+}
+
+// decodedWhole, or null past RAW_VALUE_CHARS raw or `cap` decoded units.
 function decoded(raw: string | null, cap: number, attribute: boolean): string | null {
   if (raw === null || raw.length > RAW_VALUE_CHARS) {
     return null;
   }
-  const normalized = raw.replace(/\r\n?/g, "\n").replaceAll("\0", "�");
-  const value = attribute ? decodeHTMLAttribute(normalized) : decodeHTML(normalized);
+  const value = decodedWhole(raw, attribute);
   return value.length > cap ? null : value;
 }
 
@@ -498,6 +505,32 @@ async function scanPaced(
       }),
     });
 
+  const bytes = await pump(rewriter, input, charset, signal, pause);
+  if ("failed" in bytes) {
+    return bytes;
+  }
+  if (broken) {
+    return { failed: "parser" };
+  }
+  if (hasFrameset(bytes)) {
+    scan.relMeWithFrameset = true;
+    scan.dropped.relMe += scan.relMe.length;
+    scan.outputUnits -= scan.relMe.reduce((sum, href) => sum + (href?.length ?? 0), 0);
+    scan.relMe = [];
+  }
+  return scan;
+}
+
+// Runs `rewriter` over `input` (from its BOM on) decoded as `charset.label`, in SCAN_CHUNK pieces: the bytes it read
+// (transcoded to UTF-8 for a label lol-html does not decode natively), or the scan's failure. An abort of `signal`
+// rejects with its reason.
+async function pump(
+  rewriter: HTMLRewriter,
+  input: Uint8Array,
+  charset: { label: string; bomLength: number },
+  signal: AbortSignal | undefined,
+  pause: ScanPause,
+): Promise<Uint8Array | ScanFailure> {
   const body = input.subarray(charset.bomLength);
   const native = !TRANSCODED.has(charset.label);
   const bytes = native ? body : new TextEncoder().encode(new TextDecoder(charset.label).decode(body));
@@ -519,14 +552,86 @@ async function scanPaced(
     return failureOf(error);
   }
   signal?.throwIfAborted();
+  return bytes;
+}
+
+// The start tags after which no alternate is taken (scanAlternate), and why: lol-html reads <noscript> as raw text
+// (a scripting-off parser makes elements of a head <noscript>'s <link>), does not model "in select" (which ignores a
+// <link>), <template> (whose content //link may or may not reach), table foster parenting (which moves a <link>
+// misplaced in a table before the table, so <table><tr><td><link A></td></tr><b><link B></b></table> streams A, B
+// where the tree's document order is B, A) or every foreign-content rule (an <svg> or <math> <link> is no HTML link).
+const ALTERNATE_CONTEXTS = ["noscript", "select", "template", "table", "svg", "math"] as const;
+
+// What ended an alternate search before a match: one of the start tags above, a <link> rel past RAW_VALUE_CHARS raw
+// or REL_CHARS decoded units, or the page's <frameset> bytes.
+type AlternateRefusal = (typeof ALTERNATE_CONTEXTS)[number] | "long-rel" | "frameset";
+
+// The page's alternate link for search resolution (federation/resolve.ts), as Mastodon's
+// FetchResourceService#process_html selects it (v4.7.5): the first <link> in document order whose rel holds the token
+// "alternate" among all its tokens (split on ASCII whitespace, ASCII-lowercased, as NokogiriHandler.link_rel_include
+// downcases them; the rel decoded up to REL_CHARS units) and whose decoded type equals one of `types` exactly (case and
+// whitespace kept). `link` is that match, its href decoded (null when it has none or one past RAW_VALUE_CHARS raw or
+// SCAN_LIMITS.valueChars decoded units, however short it decodes), or null. Only an element in the HTML namespace counts, and the first of duplicate attributes wins, as in an HTML5
+// tree. Where lol-html cannot place a <link> as Nokogiri's HTML5 tree does (scripting off), in presence or in order,
+// nothing is taken and `refused` names why: at or after the first ALTERNATE_CONTEXTS start tag (in any namespace), at
+// or after a <link> whose rel is past RAW_VALUE_CHARS raw or REL_CHARS decoded units, and on a page with <frameset> bytes; so Kopje may resolve nothing
+// where Mastodon resolves, never a different link. A match before any of them is taken. No link-count cap: the
+// caller's 1 MiB body and the rewriter's 3 MiB budget bound the scan, which fails whole as scanHtml does.
+export type AlternateScan = { link: { href: string | null } | null; refused: AlternateRefusal | null };
+
+export async function scanAlternate(
+  input: Uint8Array,
+  charset: { label: string; bomLength: number },
+  types: readonly string[],
+  signal?: AbortSignal,
+): Promise<AlternateScan | ScanFailure> {
+  signal?.throwIfAborted();
+  let link: AlternateScan["link"] = null;
+  let refused: AlternateRefusal | null = null;
+  let broken = false;
+  const handler = (handle: (element: Element) => void) => (element: Element) => {
+    if (broken || signal?.aborted || link !== null || refused !== null) {
+      return;
+    }
+    try {
+      handle(element);
+    } catch {
+      broken = true;
+    }
+  };
+  const rewriter = new HTMLRewriter();
+  for (const context of ALTERNATE_CONTEXTS) {
+    rewriter.on(context, { element: handler(() => (refused = context)) });
+  }
+  rewriter.on("link", {
+    element: handler((element) => {
+      if (element.namespaceURI !== XHTML) {
+        return;
+      }
+      const raw = element.getAttribute("rel");
+      const rel = decoded(raw, REL_CHARS, true);
+      if (raw !== null && rel === null) {
+        refused = "long-rel";
+        return;
+      }
+      const type = element.getAttribute("type");
+      if (
+        rel?.split(REL_SEPARATOR).some((token) => asciiLower(token) === "alternate") === true &&
+        type !== null &&
+        // Decoded whole, whatever its length: a reference never decodes to more units than it spans, but a long raw
+        // value (leading zeros in a numeric reference) can decode to one of `types`.
+        types.includes(decodedWhole(type, true))
+      ) {
+        link = { href: decoded(element.getAttribute("href"), SCAN_LIMITS.valueChars, true) };
+      }
+    }),
+  });
+  const bytes = await pump(rewriter, input, charset, signal, nextTurn);
+  if ("failed" in bytes) {
+    return bytes;
+  }
   if (broken) {
     return { failed: "parser" };
   }
-  if (hasFrameset(bytes)) {
-    scan.relMeWithFrameset = true;
-    scan.dropped.relMe += scan.relMe.length;
-    scan.outputUnits -= scan.relMe.reduce((sum, href) => sum + (href?.length ?? 0), 0);
-    scan.relMe = [];
-  }
-  return scan;
+  return hasFrameset(bytes) ? { link: null, refused: "frameset" } : { link, refused };
 }

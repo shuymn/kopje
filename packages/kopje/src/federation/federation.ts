@@ -52,12 +52,14 @@ import { createKeyring, type KeyOwner, requestSigner, type Signer } from "../sec
 import { DoKvStore } from "./kv-store";
 import {
   createContextLoader,
+  createResolveLoader,
   createSafeLoader,
   createWebFingerLoader,
   type DocumentCaps,
   type FetchBudget,
   type LoaderDeps,
   RefusedFetchError,
+  type ResolveAnswer,
   type Signing,
   requireObjectRoot,
 } from "./loader";
@@ -236,13 +238,17 @@ export type RemoteLoaders = {
   offerSigner: (signer: FetchSigner) => void;
 };
 
+// Search resolution's requests (loader.ts createResolveLoader) on the loaders' signer and budget, unmemoized, a
+// document held to the JSON bounds as `document`'s are.
+export type ResolveLoader = (url: string, terminal: boolean) => Promise<ResolveAnswer>;
+
 export function createRemoteLoaders(
   deps: FederationDeps,
   state: FederationState,
   recipient: string | FollowerSigner | null,
   budget: FetchBudget,
   prefetched: FetchSigner | null = null,
-): RemoteLoaders {
+): RemoteLoaders & { resolve: ResolveLoader } {
   const parts = federationParts(deps, state);
   const loaderDeps = { ...parts.loaderDeps, budget };
   let offered = prefetched;
@@ -267,6 +273,10 @@ export function createRemoteLoaders(
     context: boundedContexts(loaderDeps, parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
+    resolve: async (url, terminal) => {
+      const answer = await createResolveLoader(loaderDeps, await signer())(url, terminal);
+      return answer.kind === "document" ? { kind: "document", remote: withinBounds(answer.remote) } : answer;
+    },
     offerSigner: (chosen) => {
       if (resolved === undefined) {
         offered = chosen;

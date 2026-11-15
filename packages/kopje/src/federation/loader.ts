@@ -10,6 +10,7 @@ import {
 import { readBoundedBody } from "../platform/body";
 import { hostDomain } from "../platform/domain-name";
 import { errorMessage } from "../platform/error-message";
+import { type HtmlBody, readHtmlBody } from "../platform/html-body";
 import { publicShapeRefusal } from "../platform/http-url";
 import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platform/media-type";
 import { readableKeys } from "./key-entries";
@@ -34,6 +35,8 @@ import { readableKeys } from "./key-entries";
 //     "Outbound HTTP signatures"); here each hop stays one this loop has checked. The retry passes the same checks as
 //     any request (shape, policy, DNS) and is charged to the same budget, inside the same load's timeout; the first
 //     answer's body is cancelled unread, and the second is read as any response
+//   - search resolution's loader (createResolveLoader) sends Mastodon's FetchResourceService Accept and hands back a
+//     200 answer of another type unread (OtherAnswer), its HTML body read only on demand, within the same rules
 export const DOCUMENT_BODY_LIMIT = 1024 * 1024;
 export const DOCUMENT_TIMEOUT_MS = 5000;
 export const MAX_REDIRECTS = 5;
@@ -56,6 +59,12 @@ const DOCUMENT: Kind = {
   objectRoot: true,
   keyEntries: true,
 };
+
+// Search resolution's first request and an alternate's (federation/resolve.ts): Mastodon's
+// FetchResourceService::ACCEPT_HEADER (v4.7.5), HTML at a low weight; documents are taken as DOCUMENT takes them.
+export const RESOLVE_ACCEPT =
+  'application/ld+json; profile="https://www.w3.org/ns/activitystreams", application/activity+json, text/html;q=0.1';
+const RESOLVE: Kind = { ...DOCUMENT, accept: RESOLVE_ACCEPT };
 
 const CONTEXT_TYPES = new Set(["application/ld+json", "application/json", "application/activity+json"]);
 const CONTEXT: Kind = {
@@ -84,6 +93,10 @@ export class RefusedFetchError extends FetchError {}
 // A document refused only by a caller's tighter caps (DocumentCaps): what it holds is unknown, not refused by the rules
 // above, and fetching it again under the same caps would not help.
 export class CappedFetchError extends RefusedFetchError {}
+
+// A 2xx answer read within the rules whose body is no usable document: not JSON, a root that is not an object (ID-8),
+// or an id on another origin (ID-2). Search resolution tells it from the refusals above (federation/resolve.ts).
+export class UnusableDocumentError extends RefusedFetchError {}
 
 // A timeout or a network failure: fetching again may succeed.
 export class TransientFetchError extends FetchError {}
@@ -176,7 +189,7 @@ export function requireObjectRoot(loader: DocumentLoader): DocumentLoader {
 function assertObjectRoot(remote: RemoteDocument): RemoteDocument {
   const { document } = remote;
   if (typeof document !== "object" || document === null || Array.isArray(document)) {
-    throw new RefusedFetchError(remote.documentUrl, "Document root is not a JSON object");
+    throw new UnusableDocumentError(remote.documentUrl, "Document root is not a JSON object");
   }
   return remote;
 }
@@ -192,7 +205,6 @@ export function createWebFingerLoader(deps: LoaderDeps): DocumentLoader {
 }
 
 function createLoader(deps: LoaderDeps, kind: Kind, signing?: Signing): DocumentLoader {
-  const timeoutMs = deps.timeoutMs ?? DOCUMENT_TIMEOUT_MS;
   return async (url, options) => {
     // A signal aborted before the call never fires 'abort' again, so it is checked up front.
     options?.signal?.throwIfAborted();
@@ -200,35 +212,61 @@ function createLoader(deps: LoaderDeps, kind: Kind, signing?: Signing): Document
       return { contextUrl: null, document: preloadedContexts[url], documentUrl: url };
     }
     const target = new URL(url);
-    const left = deps.budget === undefined ? timeoutMs : deps.budget.deadline - Date.now();
-    if (left <= 0) {
-      throw new BudgetExceededError(target, "Request fetch deadline exhausted");
-    }
-    const limit = Math.min(timeoutMs, left);
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(new TransientFetchError(target, `Timed out after ${limit} ms`)),
-      limit,
+    const cap = deps.documentBytes ?? DOCUMENT_BODY_LIMIT;
+    return withinDeadline(deps, target, options?.signal, (signal) =>
+      load(deps, kind, signing, target, signal, (response, final) =>
+        readDocument(response, kind, final, target, deps.budget, cap),
+      ),
     );
-    const onAbort = () => controller.abort(options?.signal?.reason);
-    options?.signal?.addEventListener("abort", onAbort, { once: true });
-    const aborted = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener("abort", () => reject(controller.signal.reason as Error), { once: true });
-    });
-    const loading = load(deps, kind, signing, target, controller.signal);
-    // After a timeout the abandoned load may still reject; that rejection is not this call's result.
-    loading.catch(() => {});
-    try {
-      // The race makes the deadline hold even if a fetch or a body read ignores the signal.
-      return await Promise.race([loading, aborted]);
-    } finally {
-      clearTimeout(timer);
-      options?.signal?.removeEventListener("abort", onAbort);
-    }
   };
 }
 
-async function load(deps: LoaderDeps, kind: Kind, signing: Signing | undefined, target: URL, signal: AbortSignal) {
+// `run` under the load's timeout and the request's deadline, given up at either or at an abort of `outer`.
+async function withinDeadline<T>(
+  deps: LoaderDeps,
+  target: URL,
+  outer: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeoutMs = deps.timeoutMs ?? DOCUMENT_TIMEOUT_MS;
+  const left = deps.budget === undefined ? timeoutMs : deps.budget.deadline - Date.now();
+  if (left <= 0) {
+    throw new BudgetExceededError(target, "Request fetch deadline exhausted");
+  }
+  const limit = Math.min(timeoutMs, left);
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new TransientFetchError(target, `Timed out after ${limit} ms`)),
+    limit,
+  );
+  const onAbort = () => controller.abort(outer?.reason);
+  outer?.addEventListener("abort", onAbort, { once: true });
+  const aborted = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener("abort", () => reject(controller.signal.reason as Error), { once: true });
+  });
+  const running = run(controller.signal);
+  // After a timeout the abandoned run may still reject; that rejection is not this call's result.
+  running.catch(() => {});
+  try {
+    // The race makes the deadline hold even if a fetch or a body read ignores the signal.
+    return await Promise.race([running, aborted]);
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", onAbort);
+  }
+}
+
+// The hops of one load from `target`, the last answer handed to `read`; `follow` false hands a redirect over as any
+// answer.
+async function load<T>(
+  deps: LoaderDeps,
+  kind: Kind,
+  signing: Signing | undefined,
+  target: URL,
+  signal: AbortSignal,
+  read: (response: Response, final: URL) => Promise<T>,
+  follow = true,
+): Promise<T> {
   let current = target;
   for (let redirects = 0; ; redirects++) {
     let response = await send(deps, kind, current, signing?.sign, signal);
@@ -236,7 +274,7 @@ async function load(deps: LoaderDeps, kind: Kind, signing: Signing | undefined, 
       await response.body?.cancel();
       response = await send(deps, kind, current, signing.retry, signal);
     }
-    if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
+    if (follow && response.status >= 300 && response.status < 400 && response.headers.has("location")) {
       await response.body?.cancel();
       const next = new URL(response.headers.get("location") ?? "", current);
       if (next.origin !== target.origin) {
@@ -251,9 +289,112 @@ async function load(deps: LoaderDeps, kind: Kind, signing: Signing | undefined, 
       current = next;
       continue;
     }
-    const final = response.url === "" ? current : new URL(response.url);
-    return readDocument(response, kind, final, target, deps.budget, deps.documentBytes ?? DOCUMENT_BODY_LIMIT);
+    return read(response, response.url === "" ? current : new URL(response.url));
   }
+}
+
+// What search resolution's request answered (federation/resolve.ts): an ActivityPub document, read as the document
+// loader reads one, or a 200 answer of any other type (OtherAnswer).
+export type ResolveAnswer = { kind: "document"; remote: RemoteDocument } | OtherAnswer;
+
+// A 200 answer that is not an ActivityPub document, its body unread: its Link header as the runtime joins its fields
+// (null without one), and `page`, for a text/html answer (its media type's essence: parameters stripped, ASCII
+// lowercase), which reads the body whole (readPage). `discard` cancels the body unread; it is a no-op once read.
+export type OtherAnswer = {
+  kind: "other";
+  link: string | null;
+  page: (() => Promise<HtmlBody>) | null;
+  discard: () => void;
+};
+
+// Search resolution's loader: the document loader's rules under RESOLVE_ACCEPT, as Mastodon's FetchResourceService
+// requests (v4.7.5). The first request (`terminal` false) follows redirects as any document fetch (same origin, at most
+// MAX_REDIRECTS) and hands back a 200 answer of another type unread; a terminal one, an alternate's, follows none and
+// takes only a 200 answer (Mastodon's `follow: false` and `response.code != 200`): any other status, a redirect's
+// included, is refused with that status.
+export function createResolveLoader(
+  deps: LoaderDeps,
+  signing?: Signing,
+): (url: string, terminal: boolean) => Promise<ResolveAnswer> {
+  const cap = deps.documentBytes ?? DOCUMENT_BODY_LIMIT;
+  return (url, terminal) => {
+    const target = new URL(url);
+    const read = async (response: Response, final: URL): Promise<ResolveAnswer> => {
+      if (terminal && response.status !== 200) {
+        await response.body?.cancel();
+        throw statusError(response, final);
+      }
+      if (final.origin === target.origin && response.status === 200) {
+        const media = parseMediaType(response.headers.get("content-type") ?? "");
+        if (media === null || !isActivityPubMediaType(media)) {
+          return otherAnswer(response, media, final, deps);
+        }
+      }
+      return { kind: "document", remote: await readDocument(response, RESOLVE, final, target, deps.budget, cap) };
+    };
+    return withinDeadline(deps, target, undefined, (signal) =>
+      load(deps, RESOLVE, signing, target, signal, read, !terminal),
+    );
+  };
+}
+
+function otherAnswer(response: Response, media: MediaType | null, final: URL, deps: LoaderDeps): OtherAnswer {
+  return {
+    kind: "other",
+    link: response.headers.get("link"),
+    page: media?.essence === "text/html" ? () => readPage(response, media, final, deps) : null,
+    discard: () => {
+      response.body?.cancel().catch(() => {});
+    },
+  };
+}
+
+// The body of a text/html answer, read whole as Mastodon's body_with_limit reads it: refused past DOCUMENT_BODY_LIMIT
+// by its Content-Length before any byte is read or as it is read, and past the request's bytes (RES-6), which it is
+// charged to; decoded and its charset chosen as the web-page sink does (platform/html-body.ts readHtmlBody: an encoding
+// workerd does not decode is refused); within a timeout of its own (the load's) and the request's deadline.
+async function readPage(response: Response, media: MediaType, final: URL, deps: LoaderDeps): Promise<HtmlBody> {
+  const limit = Math.min(DOCUMENT_BODY_LIMIT, deps.budget?.bytes ?? DOCUMENT_BODY_LIMIT);
+  const tooLarge = () =>
+    limit < DOCUMENT_BODY_LIMIT
+      ? new BudgetExceededError(final, `Request byte budget exhausted (${limit} bytes left)`)
+      : new RefusedFetchError(final, `Document exceeds ${limit} bytes`);
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  const html = await withinDeadline(deps, final, undefined, (signal) => {
+    const stopped = new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+    });
+    stopped.catch(() => {});
+    return readHtmlBody(response, media, limit, (read) => Promise.race([read, stopped]));
+  });
+  if (html === "encoding") {
+    await response.body?.cancel();
+    throw new RefusedFetchError(
+      final,
+      `Undecoded content encoding: ${response.headers.get("content-encoding") ?? "none"}`,
+    );
+  }
+  if (html.limitReached) {
+    throw tooLarge();
+  }
+  if (deps.budget !== undefined) {
+    deps.budget.bytes -= html.bytes.byteLength;
+  }
+  return html;
+}
+
+// A status the caller does not take (non-ok, or a terminal resolve request's 2xx other than 200), as Fedify reads one:
+// the status and headers kept, not the body.
+function statusError(response: Response, final: URL): FetchError {
+  return new FetchError(
+    final,
+    `HTTP ${response.status}: ${final.href}`,
+    new Response(null, { status: response.status, headers: response.headers }),
+  );
 }
 
 // One request to `current`. The policy is asked before every request, a redirect's and a retry's included, and no
@@ -305,14 +446,7 @@ async function readDocument(
   if (!response.ok) {
     await response.body?.cancel();
     // Keep the status for Fedify (it treats 404 and 410 differently from transient failures), not the body.
-    throw new FetchError(
-      final,
-      `HTTP ${response.status}: ${final.href}`,
-      new Response(null, {
-        status: response.status,
-        headers: response.headers,
-      }),
-    );
+    throw statusError(response, final);
   }
   const media = parseMediaType(response.headers.get("content-type") ?? "");
   if (media === null || !kind.accepts(media)) {
@@ -333,8 +467,9 @@ async function readDocument(
     budget.bytes -= body.byteLength;
   }
   // Fedify parses the bounded bytes, so a JSON-LD context given in a Link header is applied as Fedify applies it.
-  // Alternate-document links are not followed: only JSON types reach this point. Fedify compares the Content-Type
-  // case-sensitively, so it is given the parsed essence.
+  // Fedify's alternate-document links are not followed: only JSON types reach this point (search resolution follows
+  // Mastodon's alternates itself, federation/resolve.ts). Fedify compares the Content-Type case-sensitively, so it is
+  // given the parsed essence.
   const headers = new Headers(response.headers);
   headers.set("content-type", media.essence);
   let remote: RemoteDocument;
@@ -343,7 +478,7 @@ async function readDocument(
       Promise.reject(new RefusedFetchError(final, "Refused alternate document link")),
     );
   } catch (error) {
-    throw error instanceof FetchError ? error : new RefusedFetchError(final, "Document is not valid JSON");
+    throw error instanceof FetchError ? error : new UnusableDocumentError(final, "Document is not valid JSON");
   }
   // A cheap pre-filter only: it sees the literal id and @id, not a JSON-LD alias of @id. The identity that counts is
   // the parsed object's id, which Fedify's consumers compare with this documentUrl (fetchKey for signature keys,
@@ -351,7 +486,7 @@ async function readDocument(
   // itself must make the same check.
   const id = documentId(remote.document);
   if (id !== undefined && originOf(id) !== final.origin) {
-    throw new RefusedFetchError(final, `Document id ${id} is not on ${final.origin}`);
+    throw new UnusableDocumentError(final, `Document id ${id} is not on ${final.origin}`);
   }
   // ID-1: a document's key entries as Mastodon 4.7 reads them (key-entries.ts readableKeys). A context given in a Link
   // header applies before the document's own, so the document's alone does not establish what its terms mean.

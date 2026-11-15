@@ -1,5 +1,7 @@
 import type { RouterRoute } from "hono/types";
 
+import { stripEnds } from "../platform/strip";
+
 // Content negotiation between the web pages and the documents served at the same paths, and between app.ts's error
 // pages and the API's error answers.
 
@@ -51,7 +53,7 @@ const PARAMETER = new RegExp(`^(${TOKEN})=(${TOKEN}|${QUOTED})$`);
 
 // HTTP's optional whitespace (RFC 9110 §5.6.3): spaces and tabs only, never other Unicode whitespace.
 function trimOws(text: string): string {
-  return text.replace(/^[ \t]+|[ \t]+$/g, "");
+  return stripEnds(text, " \t");
 }
 
 // A parameter's value: a token as written, or a quoted-string's content unescaped.

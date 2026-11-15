@@ -10,6 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
+  `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
+- A local post's ActivityPub Note lists its link card as a `Link` attachment once the card is fetched, as Mastodon 4.7
+  does. No Store migration and no `wrangler.jsonc` change.
 - Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
   year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
   `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in
@@ -247,6 +253,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   language-tagged value, or from `name` when `summary` is blank, and stripped as Mastodon strips it, as Mastodon 4.7
   does (`mastodon#39590`). A post whose attachments now read differently counts its next update as an edit once. No
   Store migration and no `wrangler.jsonc` change.
+- Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
+  linear time on long input. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

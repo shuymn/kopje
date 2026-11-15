@@ -276,6 +276,8 @@ const RULES: readonly Rule[] = [
     name: "reads or writes status_cards",
     pattern: readsOrWrites("status_cards"),
     allowed: {
+      "src/domain/activities.ts":
+        "reads only: a local status's attached card by its key for its Note's Link, shown by status-presenter.ts shownCardUrl (public or unlisted only)",
       "src/domain/card-images.ts":
         "a recorded card's image link (recordCard, under its fence) and the image GC's reference check; no card is fetched or shown",
       "src/domain/link-cards.ts": "the enqueue, the claim and the record, under cardEligibleSql",
@@ -289,7 +291,7 @@ const RULES: readonly Rule[] = [
   },
   {
     // R43: status_cards.public is set from the status by the card's writers only, so the readers (trends.ts,
-    // timelines.ts, status-rows.ts) never write it.
+    // timelines.ts, status-rows.ts, activities.ts) never write it.
     name: "writes status_cards",
     pattern: new RegExp(`\\b(?:INTO|UPDATE|DELETE\\s+FROM)\\s+${table(["status_cards"])}`, "i"),
     allowed: {

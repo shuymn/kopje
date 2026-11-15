@@ -958,24 +958,35 @@ const CARD_TYPE_NAMES = {
   [CARD_TYPES.video]: "video",
 } as const;
 
-// A status's card as presented (not a quoted status's: see CARD_JSON_MAX): none on a status that is not public or
-// unlisted, without a URL, or whose title is blank; each text and URL judged as decoded (presentedCardText,
-// presentedCardUrl), an optional URL refused shown as '', a language outside Mastodon's locales and a time not
-// in the ISO form as null. Its type and dimensions as read (link and 0 past their bounds); a video's iframe from its
-// src as decoded (presentedEmbedSrc), else a link without html. Viewer-independent.
+// The URL of a status's attached card where it is shown (R43, VIS-32): on a public or unlisted status, its URL as
+// presented (presentedCardUrl) when its title is not blank as decoded; else null. presentCard and the Note's Link
+// (activities.ts statusFacts) share it, so a Note lists a card only where the API shows one.
+export function shownCardUrl(visibility: Visibility, url: unknown, title: unknown): string | null {
+  if (visibility !== "public" && visibility !== "unlisted") {
+    return null;
+  }
+  const shown = presentedCardUrl(url);
+  return shown === null || railsBlank(presentedCardText(title, CARD_TEXTS.title)) ? null : shown;
+}
+
+// A status's card as presented (not a quoted status's: see CARD_JSON_MAX): none where shownCardUrl gives no URL;
+// each text and URL judged as decoded (presentedCardText, presentedCardUrl), an optional URL refused shown as '', a
+// language outside Mastodon's locales and a time not in the ISO form as null. Its type and dimensions as read (link
+// and 0 past their bounds); a video's iframe from its src as decoded (presentedEmbedSrc), else a link without html.
+// Viewer-independent.
 export function presentCard(
   row: Pick<StatusRow, "visibility">,
   card: CardRow | undefined,
   origin: string,
 ): PreviewCard | null {
-  if (card === undefined || (row.visibility !== "public" && row.visibility !== "unlisted")) {
+  if (card === undefined) {
     return null;
   }
-  const url = presentedCardUrl(card.url);
+  const url = shownCardUrl(row.visibility, card.url, card.title);
+  if (url === null) {
+    return null;
+  }
   const title = presentedCardText(card.title, CARD_TEXTS.title);
-  if (url === null || railsBlank(title)) {
-    return null;
-  }
   const authorName = presentedCardText(card.author_name, CARD_TEXTS.author_name);
   const authorUrl = presentedCardUrl(card.author_url, CARD_OPTIONAL_URL_LIMIT) ?? "";
   const stored = CARD_TYPE_NAMES[card.card_type as keyof typeof CARD_TYPE_NAMES] ?? "link";
