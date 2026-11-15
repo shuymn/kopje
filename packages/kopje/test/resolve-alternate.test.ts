@@ -17,7 +17,7 @@ import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, completeSetup, migratedStore } from "./helpers";
 import { AP, MASTODON, mastodonActor, RemoteWeb } from "./inbox-helpers";
-import { ALICE, AS, mastodonNote, type Note, token } from "./inbox-status-helpers";
+import { ALICE, AS, mastodonNote, token } from "./inbox-status-helpers";
 import { attr, parseHtml, query } from "./web-dom";
 import { postForm, signIn } from "./web-helpers";
 
@@ -101,11 +101,9 @@ async function world(loaderExtra: { timeoutMs?: number } = {}) {
   const h = harness(counting.stub, {}, undefined, { keygen: fixtureKeyGen, loader }, () => NOW);
   const bearer = await token(store, ALICE);
   const bob = await mastodonActor(web, "bob");
-  const notes: Note[] = [];
   const note = (extra: Record<string, unknown> = {}) => {
     const made = mastodonNote(bob, extra);
     web.serve(made.id, { "@context": AS, ...made });
-    notes.push(made);
     return made;
   };
   const search = async (q: string) => {

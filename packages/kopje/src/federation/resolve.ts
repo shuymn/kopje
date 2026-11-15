@@ -318,10 +318,6 @@ const ACTIVITYSTREAMS = "https://www.w3.org/ns/activitystreams";
 // Create's supported and converted types and FeaturedCollection, which Kopje does not resolve).
 const TAKEN_TYPES = [...ACTOR_TYPES, ...STATUS_TYPES, ...CONVERTED_TYPES, "FeaturedCollection"];
 
-// Mastodon's nil answer of an alternate (process_response returns nil, so process_link_headers' nil falls back to the
-// page's alternate), as opposed to the failures it raises, which end the resolution with nothing.
-const NIL = Symbol("nil");
-
 // The document a 200 answer that is not ActivityPub names, as FetchResourceService#process_response follows it
 // (v4.7.5): `process_link_headers(response) || process_html(response)`. The Link header's alternate (headerAlternate)
 // first; when it ends in a nil answer, the page's (a text/html answer's first matching <link>, scanAlternate), whose
@@ -334,7 +330,7 @@ async function alternateOf(loaders: Resolving, answer: OtherAnswer): Promise<obj
     const header = headerAlternate(answer.link);
     if (header !== null) {
       const fetched = await fetchAlternate(loaders, header);
-      if (fetched !== NIL) {
+      if (fetched !== undefined) {
         return fetched;
       }
     }
@@ -347,8 +343,7 @@ async function alternateOf(loaders: Resolving, answer: OtherAnswer): Promise<obj
     if (href === null) {
       return undefined;
     }
-    const fetched = await fetchAlternate(loaders, href);
-    return fetched === NIL ? undefined : fetched;
+    return await fetchAlternate(loaders, href);
   } finally {
     answer.discard();
   }
@@ -380,32 +375,35 @@ function deadlineSignal(budget: FetchBudget): AbortSignal {
 // One alternate, fetched as Mastodon's process(href, terminal: true): the loader's rules (NET-1, ID-2, the domain
 // policy, the request's budget), Mastodon's Accept, no redirect, a 200 answer only. Its document when it is
 // ActivityPub, of a context and type Mastodon takes, and its id is the href literally and the URL fetched (Mastodon's
-// `json['id'] != @url || json['id'] != response.uri.to_s`); NIL for Mastodon's nil answers (another status, a redirect,
-// another type, a body that is not a usable document, another context, type or id); a raised failure throws, an href
+// `json['id'] != @url || json['id'] != response.uri.to_s`); undefined for Mastodon's nil answers (another status, a
+// redirect, another type, a body that is not a usable document, another context, type or id), on which a header
+// alternate falls back to the page's as process_link_headers' nil does; a raised failure throws, an href
 // that is not an absolute https URL included (the loader refuses it before any request, NET-1). No second hop, and a
 // 410 is a nil answer: nothing is deleted or started.
-async function fetchAlternate(loaders: Resolving, href: string): Promise<object | typeof NIL> {
+async function fetchAlternate(loaders: Resolving, href: string): Promise<object | undefined> {
   let answer: ResolveAnswer;
   try {
     answer = await loaders.resolve(href, true);
   } catch (error) {
     if (isNilAnswer(error)) {
-      return NIL;
+      return undefined;
     }
     throw error;
   }
   if (answer.kind === "other") {
     answer.discard();
-    return NIL;
+    return undefined;
   }
   const { document, documentUrl } = answer.remote;
   if (typeof document !== "object" || document === null) {
-    return NIL;
+    return undefined;
   }
   const record = document as { "@context"?: unknown; type?: unknown; id?: unknown };
   const context = record["@context"];
   const supported = Array.isArray(context) ? context.includes(ACTIVITYSTREAMS) : context === ACTIVITYSTREAMS;
-  return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href ? document : NIL;
+  return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href
+    ? document
+    : undefined;
 }
 
 // Whether a failed alternate fetch is one of Mastodon's nil answers rather than a raised failure: a status other than
