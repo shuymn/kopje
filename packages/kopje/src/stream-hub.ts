@@ -1,6 +1,5 @@
-import { noteActivity } from "./domain/auth";
 import { compareIntegers, isIntegerText } from "./domain/ids";
-import { keepInstanceActivity } from "./domain/instance-activity";
+import { keepInstanceActivity, noteActivity } from "./domain/instance-activity";
 import { JOURNAL_SPAN } from "./domain/stream-journal";
 import {
   CONVERSATIONS_PER_TURN,
@@ -166,8 +165,8 @@ export class StreamHub {
     return Promise.resolve(new Response(null, { status: 404 }));
   }
 
-  // After a write commits: a turn, if a socket is open and the write was not the hub's own, an activity stamp
-  // (auth.ts noteActivity) or the instance activity's kept answer (instance-activity.ts), which no stream shows.
+  // After a write commits: a turn, if a socket is open and the write was not the hub's own, an activity stamp or the
+  // instance activity's kept answer (both instance-activity.ts), which no stream shows.
   written(operation: StoreOperation<never, unknown>): void {
     if (
       !STREAM_OPERATIONS.has(operation) &&

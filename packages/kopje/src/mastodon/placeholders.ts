@@ -98,7 +98,9 @@ export const emailSubscription: ApiHandler = async (c, deps) => {
 // An empty list, for an account that exists.
 const emptyAccountList: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
-  const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
+  const account = authorized(
+    await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c), credential: null })),
+  );
   return account === null ? recordNotFound() : c.json([]);
 };
 

@@ -4,7 +4,6 @@ import type { StoreClock, StoreOperation, TimedOperation } from "../platform/sto
 import { grantsAny, type RequiredScope } from "../security/scopes";
 import { adminAccountId, adminAccountIdOnce } from "./admin-authority";
 import type { ViewerContext } from "./audience";
-import { recordLogin } from "./instance-activity";
 import { mediaDeleteOperation, readOperation, sessionOperation, writeOperation } from "./operation";
 
 // Token validation for API requests, in the same RPC as the operation. A protected
@@ -210,27 +209,29 @@ export const checkCredential = readOperation<Credential, Authorized<Viewer>>((db
   return auth.status === "ok" ? { status: "ok", value: auth.viewer } : auth;
 });
 
-// RES-6: records the UTC day of a user's authenticated API or web request (local_accounts.active_on, migration
-// 0059_contact_and_activity), as Mastodon's UserTrackingConcern records a sign-in, for the instance's
-// usage.users.active_month (instance.ts). A session operation, admitted while the Store is readonly. The day only
-// moves forward and an equal or later stamp writes nothing, so an account's row is written at most once per UTC day
-// whichever token or isolate asks, and a delayed request of an earlier day never moves it back. An invalid, expired
-// or stale token, a suspended account and an app token write nothing. Both seeks are by key (the token, then the
-// account). The same request records the day's login for GET /api/v1/instance/activity (instance-activity.ts
-// recordLogin, one key insert, nothing when the day is recorded), whether or not active_on moved. No stream turn
-// follows it (StreamHub#written skips it).
-export const noteActivity = sessionOperation<{ tokenHash: string; now: number }, void>((db, { tokenHash, now }) => {
-  const auth = authorize(db, { tokenHash, scope: null, now });
-  if (auth.status !== "ok" || auth.viewer.accountId === null) {
-    return;
-  }
-  db.run(
-    "UPDATE local_accounts SET active_on = ?1 WHERE account_id = ?2 AND (active_on IS NULL OR active_on < ?1)",
-    new Date(now).toISOString().slice(0, 10),
-    auth.viewer.accountId,
-  );
-  recordLogin(db, auth.viewer.accountId, now);
-});
+export type Suspended = { status: "suspended" };
+
+// The answer of an operation of an anonymous route (mastodon/access.ts) that judges the token's owner.
+export type Judged<O> = Suspended | { status: "ok"; value: O };
+
+// AUTH-2's anonymous routes, as Mastodon's Api::BaseController#require_not_suspended! on a route that needs no token:
+// a token sent whose row the Store holds and whose owner is suspended is refused, expired or of an earlier epoch alike
+// (authorize's order, AUTH-1); any other token, an unknown, expired or app token included, changes nothing. An
+// operation that can write calls it first, in the transaction of its writes.
+export function refuseSuspended(db: Db, credential: Credential | null): Suspended | null {
+  return credential !== null && authorize(db, credential).status === "suspended" ? { status: "suspended" } : null;
+}
+
+// An anonymous route's read in its operation: the suspended owner's refusal, else what `read` reads, run after the
+// judgment in the same transaction.
+export function unlessSuspended<O>(db: Db, credential: Credential | null, read: () => O): Judged<O> {
+  return refuseSuspended(db, credential) ?? { status: "ok", value: read() };
+}
+
+// The judgment of an anonymous route's answer that no operation judged (the access middleware's after-check).
+export const checkNotSuspended = readOperation<Credential, Suspended | { status: "ok" }>(
+  (db, credential) => refuseSuspended(db, credential) ?? { status: "ok" },
+);
 
 // Operations of a route whose token is optional (Mastodon's authorize_if_got_token!): no credential reads as an
 // anonymous viewer; a credential must be valid and cover the route's scope (if it declares one), and an app token (no
