@@ -29,6 +29,7 @@ import { oauthAdminStatus } from "./domain/admin-authority";
 import * as adminDomainBlocks from "./domain/admin-domain-blocks";
 import { adminMeasure } from "./domain/admin-measures";
 import * as announcements from "./domain/announcements";
+import * as annualReports from "./domain/annual-reports";
 import { checkCredential, noteActivity } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
@@ -423,6 +424,13 @@ export const STORE_RPC = {
 
   // The cron's round of polls (jobs/scheduled.ts): those that ended, and the Updates of counts that are due.
   pollRound: polls.pollRound,
+
+  // Annual reports (domain/annual-reports.ts).
+  annualReportState: annualReports.annualReportState,
+  generateAnnualReport: annualReports.generateAnnualReport,
+  annualReports: annualReports.annualReports,
+  annualReport: annualReports.annualReport,
+  markAnnualReportRead: annualReports.markAnnualReportRead,
 
   // Scheduled statuses (domain/scheduled-statuses.ts).
   postStatus: scheduled.postStatus,

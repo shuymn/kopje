@@ -63,7 +63,8 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
     object: TOMBSTONE,
   },
   // Mastodon's stamp Delete: ActivityPub::DeleteQuoteAuthorizationSerializer, its object the
-  // QuoteAuthorizationSerializer's (context_helper.rb quote_authorizations), signed as above (RevokeQuoteService).
+  // QuoteAuthorizationSerializer's as 4.5.10 and later write it (context_helper.rb quote_authorizations), signed as
+  // above (RevokeQuoteService).
   mastodonStamp: {
     form: "mastodon",
     context: [
@@ -92,16 +93,20 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   },
   // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
   kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
-  // Mastodon's and Kopje's status Delete, as a Mastodon (4.4 to 4.7) that holds a boost or quote of the status
-  // forwards it: ActivityPub::ProcessCollectionService (ProcessActivityService from 4.7) replaces the body with its
-  // compaction under full_context (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts
-  // back the values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder
-  // sends that copy. Its @context is one of the three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The
-  // keys of these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no
-  // forwarded profile yet (#1599): Mastodon 4.7.5 forwards it in this form, its author's signature kept, and
-  // inbound.ts relayed drops it (202, logged), the quote staying accepted.
+  // Mastodon's and Kopje's status and stamp Delete, as a Mastodon (4.4 to 4.7) forwards them: a status's when it holds
+  // a boost or quote of the status, a stamp's when it holds a quote naming the stamp (Activity::Delete#revoke_quote,
+  // with no forwardable? check, through the local sharers of the quoting status). ActivityPub::ProcessCollectionService
+  // (ProcessActivityService from 4.7) replaces the body with its compaction under full_context (JsonLdHelper#compact,
+  // the signature kept as received), patch_for_forwarding! puts back the values compaction changed (Public,
+  // single-item arrays) but not the @context, and ActivityPub::Forwarder sends that copy. Its @context is one of the
+  // three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The keys of these senders' bodies are all
+  // full_context terms (Mastodon's stamp's from 4.5.10, which added its terms), so only the @context changes. A
+  // forwarder before 4.5.10 drops the signature of Mastodon's stamp Delete (safe_for_forwarding?): a relay without a
+  // proof.
   mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
+  mastodonForwardedStamp: { form: "mastodon", context: "forwarded", extra: ["to"], object: QUOTE_AUTHORIZATION },
+  kopjeForwardedStamp: { form: "fedify", context: "forwarded", extra: ["to"], object: "iri" },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
   // Delete#toJsonLd docContext), which copies that context into the proof.
   fedifyProof: {
@@ -137,6 +142,9 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
 const SIGNATURE_KEYS = ["type", "creator", "created", "signatureValue"];
 // The form of `created` and `expires` in LinkedDataSignature#sign! (Time#iso8601 of a UTC time).
 const SIGN_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+// The keys Fedify 2.4.5's createProof writes, and nothing else. `expires`, which Mastodon 4.7 accepts at receipt
+// (object_integrity_proof.rb:19), is outside the profile: no sender of one writes it, and Fedify would judge it at its
+// own clock, not at the time the request reached the inbox (OPS-1).
 const PROOF_KEYS = ["type", "cryptosuite", "verificationMethod", "proofPurpose", "proofValue", "created"];
 
 function isJson(value: unknown): value is Json {
@@ -253,7 +261,10 @@ function isSignTime(value: string): boolean {
 
 // One proof (alone, or alone in an array, as Fedify's signObject writes one), a DataIntegrityProof (eddsa-jcs-2022)
 // whose own @context, when it has one, is the body's. A second proof is refused, whatever it is: no sender of a profile
-// writes one, so how Fedify judges several (2.4.5 refuses the body when any of them fails) is not relied on.
+// writes one, so how Fedify judges several (2.4.5 refuses the body when any of them fails) is not relied on. An
+// mldsa44-jcs-2024 proof, which Mastodon 4.7 verifies (object_integrity_proof.rb:7), is in no profile: no sender of
+// one writes the suite, and Fedify 2.4.5's verifier does not include it, though the runtime could verify ML-DSA-44
+// (workerd's node:crypto); it is refused here, before any verifier runs.
 function isProof(json: Json): boolean {
   const proofs = Array.isArray(json.proof) ? json.proof : [json.proof];
   return (
@@ -308,6 +319,10 @@ export function hasAuthorProof(json: Json): boolean {
   return (json.signature !== undefined && json.signature !== null) || (json.proof !== undefined && json.proof !== null);
 }
 
+// Fedify's verifiers of an LD signature and of an FEP-8b32 proof; a caller other than Fedify's defaults is a test that
+// counts the calls.
+export type ProofVerifiers = { verifyObject: typeof verifyObject; verifyJsonLd: typeof verifyJsonLd };
+
 // Whether `json` is, in one of the PROFILES, a Delete of exactly `expected` proven by a key the actor's document
 // embeds, at `receivedAt` (epoch milliseconds: when the request reached the inbox, its spool time on replay).
 export async function verifyAuthorProof(
@@ -315,6 +330,7 @@ export async function verifyAuthorProof(
   expected: ProvenDelete,
   actorDocument: unknown,
   receivedAt: number,
+  verifiers: ProofVerifiers = { verifyObject, verifyJsonLd },
 ): Promise<boolean> {
   const matched = profileOf(json);
   if (
@@ -335,9 +351,9 @@ export async function verifyAuthorProof(
   try {
     let proven: unknown;
     if (matched.profile.form !== "proof") {
-      proven = (await verifyJsonLd(json, options)) ? await Delete.fromJsonLd(json, options) : null;
+      proven = (await verifiers.verifyJsonLd(json, options)) ? await Delete.fromJsonLd(json, options) : null;
     } else {
-      proven = await verifyObject(Delete, json, options);
+      proven = await verifiers.verifyObject(Delete, json, options);
     }
     return (
       proven instanceof Delete &&

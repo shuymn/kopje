@@ -567,6 +567,18 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: SETTINGS,
   },
+  "src/domain/annual-reports.ts interpolation settingProjectionSql('wrapstodon', 'value')": {
+    count: 1,
+    reason: SETTINGS,
+  },
+  'src/domain/annual-reports.ts interpolation annualReportCountedSql("u")': {
+    count: 1,
+    reason: "R44's counted predicate over the year's tag rows (whether one is not withdrawn), a number",
+  },
+  "src/domain/annual-reports.ts status_tags.name": {
+    count: 1,
+    reason: "octet_length of the year's tag names, summed against REPORT_HASHTAG_BYTES, a number",
+  },
   // The round's raw cut: a status's first 100 names, matched by membership only (projecting them would change which
   // rows count against the cut); the names the round returns go through tagNameSql.
   "src/domain/trends.ts status_tags.name": { count: 1, reason: COMPARED_SQL },

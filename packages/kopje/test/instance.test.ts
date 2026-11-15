@@ -80,6 +80,8 @@ describe("instance contract", () => {
 
   it("freezes /api/v2/instance with the VAPID public key", async () => {
     const h = await configured();
+    // The campaign off, so the answer holds on any date (test/annual-reports.test.ts judges the dates).
+    await setSetting(h.store, "wrapstodon", "false");
     const response = await h.request("/api/v2/instance");
     expect(response.status).toBe(200);
     const body = await response.json<Record<string, unknown>>();

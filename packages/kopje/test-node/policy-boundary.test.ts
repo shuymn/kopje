@@ -306,6 +306,15 @@ const RULES: readonly Rule[] = [
       "src/domain/instance-activity.ts": "the counters and the login record, the 12 weeks, and the retention prune",
     },
   },
+  {
+    // R44: an annual report is its owner's alone (audience.ts annualReportOwnSql); one module makes, lists, shows and
+    // marks it read.
+    name: "reads or writes annual_reports",
+    pattern: readsOrWrites("annual_reports"),
+    allowed: {
+      "src/domain/annual-reports.ts": "the owner's reports: the existence check, the insert, the list, show and read",
+    },
+  },
 ];
 
 const files = (texts: Record<string, string>): Source[] =>
@@ -431,6 +440,11 @@ const RULE_FIXTURES: readonly [name: string, flagged: string, passed: string][] 
     "reads or writes the instance activity",
     "db.run('INSERT INTO activity_logins (day, account_id) VALUES (?, ?)')",
     "db.all('SELECT activity_counts FROM x')",
+  ],
+  [
+    "reads or writes annual_reports",
+    "db.run('UPDATE annual_reports SET viewed_at = ?')",
+    "db.all('SELECT annual_reports_count FROM x')",
   ],
 ];
 

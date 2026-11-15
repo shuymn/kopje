@@ -1,4 +1,4 @@
-import { type DocumentLoader, exportSpki, signObject, verifyJsonLd } from "@fedify/fedify";
+import { type DocumentLoader, exportMultibaseKey, exportSpki, signObject, verifyJsonLd } from "@fedify/fedify";
 import { CryptographicKey, Delete, Multikey, Person } from "@fedify/vocab";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
@@ -36,8 +36,10 @@ import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
 import {
+  MASTODON_47_FORWARDED_CONTEXT,
   mastodon47Signed,
   mastodonDelete,
+  mastodonForwarded,
   mastodonSigned,
   mastodonStampDelete,
   signTime,
@@ -63,6 +65,7 @@ import {
   token,
 } from "./inbox-status-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
+import { ML_DSA_44_MULTIBASE } from "./key-forms-helpers";
 import { contexts, deliveryDeps, quoteAccept } from "./quote-helpers";
 import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
@@ -283,8 +286,13 @@ describe("the forward of a proven Delete through a local boost", () => {
 });
 
 // erin (another server), whose document also carries an Ed25519 assertion method (Multikey) for FEP-8b32 proofs,
-// followed by alice.
-async function fepActor(w: World): Promise<{ erin: TestActor; ed: CryptoKeyPair }> {
+// followed by alice. `served`: the document as erin's server serves it, from the one Fedify writes.
+async function fepActor(
+  w: World,
+  served: (document: Record<string, unknown>, uri: string, ed: CryptoKeyPair) => Promise<Record<string, unknown>> = (
+    document,
+  ) => Promise.resolve(document),
+): Promise<{ erin: TestActor; ed: CryptoKeyPair }> {
   const rsa = (await crypto.subtle.generateKey(
     { ...RSA_ALGORITHM, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
     true,
@@ -301,7 +309,11 @@ async function fepActor(w: World): Promise<{ erin: TestActor; ed: CryptoKeyPair 
       new Multikey({ id: new URL(`${uri}#ed25519-key`), controller: new URL(uri), publicKey: ed.publicKey }),
     ],
   });
-  const document = (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>;
+  const document = await served(
+    (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>,
+    uri,
+    ed,
+  );
   w.t.web.serve(uri, document);
   const erin: TestActor = {
     uri,
@@ -318,21 +330,7 @@ describe("the proof round (need proof)", () => {
   it("an FEP-8b32 proof forwards too, and the POSTed body verifies", async () => {
     const w = await world();
     const { erin, ed } = await fepActor(w);
-    const note = mastodonNote(erin);
-    expect(await w.post(erin, create(erin, note))).toBe(202);
-    const id = await statusId(w.t.store, note.id);
-    await boost(w, id);
-    await deliver(w);
-    const unsigned = new Delete({
-      id: new URL(`${note.id}#delete`),
-      actor: new URL(erin.uri),
-      object: new URL(note.id),
-    });
-    const signed = await signObject(unsigned, ed.privateKey, new URL(`${erin.uri}#ed25519-key`), {
-      contextLoader: contexts,
-      documentLoader: contexts,
-    });
-    const json = (await signed.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>;
+    const { note, json } = await fepDelete(w, erin, ed);
     expect(await w.post(erin, json)).toBe(202);
     expect(proofRounds(w)).toBe(1);
     expect(await forwards(w.t.store, note.id)).toHaveLength(1);
@@ -350,6 +348,81 @@ describe("the proof round (need proof)", () => {
         ),
       ).toBe(true);
     }
+  });
+
+  // erin's Delete of a status alice boosted, signed by Fedify's signObject with erin's Ed25519 key `keyId`.
+  async function fepDelete(w: World, erin: TestActor, ed: CryptoKeyPair, keyId = `${erin.uri}#ed25519-key`) {
+    const note = mastodonNote(erin);
+    expect(await w.post(erin, create(erin, note))).toBe(202);
+    await boost(w, await statusId(w.t.store, note.id));
+    await deliver(w);
+    const unsigned = new Delete({
+      id: new URL(`${note.id}#delete`),
+      actor: new URL(erin.uri),
+      object: new URL(note.id),
+    });
+    const signed = await signObject(unsigned, ed.privateKey, new URL(keyId), {
+      contextLoader: contexts,
+      documentLoader: contexts,
+    });
+    const json = (await signed.toJsonLd({ format: "compact", contextLoader: contexts })) as Record<string, unknown>;
+    return { note, json };
+  }
+
+  it("an FEP-8b32 proof by an Ed25519 key its author lists beside an ML-DSA-44 key forwards byte for byte", async () => {
+    const w = await world();
+    const { erin, ed } = await fepActor(w, (document, uri) =>
+      Promise.resolve({
+        ...document,
+        assertionMethod: [
+          ...[document.assertionMethod].flat(),
+          { id: `${uri}#mldsa-key`, type: "Multikey", controller: uri, publicKeyMultibase: ML_DSA_44_MULTIBASE },
+        ],
+      }),
+    );
+    const { note, json } = await fepDelete(w, erin, ed);
+    expect(await w.post(erin, json)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, note.id)).toHaveLength(1);
+    await jobs(w.t.store);
+    const sent = (await deliver(w)).filter((s) => s.json.type === "Delete");
+    expect(sent.map((s) => s.inbox)).toContain(`${FANS}/inbox`);
+    for (const s of sent) {
+      expect(s.body).toBe(JSON.stringify(json));
+    }
+  });
+
+  it("an mldsa44-jcs-2024 proof deletes and forwards nothing", async () => {
+    const w = await world();
+    const { erin, ed } = await fepActor(w);
+    const { note, json } = await fepDelete(w, erin, ed);
+    const proof = { ...(json.proof as Record<string, unknown>), cryptosuite: "mldsa44-jcs-2024" };
+    expect(await w.post(erin, { ...json, proof })).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, note.id)).toEqual([]);
+    expect(await sql(w.t.store, "SELECT id FROM statuses WHERE uri = ?", note.id)).toEqual([]);
+  });
+
+  it("a proof by the eleventh Multikey its author lists deletes and forwards nothing", async () => {
+    const w = await world();
+    const { erin, ed } = await fepActor(w, async (document, uri, pair) => {
+      const multibase = await exportMultibaseKey(pair.publicKey);
+      const others = Array.from({ length: 10 }, (_, i) => ({
+        id: `${uri}#other-${i}`,
+        type: "Multikey",
+        controller: uri,
+        publicKeyMultibase: multibase,
+      }));
+      return { ...document, assertionMethod: [...others, ...[document.assertionMethod].flat()] };
+    });
+    const { note, json } = await fepDelete(w, erin, ed);
+    // Fedify alone, given the document as served, accepts the proof.
+    const expected = { id: `${note.id}#delete`, actor: erin.uri, object: note.id };
+    expect(await verifyAuthorProof(json, expected, w.t.web.served.get(erin.uri)!.body, NOW)).toBe(true);
+    expect(await w.post(erin, json)).toBe(202);
+    expect(proofRounds(w)).toBe(1);
+    expect(await forwards(w.t.store, note.id)).toEqual([]);
+    expect(await sql(w.t.store, "SELECT id FROM statuses WHERE uri = ?", note.id)).toEqual([]);
   });
 
   it("an invalid proof deletes and forwards nothing", async () => {
@@ -1169,6 +1242,49 @@ describe("the body from the request to the POST", () => {
     expect(sent.map((d) => d.inbox)).toContain(`${MASTODON}/users/bob/inbox`);
     for (const d of sent) {
       expect(d.body).toBe(JSON.stringify(body));
+    }
+  });
+
+  it("a stamp's Delete forwarded by a Mastodon revokes the local quote and forwards the body as received", async () => {
+    const w = await world();
+    const stamp = `${w.bob.uri}/quote_authorizations/${nextId()}`;
+    const mine = await quotedWithStamp(w, stamp);
+    const quoteRow = () =>
+      sql<{ state: string; quoted_uri: string }>(
+        w.t.store,
+        "SELECT q.state, q.quoted_uri FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
+        mine,
+      );
+    const quoted = (await quoteRow())[0]!.quoted_uri;
+    // dan's server holds alice's quoting status and forwards bob's revocation as Mastodon 4.7.5 does.
+    const dan = await mastodonActor(w.t.web, "dan", { origin: "https://relay.example", key: 6 });
+    const signed = await mastodon47Signed(mastodonStampDelete(w.bob, { uri: stamp, quoting: mine, quoted }), w.bob);
+    const body = mastodonForwarded(signed, MASTODON_47_FORWARDED_CONTEXT);
+    expect(await w.post(dan, body)).toBe(202);
+    expect(await quoteRow()).toEqual([{ state: "revoked", quoted_uri: quoted }]);
+    const recorded = () =>
+      sql<{ account_id: string; body: string }>(
+        w.t.store,
+        "SELECT account_id, body FROM outbound_activities WHERE object_uri = ?",
+        stamp,
+      );
+    const [forward, ...others] = await recorded();
+    expect(others).toEqual([]);
+    expect(forward!.account_id).toBe(ALICE);
+    const envelope = JSON.parse(forward!.body) as { activity: unknown; immutable?: boolean };
+    expect(envelope.immutable).toBe(true);
+    expect(JSON.stringify(envelope.activity)).toBe(JSON.stringify(body));
+    // Forwarded again (by another sharer's server, or replayed): nothing more is recorded.
+    expect(await w.post(dan, body)).toBe(202);
+    expect(await recorded()).toHaveLength(1);
+    // POSTed as received, and a Kopje receiver accepts its proof (the forwarded profile).
+    const sent = (await deliver(w)).filter((d) => d.json.type === "Delete" && objectOf(d.json) === stamp);
+    expect(sent.map((d) => d.inbox)).toContain(`${FANS}/inbox`);
+    for (const d of sent) {
+      expect(d.body).toBe(JSON.stringify(body));
+      expect(d.signer).toBe(ALICE_URI);
+      const expected = { id: body.id as string, actor: w.bob.uri, object: stamp };
+      expect(await verifyAuthorProof(d.json, expected, w.bob.document, NOW)).toBe(true);
     }
   });
 });

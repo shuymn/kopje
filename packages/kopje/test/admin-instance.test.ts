@@ -140,6 +140,7 @@ describe("setInstanceSettings", () => {
       ["privacy_policy", DOCUMENT_AT, [`${DOCUMENT_AT}a`, "<p></p>"]],
       ["show_domain_blocks", "all", ["everyone", "All"]],
       ["show_domain_blocks_rationale", "disabled", [""]],
+      ["wrapstodon", "false", ["maybe", "TRUE", "on"]],
     ];
     for (const [name, at, past] of cases) {
       for (const over of past) {
@@ -151,6 +152,7 @@ describe("setInstanceSettings", () => {
       expect(await set(s, { [name]: at }), name).toMatchObject({ ok: true });
       expect((await values(s))[name]).toBe(at);
     }
+    expect(await set(s, { wrapstodon: "maybe" })).toEqual(refusal("wrapstodon must be true or false"));
     // The terms of service go with their date: at the bound and one byte past it.
     const date = { terms_of_service_effective_date: "2026-11-01" };
     expect(await set(s, { terms_of_service: `${DOCUMENT_AT}a`, ...date })).toEqual(
@@ -201,6 +203,7 @@ describe("setInstanceSettings", () => {
     ["trends", "false"],
     ["trendable_by_default", "true"],
     ["activity_api_enabled", "false"],
+    ["wrapstodon", "false"],
   ];
 
   // Runs one admin write inside the transaction the operation would have, and checks that every stored value is one
@@ -219,7 +222,7 @@ describe("setInstanceSettings", () => {
     return result;
   }
 
-  it("accepts a value for each of the thirteen names", async () => {
+  it("accepts a value for each of the fourteen names", async () => {
     expect(ACCEPTED.map(([name]) => name).toSorted()).toEqual([...INSTANCE_ADMIN_NAMES].toSorted());
     const s = await store();
     await seedAccount(s, { username: "alice" });

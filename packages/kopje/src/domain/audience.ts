@@ -1255,6 +1255,19 @@ export function scheduledOwnSql(ss: string, viewer: string): string {
   return `${ss}.account_id = ${viewer}`;
 }
 
+// R44: an annual report (annual_reports row `r`) is its owner's alone: read, listed and marked read by its owner
+// only. Anyone else's year is a report that does not exist.
+export function annualReportOwnSql(r: string, viewer: string): string {
+  return `${r}.account_id = ${viewer}`;
+}
+
+// R44: whether the status row `s` counts for its author's annual report: not withdrawn (R2's rule for the author's
+// own statuses, as Mastodon's kept scope), of any visibility, boosts included. The caller names the author (the
+// owner) and the year's id range.
+export function annualReportCountedSql(s: string): string {
+  return `${s}.withdrawn = 0`;
+}
+
 // R27 (PollPolicy#vote?): whether `voter` may vote in the poll of the status `s`: may see the status by itself (R3),
 // and blocks neither its author (an author who blocks the voter hides the status already) nor the author's domain, to
 // which a remote poll's vote would not be delivered (R23 leaves such an account out). Votes are their voters' own

@@ -280,7 +280,7 @@ describe("/api/v2/instance", () => {
     await runInDurableObject(h.store, (_instance, state) => {
       const info = instanceUsage.run(
         observedSql(state.storage.sql, (_rows, query) => statements.push(query)),
-        { now: NOW, present },
+        { now: NOW, storeNow: NOW, present },
       );
       expect(info.activeMonth).toBe(0);
     });
@@ -316,8 +316,8 @@ describe("/api/v2/instance", () => {
 
   it("reads no more rows as the remote accounts grow", async () => {
     const h = await world();
-    const small = await rowsRead(h, instanceUsage, { now: NOW, present });
+    const small = await rowsRead(h, instanceUsage, { now: NOW, storeNow: NOW, present });
     await more(h, 300, 30);
-    expect(await rowsRead(h, instanceUsage, { now: NOW, present })).toBe(small);
+    expect(await rowsRead(h, instanceUsage, { now: NOW, storeNow: NOW, present })).toBe(small);
   }, 60_000);
 });
