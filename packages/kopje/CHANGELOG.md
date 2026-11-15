@@ -269,6 +269,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Store migration and no `wrangler.jsonc` change.
 - Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
+- `PUT /api/v1/media/:id` answers 404 for media attached to a post before it checks the parameters, as Mastodon does.
+  No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

@@ -18,7 +18,6 @@ import {
   type ApiDeps,
   type ApiHandler,
   authorized,
-  refuseAfterAuth,
   storeCall,
   userCredential,
   withParams,
@@ -501,11 +500,16 @@ export const updateMedia: ApiHandler = withParams(
   async (c, deps, p) => {
     const description = p.get("description");
     const problem = mediaProblem(p, description);
+    const credential = userCredential(c, deps);
     if (problem !== undefined) {
-      return refuseAfterAuth(c, deps, mastodonError(422, problem));
+      // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
+      // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget).
+      const found = authorized(
+        await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c), now: deps.now() })),
+      );
+      return found === null ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-    const credential = userCredential(c, deps);
     const media = authorized(
       await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
     );
