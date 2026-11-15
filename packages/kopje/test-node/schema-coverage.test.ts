@@ -153,6 +153,11 @@ const NOT_CONVERTED: Record<string, string> = {
   "accounts.moved_to_account_id": "legacy keeps no account move: NULL, no pointer",
   "accounts.avatar_static_url": "legacy keeps no still image: NULL, the static is the avatar",
   "accounts.header_static_url": "legacy keeps no still image: NULL, the static is the header",
+  "accounts.avatar_description": "legacy has no image descriptions: '', none",
+  "accounts.header_description": "legacy has no image descriptions: '', none",
+  "accounts.show_featured": "legacy has no display settings: 1, Mastodon's default",
+  "accounts.show_media": "legacy has no display settings: 1, Mastodon's default",
+  "accounts.show_media_replies": "legacy has no display settings: 1, Mastodon's default",
   "accounts.deleted_at": "set when a remote actor deletes itself in Kopje; legacy has no account being deleted",
   "accounts.document_revision": "0: Kopje issues a remote actor's revision when it stores its next document",
   "accounts.suspended_at": "set when the admin suspends a remote account in Kopje; legacy has no such suspension",
@@ -220,6 +225,7 @@ const FROM_RAW = "remote: read from raw, which is compared byte for byte; local:
 
 // Columns of carried tables verify-conversion does not compare.
 const NOT_VERIFIED: Record<string, string> = {
+  "accounts.avatar_description": DEFAULT,
   "accounts.confirmed_username": DEFAULT,
   "accounts.created_at": TIME,
   "accounts.deleted_at": DEFAULT,
@@ -227,6 +233,7 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.fetched_at": TIME,
   "accounts.followers_count": ACCOUNT_COUNTER,
   "accounts.following_count": ACCOUNT_COUNTER,
+  "accounts.header_description": DEFAULT,
   "accounts.hide_collections": DEFAULT,
   "accounts.indexable": DEFAULT,
   "accounts.moved_to_account_id": DEFAULT,
@@ -238,6 +245,9 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.last_status_id": "derived by triggers from the statuses, which are compared",
   "accounts.search_text": SEARCH,
   "accounts.shared_inbox_url": FROM_RAW,
+  "accounts.show_featured": DEFAULT,
+  "accounts.show_media": DEFAULT,
+  "accounts.show_media_replies": DEFAULT,
   "accounts.statuses_count": ACCOUNT_COUNTER,
   "blocks.created_at": TIME,
   "conversations.stream_seq": "the streaming change sequence, 0 until the owner subscribes to `direct`",

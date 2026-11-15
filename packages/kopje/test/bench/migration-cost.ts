@@ -111,7 +111,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
 // instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_quote_author_fetches
 // adds a checked column to quotes, which SQLite tests against every quote; 0095_notification_policy_bots tests its
-// column's CHECK on every notification_policies row. A migration that
+// column's CHECK on every notification_policies row; 0096_profile_descriptions reads no row (five columns of accounts
+// with constant defaults and no CHECK, and two triggers). A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -1003,6 +1004,27 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const botPolicies = has("notification_policies", "for_bots")
       ? count("notification_policies WHERE for_bots = 'accept'")
       : undefined;
+    // 0096_profile_descriptions: its columns and triggers, and the accounts holding the columns' defaults.
+    const profileSettings = has("accounts", "show_media_replies")
+      ? {
+          accounts: count(
+            `accounts WHERE avatar_description = '' AND header_description = '' AND show_featured = 1 AND show_media = 1
+							AND show_media_replies = 1`,
+          ),
+          columns: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM pragma_table_info('accounts') WHERE name LIKE '%description' OR name LIKE 'show_%' ORDER BY cid",
+            )
+            .toArray()
+            .map((row) => row.name),
+          triggers: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'accounts_profile_settings_%' ORDER BY name",
+            )
+            .toArray()
+            .map((row) => row.name),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
@@ -1017,6 +1039,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           rejectReplays,
           authorFetches,
           botPolicies,
+          profileSettings,
         },
       };
     }
@@ -1049,6 +1072,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         rejectReplays,
         authorFetches,
         botPolicies,
+        profileSettings,
       },
     };
   });
@@ -1122,6 +1146,14 @@ it("applies the migration to the benchmark store within the budget", async () =>
   // 0095 tested its CHECK on a policy of each local account, which kept the default.
   if (applied.includes("0095_notification_policy_bots")) {
     expect([seeded.policies, measured.botPolicies]).toEqual([SHAPE.local, SHAPE.local]);
+  }
+  // 0096 added the five columns and two triggers, every account holding the defaults, and checked no reference.
+  if (applied.includes("0096_profile_descriptions")) {
+    expect(measured.profileSettings).toEqual({
+      accounts,
+      columns: ["avatar_description", "header_description", "show_featured", "show_media", "show_media_replies"],
+      triggers: ["accounts_profile_settings_insert", "accounts_profile_settings_update"],
+    });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));

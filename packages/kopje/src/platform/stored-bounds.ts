@@ -29,6 +29,12 @@ export const MEDIA_META_BYTES = 1024;
 // A media description, in code points: Mastodon's MediaAttachment::MAX_DESCRIPTION_LENGTH (a local one's validation)
 // and MAX_DESCRIPTION_HARD_LENGTH_LIMIT (a remote one's cut), both 10,000 in v4.7.5.
 export const MAX_MEDIA_DESCRIPTION_LENGTH = 10_000;
+// A profile image description (accounts.avatar_description, header_description), in code points: Mastodon's
+// Account::Avatar::MAX_DESCRIPTION_LENGTH and Account::Header::MAX_DESCRIPTION_LENGTH (a local one's validation),
+// 150 in v4.7.5. Kopje holds a remote one to it too (docs/mastodon-deviations.md). Its raw bytes as stored: at most
+// four a code point.
+export const PROFILE_DESCRIPTION_LIMIT = 150;
+export const PROFILE_DESCRIPTION_BYTES = 4 * PROFILE_DESCRIPTION_LIMIT;
 // A poll's choices (RES-4): at most this many, each at most this many code points as read.
 export const MAX_REMOTE_OPTIONS = 100;
 export const MAX_REMOTE_OPTION_LENGTH = 1000;
@@ -183,6 +189,13 @@ export function storedMediaDescription(text: string): string {
   return cutCodePoints(storedText(text), MAX_MEDIA_DESCRIPTION_LENGTH);
 }
 
+// accounts.avatar_description and header_description as stored: storedText's output, at most
+// PROFILE_DESCRIPTION_LIMIT code points, so within profileSettingsPastBoundSql. A local one is validated at the limit
+// before (mastodon/accounts.ts), so this removes only NUL and lone surrogates from it.
+export function storedProfileDescription(text: string): string {
+  return cutCodePoints(storedText(text), PROFILE_DESCRIPTION_LIMIT);
+}
+
 // accounts.url, avatar_url and header_url as stored: none past PROFILE_URL_LIMIT.
 export function storedProfileUrl(url: string | null): string | null {
   return withinBytes(url, PROFILE_URL_LIMIT);
@@ -235,6 +248,13 @@ export function presentedDisplayName(stored: string): string {
 // text JSON.stringify and json_quote write the same bytes, so no note a writer stored changes.
 export function presentedNote(stored: string): string {
   return ENCODER.encode(JSON.stringify(stored)).length <= BIO_JSON_BYTES ? stored : "";
+}
+
+// A profile image description as presented: its first PROFILE_DESCRIPTION_LIMIT code points after decoding (each at
+// most six JSON bytes). 0xFF and 599 continuation bytes pass profileSettingsPastBoundSql as one character and decode
+// to 600 U+FFFD, which this cuts to PROFILE_DESCRIPTION_LIMIT.
+export function presentedProfileDescription(stored: string): string {
+  return cutCodePoints(stored, PROFILE_DESCRIPTION_LIMIT);
 }
 
 // ---- Attribution domains (local_accounts.attribution_domains)
@@ -943,6 +963,35 @@ export function indexablePastBoundSql(column: string): string {
   return `CASE WHEN ${column} IS NULL THEN 0
 	WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT IN (0, 1) THEN 1
+	ELSE 0 END`;
+}
+
+// ---- Profile descriptions and display settings: migration 0096_profile_descriptions
+
+// The image descriptions and display settings of accounts (Mastodon's avatar_description, header_description,
+// show_featured, show_media, show_media_replies): every description text of at most PROFILE_DESCRIPTION_BYTES bytes,
+// without NUL, of at most PROFILE_DESCRIPTION_LIMIT characters; every setting the integer 0 or 1. True when `row`
+// holds anything else, each column judged in order: the storage class (column affinity has already stored numeric
+// text as an integer in a setting, and a number as its text in a description; NULL reaches a BEFORE trigger before
+// NOT NULL), then the raw bytes, then NUL, then the characters (SQLite's length, which a NUL would stop), or the
+// value.
+export const PROFILE_DESCRIPTION_COLUMNS = ["avatar_description", "header_description"] as const;
+export const PROFILE_SETTING_COLUMNS = ["show_featured", "show_media", "show_media_replies"] as const;
+
+export function profileSettingsPastBoundSql(row: string): string {
+  const descriptions = PROFILE_DESCRIPTION_COLUMNS.map((name) => {
+    const column = `${row}.${name}`;
+    return `WHEN typeof(${column}) <> 'text' THEN 1
+	WHEN length(CAST(${column} AS BLOB)) > ${PROFILE_DESCRIPTION_BYTES} THEN 1
+	WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 1
+	WHEN length(${column}) > ${PROFILE_DESCRIPTION_LIMIT} THEN 1`;
+  });
+  const settings = PROFILE_SETTING_COLUMNS.map((name) => {
+    const column = `${row}.${name}`;
+    return `WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT IN (0, 1) THEN 1`;
+  });
+  return `CASE ${[...descriptions, ...settings].join("\n\t")}
 	ELSE 0 END`;
 }
 
