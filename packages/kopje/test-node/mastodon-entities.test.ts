@@ -64,9 +64,9 @@ const MAPPING: Record<string, Mapping> = {
   "REST::SearchSerializer": { file: "src/domain/search.ts", typeName: "SearchResults" },
   "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
-  // No Kopje type yet. PartialAccount is a Pick<...> the reader cannot follow; #1583 writes it as a literal.
+  "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
+  // No Kopje type yet: the profile API.
   "REST::ProfileSerializer": { deferred: 1583 },
-  "REST::PartialAccountSerializer": { deferred: 1583 },
   "REST::CollectionSerializer": { deferred: 1589 },
   "REST::CollectionItemSerializer": { deferred: 1589 },
   "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
@@ -84,15 +84,6 @@ const MAPPING: Record<string, Mapping> = {
 const ACCOUNT: Record<string, Exception> = {
   // No silencing or memorializing.
   ...accepted("MD-2", "limited", "memorial"),
-  ...open(
-    1583,
-    "the profile fields of Mastodon 4.6",
-    "avatar_description",
-    "header_description",
-    "show_featured",
-    "show_media",
-    "show_media_replies",
-  ),
   ...open(1589, "collections", "feature_approval"),
   // Left out, as with e-mail subscriptions off.
   ...accepted("MD-3", "email_subscriptions"),

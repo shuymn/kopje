@@ -252,8 +252,8 @@ describe("dump", () => {
   }, 120_000);
 
   // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
-  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at 0096; a dump holding
-  // two remote rows of one address is refused by the UNIQUE index (D6).
+  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at the latest file; a
+  // dump holding two remote rows of one address is refused by the UNIQUE index (D6).
   it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
     const remote = (n: number, username: string) =>
       `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
@@ -620,6 +620,89 @@ describe("dump", () => {
     await copyConfig(source, target);
     expect(String(await rejectionOf(importViaRpc(target, dump)))).toMatch(
       /accounts: static image past its stored bound/,
+    );
+  }, 120_000);
+
+  it("round-trips descriptions and settings (0097), and refuses one past its bound on import", async () => {
+    const source = await seeded(0);
+    // At the bound: 150 four-byte characters (600 bytes), and 150 ASCII characters; the settings off, on, off.
+    const avatar = "𠀀".repeat(150);
+    const header = "h".repeat(150);
+    const id = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const local = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .one().id;
+      sql.exec(
+        `UPDATE accounts SET avatar_description = ?1, header_description = ?2, show_featured = 0, show_media = 1,
+					show_media_replies = 0 WHERE id = ?3`,
+        avatar,
+        header,
+        local,
+      );
+      return local;
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    await runInDurableObject(restored, (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec(
+            `SELECT avatar_description AS a, header_description AS h, show_featured AS f, show_media AS m,
+							show_media_replies AS r FROM accounts WHERE id = ?`,
+            id,
+          )
+          .one(),
+      ).toEqual({ a: avatar, h: header, f: 0, m: 1, r: 0 });
+    });
+    // A dump from elsewhere, as its text could hold it: a description of 151 characters, one of malformed bytes past
+    // the characters, a setting of 2, and NULL for each.
+    const values = `'${avatar}','${header}',0,1,0)`;
+    expect(text.split(values)).toHaveLength(2);
+    for (const past of [
+      `'${avatar}','${header}h',0,1,0)`,
+      `'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0)`,
+      `'${avatar}','${header}',0,2,0)`,
+      `NULL,'${header}',0,1,0)`,
+      `'${avatar}','${header}',0,1,NULL)`,
+    ]) {
+      const dump = text.replace(values, past);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, dump))), past).toMatch(
+        /accounts: profile setting past its stored bound/,
+      );
+    }
+  }, 120_000);
+
+  it("restores a dump taken before 0097_profile_descriptions, which then upgrades through it", async () => {
+    await restoredBefore(
+      "0097_profile_descriptions",
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES ('100000000000000001', 'https://kopje.test/ap/users/a', 'a')",
+        );
+        sql.exec(
+          `INSERT INTO accounts (id, uri, username, domain)
+						VALUES ('100000000000000002', 'https://remote.test/users/b', 'b', 'remote.test')`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0097_profile_descriptions"] });
+        expect(
+          sql
+            .exec(
+              `SELECT id, avatar_description AS a, header_description AS h, show_featured AS f, show_media AS m,
+								show_media_replies AS r FROM accounts ORDER BY id`,
+            )
+            .toArray(),
+        ).toEqual([
+          { id: "100000000000000001", a: "", h: "", f: 1, m: 1, r: 1 },
+          { id: "100000000000000002", a: "", h: "", f: 1, m: 1, r: 1 },
+        ]);
+      },
     );
   }, 120_000);
 

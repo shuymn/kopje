@@ -430,7 +430,7 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     );
     expect(only.body.notification_groups).toHaveLength(1);
     expect(only.body.partial_accounts.map((account) => Object.keys(account).toSorted())).toEqual([
-      ["acct", "avatar", "avatar_static", "bot", "id", "locked", "url"],
+      ["acct", "avatar", "avatar_description", "avatar_static", "bot", "id", "locked", "url"],
     ]);
   }, 300_000);
 });

@@ -535,41 +535,57 @@ describe("the hydrate queries (RES-3)", () => {
       ]),
     );
 
-  it("read an ordinary page of 40 statuses in one chunk of at most 14 queries", async () => {
+  // Its chunks are the ones its planned R packs (packed), each of the plain page's kinds of query: with the emoji, its
+  // R passes PAGE_CHUNKS' target, and without them it reads in one chunk.
+  it("read an ordinary page of 40 statuses in the chunks its R plans, one chunk without emoji", async () => {
     const { h, f } = await fixture();
     const counts = await runInDurableObject(h.store, (_instance, state) => {
       const items = ordinary({ status: misskeyShaped(3), author: misskeyShaped(2) });
       const ids = items.map((item) => build(state.storage.sql, f, item));
       const plain = ordinary(undefined).map((item) => build(state.storage.sql, f, item));
       const planned = observedPresentation(state, f.viewer, ids, PAGE_CHUNKS);
-      const sum = (of: string[], filterRows = 1) =>
-        [...boundsOf(state, f.viewer, of, filterRows).values()].reduce((a, b) => a + b, 0);
-      // The planner's R counts a filter row for each of the viewer's filters that names statuses (status-presenter.ts
-      // statusStream), the stated R one for each status.
-      const naming = state.storage.sql
-        .exec<{ n: number }>(
-          `SELECT count(*) AS n FROM filters f WHERE f.account_id = ?
-					AND EXISTS (SELECT 1 FROM filter_statuses fs WHERE fs.filter_id = f.id)`,
-          f.viewer,
-        )
-        .one().n;
+      const plainPlanned = observedPresentation(state, f.viewer, plain, PAGE_CHUNKS);
+      // The planner's R counts a filter row for each of the viewer's active filters that name statuses
+      // (status-presenter.ts statusStream), the stated R one for each status.
+      const filterRows = plannedFilterRows(state, f.viewer);
+      const bounds = (of: string[], rows: number) => {
+        const r = boundsOf(state, f.viewer, of, rows);
+        return of.map((id) => r.get(id)!);
+      };
+      const sum = (of: string[], rows = 1) => bounds(of, rows).reduce((a, b) => a + b, 0);
+      const counted = (observed: ReturnType<typeof observedPresentation>) => ({
+        queries: observed.reads.length,
+        windows: observed.reads.filter((read) => read.query === statusRowBoundSql()).length,
+        chunks: observed.segments.length,
+      });
       return {
-        queries: planned.reads.length,
-        chunks: planned.segments.length,
+        page: counted(planned),
+        packed: packed(bounds(ids, filterRows)),
+        plain: counted(plainPlanned),
+        plainPacked: packed(bounds(plain, filterRows)),
         sum: sum(ids),
-        planned: sum(ids, naming),
-        plain: sum(plain),
+        planned: sum(ids, filterRows),
+        plainSum: sum(plain),
+        plainPlanned: sum(plain, filterRows),
         shown: planned.items.map((status) => status.emojis.length),
       };
     });
     console.info(
-      `R of the ordinary page: ${counts.sum} for 40 statuses (${counts.planned} as planned), ${counts.plain} without emoji`,
+      `R of the ordinary page: ${counts.sum} for 40 statuses (${counts.planned} as planned) in ${counts.page.chunks} chunks of ${counts.page.queries} queries; ` +
+        `${counts.plainSum} without emoji (${counts.plainPlanned} as planned) in ${counts.plain.chunks} chunk of ${counts.plain.queries} queries`,
     );
     expect(counts.shown).toEqual(Array.from({ length: 40 }, () => 3));
-    expect(counts.planned).toBeLessThanOrEqual(PAGE_CHUNKS.target);
-    expect(counts.chunks).toBe(1);
-    // 13 for the statuses, and one for their accounts' cached profile images (cachedImagesOf, one a chunk).
-    expect(counts.queries).toBeLessThanOrEqual(13 + 1);
+    // Without emoji: one chunk, 13 queries for the statuses (the window of R among them) and one for their accounts'
+    // cached profile images (cachedImagesOf, one a chunk).
+    expect(counts.plainPlanned).toBeLessThanOrEqual(PAGE_CHUNKS.target);
+    expect([counts.plain.windows, counts.plain.chunks, counts.plainPacked]).toEqual([1, 1, 1]);
+    expect(counts.plain.queries).toBeLessThanOrEqual(13 + 1);
+    // With them: the chunks its R packs, each running the plain chunk's queries but its window.
+    expect(counts.page.windows).toBe(1);
+    expect(counts.page.chunks).toBe(counts.packed);
+    expect(counts.page.queries).toBeLessThanOrEqual(
+      counts.page.windows + counts.page.chunks * (counts.plain.queries - counts.plain.windows),
+    );
   });
 
   // The same page with every status and author at the stored emoji caps: one window of R (40 of R_WINDOW's 80) whose
@@ -699,7 +715,7 @@ describe("the chunk target at its threshold workload (RES-3)", () => {
       expect(bound).toBeGreaterThan(LOW);
       expect(bound).toBeLessThanOrEqual(HIGH);
     }
-    expect(PAGE_CHUNKS).toEqual({ target: 416 * 1024, cap: 416 * 1024 });
+    expect(PAGE_CHUNKS).toEqual({ target: 392 * 1024, cap: 392 * 1024 });
     expect([result.atPage.chunks, result.atLarger.chunks]).toEqual([80, 40]);
     expect([result.atPage.items, result.atLarger.items]).toEqual([80, 80]);
     expect([result.atPage.windows, result.atLarger.windows]).toEqual([1, 1]);
