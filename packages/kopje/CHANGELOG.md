@@ -283,7 +283,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. A profile
   field's name or value longer than 255 characters is cut to 255 instead of refused (a change from earlier versions),
   surrounding whitespace is stripped as Ruby strips it, a field sent without its `name` or `value` parameter is
-  dropped, and a value without a label is refused, as Mastodon reads fields. No Store migration and no `wrangler.jsonc` change.
+  dropped, and a value without a label is refused, as Mastodon reads fields. An attribution domain with a label of 64
+  or more characters as written is refused, as Mastodon refuses it. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

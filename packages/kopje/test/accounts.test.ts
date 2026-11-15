@@ -290,13 +290,47 @@ describe("credentials", () => {
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
   });
 
+  // Measured on Mastodon 4.7.5 (M1): Addressable converts a label of fewer than 64 characters as written, so padding
+  // IDNA drops (U+00AD) passes up to 63 characters in a label and is refused at 64, in the first label as in the last.
+  it("refuses a label of 64 characters as written", async () => {
+    const h = await aliceSession();
+    const patch = (domain: string) =>
+      h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(h.token, json({ attribution_domains: [domain] }, { method: "PATCH" })),
+      );
+    const pad = (n: number) => "\u00ad".repeat(n);
+    for (const [domain, status] of [
+      [`a${pad(62)}.example.com`, 200],
+      [`a${pad(63)}.example.com`, 422],
+      [`example.com${pad(60)}`, 200],
+      [`example.com${pad(61)}`, 422],
+    ] as const) {
+      const response = await patch(domain);
+      expect(response.status, domain).toBe(status);
+      if (status === 422) {
+        expect(await response.json()).toMatchObject({
+          error: `Validation failed: Attribution domains ${domain} is not a valid domain name`,
+        });
+      }
+    }
+    const [row] = await sql<{ attribution_domains: string }>(
+      h.store,
+      "SELECT attribution_domains FROM local_accounts WHERE account_id = ?",
+      h.aliceId,
+    );
+    expect(JSON.parse(row?.attribution_domains ?? "")).toEqual([`example.com${pad(60)}`]);
+  });
+
   it("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES", async () => {
     const h = await aliceSession();
     const patch = (body: Record<string, unknown>) =>
       h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
-    // Compliant hosts padded with U+00AD (two UTF-8 bytes), which IDNA drops: a.example and ab.example.
-    const over = `a${"\u00ad".repeat(506)}.example`;
-    const at = `ab${"\u00ad".repeat(505)}.example`;
+    // Compliant hosts padded with U+00AD (two UTF-8 bytes), which IDNA drops, in labels of 63 characters as written
+    // (a and 62 U+00AD): bcde.a.a.a.a.a.a.a.a.example and bcdef.a.a.a.a.a.a.a.a.example.
+    const padded = `${Array.from({ length: 8 }, () => `a${"\u00ad".repeat(62)}`).join(".")}.example`;
+    const over = `bcdef.${padded}`;
+    const at = `bcde.${padded}`;
     expect([over, at].map((domain) => new TextEncoder().encode(domain).length)).toEqual([
       ATTRIBUTION_DOMAIN_BYTES + 1,
       ATTRIBUTION_DOMAIN_BYTES,

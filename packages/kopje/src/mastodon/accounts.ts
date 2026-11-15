@@ -235,11 +235,18 @@ function normalizeAttributionDomains(values: readonly string[]): string[] {
 
 const MAX_DOMAIN_LENGTH = 256;
 const DOMAIN_LABEL = /^[a-z0-9-]{1,63}$/;
+const MAX_LABEL_CHARACTERS = 64;
 
 // DomainValidator#compliant?: the host, lowercased and IDNA-encoded, shorter than 256 characters, of labels of 1 to 63
 // letters, digits and hyphens (a trailing dot is allowed, as Ruby's split drops the empty label after it). A value
-// with a character a host cannot hold (Addressable::URI::InvalidURIError) is not compliant.
+// with a character a host cannot hold (Addressable::URI::InvalidURIError) is not compliant. Addressable converts only
+// a '.'-separated label of fewer than 64 characters as written (addressable 2.9.2, idna/native.rb to_ascii) and keeps
+// a longer one, which then fails the label rule, so a label of 64 or more characters as written is not compliant
+// whatever IDNA would drop of it (U+00AD).
 function compliantDomain(value: string): boolean {
+  if (value.split(".").some((label) => [...label].length >= MAX_LABEL_CHARACTERS)) {
+    return false;
+  }
   let host: string;
   if (/^[\x21-\x7e]*$/.test(value)) {
     host = value.toLowerCase();
