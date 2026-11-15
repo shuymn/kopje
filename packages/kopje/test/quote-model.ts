@@ -7,7 +7,7 @@
 //   retractions, the quote notifications and silent mentions, and Kopje's outstanding intents for R in their lane.
 //   A rule the code follows that the docs do not state yet cites the doc-gap issue as G1-G8; a suspected defect is
 //   never policy.
-// - QuotePeer: R's server, Mastodon v4.5.11, written from its source (each rule cites the file and line it models),
+// - QuotePeer: R's server, Mastodon v4.7.5, written from its source (each rule cites the file and line it models),
 //   applying the bytes Kopje confirmed, each with the inbox it reached, and sending back what Mastodon would.
 // - The quiescence relation (live-accepted, stamps) and the exception predicates of the accepted risks X1, X2 and X3,
 //   each a pure function of the run's event log, so that a trace with one causal event deleted can be checked.
@@ -106,8 +106,8 @@ export function parsedStored(author: string, policy: { automatic: string[]; manu
   return { automatic: half(policy.automatic), manual: half(policy.manual) };
 }
 
-// NoteSerializer#interaction_policy (note_serializer.rb:234-248): the author always, then the collections its
-// automatic choice names; Mastodon 4.5 sends no manual half.
+// NoteSerializer#interaction_policy (note_serializer.rb:234-248; the flags, interaction_policy.rb:4-38): the author
+// always, then the collections its automatic choice names; Mastodon 4.7 sends no manual half.
 export function mastodonCanQuote(author: string, name: LocalPolicy): { automatic: string[]; manual: string[] } {
   return {
     automatic: [
@@ -981,7 +981,7 @@ export class QuotePolicy {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// QuotePeer: R's server, Mastodon v4.5.11
+// QuotePeer: R's server, Mastodon v4.7.5
 // ---------------------------------------------------------------------------------------------------------------
 
 // A body Kopje confirmed, as the peer parses it.
@@ -1007,7 +1007,7 @@ export class QuotePeer {
   // Copies of L's statuses: an SL's parsed policy flags, an L quoting status's quote of R's status (Quote rows whose
   // quoted account is R).
   readonly copies = new Map<string, { flags: Half; quote: MQuote | null }>();
-  // Tombstones (delete.rb:30-32) and the uris of Kopje's statuses whose Delete came first.
+  // Tombstones (delete.rb:29-31) and the uris of Kopje's statuses whose Delete came first.
   readonly tombstones = new Set<string>();
   inbox: { seq: number; body: Body; inbox: string; token: string }[] = [];
   outbox: Sent[] = [];
@@ -1045,7 +1045,7 @@ export class QuotePeer {
   }
 
   stamp(id: number): string {
-    // tag_manager.rb:68-73: the stamp of a quote is named by the quote's id.
+    // tag_manager.rb:74-79: the stamp of a quote is named by the quote's id.
     return `${this.rUri}/quote_authorizations/${id}`;
   }
 
@@ -1084,7 +1084,8 @@ export class QuotePeer {
     };
   }
 
-  // StatusPolicy#quote? on R's own view of L's status (status_policy.rb:22-24; interaction_policy_concern.rb:29-69).
+  // StatusPolicy#quote? on R's own view of L's status (status_policy.rb:16-18; interaction_policy_concern.rb:20-61,
+  // interaction_policy.rb:4-38).
   private mayQuote(sl: string): boolean {
     const copy = this.copies.get(sl);
     if (copy === undefined || this.tombstones.has(sl)) {
@@ -1094,8 +1095,8 @@ export class QuotePeer {
     return f.public || (f.followers && this.follows.rl) || (f.following && this.follows.lr);
   }
 
-  // PostStatusService#attach_quote! (post_status_service.rb:106-113, :159): a pending quote with its activity_uri
-  // (quote.rb:108-110); the Create to its reach, which includes L (status_reach_finder.rb:51-53), and the QuoteRequest
+  // PostStatusService#attach_quote! (post_status_service.rb:122-129, :180): a pending quote with its activity_uri
+  // (quote.rb:112-114); the Create to its reach, which includes L (status_reach_finder.rb:51-53), and the QuoteRequest
   // with the Note inlined to L's inbox (quote_request_worker.rb:15-21; quote_request_serializer.rb:20-38).
   postQuote(label: string, sl: string): boolean {
     if (this.rqs.has(label) || !this.mayQuote(sl)) {
@@ -1141,7 +1142,7 @@ export class QuotePeer {
   }
 
   // InteractionPoliciesController#update (interaction_policies_controller.rb:8-27): an implicit Update to followers
-  // and quoters (status_update_distribution_worker.rb:18-28).
+  // and quoters (status_update_distribution_worker.rb:18-24; update_note_serializer.rb:8-36).
   setPolicy(sr: string, policy: LocalPolicy): boolean {
     const s = this.srs.get(sr);
     if (s === undefined || s.deleted || s.policy === policy) {
@@ -1156,7 +1157,7 @@ export class QuotePeer {
   }
 
   // RemoveStatusService (remove_status_service.rb:16-53): R's quoting status is not revoked by R (:51 requires a local
-  // quoted account); R's status SR leaves its quotes without a target (status.rb:83).
+  // quoted account); R's status SR leaves its quotes without a target (status.rb:98).
   deleteRq(label: string): boolean {
     const rq = this.rqs.get(label);
     if (rq === undefined || rq.deleted) {
@@ -1201,7 +1202,7 @@ export class QuotePeer {
   }
 
   private handle(body: Body, inbox: string, token: string): void {
-    // process_collection_service.rb:25: R's own activity forwarded back is ignored.
+    // process_activity_service.rb:64: R's own activity forwarded back is ignored.
     if (body.actor !== this.lUri) {
       return;
     }
@@ -1232,7 +1233,7 @@ export class QuotePeer {
     }
   }
 
-  // StatusParser on L's Note: the flags of its automatic half (status_parser.rb:126-136, :171-188).
+  // StatusParser on L's Note: the flags of its automatic half (status_parser.rb:126-136, :179-196).
   parseFlags(note: Record<string, unknown>): Half {
     const policy = note.interactionPolicy as { canQuote?: { automaticApproval?: unknown } } | undefined;
     const list = policy?.canQuote?.automaticApproval;
@@ -1245,9 +1246,9 @@ export class QuotePeer {
     };
   }
 
-  // ActivityPub::Activity::Create (create.rb:15, :19, :21-28, :422-435): stored only when related (R follows L, or the
-  // body came to R's personal inbox), never over a Tombstone; a status R holds is left as it is. A quote of R's status
-  // stays pending (verify_quote_service.rb:17).
+  // ActivityPub::Activity::Create (create.rb:18, :28, :32, :34-45, :464-475): stored only when related (for L's public,
+  // unlisted and private statuses alike, R follows L or the body came to R's personal inbox), never over a Tombstone;
+  // a status R holds is left as it is. A quote of R's status stays pending (verify_quote_service.rb:17).
   ingest(note: Record<string, unknown>, related: boolean): void {
     const uri = note.id as string;
     if (this.copies.has(uri) || this.tombstones.has(uri) || !related) {
@@ -1272,8 +1273,8 @@ export class QuotePeer {
     this.ingest(note, this.follows.rl || personal);
   }
 
-  // ProcessStatusUpdateService: an implicit Update of L's status applies its policy (:68-75); an Update of L's quoting
-  // status changes no quote (:288-301, the return at :293).
+  // ProcessStatusUpdateService: an implicit Update of L's status applies its policy (:73-80); an Update of L's quoting
+  // status changes no quote (:336-349, the return at :341).
   private update(note: Record<string, unknown>): void {
     const copy = this.copies.get(note.id as string);
     if (copy !== undefined) {
@@ -1281,10 +1282,10 @@ export class QuotePeer {
     }
   }
 
-  // ActivityPub::Activity::Delete (delete.rb:20-44, :58-67): a stamp's Delete matches R's own quote by approval_uri,
-  // its quoted account the sender, pending or accepted, and rejects it; a Note's, after the Tombstone (:30-32), deletes
+  // ActivityPub::Activity::Delete (delete.rb:19-43, :57-66): a stamp's Delete matches R's own quote by approval_uri,
+  // its quoted account the sender, pending or accepted, and rejects it; a Note's, after the Tombstone (:29-31), deletes
   // the status.
-  // ActivityPub::Activity::Delete#delete_object (delete.rb:20-44): the Tombstone first, then by the object's type: a
+  // ActivityPub::Activity::Delete#delete_object (delete.rb:19-43): the Tombstone first, then by the object's type: a
   // QuoteAuthorization only revokes a quote (revoke_quote), a Note or Question only deletes a status, and anything else
   // (a Tombstone, an untyped id) deletes a status or, when none matches, revokes a quote.
   private delete(object: string, type: string | null): void {
@@ -1298,7 +1299,7 @@ export class QuotePeer {
     }
   }
 
-  // delete.rb:47-56: a copy of L's status is removed; R's quotes of it lose their target (status.rb:83).
+  // delete.rb:46-55: a copy of L's status is removed; R's quotes of it lose their target (status.rb:98).
   private deleteStatus(object: string): boolean {
     if (!this.copies.has(object)) {
       return false;
@@ -1312,7 +1313,7 @@ export class QuotePeer {
     return true;
   }
 
-  // delete.rb:58-67: R's own quote whose approval_uri is the object, quoted account the sender, pending or accepted.
+  // delete.rb:57-66: R's own quote whose approval_uri is the object, quoted account the sender, pending or accepted.
   private revokeQuote(object: string): void {
     const own = [...this.rqs.values()].find(
       (rq) =>
@@ -1335,7 +1336,7 @@ export class QuotePeer {
     if (new URL(request).origin !== new URL(this.lUri).origin || sr === undefined || sr.deleted) {
       return;
     }
-    // :12-16 R's policy decides for the sender (Mastodon 4.5.11 accepts manual approval automatically, :12).
+    // :12-16 R's policy decides for the sender (Mastodon 4.7.5 accepts manual approval automatically, :12).
     const allowed = sr.policy === "public" || (sr.policy === "followers" && this.follows.lr);
     const inline = body.instrument as Record<string, unknown> | string;
     const instrument = typeof inline === "string" ? inline : (inline.id as string);
@@ -1346,7 +1347,7 @@ export class QuotePeer {
       this.emit({ k: "peerAnswer", request, answer: "Reject", stamp: null, msg });
       return;
     }
-    // :21-24 the instrument stored, else imported (refused over a Tombstone, create.rb:15, :19); :28 nil raises.
+    // :21-24 the instrument stored, else imported (refused over a Tombstone, create.rb:18, :32); :28 nil raises.
     if (!this.copies.has(instrument) && typeof inline !== "string") {
       this.ingest(inline, true);
     }
@@ -1367,8 +1368,8 @@ export class QuotePeer {
     this.emit({ k: "peerAnswer", request, answer: "Accept", stamp, msg });
   }
 
-  // ActivityPub::Activity::Accept#accept_quote! (accept.rb:4-15, :47-58): the quote found by quoted account and
-  // activity_uri (activity.rb:160-162) applies only when the result is on the sender's host, its quoted account is the
+  // ActivityPub::Activity::Accept#accept_quote! (accept.rb:4-14, :47-58): the quote found by quoted account and
+  // activity_uri (activity.rb:152-154) applies only when the result is on the sender's host, its quoted account is the
   // sender, the quoting status is R's and the quote pending (:49); then an Update of R's status carries the stamp
   // (:54-57).
   private accept(body: Body): void {
@@ -1393,7 +1394,7 @@ export class QuotePeer {
     this.send({ type: "Update", id: `${own.uri}#updates/${++this.n}`, note: this.noteOf(own.uri) }, false);
   }
 
-  // ActivityPub::Activity::Reject (reject.rb:4-16, :42-47): the quoted account is the sender and the quoting status
+  // ActivityPub::Activity::Reject (reject.rb:4-15, :34-39): the quoted account is the sender and the quoting status
   // R's; reject! from any state.
   private reject(body: Body): void {
     const object = typeof body.object === "string" ? body.object : (body.object as { id: string }).id;

@@ -5,7 +5,7 @@
 //   docs/mastodon-deviations.md for the unlock acceptance), written from the docs and never from src/: the edges
 //   both ways, the blocks both ways, L's lock, R's retracted ids, L's counts and follow notifications, and Kopje's
 //   outstanding intents for R in their lane, each with its delivery's state.
-// - Peer: R's server, Mastodon v4.5.11, written from its source (each rule cites the file and line it models),
+// - Peer: R's server, Mastodon v4.7.5, written from its source (each rule cites the file and line it models),
 //   applying the bytes Kopje actually confirmed and sending back what Mastodon would.
 //
 // A change to a follow-lifecycle rule in docs/threat-model.md changes this file with it.
@@ -711,12 +711,12 @@ export class Policy {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Peer: R's server, Mastodon v4.5.11
+// Peer: R's server, Mastodon v4.7.5
 // ---------------------------------------------------------------------------------------------------------------
 
 export type PeerEdge = { state: "requested" | "accepted"; uri: string } | null;
 
-// Six hours, activity.rb:96-98 (delete_later!).
+// Six hours, activity.rb:102-104 (delete_later!).
 export const UNDO_CACHE_MS = 6 * 60 * 60 * 1000;
 
 // What R's server sends Kopje, as the Store's receive takes it.
@@ -734,7 +734,7 @@ export type Body = {
 export type PeerEvents = {
   // block.rb:16: Kopje's Block dropped R's request g (RejectFollowService, nothing sent).
   blockDroppedRequest: Set<string>;
-  // accept.rb:24 and reject.rb:25: the receptions (by the tag their sender gave each, receive) of answers of other
+  // accept.rb:23 and reject.rb:24: the receptions (by the tag their sender gave each, receive) of answers of other
   // generations applied to R's request or follow g by the account pair.
   pairAnswer: Map<string, Set<string>>;
   // refollow_worker.rb:19-26: R's follow g dropped by a refollow whose replacement FollowService refused (nothing
@@ -749,7 +749,7 @@ export type PeerEvents = {
   // than the relationship it ended.
   undoEnded: { follow: string | null; block: string | null };
   // The ids named by a typed Undo that ended a different follow or block of L's (by the pair): no cached Undo then
-  // suppresses the named Follow or Block (activity.rb:92-98), which applies when it is processed later.
+  // suppresses the named Follow or Block (activity.rb:98-104), which applies when it is processed later.
   undoNamedOther: { follow: Set<string>; block: Set<string> };
 };
 
@@ -760,9 +760,9 @@ export class Peer {
   locked = false;
   private lrEdge: PeerEdge = null;
   private lBlock: string | null = null;
-  // AuthorizeFollowWorker jobs, each for L's request (update_account_service.rb:22-28).
+  // AuthorizeFollowWorker jobs, each for L's request (update_account_service.rb:25-31).
   jobs = 0;
-  // delete_upon_arrival keys (activity.rb:92-98): the undone object's id and its expiry.
+  // delete_upon_arrival keys (activity.rb:98-104): the undone object's id and its expiry.
   readonly cache = new Map<string, number>();
   // Messages to Kopje not yet delivered, and bodies from Kopje received but not processed.
   outbox: PeerMessage[] = [];
@@ -887,11 +887,11 @@ export class Peer {
     return true;
   }
 
-  // BlockService (block_service.rb:6-20): R's accepted follow is undone (UnfollowService), L's follow of R ends with a
-  // Reject (UnfollowService sends one for a remote follower, unfollow_service.rb:35-36) and L's request is rejected
-  // (RejectFollowService); R's own request stays. Then the Block. Nothing guards a block R already holds (the API's
-  // block calls BlockService every time, accounts_controller.rb:54-57): the cleanup runs again, and the Block is sent
-  // again under its id (block! finds the existing block, interactions.rb:75-78, whose uri BlockSerializer names).
+  // BlockService (block_service.rb:6-22, :26-30): R's accepted follow is undone (UnfollowService), L's follow of R
+  // ends with a Reject (UnfollowService sends one for a remote follower, unfollow_service.rb:35-36) and L's request is
+  // rejected (RejectFollowService); R's own request stays. Then the Block. Nothing guards a block R already holds (the
+  // API's block calls BlockService every time, accounts_controller.rb:54-57): the cleanup runs again, and the Block is
+  // sent again under its id (block! finds the existing block, interactions.rb:72-75, whose uri BlockSerializer names).
   block(): boolean {
     if (this.rl?.state === "accepted") {
       this.unfollow();
@@ -949,7 +949,7 @@ export class Peer {
     return true;
   }
 
-  // UpdateAccountService (update_account_service.rb:5-11, 22-28): an unlock queues one AuthorizeFollowWorker per
+  // UpdateAccountService (update_account_service.rb:7-13, 25-31): an unlock queues one AuthorizeFollowWorker per
   // pending request; relocking cancels none, and the worker does not read `locked`.
   lock(locked: boolean): void {
     if (this.locked && !locked && this.lr?.state === "requested") {
@@ -1091,7 +1091,7 @@ export class Peer {
     this.events.pairAnswer.set(g, receptions.add(tag));
   }
 
-  // accept.rb:4-35: R's request by the Follow's id, else (embedded Follow) by the account pair.
+  // accept.rb:4-34: R's request by the Follow's id, else (embedded Follow) by the account pair.
   private processAccept(uri: string | null, tag: string): void {
     if (this.rl?.state !== "requested") {
       return;
@@ -1102,7 +1102,7 @@ export class Peer {
     this.rl = { state: "accepted", uri: this.rl.uri };
   }
 
-  // reject.rb:4-29: R's request by id, else R's follow by id (UnfollowService, which sends an Undo), else by the pair:
+  // reject.rb:4-28: R's request by id, else R's follow by id (UnfollowService, which sends an Undo), else by the pair:
   // the request is rejected and a follow undone.
   private processReject(uri: string | null, tag: string): void {
     if (this.rl === null) {
