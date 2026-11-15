@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { type Account, presentAccountsWithin } from "../src/domain/accounts";
-import { seedAccount, sql } from "./api-helpers";
+import { bearer, json, seedAccount, sql } from "./api-helpers";
 import { community, getJson } from "./status-helpers";
 
 // Account#show_featured, #show_media and #show_media_replies (migration 0096_profile_descriptions; Mastodon 4.6,
 // REST::AccountSerializer): presented as stored on every Account and CredentialAccount, true by default, and also
-// while the account is unavailable, as Mastodon does. No local writer yet: the profile API sets them.
+// while the account is unavailable, as Mastodon does. update_credentials does not set them (Mastodon's account_params
+// has none of them); the profile API does.
 
 const ORIGIN = "https://kopje.test";
 
@@ -65,5 +66,28 @@ describe("profile display settings", () => {
         remote,
       );
     }
+  });
+
+  it("are not set by update_credentials", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const patch = async (body: Record<string, unknown>) => {
+      const response = await h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(alice.token, json(body, { method: "PATCH" })),
+      );
+      return { status: response.status, body: settings(await response.json<Settings>()) };
+    };
+    const off = { show_featured: false, show_media: false, show_media_replies: false };
+    expect(await patch(off)).toEqual({
+      status: 200,
+      body: { show_featured: true, show_media: true, show_media_replies: true },
+    });
+    // The same answer shows a stored 0 as false, so the request above set nothing.
+    await sql(h.store, "UPDATE accounts SET show_media = 0 WHERE id = ?", alice.id);
+    expect(await patch({ show_media: true })).toEqual({
+      status: 200,
+      body: { show_featured: true, show_media: false, show_media_replies: true },
+    });
   });
 });

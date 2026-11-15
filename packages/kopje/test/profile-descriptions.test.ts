@@ -2,15 +2,19 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { type Account, partialAccountsOf, presentAccountsWithin } from "../src/domain/accounts";
+import { type Account, MAX_DISPLAY_NAME, partialAccountsOf, presentAccountsWithin } from "../src/domain/accounts";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { PROFILE_DESCRIPTION_BYTES, PROFILE_DESCRIPTION_LIMIT } from "../src/platform/stored-bounds";
-import { bearer, seedAccount, sql } from "./api-helpers";
-import { community, getJson } from "./status-helpers";
+import { bearer, json, seedAccount, sql } from "./api-helpers";
+import { PNG_PLAIN } from "./fixtures/images";
+import { bytes, multipartForm, TestCodec } from "./media-helpers";
+import { aliceWithFollower } from "./profile-fixtures";
+import { community, getJson, outbound } from "./status-helpers";
 
 // Account#avatar_description and #header_description (migration 0096_profile_descriptions; Mastodon 4.6,
 // REST::AccountSerializer): presented on every Account and CredentialAccount, '' while the account is unavailable and
 // again after, cut at PROFILE_DESCRIPTION_LIMIT code points after decoding; PartialAccount carries the avatar's.
+// Written through update_credentials (Mastodon 4.6.1), at most PROFILE_DESCRIPTION_LIMIT code points as sent.
 // Independent of the images, as in Mastodon: removing or replacing an image keeps its description.
 
 const ORIGIN = "https://kopje.test";
@@ -136,5 +140,98 @@ describe("profile image descriptions", () => {
     expect(await sql(h.store, "SELECT avatar_url, header_url FROM accounts WHERE id = ?", alice.id)).toEqual([
       { avatar_url: null, header_url: null },
     ]);
+  });
+});
+
+describe("profile image descriptions through update_credentials", () => {
+  type Answer = Shown & { error?: string; avatar?: string };
+
+  async function writer(deps: Parameters<typeof aliceWithFollower>[0] = {}) {
+    const h = await aliceWithFollower(deps);
+    const { alice } = h.users;
+    const patch = async (body: BodyInit | Record<string, unknown>) => {
+      const init = body instanceof FormData ? { method: "PATCH", body } : json(body, { method: "PATCH" });
+      const response = await h.request("/api/v1/accounts/update_credentials", bearer(alice.token, init));
+      return { status: response.status, body: await response.json<Answer>() };
+    };
+    const stored = async () =>
+      (
+        await sql<{ a: string; h: string }>(
+          h.store,
+          "SELECT avatar_description AS a, header_description AS h FROM accounts WHERE id = ?",
+          alice.id,
+        )
+      ).map((row) => [row.a, row.h])[0];
+    return { h, alice, patch, stored };
+  }
+
+  it("are stored as sent and shown on the CredentialAccount and the Account; '' clears one, an absent one is kept", async () => {
+    const { h, alice, patch, stored } = await writer();
+    const written = await patch({ avatar_description: " A cat\n", header_description: "A field" });
+    expect(written.status).toBe(200);
+    expect(descriptions(written.body)).toEqual([" A cat\n", "A field"]);
+    expect(descriptions((await getJson<Shown>(h, `/api/v1/accounts/${alice.id}`, alice.token)).body)).toEqual([
+      " A cat\n",
+      "A field",
+    ]);
+    expect(descriptions((await patch({ avatar_description: "" })).body)).toEqual(["", "A field"]);
+    expect(descriptions((await patch({ display_name: "Alice" })).body)).toEqual(["", "A field"]);
+    expect(await stored()).toEqual(["", "A field"]);
+  });
+
+  it("refuse past PROFILE_DESCRIPTION_LIMIT code points with Mastodon's messages, before the display name's", async () => {
+    const { patch, stored } = await writer();
+    const refused = await patch({
+      display_name: "x".repeat(MAX_DISPLAY_NAME + 1),
+      avatar_description: "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT + 1),
+      header_description: `${"\u0001".repeat(PROFILE_DESCRIPTION_LIMIT)}\u0000`,
+    });
+    expect(refused).toEqual({
+      status: 422,
+      body: {
+        error:
+          "Validation failed: Avatar description is too long (maximum is 150 characters), " +
+          "Header description is too long (maximum is 150 characters), " +
+          "Display name is too long (maximum is 40 characters)",
+      },
+    });
+    expect(await stored()).toEqual(["", ""]);
+    // At the limit: four-byte characters at the stored bytes' bound, and a NUL counted, then dropped when stored.
+    const taken = await patch({
+      avatar_description: "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT),
+      header_description: `${"\u0001".repeat(PROFILE_DESCRIPTION_LIMIT - 1)}\u0000`,
+    });
+    expect(taken.status).toBe(200);
+    expect(descriptions(taken.body)).toEqual([
+      "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT),
+      "\u0001".repeat(PROFILE_DESCRIPTION_LIMIT - 1),
+    ]);
+    expect(await stored()).toEqual(descriptions(taken.body));
+  });
+
+  it("stay when a new image replaces the old one", async () => {
+    const codec = new TestCodec();
+    const { patch, stored } = await writer({ images: () => codec });
+    await patch({ avatar_description: "A cat", header_description: "A field" });
+    const png = (name: string) => new File([bytes(PNG_PLAIN)], name, { type: "image/png" });
+    for (let i = 0; i < 2; i++) {
+      const replaced = await patch(
+        multipartForm([
+          ["avatar", png(`a${i}.png`)],
+          ["header", png(`h${i}.png`)],
+        ]),
+      );
+      expect(replaced.status).toBe(200);
+      expect(replaced.body.avatar).toContain("/media/");
+      expect(descriptions(replaced.body)).toEqual(["A cat", "A field"]);
+    }
+    expect(await stored()).toEqual(["A cat", "A field"]);
+  });
+
+  // The actor does not publish them yet: a change of a description alone changes no published document.
+  it("send no Update when only a description changes", async () => {
+    const { h, patch } = await writer();
+    expect((await patch({ avatar_description: "A cat", header_description: "A field" })).status).toBe(200);
+    expect((await outbound(h.store)).filter((o) => o.activity.type === "Update")).toEqual([]);
   });
 });
