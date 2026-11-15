@@ -470,8 +470,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   only to its addressed recipients, presented as `private` by the API, never widened by an edit. _Enforced (main):_
   `interpretAddressing` in `src/domain/audience.ts`; `test/audience.test.ts` ("reads Misskey specified"). _Enforced
   (main)_ for inbound statuses: addressing goes through `interpretAddressing`, including the owner of the personal inbox
-  a status came to, and an edit never changes the visibility or adds a recipient to a private, direct or limited status;
-  `test/inbox-statuses.test.ts` ("VIS-2: a Misskey specified note is limited", "never widens a private audience").
+  a status came to, by a `Create` or by an `Update` that finds the stored status only by its `atomUri` (Mastodon's
+  `postprocess_audience_and_deliver`, which makes a direct status limited), and an edit itself never changes the
+  visibility or adds a recipient to a private, direct or limited status; `test/inbox-statuses.test.ts` ("VIS-2: a
+  Misskey specified note is limited", "never widens a private audience"), `test/inbox-atom-uri.test.ts`.
   Outbound: each silent recipient gets a copy of its own at its personal inbox naming only itself in `to` (no Mention),
   because Misskey derives `visibleUsers` from `to` and `cc` only; the copy everyone else gets never names a silent
   recipient. So a silent recipient learns that it is addressed, and nothing about other silent recipients. A personal

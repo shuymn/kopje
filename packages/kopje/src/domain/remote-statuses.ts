@@ -356,17 +356,8 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     if (existing.account_id !== author.id) {
       return { applied: false, reason: "not-author" };
     }
-    // ThreadResolveWorker: replies stored before this object, waiting on its id, are linked to the status found by its
-    // atomUri, as to one created under the id (parentOf: never a boost or a withdrawn status).
-    const found = byId === undefined ? parentOf(db, atomUri) : undefined;
-    if (found !== undefined) {
-      linkReplies(db, {
-        id: found.id,
-        uri: input.uri,
-        accountId: author.id,
-        replyTarget: found.in_reply_to_account_id,
-        isReply: found.in_reply_to_uri !== null,
-      });
+    if (byId === undefined) {
+      linkMatchedReplies(db, author, input.uri, atomUri);
     }
     // A known status arriving again as a root verifies its quote as any root does (quotes.ts promoteQuote).
     promoteQuote(db, existing.id, arrivalOf(db, author, ctx), ctx.now);
@@ -494,6 +485,22 @@ function arrivalOf(db: Db, author: Author, ctx: StoreContext) {
   return quoteArrival(db, author.id, ctx.deliveredTo, ctx.quoteHops ?? QUOTE_HOPS);
 }
 
+// ThreadResolveWorker: replies stored before an object, waiting on its id, are linked to the status found by its
+// atomUri (matchedUri; a Create, an Update), as to one created under the id (parentOf: never a boost or a withdrawn
+// status).
+function linkMatchedReplies(db: Db, author: Author, objectId: string, matchedUri: string | null): void {
+  const found = parentOf(db, matchedUri);
+  if (found !== undefined) {
+    linkReplies(db, {
+      id: found.id,
+      uri: objectId,
+      accountId: author.id,
+      replyTarget: found.in_reply_to_account_id,
+      isReply: found.in_reply_to_uri !== null,
+    });
+  }
+}
+
 // Replies that arrived before this status are linked to it now (a bounded number; the rest keep their uri).
 function linkReplies(
   db: Db,
@@ -603,8 +610,9 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //   - A significant change (content, spoiler, media) is recorded in status_edits, the original first, and local
 //     boosters are notified; history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last one.
 //   - An Update of an unknown status creates it if it is recent (Create and Update out of order), unless its atomUri
-//     names a stored status, which it updates as by its id, under that status's uri (Update#update_status reaches
-//     ProcessStatusUpdateService with the status Create#find_existing_status found).
+//     names a stored status: Update#update_status reaches Create#create_status, which finds that status
+//     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
+//     id, under that status's uri.
 export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
@@ -641,6 +649,13 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   // ID-3, ID-6: found by its id or by atomUri, only the author's own original is updated.
   if (existing.account_id !== author.id || existing.reblog_of_id !== null) {
     return { applied: false, reason: "not-author" };
+  }
+  // Update#update_status reaches Create#create_status for an unknown id: the status it finds by atomUri gains the
+  // delivery's recipient (postprocess_audience_and_deliver) and the replies waiting on the id, as for a Create, before
+  // the edit applies or not.
+  if (uri !== input.uri) {
+    extendAudience(db, existing, ctx.deliveredTo);
+    linkMatchedReplies(db, author, input.uri, uri);
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
   const stored = Date.parse(existing.watermark ?? "");

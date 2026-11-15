@@ -14,9 +14,11 @@ import { LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers"
 import {
   accountId,
   ALICE,
+  ALICE_URI,
   announce,
   AS,
   create,
+  DAVE,
   followed,
   localStatus,
   mastodonNote,
@@ -260,6 +262,31 @@ describe("an Update naming a stored status by atomUri (Update#update_status, Pro
       reason: "retracted",
     });
     expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: a.note.content, edited: 0 }]);
+  });
+
+  it("adds the recipient of its delivery to A's audience, as a Create of B does (postprocess_audience_and_deliver)", async () => {
+    const { t, bob } = await world();
+    const a = await stored(t, bob, { to: [ALICE_URI], cc: [] });
+    expect((await t.api(`/api/v1/statuses/${a.id}`, "dave")).status).toBe(404);
+    const b = naming(bob, a.note.id, { to: [ALICE_URI], cc: [], ...edit });
+    expect(await t.post(bob, update(bob, b, "2026-10-11T13:00:00Z"), { path: "/ap/users/dave/inbox" })).toBe(202);
+    // Without it, A is edited and dave, whose inbox the Update reached, still cannot read it.
+    expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: "<p>edited</p>", edited: 1 }]);
+    expect(await mentionsOf(t, a.id)).toContainEqual({ account_id: DAVE, silent: 1 });
+    expect((await t.api(`/api/v1/statuses/${a.id}`, "dave")).status).toBe(200);
+  });
+
+  it("links replies waiting on B to A, as a Create of B does", async () => {
+    const { t, bob, erin, bobId } = await world();
+    const a = await stored(t, bob);
+    const b = naming(bob, a.note.id, edit);
+    const reply = mastodonNote(erin, { inReplyTo: b.id });
+    expect(await t.post(erin, create(erin, reply))).toBe(202);
+    expect(await t.post(bob, update(bob, b, "2026-10-11T13:00:00Z"))).toBe(202);
+    // Without it, the reply stays waiting on B's id, and A counts no reply.
+    expect(await statusRow(t.store, reply.id)).toMatchObject({ in_reply_to_id: a.id, in_reply_to_account_id: bobId });
+    expect((await statusRow(t.store, a.note.id))?.replies_count).toBe(1);
+    expect(await rowOf(t, a.id)).toEqual([{ uri: a.note.id, content: "<p>edited</p>", edited: 1 }]);
   });
 });
 
