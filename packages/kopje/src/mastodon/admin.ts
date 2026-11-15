@@ -30,7 +30,12 @@ import {
 } from "../domain/admin-measures";
 import { OWNER_ROLE } from "../domain/auth";
 import { type InstanceDomainBlock, MAX_DOMAIN_INPUT } from "../domain/instance-domain-blocks";
-import { ADMIN_REPORTS_LIMIT, MAX_ADMIN_REPORTS_LIMIT, type ReportAction } from "../domain/reports";
+import {
+  ADMIN_REPORTS_LIMIT,
+  type AdminReportFilter,
+  MAX_ADMIN_REPORTS_LIMIT,
+  type ReportAction,
+} from "../domain/reports";
 import { blockedDomain } from "../platform/domain-name";
 import { railsBlank } from "../platform/rails-blank";
 import { sha256Hex } from "../security/tokens";
@@ -46,7 +51,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
-import { type Params, parseBoolean } from "./params";
+import { Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 
 // The Mastodon admin API (/api/v1/admin/*, /api/v2/admin/*). Every route is Mastodon's authorize_if_got_token!: the
@@ -103,9 +108,18 @@ function adminPage(p: Params, fallback = ADMIN_REPORTS_LIMIT, max = MAX_ADMIN_RE
   };
 }
 
-// The parameters the index's Link URLs carry (PAGINATION_PARAMS, reports_controller.rb:17-23, 108-110), with the
+// ActiveModel::Type::Boolean#cast's false values with blank (cast to nil, which is false too; JSON null reads as
+// blank), each in its own case only: parseBoolean folds case, so 'False' would be false there; Rails casts it to true.
+const RAILS_FALSE: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
+
+// A parameter as ActiveModel::Type::Boolean casts it, true or not: absent is nil.
+function railsTrue(value: string | null | undefined): boolean {
+  return value != null && !RAILS_FALSE.includes(value);
+}
+
+// The parameters the index's Link URLs carry (PAGINATION_PARAMS, reports_controller.rb:18-25, 108-110), with the
 // cursor, in the sorted order Rails' URL helpers write them.
-const REPORT_PAGINATION_PARAMS = ["limit", "resolved", "account_id", "target_account_id"];
+const REPORT_PAGINATION_PARAMS = ["limit", "resolved", "unresolved", "account_id", "target_account_id"];
 
 // The array parameters a Link URL carries (v2's role_ids[]).
 const ARRAY_PARAMS = new Set(["role_ids"]);
@@ -161,13 +175,23 @@ function reportsUrl(c: ApiContext, p: Params, cursor: Record<string, string>): s
   return listUrl(c, "/api/v1/admin/reports", REPORT_PAGINATION_PARAMS, p, cursor);
 }
 
+// The index's boolean filters, which Rails assigns from a repeated query parameter's last value.
+const REPORT_FLAGS = ["resolved", "unresolved"];
+
+// ReportFilter#status_scope.
+function reportState(resolved: boolean, unresolved: boolean): AdminReportFilter["state"] {
+  return resolved && unresolved ? "all" : resolved ? "resolved" : "unresolved";
+}
+
 // GET /api/v1/admin/reports (reports_controller.rb:92-98 next_path/prev_path); paging: listLinks and listAdminReports.
-export const reports: ApiHandler = withParams(async (c, deps, p) => {
+export const reports: ApiHandler = withParams(async (c, deps, sent) => {
+  // The query with each flag's last value (Params.withQuery's declared names), read here and carried by the Link URLs.
+  const p = new Params([]).withQuery(sent.entries, REPORT_FLAGS);
   const page = adminPage(p);
   const input = {
     credential: optionalCredential(c, deps),
     filter: {
-      resolved: p.has("resolved"),
+      state: reportState(railsTrue(p.get("resolved")), railsTrue(p.get("unresolved"))),
       accountId: p.get("account_id") ?? null,
       targetAccountId: p.get("target_account_id") ?? null,
     },
@@ -390,11 +414,6 @@ export function actOnAccount(action: AdminAccountAction): ApiHandler {
   };
 }
 
-// send_email_notification as Admin::AccountAction's boolean attribute casts it (default true): absent is true, blank
-// (JSON null reads as blank) is nil, which is false, and ActiveModel::Type::Boolean::FALSE_VALUES are false, each in
-// its own case only (parseBoolean folds case, so 'False' would be false there; Rails casts it to true).
-const ACTION_NOTIFICATION_OFF: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
-
 // POST /api/v1/admin/accounts/:account_id/action (Api::V1::Admin::AccountActionsController#create): type, report_id,
 // warning_preset_id, text and send_email_notification, as form fields (Fedilab) or JSON. A type, report_id or
 // warning_preset_id sent blank is not sent (`present?`); text is as sent, empty when absent (text_for_warning's
@@ -412,7 +431,8 @@ export const accountAction: ApiHandler = withParams(async (c, deps, p) => {
     reportId: sent("report_id"),
     warningPresetId: sent("warning_preset_id"),
     text: p.get("text") ?? "",
-    notify: !ACTION_NOTIFICATION_OFF.includes(p.get("send_email_notification") ?? "true"),
+    // Admin::AccountAction's boolean attribute, default true.
+    notify: railsTrue(p.get("send_email_notification") ?? "true"),
   };
   const result: AccountActionResult = authorized(await storeCall(c, deps, (s, b) => s.adminAccountAction(b, input)));
   switch (result.status) {

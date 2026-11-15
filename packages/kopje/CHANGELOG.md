@@ -67,6 +67,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- `GET /api/v1/admin/reports` reads `resolved` and `unresolved` as booleans, as Mastodon 4.7.5 does: both true lists
+  every report, `resolved` alone the resolved ones, otherwise the unresolved ones. `resolved=false` now lists the
+  unresolved reports; it listed the resolved ones. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
