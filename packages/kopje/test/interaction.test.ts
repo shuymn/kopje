@@ -974,6 +974,21 @@ describe("POST /authorize_interaction (look-up)", () => {
       { content: "<p>the edit</p>", edited_at: "2026-10-11T13:00:00.000Z" },
     ]);
   });
+
+  // ID-2, ID-7: as search's (federation/resolve.ts ownDocument), a document another URL of the status's origin serves is
+  // taken only as its id answers.
+  it("updates nothing from another URL naming a stored status's id", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    const other = `${new URL(note.id).origin}/other`;
+    t.web.serve(other, { "@context": AS, ...note, content: "<p>forged</p>", updated: "2026-10-11T13:00:00Z" });
+    expect((await lookUp(t, browser, other)).html).toContain("the note");
+    expect(await sql(t.store, "SELECT content, edited_at FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the note</p>", edited_at: null },
+    ]);
+  });
 });
 
 describe("POST /authorize_interaction/follow", () => {

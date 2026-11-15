@@ -174,6 +174,92 @@ describe("search of a stored status applies the served document as an Update", (
   });
 });
 
+// ID-2, ID-7: a document is taken only from its own id, as Mastodon's FetchResourceService#process_response
+// (fetch_resource_service.rb:54-59 in v4.7.5): when the URL searched, or the URL that answered after redirects, is not
+// the document's id, the id is fetched again, terminal (no redirect, a 200 whose id is that URL), and only that document
+// is used. Another URL of the same origin (the loader refuses another origin's id) cannot speak for a stored status.
+describe("search takes a status document only from its id", () => {
+  const forged = (note: Note): Note => ({
+    ...note,
+    content: "<p>FORGED</p>",
+    updated: at(60),
+    interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } },
+  });
+  const serveAt = (t: Setup, url: string, note: Note) => t.web.serve(url, { "@context": AS, ...note });
+  const origin = (note: Note) => new URL(note.id).origin;
+
+  it("updates nothing from another URL of the origin whose document names a stored status's id", async () => {
+    const { t, note, id } = await stored();
+    const before = await row(t, id);
+    serveAt(t, `${origin(note)}/noncanonical-cache`, forged(note));
+    t.web.fetched.length = 0;
+    expect((await search(t, `${origin(note)}/noncanonical-cache`)).body.statuses).toMatchObject([{ id }]);
+    expect(await row(t, id)).toEqual(before);
+    expect(t.web.fetched).toContain(note.id);
+  });
+
+  it("updates nothing through a redirect to a document naming a stored status's id", async () => {
+    const { t, note, id } = await stored();
+    const before = await row(t, id);
+    t.web.redirect(`${origin(note)}/redirecting`, `${origin(note)}/forged`);
+    serveAt(t, `${origin(note)}/forged`, forged(note));
+    await search(t, `${origin(note)}/redirecting`);
+    expect(await row(t, id)).toEqual(before);
+    expect(t.web.fetched).toContain(note.id);
+  });
+
+  // The URL that answered is part of the check: the id searched, redirected to another URL serving that id.
+  it("updates nothing from a document its id redirects to", async () => {
+    const { t, note, id } = await stored();
+    const before = await row(t, id);
+    t.web.redirect(note.id, `${origin(note)}/elsewhere`);
+    serveAt(t, `${origin(note)}/elsewhere`, forged(note));
+    await search(t, note.id);
+    expect(await row(t, id)).toEqual(before);
+  });
+
+  // Mastodon serves a status at its page URL with the Note's id: the id is fetched again and its document applied.
+  it("applies the document its id serves when searched by the status's page URL", async () => {
+    const { t, note, id } = await stored();
+    const page = note.url as string;
+    serveAt(t, page, note);
+    serve(t, { ...note, content: "<p>edited</p>", updated: at(60) });
+    await search(t, page);
+    expect(await row(t, id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60), edits: 2 });
+  });
+
+  it("applies the document its id serves when searched through a redirect", async () => {
+    const { t, note, id } = await stored();
+    t.web.redirect(`${origin(note)}/short`, note.url as string);
+    serveAt(t, note.url as string, note);
+    serve(t, { ...note, content: "<p>edited</p>", updated: at(60) });
+    await search(t, `${origin(note)}/short`);
+    expect(await row(t, id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60), edits: 2 });
+  });
+
+  // Mastodon compares the id with the URL searched as well as the URL that answered: a redirect that ends at the id is
+  // followed by one more fetch of the id, terminal.
+  it("fetches the id again when a redirect ends at it", async () => {
+    const { t, note } = await stored();
+    t.web.redirect(`${origin(note)}/to-id`, note.id);
+    t.web.fetched.length = 0;
+    await search(t, `${origin(note)}/to-id`);
+    expect(t.web.fetched.filter((url) => url === note.id)).toHaveLength(2);
+  });
+
+  // A document Mastodon does not take (fetch_resource_service.rb:54) is not followed to its id.
+  it("follows no id that a document of another context names", async () => {
+    const { t, note, id } = await stored();
+    const before = await row(t, id);
+    t.web.serve(`${origin(note)}/other-context`, { "@context": "https://example.com/ns", ...forged(note) });
+    serve(t, forged(note));
+    t.web.fetched.length = 0;
+    await search(t, `${origin(note)}/other-context`);
+    expect(t.web.fetched).not.toContain(note.id);
+    expect(await row(t, id)).toEqual(before);
+  });
+});
+
 describe("search of a stored status arrives as a root for its quote", () => {
   // bob's status quoting carol's, stored by search, its quote's work spent (no budget, nothing due).
   async function spent(extra: Record<string, unknown> = {}) {

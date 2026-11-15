@@ -1,4 +1,4 @@
-import { FetchError } from "@fedify/fedify";
+import { FetchError, type RemoteDocument } from "@fedify/fedify";
 
 import type { ResolutionStart } from "../domain/inbox";
 import type { ActorState, DocumentRevision, Handle, RemoteActorInput } from "../domain/remote-actors";
@@ -313,7 +313,8 @@ async function resolveAddress(loaders: Resolving, username: string, domain: stri
 
 // A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
 // remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
-// probed, and a 200 answer that is not ActivityPub is followed to the document its alternate names (alternateOf).
+// probed: a 200 answer that is not ActivityPub is followed to the document its alternate names (alternateOf), and a
+// document is taken as ownDocument takes it.
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const stored = await loaders.stateOf(url);
   if (stored.revision !== null) {
@@ -322,7 +323,8 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   let document: unknown;
   try {
     const answer = await loaders.resolve(url, false);
-    document = answer.kind === "document" ? answer.remote.document : await alternateOf(loaders, answer);
+    document =
+      answer.kind === "document" ? await ownDocument(loaders, url, answer.remote) : await alternateOf(loaders, answer);
   } catch {
     return NONE;
   }
@@ -344,6 +346,23 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const { fetched, state } = await actorAfterRevision(loaders, status.attributedTo);
   const author = await storable(loaders, fetched, state);
   return author === null ? NONE : { kind: "status", status, author: author.actor, revision: author.revision };
+}
+
+// The probe's document, as FetchResourceService#process_response takes it (v4.7.5, fetch_resource_service.rb:54-59):
+// as served when its id is the URL searched and the URL that answered, after any redirect; otherwise, when Mastodon
+// takes it (takes), only as its id answers, fetched once, terminal (fetchAlternate), so a document another URL serves,
+// directly or through a redirect, never stands for the status its id names (storeResolved would apply it to that
+// status). An actor's is taken as served: resolveAccount fetches its id again after reading its state.
+async function ownDocument(loaders: Resolving, url: string, remote: RemoteDocument): Promise<unknown> {
+  const { document, documentUrl } = remote;
+  if (typeof document !== "object" || document === null || typeIs((document as { type?: unknown }).type, ACTOR_TYPES)) {
+    return document;
+  }
+  const id = idOf(document);
+  if (id === url && documentUrl === url) {
+    return document;
+  }
+  return id === null || !takes(document) ? undefined : fetchAlternate(loaders, id);
 }
 
 // The types Mastodon's ACTIVITY_STREAM_LINK_TYPES names, in the order process_link_headers tries them.
@@ -438,14 +457,18 @@ async function fetchAlternate(loaders: Resolving, href: string): Promise<object 
   if (typeof document !== "object" || document === null) {
     return undefined;
   }
-  const record = document as { "@context"?: unknown; type?: unknown; id?: unknown };
+  return takes(document) && (document as { id?: unknown }).id === href && documentUrl === href ? document : undefined;
+}
+
+// Whether Mastodon takes a document (fetch_resource_service.rb:54): of the ActivityStreams context, and of a type it
+// takes (TAKEN_TYPES).
+function takes(document: object): boolean {
+  const record = document as { "@context"?: unknown; type?: unknown };
   const context = record["@context"];
   const supported = Array.isArray(context)
     ? context.some((entry) => entry === ACTIVITYSTREAMS)
     : context === ACTIVITYSTREAMS;
-  return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href
-    ? document
-    : undefined;
+  return supported && typeIs(record.type, TAKEN_TYPES);
 }
 
 // Whether a failed alternate fetch is one of Mastodon's nil answers rather than a raised failure: a status other than

@@ -289,7 +289,13 @@ against their own instance. TLS is assumed between all parties.
   json['id'] != response.uri`), so the rule above holds for it as for any fetch. _Enforced (main):_ `fetchAlternate`
   in `src/federation/resolve.ts`; `test/resolve-alternate.test.ts` ("takes an alternate on another origin whose id is
   the href, and none whose id is not", "makes no second hop: an alternate answering HTML that names its own alternate
-  resolves nothing").
+  resolves nothing"). The probe's own document is held to the same check (`fetch_resource_service.rb:54-59`): one whose
+  `id` is not both the URL searched and the URL that answered (another URL of the origin, or one a redirect reached) is
+  taken only as its `id` answers that one terminal fetch, so no other URL of a status's origin speaks for the status
+  that search applies it to as an `Update` (ID-7). _Enforced (main):_ `ownDocument` in `src/federation/resolve.ts`;
+  `test/search-refetch.test.ts` ("updates nothing from another URL of the origin whose document names a stored
+  status's id", "updates nothing from a document its id redirects to"), `test/interaction.test.ts` ("updates nothing
+  from another URL naming a stored status's id").
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
@@ -429,8 +435,9 @@ against their own instance. TLS is assumed between all parties.
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
   author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
   that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
-  not store is its `Create`; a 404 to such a fetch removes nothing (`test/search-refetch.test.ts`,
-  `test/interaction.test.ts` ("applies a newer version of a stored status it finds again")).
+  not store is its `Create`, its document taken only from its `id` (ID-2); a 404 to such a fetch removes nothing
+  (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version of a stored status it finds
+  again")).
   A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
