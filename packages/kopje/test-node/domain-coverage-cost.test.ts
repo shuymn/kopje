@@ -45,10 +45,12 @@ function walked(labels: number, blocks: [string, "suspend" | "noop"][]): { joine
   const counted = { joined: 0, single: 0 };
   for (const [form, query] of Object.entries(projections) as [keyof typeof projections, string][]) {
     const { db, calls } = store(labels, blocks);
+    // The projection's calls only: the fixture's inserts call instr() in the triggers of accounts.
+    const before = calls();
     const rows = db.prepare(query.replaceAll("main.", "")).all() as { v: number }[];
     expect(rows).toHaveLength(ACCOUNTS);
     expect(rows.every((row) => row.v === 1)).toBe(true);
-    counted[form] = calls();
+    counted[form] = calls() - before;
     db.close();
   }
   return counted;

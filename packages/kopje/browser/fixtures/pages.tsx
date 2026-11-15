@@ -218,9 +218,11 @@ const replyTarget = statusTarget({ uri: reply.uri, url: reply.url ?? "", path: "
 // The site facts every page read loads (domain/web-pages/site.ts): both documents exist, so every footer links them.
 const site: Site = { domain: DOMAIN, documents: { privacyPolicy: true, termsOfService: true } };
 
-// The signed-in account as the settings page reads it: alice with her profile's source.
+// The signed-in account as the settings page reads it: alice with her profile's source, an avatar description and no
+// header description, so the image cards show a filled and an empty form.
 const credential: CredentialAccount = {
   ...alice,
+  avatar_description: "A grey cat asleep on a windowsill in the afternoon sun",
   source: {
     privacy: "public",
     sensitive: false,
@@ -236,6 +238,37 @@ const credential: CredentialAccount = {
   },
   role: OWNER_ROLE,
 };
+
+// Settings after a save: the notice, two authorized apps (the second with a long name and every scope) and other
+// sessions to sign out.
+const settingsOf = (account: CredentialAccount) => (
+  <SettingsPage
+    chrome={site}
+    account={account}
+    authorizations={{
+      apps: [
+        {
+          clientId: "client-1",
+          name: "A client",
+          website: "https://client.example/",
+          scopes: ["read", "write"],
+          authorizedAt: CREATED,
+        },
+        {
+          clientId: "client-2",
+          name: "An application with a remarkably long name for its authorized row",
+          website: null,
+          scopes: [...SCOPES],
+          authorizedAt: CREATED,
+        },
+      ],
+      otherSessions: 2,
+    }}
+    csrf={CSRF}
+    notice="saved"
+    problems={[]}
+  />
+);
 
 const ELEMENTS: Record<PageName, Child> = {
   profile: (
@@ -500,36 +533,7 @@ const ELEMENTS: Record<PageName, Child> = {
       host={LONGEST_HOST}
     />
   ),
-  // Settings after a save: the notice, two authorized apps (the second with a long name and every scope) and other
-  // sessions to sign out.
-  settings: (
-    <SettingsPage
-      chrome={site}
-      account={credential}
-      authorizations={{
-        apps: [
-          {
-            clientId: "client-1",
-            name: "A client",
-            website: "https://client.example/",
-            scopes: ["read", "write"],
-            authorizedAt: CREATED,
-          },
-          {
-            clientId: "client-2",
-            name: "An application with a remarkably long name for its authorized row",
-            website: null,
-            scopes: [...SCOPES],
-            authorizedAt: CREATED,
-          },
-        ],
-        otherSessions: 2,
-      }}
-      csrf={CSRF}
-      notice="saved"
-      problems={[]}
-    />
-  ),
+  settings: settingsOf(credential),
   "setup-login": <SetupLoginPage problem="The setup session ended. Enter the setup token again." />,
   // The wizard with the domain confirmed and Access ready: a passed step, a warning with its hint and a failure.
   setup: (
@@ -610,6 +614,13 @@ const ELEMENTS: Record<PageName, Child> = {
 // The bytes the Worker sends for each page: c.html writes the rendered element as it is, inside L1Context on the
 // pages that load the L1 bundle (l1Page in src/app/public-pages.tsx), and in HostContext with the request's host, which
 // the routes of the pages without the site's chrome set (onHost) and no other page reads.
+// The settings page as the fixture's, with these of the account's values, for a check that needs others.
+export async function renderSettings(changes: Partial<CredentialAccount>): Promise<string> {
+  const page = <HostContext.Provider value={DOMAIN}>{settingsOf({ ...credential, ...changes })}</HostContext.Provider>;
+  // oxlint-disable-next-line typescript/no-unnecessary-type-conversion
+  return String(await (page as Child as JSXNode).toString());
+}
+
 export async function renderPages(): Promise<Record<PageName, string>> {
   const html = {} as Record<PageName, string>;
   for (const [name, element] of Object.entries(ELEMENTS) as [PageName, Child][]) {
