@@ -903,7 +903,7 @@ export function accountByLookup(db: Db, username: string, domain: string | null,
   // The prefix is a prefilter; shownHandle decides on the row as presented.
   const row = db.first<AccountRow>(
     `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
-			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! '`,
+			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! ' AND ${foundSql("a")}`,
     username,
   );
   return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
