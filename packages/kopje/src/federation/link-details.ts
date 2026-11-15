@@ -47,9 +47,8 @@ type Json = Record<string, unknown>;
 const SUPPORTED_TYPES = new Set(["NewsArticle", "WebPage"]);
 // CDATA_JUNK_PATTERN (:10-18): a line holding only a CDATA opening or closing in comment style. Ruby's ^ and $ match at
 // line boundaries, and its \s* may span blank lines before it, as JavaScript's does with the m flag. removeCdataJunk
-// removes what `/^\s*(?:\/\*\s*<!\[CDATA\[\s*\*\/|\/\/\s*<!\[CDATA\[|\/\*\s*\]\]>\s*\*\/|\/\/\s*\]\]>)\s*$/gm`
-// replaces (JavaScript's \s and line terminators; test/link-details.test.ts holds it to that pattern), in time linear
-// in the text's length.
+// removes what that pattern with the m flag replaces (JavaScript's \s and line terminators; test/link-details.test.ts
+// holds it to CDATA_JUNK_PATTERN), in time linear in the text's length.
 const SPACE = /\s/;
 
 const isLineEnd = (text: string, at: number): boolean => {
