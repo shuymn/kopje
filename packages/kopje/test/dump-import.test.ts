@@ -20,6 +20,11 @@ import type { StoreStub } from "../src/platform/store-client";
 import { type DumpCursor } from "../src/platform/store-dump";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { applyStagedLinks, MAX_LINK_STATEMENT_BYTES } from "../src/platform/store-import";
+import {
+  MAX_MEDIA_DESCRIPTION_LENGTH,
+  MEDIA_DESCRIPTION_BYTES,
+  mediaDescriptionSql,
+} from "../src/platform/stored-bounds";
 import { ACCOUNT_EMOJIS_FULL, STATUS_EMOJIS_FULL } from "./emoji-fixtures";
 import { BUILD, freshStore, MIGRATION_NAMES, migratedStore, rejectionOf, testKernel } from "./helpers";
 import {
@@ -43,7 +48,15 @@ import {
   TEAM_DOMAIN,
 } from "./ops-helpers";
 import { withoutTriggers } from "./pin-cap-helpers";
-import { blurhashOf, columnsSql, movedCountSql, seedBounded, storedSql, TABLES } from "./stored-bounds-fixtures";
+import {
+  blurhashOf,
+  COLUMNS_0048,
+  columnsSql,
+  movedCountSql,
+  seedBounded,
+  storedSql,
+  TABLES,
+} from "./stored-bounds-fixtures";
 
 const TOKEN = { kind: "import-token" } as const;
 
@@ -293,13 +306,12 @@ describe("dump", () => {
   // same migrations, which then upgrades through 0048 to P(x) of every value.
   it("restores a dump taken before 0048_stored_bounds, which then upgrades through it", async () => {
     await restoredBefore("0048_stored_bounds", seedBounded, async (sql, upgrade) => {
-      const expected = TABLES.map((table) => sql.exec(storedSql(table)).toArray());
-      expect(TABLES.map((table) => sql.exec<{ n: number }>(movedCountSql(table)).one().n).every((n) => n > 0)).toBe(
-        true,
-      );
+      const expected = TABLES.map((table) => sql.exec(storedSql(table, COLUMNS_0048)).toArray());
+      const moved = () => TABLES.map((table) => sql.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n);
+      expect(moved().every((n) => n > 0)).toBe(true);
       expect(await upgrade()).toMatchObject({ ok: true, applied: ["0048_stored_bounds"] });
       expect(TABLES.map((table) => sql.exec(columnsSql(table)).toArray())).toEqual(expected);
-      expect(TABLES.map((table) => sql.exec<{ n: number }>(movedCountSql(table)).one().n)).toEqual([0, 0, 0, 0]);
+      expect(moved()).toEqual([0, 0, 0, 0]);
     });
   }, 120_000);
 
@@ -1071,6 +1083,99 @@ describe("dump", () => {
     expect(String(await rejectionOf(importViaRpc(target, dump)))).toMatch(
       /media_attachments: blurhash past its stored bound/,
     );
+  }, 120_000);
+
+  // RES-2: a media description within MEDIA_DESCRIPTION_BYTES (0102), malformed UTF-8 that only an import holds, is
+  // dumped byte for byte and restored; one byte more, or a BLOB, is refused at apply.
+  it("round-trips a media description at its byte bound (0102), and refuses one past it or a BLOB on import", async () => {
+    const source = await seeded(0);
+    const id = "990000000000000012";
+    const at = `FF${"80".repeat(MEDIA_DESCRIPTION_BYTES - 1)}`;
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const remote = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NOT NULL ORDER BY id LIMIT 1")
+        .one().id;
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, type, url, description)
+				VALUES (?, ?, 'image', 'https://remote.test/m/2', CAST(unhex(?) AS TEXT))`,
+        id,
+        remote,
+        at,
+      );
+    });
+    const { text } = await dumpViaRpc(source);
+    const quoted = `CAST(X'${at}' AS TEXT)`;
+    expect(text).toContain(quoted);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    const stored = await runInDurableObject(
+      restored,
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{ h: string }>("SELECT hex(CAST(description AS BLOB)) AS h FROM media_attachments WHERE id = ?", id)
+          .one().h,
+    );
+    expect(stored).toBe(at);
+    // A dump from elsewhere, as its text could hold it: one byte past the bound, or a BLOB.
+    for (const literal of [`CAST(X'${at}80' AS TEXT)`, "X'616C74'"]) {
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, text.replace(quoted, literal))))).toMatch(
+        /media_attachments: a value past its stored bound/,
+      );
+    }
+  }, 120_000);
+
+  // RES-2: a dump taken before 0102_media_description_bytes restores into a Store at the same migrations, which then
+  // upgrades through 0102: descriptions a writer stores unchanged, imported ones (a malformed run past the byte bound,
+  // a BLOB) to P(x).
+  it("restores a dump taken before 0102_media_description_bytes, which then upgrades through it", async () => {
+    const values = [
+      ["", "text"],
+      ["\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH), "text"],
+      [`FF${"80".repeat(999_999)}`, "malformed"],
+      ["616C74", "blob"],
+    ] as const;
+    const seed = (sql: SqlStorage) => {
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES ('190000000000000002', 'https://r.test/u', 'u', 'r.test')",
+      );
+      for (const [i, [value, kind]] of values.entries()) {
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, description)
+					VALUES (?, '190000000000000002', 'image', 'https://r.test/m.png',
+						${kind === "text" ? "?" : kind === "malformed" ? "CAST(unhex(?) AS TEXT)" : "unhex(?)"})`,
+          `99000000000000010${i}`,
+          value,
+        );
+      }
+    };
+    const P = mediaDescriptionSql("description");
+    await restoredBefore("0102_media_description_bytes", seed, async (sql, upgrade) => {
+      const read = () =>
+        sql
+          .exec<{ kind: string; h: string; p: string }>(
+            `SELECT typeof(description) AS kind, hex(CAST(description AS BLOB)) AS h, hex(CAST((${P}) AS BLOB)) AS p
+						FROM media_attachments WHERE id GLOB '99000000000000010*' ORDER BY id`,
+          )
+          .toArray();
+      const before = read();
+      // Restored byte for byte, the BLOB as a BLOB.
+      expect(before.map((row) => row.kind)).toEqual(["text", "text", "text", "blob"]);
+      expect(before[2]!.h).toBe(values[2][0]);
+      expect(await upgrade()).toMatchObject({ ok: true, applied: ["0102_media_description_bytes"] });
+      const after = read();
+      expect(after.map((row) => row.h)).toEqual(before.map((row) => row.p));
+      expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+      expect(after.map((row) => [row.kind, row.h.length / 2])).toEqual([
+        ["text", 0],
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", 3],
+      ]);
+    });
   }, 120_000);
 
   it("round-trips field verification (0066), an open claim too, and refuses values past their bounds on import", async () => {

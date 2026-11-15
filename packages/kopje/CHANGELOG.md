@@ -194,6 +194,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- A media description holds at most 40,000 bytes as well as 10,000 characters; an import refuses a longer one, and the
+  upgrade cuts a stored one (only an imported row of malformed UTF-8 or a BLOB holds one). The API, ActivityPub and
+  filters show at most a description's first 10,000 code points once decoded. Migration
+  `0102_media_description_bytes` rewrites such descriptions and makes the media bound triggers again; the upgrade
+  checks no reference (6,630 ms for this file in one local run of the migration bench, at a load average of 21 to
+  40). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
+  rolling back past it needs a point-in-time restore.
 
 ### Fixed
 

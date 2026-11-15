@@ -310,6 +310,12 @@ of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) 
 anything else fails with `media_attachments: blurhash past its stored bound`. A dump taken before 0065 has no such
 column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
 
+Media descriptions (migration `0102_media_description_bytes`): `media_attachments.description` is text of at most
+40,000 UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a
+BLOB, fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for
+byte, and presented as its first 10,000 code points once decoded. A dump taken before 0102 may hold a longer one or a
+BLOB: it restores into a Store at its own migrations, whose upgrade then cuts it to the bound, as text.
+
 Field verification (migration `0066_field_verification`): `local_accounts.links_due_at` and `links_hold_until` are NULL
 or non-negative integers (milliseconds), `links_claim` a non-negative integer and `links_attempts` an integer from 0 to
 2 (CHECKs `links_due_at_time`, `links_hold_until_time`, `links_claim_count` and `links_attempts_count`); a restored open

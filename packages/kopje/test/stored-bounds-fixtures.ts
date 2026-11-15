@@ -2,6 +2,7 @@ import {
   BASE83,
   BIO_JSON_BYTES,
   CONTENT_JSON_BYTES,
+  cutSql,
   DISPLAY_NAME_LIMIT,
   MAX_MEDIA_DESCRIPTION_LENGTH,
   MAX_REMOTE_OPTION_LENGTH,
@@ -79,9 +80,20 @@ export const JSON_BOUNDED = Object.entries(STORED_COLUMNS).flatMap(([table, colu
   columns.filter((c) => c.jsonBytes !== undefined).map((c) => ({ table, column: c.column })),
 );
 
+type Covered = typeof STORED_COLUMNS;
+
+// The covered columns as 0048_stored_bounds bounded them: the description by cutSql's character cut, which
+// 0102_media_description_bytes replaced, and the rest as STORED_COLUMNS has them.
+export const COLUMNS_0048: Covered = {
+  ...STORED_COLUMNS,
+  media_attachments: (STORED_COLUMNS.media_attachments ?? []).map((c) =>
+    c.column === "description" ? { ...c, projection: (x: string) => cutSql(x, MAX_MEDIA_DESCRIPTION_LENGTH) } : c,
+  ),
+};
+
 // SQL that counts the rows of `table` whose covered columns are not all fixed points of their projections.
-export function movedCountSql(table: string): string {
-  const columns = STORED_COLUMNS[table] ?? [];
+export function movedCountSql(table: string, covered: Covered = STORED_COLUMNS): string {
+  const columns = covered[table] ?? [];
   return `SELECT count(*) AS n FROM ${table} WHERE ${columns
     .map((c) => `(${c.projection(c.column)}) IS NOT ${c.column}`)
     .join(" OR ")}`;
@@ -90,10 +102,10 @@ export function movedCountSql(table: string): string {
 // The bytes of `value` as SQLite stores it, in hex, and NULL for NULL: values compare by bytes, not as decoded text.
 const bytesSql = (value: string) => `CASE WHEN (${value}) IS NOT NULL THEN hex(CAST((${value}) AS BLOB)) END`;
 
-// What 0048_stored_bounds stores for each covered column of `table` (its projection, or '' for a media URL), by rowid,
-// as bytes.
-export function storedSql(table: string): string {
-  const columns = STORED_COLUMNS[table] ?? [];
+// What a rewrite to `covered`'s projections stores for each covered column of `table` (its projection, or '' for a
+// media URL), by rowid, as bytes.
+export function storedSql(table: string, covered: Covered = STORED_COLUMNS): string {
+  const columns = covered[table] ?? [];
   const values = columns.map((c) => `${bytesSql((c.stored ?? c.projection)(c.column))} AS ${c.column}`);
   return `SELECT rowid AS r, ${values.join(", ")} FROM ${table} ORDER BY rowid`;
 }

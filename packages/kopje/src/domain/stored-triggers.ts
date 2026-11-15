@@ -113,7 +113,8 @@ const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
 
 // Each trigger's statement, by the migration that last defines it.
 const STATEMENTS: readonly string[] = [
-  // 0048_stored_bounds: a write where P(NEW.x) IS NOT NEW.x.
+  // 0048_stored_bounds: a write where P(NEW.x) IS NOT NEW.x. media_attachments' pair is as
+  // 0102_media_description_bytes made it again, over its description's P.
   ...Object.entries(STORED_COLUMNS).flatMap(([table, columns]) =>
     boundTriggers(
       `${table}_bounds`,

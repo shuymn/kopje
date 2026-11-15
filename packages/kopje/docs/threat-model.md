@@ -2900,6 +2900,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   triggers `<table>_bounds_insert` and `<table>_bounds_update` (`migrations/0048_stored_bounds.sql`) abort any write
   where `P(NEW.x) IS NOT NEW.x`. Reads take these columns as stored: since P(P(x)) = P(x), a rewritten row presents
   what a read through P presented before. The columns that keep read-time projections are listed at `STORED_COLUMNS`.
+  A media description's P (`mediaDescriptionSql`) bounds it by bytes as well: text within 40,000 UTF-8 bytes
+  (`MEDIA_DESCRIPTION_BYTES`, four a code point) and 10,000 SQLite characters, which count a malformed run as one;
+  migration `0102_media_description_bytes` set every stored description to it (a malformed run past the bytes, or a
+  BLOB, only an import holds) and made `media_attachments`' pair of triggers again with it, so an import refuses one
+  past it; on text within the bytes it is 0048's cut, so no writer's description changes (`test/migrations.test.ts`
+  ("0102_media_description_bytes"), `test/dump-import.test.ts` ("round-trips a media description at its byte bound",
+  "restores a dump taken before 0102_media_description_bytes")).
   `test/stored-bounds.test.ts` ("P is idempotent and the writer's output is its fixed point", "answers every converted
   row after the rewrite"), `test/migrations.test.ts` (0048: "stores each covered value as P(x)", "refuses a value one
   past its bound on insert and update", "fails by its check on an uploaded media URL past the bound"),
@@ -3040,8 +3047,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stored rows, or NULL when an input is not text after affinity (judged in SQL first, so no JavaScript runs on it); a
   text change clears the column in its own SET, so a hide fires no trigger. A stored figure never raises what is matched
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
-  its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
-  imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  its cost is a presentation's: media descriptions are bounded by bytes as well as characters (0102: at most 40,000
+  bytes, so a malformed UTF-8 run in an imported one decodes to at most 40,000 U+FFFD), and the filter text holds each
+  as presented, its first 10,000 code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  `test/status-bounds.test.ts` ("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the
+  filter text"),
   `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at` and `edited_at` have
   no stored bound (TEXT, no CHECK or trigger; adding one would rewrite every status, each row whole), so an imported or
   converted row may hold any value there. The writers store only the 24-byte ISO form: the remote writers (`remoteTime`
@@ -3180,7 +3190,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
   (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
-  descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
+  descriptions within 10,000 code points and `MEDIA_DESCRIPTION_BYTES` (40,000) and presented within 10,000 code
+  points after decoding (`presentedMediaDescription`, live, scheduled, from an edit's snapshot, as a Note's or a legacy
+  Image's `name` and in the filter text), meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. Columns that keep a read-time projection are read through their helper in
   `src/domain/status-bounds.ts` (accounts and actor ids through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes
   reads as ''; at most 4 attachments per status; at most 200 mentions and 70 hashtags (of the 100 stored) per status,
@@ -4381,7 +4393,11 @@ bound, 2,048 bytes as JSON, the most it presents. An imported account whose disp
 in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192 and 65,534
 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of the row and
 that within the raw fill's, and presenting within the escaped fill's account occurrence (`test/status-bounds.test.ts`
-("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
+("an account of malformed imported text")). An imported attachment description of malformed UTF-8 at its stored
+bound (0xFF and continuation bytes to `MEDIA_DESCRIPTION_BYTES`, 40,000) decodes to 40,000 U+FFFD, of which every
+presenter shows the first 10,000 (`presentedMediaDescription`): within the escaped fill's description, so the fills
+stay the maxima; a status of four such attachments reads within R (`test/status-bounds.test.ts` ("an attachment of
+malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own

@@ -25,7 +25,7 @@ import {
   MAX_FIELDS,
   VERIFIED_AT_JSON_BYTES,
 } from "../src/domain/accounts";
-import { createActivity, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
+import { createActivity, getLegacyObject, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { OWNER_ROLE } from "../src/domain/auth";
@@ -60,10 +60,11 @@ import {
   presentation,
   presentedMediaUrl,
   presentStatusesWithin,
+  storedSearchableText,
 } from "../src/domain/status-presenter";
 import { statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
-import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
+import { getStatus, getStatuses, recordEdit, statusHistory } from "../src/domain/statuses";
 import { streamUnit } from "../src/domain/streaming";
 import {
   LINK_ACCT_JSON_BYTES,
@@ -91,6 +92,7 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
+  MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
   mediaCategorySql,
   ACCOUNT_EMOJIS_BYTES,
@@ -2585,6 +2587,167 @@ describe("an account of malformed imported text (RES-3)", () => {
       expect({ name: account.display_name, note: account.note }).toEqual({ name: "\uFFFD".repeat(2048), note: "" });
     }
   }, 300_000);
+});
+
+// A status of alice's whose four attachments hold imported descriptions of malformed UTF-8 at 0102's stored bound:
+// 0xFF and continuation bytes to MEDIA_DESCRIPTION_BYTES, one character to SQLite, which decode to 40,000 U+FFFD.
+// Every presenter shows MAX_MEDIA_DESCRIPTION_LENGTH of them (presentedMediaDescription), within the escaped fill's
+// description (that many code points of six JSON bytes): REST, the stream unit of its edit, the edit history (a
+// snapshot an edit recorded, and an imported one past the byte bound), the Note's attachment names, the legacy
+// Image's name and the filter text; and the rows its read takes stay within R.
+describe("an attachment of malformed imported text (RES-3)", () => {
+  const malformed = (bytes: number, tail = "") => {
+    const run = new Uint8Array(bytes).fill(0x80);
+    run[0] = 0xff;
+    return new Uint8Array([...run, ...new TextEncoder().encode(tail)]).buffer;
+  };
+  const SHOWN = "�".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+  const DESCRIPTION_JSON_MAX = jsonBytes(C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH));
+
+  it("presents each description within MAX_MEDIA_DESCRIPTION_LENGTH code points everywhere", async () => {
+    const t = await setup();
+    const id = await storedStatus(t, ALICE, {
+      content: "<p>described</p>",
+      spoiler: "",
+      media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
+        url: `https://m.example/${i}.png`,
+        preview: null,
+        description: "",
+        meta: null,
+      })),
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    const at = new Date(NOW).toISOString();
+    await runInDurableObject(t.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(
+        "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+        malformed(MEDIA_DESCRIPTION_BYTES),
+        id,
+      );
+      sql.exec(
+        `UPDATE media_attachments SET legacy_ap_o = 'legacy-image'
+				WHERE id = (SELECT min(id) FROM media_attachments WHERE status_id = ?)`,
+        id,
+      );
+      // An edit records the status as it is now (statuses.ts recordEdit), and an imported snapshot holds one past the
+      // byte bound, within EDIT_MEDIA_BYTES.
+      recordEdit(new Db(sql), id, at);
+      sql.exec(
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				VALUES (?1, '<p>imported</p>', '', CAST(?2 AS TEXT), ?3)`,
+        id,
+        new Uint8Array([
+          ...new TextEncoder().encode('[{"id":"m","type":"image","description":"'),
+          ...new Uint8Array(malformed(100_000)),
+          ...new TextEncoder().encode('"}]'),
+        ]).buffer,
+        at,
+      );
+      sql.exec("UPDATE statuses SET edited_at = ? WHERE id = ?", at, id);
+      // Stored: MEDIA_DESCRIPTION_BYTES each, one character to SQLite.
+      expect(
+        sql
+          .exec(
+            "SELECT length(CAST(description AS BLOB)) AS bytes, length(description) AS characters FROM media_attachments WHERE status_id = ?",
+            id,
+          )
+          .toArray(),
+      ).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, () => ({ bytes: MEDIA_DESCRIPTION_BYTES, characters: 1 })));
+    });
+    const described = (media: readonly { description?: unknown; name?: unknown }[], key: "description" | "name") => {
+      expect(media).toHaveLength(MAX_STATUS_MEDIA);
+      for (const m of media) {
+        expect(m[key]).toBe(SHOWN);
+        expect(jsonBytes(m[key])).toBeLessThanOrEqual(DESCRIPTION_JSON_MAX);
+      }
+    };
+    // REST.
+    const rest = (await read(t, getStatus, id)).answer as Presented;
+    described(rest.media_attachments, "description");
+    // The stream unit of an edit, as the hub presents it.
+    const tokenHashes = [await sha256Hex(t.tokens.alice)];
+    const unit = await runInDurableObject(t.store, (_instance, state) =>
+      streamUnit.run(state.storage.sql, { kind: "edit", subject: id, accountId: ALICE, tokenHashes, now: NOW }),
+    );
+    expect(unit.event).toBe("status.update");
+    described((unit.payload as Presented).media_attachments, "description");
+    // The edit history: the current version, the snapshot the edit recorded and the imported one, whose description
+    // editMediaSql cuts to MEDIA_DESCRIPTION_BYTES (40,000 U+FFFD decoded).
+    const history = (await read(t, statusHistory, id)).answer as {
+      content: string;
+      media_attachments: Presented["media_attachments"];
+    }[];
+    const versions = Object.fromEntries(history.map((v) => [v.content, v.media_attachments]));
+    described(versions["<p>described</p>"]!.slice(0, MAX_STATUS_MEDIA), "description");
+    expect(versions["<p>imported</p>"]!.map((m) => m.description)).toEqual([SHOWN]);
+    // The Note's attachments, and the legacy Image.
+    const { note, image, filterText } = await runInDurableObject(t.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const facts = statusFacts(db, id, noteQuote, { reached: false })!;
+      const legacy = getLegacyObject.run(state.storage.sql, { uuid: "legacy-image", origin: ORIGIN }) as unknown;
+      let found = legacy as { image?: string | null; value?: unknown; status?: string };
+      while (found.image === undefined && found.value !== undefined) {
+        found = found.value as typeof found;
+      }
+      return {
+        note: noteOf(facts),
+        image: JSON.parse(found.image ?? "null") as { name?: string },
+        filterText: storedSearchableText(db, id, at),
+      };
+    });
+    described(
+      (note.attachment as { name?: unknown }[]).filter((a) => "name" in a),
+      "name",
+    );
+    expect(image.name).toBe(SHOWN);
+    // The filter text holds the descriptions as shown.
+    expect(filterText).toBe(
+      ["", "described", Array.from({ length: MAX_STATUS_MEDIA }, () => SHOWN).join("\n\n")].join("\n\n"),
+    );
+    // The rows the read takes stay within R.
+    const rows = await runInDurableObject(t.store, (_instance, state) => {
+      const real = state.storage.sql;
+      const visible = [id as VisibleStatusId];
+      const shared = presentation(new Db(real), visible, { origin: ORIGIN, viewer: { accountId: ALICE, now: at } });
+      let bytes = 0;
+      const counting = observedSql(real, (read) => {
+        bytes += heap(read);
+      });
+      presentStatusesWithin(new Db(counting), shared, visible, Infinity, true, 1);
+      const [bound] = real
+        .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS)
+        .toArray();
+      return { bytes, bound: bound!.bytes };
+    });
+    expect(rows.bytes).toBeLessThanOrEqual(rows.bound);
+  }, 120_000);
+
+  // A keyword past the 10,000th code point of a description as decoded is not in the filter text, as it is not shown.
+  it("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the filter text", async () => {
+    const t = await setup();
+    const id = await storedStatus(t, ALICE, {
+      content: "<p>x</p>",
+      spoiler: "",
+      media: [{ url: "https://m.example/0.png", preview: null, description: "", meta: null }],
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    const text = await runInDurableObject(t.store, (_instance, state) => {
+      // 10,001 bytes of a malformed run, then the keyword: seven characters to SQLite, within both bounds.
+      state.storage.sql.exec(
+        "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+        malformed(MAX_MEDIA_DESCRIPTION_LENGTH + 1, "secret"),
+        id,
+      );
+      return storedSearchableText(new Db(state.storage.sql), id, new Date(NOW).toISOString());
+    });
+    expect(text).toBe(`\n\nx\n\n${SHOWN}`);
+    expect(text).not.toContain("secret");
+  });
 });
 
 describe("the table of maxima (RES-3)", () => {

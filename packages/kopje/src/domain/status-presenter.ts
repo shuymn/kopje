@@ -10,9 +10,11 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_TYPES,
+  cutCodePoints,
   embedSrcAttribute,
   isAppWebsite,
   isIsoTime,
+  MAX_MEDIA_DESCRIPTION_LENGTH,
   MAX_REMOTE_OPTIONS,
   presentedAppName,
   presentedCardText,
@@ -629,7 +631,7 @@ function searchableText(row: TextRow, poll: Poll | undefined, media: readonly Me
     row.spoiler_text,
     row.author_domain === null ? (row.source_text ?? htmlToPlainText(row.content)) : remotePlainText(row.content),
     ...(poll === undefined ? [] : [poll.options.map((option) => option.title).join("\n\n")]),
-    media.map((m) => m.description).join("\n\n"),
+    media.map((m) => presentedMediaDescription(m.description) ?? "").join("\n\n"),
   ].join("\n\n");
 }
 
@@ -1112,9 +1114,16 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
     preview_remote_url: remote ? remotePreview : null,
     text_url: null,
     meta: Object.keys(meta).length === 0 ? null : meta,
-    description: row.description === "" ? null : row.description,
+    description: presentedMediaDescription(row.description),
     blurhash: storedBlurhash(row.blurhash),
   };
+}
+
+// A media description as presented, live, scheduled, federated or from an edit's snapshot (RES-3): its first
+// MAX_MEDIA_DESCRIPTION_LENGTH code points as decoded, so at most that however a stored value within
+// MEDIA_DESCRIPTION_BYTES decodes (a malformed byte to one U+FFFD); null for '' and for a value that is not a string.
+export function presentedMediaDescription(value: unknown): string | null {
+  return typeof value !== "string" || value === "" ? null : cutCodePoints(value, MAX_MEDIA_DESCRIPTION_LENGTH);
 }
 
 const ENCODER = new TextEncoder();
