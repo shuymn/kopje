@@ -450,8 +450,10 @@ export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, 
         deliveredTo: null,
         fetched: true,
       });
-      const status = stored.statusId === undefined ? undefined : statusByUri(db, uri);
-      if (status !== undefined && pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
+      // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's slot
+      // is the one it takes.
+      const status = stored.statusId === undefined ? undefined : pinnableStatus(db, stored.statusId);
+      if (pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
         db.run(
           "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
           account.id,

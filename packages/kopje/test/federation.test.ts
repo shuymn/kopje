@@ -170,6 +170,31 @@ describe("actor document", () => {
     expect(document).toMatchObject({ id: "https://social.example/ap/users/Alice", type: "Person" });
   });
 
+  it("declares its handle in webfinger with its context, suspended too, as Mastodon 4.6 (FEP-2c59)", async () => {
+    const { json, store } = await instance();
+    for (const suspended of [false, true]) {
+      if (suspended) {
+        await runInDurableObject(store, (_instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z' WHERE account_id = ?",
+            ALICE,
+          );
+        });
+      }
+      const { status, body } = await json("/ap/users/Alice");
+      expect(status).toBe(200);
+      const document = body as Record<string, unknown>;
+      // The stored username's spelling at the domain fixed at setup.
+      expect(document.webfinger, String(suspended)).toBe("Alice@social.example");
+      expect(document["@context"], String(suspended)).toContain("https://purl.archive.org/socialweb/webfinger");
+      expect(document.suspended, String(suspended)).toBe(suspended ? true : undefined);
+    }
+    // The instance actor declares none: WebFinger answers it only by its URL.
+    const actor = (await json("/actor")).body as Record<string, unknown>;
+    expect(actor).not.toHaveProperty("webfinger");
+    expect(JSON.stringify(actor["@context"])).not.toContain("socialweb/webfinger");
+  });
+
   it("answers 404 for an unknown actor and for a differently cased path", async () => {
     const { request } = await instance();
     expect((await request("/ap/users/nobody", AP)).status).toBe(404);

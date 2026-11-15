@@ -30,6 +30,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   change.
 - An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
   `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
+- A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to
+  it, as Mastodon does: an `Update` edits it, replies waiting on the other id are linked to it, and a boost, pin or
+  quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
+  handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
