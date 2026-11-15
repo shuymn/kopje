@@ -1197,7 +1197,7 @@ export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput
       const name = input.quotePolicy ?? localAuthor(db, accountId).default_quote_policy;
       setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), Date.parse(viewer.now));
     }
-    return viewed(presentStatus(db, visible, { ...input.present, viewer }));
+    return viewed(presentStatus(db, visible, { ...input.present, viewer, proper: true }));
   },
 );
 
@@ -1303,7 +1303,7 @@ export const deleteStatus = userMediaDeleteOperation<
   if (current === null) {
     return { status: "not_found" };
   }
-  const value = presentOwn(db, accountId, current.id, { ...input.present, viewer, source: true });
+  const value = presentOwn(db, accountId, current.id, { ...input.present, viewer, source: true, proper: true });
   if (value === null) {
     return { status: "not_found" };
   }
@@ -1443,7 +1443,7 @@ export function viewable(db: Db, viewerId: string | null, id: string) {
 export const getStatus = optionalUserReadOperation<{ id: string; present: Present }, Viewed<Status>>(
   (db, { id, present }, viewer) => {
     const resolved = viewable(db, viewer.accountId, id);
-    return viewed(resolved === null ? null : presentStatus(db, resolved, { ...present, viewer }));
+    return viewed(resolved === null ? null : presentStatus(db, resolved, { ...present, viewer, proper: true }));
   },
 );
 
@@ -1472,7 +1472,7 @@ export const getStatuses = optionalUserReadOperation<{ ids: readonly string[]; p
       viewer.now,
     );
     const visible = rows.map((row) => row.id).toSorted((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-    const options = { ...present, viewer };
+    const options = { ...present, viewer, proper: true as const };
     return presentStatusesWithin(db, presentation(db, visible, options), visible, ARRAY_ANSWER_BYTES, true).items;
   },
 );
@@ -1960,7 +1960,7 @@ export const reblog = userWriteOperation<ReblogInput, Acted<Status>>((db, input,
   ) {
     return { status: "forbidden" };
   }
-  const options = { ...input.present, viewer };
+  const options = { ...input.present, viewer, proper: true as const };
   const existing = keptBoost(db, accountId, target.id);
   if (existing !== null) {
     return viewed(presentOwn(db, accountId, existing, options));
