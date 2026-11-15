@@ -1,6 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { VALUE_BYTES } from "../../src/db/sql";
+import { statusRowBoundSql } from "../../src/domain/status-rows";
 import { boundedWindow, type MergedRow, type Window } from "../../src/domain/windows";
 import { migratedStore } from "../helpers";
 import { statementId } from "../plan-audit";
@@ -47,6 +49,111 @@ function windowResult(main: string, mine: string): NonNullable<Baseline["result"
   };
 }
 
+// The columns added to the account read since main's base (migration 0096_profile_descriptions), which main's
+// statements cannot read, with their defaults: those of them the rewrite reads and main's text does not, and the
+// comparison of a pair's rows without them, so every row and every other value is still main's.
+const ADDED_DEFAULTS = {
+  avatar_description: "",
+  header_description: "",
+  show_featured: 1,
+  show_media: 1,
+  show_media_replies: 1,
+} as const;
+const ADDED_COLUMNS = Object.keys(ADDED_DEFAULTS);
+const reads = (text: string, column: string) => new RegExp(`\\bAS ${column}(?![A-Za-z0-9_])`).test(text);
+const addedSinceBase = (main: string, mine: string) =>
+  ADDED_COLUMNS.filter((column) => reads(mine, column) && !reads(main, column));
+function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"]> {
+  return {
+    main: (rows: SqlRow[]) => rows,
+    mine: (rows: SqlRow[]) =>
+      rows.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => !columns.includes(key)))),
+  };
+}
+
+// R (statusRowBoundSql) counts the author account row of each status row an item reads by
+// rowHeapSql(ACCOUNT_COLUMN_MAP), and so the added columns, which main's text does not count: VALUE_BYTES and twice
+// its value's UTF-8 bytes for each, ADDED_ROW_BYTES for an account that holds their defaults. R's rows as main's
+// statement counts them: each item's bytes less ADDED_ROW_BYTES for each of those account rows, counted in the world
+// (authorRows), with every other value, the items and their order still main's.
+const ADDED_ROW_BYTES = Object.values(ADDED_DEFAULTS).reduce(
+  (sum, value) => sum + VALUE_BYTES + 2 * new TextEncoder().encode(String(value)).length,
+  0,
+);
+const R_TEXT = normalized(statusRowBoundSql());
+const counts = (text: string, column: string) => text.includes(`octet_length(a.${column})`);
+function rWithoutAdded(authorRows: (ids: readonly string[]) => readonly number[]): NonNullable<Baseline["result"]> {
+  return {
+    main: (rows: SqlRow[]) => rows,
+    mine: (rows: SqlRow[], params: readonly SqlStorageValue[]) => {
+      const accounts = authorRows(JSON.parse(params[0] as string) as string[]);
+      return (rows as { k: number; bytes: number }[]).map((row) => {
+        const n = accounts[row.k];
+        if (n === undefined) {
+          throw new Error(`R: no item at ${row.k}`);
+        }
+        return { ...row, bytes: row.bytes - n * ADDED_ROW_BYTES };
+      });
+    },
+  };
+}
+
+// The author account rows R reads for each item of `ids` in the world `sql`: those of the status, its boosted
+// original and the quoted status of the status or of its original (the status rows of statusRowBoundSql's x), each
+// that is stored. Each holds the added columns' defaults and has not moved (its moved-to account's added flags would
+// count too), so that ADDED_ROW_BYTES is the whole of its difference.
+const OTHER_THAN_DEFAULTS = [
+  ...Object.entries(ADDED_DEFAULTS).map(
+    ([column, value]) => `a.${column} IS NOT ${typeof value === "string" ? `'${value}'` : value}`,
+  ),
+  "a.moved_to_account_id IS NOT NULL",
+].join(" OR ");
+function authorRowsIn(sql: SqlStorage, ids: readonly string[]): number[] {
+  return ids.map((id) => {
+    const { n, other } = sql
+      .exec<{ n: number; other: number }>(
+        `SELECT count(*) AS n, count(CASE WHEN ${OTHER_THAN_DEFAULTS} THEN 1 END) AS other
+					FROM (SELECT ?1 AS id
+						UNION ALL SELECT b.reblog_of_id FROM statuses b WHERE b.id = ?1
+						UNION ALL SELECT q.quoted_status_id FROM statuses b
+							JOIN quotes q ON q.status_id = coalesce(b.reblog_of_id, b.id) WHERE b.id = ?1) x
+					JOIN statuses w ON w.id = x.id JOIN accounts a ON a.id = w.account_id`,
+        id,
+      )
+      .one();
+    if (other > 0) {
+      throw new Error(`R: an author account of ${id} holds other than the added columns' defaults, or has moved`);
+    }
+    return n;
+  });
+}
+
+// The world the case runs in, for R's hook.
+let caseWorld: SqlStorage | undefined;
+const authorRows = (ids: readonly string[]) => {
+  if (caseWorld === undefined) {
+    throw new Error("R: no world");
+  }
+  return authorRowsIn(caseWorld, ids);
+};
+
+// How a pair's rows compare: a window's through each side's post-processing; R's and the account read's without what
+// the added columns add. Any other statement that counts an added column fails.
+function resultOf(key: string, main: string, mine: string): Baseline["result"] {
+  if (main.includes("f(bound) AS")) {
+    return windowResult(main, mine);
+  }
+  const counted = ADDED_COLUMNS.filter((column) => counts(mine, column) && !counts(main, column));
+  if (counted.length > 0) {
+    if (mine !== R_TEXT || counted.length !== ADDED_COLUMNS.length) {
+      throw new Error(`${key}: a statement other than R counts ${counted.join(", ")} beside main's`);
+    }
+    return rWithoutAdded(authorRows);
+  }
+  const added = addedSinceBase(main, mine);
+  return added.length > 0 ? withoutAdded(added) : undefined;
+}
+
 type Plan = { witness: PlanWitness; expected: string[] };
 const plans = new Map<string, Plan>();
 
@@ -72,12 +179,13 @@ async function planOf(key: string, writes: string | undefined): Promise<Plan> {
       throw new Error(`${key}: main's ${id} has two rewrites`);
     }
     const leading = MAIN_PARAMETERS[id]?.count;
+    const result = resultOf(key, main, mine);
     baselines[id] = {
       sql: main,
       text: mine,
       ...(leading === undefined ? {} : { params: (params: readonly SqlStorageValue[]) => params.slice(0, leading) }),
       ...(writes === undefined ? {} : { writes }),
-      ...(main.includes("f(bound) AS") ? { result: windowResult(main, mine) } : {}),
+      ...(result === undefined ? {} : { result }),
     };
     expected.push(id);
   }
@@ -94,6 +202,49 @@ beforeAll(async () => {
 });
 
 describe("the rewritten statements beside main's", () => {
+  it("compare a pair's rows without only the columns the rewrite reads and main's text does not", () => {
+    const main = "SELECT a.id AS id, a.show_media AS show_media FROM accounts a";
+    const mine =
+      "SELECT a.id AS id, a.show_media AS show_media, a.show_media_replies AS show_media_replies FROM accounts a";
+    expect(addedSinceBase(main, mine)).toEqual(["show_media_replies"]);
+    expect(addedSinceBase(mine, mine)).toEqual([]);
+    const { mine: shown } = withoutAdded(["show_media_replies"]);
+    expect(shown([{ id: "1", show_media: 0, show_media_replies: 1 }], [])).toEqual([{ id: "1", show_media: 0 }]);
+  });
+
+  it("compare R's items with exactly ADDED_ROW_BYTES more for each author account row of each", () => {
+    const { main: of, mine: shown } = rWithoutAdded(() => [2, 1]);
+    const params = [JSON.stringify(["1", "2"]), null, 0];
+    const main = [
+      { k: 0, bytes: 7_442 },
+      { k: 1, bytes: 3_696 },
+    ];
+    const plus = (perRow: number, rows: readonly number[]) =>
+      main.map(({ k, bytes }) => ({ k, bytes: bytes + perRow * rows[k]! }));
+    expect(shown(plus(ADDED_ROW_BYTES, [2, 1]), params)).toEqual(of(main, params));
+    expect(shown(plus(ADDED_ROW_BYTES - 1, [2, 1]), params)).not.toEqual(of(main, params));
+    expect(shown(plus(ADDED_ROW_BYTES, [3, 1]), params)).not.toEqual(of(main, params));
+    expect(shown(plus(ADDED_ROW_BYTES, [2, 1]).toReversed(), params)).not.toEqual(of(main, params));
+    expect(() => shown([{ k: 2, bytes: 0 }], params)).toThrow("no item at 2");
+  });
+
+  it("count R's author account rows in the world, each holding the added columns' defaults", async () => {
+    const store = await migratedStore();
+    await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      buildWorld(sql, WORLDS[0]!);
+      const { id, account } = sql
+        .exec<{ id: string; account: string }>(
+          `SELECT id, account_id AS account FROM statuses
+						WHERE reblog_of_id IS NULL AND id NOT IN (SELECT status_id FROM quotes) ORDER BY id LIMIT 1`,
+        )
+        .one();
+      expect(authorRowsIn(sql, [id, "0"])).toEqual([1, 0]);
+      sql.exec("UPDATE accounts SET avatar_description = 'A cat' WHERE id = ?", account);
+      expect(() => authorRowsIn(sql, [id])).toThrow("holds other than the added columns' defaults");
+    });
+  });
+
   it("are main's audited statements, each paired with one rewrite", async () => {
     // Each allowance is a baseline's, so none outlives the statement it was given for.
     const baselineIds = new Set([...plans.values()].flatMap(({ expected }) => expected));
@@ -120,6 +271,7 @@ describe("the rewritten statements beside main's", () => {
         const sql = state.storage.sql;
         const transact = <T>(fn: () => T): T => state.storage.transactionSync(fn);
         const context = buildWorld(sql, world);
+        caseWorld = sql;
         const lines: string[] = [];
         let populations: Record<string, number> = {};
         for (const [flow, { run }] of Object.entries(FLOWS)) {

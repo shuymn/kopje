@@ -99,8 +99,9 @@ const REMOTE_VERIFIED_SQL = `CASE WHEN a.domain IS NOT NULL THEN (SELECT CASE WH
 
 // RES-2: stored profile bounds: platform/stored-bounds.ts; username and actor id read projections: profile-bounds.ts;
 // fields: REMOTE_ATTACHMENT_SQL and remoteFields. The display name is read by its stored bytes (displayNameReadSql),
-// and it and the note are bounded again after decoding (presentedDisplayName, presentedNote). Maxima: the account
-// occurrence in docs/threat-model.md, "Maxima of presented units".
+// and it and the note are bounded again after decoding (presentedDisplayName, presentedNote). The image descriptions
+// and display settings are read as stored (0096's triggers bound them), and the descriptions cut again after decoding
+// (presentedProfileDescription). Maxima: the account occurrence in docs/threat-model.md, "Maxima of presented units".
 export const ACCOUNT_COLUMN_MAP = {
   id: "a.id",
   uri: actorUriSql("a.uri"),
@@ -114,9 +115,14 @@ export const ACCOUNT_COLUMN_MAP = {
   header_url: "a.header_url",
   avatar_static_url: "a.avatar_static_url",
   header_static_url: "a.header_static_url",
+  avatar_description: "a.avatar_description",
+  header_description: "a.header_description",
   locked: "a.locked",
   discoverable: "a.discoverable",
   indexable: "a.indexable",
+  show_featured: "a.show_featured",
+  show_media: "a.show_media",
+  show_media_replies: "a.show_media_replies",
   followers_count: presentedCountSql("a.followers_count"),
   following_count: presentedCountSql("a.following_count"),
   statuses_count: presentedCountSql("a.statuses_count"),
@@ -144,15 +150,15 @@ function lastStatusAtSql(a: string): string {
 }
 
 // The account an account moved to, as it presents nested in Account#moved (docs/mastodon-deviations.md, "Accounts"):
-// its identity and counts, no note or fields, and of its emojis only those its cut display name references, so that
-// no target is read past what it shows (RES-3). Every text is cut in SQL by its raw UTF-8 bytes (an imported value
-// may be malformed UTF-8, which SQLite's substr counts as fewer characters), then by its decoded limit in the
-// presenter (presentMovedAccount): display_name at MOVED_DISPLAY_NAME_LIMIT code points (400 bytes read), username at
-// USERNAME_LIMIT (1,020 bytes read), created_at at 24 and last_status_at at 10 (96 and 40 bytes read). The uri and
-// URLs read as unset past MOVED_URL_LIMIT bytes (the statics past STATIC_URL_LIMIT, their stored bound), and are shown
-// only within MOVED_URL_LIMIT as JSON writes them; emojis are the stored snapshot (ACCOUNT_EMOJIS_BYTES, 0053's
-// trigger), shown within MOVED_EMOJIS_BYTES of JSON. A target whose domain passes DOMAIN_BYTES is not read (no
-// `moved`).
+// its identity, counts and display settings, no note, fields or image descriptions, and of its emojis only those its
+// cut display name references, so that no target is read past what it shows (RES-3). Every text is cut in SQL by its
+// raw UTF-8 bytes (an imported value may be malformed UTF-8, which SQLite's substr counts as fewer characters), then by
+// its decoded limit in the presenter (presentMovedAccount): display_name at MOVED_DISPLAY_NAME_LIMIT code points (400
+// bytes read), username at USERNAME_LIMIT (1,020 bytes read), created_at at 24 and last_status_at at 10 (96 and 40
+// bytes read). The uri and URLs read as unset past MOVED_URL_LIMIT bytes (the statics past STATIC_URL_LIMIT, their
+// stored bound), and are shown only within MOVED_URL_LIMIT as JSON writes them; emojis are the stored snapshot
+// (ACCOUNT_EMOJIS_BYTES, 0053's trigger), shown within MOVED_EMOJIS_BYTES of JSON. A target whose domain passes
+// DOMAIN_BYTES is not read (no `moved`).
 export const MOVED_DISPLAY_NAME_LIMIT = 100;
 export const MOVED_URL_LIMIT = 512;
 export const MOVED_EMOJIS_BYTES = 2048;
@@ -179,6 +185,9 @@ const MOVED_COLUMN_MAP = {
   locked: movedFlag("m.locked"),
   discoverable: movedFlag("m.discoverable"),
   indexable: movedFlag("m.indexable"),
+  show_featured: movedFlag("m.show_featured"),
+  show_media: movedFlag("m.show_media"),
+  show_media_replies: movedFlag("m.show_media_replies"),
   followers_count: presentedCountSql("m.followers_count"),
   following_count: presentedCountSql("m.following_count"),
   statuses_count: presentedCountSql("m.statuses_count"),
@@ -206,6 +215,9 @@ export const MOVED_ACCOUNT_CAPS: { readonly [K in keyof typeof MOVED_COLUMN_MAP]
   locked: 0,
   discoverable: 0,
   indexable: 0,
+  show_featured: 0,
+  show_media: 0,
+  show_media_replies: 0,
   followers_count: 0,
   following_count: 0,
   statuses_count: 0,

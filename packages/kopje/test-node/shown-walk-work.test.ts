@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
@@ -33,8 +33,48 @@ const leading = new Map(
 // rows the rewrite's code reads in another shape.
 const reshaped = (main: string) => main.includes("f(bound) AS");
 
+const columnsOf = (db: DatabaseSync, text: string) =>
+  db
+    .prepare(text)
+    .columns()
+    .map((column) => column.name);
+
+// The rows main's statement `main` gives the code in place of `query`, main's run counted: its own; or the rewrite's,
+// read uncounted, for a reshaped statement, and for a read with a column added since main's base (an account's
+// profile descriptions and settings, migration 0096_profile_descriptions), which main's code never read. The latter
+// holds only when main's columns are some of the rewrite's and both read the same rows (the same ids, where they read
+// one); any other difference in columns throws.
+function mainRows(
+  db: DatabaseSync,
+  counter: ReturnType<typeof countingInstr>,
+  main: string,
+  query: string,
+  mainParams: SQLInputValue[],
+  params: SQLInputValue[],
+): Record<string, SQLOutputValue>[] {
+  const rows = db.prepare(main).all(...mainParams);
+  if (reshaped(main)) {
+    return counter.uncounted(() => db.prepare(query).all(...params));
+  }
+  const mainColumns = columnsOf(db, main);
+  const columns = columnsOf(db, query);
+  if (mainColumns.length === columns.length && mainColumns.every((column) => columns.includes(column))) {
+    return rows;
+  }
+  const extra = mainColumns.filter((column) => !columns.includes(column));
+  if (extra.length > 0) {
+    throw new Error(`main's statement reads ${extra.join(", ")}, which the current one does not: ${main}`);
+  }
+  const current = counter.uncounted(() => db.prepare(query).all(...params));
+  const ids = (of: typeof rows) => (mainColumns.includes("id") ? of.map((row) => row.id) : of.length);
+  if (JSON.stringify(ids(current)) !== JSON.stringify(ids(rows))) {
+    throw new Error(`main's statement reads other rows than the current one with a column added: ${main}`);
+  }
+  return current;
+}
+
 // The Store over `db`, running main's text in place of a statement where `swap` gives one (from its normalized text):
-// its walks are counted, and a reshaped statement's rows are the rewrite's, read uncounted.
+// its walks are counted, and the code reads the rows mainRows gives.
 function swapping(
   db: DatabaseSync,
   counter: ReturnType<typeof countingInstr>,
@@ -42,9 +82,11 @@ function swapping(
 ) {
   return nodeStorage(db, (query, params) => {
     const main = swap(normalized(query));
-    const count = main === undefined ? undefined : leading.get(main);
-    const rows = db.prepare(main ?? query).all(...(count === undefined ? params : params.slice(0, count)));
-    return main === undefined || !reshaped(main) ? rows : counter.uncounted(() => db.prepare(query).all(...params));
+    if (main === undefined) {
+      return db.prepare(query).all(...params);
+    }
+    const count = leading.get(main);
+    return mainRows(db, counter, main, query, count === undefined ? params : params.slice(0, count), params);
   });
 }
 
@@ -96,5 +138,37 @@ describe("the walks of each flow beside main's", () => {
       expect(totals.get(`noncovering/${shape}`)!, shape).toBeGreaterThan(none);
       expect(totals.get(`covering/${shape}`)!, shape).toBeGreaterThan(none);
     }
+  });
+});
+
+describe("main's rows in place of a read with a column added since main's base", () => {
+  const world = () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(
+      "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT); INSERT INTO t VALUES (1, 'x', 'p'), (2, 'y', 'q')",
+    );
+    return { db, counter: countingInstr(db) };
+  };
+  const current = "SELECT id, a, b FROM t WHERE instr(a, ?) >= 0 ORDER BY id";
+
+  it("gives the current statement's rows, main's counted and the current one's not", () => {
+    const { db, counter } = world();
+    const rows = mainRows(db, counter, "SELECT id, a FROM t WHERE instr(a, ?) >= 0 ORDER BY id", current, [""], [""]);
+    expect(rows).toEqual([
+      { id: 1, a: "x", b: "p" },
+      { id: 2, a: "y", b: "q" },
+    ]);
+    expect(counter.calls()).toBe(2);
+  });
+
+  it("refuses main's statement with a column the current one lacks, or other rows", () => {
+    const { db, counter } = world();
+    const rows = (main: string) => () => mainRows(db, counter, main, current, [""], [""]);
+    expect(rows("SELECT id, a, 1 AS c FROM t WHERE instr(a, ?) >= 0 ORDER BY id")).toThrow(
+      "which the current one does not",
+    );
+    expect(rows("SELECT id, a FROM t WHERE instr(a, ?) >= 0 AND id = 1")).toThrow("other rows");
+    expect(rows("SELECT id, a FROM t WHERE instr(a, ?) >= 0 ORDER BY id DESC")).toThrow("other rows");
+    expect(rows("SELECT a FROM t WHERE instr(a, ?) >= 0 AND id = 1")).toThrow("other rows");
   });
 });
