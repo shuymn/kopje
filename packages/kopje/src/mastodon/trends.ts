@@ -75,8 +75,8 @@ function listResponse(c: ApiContext, items: unknown[], anonymous: boolean, vary:
     : c.json(items);
 }
 
-// GET /api/v1/trends/tags and GET /api/v1/trends (its alias), and GET /api/v1/admin/trends/tags for an admin without
-// manage_taxonomies (`super`).
+// GET /api/v1/trends/tags and GET /api/v1/trends (its alias), and GET /api/v1/admin/trends/tags past the admin gate
+// (mastodon/admin.ts).
 export const trendTags: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const offset = offsetParam(p);

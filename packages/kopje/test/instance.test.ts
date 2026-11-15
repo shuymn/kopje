@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { type ApiHarness, apiHarness, bearer, seedAccount, setSetting, sql } from "./api-helpers";
+import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../src/domain/accounts";
+import { PIN_LIMIT } from "../src/domain/activities";
+import { MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
+import { type ApiHarness, apiHarness, bearer, json, seedAccount, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { DAY_MS } from "./read-helpers";
-import { community } from "./status-helpers";
+import { act, community, post } from "./status-helpers";
 
 // A fixed P-256 key; only its public half appears in responses.
 const VAPID_JWK = JSON.stringify({
@@ -17,7 +20,7 @@ const VAPID_JWK = JSON.stringify({
 const VAPID_PUBLIC_KEY = "BH_Nzidw9sRdQYPL7m_bS3tYBzM1e-nvE7rPbjx70VRFx_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0";
 
 const CONFIGURATION = {
-  accounts: { max_featured_tags: 10 },
+  accounts: { max_featured_tags: MAX_FEATURED_TAGS },
   statuses: { max_characters: 500, max_media_attachments: 4, characters_reserved_per_url: 23 },
   media_attachments: {
     supported_mime_types: ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"],
@@ -45,6 +48,17 @@ const RULES = [
   { id: "1", text: "Be kind", hint: "", translations: {} },
   { id: "r2", text: "No spam", hint: "", translations: {} },
 ];
+
+// v2's configuration.accounts: the constants that enforce each limit, in REST::InstanceSerializer's order.
+const ACCOUNT_LIMITS = {
+  max_display_name_length: MAX_DISPLAY_NAME,
+  max_note_length: MAX_NOTE,
+  max_featured_tags: MAX_FEATURED_TAGS,
+  max_pinned_statuses: PIN_LIMIT,
+  max_profile_fields: MAX_FIELDS,
+  profile_field_name_limit: MAX_FIELD_NAME,
+  profile_field_value_limit: MAX_FIELD_VALUE,
+};
 
 // Contract: the declared version is 4.5.0 and api_versions.mastodon is 7 (the reasoning is above MASTODON_VERSION in
 // src/mastodon/instance.ts). Changing these payloads changes what clients do; update this test only together with that
@@ -92,7 +106,12 @@ describe("instance contract", () => {
       source_url: "https://github.com/shuymn/kopje",
       description: "A test instance",
       usage: { users: { active_month: 0 } },
-      thumbnail: { url: "https://kopje.test/assets/thumbnail.jpg" },
+      thumbnail: {
+        url: "https://kopje.test/assets/thumbnail.jpg",
+        description:
+          "A klipspringer, a small antelope, stands on the top boulder of a granite kopje against a large amber sun, " +
+          "with the dry savanna, a distant acacia and blue hills around it.",
+      },
       icon: [
         { src: "https://kopje.test/assets/favicon-48.png", size: "48x48" },
         { src: "https://kopje.test/assets/favicon-192.png", size: "192x192" },
@@ -109,7 +128,7 @@ describe("instance contract", () => {
         },
         vapid: { public_key: VAPID_PUBLIC_KEY },
         ...CONFIGURATION,
-        accounts: { max_featured_tags: 10, max_pinned_statuses: 5 },
+        accounts: ACCOUNT_LIMITS,
         media_attachments: { ...CONFIGURATION.media_attachments, description_limit: 10000 },
         translation: { enabled: false },
         timelines_access: {
@@ -132,6 +151,9 @@ describe("instance contract", () => {
       contact: { email: "admin@kopje.test", account: null },
       rules: RULES,
     });
+    // The account limits in REST::InstanceSerializer's order, which toEqual does not compare.
+    const { accounts } = body.configuration as { accounts: Record<string, number> };
+    expect(Object.keys(accounts)).toEqual(Object.keys(ACCOUNT_LIMITS));
   });
 
   it("names the privacy policy and terms of service pages on v2 only while they are available", async () => {
@@ -183,6 +205,71 @@ describe("instance contract", () => {
     const unknown = await h.request("/api/v1/accounts/1/statuses/nope");
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toEqual({ error: "Record not found" });
+  });
+});
+
+describe("instance account limits", () => {
+  type Accounts = { configuration: { accounts: Record<string, number> } };
+  const accounts = async (h: ApiHarness) =>
+    (await (await h.request("/api/v2/instance")).json<Accounts>()).configuration.accounts;
+
+  it("accepts each advertised limit and refuses one past it, the profile's in code points", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const limits = await accounts(h);
+    const patch = async (body: Record<string, unknown>) => {
+      const response = await h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(alice.token, json(body, { method: "PATCH" })),
+      );
+      return [response.status, (await response.json<{ error?: string }>()).error];
+    };
+    // n code points: astral characters (two UTF-16 code units each) and a NUL inside, which the strip keeps.
+    const text = (n: number) => `\u{1F600}\u0000${"\u{1F600}".repeat(n - 2)}`;
+    const fields = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `n${i}`, value: "v" }));
+    const cases: [string, (n: number) => Record<string, unknown>, (n: number) => string][] = [
+      [
+        "max_display_name_length",
+        (n) => ({ display_name: text(n) }),
+        (n) => `Display name is too long (maximum is ${n} characters)`,
+      ],
+      ["max_note_length", (n) => ({ note: text(n) }), (n) => `Note is too long (maximum is ${n} characters)`],
+      [
+        "max_profile_fields",
+        (n) => ({ fields_attributes: fields(n) }),
+        (n) => `Fields is too long (maximum is ${n} fields)`,
+      ],
+      [
+        "profile_field_name_limit",
+        (n) => ({ fields_attributes: [{ name: text(n), value: "v" }] }),
+        (n) => `Fields is too long (maximum is ${n} characters each)`,
+      ],
+      [
+        "profile_field_value_limit",
+        (n) => ({ fields_attributes: [{ name: "n", value: text(n) }] }),
+        (n) => `Fields is too long (maximum is ${n} characters each)`,
+      ],
+    ];
+    for (const [key, body, message] of cases) {
+      const limit = limits[key]!;
+      expect(await patch(body(limit)), key).toEqual([200, undefined]);
+      expect(await patch(body(limit + 1)), key).toEqual([422, `Validation failed: ${message(limit)}`]);
+    }
+    const tags = limits.max_featured_tags!;
+    for (let i = 0; i < tags; i++) {
+      expect((await act(h, alice, "/api/v1/featured_tags", { name: `t${i}` })).status).toBe(200);
+    }
+    const tag = await act(h, alice, "/api/v1/featured_tags", { name: "over" });
+    expect([tag.status, await tag.json()]).toEqual([
+      422,
+      { error: "Validation failed: You have already featured the maximum number of hashtags" },
+    ]);
+    const pins = limits.max_pinned_statuses!;
+    for (let i = 0; i <= pins; i++) {
+      const status = await post(h, alice, { status: `pin ${i}` });
+      const pinned = await act(h, alice, `/api/v1/statuses/${status.id}/pin`);
+      expect([pinned.status, i]).toEqual([i < pins ? 200 : 422, i]);
+    }
   });
 });
 

@@ -42,6 +42,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
   handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
   migration and no `wrangler.jsonc` change.
+- `GET /api/v1/accounts/:id/statuses` takes `exclude_direct`, leaving out direct posts, as Mastodon 4.7.5 does. Its
+  `Link` keeps the parameter, where Mastodon's drops it
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). `api_versions.mastodon` stays 7. No Store migration and
+  no `wrangler.jsonc` change.
+- `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
+  profile fields and their name and value lengths) and a description of the default thumbnail, and
+  `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 - WebFinger answers, the instance actor's included, carry FEP-3b86's `Object` intent,
   `https://<domain>/authorize_interaction?uri={object}`, after the subscribe template, as Mastodon 4.6 and later do, so
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
@@ -64,11 +72,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A delivery or a signed fetch answered 400 or 401 is sent once more at once with an RFC 9421 signature by the same
   key, following Mastodon 4.7's retry with an RFC 9421 signature, and the second answer decides it; a delivery answered
   400 was given up at once before. Web Push is not retried. No Store migration and no `wrangler.jsonc` change.
-- The admin API's measures and retention follow Mastodon 4.5.21's refusal order: a caller other than the OAuth admin
-  is refused (403) before the body is read, so `POST /api/v1/admin/measures` no longer answers such a caller 400 or 422
-  for its body. To the OAuth admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400
-  without `start_at` or `end_at`, as Mastodon 4.5.21 does, and 422 for a date that is not ISO 8601, as measures does
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)); both answered `[]` before.
+- The admin API refuses every caller other than the OAuth admin with 403 `{"error":"Forbidden"}` first, as Mastodon
+  4.7.5 does: no token, an unknown or app token, or another account's token, whatever its scopes or expiry, before any
+  token check (401), lookup (404) or parameter error (400, 422), where such a caller was answered those or 403 "This
+  action is not allowed"; a suspended user's token is still answered 403 "Your login is currently disabled" first.
+  `GET /api/v1/admin/trends/{links,statuses,tags}` no longer answer such callers the public trends. To the OAuth
+  admin, measures without `keys` answers 400, and `POST /api/v1/admin/retention` answers 400 without `start_at` or
+  `end_at`, as Mastodon 4.7.5 does, and 422 for a date that is not ISO 8601, as measures does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)); both answered `[]` before. No Store migration and no
+  `wrangler.jsonc` change.
 - Day ranges follow Mastodon 4.5.21. `GET /api/v1/instance/activity` counts 7 days a week, so the day before a week's
   start, which no week counted, is in the week before. `usage.users.active_month` of `/api/v2/instance` counts today
   and the 28 UTC days before it (29 days, where it counted 28). The admin measures' `previous_total` counts the period
@@ -89,6 +101,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
   included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
   migration and no `wrangler.jsonc` change.
+- A remote account whose deletion has started answers 404 to `GET /api/v1/accounts/:id`, to every
+  `/api/v1/accounts/:id/...` route and to lookup, and is left out of `GET /api/v1/accounts` and of relationships, with
+  or without `with_suspended`, as Mastodon 4.7 does; it was shown redacted. This breaks clients that read deleting
+  accounts. An actor whose own URI answers 410, without a redirect, is deleted as by its `Delete`; a 404 deletes
+  nothing. A search by a URL that is a stored actor's id fetches it as that actor, without a probe. No Store migration
+  and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - A media description may have 10,000 characters on upload, media update and status edit, and
@@ -114,6 +132,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
   written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
   their hashtags until edited.
+- `GET /api/v1/admin/reports` reads `resolved` and `unresolved` as booleans, as Mastodon 4.7.5 does: both true lists
+  every report, `resolved` alone the resolved ones, otherwise the unresolved ones. `resolved=false` now lists the
+  unresolved reports; it listed the resolved ones. No Store migration and no `wrangler.jsonc` change.
 - An `Accept` or `Reject` of a quote request is matched by the request's id only, as Mastodon 4.7 does; one that
   embeds a request under another id changes nothing.
 - A suspended user's token is refused with 403 "Your login is currently disabled" before its expiry is judged, as

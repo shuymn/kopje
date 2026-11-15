@@ -163,8 +163,9 @@ against their own instance. TLS is assumed between all parties.
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
   of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
-  `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which fetches a
-  URL's actor document again after reading the revision, so its probe is never stored), and the refresh of a stale
+  `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
+  revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe found
+  again after reading its revision, so a probe is never stored), and the refresh of a stale
   boosted or quoted author (the revision read when the refresh was decided travels with the need or the quote's work;
   staleness stays the refresh policy, since a `Move` changes the revision but not `fetched_at`). A document stored under
   an expectation is fetched after it was read: an expectation read before the request's first fetch (the inbox gate's, a
@@ -176,10 +177,18 @@ against their own instance. TLS is assumed between all parties.
   author refresh use the stored row. Each such attempt is atomic, and whether a sender retries, and whether a retry
   finds its key still authorized and its document current, is outside Kopje. Writers that store an author only while no
   row of it exists (a boosted or quoted author Kopje does not know) keep that absence check, in the same transaction,
-  instead of an expectation, and issue a revision too. _Enforced (main):_ `upsertRemoteActor`, `applyRefresh`, `receive`
-  and `inboxGate` in `src/domain/inbox.ts`, `quoteWork` in `src/domain/quotes.ts`, `resolveSearch` in
-  `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`; `test/inbox-actor-revision.test.ts`,
-  `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
+  instead of an expectation, and issue a revision too. The same expectation fences a deletion: a stored remote actor
+  whose own URI answers 410 to one of those fetches, with no redirect (the safe loader follows same-origin redirects,
+  ID-2, and a 410 at the end of one is not the URI's own), is deleted as by its `Delete` (ID-7) only while the revision
+  read before that fetch holds, compared in the deleting transaction; a 404, a redirected 410, a 410 fetched before
+  another store of the actor committed, and the 410 of a fetch no revision was read before (a URL search's probe, an
+  unknown author's need) delete nothing, nor does a 410 for a local actor or one never stored. A key-gone signature
+  of the actor's own stored key fetches the actor's document (the memo serves it when the key is on it), so its 410
+  deletes too, and the request is answered 202, as for a document whose 410 deletes. _Enforced (main):_
+  `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
+  `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
+  `src/federation/actor-gone.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`, `test/quotes.test.ts`
+  ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
   server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
   Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
@@ -373,7 +382,9 @@ against their own instance. TLS is assumed between all parties.
   A Move is a job keyed by its id that never moves a follow made after it. The Store rounds of one request carry the
   same actor document and revision, and only the first round that finds the revision stores the document (ID-1). An
   actor's deletion is a tombstone (`inbound_jobs`) independent of the retraction cap and TTL, honoured by every upsert
-  and by every Move batch, and recorded even for a verified Delete of an actor never stored. A generation change whose
+  and by every Move batch, and recorded even for a verified Delete of an actor never stored. A 410 at a stored actor's
+  own URI starts the same deletion and tombstone under ID-1's revision fence; one for an actor never stored records
+  nothing (`actorGone` in `src/domain/inbox.ts`, `test/inbox-gone.test.ts`). A generation change whose
   retraction cannot be recorded
   (the per-actor cap) is not made: a Block, and a local reject of a request (which records the remote Follow as
   retracted and answers 503 if it cannot), change nothing then. Misskey's pair-shaped
@@ -1248,10 +1259,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   existing tokens follow the current match, and the role's permissions are exactly the route groups Kopje serves. No
   admin action targets the admin's own account; a suspension fences the account's tokens; every admin write is logged;
   and the OAuth admin never holds A5 (AUTH-5). `ADMIN_PERMISSIONS` is 1080 (manage_reports, manage_users,
-  manage_federation, view_dashboard); every other admin route answers as Mastodon answers a role without the permission.
-  _Enforced (main):_ the match and the check: `oauthAdmin` and `adminAccountId` in `src/domain/admin-authority.ts`,
-  `adminReadOperation` and `adminWriteOperation` in `src/domain/auth.ts`, setup's admin in `src/domain/setup.ts`;
-  `test/admin-api.test.ts`, `test/setup-access.test.ts`. Reports (manage_reports): anyone but the OAuth admin is refused
+  manage_federation, view_dashboard); every other admin route answers the OAuth admin as Mastodon answers a role without
+  the permission. Every admin route is gated first, in Mastodon 4.7.5's order
+  (`Api::BaseController#require_not_suspended!`, then `Admin::PermissionsConcern`, then `authorize_if_got_token!`): a
+  held token of a suspended owner answers 403 `Your login is currently disabled` (AUTH-1); anyone else but the OAuth
+  admin (no token, a token the Store does not hold, an app token, another account's token whatever its scopes, expiry
+  or epoch) answers 403 `Forbidden` before the token's validity or scope, any lookup or any parameter is judged, so
+  such a caller learns only that the route exists;
+  then the OAuth admin's token must be valid and cover the route's scope (401, 403), and then come the route's lookups
+  (404), parameters (400, 422) and permission (403 `This action is not allowed`). A request without a token is answered
+  by the Worker with no Store call; every other answer passes the gate in the Store, in the admin operation's
+  transaction or, for an answer a handler gives before or without one (a parameter error, a route Kopje does not
+  serve), in its own read first. _Enforced (main):_ the match and the check: `oauthAdmin` and `adminAccountId` in
+  `src/domain/admin-authority.ts`, `adminGate`, `checkAdminCredential`, `adminReadOperation` and `adminWriteOperation`
+  in `src/domain/auth.ts`, the admin routes' access in `src/mastodon/access.ts`, `checkAdminCredential` and
+  `refuseAfterAuth` in `src/mastodon/context.ts`, setup's admin in `src/domain/setup.ts`; `test/admin-api.test.ts`
+  ("admin routes"), `test/mastodon-access.test.ts` ("gates exactly the routes Mastodon's Admin::PermissionsConcern
+  guards"), `test/setup-access.test.ts`. Reports (manage_reports): anyone but the OAuth admin is refused
   before a report is read, so not even its existence is disclosed; the admin sees every report with its accounts (local
   emails included) and only the statuses its reporter may still see (R37); every admin write, and every Access repair
   below, writes its moderation log row (`admin_actions`, actor, account and client or Access identity, newest 10,000
@@ -1316,21 +1340,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   parameters, refusals and log rows: `actOnAccount` in `src/domain/admin-accounts.ts`, `accountAction` in
   `src/mastodon/admin.ts`, `writeAccountWarning` in `src/domain/account-warnings.ts`; `test/admin-suspension.test.ts`
   ("account warnings"). Domain blocks and allows
-  (manage_federation): the block API of VIS-30; domain allows list none, and their create answers 403 to everyone. The
+  (manage_federation): the block API of VIS-30; domain allows list none, and their create answers 403. The
   measures (view_dashboard) are counts, never rows: each served key's walk is bounded (docs/visibility.md, the admin
   measures) and answers 422 beyond its bound, never an undercount, and the keys Kopje does not serve answer 422
-  (MD-2); dimensions and retention answer `[]`. Any other caller is refused (403) before the body is read, in
-  Mastodon 4.5.21's refusal order.
+  (MD-2); dimensions and retention answer `[]`. Any other caller is refused by the gate (403 `Forbidden`) before the
+  body is read, in Mastodon 4.7.5's refusal order.
   `src/domain/admin-domain-blocks.ts`, `src/domain/admin-measures.ts`; `test/admin-domain-blocks.test.ts`,
   `test/admin-measures.test.ts`, `test/admin-measures-keys.test.ts`, `test/admin-measures-bounds.test.ts`,
   `test/admin-domain-blocks-replay.test.ts`.
   Announcements are the Access admin's (AUTH-5), never the OAuth admin's; each write logs its row in its own transaction
   (`test/admin-announcements.test.ts`, `test/cli.test.ts`).
   Trends reviews are the Access admin's too (`/admin/trends`, `kopje-admin trends`: AUTH-5), hashtags, statuses, links
-  and publishers alike; through the Mastodon admin API the OAuth admin is shown the public trends and its approve and
-  reject, and the link publishers' list and reviews, answer 403 (MD-2). Each review logs its row in its own transaction
-  (a link as `PreviewCard`, a publisher as `PreviewCardProvider`; `test/admin-trends.test.ts`, `test/cli.test.ts`,
-  `test/trends.test.ts`, `test/trend-links.test.ts`).
+  and publishers alike; through the Mastodon admin API the OAuth admin alone is shown the public trends, past the gate
+  and never cached publicly, and its approve and reject, and the link publishers' list and reviews, answer 403 (MD-2).
+  Each review logs its row in its own transaction (a link as `PreviewCard`, a publisher as `PreviewCardProvider`;
+  `test/admin-trends.test.ts`, `test/cli.test.ts`, `test/trends.test.ts`, `test/trend-links.test.ts`).
 - **VIS-30: an instance-suspended account is shown to nobody and gets no new content.** An account the instance
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
   nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,
@@ -1514,11 +1538,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`
   (`src/domain/accounts.ts`); `test/placeholders.test.ts` (the donation and e-mail subscriptions cases, and "answers
   an expired or revoked token as no token on the feature-off routes"), and `test/mastodon-access.test.ts` (the two
-  routes' access exceptions). _Enforced (main):_ the admin API's routes are optional-token routes with admin scopes
-  (Mastodon's `authorize_if_got_token!`): a token sent must be valid and cover the route's scope, and who may act is
-  decided in the Store (VIS-29);
-  `test/mastodon-access.test.ts` compares them with Mastodon's, setting aside only each admin route's role policy, and
-  `test/admin-api.test.ts` ("admin routes").
+  routes' access exceptions). _Enforced (main):_ the admin API's routes are `admin` routes with admin scopes: no token
+  answers 403 `Forbidden` at the route, and a token sent passes the admin gate before it must be valid and cover the
+  route's scope (Mastodon's `Admin::PermissionsConcern`, then `authorize_if_got_token!`); who may act is decided in
+  the Store (VIS-29); `test/mastodon-access.test.ts` compares them with Mastodon's optional-token routes, setting aside
+  only each admin route's role policy, and checks that they are exactly the routes Mastodon guards with
+  `require_moderator_or_admin_permissions`, and `test/admin-api.test.ts` ("admin routes").
 - **AUTH-3: OAuth follows the supported contract.** _Enforced (main):_ `src/app/authorize.tsx`, `src/mastodon/oauth.ts`,
   `src/domain/oauth.ts`; `test/oauth.test.ts`, `test/vectors.test.ts`. - Grants: authorization code and client
   credentials. Codes expire after 10 minutes and are single-use. PKCE is optional and S256 only; a bound code needs the
@@ -3330,15 +3355,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   push service answers", "keeps the subscription and retries when the push service answers", "sends pushes from the
   delivery doorbell, and not without a VAPID_JWK or in maintenance", "RES-4: a notification fanned out to several
   subscriptions fills the backlog only up to its cap", "records no push beyond the backlog cap"). _Enforced (main)_ for
-  local emoji: `GET /api/v1/custom_emojis` holds at most 1,000 entries of at most 1,489 JSON bytes each with its
-  separator, 1,489,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
+  local emoji: `GET /api/v1/custom_emojis` holds at most 1,000 entries of at most 1,506 JSON bytes each with its
+  separator, 1,506,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
   it); `GET /admin/emojis` pages hold at most 200.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
-  resolution makes one more Store call (`actorRevision`) before each actor fetch, and fetches a URL's actor document a
-  second time after it (within the request's fetch budget of 8). Every revision read is one seek by `accounts`' uri
-  index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh need's and a quote's
+  resolution makes one more Store call (`actorRevision`) before each actor fetch and before a URL's probe, and fetches
+  the actor document a probe found a second time after it (within the request's fetch budget of 8). A fetch whose
+  actor answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the deletion's first
+  purge batch, `PURGE_BATCH`), so at most one per fetch of the budget. Every revision read is one seek by `accounts`'
+  uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh need's and a quote's
   author stage's author, a search resolution's actor, and the comparison in the writing transaction
   (`test/inbox-actor-revision.test.ts`, "the revision reads’ plans"). Delivery backlog and concurrency are bounded.
   Anonymous app registration, inbox spooling and media transformations have rate or storage budgets with a visible
@@ -3953,11 +3980,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stale statistics", "name no withdrawn boost as a cursor where it would end a full window")). _Gap:_ the number of
   streams is the viewer's follows (their own choice), and the bounds harness (`test/policy-bounds.test.ts`) grows
   histories evenly, never a skewed one where one author's statuses dominate a merged read; rows hidden by visibility are
-  walked past, not windowed (account statuses read by a non-follower of an account that posts mostly to followers: a
-  remote account's private statuses are stored only while a local account follows it, so no outside party can grow it at
-  will; accepted); the public timeline's request conditions (`local`, `remote`, `only_media`) and its reply predicate
-  are tested inside its `LIMIT` on `statuses_public`, so on an instance whose public rows are mostly remote a
-  `local=true` or `only_media` page may walk them all.
+  walked past, not windowed (account statuses read by a non-follower of an account that posts mostly to followers, with
+  `exclude_direct` or without it, as `statuses_feed` holds private statuses too: a remote account's private statuses are
+  stored only while a local account follows it, so no outside party can grow it at will; accepted;
+  `test/exclude-direct-reads.test.ts`); the public timeline's request conditions (`local`, `remote`, `only_media`) and
+  its reply predicate are tested inside its `LIMIT` on `statuses_public`, so on an instance whose public rows are mostly
+  remote a `local=true` or `only_media` page may walk them all.
   _Enforced (main)_ for search: statuses pass `listableSql` before `LIMIT`, each library source reads at most 2,500 rows
   through an index ordered by the status id it returns (cursors applied inside it), hashtags come from at most 500
   entries per library source plus the newest 2,000 public statuses, and an account search matches the exact address
@@ -4070,10 +4098,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   account has a follower on the reporter's server is two probes of at most `FOLLOWER_PROBE` (1,000) rows each (its
   followers, the server's accounts), so a private status of an account with more followers, on a server with more stored
   accounts, none of them in either window, is not attached (accepted). The admin's list filtered by reporter and
-  reported account reads `reports_pair_state` (no residual, however many others report the account), and a local
-  suspension's reach reads the account's reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account
-  read each, resumed by account id (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`,
-  `test/admin-suspension.test.ts` ("the account's reporters")).
+  reported account reads `reports_pair_state` (no residual, however many others report the account); every report
+  (`resolved` and `unresolved` both true) reads the two states' ranges of the filter's index, each cut at the limit
+  and merged by id, so at most 2 × limit index entries and 5 × limit + 1 rows (1,001 at the cap of 200) however many
+  reports lie around them (`test/admin-reports.test.ts` ("every report reads two ranges")); and a local suspension's
+  reach reads the account's reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account read each,
+  resumed by account id (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`, `test/admin-suspension.test.ts`
+  ("the account's reporters")).
   _Enforced (main)_ for trends (MD-5): the round reads the newest 4,000 public originals from yesterday 00:00 UTC, at
   most 100 hashtag rows of each and 8,000 in all, cut raw before any rule (materialized), returns at most 1,600 hashtag
   groups (each takes 5 of the 8,000 rows), keeps the first 400 whose names are well-formed and in their own normalized

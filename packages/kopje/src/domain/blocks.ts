@@ -9,7 +9,7 @@ import {
   type Present,
   relationshipResult,
   type RelationshipResult,
-  resolveAccountId,
+  routeAccountId,
 } from "./accounts";
 import { blockActivity, blockUri, followAnswerActivity, recordOutbound, undoBlockActivity } from "./activities";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
@@ -128,10 +128,10 @@ export function severFollow(db: Db, followerId: string, targetId: string, now: n
 
 type Target = { status: "ok"; viewer: Party; target: Party } | { status: "not_found" } | { status: "forbidden" };
 
-// The account a block or mute names. Any stored account may be blocked or muted, a suspended one included; nobody
-// blocks or mutes themselves.
+// The account a block or mute names (routeAccountId). Any account found may be blocked or muted, a suspended one
+// included; nobody blocks or mutes themselves.
 function relationTarget(db: Db, viewerId: string, id: string): Target {
-  const resolved = resolveAccountId(db, id);
+  const resolved = routeAccountId(db, id);
   const target = resolved === null ? undefined : party(db, resolved);
   const viewer = party(db, viewerId);
   if (target === undefined || viewer === undefined) {
@@ -219,7 +219,7 @@ export const unblock = userWriteOperation<RelationInput, RelationshipResult>((db
 // follow simply ends. A pending request is left alone (the service reads passive_relationships, accepted follows only),
 // and so is everything else for any other stored account, the viewer included.
 export const removeFromFollowers = userWriteOperation<RelationInput, RelationshipResult>((db, input, { accountId }) => {
-  const resolved = resolveAccountId(db, input.target);
+  const resolved = routeAccountId(db, input.target);
   const follower = resolved === null ? undefined : party(db, resolved);
   const viewer = party(db, accountId);
   if (follower === undefined || viewer === undefined) {

@@ -1,5 +1,7 @@
+import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../domain/accounts";
 import { PIN_LIMIT } from "../domain/activities";
-import { DEFAULT_THUMBNAIL, INSTANCE_ICONS } from "../platform/brand-assets";
+import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
+import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../platform/stored-bounds";
 import {
   type ApiContext,
@@ -40,7 +42,7 @@ const SOURCE_URL = "https://github.com/shuymn/kopje";
 const UI_LANGUAGES = ["en"];
 
 const CONFIGURATION = {
-  accounts: { max_featured_tags: 10 },
+  accounts: { max_featured_tags: MAX_FEATURED_TAGS },
   statuses: { max_characters: 500, max_media_attachments: 4, characters_reserved_per_url: 23 },
   media_attachments: {
     supported_mime_types: ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"],
@@ -101,7 +103,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
     source_url: SOURCE_URL,
     description: info.description ?? "",
     usage: { users: { active_month: info.activeMonth } },
-    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}` },
+    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}`, description: DEFAULT_THUMBNAIL_DESCRIPTION },
     languages: UI_LANGUAGES,
     icon: INSTANCE_ICONS.map(({ path, size }) => ({ src: `${origin}${path}`, size })),
     configuration: {
@@ -117,7 +119,18 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       },
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
-      accounts: { ...CONFIGURATION.accounts, max_pinned_statuses: PIN_LIMIT },
+      // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
+      // in code points (credentialChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
+      // and the pins' in rows.
+      accounts: {
+        max_display_name_length: MAX_DISPLAY_NAME,
+        max_note_length: MAX_NOTE,
+        max_featured_tags: MAX_FEATURED_TAGS,
+        max_pinned_statuses: PIN_LIMIT,
+        max_profile_fields: MAX_FIELDS,
+        profile_field_name_limit: MAX_FIELD_NAME,
+        profile_field_value_limit: MAX_FIELD_VALUE,
+      },
       media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_MEDIA_DESCRIPTION_LENGTH },
       translation: { enabled: false },
       // Who may read the public, hashtag and link timelines: anyone, as Kopje serves them without a token.

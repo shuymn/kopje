@@ -95,10 +95,14 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the admin's, made by `/setup`, an account is made only by invitation: the first sign-in through Cloudflare Access of
   an email the Access admin invited ([setup.md](setup.md), "Adding accounts"; threat model AUTH-9). Accepted,
   2026-10-15; the invitation rule, 2026-10-27.
-- **MD-2: Admin operations withheld from Mastodon's API.** Domain allows, IP, email domain and canonical email blocks,
-  link publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
-  retention answer `[]` to the OAuth admin and 403 to everyone else, retention after its 400 for a missing `start_at` or
-  `end_at` and 422 for an invalid date, as Mastodon 4.5.21 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
+- **MD-2: Admin operations withheld from Mastodon's API.** Every admin route answers anyone but the OAuth admin 403
+  `Forbidden` first, after a suspended owner's 403, as Mastodon 4.7.5's `Admin::PermissionsConcern` does, before the
+  token's validity or scope, any lookup or the body is judged. A token of the OAuth admin that was revoked, or swept
+  once expired, is deleted, so it answers `Forbidden` where Mastodon, whose Doorkeeper 5.9.9 finds such a token's owner
+  until its vacuum, answers 401. To the OAuth admin, domain allows, IP, email domain and canonical email blocks, link
+  publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
+  retention answer `[]`, retention after its 400 for a missing `start_at` or `end_at` and 422 for an invalid date, as
+  Mastodon 4.7.5 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
   Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin reviews trends
   (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje
   keeps login days only for the instance activity, from the upgrade that added them and for today, the 184 days before
@@ -106,12 +110,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   measure takes any range), `interactions` (no count of replies, boosts, follows, votes and favourites by day survives
   their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's
   API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
-  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
-  a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
-  caller is refused (403) before the body is read. Accepted, 2026-10-22. Kopje does not offer silencing or
-  memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships writes
-  no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
-  never sent. Accepted, 2026-11-15.
+  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.7.5's 400 for
+  a missing `keys` or object and 422 for an invalid date come first. Accepted, 2026-10-22. Kopje does not offer
+  silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
+  relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
+  notification's `event` are never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
@@ -382,6 +385,21 @@ Accounts (the `Account` and credential account entities):
   username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
+  Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
+  `GET /api/v1/accounts` and relationships leave it out whatever `with_suspended`, as Mastodon 4.7 answers for a
+  deleted account (`without_requested_deletion`, `accounts_controller.rb:86-91`, `accounts/base_controller.rb:7`,
+  `lookup_controller.rb:16`, `relationships_controller.rb:8-9`); nested in another entity it is shown redacted. Kopje's
+  `identity_proofs` placeholder answers 404 for it too, as for an id that names no account, where Mastodon answers
+  `[]` for any id.
+- An actor whose own URI answers 410 to a fetch Kopje makes of it is deleted as by its `Delete`, as Mastodon's
+  `FetchRemoteActorService` deletes a stored account on a 410 (`fetch_remote_actor_service.rb:21-24,46-54`); a 404 is
+  not. Kopje follows same-origin redirects on an actor fetch where Mastodon follows none (`json_ld_helper.rb:242`), and
+  deletes only on a 410 at the actor URI itself: a 410 at the end of a redirect deletes nothing. The 410 counts only
+  under the Store revision read before that fetch (ID-1 in `docs/threat-model.md`), so a search by a URL first reads
+  whether it is a stored actor's id, and resolves such a URL as that actor; the 410 of any other URL's probe, a
+  status's included, deletes nothing.
+- `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
+  deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
   verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
   an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
@@ -427,12 +445,13 @@ Accounts (the `Account` and credential account entities):
   `FetchRemoteStatusService#account_from_uri` refetches a `possibly_stale?` account
   (`fetch_remote_status_service.rb:67-71`, `account.rb:71,254-256`). An account the instance suspended or a domain block
   covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch does not look the account
-  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon; a 404 or 410
-  that arrives after another request's failed refetch of the same account is not applied. Where any other failure would
-  make Mastodon store nothing or retry the job, Kopje stores the status under the stored account and tries that account
-  again only a day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The
-  pinned statuses a collection sync fetches use the stored account however long ago the sync was asked for, where
-  Mastodon checks the account when it fetches them. Search always fetches the account.
+  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon, and a 410 at
+  its URI deletes it (above); a 404 or 410 that arrives after another request's failed refetch of the same account is
+  not applied. Where any other failure would make Mastodon store nothing or retry the job, Kopje stores the status
+  under the stored account and tries that account again only a day later. A sender's own statuses are stored under the
+  sender, as fresh as its key (24 hours, ID-1). The pinned statuses a collection sync fetches use the stored account
+  however long ago the sync was asked for, where Mastodon checks the account when it fetches them. Search always
+  fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
   Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
@@ -534,7 +553,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
   six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
   had.
-- `thumbnail` is always Kopje's default image; there is no upload.
+- `thumbnail` is always Kopje's default image, with its fixed description on `/api/v2/instance`; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
 - The reading preferences, `reading:autoplay:gifs` included, are Mastodon's defaults; no setting stores them.
@@ -796,14 +815,17 @@ Request parameters:
 
 Paged status lists with request conditions:
 
-- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged` or `exclude_replies`, `GET
-  /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the profile's Posts, Media and
-  tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page before applying the
-  conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first holds what it found,
-  possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev` by `min_id` for a
-  `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next` only when the page
-  is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
-  status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged`, `exclude_replies`, or `exclude_direct` with
+  `exclude_reblogs`, `GET /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the
+  profile's Posts, Media and tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page
+  before applying the conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first
+  holds what it found, possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev`
+  by `min_id` for a `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next`
+  only when the page is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by
+  `Link` reach every status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- The `Link` of `GET /api/v1/accounts/:id/statuses` keeps `exclude_direct`, as it keeps every other parameter, so the
+  next page leaves direct posts out too. Mastodon's drops it (`AccountStatusesFilter::KEYS` lacks it), so its next page
+  lists them.
 
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
@@ -858,8 +880,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
-Custom emoji (the `CustomEmoji` entities of a status, its poll and an account):
+Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, and `GET /api/v1/custom_emojis`):
 
+- A local emoji's category is a name with no featured emoji, so the listing shows `featured: false` beside each
+  `category`.
 - A remote emoji's `url` is Kopje's cached copy on the instance's own origin (`/media/r/…`) once the cron has fetched
   it, kept per (domain, url), the domain being the account's whose object named it; `static_url` is a still remuxed
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a

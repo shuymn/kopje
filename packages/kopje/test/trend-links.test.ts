@@ -138,14 +138,24 @@ describe("GET /api/v1/trends/links", () => {
     expect((await h.request("/api/v1/trends/links", bearer("nope"))).status).toBe(401);
   });
 
-  it("answers the OAuth admin’s list with the public one, and refuses its link and publisher reviews", async () => {
+  it("answers the OAuth admin alone the public list, uncached, and refuses the reviews", async () => {
     const h: ApiHarness = await apiHarness();
     await seedAccount(h.store, { username: "owner", email: "owner@example.com" });
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
     await setSetting(h.store, "admin_email", "owner@example.com");
     const scope = "read admin:read admin:write";
-    const token = (await login(h, { app: await registerApp(h, { scopes: scope }), scope, email: "owner@example.com" }))
-      .token;
+    const app = await registerApp(h, { scopes: scope });
+    const token = (await login(h, { app, scope, email: "owner@example.com" })).token;
+    const alice = (await login(h, { app, scope, email: "alice@example.com" })).token;
     await listedLinks(h.store, 2);
+    // Anyone but the OAuth admin is refused by the gate (VIS-29), where the public list answers them.
+    expect((await h.request("/api/v1/trends/links")).headers.get("cache-control")).toMatch(/^public/);
+    for (const caller of [undefined, "nope", alice]) {
+      expect(await getJson(h, "/api/v1/admin/trends/links", caller)).toEqual({
+        status: 403,
+        body: { error: "Forbidden" },
+      });
+    }
     const signed = await h.request("/api/v1/admin/trends/links", bearer(token));
     expect(signed.headers.get("cache-control")).toBeNull();
     expect(signed.headers.get("vary")).toBe("Authorization, Accept-Language");

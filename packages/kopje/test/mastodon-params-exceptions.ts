@@ -48,8 +48,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
     "avatar_description",
     "header_description",
   ),
-  "GET /api/v1/accounts/:id/statuses": open(1585, "exclude_direct", "exclude_direct"),
-  "GET /api/v1/admin/reports": open(1585, "unresolved on admin reports", "unresolved"),
   "POST /api/v1/reports": open(1589, "collections", "collection_ids[]"),
 
   // Admin features not served.
