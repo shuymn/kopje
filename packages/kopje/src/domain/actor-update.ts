@@ -57,15 +57,17 @@ function actorRow(db: Db, accountId: string): ActorRow | undefined {
 
 // The document of an actor row. A suspended actor is presented as the actor endpoint presents it (federation.ts, as
 // Mastodon's ActivityPub::ActorSerializer): no name, summary, icon, image, aliases or fields, not locked or
-// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections and `webfinger` handle stay.
+// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections and `webfinger` handle stay. Every
+// link, the handle's host included, is on the actor id's origin (ID-5), as the endpoint's are on the id it serves,
+// whatever domain /admin/config stores later.
 function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
-  const origin = new URL(row.uri).origin;
+  const actorId = new URL(row.uri);
+  const origin = actorId.origin;
   const suspended = row.suspended_at !== null;
   const emojis = suspended ? [] : localEmojiTags(db, row.emojis, origin, ACCOUNT_EMOJIS_BYTES);
-  const domain = db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value;
   return {
     id: row.uri,
-    ...(domain === undefined ? {} : { webfinger: `${row.username}@${domain}` }),
+    webfinger: `${row.username}@${actorId.host}`,
     type: row.actor_type,
     preferredUsername: row.username,
     ...(suspended ? {} : { name: row.display_name, summary: row.note }),

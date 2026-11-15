@@ -296,8 +296,11 @@ against their own instance. TLS is assumed between all parties.
   (`test/inbox-actor-revision.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
-  no key pair. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently cased path",
-  "another host, an unknown user, and the request host"), `test/signed-fetch.test.ts` ("no key pairs for a spelling").
+  no key pair. An actor's `webfinger` handle names the host of the actor id its document declares, on the actor endpoint
+  and in a profile `Update`. _Enforced (main):_ `src/federation/federation.ts`, `documentOf` in
+  `src/domain/actor-update.ts`; `test/federation.test.ts` ("differently cased path", "another host, an unknown user, and
+  the request host"), `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/actor-update.test.ts` ("names
+  the handle at its actor id's host").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require

@@ -354,7 +354,7 @@ export function createKopjeFederation(
       }
       state.resolvedUsername = actor.username;
       state.source = { kind: "actor", username: actor.username, rendered: JSON.stringify(actor) };
-      return localActorObject(ctx, actor, domain);
+      return localActorObject(ctx, actor);
     })
     .mapHandle(async (_ctx, username) => (await localActor(username))?.username ?? null)
     .mapActorAlias("/actor", INSTANCE_ACTOR)
@@ -583,7 +583,7 @@ function instanceOwner(key: EncodedKey, keyId: URL): KeyOwner {
   return userOwner(decodeKey(key), keyId);
 }
 
-async function localActorObject(ctx: RequestContext<FederationState>, actor: LocalActor, domain: string) {
+async function localActorObject(ctx: RequestContext<FederationState>, actor: LocalActor) {
   const id = ctx.getActorUri(actor.username);
   const cls = ACTOR_CLASSES[actor.actorType as keyof typeof ACTOR_CLASSES] ?? Person;
   // A suspended actor, as Mastodon's ActivityPub::ActorSerializer presents one: no name, summary, icon, image, aliases
@@ -628,12 +628,13 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
     published: Temporal.Instant.from(actor.createdAt),
     ...profile,
   });
-  return withMastodonTerms(object, `${actor.username}@${domain}`, actor.attributionDomains);
+  return withMastodonTerms(object, `${actor.username}@${id.host}`, actor.attributionDomains);
 }
 
 // Mastodon's actor terms that Fedify's vocabulary does not have, added to the compacted document with their contexts as
 // ActivityPub::ActorSerializer adds them, a suspended account's too: `webfinger` (FEP-2c59, Mastodon 4.6: the stored
-// username's spelling at the domain fixed at setup, ID-5) with its named context, which Fedify preloads, and
+// username's spelling at the host of the actor id, the domain fixed at setup that WebFinger answers on, ID-5, as the
+// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads, and
 // `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance actor
 // declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
 const WEBFINGER_CONTEXT = "https://purl.archive.org/socialweb/webfinger";
