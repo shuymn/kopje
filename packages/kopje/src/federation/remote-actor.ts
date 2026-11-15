@@ -8,7 +8,7 @@ import { httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { MAX_PUBLIC_KEYS } from "./key-entries";
+import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -89,6 +89,30 @@ async function readActor(uri: string, served: RemoteDocument, contextLoader: Doc
     return { kind: "unusable" };
   }
   return { kind: "ok", actor: object, document: served.document };
+}
+
+// The actor document an activity embeds (an Update(Person)'s object, docs/threat-model.md ID-1), read as a fetched one
+// is: its key entries as the safe loader reads a fetched document's (key-entries.ts readableKeys), then readActor and
+// remoteActorInput. It is served under the actor's URI with the activity's @context before its own (`context`), as
+// JSON-LD nests the object in the activity and Mastodon reads it under the activity's compacted context. Nothing is
+// fetched but its JSON-LD contexts, through the request's context loader and budget (RES-6); its size is the
+// activity's (inbound.ts parseActivity, RES-2). Unusable: no actor of exactly `uri`, or one remoteActorInput refuses.
+export async function readEmbeddedActor(
+  uri: string,
+  object: Record<string, unknown>,
+  context: unknown,
+  contextLoader: DocumentLoader,
+): Promise<{ kind: "ok"; input: RemoteActorInput } | { kind: "transient" } | { kind: "unusable" }> {
+  const own = object["@context"];
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [value]);
+  const document = { ...object, "@context": own === undefined ? context : [...list(context), ...list(own)] };
+  const served = { contextUrl: null, documentUrl: uri, document: await readableKeys(document) };
+  const read = await readActor(uri, served, contextLoader);
+  if (read.kind !== "ok") {
+    return read;
+  }
+  const input = await remoteActorInput(read.actor, read.document);
+  return input === null ? { kind: "unusable" } : { kind: "ok", input };
 }
 
 // A natural-language value: a plain string or Fedify's LanguageString (a String with a language tag).

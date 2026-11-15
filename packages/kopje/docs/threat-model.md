@@ -157,12 +157,20 @@ against their own instance. TLS is assumed between all parties.
   meaning"), `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers
   the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
   `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
-  (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored:
-  every store of a remote actor's document issues a new Store revision
+  and the inboxes beside it are replaced only by a document fetched after the last one stored; the profile, the handle
+  and `movedTo` also by the actor's own `Update(Person)` embedding its document (an object of an actor type whose `id`
+  is the activity's `actor`, its signer), read as a fetched document is (`readEmbeddedActor`) and stored under the
+  revision the inbox gate read before the request's first fetch, in one store with the keys and inboxes of the document
+  the request fetched for its key when it fetched one, else the stored row's (`upsertEmbeddedActor`). Such an
+  `Update(Person)` fetches the actor's document only when its key needs one, as any activity; an embedded document never
+  writes keys, inboxes or a key's freshness (`remote_keys.fetched_at`), so a key's trust still runs from the last
+  fetched document, and it sets `accounts.fetched_at` (the stale-author refresh's clock); one Kopje cannot read applies
+  nothing. Every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
-  of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
+  of its request (a later round never stores its document again), the embedded document of its `Update(Person)`, its
+  routing while it is suspended (VIS-30, from a fetched document only), a relayed
   `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
   revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe or its
   alternate found again after reading its revision, so neither is ever stored), the refresh of a stale boosted or quoted
@@ -189,7 +197,9 @@ against their own instance. TLS is assumed between all parties.
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
   `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
-  `src/domain/remote-collections.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`,
+  `src/domain/remote-collections.ts`, `upsertEmbeddedActor` in `src/domain/remote-actors.ts`, `readEmbeddedActor` in
+  `src/federation/remote-actor.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-actor-update.test.ts`,
+  `test/inbox-gone.test.ts`,
   `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
   `test/remote-collections.test.ts` ("the document part of a refresh (D9)"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
@@ -1378,10 +1388,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
   nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,
   `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
-  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
-  `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
-  accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
+  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and `Reject`, after a routing refresh of its
+  inbox from a verified document it fetched (never an embedded one; fenced by its revision as any document, ID-1); no
+  path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local accounts are
+  severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
   current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
   sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
   unanswerable while it is unavailable, as Mastodon keeps `FollowRequest`s; local follows of it are kept.
@@ -2883,7 +2893,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
   contexts too, before they are cached and again on every cache hit (an entry may predate the check; `boundedContexts`
   in `src/federation/federation.ts`); and one request fetches at most 8 documents (the fetch budget), so one activity's
-  JSON-LD work is at most 8 bounded documents and their bounded contexts; the Store asks the Worker for documents at
+  JSON-LD work is at most 8 bounded documents and their bounded contexts, besides the activity itself (an
+  `Update(Person)`'s embedded actor is read through JSON-LD within the activity's bounds, its contexts loaded within the
+  same budget: `readEmbeddedActor`, `test/inbox-actor-update.test.ts`); the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may
   fetch its actor again); statuses are read as compacted JSON, without JSON-LD, as Mastodon reads them;
   `test/inbox-statuses.test.ts` ("refuses an activity or a fetched document past the JSON bounds before reading it",
