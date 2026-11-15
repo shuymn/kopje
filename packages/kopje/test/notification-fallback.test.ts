@@ -456,6 +456,9 @@ describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
     for (const [name, username, url, domain] of fills) {
       const target = await remoteAccount(h.store, `${name}-target`);
       const reporter = domain === null ? h.users.alice.id : await remoteAccount(h.store, `${name}-reporter`);
+      // One remote account holds an address (accounts_domain_username): a remote reporter moves to its domain before
+      // it takes the target's username.
+      await sql(h.store, "UPDATE accounts SET domain = ? WHERE id = ? AND domain IS NOT NULL", domain, reporter);
       await sql(
         h.store,
         "UPDATE accounts SET username = CAST(? AS TEXT) WHERE id IN (?, ?)",
@@ -464,7 +467,6 @@ describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
         reporter,
       );
       await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, target);
-      await sql(h.store, "UPDATE accounts SET domain = ? WHERE id = ? AND domain IS NOT NULL", domain, reporter);
       const fallback = await runInDurableObject(h.store, (_instance, state) =>
         notificationFallback(new Db(state.storage.sql), "admin.report", {
           accountId: reporter,
@@ -477,6 +479,13 @@ describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
         // The host keeps its quotes, each escaped.
         expect(fallback!.title).toContain(`href="https://${"&quot;".repeat(PROFILE_URL_LIMIT - "https:///".length)}/"`);
       }
+      // A later fill's target takes the same address, so this fill's remote accounts give theirs up, as invalidated.
+      await sql(
+        h.store,
+        "UPDATE accounts SET username = '! ' || id WHERE id IN (?, ?) AND domain IS NOT NULL",
+        target,
+        reporter,
+      );
     }
     console.info(`Fallback JSON of each fill: ${JSON.stringify(measured)}`);
     for (const bytes of Object.values(measured)) {
