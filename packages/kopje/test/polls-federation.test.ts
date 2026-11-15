@@ -10,7 +10,7 @@ import { MAX_REMOTE_OPTION_LENGTH, pollOptionsSql } from "../src/platform/stored
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { AP, mastodonActor, type TestActor } from "./inbox-helpers";
+import { AP, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   AS,
@@ -125,6 +125,49 @@ describe("a remote Question", () => {
         audience: { followers: false, accounts: [expect.any(String)] },
       },
     ]);
+  });
+
+  it("with attachments is stored and shown with its media and its poll, and an edit replaces both", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const png = (n: number) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `${MASTODON}/system/media/${n}.png`,
+      name: `image ${n}`,
+    });
+    const object = question(bob, { attachment: [png(1)] });
+    const id = await remotePoll(t, bob, object);
+    type Shown = { media_attachments: { remote_url: string; description: string }[]; poll: Poll };
+    const shown = async () => {
+      const { body } = await api<Shown>(t, `/api/v1/statuses/${id}`);
+      return {
+        media: body.media_attachments.map((m) => [m.remote_url, m.description]),
+        choices: body.poll.options.map((o) => o.title),
+      };
+    };
+    expect(await shown()).toEqual({
+      media: [[`${MASTODON}/system/media/1.png`, "image 1"]],
+      choices: ["cats", "dogs"],
+    });
+    // A newer version with other media and other choices.
+    const edited = question(bob, {
+      id: object.id,
+      attachment: [png(2), png(3)],
+      oneOf: [
+        { type: "Note", name: "birds", replies: { type: "Collection", totalItems: 0 } },
+        { type: "Note", name: "fish", replies: { type: "Collection", totalItems: 0 } },
+      ],
+    });
+    expect(await t.post(bob, update(bob, edited, "2026-10-11T12:30:00Z"))).toBe(202);
+    expect(await shown()).toEqual({
+      media: [
+        [`${MASTODON}/system/media/2.png`, "image 2"],
+        [`${MASTODON}/system/media/3.png`, "image 3"],
+      ],
+      choices: ["birds", "fish"],
+    });
   });
 
   it("without an end is open: it presents expires_at null and expired false, and takes a vote", async () => {
