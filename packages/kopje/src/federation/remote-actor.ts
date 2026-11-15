@@ -1,4 +1,4 @@
-import { type DocumentLoader, exportSpki, FetchError } from "@fedify/fedify";
+import { type DocumentLoader, exportSpki, FetchError, type RemoteDocument } from "@fedify/fedify";
 import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
@@ -49,14 +49,16 @@ export async function fetchActor(
     : loaded;
 }
 
+type ReadActor = { kind: "ok"; actor: Actor; document: unknown } | { kind: "transient" } | { kind: "unusable" };
+
 // fetchActor's load and parse, without reading the document into a remote account's columns: the parsed actor and
 // the document as loaded.
 export async function loadActor(
   uri: string,
   loader: DocumentLoader,
   contextLoader: DocumentLoader,
-): Promise<{ kind: "ok"; actor: Actor; document: unknown } | Exclude<FetchedActor, { kind: "ok" }>> {
-  let remote: Awaited<ReturnType<DocumentLoader>>;
+): Promise<ReadActor | Extract<FetchedActor, { kind: "gone" }>> {
+  let remote: RemoteDocument;
   try {
     remote = await loader(uri);
   } catch (error) {
@@ -66,12 +68,17 @@ export async function loadActor(
     }
     return { kind: isTransientLoadError(error) ? "transient" : "unusable" };
   }
+  return readActor(uri, remote, contextLoader);
+}
+
+// An actor document as served at `uri`, parsed by Fedify's lookupObject over a loader that answers it alone: nothing
+// is fetched but its JSON-LD contexts, through `contextLoader`. lookupObject asks its loader only for the URI it was
+// given (as it parses it: without verifyPortableObject it takes no portable path), and never falls back to its own
+// WebFinger lookup, which would fetch outside the safe loader. An actor whose id is not exactly uri is unusable.
+async function readActor(uri: string, served: RemoteDocument, contextLoader: DocumentLoader): Promise<ReadActor> {
   let object: unknown;
   try {
-    object = await lookupObject(uri, {
-      documentLoader: (url, options) => (url === uri ? Promise.resolve(remote) : loader(url, options)),
-      contextLoader,
-    });
+    object = await lookupObject(uri, { documentLoader: () => Promise.resolve(served), contextLoader });
   } catch (error) {
     // A JSON-LD context that failed to load for a reason that may pass is transient too; only a document that
     // cannot be read as served is unusable.
@@ -81,7 +88,7 @@ export async function loadActor(
   if (!isActor(object) || object.id?.href !== uri) {
     return { kind: "unusable" };
   }
-  return { kind: "ok", actor: object, document: remote.document };
+  return { kind: "ok", actor: object, document: served.document };
 }
 
 // A natural-language value: a plain string or Fedify's LanguageString (a String with a language tag).
