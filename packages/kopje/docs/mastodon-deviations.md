@@ -718,6 +718,19 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   `created_at`, so there an individual suspension with any other timestamp survives the unblock, as Kopje's
   individual suspension does (`account` wins), and one with that timestamp does not.
 
+Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
+
+- The summary of an `admin.report` and of a `moderation_warning` is `You're on an app that does not support the most
+  recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's link reads `Sign in
+  to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
+  `moderation_warning`'s goes to the strike's dispute page; Kopje has neither a web app nor disputes. Accepted,
+  2026-11-15.
+- Only `admin.report` and `moderation_warning` carry one: Kopje writes no other type outside Mastodon's baseline, and a
+  restored row of another such type has none.
+- A title names an account within the presented bounds (RES-2): its username as `usernameSql` reads it, within 255
+  bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
+  within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.
+
 Request parameters:
 
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
