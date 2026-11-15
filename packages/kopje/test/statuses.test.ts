@@ -371,13 +371,17 @@ describe("POST /api/v1/statuses", () => {
     expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, json({ status: longUrls })))).status).toBe(
       200,
     );
-    // The same as a blank text's warning, which the Store counts as the text it becomes.
+    // The same as a blank text's warning, which the Store counts as the text it becomes, on a post and an edit.
+    const edited = await post(h, h.users.alice, { status: "edited" });
     for (const [warning, status] of [
       [worst, 422],
       [longUrls, 200],
     ] as const) {
-      const body = json({ status: "", spoiler_text: warning });
-      expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, body))).status).toBe(status);
+      const body = { status: "", spoiler_text: warning };
+      expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, json(body)))).status).toBe(status);
+      const path = `/api/v1/statuses/${edited.id}`;
+      const edit = await h.request(path, bearer(h.users.alice.token, json(body, { method: "PUT" })));
+      expect(edit.status).toBe(status);
     }
     expect(Date.now() - started).toBeLessThan(2000);
   });
@@ -1555,6 +1559,128 @@ describe("a blank text with a content warning", () => {
     // Within the bound, the same pair converts and posts.
     const { result } = await postPlans(h, alice.token, { ...blank, text: " ".repeat(MAX_RAW_LENGTH - 1) }, /^$/);
     expect(result).toMatchObject({ value: { status: "ok", value: { content: "<p>w</p>", spoiler_text: "" } } });
+  });
+});
+
+// UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
+// sent as its text and the status keeps its own (the quote case: test/quote-authoring.test.ts).
+describe("an edit to a blank text", () => {
+  type Shown = { text: string; spoiler_text: string; sensitive: boolean };
+  const MEDIA = "100000000000000001";
+  async function setup() {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await sql(
+      h.store,
+      `INSERT INTO media_attachments (id, account_id, type, url, processed, gc_at)
+			VALUES (?1, ?2, 'image', 'https://kopje.test/media/1.png', 1, ?3)`,
+      MEDIA,
+      alice.id,
+      new Date(NOW + HOUR).toISOString(),
+    );
+    const put = (id: string, body: Record<string, unknown>) =>
+      posting(h, alice.token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
+    const shown = async (id: string): Promise<Shown> => {
+      const source = (await getJson<Shown>(h, `/api/v1/statuses/${id}/source`, alice.token)).body;
+      const status = (await getJson<Shown>(h, `/api/v1/statuses/${id}`, alice.token)).body;
+      return { text: source.text, spoiler_text: source.spoiler_text, sensitive: status.sensitive };
+    };
+    const versions = async (id: string) =>
+      (await sql<{ n: number }>(h.store, "SELECT count(*) AS n FROM status_edits WHERE status_id = ?", id))[0]!.n;
+    return { h, alice, put, shown, versions };
+  }
+
+  it("takes the warning sent as its text, keeps the status's warning, and is sensitive only as sent", async () => {
+    const { h, alice, put, shown, versions } = await setup();
+    const a = await post(h, alice, { status: "a", spoiler_text: "old" });
+    expect((await put(a.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "new", spoiler_text: "old", sensitive: false });
+    // The written pair is the stored one: nothing changes and no version is recorded.
+    const recorded = await versions(a.id);
+    expect((await put(a.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect(await versions(a.id)).toBe(recorded);
+    expect((await put(a.id, { status: "", spoiler_text: "new", sensitive: true })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "new", spoiler_text: "old", sensitive: true });
+    // No warning sent: the text is blank, and needs media.
+    expect(await put(a.id, { status: "" })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+    expect((await put(a.id, { status: "", media_ids: [MEDIA] })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "", spoiler_text: "old", sensitive: false });
+  });
+
+  it("converts a status an earlier release stored with a blank text, a warning and media on its next such edit", async () => {
+    const { h, alice, put, shown } = await setup();
+    const earlier = await post(h, alice, { status: "x", spoiler_text: "nsfw", media_ids: [MEDIA] });
+    await sql(h.store, "UPDATE statuses SET source_text = '', content = '' WHERE id = ?", earlier.id);
+    expect(await shown(earlier.id)).toEqual({ text: "", spoiler_text: "nsfw", sensitive: true });
+    // An alt-text edit that sends the text and warning back as they are shown.
+    const alt = await put(earlier.id, {
+      status: "",
+      spoiler_text: "nsfw",
+      media_ids: [MEDIA],
+      media_attributes: [{ id: MEDIA, description: "a cat" }],
+    });
+    expect(alt.status).toBe(200);
+    expect(await shown(earlier.id)).toEqual({ text: "nsfw", spoiler_text: "nsfw", sensitive: false });
+  });
+
+  it("keeps a kept warning as stored, an imported one's malformed bytes included", async () => {
+    const { h, alice, put, shown } = await setup();
+    const imported = await post(h, alice, { status: "x", spoiler_text: "nsfw" });
+    await sql(h.store, "UPDATE statuses SET spoiler_text = 'nsfw' || CAST(X'FF' AS TEXT) WHERE id = ?", imported.id);
+    const bytes = () => sql(h.store, "SELECT hex(spoiler_text) AS hex FROM statuses WHERE id = ?", imported.id);
+    expect(await bytes()).toEqual([{ hex: "6E736677FF" }]);
+    expect((await put(imported.id, { status: "", spoiler_text: "cw" })).status).toBe(200);
+    expect(await shown(imported.id)).toMatchObject({ text: "cw", spoiler_text: "nsfw\ufffd" });
+    expect(await bytes()).toEqual([{ hex: "6E736677FF" }]);
+  });
+
+  it("counts the text and the kept warning as written, as one string", async () => {
+    const { h, alice, put, shown } = await setup();
+    const TOO_LONG = { status: 422, body: { error: "Validation failed: Text character limit of 500 exceeded" } };
+    // The combining mark joins the kept warning's last x: 500 graphemes, then 501.
+    const joined = await post(h, alice, { status: "a", spoiler_text: "x".repeat(499) });
+    expect((await put(joined.id, { status: "", spoiler_text: "\u0301x" })).status).toBe(200);
+    expect(await shown(joined.id)).toMatchObject({ text: "\u0301x", spoiler_text: "x".repeat(499) });
+    expect(await put(joined.id, { status: "", spoiler_text: "\u0301xy" })).toEqual(TOO_LONG);
+    // A warning sent becomes the text, its URLs counted as 23 characters.
+    const plain = await post(h, alice, { status: "b" });
+    const urls = Array.from({ length: 20 }, () => `https://example.com/${"r".repeat(470)}`).join(" ");
+    expect((await put(plain.id, { status: "", spoiler_text: urls })).status).toBe(200);
+    expect(await shown(plain.id)).toMatchObject({ text: urls, spoiler_text: "" });
+    expect(await put(plain.id, { status: "", spoiler_text: `${"x".repeat(480)} https://example.com` })).toEqual(
+      TOO_LONG,
+    );
+    expect(await shown(plain.id)).toMatchObject({ text: urls, spoiler_text: "" });
+    // The raw bound holds on the pair written, though its counted length passes: a kept warning of 80 graphemes in
+    // 8,080 code units beside a text of four long URLs (1,923 code units, 95 counted).
+    const warning = `a${"\u0301".repeat(100)}`.repeat(80);
+    const wide = await post(h, alice, { status: "c", spoiler_text: warning });
+    const links = Array.from({ length: 4 }, () => `https://example.com/${"r".repeat(460)}`).join(" ");
+    expect(warning.length + links.length).toBe(MAX_RAW_LENGTH + 3);
+    expect(await put(wide.id, { status: "", spoiler_text: links })).toEqual(TOO_LONG);
+    expect(await shown(wide.id)).toMatchObject({ text: "c", spoiler_text: warning });
+  });
+
+  it("federates as written: the Create of a converted post and the Update of a converted edit", async () => {
+    const { h, alice, put } = await setup();
+    await remoteFollows(h.store, await remoteAccount(h.store, "dave"), alice.id);
+    await post(h, alice, { status: "", spoiler_text: "cw" });
+    const objects = async () =>
+      (await outbound(h.store)).map((o) => {
+        const object = o.activity.object as Record<string, unknown>;
+        return { type: o.activity.type, content: object.content, summary: object.summary, sensitive: object.sensitive };
+      });
+    expect(await objects()).toEqual([{ type: "Create", content: "<p>cw</p>", summary: null, sensitive: true }]);
+    await settle(h.store);
+    const edited = await post(h, alice, { status: "a", spoiler_text: "old" });
+    expect((await put(edited.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect((await objects()).slice(-2)).toEqual([
+      { type: "Create", content: "<p>new</p>", summary: "old", sensitive: false },
+      { type: "Update", content: "<p>new</p>", summary: "old", sensitive: false },
+    ]);
   });
 });
 

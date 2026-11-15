@@ -387,8 +387,8 @@ describe("the content fallback (TextFormatter#add_quote_fallback)", () => {
   it("an edit of a quote to empty text with a CW keeps the text empty and the CW as the warning", async () => {
     const { t, theirs } = await world();
     const quote = await quotePost(t, theirs.id, { status: "hello" });
-    // Mastodon 4.5.21's UpdateStatusService moves a CW into a blank text only when the status has no quote
-    // (update_status_service.rb:114-117).
+    // UpdateStatusService moves a CW into a blank text only when the status has no quote (v4.7.5
+    // update_status_service.rb:115-116); the guarded branch: test/statuses.test.ts, "an edit to a blank text".
     const edited = await api(t, "PUT", `/api/v1/statuses/${quote.id}`, { status: "", spoiler_text: "careful" });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ spoiler_text: "careful", sensitive: true });

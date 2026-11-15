@@ -986,9 +986,9 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   if (current === null || current.reblog_of_id !== null) {
     return { status: "not_found" };
   }
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
-  if (exceedsRawLength(text, spoilerText)) {
+  const sentText = storedText(input.text);
+  const sentSpoiler = storedText(input.spoilerText);
+  if (exceedsRawLength(sentText, sentSpoiler)) {
     return { status: "invalid", error: TOO_LONG };
   }
   // Before the "unchanged" test: UpdateStatusService validates the media before NoChangesSubmittedError.
@@ -999,14 +999,23 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
   // quoted status is there.
   const quote = localQuoteOf(db, current.id);
-  // The counted length of a blank text, which the Worker leaves to the Store.
-  if (blankText(text) && statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS) {
+  // UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
+  // sent (or "") as its text, whether a warning was sent or not; the warning sent is then not applied, so the status
+  // keeps its own, and sensitive is the value sent or false. A status stored with a blank text and a warning is
+  // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
+  const blankSent = blankText(sentText);
+  const keepsWarning = blankSent && quote === undefined;
+  const text = keepsWarning ? sentSpoiler : sentText;
+  const spoilerText = keepsWarning ? current.spoiler_text : sentSpoiler;
+  // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
+  // written: a kept warning is the stored one.
+  if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
     return { status: "invalid", error: TOO_LONG };
   }
   if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
-  const sensitive = (input.sensitive ?? false) || spoilerText !== "";
+  const sensitive = (input.sensitive ?? false) || (!keepsWarning && spoilerText !== "");
   const language = input.language ?? current.language;
   const currentMedia = db.all<{ id: string; description: string; focus_x: number; focus_y: number }>(
     "SELECT id, description, focus_x, focus_y FROM media_attachments WHERE status_id = ? AND shown = 1 ORDER BY position, id",
@@ -1060,12 +1069,14 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   }
   editPoll(db, current.id, input.poll ?? null, input.now);
   db.run(
-    `UPDATE statuses SET content = ?, source_text = ?, spoiler_text = ?, sensitive = ?, language = ?, edited_at = ?,
-			search_text = ?, quote_policy = COALESCE(?, quote_policy), emojis = ?, filter_text_units = NULL
+    `UPDATE statuses SET content = ?, source_text = ?, spoiler_text = COALESCE(?, spoiler_text), sensitive = ?,
+			language = ?, edited_at = ?, search_text = ?, quote_policy = COALESCE(?, quote_policy), emojis = ?,
+			filter_text_units = NULL
 		WHERE id = ?`,
     composed.content,
     composed.source,
-    spoilerText,
+    // A kept warning stays as stored, copied in SQL.
+    keepsWarning ? null : spoilerText,
     sensitive ? 1 : 0,
     language,
     editedAt,
