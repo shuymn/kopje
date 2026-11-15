@@ -1008,6 +1008,11 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   RES-6); Mastodon removes an app only when its owner deletes it. An app a user authorized is never removed, so the
   statuses posted through it keep showing it. A status or scheduled status whose app is gone all the same (one a dump
   or a legacy import names) shows `application: null`, and such a scheduled status is published; Mastodon drops it.
+- An edit whose only change is `quote_approval_policy` stores the policy, sends an `Update` and notifies as an edit
+  does, but records no history entry and leaves `edited_at` as it was: the policy is not part of a status's versions,
+  as with `PUT /api/v1/statuses/:id/interaction_policy`. Mastodon counts such a change as an edit
+  (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
+  `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 

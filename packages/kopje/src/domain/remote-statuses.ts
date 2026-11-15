@@ -679,14 +679,20 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     // a poll's counts, which names none, or the same one) still refreshes the counts, the end and the voters of its
     // poll, and verifies a changed stamp of the same quote again; the quoted status itself changes only with a newer
     // version.
-    refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
         remoteQuotePolicy(db, author, input.quotePolicy),
         existing.id,
       ) > 0;
-    return input.poll !== undefined && storeRemotePoll(db, existing.id, input.poll, false, ctx.now)
+    const pollUpdated = input.poll !== undefined && storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
+    // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
+    if (restamped) {
+      notifyEdited(db, existing.id, author.id, ctx.now);
+    }
+    return pollUpdated
       ? { applied: true, reason: "poll-updated", statusId: existing.id }
       : policyChanged
         ? { applied: true, reason: "policy-updated", statusId: existing.id }

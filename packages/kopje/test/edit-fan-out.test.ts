@@ -4,8 +4,9 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { totalChanges } from "../src/domain/row-budget";
 import { notifyEdited } from "../src/domain/statuses";
+import { verifyQuotes } from "../src/federation/quotes";
 import { sql } from "./api-helpers";
-import { NOW } from "./app-helpers";
+import { inboxDeps, NOW } from "./app-helpers";
 import { LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { LOCAL, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
@@ -20,13 +21,15 @@ import {
   mastodonNote,
   nextId,
   type Note,
+  OTHER,
+  PUBLIC,
   type Setup,
   setup,
   statusRow,
   token,
   update,
 } from "./inbox-status-helpers";
-import { quoteRequest, quoting } from "./quote-helpers";
+import { quoteRequest, quoting, serveStamp } from "./quote-helpers";
 import { observedSql, remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 
 // Mastodon's update fan-out (notifyEdited in src/domain/statuses.ts; docs/visibility.md R15, docs/threat-model.md
@@ -234,6 +237,110 @@ describe("an accepted quote's notification on an edit (notify_quoted_account!)",
     expect(await t.post(bob, edited(bob, note))).toBe(202);
     expect(await sql(t.store, "SELECT count(*) AS n FROM status_edits")).not.toEqual([{ n: 0 }]);
     expect(await rowsOf(t, "quote")).toEqual([]);
+  });
+});
+
+describe("an implicit Update's update fan-out (a changed approval stamp)", () => {
+  // bob's status quotes carol's (on another server) with `stamp`, tags alice and addresses her; dave follows bob and
+  // boosts it. alice's mention notification is dismissed. A same-version Update follows (handle_implicit_update!).
+  async function world(stamped: boolean, extra: Record<string, unknown> = {}) {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob, DAVE);
+    const carol = await mastodonActor(t.web, "carol", { origin: OTHER, key: 2 });
+    await subscribe(t, ALICE, ["mention"]);
+    const target = mastodonNote(carol);
+    t.web.serve(target.id, { "@context": AS, ...target });
+    const stamp = () => `${carol.uri}/quote_authorizations/${nextId()}`;
+    const first = stamped ? stamp() : null;
+    const note = quoting(bob, target.id, first, {
+      cc: [FOLLOWERS(bob), ALICE_URI],
+      tag: [mention(ALICE_URI)],
+      ...extra,
+    });
+    if (first !== null) {
+      serveStamp(t.web, first, carol, note.id, target.id);
+    }
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    if (stamped) {
+      const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+      for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+        expect(round).toBeLessThan(20);
+      }
+    }
+    const statusId = (await statusRow(t.store, note.id))!.id;
+    expect(await quoteState(t, statusId)).toBe(stamped ? "accepted" : "pending");
+    const boosted = await t.request(`/api/v1/statuses/${statusId}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.dave}` },
+    });
+    expect(boosted.status).toBe(200);
+    const [mentioned] = await rowsOf(t, "mention");
+    const dismissed = await t.request(`/api/v1/notifications/${mentioned!.id}/dismiss`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    expect(dismissed.status).toBe(200);
+    expect(await pushed(t)).toEqual([]);
+    // The same version (its published time, the stored watermark) of `note` with `extra`.
+    const implicit = (extra: Record<string, unknown>) => update(bob, { ...note, ...extra }, note.published as string);
+    return { t, bob, statusId, note, first, stamp, implicit };
+  }
+
+  const quoteState = async (t: Setup, statusId: string) =>
+    (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", statusId))[0]?.state;
+
+  it.each([
+    ["a new stamp of an accepted quote", true],
+    ["the first stamp of a pending quote (the approval Update)", false],
+  ])("notifies on %s: the mention again, with its push, and the booster", async (_name, stamped) => {
+    const { t, bob, statusId, stamp, implicit } = await world(stamped);
+    expect(await t.post(bob, implicit({ quoteAuthorization: stamp() }))).toBe(202);
+    expect(await quoteState(t, statusId)).toBe("pending");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: ALICE }]);
+    expect(await pushed(t)).toEqual([again[0]!.id]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+  });
+
+  it("notifies no one when it keeps the stamp, or changes only the quote policy", async () => {
+    const { t, bob, statusId, implicit } = await world(true);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    const policy = { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } };
+    expect(await t.post(bob, implicit(policy))).toBe(202);
+    expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE id = ?", statusId)).not.toEqual([
+      { quote_policy: 0 },
+    ]);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("notifies no one when it changes only its poll's counts", async () => {
+    const choices = (cats: number) => [
+      { type: "Note", name: "cats", replies: { type: "Collection", totalItems: cats } },
+      { type: "Note", name: "dogs", replies: { type: "Collection", totalItems: 0 } },
+    ];
+    const poll = { type: "Question", endTime: "2026-10-13T00:00:00Z", votersCount: 1, oneOf: choices(1) };
+    const { t, bob, statusId, implicit } = await world(true, poll);
+    expect(await t.post(bob, implicit({ votersCount: 2, oneOf: choices(2) }))).toBe(202);
+    expect(await sql(t.store, "SELECT votes_count, voters_count FROM polls WHERE status_id = ?", statusId)).toEqual([
+      { votes_count: 2, voters_count: 2 },
+    ]);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("notifies no one for a legacy form alone, though it writes the quote back", async () => {
+    const { t, bob, statusId, implicit } = await world(true);
+    // The same stamp, the quote named by _misskey_quote and quoteUri only (a legacy form).
+    expect(await t.post(bob, implicit({ quote: undefined }))).toBe(202);
+    expect(await sql(t.store, "SELECT legacy, state FROM quotes WHERE status_id = ?", statusId)).toEqual([
+      { legacy: 1, state: "pending" },
+    ]);
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
   });
 });
 

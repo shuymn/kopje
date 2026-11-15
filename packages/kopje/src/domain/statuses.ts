@@ -999,7 +999,8 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // as the first history entry. A quote policy sent with the edit is stored (Mastodon 4.5.5: only when one is sent),
 // nobody for a status that is not public or unlisted. Where Kopje differs from Mastodon, which counts a changed policy
 // as an edit: the policy is not part of the history, so a change of the policy alone is stored as
-// PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy).
+// PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy); it notifies
+// as an edit does (notifyEdited), which the interaction policy endpoint does not.
 //
 // Deliberate difference from Mastodon: the audience of a private, direct or limited status never widens. A mention
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
@@ -1072,8 +1073,10 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   };
   const policy = input.quotePolicy === undefined ? null : storedQuotePolicy(input.quotePolicy, current.visibility);
   if (unchanged) {
-    if (policy !== null) {
-      setQuotePolicy(db, accountId, current.id, policy, input.now);
+    // UpdateStatusService counts a changed policy as a change (update_status_service.rb:121, :174-176 in v4.7.5), so
+    // the edit broadcasts (:37, :143-146).
+    if (policy !== null && setQuotePolicy(db, accountId, current.id, policy, input.now)) {
+      notifyEdited(db, current.id, accountId, input.now);
     }
     return status();
   }
@@ -1162,15 +1165,17 @@ function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: numbe
 }
 
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update
-// (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones.
-function setQuotePolicy(db: Db, accountId: string, id: string, policy: number, now: number): void {
+// (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones. Answers
+// whether the stored policy changed.
+function setQuotePolicy(db: Db, accountId: string, id: string, policy: number, now: number): boolean {
   if (db.run("UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1", policy, id) === 0) {
-    return;
+    return false;
   }
   const facts = statusFacts(db, id, noteQuote);
   if (facts !== null) {
     recordOutbound(db, accountId, updateActivity(facts, `quote-policy-${crypto.randomUUID()}`), now);
   }
+  return true;
 }
 
 // quotePolicy: the policy sent; none is the author's default, and 'invalid' one the Worker could not read.
@@ -1184,7 +1189,8 @@ export type InteractionPolicyInput = {
 // must be one the viewer may see by itself (R3, else not found) and their own (else forbidden), then the policy must be
 // one of the three (else "Record invalid"). The policy sent, or the author's default_quote_policy when none is, is
 // stored as on posting (storedQuotePolicy). A boost has no policy of its own (its original's is shown): it is answered
-// unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy).
+// unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy); it notifies
+// no one, as the controller broadcasts with skip_notifications (interaction_policies_controller.rb:24-26 in v4.7.5).
 export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput, Acted<Status>>(
   (db, input, { accountId }, viewer) => {
     const visible = viewable(db, accountId, input.id);

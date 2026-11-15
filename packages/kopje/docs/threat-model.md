@@ -839,10 +839,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   only when new under its natural key; a repeat inserts nothing (`update` replaces the previous one). The update fan-out
   notifies the quoted account of an accepted quote and each active mention, each without a kept notification, as
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
-  notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit; a
-  kept one is a repeat. Its push is sent only for a newly inserted row. A remote favourite notifies when it is created
-  and its notification goes with it, as Mastodon's does: a further `Like` it tracks notifies nothing, and an `Undo`
-  followed by the next reaction's `Like` notifies (and pushes) again, while the reverse order does not;
+  notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
+  quote stamp change or policy-only edit; a kept one is a repeat. Its push is sent only for a newly inserted row. A
+  remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
+  it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
+  the reverse order does not;
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in

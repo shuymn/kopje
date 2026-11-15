@@ -200,9 +200,11 @@ path, within the real-time window (published at most six hours before it arrived
 counts only its `to` and `cc`. A status that arrives again notifies no one. Mastodon's update fan-out (`notifyEdited`
 in `src/domain/statuses.ts`) notifies the local quoted account of the status's accepted quote and each active local
 mention, each when it has no kept notification (the mentions without the limited condition), then the local boosters
-and quoters: on a significant remote edit (text, spoiler text, media or poll) and on every accepted local edit. So a
-quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
-cleared, is notified then.
+and quoters: on a significant remote edit (text, spoiler text, media or poll), on a remote `Update` of the same version
+that changes its quote's approval stamp (not its legacy form alone), and on every accepted local edit, one that changes
+only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a quote or
+mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or cleared,
+is notified then.
 
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
 (`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the

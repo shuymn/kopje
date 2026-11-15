@@ -259,23 +259,71 @@ describe("PUT /api/v1/statuses/:id quote_approval_policy", () => {
     expect(await stored(h.store, status.id)).toBe(0);
   });
 
-  it("stores a change of the policy alone with no history entry or edited_at, and sends an Update", async () => {
-    const h = await community(["alice"]);
-    await remoteFollows(h.store, await remoteAccount(h.store, "rem"), h.users.alice.id);
-    const status = await post(h, h.users.alice, { status: "same" });
+  it("stores a change of the policy alone with no history entry or edited_at, sends an Update and notifies as an edit", async () => {
+    const { h, alice, status } = await edited();
     expect((await outbound(h.store)).map((row) => row.activity.type)).toEqual(["Create"]);
-    const response = await send(h, h.users.alice.token, "PUT", `/api/v1/statuses/${status.id}`, {
-      status: "same",
+    const response = await send(h, alice.token, "PUT", `/api/v1/statuses/${status.id}`, {
+      status: "@bob same",
       quote_approval_policy: "nobody",
     });
-    const edited = await response.json<PolicyStatus>();
-    expect(edited.edited_at).toBeNull();
-    expect(edited.quote_approval).toEqual(approvalOf([]));
+    const body = await response.json<PolicyStatus>();
+    expect(body.edited_at).toBeNull();
+    expect(body.quote_approval).toEqual(approvalOf([]));
     expect(await stored(h.store, status.id)).toBe(0);
     expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
     expect((await outbound(h.store)).map((row) => row.activity.type)).toEqual(["Create", "Update"]);
+    // UpdateStatusService counts the change as an edit, so it broadcasts: bob's dismissed mention is written and pushed
+    // again, and carol, who boosted the status, gets its update.
+    const notified = await notifiedOf(h);
+    expect(notified.map(({ type, account_id }) => [type, account_id])).toEqual([
+      ["mention", h.users.bob.id],
+      ["update", h.users.carol.id],
+    ]);
+    expect(await pushes(h)).toEqual([notified[0]!.id]);
+  });
+
+  it("notifies no one for an edit that changes nothing, the policy sent as it is included", async () => {
+    const { h, alice, status } = await edited();
+    for (const body of [{ status: "@bob same" }, { status: "@bob same", quote_approval_policy: "public" }]) {
+      expect((await send(h, alice.token, "PUT", `/api/v1/statuses/${status.id}`, body)).status).toBe(200);
+    }
+    expect(await stored(h.store, status.id)).toBe(PUBLIC);
+    expect((await outbound(h.store)).map((row) => row.activity.type)).toEqual(["Create"]);
+    expect(await notifiedOf(h)).toEqual([]);
   });
 });
+
+// alice's public status mentioning bob, with a remote follower (so its activities are recorded), boosted by carol;
+// bob holds a push subscription for mentions and has dismissed his mention notification.
+async function edited() {
+  const h = await community(["alice", "bob", "carol"]);
+  const { alice, bob, carol } = h.users;
+  await remoteFollows(h.store, await remoteAccount(h.store, "rem"), alice.id);
+  await sql(
+    h.store,
+    `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
+		SELECT token_hash, 'https://push.example/1', 'p', 'a', '{"mention":true}', 'all' FROM oauth_tokens WHERE account_id = ?`,
+    bob.id,
+  );
+  const status = await post(h, alice, { status: "@bob same" });
+  expect((await act(h, carol, `/api/v1/statuses/${status.id}/reblog`)).status).toBe(200);
+  const [mention] = await notifiedOf(h);
+  expect(mention).toMatchObject({ type: "mention", account_id: bob.id });
+  expect((await act(h, bob, `/api/v1/notifications/${mention!.id}/dismiss`)).status).toBe(200);
+  expect([await notifiedOf(h), await pushes(h)]).toEqual([[], []]);
+  return { h, alice, status };
+}
+
+// The notifications of the edit's recipients (bob's mentions, carol's updates), and the pushes queued.
+const notifiedOf = (h: ApiHarness) =>
+  sql<{ id: string; type: string; account_id: string }>(
+    h.store,
+    "SELECT CAST(id AS TEXT) AS id, type, account_id FROM notifications WHERE type IN ('mention', 'update') ORDER BY id",
+  );
+const pushes = async (h: ApiHarness) =>
+  (await sql<{ id: string }>(h.store, "SELECT CAST(notification_id AS TEXT) AS id FROM push_deliveries")).map(
+    (row) => row.id,
+  );
 
 describe("PUT and PATCH /api/v1/statuses/:id/interaction_policy", () => {
   describe.for(["PUT", "PATCH"])("%s", (method) => {
@@ -307,6 +355,16 @@ describe("PUT and PATCH /api/v1/statuses/:id/interaction_policy", () => {
       expect(await sql(h.store, "SELECT edited_at FROM statuses WHERE id = ?", status.id)).toEqual([
         { edited_at: null },
       ]);
+    });
+
+    // Statuses::InteractionPoliciesController broadcasts with skip_notifications (interaction_policies_controller.rb:24-26).
+    it("notifies no one of a change", async () => {
+      const { h, alice, status } = await edited();
+      const path = `/api/v1/statuses/${status.id}/interaction_policy`;
+      expect((await send(h, alice.token, method, path, { quote_approval_policy: "nobody" })).status).toBe(200);
+      expect(await stored(h.store, status.id)).toBe(0);
+      expect((await outbound(h.store)).map((row) => row.activity.type)).toEqual(["Create", "Update"]);
+      expect(await notifiedOf(h)).toEqual([]);
     });
 
     it("refuses any other value with 422 and keeps the policy", async () => {
