@@ -625,6 +625,53 @@ describe("publication", () => {
     );
   });
 
+  it("schedules a blank text with its CW as its text, and publishes a row an earlier release scheduled as stored", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const created = await scheduled(h, alice, { status: "", spoiler_text: "cw", scheduled_at: at(NOW + HOUR) });
+    expect(created.params).toMatchObject({ text: "cw", spoiler_text: "", sensitive: true });
+    expect(
+      (await getJson<Scheduled>(h, `/api/v1/scheduled_statuses/${created.id}`, alice.token)).body.params,
+    ).toMatchObject({ text: "cw", spoiler_text: "", sensitive: true });
+    // Its length is that of the text it becomes: 500 characters as a warning, 504 as text.
+    expect(
+      await refusal(
+        await schedule(h, alice, {
+          status: "",
+          spoiler_text: `${"x".repeat(480)} https://example.com`,
+          scheduled_at: at(NOW + HOUR),
+        }),
+      ),
+    ).toEqual({ status: 422, body: { error: "Validation failed: Text character limit of 500 exceeded" } });
+    expect(await count(h, "scheduled_statuses")).toBe(1);
+    // A row an earlier release scheduled with a blank text, a CW and media, its upload held.
+    const media = await upload(h, alice, 1);
+    const earlier = "600000000000000001";
+    await sql(
+      h.store,
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)`,
+      earlier,
+      alice.id,
+      at(NOW + HOUR),
+      JSON.stringify({ ...created.params, text: "", spoiler_text: "cw", sensitive: null, media_ids: [media] }),
+    );
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?",
+      earlier,
+      media,
+    );
+    for (const id of [created.id, earlier]) {
+      expect(await publishDirectly(h, id, NOW + HOUR), id).toMatchObject({ status: "published" });
+    }
+    expect(
+      await sql(h.store, "SELECT content, source_text, spoiler_text, sensitive FROM statuses ORDER BY id"),
+    ).toEqual([
+      { content: "<p>cw</p>", source_text: "cw", spoiler_text: "", sensitive: 1 },
+      { content: "", source_text: "", spoiler_text: "cw", sensitive: 1 },
+    ]);
+  });
+
   it("applies the author's defaults at the time of publication", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
