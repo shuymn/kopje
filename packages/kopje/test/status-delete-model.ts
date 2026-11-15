@@ -8,7 +8,7 @@
 //   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
 //   jobs, and Kopje's outbound intents with their deliveries in each lane.
-// - Peer: the author R's server, Mastodon v4.5.11, as a sender only (each rule cites the file and line it models): the
+// - Peer: the author R's server, Mastodon v4.7.5, as a sender only (each rule cites the file and line it models): the
 //   statuses it posted, edited and deleted, and every message it sent, each an independent delivery job.
 //
 // A change to a status Create, Update or Delete rule in docs/threat-model.md changes this file with it.
@@ -25,7 +25,7 @@ const DAY = 24 * HOUR;
 export const RETRACTION_TTL_MS = 30 * DAY;
 // ID-7: "an Update dated more than 5 minutes ahead of the clock is ignored".
 export const VERSION_SKEW_MS = 5 * MINUTE;
-// Mastodon's Update#object_too_old? (OBJECT_AGE_THRESHOLD = 1.day, update.rb:5,44-48), which Kopje follows for an
+// Mastodon's Update#object_too_old? (OBJECT_AGE_THRESHOLD = 1.day, update.rb:5,52-56), which Kopje follows for an
 // Update of a status it does not hold (updateRemoteStatus's doc comment: "creates it if it is recent").
 export const UPDATE_CREATES_WITHIN_MS = DAY;
 
@@ -244,7 +244,7 @@ export class Policy {
   }
 
   // ID-6: "Update ... require[s] the object's current author"; ID-7: the watermark, the skew, the retraction; an
-  // Update of a status Kopje does not hold creates it when it is recent (Mastodon's update.rb:34-37).
+  // Update of a status Kopje does not hold creates it when it is recent (Mastodon's update.rb:36-39).
   private update(actor: string, o: Obj, now: number): Answer {
     if (originOf(o.uri) !== originOf(actor)) {
       return { applied: false, reason: "foreign-object" };
@@ -609,7 +609,7 @@ export class Policy {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Peer: R's server, Mastodon v4.5.11, as the author
+// Peer: R's server, Mastodon v4.7.5, as the author
 // ---------------------------------------------------------------------------------------------------------------
 
 // ActivityPub::DeliveryWorker (app/workers/activitypub/delivery_worker.rb:11-20): 16 retries, the n-th after
@@ -674,8 +674,8 @@ export class Peer {
     return true;
   }
 
-  // UpdateStatusService: an edit with no change is refused (NoChangesSubmittedError, update_status_service.rb:121);
-  // any change, the sensitive flag included (status.changed?, :171), sets edited_at to now (:123) and sends an Update
+  // UpdateStatusService: an edit with no change is refused (NoChangesSubmittedError, update_status_service.rb:124);
+  // any change, the sensitive flag included (status.changed?, :175), sets edited_at to now (:126) and sends an Update
   // naming it as `updated`.
   edit(uri: string, snapshot: Snapshot, now: number): boolean {
     const status = this.statuses.get(uri)!;

@@ -51,7 +51,7 @@ export const hostCovered = (blocks: ReadonlyMap<string, Block>, host: string): b
 export const accountCovered = (blocks: ReadonlyMap<string, Block>, a: { domain: string; uri: string }): boolean =>
   hostCovered(blocks, a.domain) || hostCovered(blocks, new URL(a.uri).hostname);
 
-// Mastodon v4.5.11 DomainBlock#stricter_than? (app/models/domain_block.rb:81-87), which a create applies against the
+// Mastodon v4.7.5 DomainBlock#stricter_than? (app/models/domain_block.rb:79-85), which a create applies against the
 // block ruling its domain (visibility.md, "Precedence": "one whose ruling block is at least as strict").
 export function stricterThan(block: { severity: string; rejectMedia: boolean; rejectReports: boolean }, other: Block) {
   if (block.severity === "suspend") {

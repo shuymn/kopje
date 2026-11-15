@@ -28,7 +28,7 @@ import {
 import { community, remoteAccount, seedReceipts } from "./status-helpers";
 
 // Model-based checks of a remote author's statuses and their deletion (ID-7, ID-6, RES-6, VIS-1 and VIS-3 in
-// docs/threat-model.md). Generated sequences of the author R's Create, Update and Delete (through a Mastodon v4.5.11
+// docs/threat-model.md). Generated sequences of the author R's Create, Update and Delete (through a Mastodon v4.7.5
 // sender, delivered in any order and again), L's favourites and boosts of R's status, Kopje's job rounds and its
 // delivery steps run through the Store and the API; after every step the Store's projection and each answer must equal
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
@@ -908,7 +908,7 @@ async function settleKopje(w: World): Promise<void> {
 // ---------------------------------------------------------------------------------------------------------------
 
 // The accepted risk of an Update that reaches Kopje before its Create, more than 24 hours after publication
-// (Mastodon parity: update.rb:34 drops it through object_too_old?): Kopje dropped it as `unknown-object` and stored the
+// (Mastodon parity: update.rb:36 drops it through object_too_old?): Kopje dropped it as `unknown-object` and stored the
 // earlier version the Create carried. Allowed only for that status, while every newer version of it was answered
 // `unknown-object` each time it arrived, and the version Kopje holds is one the author sent.
 function updateBeforeCreate(w: World, uri: string, held: { snapshot: Shown; version: string | null }): boolean {
@@ -1223,7 +1223,7 @@ describe("status deletes: the author's orders", () => {
     expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
   });
 
-  // Exception 1, Mastodon parity (update.rb:34, OBJECT_AGE_THRESHOLD = 1.day): the Update is dropped and the Create
+  // Exception 1, Mastodon parity (update.rb:36, OBJECT_AGE_THRESHOLD = 1.day): the Update is dropped and the Create
   // that follows stores the earlier version, until the next edit.
   it("an Update before its Create, past 24 hours, leaves the earlier version (an accepted risk)", async () => {
     const w = await run([
@@ -1249,7 +1249,7 @@ describe("status deletes: the author's orders", () => {
   });
 
   // Decision (c): Kopje's watermark moves on every accepted Update, so the obsolete B, older than the final A, is
-  // ignored. Mastodon's edited_at moves only on a significant change (process_status_update_service.rb:179,394-396),
+  // ignored. Mastodon's edited_at moves only on a significant change (process_status_update_service.rb:189,443-445),
   // so the final A, no change against A, leaves it, and B then applies there.
   it("the author's A, B, A with the final A delivered before B", async () => {
     const w = await run([
@@ -1472,7 +1472,7 @@ describe("status deletes: forgeries and the retraction's scope", () => {
   });
 
   // ID-7, ID-6: a stored status R deleted is created again by nobody (`*`), while R's Delete of a uri never seen
-  // here is R's own (deviation 3: Mastodon's Tombstone of it refuses every account, create.rb:438).
+  // here is R's own (deviation 3: Mastodon's Tombstone of it refuses every account, create.rb:488).
   it("F's Create of R's deleted uri is refused; of R's unknown-deleted uri it is taken", async () => {
     const w = await inRun([
       inbox(0, "Create", 0),
