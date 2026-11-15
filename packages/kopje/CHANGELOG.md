@@ -79,6 +79,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- An attribution domain (`attribution_domains[]`) longer than 1,020 UTF-8 bytes is refused as not a valid domain
+  name. CredentialAccount's `source.attribution_domains` and the actor show at most 100 domains of at most 1,020 bytes,
+  and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
+  included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
+  migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
@@ -131,6 +136,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
+  Store migration and no `wrangler.jsonc` change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
   spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
   every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a

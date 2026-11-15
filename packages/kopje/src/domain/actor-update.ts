@@ -2,7 +2,7 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
-import { ACCOUNT_EMOJIS_BYTES } from "../platform/stored-bounds";
+import { ACCOUNT_EMOJIS_BYTES, presentedAttributionDomains } from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
 import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
@@ -129,9 +129,9 @@ export function moderationUpdate(db: Db, accountId: string, now: number): Delive
   };
 }
 
-// `attributionDomains`, as ActivityPub::ActorSerializer adds it: only when the account has one.
+// `attributionDomains`, as ActivityPub::ActorSerializer adds it: only when the account has one presented.
 function attributionDomainsOf(stored: string): { attributionDomains?: string[] } {
-  const domains = JSON.parse(stored) as string[];
+  const domains = presentedAttributionDomains(stored);
   return domains.length === 0 ? {} : { attributionDomains: domains };
 }
 

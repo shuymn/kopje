@@ -2855,6 +2855,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`verifiedLinksPastBoundSql`, `unverifiedLinksPastBoundSql`) refuses of the exact value written, never failing;
   `test/migrations.test.ts` ("0066_field_verification", "0076_field_link_checks"), `test/field-links.test.ts`
   ("records a value beside imported entries escaped up to the bound").
+  _Enforced (main)_ for attribution domains: `local_accounts.attribution_domains` keeps only its shape CHECK (migration
+  `0024_attribution_domains`), so a stored value may be any JSON array: an import, or a list an earlier writer accepted
+  with domains padded by characters IDNA ignores (100 of them pass `ATTRIBUTION_DOMAINS_BYTES`). Every reader
+  (CredentialAccount's `source`, the actor endpoint, the profile Update) reads it through `attributionDomainsSql`
+  (`'[]'` past `ATTRIBUTION_DOMAINS_BYTES`, 102,302 bytes) and presents it through `presentedAttributionDomains`, which
+  never throws: of the first 100 entries, the strings whose JSON is within `ATTRIBUTION_DOMAIN_BYTES` + 2 (1,022 bytes)
+  after decoding, at most `ATTRIBUTION_DOMAINS_JSON_MAX` (102,301 bytes) in all. What passes these bounds stays stored
+  and is hidden from the presentation; the writer refuses a domain past the same rule (`withinAttributionDomainBound` in
+  `src/platform/stored-bounds.ts`); `test/attribution-domains.test.ts`,
+  `test/accounts.test.ts` ("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES"), `test/actor-update.test.ts`
+  ("sends the same document as the endpoint for imported attribution domains past their bounds").
   _Enforced (main)_ for account moves: `accounts.moved_to_account_id` holds NULL or the 18-digit id of another
   account, on a remote row only; the triggers `accounts_moved_to_insert` and `accounts_moved_to_update` of migration
   `0060_account_moves` refuse any other value, imports included, judged by storage class, bytes, NUL, digits, then the
@@ -2985,11 +2996,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   profile URL (`url`, icon, image) over `PROFILE_URL_LIMIT` (2,048) is not stored, and an image (`avatar`, `header`) or
   its static shows only while its JSON is within `PROFILE_URL_LIMIT` bytes too, both defaults otherwise; the display
   name is cut at 2,048 code points, and a username over 255 is refused. Converted rows hold the same bounds (RES-2,
-  stored values), so `ACCOUNT_COLUMN_MAP` reads the bio, display name and URLs as stored and cuts the username at 255
-  code points; mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct`
-  and a fallback url from the cut username; the admin account search reads candidates' ids and flags only and tests
-  their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and refused at
-  the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
+  stored values), so `ACCOUNT_COLUMN_MAP` reads the bio and URLs as stored and cuts the username at 255 code points.
+  An import may still hold malformed UTF-8 that passes the display name's character cut and the bio's byte bound and
+  decodes past them (0xFF and any number of continuation bytes is one character to SQLite, and each byte decodes to a
+  U+FFFD of three bytes), so the display name is read through a cut of 8,192 stored bytes (`displayNameReadSql`, which
+  cuts no value a writer stores) and both are bounded again after decoding: the display name at 2,048 code points
+  (`presentedDisplayName`) and the bio `''` past 64 KiB of JSON (`presentedNote`), in every Account and in
+  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The local actor's `name` and `summary` read
+  both as stored (#1583). Mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and
+  derive `acct` and a fallback url from the cut username; the admin account search reads candidates' ids and flags only
+  and tests their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
+  refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the
   presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note or
@@ -4170,7 +4187,12 @@ operation. No one fill holds a status's emoji arrays and its polls' at their bou
 choices need displace escaped characters), so the conservative JSON of a shape is the escaped fill's plus 12,286 bytes
 for each poll it shows, at least every fill's (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape
 within 85%, above every fill")); shares are of it. Each remote account of the fills carries its actor id (`uri`) at its
-bound, 2,048 bytes as JSON, the most it presents. A local account also shows `noindex` and `roles`, at most the Owner's
+bound, 2,048 bytes as JSON, the most it presents. An imported account whose display name and bio hold malformed UTF-8
+(0xFF and 1,048,575 continuation bytes, and 65,534 continuation bytes) is no fill, since a fill measures decoded values
+in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192 and 65,534
+bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of the row and
+that within the raw fill's, and presenting within the escaped fill's account occurrence (`test/status-bounds.test.ts`
+("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own

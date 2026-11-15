@@ -200,6 +200,13 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
+  domain name. A compliant host is shorter than 256 characters, so only one padded with characters IDNA ignores (U+00AD)
+  is that long; Mastodon refuses such padding much sooner, when its IDNA conversion fails (between 60 and 120 U+00AD in
+  a check), and Kopje accepts it up to the 1,020 bytes (#1606). Domains and lists past the presented bounds, whether
+  saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
+  `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
+  (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
   once, as the HTML it presents and federates.
