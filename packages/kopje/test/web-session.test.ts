@@ -677,15 +677,32 @@ describe("settings page", () => {
     const csrf = await csrfOf(h, browser);
     const response = await postForm(h, browser, "/settings/profile", {
       csrf,
-      display_name: "x".repeat(31),
+      display_name: "x".repeat(41),
       "fields_attributes[0][name]": "n".repeat(256),
       "fields_attributes[0][value]": "v",
     });
     expect(response.status).toBe(422);
     const page = await response.text();
-    expect(page).toContain("Display name is too long");
+    expect(page).toContain("Display name is too long (maximum is 40 characters)");
     expect(page).toContain("Fields is too long");
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: "Alice" }]);
+  });
+
+  // The server decides the display name's limit in code points (40, Mastodon's); the field's native limit lets through
+  // more (browser job), so 41 BMP characters reach this check.
+  it("saves a display name of 40 code points, astral ones included, and refuses 41", async () => {
+    const h = await withAlice();
+    const browser = await signIn(h);
+    const csrf = await csrfOf(h, browser);
+    const forty = `${"😀".repeat(20)}${"あ".repeat(20)}`;
+    expect((await postForm(h, browser, "/settings/profile", { csrf, display_name: forty })).status).toBe(303);
+    expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: forty }]);
+    for (const value of ["😀".repeat(41), "x".repeat(41)]) {
+      const refused = await postForm(h, browser, "/settings/profile", { csrf, display_name: value });
+      expect(refused.status, value).toBe(422);
+      expect(await refused.text()).toContain("Display name is too long (maximum is 40 characters)");
+    }
+    expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: forty }]);
   });
 
   it("shows only notices it knows", async () => {

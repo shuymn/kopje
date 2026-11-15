@@ -3,9 +3,11 @@ import {
   type FieldSource,
   MAX_ACCOUNTS_BY_ID,
   MAX_ATTRIBUTION_DOMAINS,
+  MAX_DISPLAY_NAME,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  MAX_NOTE,
   type RelationshipResult,
   type Visibility,
 } from "../domain/accounts";
@@ -56,8 +58,6 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
   return account === null ? recordNotFound() : c.json(account);
 };
 
-const MAX_DISPLAY_NAME = 30;
-const MAX_NOTE = 500;
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
 

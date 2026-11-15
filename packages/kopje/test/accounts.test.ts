@@ -259,10 +259,35 @@ describe("credentials", () => {
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
   });
 
+  // Account::DISPLAY_NAME_LENGTH_LIMIT (Mastodon 4.6, `mastodon#39458`): 40 code points, whatever plane they are in; a
+  // NUL counts as one, as it does in Mastodon, and is dropped when stored.
+  it("accepts a display name of 40 code points and refuses 41", async () => {
+    const h = await aliceSession();
+    const patch = (display_name: string) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json({ display_name }, { method: "PATCH" })));
+    const forty = "😀".repeat(40);
+    const accepted = await patch(forty);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ display_name: forty });
+    const stored = () => sql(h.store, "SELECT display_name FROM accounts WHERE id = ?", h.aliceId);
+    expect(await stored()).toEqual([{ display_name: forty }]);
+    for (const value of [`${"😀".repeat(40)}\u0000`, "x".repeat(41), `${"😀".repeat(20)}${"x".repeat(21)}`]) {
+      const refused = await patch(value);
+      expect(refused.status, value).toBe(422);
+      expect(await refused.json()).toEqual({
+        error: "Validation failed: Display name is too long (maximum is 40 characters)",
+      });
+    }
+    expect(await stored()).toEqual([{ display_name: forty }]);
+    // The NUL is one of the 40 and is not stored.
+    expect((await patch(`${"😀".repeat(39)}\u0000`)).status).toBe(200);
+    expect(await stored()).toEqual([{ display_name: "😀".repeat(39) }]);
+  });
+
   it("refuses invalid values without changing anything", async () => {
     const h = await aliceSession();
     for (const body of [
-      { display_name: "x".repeat(31) },
+      { display_name: "x".repeat(41) },
       { note: "x".repeat(501) },
       { source: { privacy: "secret" } },
     ]) {
