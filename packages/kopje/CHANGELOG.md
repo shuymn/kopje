@@ -117,6 +117,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- A boost answered on its own (the reblog response, `GET /api/v1/statuses/:id`, `GET /api/v1/statuses`, its deletion
+  and its interaction-policy update), a reported boost in the admin API's reports, and a boost named by a notification
+  or a notification request shown alone (`GET /api/v1/notifications/:id`, `GET /api/v2/notifications/:group_key`, a
+  streamed notification, `GET /api/v1/notifications/requests/:id`) show its original's `favourited`, `reblogged` and
+  `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
+  `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
+  Mastodon's streaming does.
 
 ## [0.5.2] - 2026-11-14
 
