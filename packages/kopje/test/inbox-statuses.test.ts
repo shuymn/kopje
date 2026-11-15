@@ -1253,7 +1253,8 @@ describe("search with resolve=true (NET-4, VIS-1)", () => {
       { uri: note.id, content: "<p>found </p>", account: { acct: "bob@mastodon.example" } },
     ]);
     expect(new Set(t.web.signers)).toEqual(new Set([`${LOCAL}/actor#main-key`]));
-    // Stored, but not notified, and outside the public timelines' rules as any fetched status.
+    // Stored, and outside the public timelines' rules as any fetched status; not notified, since it mentions no local
+    // account (and was published more than the real-time window before it arrived).
     expect(await notifications(t.store)).toEqual([]);
     // A second search answers from the Store's row.
     const again = await t.api<{ statuses: { id: string }[] }>(

@@ -194,6 +194,11 @@ the sender's filtered notifications, adding its direct mentions to the recipient
 notifications in bounded batches (`src/domain/notification-requests.ts`), the first in the request and the rest with the
 inbound jobs. Requests, the policy and permissions are their recipient's alone: only their owner reads or answers them.
 
+A remote status's mentions and post notifications are written when it is delivered, or when Kopje fetches it, on any
+path, within the real-time window (published at most six hours before it arrived; `withinRealTimeWindow` in
+`src/domain/real-time-window.ts`, the window the streaming `update` event uses); a fetched status's limited condition
+counts only its `to` and `cc`. A status that arrives again notifies no one.
+
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
 (`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the
 recipient's notifications at the time (`notification_clears`), and dismissing a group

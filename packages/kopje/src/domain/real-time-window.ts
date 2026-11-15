@@ -4,7 +4,8 @@ import type { Db } from "../db/sql";
 // Mastodon's real-time window (Status::REAL_TIME_WINDOW and Status#within_realtime_window?, app/models/status.rb:188,
 // :218-220 in v4.7.5): a status published at most six hours before it arrived is live. A delivered Create always fans
 // out (ActivityPub::ProcessingWorker sets override_timestamps, processing_worker.rb:16); a fetched one only within the
-// window (Create#distribute, create.rb:92). The streaming `update` event (streaming.ts) judges it here.
+// window (Create#distribute, create.rb:92). The streaming `update` event (streaming.ts) and a fetched status's
+// notifications (remote-statuses.ts storeRemoteStatus) judge it here.
 //
 // It compares the stored published_at with created_at, both the Store's: published_at is the parsed `published`, or
 // the arrival when it is missing, unreadable or in the future (remote-statuses.ts remoteTime), as StatusParser takes

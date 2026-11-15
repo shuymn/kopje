@@ -76,6 +76,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   filtered by default unless the account follows the author. Such a mention was never notified. A mention an edit adds
   is notified as an ordinary one, whether or not the edit addresses the account. No Store migration and no
   `wrangler.jsonc` change.
+- A remote status Kopje fetches (a search result, a boost's original, a pinned or a quoted status) notifies its
+  mentioned local accounts and the author's subscribers when it was published within six hours of arriving, as
+  Mastodon's real-time window does; such a status notified no one. A status that arrives again later notifies no one
+  again. No Store migration and no `wrangler.jsonc` change.
 - Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage

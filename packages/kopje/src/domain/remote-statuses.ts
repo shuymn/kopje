@@ -26,6 +26,7 @@ import { enqueueCard, remoteCardLink } from "./link-cards";
 import { notify } from "./notifications";
 import { isLocalPoll, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
+import { withinRealTimeWindow } from "./real-time-window";
 import {
   type DocumentRevision,
   remoteAccount,
@@ -86,7 +87,7 @@ export type StoreContext = {
   // The local account whose personal inbox received the activity.
   deliveredTo: string | null;
   // Fetched by Kopje (a boosted original, a search result) rather than delivered: Mastodon's fetch?, which needs no
-  // relation to a local account, and sends no notifications.
+  // relation to a local account, and notifies only within the real-time window (real-time-window.ts).
   fetched: boolean;
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
@@ -376,15 +377,15 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     known: known.byUri,
     deliveredTo,
   });
-  const audience = new Set(
+  // The known accounts of to and cc, and with them the owner of the personal inbox it came to (Mastodon's
+  // accounts_in_audience).
+  const addressed = new Set(
     [...to, ...cc].flatMap((uri) => {
       const id = known.byUri.get(uri);
       return id === undefined ? [] : [id];
     }),
   );
-  if (deliveredTo !== null) {
-    audience.add(deliveredTo);
-  }
+  const audience = deliveredTo === null ? addressed : new Set([...addressed, deliveredTo]);
   const parent = parentOf(db, input.inReplyTo);
   const addressesLocal = [...audience].some((id) => known.local.has(id) || id === deliveredTo);
   if (!ctx.fetched && !relatedToLocal(db, author, visibility, addressesLocal, parent)) {
@@ -465,13 +466,16 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   linkQuotes(db, { id, uri: input.uri }, ctx.now);
   // Create#process_status's LinkCrawlWorker, for every status stored (a fetched one included).
   enqueueCard(db, id, remoteCardLink(db, id, input.cardCandidates, new URL(ctx.origin).host), ctx.now);
-  if (!ctx.fetched) {
+  // Create#distribute fans out a delivered status, and a fetched one only within the real-time window (create.rb:92 in
+  // v4.7.5). A fetch has no delivered_to_account_id (ActivityPub::FetchRemoteStatusService), so a fetched status's
+  // limited condition counts to and cc alone, whatever inbox the fetch began from.
+  if (!ctx.fetched || withinRealTimeWindow(db, id)) {
     notifyCreated(db, {
       id,
       author,
       rows,
       local: known.local,
-      audience,
+      audience: ctx.fetched ? addressed : audience,
       language: input.language,
       replyTarget,
       isReply,
@@ -526,9 +530,9 @@ function linkReplies(
 
 // Mastodon's mention notifications (FanOutOnWriteService#notify_mentioned_accounts!, fan_out_on_write_service.rb:68-75
 // in v4.7.5): each local account the status mentions (not silently), and one it tags without addressing it (not in
-// `audience`, to/cc and the owner of the personal inbox it came to: Create#process_audience's silenced_account_ids,
-// create.rb:155) marked `limited`, so the policy's limited accounts condition applies; and FeedInsertWorker#notify? for
-// followers who asked to hear of the author's posts. notify() applies the audience rule.
+// `audience`, to/cc and, for a delivered status, the owner of the personal inbox it came to: Create#process_audience's
+// silenced_account_ids, create.rb:155) marked `limited`, so the policy's limited accounts condition applies; and
+// FeedInsertWorker#notify? for followers who asked to hear of the author's posts. notify() applies the audience rule.
 function notifyCreated(
   db: Db,
   created: {
