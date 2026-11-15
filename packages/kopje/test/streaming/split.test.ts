@@ -1,18 +1,21 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { addToConversation } from "../../src/domain/conversations";
 import { runInboundJobs } from "../../src/domain/inbox";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
 import { deleteStatus, unreblog } from "../../src/domain/statuses";
 import { CAPTURE_LIMITS, CONVERSATIONS_PER_TURN, streamCaughtUp, streamMerged } from "../../src/domain/streaming";
+import { utf8Length } from "../../src/platform/dump-format";
 import { sha256Hex } from "../../src/security/tokens";
-import { STREAM_FAULTS, TURN_BUDGET } from "../../src/stream-hub";
-import { type ApiHarness, sql } from "../api-helpers";
+import { STREAM_FAULTS, STREAM_LIMITS, TURN_BUDGET, UNIT_WORST } from "../../src/stream-hub";
+import { type ApiHarness, bearer, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
 import { deleteSignature } from "../delete-job-helpers";
 import { BUILD } from "../helpers";
-import { community } from "../status-helpers";
+import { community, type User } from "../status-helpers";
+import { described, describedMedia, FILLS, fillProfile, writeFilled } from "./payload-fills";
 import { connect, drained, echo, type Inbox, type StreamMessage, takeAll } from "./stream-helpers";
 
 // Every event kind the hub serves, split across turns by the turn budget (RES-6). Each kind's fixture has more units
@@ -765,4 +768,177 @@ describe.each(KINDS)("$name split across turns", (kind) => {
     await settle(event);
     await exactly(event);
   });
+});
+
+// RES-6: a turn is charged each presented payload's UTF-8 bytes, the measure of STREAM_LIMITS.payloadBytes, and starts
+// a unit only while UNIT_WORST is left; a unit is charged whole after it is presented, sent or skipped. The payloads
+// are payload-fills.ts's plain fill (mostly characters past U+07FF, which UTF-16 counts at a half to a third).
+describe("the turn's payload budget", () => {
+  afterEach(() => {
+    STREAM_FAULTS.dropContinuation = null;
+  });
+
+  // The units a turn starts for payloads of these bytes, in order: each while what is left covers UNIT_WORST.
+  function started(payloads: readonly number[]): number {
+    let left = TURN_BUDGET.bytes;
+    let units = 0;
+    for (const bytes of payloads) {
+      if (left < UNIT_WORST.bytes) {
+        break;
+      }
+      left -= bytes;
+      units++;
+    }
+    return units;
+  }
+
+  // alice with the plain fill's profile, her S1 with four ordinary descriptions at their length, sent to whoever
+  // listens; and the media of more such statuses, described, so that later writes start no turn.
+  async function author(h: ApiHarness & { users: Record<"alice", User> }, statuses: number) {
+    const { alice } = h.users;
+    await fillProfile(h, alice, FILLS.plain);
+    const media = await describedMedia(
+      h,
+      alice,
+      Array.from({ length: statuses + 1 }, () => described("\u{1F600}")).flat(),
+    );
+    const quoted = await writeFilled(h, alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
+    const more = Array.from({ length: statuses }, (_, i) =>
+      media.slice((i + 1) * MAX_STATUS_MEDIA, (i + 2) * MAX_STATUS_MEDIA),
+    );
+    return { alice, quoted, more };
+  }
+
+  it("sends in a turn the units their UTF-8 bytes allow, and the rest in later turns", async () => {
+    const h = await community(["alice"]);
+    const ids = await accounts(h, 30, "4");
+    const inboxes = await Promise.all(ids.map((id) => socket(h, id, [{ stream: "public:local" }])));
+    const { alice, quoted, more } = await author(h, 1);
+    await h.store.streamTick(BUILD);
+    await opened(h, inboxes);
+    STREAM_FAULTS.dropContinuation = () => {};
+    const quote = await writeFilled(h, alice, FILLS.plain, more[0]!, quoted);
+    await turn(h);
+    for (const inbox of inboxes) {
+      await echo(inbox);
+    }
+    const frames = inboxes.flatMap((inbox) => inbox.rest().filter((m) => m.event === "update"));
+    const bytes = frames.map((m) => utf8Length(JSON.stringify(m.payload)));
+    // Every viewer is presented the same payload; counted in UTF-16 code units, the turn would start more units.
+    const payload = bytes[0]!;
+    expect(bytes).toEqual(frames.map(() => payload));
+    expect(frames.map((m) => key(m))).toEqual(frames.map(() => `public:local update ${quote}`));
+    expect(frames).toHaveLength(started(ids.map(() => payload)));
+    expect(frames.length).toBeLessThan(ids.length);
+    const units = JSON.stringify(frames[0]!.payload).length;
+    expect(started(ids.map(() => units))).toBeGreaterThan(frames.length);
+    let turns = 0;
+    while (!(await caughtUp(h)) && turns < SETTLE_TURNS) {
+      await turn(h);
+      turns++;
+    }
+    expect(await caughtUp(h)).toBe(true);
+    for (const inbox of inboxes) {
+      await echo(inbox);
+    }
+    expect(
+      inboxes.map((inbox) =>
+        inbox
+          .rest()
+          .filter((m) => m.event === "update")
+          .map((m) => key(m)),
+      ),
+    ).toEqual(inboxes.map(() => [`public:local update ${quote}`]));
+  }, 120_000);
+
+  // A turn nearly spent by plain events still starts a unit while UNIT_WORST.bytes is left; the event whose payload
+  // passes STREAM_LIMITS.payloadBytes (a quote whose eight descriptions are control characters) is presented, charged
+  // whole and skipped, which ends the turn; a small status written after it waits for the next turn. The turn's charge
+  // stays within its hard bound (18,745,008 bytes: test/status-bounds.test.ts, "the most a turn presents").
+  it("charges a skipped unit whole and starts no unit after it, within the turn's hard bound", async () => {
+    const h = await community(["alice"]);
+    const [viewer] = await accounts(h, 1, "4");
+    const inbox = await socket(h, viewer!, [{ stream: "public:local" }]);
+    const { alice } = h.users;
+    await fillProfile(h, alice, FILLS.plain);
+    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions.
+    const ordinary = await describedMedia(h, alice, Array.from({ length: 3 }, () => described("\u{1F600}")).flat());
+    const controlled = await describedMedia(h, alice, described("\u0001"));
+    const quoted = await writeFilled(h, alice, FILLS.plain, ordinary.slice(0, MAX_STATUS_MEDIA));
+    const quotedControls = await writeFilled(h, alice, FILLS.plain, controlled);
+    const single = await writeFilled(h, alice, FILLS.plain, ordinary.slice(MAX_STATUS_MEDIA, 2 * MAX_STATUS_MEDIA));
+    const quoting = await writeFilled(h, alice, FILLS.plain, ordinary.slice(2 * MAX_STATUS_MEDIA), quoted);
+    await h.store.streamTick(BUILD);
+    await opened(h, [inbox]);
+    // The stream presents a status as REST does ("sends a public status ... as REST presents it to the viewer").
+    const presented = async (id: string) =>
+      utf8Length(JSON.stringify(await (await h.request(`/api/v1/statuses/${id}`, bearer(`split-${viewer}`))).text()));
+    const quotePayload = await presented(quoting);
+    const singlePayload = await presented(single);
+    // The oversized event: a quote whose eight descriptions take 7 bytes a character, not 4.
+    const oversized = quotePayload + 2 * MAX_STATUS_MEDIA * (7 - 4) * MAX_MEDIA_DESCRIPTION_LENGTH;
+    expect(oversized).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
+    // Quotes, then single statuses, until what is left covers UNIT_WORST.bytes and not the oversized payload. The
+    // counts the writes add (alice's statuses, the quoted status's quotes) lengthen each payload by a few bytes, so the
+    // turn is checked below by what the payloads measure once everything is written.
+    const plan: ("quote" | "single")[] = [];
+    let left = TURN_BUDGET.bytes;
+    for (const [shape, bytes] of [
+      ["quote", quotePayload],
+      ["single", singlePayload],
+    ] as const) {
+      while (left >= oversized && left - bytes >= UNIT_WORST.bytes) {
+        plan.push(shape);
+        left -= bytes;
+      }
+    }
+    expect(left).toBeGreaterThanOrEqual(UNIT_WORST.bytes);
+    expect(left).toBeLessThan(oversized);
+    const media = await describedMedia(
+      h,
+      alice,
+      plan.flatMap(() => described("\u{1F600}")),
+    );
+    const controls = await describedMedia(h, alice, described("\u0001"));
+    await drained(h, inbox);
+    STREAM_FAULTS.dropContinuation = () => {};
+    const written: string[] = [];
+    for (const [i, shape] of plan.entries()) {
+      const own = media.slice(i * MAX_STATUS_MEDIA, (i + 1) * MAX_STATUS_MEDIA);
+      written.push(await writeFilled(h, alice, FILLS.plain, own, shape === "quote" ? quoted : undefined));
+    }
+    const skipped = await writeFilled(h, alice, FILLS.plain, controls, quotedControls);
+    const small = await status(h, alice.id);
+    // Measured once everything is written: no turn has run since (the writes go straight to the Store).
+    const measuredWritten = await Promise.all(written.map((id) => presented(id)));
+    const skippedPayload = await presented(skipped);
+    expect(skippedPayload).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await turn(h);
+      await echo(inbox);
+      const frames = inbox.rest().filter((m) => m.event === "update");
+      expect(frames.map((m) => key(m))).toEqual(written.map((id) => `public:local update ${id}`));
+      const sent = frames.map((m) => utf8Length(JSON.stringify(m.payload)));
+      expect(sent).toEqual(measuredWritten);
+      expect(
+        warn.mock.calls.filter(([entry]) => (entry as { event?: string })?.event === "kopje.stream.payload-skipped"),
+      ).toHaveLength(1);
+      // What the sent units left covers UNIT_WORST.bytes, so the oversized unit starts, and not its payload, so it
+      // crosses the turn's bytes; charged whole, it ends the turn within the hard bound.
+      const leftAfterSent = TURN_BUDGET.bytes - sent.reduce((sum, bytes) => sum + bytes, 0);
+      expect(leftAfterSent).toBeGreaterThanOrEqual(UNIT_WORST.bytes);
+      expect(leftAfterSent).toBeLessThan(skippedPayload);
+      const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
+      expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
+      expect(charged).toBeLessThanOrEqual(18_745_008);
+      await takeAll(inbox);
+      await turn(h);
+      await echo(inbox);
+      expect(inbox.rest().map((m) => key(m))).toEqual([`public:local update ${small}`]);
+      expect(await caughtUp(h)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
 });

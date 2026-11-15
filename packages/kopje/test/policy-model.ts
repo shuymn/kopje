@@ -131,6 +131,18 @@ export class PolicyModel {
     return !account.suspended && !(!account.local && (account.deleting || this.domainCovered(x)));
   }
 
+  // R1's account reads: an account is found by id or address unless it is a remote account whose deletion has started;
+  // a suspended or covered account is found (and shown redacted).
+  accountFound(x: number): boolean {
+    const account = this.account(x);
+    return account.local || !account.deleting;
+  }
+
+  // R1: relationships list a found account, and without with_suspended only an available one.
+  relationshipListed(x: number, withSuspended: boolean): boolean {
+    return this.accountFound(x) && (withSuspended || this.available(x));
+  }
+
   // R38: an instance domain block covers `domain` (lowercase, no trailing dot) when the block that rules it is a
   // suspend: the block of the domain itself or of its nearest parent, the longest match (Mastodon's
   // DomainBlock.rule_for). A child noop exempts its subdomains from a parent's suspend.
@@ -341,6 +353,12 @@ export class PolicyModel {
   viewable(s: number, viewer: Viewer): boolean {
     const { reblogOf } = this.status(s);
     return this.visible(s, viewer) && (reblogOf === null || this.visible(reblogOf, viewer));
+  }
+
+  // R11 with exclude_direct: Mastodon's list_eligible visibilities, public, unlisted and private (listEligibleSql).
+  listEligible(s: number): boolean {
+    const { visibility } = this.status(s);
+    return visibility === "public" || visibility === "unlisted" || visibility === "private";
   }
 
   // R8: viewable, and the viewer filters neither the author nor a reblogged original's author.
@@ -826,8 +844,10 @@ export class PolicyModel {
   // status from an account the recipient does not follow is filtered, unless it answers a private mention of the
   // sender by the recipient. Walking up from the parent, the parent counts when it mentions the sender (not silently),
   // an ancestor above it when the recipient wrote it and it mentions the sender; the first that counts answers when
-  // it is the recipient's direct status. The walk reads the parent and at most 100 statuses above it. Nothing is
-  // dropped by default.
+  // it is the recipient's direct status. The walk reads the parent and at most 100 statuses above it. A limited
+  // mention (a remote Create's tagged mention of a recipient it does not address) from such an account is filtered
+  // too, but the worlds' writes are local and never limited (test/inbox-statuses.test.ts checks the remote one). A bot
+  // sender (actor_type Application or Service) is accepted by default. Nothing is dropped by default.
   filtered(r: number, type: NotificationType, from: number, s: number | null): boolean {
     if (type !== "mention" || s === null || this.follows(r, from) || this.status(s).visibility !== "direct") {
       return false;

@@ -29,6 +29,7 @@ import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bou
 import { withinJsonBounds } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
+import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
 import { hasAuthorProof, verifyAuthorProof } from "./author-proof";
 import {
   afterRevisionRead,
@@ -50,7 +51,7 @@ import {
   requestBudget,
   requireObjectRoot,
 } from "./loader";
-import { fetchActor, loadActor, ownKeys } from "./remote-actor";
+import { type FetchedActor, fetchActor, loadActor, ownKeys } from "./remote-actor";
 import {
   ACTOR_TYPES,
   CONVERTED_TYPES,
@@ -662,6 +663,7 @@ export async function receiveInbound(
     return domainBlocked(deps, request, headers, parsed, { origin, state, budget, key: storedKey, revisions });
   }
   const served = new Map<string, ServedKey>();
+  const settle = goneSettler(deps.store, deps.build, deps.now);
   let verified = await verify(deps, request, headers, loaders, served, false, storedKey);
   rethrowStoreError(state);
   // The key is gone, and the activity is the actor's own Delete. A stored key of any age may speak for the actor
@@ -689,6 +691,23 @@ export async function receiveInbound(
     const recovered = verified.key.id === null ? undefined : served.get(verified.key.id.href);
     if (recovered === undefined || recovered.key !== verified.key || recovered.owner !== parsed.actor) {
       return { status: 401, reason: "not-key-owner" };
+    }
+  }
+  // A stored key of the actor that no longer verifies and whose document is gone: the actor's own document is fetched
+  // (one fetch with the key's, which the memo serves when the key is on that document), as Mastodon refetches the
+  // actor of a stored key that fails (signature_verification.rb:141). A 410 at its URI deletes it under the gate's
+  // revision (ID-1, actor-gone.ts) and the request is answered 202, as the actor will not come back.
+  if (
+    "status" in verified &&
+    verified.reason === "key-gone" &&
+    parsed.actor !== undefined &&
+    storedKey?.stored?.owner === parsed.actor
+  ) {
+    const current = await fetchActor(parsed.actor, loaders.document, loaders.context);
+    rethrowStoreError(state);
+    const gone = await settle(current, parsed.actor, revisions.actor);
+    if (gone.at) {
+      return { status: 202, reason: "actor-gone", jobsPending: gone.jobsPending };
     }
   }
   if ("status" in verified) {
@@ -727,6 +746,7 @@ export async function receiveInbound(
       state,
       budget,
       revisions,
+      settle,
       receivedAt: request.receivedAt,
     });
   }
@@ -735,7 +755,9 @@ export async function receiveInbound(
   }
   let actor: RemoteActorInput | null = null;
   if (fromStore?.key !== key || activity.type === "UpdateActor") {
-    const owned = await ownerDocument(actorUri, key, pem, loaders);
+    const owned = await ownerDocument(actorUri, key, pem, loaders, (fetched) =>
+      settle(fetched, actorUri, revisions.actor),
+    );
     rethrowStoreError(state);
     if ("status" in owned) {
       return owned;
@@ -753,6 +775,7 @@ export async function receiveInbound(
     budget,
     body: parsed.body,
     revisions,
+    settle,
     receivedAt: request.receivedAt,
   });
 }
@@ -817,20 +840,30 @@ async function domainBlocked(
     budget: context.budget,
     body: parsed.body,
     revisions: context.revisions,
+    settle: goneSettler(deps.store, deps.build, deps.now),
     receivedAt: request.receivedAt,
   });
 }
 
 // The current document of `uri`, fetched anew, if it lists this very key (the same id and the same key material).
+// `settle`: for the activity's own actor, what a gone document does (actor-gone.ts); a 410 at its URI answers
+// 202, as the actor will not come back.
 async function ownerDocument(
   uri: string,
   key: CryptographicKey,
   pem: string,
   loaders: Pick<RemoteLoaders, "document" | "context">,
+  settle?: (fetched: FetchedActor) => Promise<GoneSettled>,
 ): Promise<{ input: RemoteActorInput } | InboxOutcome> {
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
     return { status: 503, reason: "actor-unavailable" };
+  }
+  if (fetched.kind === "gone" && settle !== undefined) {
+    const gone = await settle(fetched);
+    if (gone.at) {
+      return { status: 202, reason: "actor-gone", jobsPending: gone.jobsPending };
+    }
   }
   if (fetched.kind !== "ok") {
     return { status: 401, reason: "actor-unusable" };
@@ -859,6 +892,7 @@ type Relay = {
   state: FederationState;
   budget: FetchBudget;
   revisions: InboxGate["revisions"];
+  settle: SettleGone;
   // When the request reached the inbox (InboundRequest), the instant the author proof is judged at.
   receivedAt: number;
 };
@@ -891,6 +925,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     state,
     budget,
     revisions,
+    settle,
     receivedAt,
   } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
@@ -918,7 +953,8 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
       return { status: 503, reason: "actor-unavailable" };
     }
     if (fetched.kind !== "ok" || fetched.input === null) {
-      return { status: 202, reason: "author-unusable", dropped: true };
+      const gone = await settle(fetched, actorUri, revisions.actor);
+      return { status: 202, reason: "author-unusable", dropped: true, jobsPending: gone.jobsPending };
     }
     const verdict = await verifyAuthorProof(
       json,
@@ -950,6 +986,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     budget,
     body: json,
     revisions,
+    settle,
     receivedAt,
   });
 }
@@ -967,6 +1004,8 @@ type Application = {
   body: Json;
   // What the inbox gate read before any document was fetched (InboundGate).
   revisions: InboxGate["revisions"];
+  // What a gone actor's document does (actor-gone.ts).
+  settle: SettleGone;
   // When the request reached the inbox (InboundRequest), the instant an author proof is judged at.
   receivedAt: number;
 };
@@ -975,7 +1014,14 @@ type Application = {
 async function apply(deps: InboundDeps, application: Application): Promise<InboxOutcome> {
   const { target, actorUri, actor, origin, loaders, state, budget, revisions } = application;
   const activity = application.activity;
-  const ready = await prepare(activity, target, actorUri, origin, loaders, revisions.target);
+  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch: the answer asks for a round.
+  let goneJobs = false;
+  const settle: SettleGone = async (fetched, uri, revision) => {
+    const gone = await application.settle(fetched, uri, revision);
+    goneJobs ||= gone.jobsPending;
+    return gone;
+  };
+  const ready = await prepare(activity, target, actorUri, origin, loaders, revisions.target, settle);
   rethrowStoreError(state);
   if (!("type" in ready)) {
     return ready;
@@ -1022,7 +1068,14 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       if (prepared.type !== "Delete") {
         break;
       }
-      const proof = await proveDelete(application.body, prepared, actorUri, loadersFor(need), application.receivedAt);
+      const proof = await proveDelete(
+        application.body,
+        prepared,
+        actorUri,
+        loadersFor(need),
+        application.receivedAt,
+        (fetched) => settle(fetched, actorUri, revisions.actor),
+      );
       rethrowStoreError(state);
       if (proof === "transient") {
         return { status: 503, reason: "proof-unavailable" };
@@ -1038,10 +1091,11 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       need,
       origin,
       need.revision === undefined ? needLoaders : afterRevisionRead(needLoaders),
+      settle,
     );
     rethrowStoreError(state);
     if (fetched === "transient" && !(need.kind === "actor" && need.refresh === true)) {
-      return { status: 503, reason: "object-unavailable" };
+      return { status: 503, reason: "object-unavailable", jobsPending: goneJobs };
     }
     if (need.kind === "status") {
       prefetched.statuses[need.uri] = fetched as Prefetched["statuses"][string];
@@ -1054,12 +1108,17 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
     result = undefined;
   }
   if (result === undefined) {
-    return { status: 202, reason: "too-many-fetches" };
+    return { status: 202, reason: "too-many-fetches", jobsPending: goneJobs };
   }
   if (result.retry === true) {
-    return { status: 503, reason: result.reason };
+    return { status: 503, reason: result.reason, jobsPending: goneJobs };
   }
-  return { status: 202, reason: result.reason, jobsPending: result.jobsPending, delivers: result.delivers === true };
+  return {
+    status: 202,
+    reason: result.reason,
+    jobsPending: goneJobs || result.jobsPending,
+    delivers: result.delivers === true,
+  };
 }
 
 // Whether the author proof the body of the actor's own Delete carries verifies against a key the actor's current
@@ -1070,12 +1129,14 @@ async function proveDelete(
   actorUri: string,
   loaders: RemoteLoaders,
   receivedAt: number,
+  settle: (fetched: FetchedActor) => Promise<GoneSettled>,
 ): Promise<boolean | "transient"> {
   const fetched = await fetchActor(actorUri, loaders.document, loaders.context);
   if (fetched.kind === "transient") {
     return "transient";
   }
   if (fetched.kind !== "ok" || fetched.input === null) {
+    await settle(fetched);
     return false;
   }
   return verifyAuthorProof(
@@ -1087,11 +1148,13 @@ async function proveDelete(
 }
 
 // A document the Store asked for, fetched through the request's loaders: a status (null if it cannot be one) or an
-// actor (null if it cannot be stored, 'gone' if it answered 404 or 410). A local URI is never fetched.
+// actor (null if it cannot be stored, 'gone' if it answered 404 or 410; a 410 at its URI is settled under the need's
+// revision, a stale author's, actor-gone.ts). A local URI is never fetched.
 async function fetchNeeded(
   need: NonNullable<ReceiveAnswer["need"]>,
   origin: string,
   loaders: RemoteLoaders,
+  settle: SettleGone,
 ): Promise<Prefetched["statuses"][string] | Prefetched["actors"][string] | "transient"> {
   if (originOf(need.uri) === null || originOf(need.uri) === origin) {
     return null;
@@ -1101,6 +1164,9 @@ async function fetchNeeded(
     return fetched.kind === "transient" ? "transient" : fetched.kind === "ok" ? fetched.status : null;
   }
   const fetched = await fetchActor(need.uri, loaders.document, loaders.context);
+  if (fetched.kind === "gone") {
+    await settle(fetched, need.uri, need.revision);
+  }
   if (fetched.kind === "transient" || fetched.kind === "gone") {
     return fetched.kind;
   }
@@ -1132,7 +1198,8 @@ function withVerifiedReference(
 }
 
 // What a type needs beyond the activity itself. targetRevision: a Move target's, read by the inbox gate before this
-// fetch, stored with the document it compares against.
+// fetch, stored with the document it compares against, and the expectation a 410 at its URI is settled under
+// (actor-gone.ts).
 async function prepare(
   activity: InboundActivity | Dereference,
   target: string | null,
@@ -1140,6 +1207,7 @@ async function prepare(
   origin: string,
   loaders: RemoteLoaders,
   targetRevision: DocumentRevision,
+  settle: SettleGone,
 ): Promise<InboundActivity | InboxOutcome> {
   if (activity.type === "Dereference") {
     // The object of the actor's own activity: only on the actor's origin (Mastodon's permitted_origin).
@@ -1170,7 +1238,8 @@ async function prepare(
     return { status: 503, reason: "target-unavailable" };
   }
   if (fetched.kind !== "ok" || fetched.input === null) {
-    return { status: 202, reason: "unknown-target" };
+    const gone = await settle(fetched, target, targetRevision);
+    return { status: 202, reason: "unknown-target", jobsPending: gone.jobsPending };
   }
   if (!fetched.actor.aliasIds.some((alias) => alias.href === actorUri)) {
     return { status: 202, reason: "not-alias" };

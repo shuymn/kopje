@@ -3,6 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
+import { MAIN_PARAMETERS } from "../test/main-runtime/main-allowances.js";
+import { statementId } from "../test/plan-audit.js";
 import { normalized } from "../test/sql-text.js";
 import { countingInstr } from "./instr-counter.js";
 import { nodeStorage, rolledBack, transaction, type World, witnessDatabase, witnessWorld } from "./witness-store.js";
@@ -12,7 +14,8 @@ import { nodeStorage, rolledBack, transaction, type World, witnessDatabase, witn
 // calls of a counting instr() (instr-counter.ts), which a walk makes at every label it steps.
 // The worlds and flows run on Node's SQLite (3.54.1) (witness-store.ts); main's side runs the same flow with main's
 // literal text in place of each statement the rewrite changed (test/main-runtime/recorded.json, whose provenance
-// witness-recording.test.ts checks), bound to the same parameters.
+// witness-recording.test.ts checks), bound to the same parameters, or to the leading ones main's statement takes where
+// main-allowances.ts says so.
 
 type Recorded = { statements: string[]; runs: Record<string, { main: number[]; mine: number[] }> };
 const { statements, runs } = JSON.parse(
@@ -20,6 +23,11 @@ const { statements, runs } = JSON.parse(
 ) as Recorded;
 
 const { buildWorld, FLOWS, WORLDS, worldName } = await witnessWorld(new URL("../", import.meta.url));
+
+// The number of leading parameters each recorded statement of main's takes where it takes fewer than the rewrite's.
+const leading = new Map(
+  await Promise.all(statements.map(async (text) => [text, MAIN_PARAMETERS[await statementId(text)]?.count] as const)),
+);
 
 // A statement main's code read through its own post-processing: a candidate window (src/domain/windows.ts), whose
 // rows the rewrite's code reads in another shape.
@@ -34,7 +42,8 @@ function swapping(
 ) {
   return nodeStorage(db, (query, params) => {
     const main = swap(normalized(query));
-    const rows = db.prepare(main ?? query).all(...params);
+    const count = main === undefined ? undefined : leading.get(main);
+    const rows = db.prepare(main ?? query).all(...(count === undefined ? params : params.slice(0, count)));
     return main === undefined || !reshaped(main) ? rows : counter.uncounted(() => db.prepare(query).all(...params));
   });
 }

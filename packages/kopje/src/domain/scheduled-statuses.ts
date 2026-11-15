@@ -2,8 +2,9 @@ import { selectSql } from "../db/columns";
 import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
-import { storedApplicationId } from "../platform/stored-bounds";
+import { isoTimeSql, storedApplicationId } from "../platform/stored-bounds";
 import type { Page, PageQuery } from "./accounts";
+import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   type ApiVisibility,
   API_VISIBILITIES,
@@ -17,9 +18,11 @@ import { allocateLocalId } from "./ids";
 import { DETACHED_GRACE_MS } from "./media";
 import { writeOperation } from "./operation";
 import { checkPoll, isPollInput, type PollInput } from "./polls";
+import { MAX_STATUS_MEDIA } from "./status-bounds";
 import { type MediaAttachment, type MediaRow, presentMedia, type Status } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 import {
+  convertedPost,
   type CreateStatusInput,
   type CreateStatusResult,
   isPrepared,
@@ -31,6 +34,7 @@ import {
   postTargetsOf,
   preparePost,
   refusedPost,
+  TOO_LONG,
   writePost,
 } from "./statuses";
 import { ABOVE_EVERY_ID, BELOW_EVERY_ID, statusCursor } from "./windows";
@@ -51,7 +55,7 @@ const MINIMUM_OFFSET_MS = 5 * 60 * 1000;
 // The bound of a stored params document (RES-1), as the schema checks it. What it holds is bounded before (the status
 // text's raw bound, at most four media ids, a parent id, a language tag) far under it, but for allowed_mentions, which
 // may be as long as the request: a document past the bound is refused as "Record invalid".
-const MAX_PARAMS_BYTES = 128 * 1024;
+export const MAX_PARAMS_BYTES = 128 * 1024;
 
 // At most this many scheduled statuses are published per cron run (RES-6), each in its own transaction.
 export const PUBLISH_ROUND = 25;
@@ -84,21 +88,28 @@ export type ScheduledParams = {
 
 type ScheduledPoll = { options: string[]; expires_in: string; multiple: boolean; hide_totals: boolean };
 
-// REST::ScheduledStatusSerializer.
+// REST::ScheduledStatusSerializer. scheduled_at is null for a stored value that is not a time (COLUMNS).
 export type ScheduledStatus = {
   id: string;
-  scheduled_at: string;
+  scheduled_at: string | null;
   params: ScheduledParams;
   media_attachments: MediaAttachment[];
 };
 
-type ScheduledRow = { id: string; scheduled_at: string; params: string };
+type ScheduledRow = { id: string; scheduled_at: string | null; params: string };
 
-const COLUMNS = "ss.id, ss.scheduled_at, ss.params";
+// scheduled_at as read: the stored time when it is one Kopje writes, else NULL (isoTimeSql). The CHECK of
+// 0011_scheduled_statuses passes an imported value strftime cannot read (the CHECK is then NULL), and its length()
+// stops at a NUL, so such a value may hold any bytes; judged by its bytes in SQL, it never reaches JavaScript. A
+// scheduled status shows no time for it (null), and an update that sends no new time refuses it (isTime).
+const COLUMNS = `ss.id, ${isoTimeSql("ss.scheduled_at")} AS scheduled_at, ss.params`;
 
+// The held media shown are the first MAX_STATUS_MEDIA by position (PostStatusService#validate_media! takes four):
+// Kopje's writers hold at most that many, and a restored row holding more shows its first.
 function presentScheduled(db: Db, row: ScheduledRow): ScheduledStatus {
   const media = db.all<MediaRow>(
-    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position`,
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position
+			LIMIT ${MAX_STATUS_MEDIA}`,
     row.id,
   );
   return {
@@ -310,9 +321,10 @@ export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: 
 // from the row's created_at) answers with what the first request made, a Status or a ScheduledStatus, and makes
 // nothing (so a key that reserved a scheduled status is never posted twice, once now and once when it is published).
 // An expired key is taken from the older rows, in this transaction, and posts anew.
-// Then no scheduled_at, or a time not in the future, posts at once; otherwise the post is checked as an immediate one
-// (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and kept with its
-// media held.
+// Then the pair as sent is held to the raw bound, and a blank text takes its warning (convertedPost), whether the post
+// is made now or scheduled. No scheduled_at, or a time not in the future, posts at once; otherwise the post is checked
+// as an immediate one (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and
+// kept with its media held.
 export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db, input, caller, viewer) => {
   const { accountId } = caller;
   // AUTH-6: the app of the credential, which the Worker cannot name.
@@ -341,12 +353,16 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
     }
     releaseKey(db, accountId, input.idempotencyKey);
   }
-  if (input.scheduledAt === undefined || Date.parse(input.scheduledAt) <= input.now) {
-    return postNow(db, viewer, input, applicationId);
+  const post = convertedPost(input);
+  if (post === null) {
+    return { status: "invalid", error: TOO_LONG };
   }
-  const scheduledAt = input.scheduledAt;
+  if (post.scheduledAt === undefined || Date.parse(post.scheduledAt) <= post.now) {
+    return postNow(db, viewer, post, applicationId);
+  }
+  const scheduledAt = post.scheduledAt;
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
-  const prepared = preparePost(db, accountId, { ...input, allowedMentions: undefined }, null);
+  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, input.present);
   }
@@ -356,7 +372,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   }
   const params = JSON.stringify(
     paramsOf(
-      input,
+      post,
       prepared.media,
       prepared.parent?.id ?? null,
       prepared.quoted?.id ?? null,
@@ -396,28 +412,39 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
 export const SCHEDULED_PAGE = { limit: 20, max: 40 };
 
 // GET /api/v1/scheduled_statuses: the viewer's scheduled statuses by id, newest first, paged by id
-// (to_a_paginated_by_id); a page from the account's own index, whoever else has scheduled statuses.
+// (to_a_paginated_by_id); a page of ids from the account's own index, whoever else has scheduled statuses. Each is read
+// and presented by key as admission reaches it, within ANSWER_BYTES (RES-3): a page cut there continues from its last
+// admitted scheduled status (admittedPage).
 export const listScheduled = userReadOperation<{ page: PageQuery }, Page<ScheduledStatus>>(
   (db, { page }, { accountId }) => {
     const ascending = page.minId !== undefined;
-    const rows = db.all<ScheduledRow>(
-      `SELECT ${COLUMNS} FROM scheduled_statuses ss
-			WHERE ${scheduledOwnSql("ss", "?1")} AND ss.id < coalesce(?2, '${ABOVE_EVERY_ID}')
-				AND ss.id > coalesce(?3, '${BELOW_EVERY_ID}')
-			ORDER BY ss.id ${ascending ? "ASC" : "DESC"} LIMIT ?4`,
-      accountId,
-      statusCursor(page.maxId),
-      statusCursor(page.minId ?? page.sinceId),
-      page.limit,
-    );
+    const ids = db
+      .all<{ id: string }>(
+        `SELECT ss.id FROM scheduled_statuses ss
+				WHERE ${scheduledOwnSql("ss", "?1")} AND ss.id < coalesce(?2, '${ABOVE_EVERY_ID}')
+					AND ss.id > coalesce(?3, '${BELOW_EVERY_ID}')
+				ORDER BY ss.id ${ascending ? "ASC" : "DESC"} LIMIT ?4`,
+        accountId,
+        statusCursor(page.maxId),
+        statusCursor(page.minId ?? page.sinceId),
+        page.limit,
+      )
+      .map((row) => row.id);
     if (ascending) {
-      rows.reverse();
+      ids.reverse();
     }
-    return {
-      items: rows.map((row) => presentScheduled(db, row)),
-      newest: rows[0]?.id ?? null,
-      oldest: rows.at(-1)?.id ?? null,
-    };
+    function* presented(traversal: readonly string[]): Generator<ScheduledStatus | undefined> {
+      for (const id of traversal) {
+        const row = ownScheduled(db, accountId, id);
+        yield row === undefined ? undefined : presentScheduled(db, row);
+      }
+    }
+    return admittedPage(
+      { rows: ids, newest: ids[0] ?? null, oldest: ids.at(-1) ?? null },
+      ascending,
+      (id) => id,
+      (traversal) => admit(presented(traversal), ARRAY_ANSWER_BYTES, true),
+    );
   },
 );
 

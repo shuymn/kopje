@@ -683,6 +683,20 @@ const timeline = { credential, now: NOW, page: PAGE, local: false, remote: false
 const notificationsQuery = { credential, page: PAGE, types: [], excludeTypes: [] };
 const unread = { credential, limit: 100, types: [], excludeTypes: [] };
 
+const accountStatusesInput = {
+  credential,
+  now: NOW,
+  account: accountId(AUTHOR),
+  page: PAGE,
+  onlyMedia: false,
+  excludeReplies: false,
+  excludeReblogs: false,
+  excludeDirect: false,
+  pinned: false,
+  tagged: null,
+  present: PRESENT,
+};
+
 // What an endpoint that pages a viewer's history pages by: statuses (by status id: conversations by their last status's), the viewer's notifications,
 // favourites or bookmarks (by their ids), or a status's interactors (accounts, which are not replicated).
 type Paging = "statuses" | "notifications" | "favourites" | "bookmarks" | "interactors";
@@ -693,21 +707,14 @@ const ENDPOINTS: [string, StoreOperation<never, unknown>, unknown, Paging?][] = 
   ["list", listTimeline, { credential, id: VIEWER_LIST, page: PAGE, present: PRESENT }, "statuses"],
   ["public", publicTimeline, timeline, "statuses"],
   ["tag", tagTimeline, { ...timeline, tag: "cats", any: [], all: [], none: [] }, "statuses"],
+  ["account statuses", accountStatuses, accountStatusesInput, "statuses"],
+  // statuses_feed in place of statuses_account.
+  ["account statuses exclude_direct", accountStatuses, { ...accountStatusesInput, excludeDirect: true }, "statuses"],
+  // statuses_account_originals, the fragment a request condition.
   [
-    "account statuses",
+    "account statuses exclude_direct exclude_reblogs",
     accountStatuses,
-    {
-      credential,
-      now: NOW,
-      account: accountId(AUTHOR),
-      page: PAGE,
-      onlyMedia: false,
-      excludeReplies: false,
-      excludeReblogs: false,
-      pinned: false,
-      tagged: null,
-      present: PRESENT,
-    },
+    { ...accountStatusesInput, excludeDirect: true, excludeReblogs: true },
     "statuses",
   ],
   [
@@ -782,21 +789,11 @@ const ENDPOINTS: [string, StoreOperation<never, unknown>, unknown, Paging?][] = 
     { ids: WORLD.accounts.map((_, x) => accountId(x)), present: PRESENT, credential: null },
   ],
   ["suggestions", suggestions, { credential, version: 2, offset: 0, limit: 40, present: PRESENT }],
+  ["pinned statuses", accountStatuses, { ...accountStatusesInput, account: accountId(VIEWER), pinned: true }],
   [
-    "pinned statuses",
+    "pinned statuses exclude_direct",
     accountStatuses,
-    {
-      credential,
-      now: NOW,
-      account: accountId(VIEWER),
-      page: PAGE,
-      onlyMedia: false,
-      excludeReplies: false,
-      excludeReblogs: false,
-      pinned: true,
-      tagged: null,
-      present: PRESENT,
-    },
+    { ...accountStatusesInput, account: accountId(VIEWER), pinned: true, excludeDirect: true },
   ],
   [
     "statuses by id",
@@ -1506,7 +1503,7 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
     const reads: GrownRead[] = [
       // A full page of the friend's statuses, none of the stranger's.
       { name: "home", operation: homeTimeline, input: { credential, page: PAGE, present: PRESENT }, shows: fullPage },
-      // An empty page, answered to the viewer.
+      // An empty page, answered to the viewer; for an account whose deletion has started, none (R1's account reads).
       ...Object.entries(HIDDEN_AUTHORS).map(([name, account]): GrownRead => ({
         name: `account statuses of ${name}`,
         operation: accountStatuses,
@@ -1522,7 +1519,9 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
           tagged: null,
           present: PRESENT,
         },
-        shows: (output) => (output as { status: string }).status === "ok" && shown(output) === 0,
+        shows: (output) =>
+          (output as { status: string }).status === "ok" &&
+          (account === DELETING_ID ? (output as { value: unknown }).value === null : shown(output) === 0),
       })),
     ];
     expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
@@ -2263,6 +2262,7 @@ describe("polls are presented from their counts, not their votes (RES-7)", () =>
       onlyMedia: false,
       excludeReplies: false,
       excludeReblogs: false,
+      excludeDirect: false,
       pinned: false,
       tagged: null,
       present: PRESENT,
@@ -5053,19 +5053,19 @@ describe("the admin's report list reads a page, however many reports do not matc
   const CASES: Case[] = [
     {
       name: "unresolved",
-      filter: { resolved: false, accountId: null, targetAccountId: null },
+      filter: { state: "unresolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [{ reporter: A, target: T, resolved: true }],
     },
     {
       name: "resolved",
-      filter: { resolved: true, accountId: null, targetAccountId: null },
+      filter: { state: "resolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: true },
       bulk: [{ reporter: B, target: U, resolved: false }],
     },
     {
       name: "by reporter",
-      filter: { resolved: false, accountId: A, targetAccountId: null },
+      filter: { state: "unresolved", accountId: A, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5074,7 +5074,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by reported account",
-      filter: { resolved: false, accountId: null, targetAccountId: T },
+      filter: { state: "unresolved", accountId: null, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5083,7 +5083,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by both",
-      filter: { resolved: false, accountId: A, targetAccountId: T },
+      filter: { state: "unresolved", accountId: A, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
-import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
+import {
+  type ApiHarness,
+  apiHarness,
+  bearer,
+  form,
+  json,
+  login,
+  seedAccount,
+  sql,
+  STORED_ACTOR_TYPES,
+} from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { appToken, scopedToken } from "./read-helpers";
@@ -447,6 +457,18 @@ describe("account lookup", () => {
     });
   });
 
+  // Account#bot?, by the list the notification policy's bot condition reads (audience.ts).
+  it("presents bot by the exact stored actor type", async () => {
+    const h = await apiHarness();
+    const id = await seedAccount(h.store, { username: "maybe" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, id);
+      expect(await (await h.request(`/api/v1/accounts/${id}`)).json<{ bot: boolean }>(), label).toMatchObject({
+        bot,
+      });
+    }
+  });
+
   // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.
   it.each([
     "javascript:alert(1)",
@@ -807,12 +829,15 @@ describe("relationships of unavailable accounts (R1, with_suspended)", () => {
     expect(await relationshipsOf(h, h.unavailable)).toEqual([]);
   });
 
-  it("includes them, in request order and once each, with a true with_suspended", async () => {
+  // But one whose deletion has started, which the account reads do not find (foundSql; Mastodon 4.7's
+  // without_requested_deletion, whatever with_suspended).
+  it("includes them, in request order and once each, with a true with_suspended, but a deleting one", async () => {
     const h = await unavailableWorld();
-    const requested = [h.unavailable[2]!, h.available, ...h.unavailable, h.unavailable[0]!];
+    const deleting = h.unavailable[2]!;
+    const requested = [h.unavailable[3]!, h.available, ...h.unavailable, h.unavailable[0]!];
     for (const suffix of ["&with_suspended=true", "&with_suspended=1"]) {
       const entries = await relationshipsOf(h, requested, suffix);
-      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)]);
+      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)].filter((id) => id !== deleting));
       for (const entry of entries) {
         expect(entry).toMatchObject({ following: true, note: "n" });
       }

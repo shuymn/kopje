@@ -7,6 +7,7 @@ import { sweepMedia, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
 import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -25,7 +26,10 @@ import { BUILD } from "./helpers";
 import {
   type Attachment,
   bytes,
+  DESCRIPTION_TOO_LONG,
   mediaForm,
+  multipartForm,
+  OVERLONG_DESCRIPTIONS,
   pathOf,
   pngWithChunk,
   r2Keys,
@@ -46,6 +50,32 @@ import {
 } from "./status-helpers";
 
 const HOUR = 60 * 60 * 1000;
+
+// An update through `send` takes a description of MAX_MEDIA_DESCRIPTION_LENGTH four-byte code points, stored whole,
+// and refuses one code point more, leaving it as it was; then restores `kept`.
+async function described(
+  h: { store: Parameters<typeof sql>[0] },
+  send: (token: string, body: Record<string, unknown>) => Promise<Response>,
+  token: string,
+  id: string,
+  kept: string,
+): Promise<void> {
+  const longest = "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+  const accepted = await send(token, { description: longest });
+  expect([accepted.status, (await accepted.json<Attachment>()).description]).toEqual([200, longest]);
+  const stored = () => sql(h.store, "SELECT length(description) AS n FROM media_attachments WHERE id = ?", id);
+  expect(await stored()).toEqual([{ n: MAX_MEDIA_DESCRIPTION_LENGTH }]);
+  for (const description of OVERLONG_DESCRIPTIONS) {
+    const refused = await send(token, { description });
+    expect([description.length, refused.status, await refused.json()]).toEqual([
+      description.length,
+      422,
+      DESCRIPTION_TOO_LONG,
+    ]);
+  }
+  expect(await stored()).toEqual([{ n: MAX_MEDIA_DESCRIPTION_LENGTH }]);
+  expect((await send(token, { description: kept })).status).toBe(200);
+}
 
 async function users(names: readonly string[] = ["alice", "bob"], codec = new TestCodec()) {
   const h = await community(names as ["alice", "bob"], "read write follow", { images: () => codec });
@@ -244,10 +274,45 @@ describe("POST /api/v2/media", () => {
     expect(h.codec.calls).toBe(0);
   });
 
-  it("refuses an over-long description", async () => {
+  // MediaAttachment::MAX_DESCRIPTION_LENGTH in code points: one of four-byte code points is kept whole, and one code
+  // point more is refused before anything is transformed or written.
+  it(`takes a description of ${MAX_MEDIA_DESCRIPTION_LENGTH} code points and refuses a longer one`, async () => {
     const h = await users();
-    const response = await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS), { description: "x".repeat(1501) }));
-    expect(response.status).toBe(422);
+    const longest = "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+    const media = await uploaded(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS), { description: longest }));
+    expect(media.description).toBe(longest);
+    expect(await sql(h.store, "SELECT length(description) AS n FROM media_attachments")).toEqual([
+      { n: MAX_MEDIA_DESCRIPTION_LENGTH },
+    ]);
+    const calls = h.codec.calls;
+    const response = await upload(
+      h,
+      h.users.alice,
+      mediaForm(bytes(JPEG_WITH_GPS), { description: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }),
+    );
+    expect([response.status, await response.json()]).toEqual([422, DESCRIPTION_TOO_LONG]);
+    expect(h.codec.calls).toBe(calls);
+    // The refused upload's reservation is abandoned, with nothing written to it.
+    expect(
+      await sql(h.store, "SELECT length(description) AS n, url = '' AS abandoned FROM media_attachments ORDER BY id"),
+    ).toEqual([
+      { n: MAX_MEDIA_DESCRIPTION_LENGTH, abandoned: 0 },
+      { n: 0, abandoned: 1 },
+    ]);
+  });
+
+  // Every description too long gets the description's message, whatever its plane or length: the upload form's field
+  // bound leaves the description to its own rule.
+  it.each(["v1", "v2"] as const)("refuses every description too long with its message on %s", async (version) => {
+    const h = await users();
+    for (const description of OVERLONG_DESCRIPTIONS) {
+      const response = await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS), { description }), version);
+      expect([description.length, response.status, await response.json()]).toEqual([
+        description.length,
+        422,
+        DESCRIPTION_TOO_LONG,
+      ]);
+    }
     expect(h.codec.calls).toBe(0);
   });
 
@@ -357,7 +422,13 @@ describe("GET and PUT /api/v1/media/:id", () => {
     expect((await put(bob.token, { description: "mine now" })).status).toBe(404);
     const updated = await put(alice.token, { description: "described", focus: "-0.25,0.75" });
     expect(await updated.json()).toMatchObject({ description: "described", meta: { focus: { x: -0.25, y: 0.75 } } });
-    expect((await put(alice.token, { description: "x".repeat(1501) })).status).toBe(422);
+    await described(h, put, alice.token, media.id, "described");
+    // A multipart update's description is judged by the same rule.
+    const multipart = await h.request(
+      `/api/v1/media/${media.id}`,
+      bearer(alice.token, { method: "PUT", body: multipartForm([["description", OVERLONG_DESCRIPTIONS[1]!]]) }),
+    );
+    expect([multipart.status, await multipart.json()]).toEqual([422, DESCRIPTION_TOO_LONG]);
 
     // bob cannot attach it; alice can, after which it is no longer read or updated through /media.
     expect(await posting(h, bob.token, { status: "x", media_ids: [media.id] })).toEqual(mediaNotFound(media.id));
@@ -383,7 +454,7 @@ describe("PATCH and DELETE /api/v1/media/:id", () => {
     const updated = await patch(alice.token, { description: "patched", focus: "0.5,-0.5" });
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({ description: "patched", meta: { focus: { x: 0.5, y: -0.5 } } });
-    expect((await patch(alice.token, { description: "x".repeat(1501) })).status).toBe(422);
+    await described(h, patch, alice.token, media.id, "patched");
   });
 
   it("deletes own unattached media with its R2 objects, and nobody else’s (MEDIA-1)", async () => {

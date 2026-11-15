@@ -10,10 +10,6 @@ const PAGE = ["limit", "max_id", "min_id", "since_id"];
 const NOT_SERVED = (...names: string[]) => accepted("MD-2", ...names);
 const PLACEHOLDER = (...names: string[]) => accepted("MD-3", ...names);
 
-// Mastodon 4.6's bot condition of the notification policy, v1 and v2.
-const POLICY_V1_BOTS = open(1582, "Mastodon 4.6's bot condition", "filter_bots");
-const POLICY_V2_BOTS = open(1582, "Mastodon 4.6's bot condition", "for_bots");
-
 export const PARAM_EXCEPTIONS: Exceptions = {
   "POST /api/v1/accounts": accepted(
     "MD-1",
@@ -38,18 +34,12 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
 
   // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
-  "PATCH /api/v1/notifications/policy": POLICY_V1_BOTS,
-  "PUT /api/v1/notifications/policy": POLICY_V1_BOTS,
-  "PATCH /api/v2/notifications/policy": POLICY_V2_BOTS,
-  "PUT /api/v2/notifications/policy": POLICY_V2_BOTS,
   "PATCH /api/v1/accounts/update_credentials": open(
     1583,
     "the profile image descriptions of Mastodon 4.6",
     "avatar_description",
     "header_description",
   ),
-  "GET /api/v1/accounts/:id/statuses": open(1585, "exclude_direct", "exclude_direct"),
-  "GET /api/v1/admin/reports": open(1585, "unresolved on admin reports", "unresolved"),
   "POST /api/v1/reports": open(1589, "collections", "collection_ids[]"),
 
   // Admin features not served.

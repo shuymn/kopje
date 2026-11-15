@@ -13,6 +13,7 @@ import {
   type FieldSource,
   type RelationshipResult,
   resolveAccountId,
+  routeAccountId,
   relationshipResult,
   followLimit,
   type Present,
@@ -230,7 +231,7 @@ type TargetRow = {
 };
 
 function followTarget(db: Db, viewerId: string, target: string): TargetRow | null {
-  const id = resolveAccountId(db, target);
+  const id = routeAccountId(db, target);
   if (id === null) {
     return null;
   }

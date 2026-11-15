@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { getAccount, getAccounts, relationships } from "../src/domain/accounts";
 import {
   annualReportCountedSql,
   availableLocalSql,
@@ -563,6 +564,83 @@ describe("the policy fragments agree with the model of their rules", () => {
             }),
           ),
         );
+        expect(actual).toEqual(expected);
+      }),
+      runs(CASES / 3),
+    );
+  });
+
+  // R1's account reads (accounts.ts): getAccount finds each account by id, getAccounts lists those it finds, and
+  // relationships, for every local viewer that can hold a token, list each account with and without with_suspended.
+  it("the account read endpoints agree with the model", async () => {
+    await fc.assert(
+      fc.asyncProperty(worldArb, async (world) => {
+        const ids = accounts(world).map(accountId);
+        const viewersWithTokens = listViewers(world).filter(
+          (v): v is number => v !== null && world.accounts[v]?.suspended !== true,
+        );
+        const actual = await runInDurableObject(store, (_instance, state) => {
+          const sql = state.storage.sql;
+          writeWorld(sql, world);
+          const named = namer(world);
+          const present = { origin: "https://kopje.test" };
+          sql.exec(
+            `INSERT OR REPLACE INTO oauth_clients (id, secret, name, redirect_uris, scopes, created_at)
+						VALUES ('oracle', 's', 'oracle', 'urn:ietf:wg:oauth:2.0:oob', 'read', ?)`,
+            world.now,
+          );
+          sql.exec("DELETE FROM oauth_tokens WHERE client_id = 'oracle'");
+          const answers: string[] = [];
+          for (const id of ids) {
+            const found = getAccount.run(sql, { id, present, credential: null });
+            if (found.status === "ok" && found.value !== null) {
+              answers.push(`found ${named(id)}`);
+            }
+          }
+          const listed = getAccounts.run(sql, { ids, present, credential: null });
+          for (const account of listed.status === "ok" ? listed.value : []) {
+            answers.push(`listed ${named(account.id)}`);
+          }
+          for (const viewer of viewersWithTokens) {
+            sql.exec(
+              `INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes, created_at, epoch)
+							VALUES (?, 'access', 'oracle', ?, 'read', ?,
+								(SELECT credential_epoch FROM local_accounts WHERE account_id = ?))`,
+              `oracle-${viewer}`,
+              accountId(viewer),
+              world.now,
+              accountId(viewer),
+            );
+            const credential = {
+              tokenHash: `oracle-${viewer}`,
+              scope: "read:follows" as const,
+              now: Date.parse(world.now),
+            };
+            for (const withSuspended of [false, true]) {
+              const result = relationships.run(sql, { credential, ids, withSuspended });
+              if (result.status !== "ok") {
+                throw new Error(`relationships refused ${name(world, viewer)}: ${result.status}`);
+              }
+              for (const relationship of result.value) {
+                answers.push(`related ${withSuspended} ${name(world, viewer)} ${named(relationship.id)}`);
+              }
+            }
+          }
+          return answers;
+        });
+        const model = new PolicyModel(world);
+        const found = accounts(world).filter((x) => model.accountFound(x));
+        const expected = [
+          ...found.map((x) => `found ${name(world, x)}`),
+          ...found.map((x) => `listed ${name(world, x)}`),
+          ...viewersWithTokens.flatMap((viewer) =>
+            [false, true].flatMap((withSuspended) =>
+              accounts(world)
+                .filter((x) => model.relationshipListed(x, withSuspended))
+                .map((x) => `related ${withSuspended} ${name(world, viewer)} ${name(world, x)}`),
+            ),
+          ),
+        ];
         expect(actual).toEqual(expected);
       }),
       runs(CASES / 3),
