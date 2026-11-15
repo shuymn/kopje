@@ -163,8 +163,9 @@ against their own instance. TLS is assumed between all parties.
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
   of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
-  `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which fetches a
-  URL's actor document again after reading the revision, so its probe is never stored), and the refresh of a stale
+  `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
+  revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe found
+  again after reading its revision, so a probe is never stored), and the refresh of a stale
   boosted or quoted author (the revision read when the refresh was decided travels with the need or the quote's work;
   staleness stays the refresh policy, since a `Move` changes the revision but not `fetched_at`). A document stored under
   an expectation is fetched after it was read: an expectation read before the request's first fetch (the inbox gate's, a
@@ -176,10 +177,18 @@ against their own instance. TLS is assumed between all parties.
   author refresh use the stored row. Each such attempt is atomic, and whether a sender retries, and whether a retry
   finds its key still authorized and its document current, is outside Kopje. Writers that store an author only while no
   row of it exists (a boosted or quoted author Kopje does not know) keep that absence check, in the same transaction,
-  instead of an expectation, and issue a revision too. _Enforced (main):_ `upsertRemoteActor`, `applyRefresh`, `receive`
-  and `inboxGate` in `src/domain/inbox.ts`, `quoteWork` in `src/domain/quotes.ts`, `resolveSearch` in
-  `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`; `test/inbox-actor-revision.test.ts`,
-  `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
+  instead of an expectation, and issue a revision too. The same expectation fences a deletion: a stored remote actor
+  whose own URI answers 410 to one of those fetches, with no redirect (the safe loader follows same-origin redirects,
+  ID-2, and a 410 at the end of one is not the URI's own), is deleted as by its `Delete` (ID-7) only while the revision
+  read before that fetch holds, compared in the deleting transaction; a 404, a redirected 410, a 410 fetched before
+  another store of the actor committed, and the 410 of a fetch no revision was read before (a URL search's probe, an
+  unknown author's need) delete nothing, nor does a 410 for a local actor or one never stored. A key-gone signature
+  of the actor's own stored key fetches the actor's document (the memo serves it when the key is on it), so its 410
+  deletes too, and the request is answered 202, as for a document whose 410 deletes. _Enforced (main):_
+  `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
+  `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
+  `src/federation/actor-gone.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`, `test/quotes.test.ts`
+  ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
   quoting server forwarding the quoted author's revocation of a quote's stamp, as Mastodon forwards both). Its HTTP
   signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that actor's
@@ -341,7 +350,9 @@ against their own instance. TLS is assumed between all parties.
   A Move is a job keyed by its id that never moves a follow made after it. The Store rounds of one request carry the
   same actor document and revision, and only the first round that finds the revision stores the document (ID-1). An
   actor's deletion is a tombstone (`inbound_jobs`) independent of the retraction cap and TTL, honoured by every upsert
-  and by every Move batch, and recorded even for a verified Delete of an actor never stored. A generation change whose
+  and by every Move batch, and recorded even for a verified Delete of an actor never stored. A 410 at a stored actor's
+  own URI starts the same deletion and tombstone under ID-1's revision fence; one for an actor never stored records
+  nothing (`actorGone` in `src/domain/inbox.ts`, `test/inbox-gone.test.ts`). A generation change whose
   retraction cannot be recorded
   (the per-actor cap) is not made: a Block, and a local reject of a request (which records the remote Follow as
   retracted and answers 503 if it cannot), change nothing then. Misskey's pair-shaped
@@ -3211,9 +3222,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
-  resolution makes one more Store call (`actorRevision`) before each actor fetch, and fetches a URL's actor document a
-  second time after it (within the request's fetch budget of 8). Every revision read is one seek by `accounts`' uri
-  index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh need's and a quote's
+  resolution makes one more Store call (`actorRevision`) before each actor fetch and before a URL's probe, and fetches
+  the actor document a probe found a second time after it (within the request's fetch budget of 8). A fetch whose
+  actor answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the deletion's first
+  purge batch, `PURGE_BATCH`), so at most one per fetch of the budget. Every revision read is one seek by `accounts`'
+  uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh need's and a quote's
   author stage's author, a search resolution's actor, and the comparison in the writing transaction
   (`test/inbox-actor-revision.test.ts`, "the revision reads’ plans"). Delivery backlog and concurrency are bounded.
   Anonymous app registration, inbox spooling and media transformations have rate or storage budgets with a visible

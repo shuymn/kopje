@@ -56,6 +56,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- A remote account whose deletion has started answers 404 to `GET /api/v1/accounts/:id`, to every
+  `/api/v1/accounts/:id/...` route and to lookup, and is left out of `GET /api/v1/accounts` and of relationships, with
+  or without `with_suspended`, as Mastodon 4.7 does; it was shown redacted. This breaks clients that read deleting
+  accounts. An actor whose own URI answers 410, without a redirect, is deleted as by its `Delete`; a 404 deletes
+  nothing. A search by a URL that is a stored actor's id fetches it as that actor, without a probe. No Store migration
+  and no `wrangler.jsonc` change.
 
 ### Fixed
 
