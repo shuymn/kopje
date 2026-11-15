@@ -7,12 +7,16 @@ import { boundedHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
+  attributionDomainsSql,
   cutCodePoints,
   isIsoTime,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  presentedAttributionDomains,
   presentedCountSql,
+  presentedDisplayName,
+  presentedNote,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteHtml } from "../security/html";
@@ -47,12 +51,14 @@ import {
   type ViewerContext,
 } from "./audience";
 import {
-  authorize,
   type Credential,
+  type Judged,
   localRole,
   optionalUserReadOperation,
   OWNER_ROLE,
+  refuseSuspended,
   type Role,
+  unlessSuspended,
   userReadOperation,
   userWriteOperation,
 } from "./auth";
@@ -129,10 +135,7 @@ export type Field = { name: string; value: string; verified_at: string | null };
 // A local field as the owner wrote it (plain text), stored in local_accounts.fields.
 export type FieldSource = { name: string; value: string };
 
-export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
-
-// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
-export const MAX_ATTRIBUTION_DOMAINS = 100;
+export { MAX_ATTRIBUTION_DOMAINS, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
 
 // Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
 // name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
@@ -513,8 +516,8 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
     ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
-      display_name: row.display_name,
-      note: row.note,
+      display_name: presentedDisplayName(row.display_name),
+      note: presentedNote(row.note),
       emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
@@ -802,22 +805,35 @@ function accountRow(db: Db, id: string): AccountRow | undefined {
   return db.first<AccountRow>(`SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`, id);
 }
 
-export const getAccount = readOperation<{ id: string; present: Present }, Account | null>((db, { id, present }) => {
-  const resolved = resolveAccountId(db, id);
-  const row = resolved === null ? undefined : accountRow(db, resolved);
-  return row === undefined ? null : presentOne(db, row, present);
-});
+// GET /api/v1/accounts/:id, and the API's other reads of one account by id. credential: the token an anonymous route
+// was sent (AUTH-2), whose suspended owner is refused first.
+export const getAccount = readOperation<
+  { id: string; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { id, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = resolveAccountId(db, id);
+    const row = resolved === null ? undefined : accountRow(db, resolved);
+    return row === undefined ? null : presentOne(db, row, present);
+  }),
+);
 
 // GET /api/v1/accounts?id[]= (AccountsController#index): the accounts getAccount shows one by one, read in one query,
 // in the order asked, each once; an id that names no account is left out. Kopje has no unapproved accounts
-// (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID).
+// (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID). A suspended owner of the token sent is
+// refused first (AUTH-2's anonymous routes).
 export const MAX_ACCOUNTS_BY_ID = 40;
 
-export const getAccounts = readOperation<{ ids: string[]; present: Present }, Account[]>((db, { ids, present }) => {
-  const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
-  const accounts = presentAccountsById(db, resolved, present);
-  return resolved.flatMap((id) => accounts.get(id) ?? []);
-});
+export const getAccounts = readOperation<
+  { ids: string[]; present: Present; credential: Credential | null },
+  Judged<Account[]>
+>((db, { ids, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
+    const accounts = presentAccountsById(db, resolved, present);
+    return resolved.flatMap((id) => accounts.get(id) ?? []);
+  }),
+);
 
 // The account an address names, domain null for a local one, matched case-insensitively as Mastodon's
 // Account.find_remote: by accounts_local_username or accounts_domain_username, named so the seek does not rest on the
@@ -867,14 +883,14 @@ export function storedAddress(db: Db, username: string, domain: string | null): 
 
 // POST /api/v1/accounts/:account_id/email_subscriptions with e-mail subscriptions off (MD-3): Mastodon's
 // require_not_suspended! reads a sent token first, then set_account finds the id among local accounts
-// (Account.local.find), suspended ones included. Only a held, unexpired token of a suspended user counts; any other
-// token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
+// (Account.local.find), suspended ones included. Only a held token of a suspended user counts, expired or not (AUTH-1's
+// order); any other token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
 // local row.
 export const emailSubscriptionTarget = readOperation<
   { credential: Credential | null; id: string },
   "suspended" | "missing" | "local"
 >((db, { credential, id }) => {
-  if (credential !== null && authorize(db, credential).status === "suspended") {
+  if (refuseSuspended(db, credential) !== null) {
     return "suspended";
   }
   const resolved = resolveAccountId(db, id);
@@ -899,12 +915,15 @@ export function accountByLookup(db: Db, username: string, domain: string | null,
   return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
 }
 
-// domain null means a local account.
+// domain null means a local account. credential: the token an anonymous route was sent (AUTH-2), whose suspended
+// owner is refused first; null for a public page.
 export const lookupAccount = readOperation<
-  { username: string; domain: string | null; present: Present },
-  Account | null
->((db, { username, domain, present }) =>
-  accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  { username: string; domain: string | null; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { username, domain, present, credential }) =>
+  unlessSuspended(db, credential, () =>
+    accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  ),
 );
 
 // source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
@@ -925,7 +944,8 @@ type CredentialRow = {
 export function credentialAccount(db: Db, accountId: string, present: Present): CredentialAccount | null {
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
-    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
+    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy,
+			${attributionDomainsSql("attribution_domains")} AS attribution_domains,
 			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
 					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
@@ -943,13 +963,13 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       privacy: local.default_visibility,
       sensitive: local.default_sensitive === 1,
       language: local.default_language,
-      note: htmlToPlainText(row.note),
+      note: htmlToPlainText(presentedNote(row.note)),
       fields: localFields(row),
       follow_requests_count: Math.min(local.follow_requests_count, FOLLOW_REQUESTS_COUNT),
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,
-      attribution_domains: JSON.parse(local.attribution_domains) as string[],
+      attribution_domains: presentedAttributionDomains(local.attribution_domains),
       quote_policy: local.default_quote_policy,
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.

@@ -400,7 +400,7 @@ const CASES: Record<string, Case> = {
     main: ["9ce2b4bc7b5d421c"],
     count: "SELECT count(*) AS n FROM custom_emojis WHERE disabled = 0",
     walks: 2,
-    run: (sql) => customEmojis.run(sql, undefined, (fn) => fn()),
+    run: (sql) => customEmojis.run(sql, { credential: null }, (fn) => fn()),
   },
   "a local status's emoji snapshot": {
     main: ["8a60356d41a087d5"],

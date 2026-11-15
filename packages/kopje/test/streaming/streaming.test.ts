@@ -5,7 +5,7 @@ import { type StreamPosition, streamAdvance, streamUnit, streamUnitAdvance } fro
 import { StoreKernel, type StoreOperation } from "../../src/platform/store-kernel";
 import { sha256Hex } from "../../src/security/tokens";
 import { STREAM_LIMITS } from "../../src/stream-hub";
-import { type ApiHarness, form, login, sql } from "../api-helpers";
+import { type ApiHarness, bearer, form, json, login, setSetting, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
 import { BUILD } from "../helpers";
 import { appToken, scopedToken } from "../read-helpers";
@@ -68,6 +68,29 @@ describe("the upgrade", () => {
     }
   });
 
+  // AUTH-1: the REST API answers a suspended owner's held token 403; streaming answers it 401, as Mastodon's
+  // streaming server (streaming/index.js) answers "Invalid access token".
+  it("answers 401 to a suspended owner's held token, expired or not", async () => {
+    const h = await community(["alice"]);
+    const expired = (await login(h, { app: h.app, email: "alice@example.com", scope: "read write follow" })).token;
+    await sql(
+      h.store,
+      "UPDATE oauth_tokens SET expires_at = ? WHERE token_hash = ?",
+      new Date(NOW - 1000).toISOString(),
+      await sha256Hex(expired),
+    );
+    await h.store.suspendAccount(BUILD, { accountId: h.users.alice.id, now: NOW });
+    expect(await sql(h.store, "SELECT count(*) AS held FROM oauth_tokens WHERE kind = 'access'")).toEqual([
+      { held: 2 },
+    ]);
+    const rest = await h.request("/api/v1/timelines/home", { headers: { authorization: `Bearer ${expired}` } });
+    expect(rest.status).toBe(403);
+    for (const token of [h.users.alice.token, expired]) {
+      const refused = await upgrade(h, token);
+      expect([refused.status, refused.headers.get("x-error-message")]).toEqual([401, "Invalid access token"]);
+    }
+  });
+
   it("serves the health check, and answers 404 to a request that is not an upgrade (no SSE)", async () => {
     const h = await community(["alice"]);
     const health = await h.request("/api/v1/streaming/health");
@@ -124,6 +147,26 @@ describe("the subscribe protocol", () => {
     await post(h, h.users.bob, { status: "@alice hello", visibility: "public" });
     await drained(h, inbox);
     expect(inbox.rest().map((m) => [m.stream, m.event])).toEqual([[["user:notification"], "notification"]]);
+  });
+
+  it("sends no fallback: the event carries the notification as REST shows it without supported_types", async () => {
+    const h = await community(["owner", "alice", "carol"]);
+    await setSetting(h.store, "admin_email", "owner@example.com");
+    const inbox = await subscribed(h, h.users.owner.token, "user:notification");
+    await settled(h, inbox);
+    const reported = await h.request(
+      "/api/v1/reports",
+      bearer(h.users.alice.token, json({ account_id: h.users.carol.id })),
+    );
+    expect(reported.status).toBe(200);
+    await drained(h, inbox);
+    const [event] = notifications(inbox.rest(), "user:notification");
+    expect(event).toMatchObject({ type: "admin.report" });
+    expect(event).not.toHaveProperty("fallback");
+    // Control: the same notification listed with supported_types carries one.
+    const listed = await h.request("/api/v1/notifications?supported_types[]=mention", bearer(h.users.owner.token));
+    const [rest] = await listed.json<{ id: string; fallback?: unknown }[]>();
+    expect(rest).toMatchObject({ id: event!.id, fallback: { description: null } });
   });
 
   it("refuses a subscription the registry cannot record (a dump freezes it), so the client subscribes again", async () => {

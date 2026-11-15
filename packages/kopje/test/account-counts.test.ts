@@ -92,7 +92,7 @@ describe("account counts as they are read", () => {
             }
           }
         });
-        getAccount.run(counting, { id: "933000000000000101", present: { origin: ORIGIN } });
+        getAccount.run(counting, { id: "933000000000000101", present: { origin: ORIGIN }, credential: null });
         return bytes;
       });
       expect(longest).toBeLessThan(1000);

@@ -125,13 +125,16 @@ import {
 } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 import {
+  blankText,
   exceedsRawLength,
   linksAny,
+  MAX_STATUS_CHARACTERS,
   mentionKey,
   type MentionRef,
   parseStatusText,
   quoteFallbackHtml,
   renderStatusHtml,
+  statusLength,
 } from "./status-text";
 import { streamDelete } from "./streaming";
 import { forgetStatusTrend } from "./trends";
@@ -147,8 +150,10 @@ export type Viewed<T> = { status: "ok"; value: T } | { status: "not_found" };
 
 export type Acted<T> = Viewed<T> | { status: "forbidden" } | { status: "invalid"; error: string };
 
-// The Worker checks the counted length; the Store re-checks the raw bound so no caller can make it parse more.
-const TOO_LONG = "Validation failed: Text character limit of 500 exceeded";
+// StatusLengthValidator's error. The Worker checks the counted length of a text that is not blank; the Store counts a
+// blank one's, whose warning may become the text (convertedPost, editStatus), and re-checks the raw bound so no caller
+// can make it parse more.
+export const TOO_LONG = `Validation failed: Text character limit of ${MAX_STATUS_CHARACTERS} exceeded`;
 
 // RES-2: a local status's content and content warning stay within the bounds a presented status has (status-bounds.ts),
 // as a remote one's do. Text within MAX_RAW_LENGTH renders past STATUS_CONTENT_BYTES only through hundreds of
@@ -156,9 +161,6 @@ const TOO_LONG = "Validation failed: Text character limit of 500 exceeded";
 function exceedsStatusBounds(content: string, spoilerText: string): boolean {
   return jsonStringBytes(content) > STATUS_CONTENT_BYTES || jsonStringBytes(spoilerText) > SPOILER_BYTES;
 }
-
-// Mastodon's media_attachments.validations.too_many, which it also answers for media sent with a poll.
-export const TOO_MANY_FILES = "Cannot attach more than 4 files";
 
 export function resolveStatusId(db: Db, id: string): string | null {
   return resolveApiId(db, "statuses", id);
@@ -451,6 +453,29 @@ export type Prepared =
 // Mastodon's statuses.errors.quoted_user_not_mentioned, as ActiveRecord::RecordInvalid words it.
 const QUOTED_USER_NOT_MENTIONED = "Validation failed: Cannot quote a non-mentioned user in a Private Mention post.";
 
+// PostStatusService#preprocess_attributes! on a post as sent, once the pair as sent is within MAX_RAW_LENGTH (RES-1,
+// checked before blankText reads it or anything moves: preparePost checks only the pair it is given, whose sum drops a
+// blank text): a blank text with a warning that is not blank, quoting nothing, takes the warning as its text, with no
+// warning, and is sensitive (Mastodon computes @sensitive before the move). It applies when a post is made or
+// scheduled, never at publication, so a post an earlier release scheduled publishes as it was stored. Then the counted
+// length of a blank text, which the Worker leaves to the Store, on the pair to be written, as StatusLengthValidator
+// validates the status. null: too long.
+export function convertedPost<T extends PostInput>(input: T): T | null {
+  const text = storedText(input.text);
+  const spoilerText = storedText(input.spoilerText);
+  if (exceedsRawLength(text, spoilerText)) {
+    return null;
+  }
+  if (!blankText(text)) {
+    return input;
+  }
+  const post =
+    !blankText(spoilerText) && input.quotedStatusId === undefined
+      ? { ...input, text: spoilerText, spoilerText: "", sensitive: true }
+      : { ...input, text, spoilerText };
+  return statusLength(post.text, post.spoilerText) > MAX_STATUS_CHARACTERS ? null : post;
+}
+
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
 // the scheduled status being published, whose media it attaches (null: none). R36 is checked in the writing
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
@@ -476,15 +501,9 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
       return { status: "quote_not_found" };
     }
   }
-  // PostStatusService#validate_media! checks a poll with media before the ids; the Worker does (composition), so this
-  // order only decides for a Store caller that skips it.
   const media = mediaToAttach(db, accountId, input.mediaIds, null, input.now, scheduledId);
   if (!Array.isArray(media)) {
     return media;
-  }
-  // A poll takes the place of media.
-  if (input.poll !== undefined && input.mediaIds.length > 0) {
-    return { status: "invalid", error: TOO_MANY_FILES };
   }
   const requested = input.visibility ?? author.default_visibility;
   // PostStatusService#preprocess_attributes!: a quote of a private status (the poster's own: R36) is private.
@@ -510,7 +529,7 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
   ) {
     return { status: "invalid", error: QUOTED_USER_NOT_MENTIONED };
   }
-  if (text.trim() === "" && media.length === 0 && quoted === null) {
+  if (blankText(text) && media.length === 0 && quoted === null) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
   const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
@@ -967,9 +986,9 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   if (current === null || current.reblog_of_id !== null) {
     return { status: "not_found" };
   }
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
-  if (exceedsRawLength(text, spoilerText)) {
+  const sentText = storedText(input.text);
+  const sentSpoiler = storedText(input.spoilerText);
+  if (exceedsRawLength(sentText, sentSpoiler)) {
     return { status: "invalid", error: TOO_LONG };
   }
   // Before the "unchanged" test: UpdateStatusService validates the media before NoChangesSubmittedError.
@@ -977,16 +996,26 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   if (!Array.isArray(media)) {
     return media;
   }
-  if (input.poll !== undefined && input.mediaIds.length > 0) {
-    return { status: "invalid", error: TOO_MANY_FILES };
-  }
   // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
   // quoted status is there.
   const quote = localQuoteOf(db, current.id);
-  if (text.trim() === "" && media.length === 0 && quote === undefined) {
+  // UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
+  // sent (or "") as its text, whether a warning was sent or not; the warning sent is then not applied, so the status
+  // keeps its own, and sensitive is the value sent or false. A status stored with a blank text and a warning is
+  // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
+  const blankSent = blankText(sentText);
+  const keepsWarning = blankSent && quote === undefined;
+  const text = keepsWarning ? sentSpoiler : sentText;
+  const spoilerText = keepsWarning ? current.spoiler_text : sentSpoiler;
+  // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
+  // written: a kept warning is the stored one.
+  if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
+    return { status: "invalid", error: TOO_LONG };
+  }
+  if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
-  const sensitive = (input.sensitive ?? false) || spoilerText !== "";
+  const sensitive = (input.sensitive ?? false) || (!keepsWarning && spoilerText !== "");
   const language = input.language ?? current.language;
   const currentMedia = db.all<{ id: string; description: string; focus_x: number; focus_y: number }>(
     "SELECT id, description, focus_x, focus_y FROM media_attachments WHERE status_id = ? AND shown = 1 ORDER BY position, id",
@@ -1040,12 +1069,14 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   }
   editPoll(db, current.id, input.poll ?? null, input.now);
   db.run(
-    `UPDATE statuses SET content = ?, source_text = ?, spoiler_text = ?, sensitive = ?, language = ?, edited_at = ?,
-			search_text = ?, quote_policy = COALESCE(?, quote_policy), emojis = ?, filter_text_units = NULL
+    `UPDATE statuses SET content = ?, source_text = ?, spoiler_text = COALESCE(?, spoiler_text), sensitive = ?,
+			language = ?, edited_at = ?, search_text = ?, quote_policy = COALESCE(?, quote_policy), emojis = ?,
+			filter_text_units = NULL
 		WHERE id = ?`,
     composed.content,
     composed.source,
-    spoilerText,
+    // A kept warning stays as stored, copied in SQL.
+    keepsWarning ? null : spoilerText,
     sensitive ? 1 : 0,
     language,
     editedAt,
@@ -1166,7 +1197,7 @@ export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput
       const name = input.quotePolicy ?? localAuthor(db, accountId).default_quote_policy;
       setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), Date.parse(viewer.now));
     }
-    return viewed(presentStatus(db, visible, { ...input.present, viewer }));
+    return viewed(presentStatus(db, visible, { ...input.present, viewer, proper: true }));
   },
 );
 
@@ -1272,7 +1303,7 @@ export const deleteStatus = userMediaDeleteOperation<
   if (current === null) {
     return { status: "not_found" };
   }
-  const value = presentOwn(db, accountId, current.id, { ...input.present, viewer, source: true });
+  const value = presentOwn(db, accountId, current.id, { ...input.present, viewer, source: true, proper: true });
   if (value === null) {
     return { status: "not_found" };
   }
@@ -1412,7 +1443,7 @@ export function viewable(db: Db, viewerId: string | null, id: string) {
 export const getStatus = optionalUserReadOperation<{ id: string; present: Present }, Viewed<Status>>(
   (db, { id, present }, viewer) => {
     const resolved = viewable(db, viewer.accountId, id);
-    return viewed(resolved === null ? null : presentStatus(db, resolved, { ...present, viewer }));
+    return viewed(resolved === null ? null : presentStatus(db, resolved, { ...present, viewer, proper: true }));
   },
 );
 
@@ -1441,7 +1472,7 @@ export const getStatuses = optionalUserReadOperation<{ ids: readonly string[]; p
       viewer.now,
     );
     const visible = rows.map((row) => row.id).toSorted((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-    const options = { ...present, viewer };
+    const options = { ...present, viewer, proper: true as const };
     return presentStatusesWithin(db, presentation(db, visible, options), visible, ARRAY_ANSWER_BYTES, true).items;
   },
 );
@@ -1929,7 +1960,7 @@ export const reblog = userWriteOperation<ReblogInput, Acted<Status>>((db, input,
   ) {
     return { status: "forbidden" };
   }
-  const options = { ...input.present, viewer };
+  const options = { ...input.present, viewer, proper: true as const };
   const existing = keptBoost(db, accountId, target.id);
   if (existing !== null) {
     return viewed(presentOwn(db, accountId, existing, options));

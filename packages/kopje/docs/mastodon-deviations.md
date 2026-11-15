@@ -200,6 +200,13 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
+  domain name. A compliant host is shorter than 256 characters, so only one padded with characters IDNA ignores (U+00AD)
+  is that long; Mastodon refuses such padding much sooner, when its IDNA conversion fails (between 60 and 120 U+00AD in
+  a check), and Kopje accepts it up to the 1,020 bytes (#1606). Domains and lists past the presented bounds, whether
+  saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
+  `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
+  (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
   once, as the HTML it presents and federates.
@@ -439,6 +446,14 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   Mastodon 4.7.5 reads every item of the featured collection's first page, and the featured hashtags until it has 10
   or has read 10 pages, both only on the actor's host. Accepted, 2026-11-15.
 
+- A pinned status a sync stores, or finds already stored, has its quote verified only when the status reaches Kopje
+  another way (a delivery, a boost, an `Add`, a search); until then its quote stays pending. Mastodon 4.7.5 verifies a
+  pinned status's quote as any status's (`fetch_featured_collection_service.rb:34`, `create.rb:417-419`) and bounds
+  the fetches that follow from one only per request (`DISCOVERIES_PER_REQUEST`, 1,000 accounts and 1,000 statuses,
+  each count expiring 5 minutes after its last increment). Kopje gives quote verification work only to statuses that a
+  delivery or a user's request brought, so that reading an account's collections leads to no other account (RES-6).
+  Accepted, 2026-11-15.
+
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
 
@@ -546,15 +561,28 @@ Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campa
 `POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
 [threat-model.md](threat-model.md)):
 
-- A token past its expiry or revoked is answered as no token, whatever its owner's state: donation campaigns answers
-  422 and e-mail subscriptions its 404. A token of an earlier credential epoch is answered the same way while its owner
-  is available, and 403 while its owner is suspended, as on every route. Mastodon reads these two routes' token only
-  through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its value,
-  expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token of an
-  available owner gets donation campaigns' 204, and one of a suspended owner gets 403 on both. In Kopje a token past
-  its expiry or revoked is no credential on any route: the Store refuses an expired one inside the operation and
-  deletes a revoked one. The visible difference is only the status code of a feature-off answer. Accepted,
-  2026-11-15.
+- A token past its expiry, revoked or of an earlier credential epoch is answered as no token while its owner is
+  available: donation campaigns answers 422 and e-mail subscriptions its 404. Mastodon reads these two routes' token
+  only through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its
+  value, expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token
+  of an available owner gets donation campaigns' 204. In Kopje such a token is no credential on any route: the Store
+  refuses an expired one inside the operation and deletes a revoked one. The visible difference is only the status
+  code of a feature-off answer. Accepted, 2026-11-15.
+- A suspended owner's token answers 403 `Your login is currently disabled` while the Store holds its row, expired or of
+  an earlier epoch alike, as Mastodon's `require_not_suspended!` answers before Doorkeeper's checks, on every API route
+  but `GET /api/v1/instance`, `/api/v2/instance`, `/api/v1/instance/rules`, `/api/v1/instance/peers` and
+  `/api/v1/instance/extended_description`, which read no token, as Mastodon's controllers there read a user only in
+  limited federation mode, which Kopje does not have (AUTH-2). A row the Store no longer holds is no credential: it
+  reads as no token where a route needs none, and as an invalid token (401) where one is needed. A revoked token is
+  deleted at once, an expired one by the cron's sweep, and a suspension's tokens job deletes the account's tokens
+  shortly after the suspension, so the 403 lasts until then and the tokens stay no credential after an unsuspension.
+  Mastodon revokes nothing on a suspension and finds revoked and expired rows until its daily
+  `Vacuum::AccessTokensVacuum`, so it answers 403 for the whole suspension. Accepted, 2026-11-15.
+- `POST /api/v1/apps` with a suspended owner's token, expired or not, answers 403 where the registration limiter would
+  answer 429: Kopje judges the token's owner on every answer of an anonymous route (AUTH-2), the limiter's included,
+  while Mastodon 4.7.5's Rack::Attack throttles before the controller's `require_not_suspended!`. A request there with
+  any other Bearer token, an unknown one included, costs one Store call (`checkNotSuspended`) even when the limiter
+  refuses it. Accepted, 2026-11-15.
 
 Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
 
@@ -612,6 +640,10 @@ Hashtags (the `Tag` entity):
   follow, a featured hashtag, a timeline, a page and a search, and a received post is filed under it whatever its
   `Hashtag`'s `href` names. Migration 0087 renamed and merged the names stored before it without sending an activity, so
   a Mastodon follower of an account whose two featured hashtags it merged may keep both.
+- A post's hashtags are found as Mastodon 4.7.5's `Tag::HASHTAG_RE` finds them, over the whole text: `#` or `＃` at
+  the text's start or after whitespace (`src/domain/status-text.ts`). Mastodon then drops an `http` or `https` ending
+  from a hashtag followed by `://` (`Extractor#extract_hashtags_with_indices`), which Kopje keeps:
+  `#taghttps://example.com` is the hashtag `taghttps`, where Mastodon's is `tag`.
 - `history` is counted again on every read from the stored statuses: public originals, by the UTC day of their
   publication (Mastodon counts a status on the day it receives it), with `accounts` exact (Mastodon's is a HyperLogLog
   estimate). A deleted status and the statuses of an unavailable author leave the counts (Mastodon never decrements
@@ -700,6 +732,19 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   clears the suspension directly, and `UnblockDomainService` lifts only suspensions whose timestamp equals the block's
   `created_at`, so there an individual suspension with any other timestamp survives the unblock, as Kopje's
   individual suspension does (`account` wins), and one with that timestamp does not.
+
+Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
+
+- The summary of an `admin.report` and of a `moderation_warning` is `You're on an app that does not support the most
+  recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's link reads `Sign in
+  to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
+  `moderation_warning`'s goes to the strike's dispute page; Kopje has neither a web app nor disputes. Accepted,
+  2026-11-15.
+- Only `admin.report` and `moderation_warning` carry one: Kopje writes no other type outside Mastodon's baseline, and a
+  restored row of another such type has none.
+- A title names an account within the presented bounds (RES-2): its username as `usernameSql` reads it, within 255
+  bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
+  within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.
 
 Request parameters:
 
@@ -869,8 +914,14 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   a row.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
-- Text length, the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
+- Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
+  as Mastodon), the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
   Mastodon checks the media first.
+- A scheduled post whose text is blank and whose content warning is not, and which quotes nothing, is scheduled with
+  the warning as its text, no warning and `sensitive` true, as an immediate post is written, and is published so.
+  Mastodon keeps the blank text and drops the warning from the stored parameters
+  (`PostStatusService#scheduled_options`), so its publication fails without media and posts the blank text without the
+  warning with media.
 - `allowed_mentions[]` is compared with the mentions Kopje writes: accounts it already knows (nothing is fetched), not
   blocked by the author and not suspended. `unexpected_accounts` lists the accounts that fit the 8 MiB answer, in
   mention order. A scheduled post's parameters, the list included, must fit 128 KiB of JSON (`Record invalid`); the
