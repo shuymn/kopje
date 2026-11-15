@@ -380,6 +380,26 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
       ),
     );
   });
+
+  it("squishes a username's whitespace as link_to_mention does: each run of Unicode White_Space to one space", async () => {
+    const { h, owner, alice } = await world();
+    // [[:space:]] as Onigmo reads it: U+0085 and U+3000 are White_Space, U+FEFF (which JavaScript's \s matches) is not.
+    const [nel, ideographic, bom] = [0x85, 0x3000, 0xfeff].map((c) => String.fromCodePoint(c));
+    const shown: Record<string, string> = {};
+    const usernames: [stored: string, squished: string][] = [
+      ["a\t  b\n c", "a b c"],
+      [`\n d${nel}${ideographic}e${bom} `, ` d e${bom} `],
+    ];
+    for (const [i, [stored, squished]] of usernames.entries()) {
+      const target = await remoteAccount(h.store, `spaced${i}`);
+      await sql(h.store, "UPDATE accounts SET username = ? WHERE id = ?", stored, target);
+      shown[await report(h, alice, target)] =
+        `${mention("https://kopje.test/@alice", "alice")} reported ${mention(`https://remote.example/@spaced${i}`, squished)}`;
+    }
+    expect(await titles(h, owner.token)).toEqual(
+      Object.fromEntries(["v1", "full", "partial"].map((read) => [read, shown])),
+    );
+  });
 });
 
 describe("notification fallbacks: the parameter and the bound (RES-3)", () => {

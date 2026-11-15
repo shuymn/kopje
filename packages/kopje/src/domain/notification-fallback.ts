@@ -64,9 +64,12 @@ function fallbackHref(account: AccountRow, origin: string): string {
   return boundedHref(account.local === 1 ? `${origin}/@${account.username}` : account.url, PROFILE_URL_LIMIT) ?? "";
 }
 
-// TextFormatter.link_to_mention without the domain.
+// TextFormatter.link_to_mention without the domain, squished as it is: ActiveSupport's String#squish
+// (core_ext/string/filters.rb) turns each run of [[:space:]], which Onigmo reads as Unicode White_Space (U+0085 in,
+// U+FEFF out, unlike JavaScript's \s), into one space; its strip! finds none at either end of this HTML.
 export function linkToMention(href: string, username: string): string {
-  return `<span class="h-card" translate="no"><a href="${escapeHtml(href)}" class="u-url mention">@<span>${escapeHtml(username)}</span></a></span>`;
+  const html = `<span class="h-card" translate="no"><a href="${escapeHtml(href)}" class="u-url mention">@<span>${escapeHtml(username)}</span></a></span>`;
+  return html.replace(/\p{White_Space}+/gu, " ");
 }
 
 // notification_fallbacks.admin_report.title_html.
