@@ -52,6 +52,7 @@ import {
   nextId,
   observedPresentation,
   planCounts,
+  plannedFilterRows,
   type Read,
   recordingSql,
   ORIGIN,
@@ -148,7 +149,9 @@ describe("R bounds the rows of a status (RES-3)", () => {
         const result = await runInDurableObject(h.store, (_instance, state) => {
           // Two small statuses first, so each plan reads a chunk of several.
           const ids = [TINY, TINY, ...items].map((item) => build(state.storage.sql, f, item));
-          const bounds = boundsOf(state, f.viewer, ids, 1);
+          // With the filter count the planner uses: the viewer's filter names statuses only once an item has had
+          // `viewer`, so it may be none.
+          const bounds = boundsOf(state, f.viewer, ids, plannedFilterRows(state, f.viewer));
           // Each status alone, in a chunk of one.
           const alone = observedPresentation(state, f.viewer, ids, 1);
           const whole = observedPresentation(state, f.viewer, ids, ids.length);

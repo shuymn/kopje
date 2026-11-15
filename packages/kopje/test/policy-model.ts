@@ -844,8 +844,10 @@ export class PolicyModel {
   // status from an account the recipient does not follow is filtered, unless it answers a private mention of the
   // sender by the recipient. Walking up from the parent, the parent counts when it mentions the sender (not silently),
   // an ancestor above it when the recipient wrote it and it mentions the sender; the first that counts answers when
-  // it is the recipient's direct status. The walk reads the parent and at most 100 statuses above it. Nothing is
-  // dropped by default.
+  // it is the recipient's direct status. The walk reads the parent and at most 100 statuses above it. A limited
+  // mention (a remote Create's tagged mention of a recipient it does not address) from such an account is filtered
+  // too, but the worlds' writes are local and never limited (test/inbox-statuses.test.ts checks the remote one). A bot
+  // sender (actor_type Application or Service) is accepted by default. Nothing is dropped by default.
   filtered(r: number, type: NotificationType, from: number, s: number | null): boolean {
     if (type !== "mention" || s === null || this.follows(r, from) || this.status(s).visibility !== "direct") {
       return false;
