@@ -166,6 +166,24 @@ describe("the sequence", () => {
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
   });
 
+  it("runs main's statement with the parameters its baseline takes from a rewrite that binds one more", async () => {
+    const id = await statementId(SELECT);
+    const bounded = "SELECT id FROM t INDEXED BY t_k WHERE k = ?1 AND id >= ?2 ORDER BY id";
+    const entry = (params?: Baseline["params"]) => ({
+      [id]: { sql: SELECT, text: bounded, ...(params === undefined ? {} : { params }) },
+    });
+    const mapped = await witnessed(
+      entry((mine) => mine.slice(0, 1)),
+      () => [id],
+      [[bounded, 3, 0]],
+    );
+    expectBeside("analyzed", mapped);
+    expect(mapped.sides.map((side) => side.main.result)).toEqual([[{ id: 7 }, { id: 8 }]]);
+    const unmapped = await witnessed(entry(), () => [id], [[bounded, 3, 0]], { catching: true });
+    expect(unmapped.result).toEqual([expect.stringContaining("Wrong number of parameter bindings")]);
+    expect(unmapped.sides.map((side) => side.fault)).toEqual(["incomplete"]);
+  });
+
   it("fails a statement of the family that is no baseline's rewrite", async () => {
     const run = await witnessed(await baselines(), () => [], [["SELECT id FROM t WHERE k > ? ORDER BY id", 3]], {
       family: /^SELECT id FROM t /,

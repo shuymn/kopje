@@ -3101,7 +3101,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (Count), `/statuses` at most 40 statuses within the answer budget, continued at the statuses it consumed (Budget,
   Offset), `/links` at most 20 links of at most 10,268 bytes each (205,381 a page); the Access admin's pages hold at
   most 20 hashtags, 40 statuses, 20 links and 100 publishers, each field through its bounded projection;
-  `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once").
+  `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once"). _Enforced (main)_ for scheduled
+  statuses: a page reads the ids of at most 40 and admits whole scheduled statuses within `ARRAY_ANSWER_BYTES`, each
+  read by key when admission reaches it, the first always, a cut page continuing from its last (`listScheduled` in
+  `src/domain/scheduled-statuses.ts`); each shows at most `MAX_STATUS_MEDIA` held media (the media read's `LIMIT`), so
+  it is at most its derived maximum in "Maxima of presented units"; `test/scheduled-statuses.test.ts` ("a scheduled
+  status at its caps", "the scheduled statuses list within ANSWER_BYTES").
 - **RES-4: stored derived data is bounded.** Snapshots, the KV cache, the spool and deliveries each have a size cap, a
   count cap or an expiry with a sweeper. _Enforced (main)_ for remote statuses: one
   status stores at most 4 attachments (Mastodon's limit) with 10,000 code points of description each, 100 hashtags
@@ -3961,15 +3966,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status sought by id, so a page's history is flat in a hashtag's volume: about 21 rows per entry in the dearest world
   (suspend blocks, available authors on eight-label domains), and a whole authenticated page at most 90,000 rows for 200
   `followed_tags` (imported follows; the follow cap bounds only the follow), 115,000 for 40 v2 search hashtags with
-  every window full and no two sharing a candidate (4,000), 9,000 for 10 suggestions (`test/tag-history-bounds.test.ts`)
-  and 70,000 for 20 trending hashtags (`test/trends-maxima.test.ts`); the rules
+  every window full and no two sharing a candidate (4,000), 9,000 for 10 suggestions from 1,000 own statuses of one
+  hashtag each (`test/tag-history-bounds.test.ts`; _Gap:_ suggestions read every hashtag row of the newest 1,000 own
+  statuses of the year, and nothing caps a status's hashtag rows (a local post holds what its 500 characters fit, an
+  import any number); a cap in the statement read more than the uncapped one for every status a local post can
+  write, so it waits for an index or a bound at the edges) and 70,000 for 20 trending hashtags
+  (`test/trends-maxima.test.ts`); the rules
   read only their setting; familiar followers reads at most 10,000 of the viewer's accepted follows (above
   Mastodon's default follow limit of 7,500) and checks each against the account through the pair index; suggestions
   read fixed windows of follow ids as index ranges and judge at most 10,000 distinct candidates (docs/visibility.md,
   "Suggestions" and "Read bounds"; `test/suggestions-bounds.test.ts`); `test/instance-reads.test.ts`,
   `test/tags.test.ts`, `test/account-reads.test.ts` (rows read stay flat as accounts per domain, accounts known,
   statuses outside the window, and the account's other followers grow). _Enforced (main)_ for scheduled statuses: a page
-  reads the account's own index by id, and a publication round reads the due ones through the index by time, so neither
+  reads ids from the account's own index by id and each scheduled status it admits by key, with at most
+  `MAX_STATUS_MEDIA` of its held media through `media_attachments_scheduled` however many it holds
+  (`test/scheduled-statuses.test.ts` ("shows the first 4 held media by position")), and a publication round reads the
+  due ones through the index by time, so neither
   grows with the accounts that schedule or their scheduled statuses (`test/policy-bounds.test.ts` ("however many
   accounts schedule")). _Enforced (main)_ for grouped notifications: a page of groups walks the viewer's notifications
   from the cursor, as the list does, and reads at most 2,000 of them, shown or hidden (`GROUP_WALK`); each group's
@@ -4264,6 +4276,7 @@ not asserted.
 | Trending link (TrendsLink), derived from its caps                |                   | 4,783           | 10,268            |           |       | 0.1%           |
 | Access admin's trending link, derived from its caps              |                   | 4,166           | 4,217             |           |       | 0.1%           |
 | Instance activity (12 weeks), derived from its caps              |                   | 1,189           | 1,189             | 8,592     |       | 0.0%           |
+| Scheduled status, derived from its caps                          |                   | 884,345         | 884,889           | 5         |       | 10.5%          |
 
 A moderation_warning shows its account twice (the sender and the warning's `target_account`, the same local account with
 four local fields at their limits, each value a verified 255-character link whose `&`s the link markup escapes twice,
@@ -4301,6 +4314,19 @@ the bounds (left out), fills 715,687 bytes through the API (`test/tag-history-bo
 past the name bound are refused, and lists leave out stored names past it or not well-formed UTF-8 (`tag-bounds.ts`;
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
+
+A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
+caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the
+CHECK of `0011_scheduled_statuses` passes an imported value strftime cannot read, and its `length()` stops at a NUL, so
+such a value may hold any bytes; the read judges it by its bytes with `isoTimeSql` before it leaves SQLite, "shows no
+time for an imported scheduled_at"); its params, a JSON object of at most `MAX_PARAMS_BYTES` (128 KiB, the
+CHECK of migration `0011_scheduled_statuses`) parsed and presented again, which grow only through numbers, at most
+22/5 of the stored bytes (a four-character number such as `1e20` prints as 21 characters, each with its separator; a
+longer one prints at most 25), so 576,716 bytes; and at most `MAX_STATUS_MEDIA` held attachments (the media read's
+`LIMIT`), each with an 18-digit id, the longest type, its four URLs at 4,098 JSON bytes, every number of its meta and
+focus at the longest a double prints (24 characters, 25 with a sign), a description of 10,000 control characters and a
+54-byte blurhash. The witness, a restored row at those caps (params of `1e20`s, four attachments of a remote account
+with URLs of backslashes), presents 884,345 bytes from 5 rows.
 
 An announcement's maxima are derived from caps, not from fills: each part's conservative JSON is computed by
 `test/announcement-bounds.test.ts` (`derivedAnnouncementMaxima` in `test/announcement-helpers.ts`) from the stored and
