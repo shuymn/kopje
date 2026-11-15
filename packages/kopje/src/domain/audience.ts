@@ -80,6 +80,12 @@ export const REQUIRES_MENTION_SQL = visibilitySetSql(requiresMention);
 // list, in this order, and SQLite uses it only for the same list.
 export const REACHES_FOLLOWERS_SQL = visibilitySetSql((visibility) => !requiresMention(visibility));
 
+// Mastodon's Status.list_eligible_visibility on the status `alias`: public, unlisted and private, what an account's
+// statuses keep with exclude_direct (AccountStatusesFilter, R11). The predicate of the partial index statuses_feed.
+export function listEligibleSql(alias: string): string {
+  return `${alias}.visibility IN ${REACHES_FOLLOWERS_SQL}`;
+}
+
 // status_tags.public of a hashtag of the status `id`: whether the status is public, the only visibility hashtag timelines
 // and a tag's history count (publicConditions in timelines.ts). A status's visibility is fixed when it is written, so
 // the writers of status_tags set it with each row, and the partial index status_tags_public holds just those rows.
@@ -156,6 +162,13 @@ export function availableJoinedSql(a: string, l: string): string {
 // order is what the admin's list of suspended accounts reads of them.
 export function deletingSql(a: string): string {
   return `${a}.deleted_at IS NOT NULL`;
+}
+
+// R1's account reads: the account `a` is found by id or address unless its deletion has started (Mastodon 4.7's
+// Account.without_requested_deletion). A suspended account is found, and shown redacted. Read from the account's row:
+// only a remote account is ever deleting (the schema refuses deleted_at on a local one).
+export function foundSql(a: string): string {
+  return `${a}.deleted_at IS NULL`;
 }
 
 // The remote accounts the instance suspended or a domain block's job marked (R38: suspension_source 'account' or

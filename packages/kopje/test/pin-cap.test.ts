@@ -46,6 +46,7 @@ async function pinnedReads(owner: "local" | "remote", pins: number, limit: numbe
     onlyMedia: false,
     excludeReplies: false,
     excludeReblogs: false,
+    excludeDirect: false,
     pinned: true,
     tagged: null,
     present: { origin: "https://kopje.test" },

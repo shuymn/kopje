@@ -107,7 +107,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
-// instance_settings row by its key (it adds an empty table, its index and two triggers). A migration that
+// instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_quote_author_fetches
+// adds a checked column to quotes, which SQLite tests against every quote. A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -973,6 +974,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => row.detail),
         }
       : undefined;
+    // 0094_quote_author_fetches: the column, and the quotes holding its default.
+    const authorFetches = has("quotes", "author_fetches")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
+      : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -988,7 +993,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
-        measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft, liveQuotes, rejectReplays },
+        measured: {
+          result,
+          ms,
+          foreignKeyCheck,
+          retryEstimateMs: ms,
+          jamoLeft,
+          pinsLeft,
+          liveQuotes,
+          rejectReplays,
+          authorFetches,
+        },
       };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
@@ -1018,6 +1033,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         pinsLeft,
         liveQuotes,
         rejectReplays,
+        authorFetches,
       },
     };
   });
@@ -1082,6 +1098,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       ],
     });
     expect(measured.foreignKeyCheck).toBe("store");
+  }
+  // 0094 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0094_quote_author_fetches")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.authorFetches).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));

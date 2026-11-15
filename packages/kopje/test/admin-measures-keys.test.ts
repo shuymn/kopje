@@ -21,7 +21,7 @@ import { world, type World } from "./remote-suspension-helpers";
 // and instance_media_attachments, the refused keys (MD-2), and stored times that cannot be read.
 
 const D = "d.example";
-const NOT_ALLOWED = { status: 403, body: { error: "This action is not allowed" } };
+const FORBIDDEN = { status: 403, body: { error: "Forbidden" } };
 const point = (date: string, value: string) => ({ date, value });
 
 async function only(w: World, body: Record<string, unknown>): Promise<Measure> {
@@ -177,11 +177,11 @@ describe("the dates a measure accepts", () => {
     ]) {
       expect(await measure(w, newUsers(start!, end!)), `${start} ${end}`).toEqual(invalid);
       expect(await measure(w, { ...instance("instance_follows", D), start_at: start, end_at: end })).toEqual(invalid);
-      // Mastodon 4.5.21's refusal order: anyone else is refused before the dates are read.
+      // The admin gate: anyone else is refused before the dates are read.
       for (const token of [alice, null]) {
-        expect(await measure(w, newUsers(start!, end!), token)).toEqual(NOT_ALLOWED);
+        expect(await measure(w, newUsers(start!, end!), token)).toEqual(FORBIDDEN);
         expect(await measure(w, { ...instance("instance_follows", D), start_at: start, end_at: end }, token)).toEqual(
-          NOT_ALLOWED,
+          FORBIDDEN,
         );
       }
     }
@@ -416,7 +416,7 @@ describe("the keys Kopje does not serve (MD-2)", () => {
       const body = { keys: [key], [key]: { id: "1", domain: D }, ...range };
       expect(await measure(w, body)).toEqual({ status: 422, body: { error: `measure ${key} is not served` } });
       for (const token of [alice, null]) {
-        expect(await measure(w, body, token)).toEqual({ status: 403, body: { error: "This action is not allowed" } });
+        expect(await measure(w, body, token)).toEqual(FORBIDDEN);
       }
       const mixed = {
         ...instance("instance_follows", D, {}, range),

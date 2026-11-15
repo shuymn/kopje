@@ -23,7 +23,7 @@ export const cryptoRandomInt: RandomInt = (maxExclusive) => {
 };
 
 // IDs before this date would have fewer than 18 digits.
-const EARLIEST_MS = Date.UTC(2018, 4, 10);
+export const EARLIEST_MS = Date.UTC(2018, 4, 10);
 
 function snowflakeValue(ms: number, random: RandomInt): bigint {
   return (BigInt(ms) << 16n) | BigInt(random(0x10000));

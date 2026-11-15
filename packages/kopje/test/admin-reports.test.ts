@@ -26,7 +26,7 @@ import { NOW } from "./app-helpers";
 import { type Answer, answer, hugeStatus, ORIGIN } from "./budget-helpers";
 import { migratedStore } from "./helpers";
 import { ACCESS, ADMIN_EMAIL } from "./ops-helpers";
-import { observedSql } from "./read-helpers";
+import { observedSql, plannedRun } from "./read-helpers";
 import { community, interactWith, remoteAccount, remoteFollows, seedStatus, type User } from "./status-helpers";
 
 // The Mastodon admin API's reports (R37, VIS-29; Api::V1::Admin::ReportsController, ReportFilter,
@@ -154,15 +154,19 @@ describe("admin report routes: who is answered", () => {
         ["non-admin", alice.admin],
         ["app", app],
         ["anonymous", null],
+        ["unknown token", "not-a-token"],
       ] as const) {
         const answer = await call(h, route.path(id), token, init);
         expect(answer, `${route.method} ${route.path(":id")} as ${who}`).toMatchObject({
           status: 403,
-          body: { error: "This action is not allowed" },
+          body: { error: "Forbidden" },
         });
       }
       // A missing report is refused as an existing one is: its existence is not disclosed.
-      expect((await call(h, route.path("999999"), alice.admin, init)).status).toBe(403);
+      expect(await call(h, route.path("999999"), alice.admin, init)).toMatchObject({
+        status: 403,
+        body: { error: "Forbidden" },
+      });
     }
     expect(await sql(h.store, "SELECT * FROM reports")).toEqual(before);
     expect(await logRows(h.store)).toEqual([]);
@@ -180,7 +184,7 @@ describe("admin report routes: who is answered", () => {
     }
   });
 
-  it("refuse a token without the route's scope, whoever holds it", async () => {
+  it("refuse the OAuth admin's token without the route's scope", async () => {
     const { h, alice, carol } = await world();
     const id = await fileReport(h, alice, { account_id: carol });
     const plain = await userToken(h, OWNER, "read write");
@@ -195,7 +199,6 @@ describe("admin report routes: who is answered", () => {
         });
       }
       expect((await call(h, route.path(id), route.scope === "read" ? reader : writer, init)).status).toBe(200);
-      expect((await call(h, route.path(id), "not-a-token", init)).status).toBe(401);
     }
     expect((await logRows(h.store)).length).toBe(6);
   });
@@ -455,11 +458,66 @@ describe("GET /api/v1/admin/reports: ReportFilter", () => {
     expect(await list("")).toEqual([ids.bobDave, ids.aliceDave, ids.bobCarol, ids.aliceCarol]);
   });
 
-  it('lists the resolved reports for any value of resolved, "false" included', async () => {
+  it("reads resolved and unresolved as ActiveModel::Type::Boolean casts them, every report when both are true", async () => {
     const { ids, list } = await filtered();
-    for (const query of ["?resolved=true", "?resolved=false", "?resolved=", "?resolved=0"]) {
-      expect(await list(query), query).toEqual([ids.resolvedAliceCarol]);
+    const unresolved = [ids.bobDave, ids.aliceDave, ids.bobCarol, ids.aliceCarol];
+    const resolved = [ids.resolvedAliceCarol];
+    const all = [ids.resolvedAliceCarol, ...unresolved];
+    const cases: [string, string[]][] = [
+      ...["true", "1", "t", "True", "False", "yes"].map((v): [string, string[]] => [`?resolved=${v}`, resolved]),
+      ...["false", "0", "f", "F", "FALSE", "off", "OFF", ""].map((v): [string, string[]] => [
+        `?resolved=${v}`,
+        unresolved,
+      ]),
+      ["?unresolved=true", unresolved],
+      ["?unresolved=false", unresolved],
+      ["?resolved=true&unresolved=true", all],
+      ["?resolved=1&unresolved=t", all],
+      ["?resolved=true&unresolved=false", resolved],
+      ["?resolved=true&unresolved=", resolved],
+      ["?resolved=false&unresolved=true", unresolved],
+      // A repeated flag is read by its last value, as Rails assigns a repeated query parameter.
+      ["?resolved=false&resolved=true", resolved],
+      ["?resolved=true&resolved=false", unresolved],
+      ["?resolved=true&unresolved=false&unresolved=true", all],
+      ["?resolved=true&unresolved=true&unresolved=false", resolved],
+    ];
+    for (const [query, expected] of cases) {
+      expect(await list(query), query).toEqual(expected);
     }
+  });
+
+  it("lists every report newest first across the states, by each cursor and filter, and links on with both", async () => {
+    const { h, admin, alice, carol, ids, list } = await filtered();
+    // A second resolved report between the unresolved ones.
+    await call(h, `/api/v1/admin/reports/${ids.bobCarol}/resolve`, admin, { method: "POST" });
+    const all = "?resolved=true&unresolved=true";
+    expect(await list(all)).toEqual([ids.resolvedAliceCarol, ids.bobDave, ids.aliceDave, ids.bobCarol, ids.aliceCarol]);
+    // A page of two, its Link URLs carrying both flags in the sorted order Rails' URL helpers write them.
+    const page = await call(h, `/api/v1/admin/reports${all}&limit=2`, admin);
+    expect(page.status).toBe(200);
+    expect((page.body as { id: string }[]).map((report) => report.id)).toEqual([ids.resolvedAliceCarol, ids.bobDave]);
+    expect(page.link).toBe(
+      `<https://kopje.test/api/v1/admin/reports?limit=2&max_id=${ids.bobDave}&resolved=true&unresolved=true>; rel="next", ` +
+        `<https://kopje.test/api/v1/admin/reports?limit=2&min_id=${ids.resolvedAliceCarol}&resolved=true&unresolved=true>; rel="prev"`,
+    );
+    expect(await list(`${all}&limit=2&max_id=${ids.bobDave}`)).toEqual([ids.aliceDave, ids.bobCarol]);
+    expect(await list(`${all}&limit=2&max_id=${ids.bobCarol}`)).toEqual([ids.aliceCarol]);
+    expect(await list(`${all}&limit=2&since_id=${ids.bobCarol}`)).toEqual([ids.resolvedAliceCarol, ids.bobDave]);
+    expect(await list(`${all}&limit=2&min_id=${ids.aliceCarol}`)).toEqual([ids.aliceDave, ids.bobCarol]);
+    expect(await list(`${all}&limit=2&min_id=${ids.aliceDave}`)).toEqual([ids.resolvedAliceCarol, ids.bobDave]);
+    expect(await list(`${all}&account_id=${alice.id}`)).toEqual([
+      ids.resolvedAliceCarol,
+      ids.aliceDave,
+      ids.aliceCarol,
+    ]);
+    expect(await list(`${all}&target_account_id=${carol}&limit=2`)).toEqual([ids.resolvedAliceCarol, ids.bobCarol]);
+    expect(
+      await list(`${all}&target_account_id=${carol}&account_id=${alice.id}&max_id=${ids.resolvedAliceCarol}`),
+    ).toEqual([ids.aliceCarol]);
+    // Of repeated flags, the values read: the last of each.
+    const repeated = "?resolved=false&resolved=true&unresolved=0&unresolved=true&limit=2";
+    expect((await call(h, `/api/v1/admin/reports${repeated}`, admin)).link).toBe(page.link);
   });
 
   it("lists by reporter, by reported account, and by both, in each state", async () => {
@@ -511,13 +569,15 @@ describe("GET /api/v1/admin/reports: ReportFilter", () => {
         return plans;
       });
     // Each with the reporter's domain read by key (REPORT_COLUMNS).
-    const none = { resolved: false, accountId: null, targetAccountId: null };
+    const none = { state: "unresolved" as const, accountId: null, targetAccountId: null };
     expect(await planOf(none, { limit: 5 })).toEqual([
       expect.stringMatching(
         /^SEARCH reports USING INDEX reports_state \(<expr>=\? AND rowid>\? AND rowid<\?\) \| CORRELATED SCALAR SUBQUERY 1 \| SEARCH accounts USING INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/,
       ),
     ]);
-    expect(await planOf({ ...none, resolved: true, accountId: alice.id }, { limit: 5, maxId: "5" })).toEqual([
+    expect(
+      await planOf({ ...none, state: "resolved" as const, accountId: alice.id }, { limit: 5, maxId: "5" }),
+    ).toEqual([
       expect.stringMatching(
         /^SEARCH reports USING INDEX reports_account_state \(account_id=\? AND <expr>=\? AND rowid>\? AND rowid<\?\) \| CORRELATED SCALAR SUBQUERY 1 \| SEARCH accounts USING INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/,
       ),
@@ -973,7 +1033,7 @@ describe("report answers within ANSWER_BYTES (RES-3)", () => {
     const id = report!.id;
     const tokenHash = await sha256Hex(w.admin);
     const present = { origin: ORIGIN };
-    const filter = { resolved: false, accountId: null, targetAccountId: null };
+    const filter = { state: "unresolved" as const, accountId: null, targetAccountId: null };
     const reads = [
       [
         listAdminReports,
@@ -1036,4 +1096,152 @@ describe("report answers within ANSWER_BYTES (RES-3)", () => {
     expect(list.body.map(matched)).toEqual(list.body.map(() => 0));
     expect(matched(await reportOf(w.h, list.body[0]!.id, w.admin))).toBe(1);
   }, 300_000);
+});
+
+// RES-7 for every report (resolved and unresolved both true): each filter's index read twice, once per state, each
+// range cut at the page's limit, then merged by id. Each index shape and each cursor, in a world whose reports under
+// the filter's key (both states) and under the keys on either side grow a hundredfold, older than the newest block
+// both worlds share: the statement reads the same rows, and the page mixes the two states. Its ceiling is 5 × limit +
+// 1: each state's range at most `limit` index entries (the step past a range that ends first included) and the
+// reporter's account of each by key, then the merge's `limit` + 1 of the two sorted ranges.
+describe("every report reads two ranges of its filter's index, however many reports lie around them (RES-7)", () => {
+  const ADMIN_ID = "680000000000000000";
+  const [A0, A, A2] = ["680000000000000001", "680000000000000002", "680000000000000003"];
+  const [T0, T, T2] = ["681000000000000001", "681000000000000002", "681000000000000003"];
+  const ADMIN_TOKEN = "admin-all-reports-token";
+  const LIMIT = 10;
+  // The newest block both worlds share, per (reporter, target) pair: alternately resolved and not.
+  const SHARED = 40;
+
+  type Shape = { name: string; accountId: string | null; targetAccountId: string | null };
+  const SHAPES: Shape[] = [
+    { name: "no filter", accountId: null, targetAccountId: null },
+    { name: "reporter", accountId: A, targetAccountId: null },
+    { name: "reported account", accountId: null, targetAccountId: T },
+    { name: "both", accountId: A, targetAccountId: T },
+  ];
+  const PAIRS = [A0, A, A2].flatMap((reporter) => [T0, T, T2].map((target) => [reporter, target] as const));
+
+  // `older` reports of each pair, then SHARED of each, interleaved across the pairs in id order.
+  async function world(older: number): Promise<StoreStub> {
+    const store = await migratedStore();
+    await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("INSERT INTO instance_settings (name, value) VALUES ('admin_email', 'admin@example.com')");
+      for (const [id, name] of [
+        [ADMIN_ID, "admin"],
+        [A0, "a0"],
+        [A, "a"],
+        [A2, "a2"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
+          id,
+          `https://kopje.test/ap/users/${name}`,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'test')",
+          id,
+          `${name}@example.com`,
+        );
+      }
+      for (const id of [T0, T, T2]) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 't', 'far.example')",
+          id,
+          `https://far.example/users/${id}`,
+        );
+      }
+      for (const [count, prefix] of [
+        [older, "o"],
+        [SHARED, "s"],
+      ] as const) {
+        sql.exec(
+          `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1),
+					pairs(k, reporter, target) AS (SELECT key, value ->> '$[0]', value ->> '$[1]' FROM json_each(?2))
+					INSERT INTO reports (account_id, target_account_id, status_ids, uri, created_at, action_taken_at)
+					SELECT reporter, target, '[]', 'https://kopje.test/actor#reports/' || ?3 || n.i || '-' || k, ?4,
+						CASE WHEN n.i % 2 = 1 THEN ?4 END
+					FROM n CROSS JOIN pairs WHERE ?1 > 0 ORDER BY n.i, k`,
+          count,
+          JSON.stringify(PAIRS),
+          prefix,
+          new Date(NOW).toISOString(),
+        );
+      }
+      sql.exec(
+        "INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes) VALUES ('admin', 'secret', 'admin', 'urn:ietf:wg:oauth:2.0:oob', 'admin:read')",
+      );
+      sql.exec(
+        "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes) VALUES (?, 'access', 'admin', ?, 'admin:read')",
+        ADMIN_TOKEN,
+        ADMIN_ID,
+      );
+    });
+    return store;
+  }
+
+  // The id of the `n`-th newest report under the shape's key, both states.
+  async function nth(store: StoreStub, shape: Shape, n: number): Promise<string> {
+    const rows = await sql<{ id: string; account_id: string; target_account_id: string }>(
+      store,
+      "SELECT CAST(id AS TEXT) AS id, account_id, target_account_id FROM reports ORDER BY reports.id DESC",
+    );
+    const keyed = rows.filter(
+      (row) =>
+        (shape.accountId === null || row.account_id === shape.accountId) &&
+        (shape.targetAccountId === null || row.target_account_id === shape.targetAccountId),
+    );
+    return keyed[n - 1]!.id;
+  }
+
+  const CURSORS: Record<string, (store: StoreStub, shape: Shape) => Promise<Omit<PageQuery, "limit">>> = {
+    newest: () => Promise.resolve({}),
+    max_id: async (store, shape) => ({ maxId: await nth(store, shape, 15) }),
+    since_id: async (store, shape) => ({ sinceId: await nth(store, shape, 15) }),
+    min_id: async (store, shape) => ({ minId: await nth(store, shape, 25) }),
+  };
+
+  async function read(store: StoreStub, shape: Shape, cursor: Omit<PageQuery, "limit">) {
+    const credential = { tokenHash: ADMIN_TOKEN, scope: "admin:read:reports", now: NOW } as const;
+    const input = {
+      credential,
+      filter: { state: "all" as const, accountId: shape.accountId, targetAccountId: shape.targetAccountId },
+      page: { limit: LIMIT, ...cursor },
+      present: { origin: "https://kopje.test" },
+    };
+    const run = await plannedRun(
+      { store },
+      /UNION ALL SELECT \* FROM \(SELECT reports\.id AS k/,
+      listAdminReports,
+      input,
+    );
+    expect(run.plans).toHaveLength(1);
+    const result = run.result as { status: string; value: { items: { action_taken: boolean }[] } };
+    return { rows: run.plans[0]!.rows, plan: run.plans[0]!.plan, items: result.value.items };
+  }
+
+  it.each(SHAPES.flatMap((shape) => Object.keys(CURSORS).map((cursor) => [shape.name, cursor] as const)))(
+    "%s, %s",
+    async (shapeName, cursorName) => {
+      const shape = SHAPES.find((s) => s.name === shapeName)!;
+      const few = await world(4);
+      const many = await world(400);
+      const [a, b] = await Promise.all(
+        [few, many].map(async (store) => read(store, shape, await CURSORS[cursorName]!(store, shape))),
+      );
+      expect(a!.items).toHaveLength(LIMIT);
+      expect(new Set(a!.items.map((item) => item.action_taken))).toEqual(new Set([true, false]));
+      expect(b!.items.map((item) => item.action_taken)).toEqual(a!.items.map((item) => item.action_taken));
+      expect(b!.rows).toBe(a!.rows);
+      expect(a!.rows).toBeLessThanOrEqual(5 * LIMIT + 1);
+      const searches = a!.plan.filter((line) => line.startsWith("SEARCH reports "));
+      expect(searches).toHaveLength(2);
+      expect(searches[1]).toBe(searches[0]);
+      expect(searches[0]).toMatch(/^SEARCH reports USING INDEX reports_(pair_|account_|target_)?state \(/);
+      expect(a!.plan[0]).toBe("MERGE (UNION ALL)");
+    },
+    120_000,
+  );
 });

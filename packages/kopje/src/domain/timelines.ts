@@ -1,13 +1,14 @@
 import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { CARD_PUBLIC_LINK_INDEX } from "../platform/stored-bounds";
-import { type Page, type PageQuery, type Present, resolveAccountId } from "./accounts";
+import { type Page, type PageQuery, type Present, routeAccountId } from "./accounts";
 import { admit, type Admitted, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   audienceSql,
   blocksSql,
   DISTRIBUTABLE_SQL,
   filteredForSql,
+  listEligibleSql,
   NOT_A_REPLY_TO_OTHERS,
   REACHES_FOLLOWERS_SQL,
   REQUIRES_MENTION_SQL,
@@ -867,6 +868,7 @@ export type AccountStatusesInput = {
   onlyMedia: boolean;
   excludeReplies: boolean;
   excludeReblogs: boolean;
+  excludeDirect: boolean;
   pinned: boolean;
   tagged: string | null;
   present: Present;
@@ -875,10 +877,10 @@ export type AccountStatusesInput = {
 // An account's statuses as the viewer may see them (Mastodon's Status.permitted_for): nothing when either blocks the
 // other; boosts of accounts the viewer blocks, mutes or domain-blocks, and of originals they may not see, are left
 // out. The account's own statuses are shown even if the viewer mutes it, as on its profile. exclude_replies keeps
-// replies to the account itself (threads). pinned=true lists the account's pinned statuses by the same rule
-// (AccountStatusesFilter#pinned_scope), newest pin first (Account#pinned_statuses) and with the other filters; a page
-// asked by min_id is by status id, as Mastodon's paginate_by_min_id reorders it. An account pins at most a few, read
-// through their primary key.
+// replies to the account itself (threads); exclude_direct keeps the list-eligible ones (listEligibleSql). pinned=true
+// lists the account's pinned statuses by the same rule (AccountStatusesFilter#pinned_scope), newest pin first
+// (Account#pinned_statuses) and with the other filters; a page asked by min_id is by status id, as Mastodon's
+// paginate_by_min_id reorders it. An account pins at most a few, read through their primary key.
 export const accountStatuses = optionalUserReadOperation<AccountStatusesInput, Page<Status> | null>(
   (db, input, viewer) => accountStatusesWithin(db, input, viewer, answerAdmission)?.page ?? null,
 );
@@ -892,7 +894,7 @@ export function accountStatusesWithin(
   admission: StatusAdmission,
 ): StatusList | null {
   const { accountId: viewerId, now } = viewer;
-  const accountId = resolveAccountId(db, input.account);
+  const accountId = routeAccountId(db, input.account);
   if (accountId === null) {
     return null;
   }
@@ -936,21 +938,25 @@ export function accountStatusesWithin(
     const { items } = admission(statusStream(db, shared, ids));
     return { page: { items: cursor.ascending ? items.toReversed() : items, newest: null, oldest: null }, more: false };
   }
-  // A readWindow(limit) window through statuses_account (statuses_account_originals with exclude_reblogs, whose
-  // predicate is that index's own) with audienceSql, walked in rounds (walkedWindow) when the request has conditions,
-  // which are tested on each round's candidates by key (passingIds); then R2 and R11 over it (availability and filters
-  // of boosted originals). Statuses hidden by their visibility are walked past and never supply a cursor
-  // (docs/visibility.md "Read bounds").
+  // A readWindow(limit) window through statuses_account (statuses_account_originals with exclude_reblogs, and
+  // statuses_feed with exclude_direct alone, each index's predicate its own) with audienceSql, walked in rounds
+  // (walkedWindow) when the request has conditions, which are tested on each round's candidates by key (passingIds):
+  // exclude_direct is one of them with exclude_reblogs. Then R2 and R11 over it (availability and filters of boosted
+  // originals). Statuses hidden by their visibility are walked past and never supply a cursor (docs/visibility.md
+  // "Read bounds").
+  const feed = input.excludeDirect && !input.excludeReblogs;
+  const index = input.excludeReblogs ? "statuses_account_originals" : feed ? "statuses_feed" : "statuses_account";
+  const kept = feed ? `AND ${listEligibleSql("s")}` : reblogs;
   const { values, bind } = binder(2);
-  const request = accountConditionsSql(input, bind);
+  const request = accountConditionsSql({ ...input, excludeDirect: input.excludeDirect && !feed }, bind);
   const size = readWindow(cursor.limit);
   const window = walkedWindow(
     (range, per) =>
       singleWindow(
         db,
         `SELECT s.id FROM statuses s
-					INDEXED BY ${input.excludeReblogs ? "statuses_account_originals" : "statuses_account"}
-				WHERE s.account_id = ?1 AND ${rangeSql("s.id")} ${reblogs} AND ${audienceSql("s", "?5")}
+					INDEXED BY ${index}
+				WHERE s.account_id = ?1 AND ${rangeSql("s.id")} ${kept} AND ${audienceSql("s", "?5")}
 				ORDER BY s.id ${order} LIMIT ?4`,
         per,
         accountId,
@@ -977,10 +983,11 @@ export function accountStatusesWithin(
   );
 }
 
-// An account statuses read's request conditions on the status `s` (only_media, tagged, exclude_replies), their
-// parameters bound by `bind`; null for none. The pins' statement and the walk's (passingIds) share them.
+// An account statuses read's request conditions on the status `s` (only_media, tagged, exclude_replies and
+// exclude_direct), their parameters bound by `bind`; null for none. The pins' statement and the walk's (passingIds)
+// share them.
 function accountConditionsSql(
-  input: Pick<AccountStatusesInput, "onlyMedia" | "tagged" | "excludeReplies">,
+  input: Pick<AccountStatusesInput, "onlyMedia" | "tagged" | "excludeReplies" | "excludeDirect">,
   bind: (value: SqlStorageValue) => string,
 ): string | null {
   const terms = [
@@ -993,6 +1000,7 @@ function accountConditionsSql(
           `EXISTS (SELECT 1 FROM status_tags ut WHERE ut.status_id = s.id AND ut.name = ${bind(normalizeTag(input.tagged))})`,
         ]),
     ...(input.excludeReplies ? [NOT_A_REPLY_TO_OTHERS] : []),
+    ...(input.excludeDirect ? [listEligibleSql("s")] : []),
   ];
   return terms.length === 0 ? null : terms.join(" AND ");
 }

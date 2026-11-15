@@ -28,8 +28,10 @@ export type FetchedActor =
   | { kind: "ok"; actor: Actor; input: RemoteActorInput | null }
   // Fetching again may succeed (timeout, network error, 5xx).
   | { kind: "transient" }
-  // The document answers 404 or 410: the actor is gone.
-  | { kind: "gone" }
+  // The document answers 404 or 410: the actor is gone. url: the URL that answered, after the same-origin redirects
+  // the safe loader follows (its FetchError's, loader.ts readDocument); only a 410 at the actor URI itself starts a
+  // deletion (actor-gone.ts).
+  | { kind: "gone"; status: 404 | 410; url: string }
   // Refused, or not an actor with exactly this id.
   | { kind: "unusable" };
 
@@ -59,8 +61,8 @@ export async function loadActor(
     remote = await loader(uri);
   } catch (error) {
     const status = error instanceof FetchError ? error.response?.status : undefined;
-    if (status === 404 || status === 410) {
-      return { kind: "gone" };
+    if (error instanceof FetchError && (status === 404 || status === 410)) {
+      return { kind: "gone", status, url: error.url.href };
     }
     return { kind: isTransientLoadError(error) ? "transient" : "unusable" };
   }

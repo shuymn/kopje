@@ -1,10 +1,14 @@
+import { fallbackTypes } from "../domain/notification-fallback";
 import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
 import { recordNotFound } from "./errors";
 import { pageQuery, pageResponse } from "./pagination";
-import { parseBoolean } from "./params";
+import { type Params, parseBoolean } from "./params";
 
-// /api/v1/notifications: the list with types[], exclude_types[], account_id and
-// include_filtered, one notification, dismiss and clear.
+// /api/v1/notifications: the list with types[], exclude_types[], account_id, include_filtered and supported_types,
+// one notification with supported_types, dismiss and clear.
+
+// supported_types, as Mastodon reads it raw (params[:supported_types]): supported_types[] as an array, else a scalar.
+export const supportedTypes = (p: Params) => fallbackTypes(p.list("supported_types") ?? p.get("supported_types"));
 
 export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p);
@@ -19,6 +23,7 @@ export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
         excludeTypes: p.list("exclude_types") ?? [],
         accountId: accountId === undefined || accountId === "" ? null : accountId,
         includeFiltered: parseBoolean(p.get("include_filtered")) === true,
+        fallbackTypes: supportedTypes(p),
         present: present(c),
       }),
     ),
@@ -26,14 +31,13 @@ export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
   return pageResponse(c, result, page.limit);
 });
 
-export const getNotification: ApiHandler = async (c, deps) => {
+export const getNotification: ApiHandler = withParams(async (c, deps, p) => {
   const id = c.req.param("id") ?? "";
   const credential = userCredential(c, deps);
-  const notification = authorized(
-    await storeCall(c, deps, (s, b) => s.getNotification(b, { credential, id, present: present(c) })),
-  );
+  const input = { credential, id, fallbackTypes: supportedTypes(p), present: present(c) };
+  const notification = authorized(await storeCall(c, deps, (s, b) => s.getNotification(b, input)));
   return notification === null ? recordNotFound() : c.json(notification);
-};
+});
 
 export const dismissNotification: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";

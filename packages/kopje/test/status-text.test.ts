@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  blankText,
   exceedsRawLength,
   MAX_RAW_LENGTH,
   MAX_URL_LENGTH,
@@ -147,12 +148,49 @@ describe("status text to HTML (Mastodon TextFormatter)", () => {
   });
 });
 
+describe("blank text (ActiveSupport's String#blank?)", () => {
+  // [[:space:]] under Unicode, as Ruby matches it.
+  const SPACES = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680]
+    .concat(Array.from({ length: 11 }, (_, i) => 0x2000 + i))
+    .concat([0x2028, 0x2029, 0x202f, 0x205f, 0x3000]);
+
+  it("is blank for the 25 [[:space:]] characters only, over every code point, NUL removed as it is stored", () => {
+    expect(SPACES).toHaveLength(25);
+    expect(blankText("")).toBe(true);
+    expect(blankText(String.fromCodePoint(...SPACES))).toBe(true);
+    const blank: number[] = [];
+    for (let c = 0; c <= 0x10ffff; c++) {
+      if ((c < 0xd800 || c > 0xdfff) && blankText(String.fromCodePoint(c))) {
+        blank.push(c);
+      }
+    }
+    // U+0000 is removed by storedText, which leaves nothing.
+    expect(blank).toEqual([0, ...SPACES]);
+    // JavaScript's trim() removes U+FEFF; U+180E is no longer a space.
+    expect(blankText("\ufeff")).toBe(false);
+    expect(blankText("\u180e")).toBe(false);
+    expect(blankText(" \u0000 ")).toBe(true);
+    // A lone surrogate is stored as U+FFFD.
+    expect(blankText("\ud800")).toBe(false);
+  });
+});
+
 describe("status length (StatusLengthValidator)", () => {
   it("counts graphemes, a URL as 23 and a remote mention by its username", () => {
     expect(statusLength("👍🏽👨‍👩‍👧", "")).toBe(2);
     expect(statusLength(`https://example.com/${"x".repeat(100)}`, "")).toBe(23);
     expect(statusLength("@carol@remote.example", "")).toBe("@carol".length);
     expect(statusLength("abc", "cw")).toBe(5);
+  });
+
+  it("counts the warning followed by the text as one string, and a blank text as nothing", () => {
+    // A combining mark that starts the text joins the warning's last grapheme, as Ruby's each_grapheme_cluster counts.
+    expect(statusLength("\u0301x", "x".repeat(499))).toBe(500);
+    expect(statusLength("\u0301xy", "x".repeat(499))).toBe(501);
+    expect(statusLength(" ".repeat(10), "x".repeat(495))).toBe(495);
+    expect(statusLength("\u0085", "")).toBe(0);
+    // A blank text is not parsed, whatever its length.
+    expect(statusLength(" ".repeat(MAX_RAW_LENGTH + 1), "w")).toBe(1);
   });
 });
 

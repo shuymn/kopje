@@ -35,8 +35,11 @@ export type AuthFailure =
   | { status: "suspended" }
   | { status: "insufficient_scope" }
   | { status: "user_required" }
-  // An admin operation's refusal (adminReadOperation): the caller is not the OAuth admin, or Kopje does not grant the
-  // route's permission. Mastodon's 403 "This action is not allowed".
+  // The admin gate's refusal (adminGate): the caller of an admin route is not the OAuth admin. Mastodon's 403
+  // "Forbidden" (Admin::PermissionsConcern).
+  | { status: "admin_forbidden" }
+  // An admin operation's refusal (adminReadOperation): Kopje does not grant the OAuth admin the route's permission.
+  // Mastodon's 403 "This action is not allowed".
   | { status: "forbidden" };
 
 export type Authorized<O> = AuthFailure | { status: "ok"; value: O };
@@ -57,36 +60,35 @@ export function currentCredentialSql(t: string): string {
 export const CREDENTIAL_EPOCH_SQL =
   "coalesce((SELECT credential_epoch FROM main.local_accounts WHERE account_id = ?), 0)";
 
+type TokenRow = {
+  scopes: string;
+  account_id: string | null;
+  expires_at: string | null;
+  client_id: string;
+  name: string;
+  website: string | null;
+  suspended_at: string | null;
+  stale: number;
+};
+
 // One indexed lookup by the token's sha256, then its client and account by key, the join order pinned so stale
-// statistics cannot pick a scan of either (RES-7; test/activity.test.ts). AUTH-1's order, as Mastodon's
-// Api::BaseController#require_not_suspended! runs before Doorkeeper's checks of the row it finds: a row the Store
-// holds whose owner is suspended is refused as suspended, expired or of an earlier epoch alike; then an expired row and
-// one of an earlier epoch (currentCredentialSql) are refused as invalid. A deleted row is no credential.
-export function authorize(db: Db, credential: Credential): AuthFailure | { status: "ok"; viewer: Viewer } {
-  const row = db.first<{
-    scopes: string;
-    account_id: string | null;
-    expires_at: string | null;
-    client_id: string;
-    name: string;
-    website: string | null;
-    suspended_at: string | null;
-    stale: number;
-  }>(
+// statistics cannot pick a scan of either (RES-7; test/activity.test.ts). The row is read whatever its expiry and
+// epoch, as Doorkeeper 5.9.9 finds expired and revoked rows by value.
+function tokenRow(db: Db, tokenHash: string): TokenRow | undefined {
+  return db.first<TokenRow>(
     `SELECT t.scopes, t.account_id, t.expires_at, c.id AS client_id, c.name, c.website, l.suspended_at,
 			coalesce(t.epoch <> l.credential_epoch, 0) AS stale
 		FROM oauth_tokens t
 		CROSS JOIN oauth_clients c INDEXED BY ${OAUTH_CLIENTS_ID_INDEX} ON c.id = t.client_id
 		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = t.account_id
 		WHERE t.token_hash = ? AND t.kind = 'access'`,
-    credential.tokenHash,
+    tokenHash,
   );
-  if (row === undefined) {
-    return { status: "unauthenticated" };
-  }
-  if (row.suspended_at !== null) {
-    return { status: "suspended" };
-  }
+}
+
+// Doorkeeper's checks of a held row whose owner has been judged: an expired row and one of an earlier epoch
+// (currentCredentialSql) are invalid; then the route's scope.
+function validToken(row: TokenRow, credential: Credential): AuthFailure | { status: "ok"; viewer: Viewer } {
   if (row.expires_at !== null && row.expires_at <= new Date(credential.now).toISOString()) {
     return { status: "unauthenticated" };
   }
@@ -112,6 +114,20 @@ export function authorize(db: Db, credential: Credential): AuthFailure | { statu
       now: credential.now,
     },
   };
+}
+
+// AUTH-1's order, as Mastodon's Api::BaseController#require_not_suspended! runs before Doorkeeper's checks of the row
+// it finds: a row the Store holds whose owner is suspended is refused as suspended, expired or of an earlier epoch
+// alike; then validToken. A deleted row is no credential.
+export function authorize(db: Db, credential: Credential): AuthFailure | { status: "ok"; viewer: Viewer } {
+  const row = tokenRow(db, credential.tokenHash);
+  if (row === undefined) {
+    return { status: "unauthenticated" };
+  }
+  if (row.suspended_at !== null) {
+    return { status: "suspended" };
+  }
+  return validToken(row, credential);
 }
 
 // The viewer context of a signed-in user.
@@ -318,32 +334,54 @@ export function viewerOf(admin: Admin, accountId: string): UserContext {
   return contextOf(accountId, admin.now);
 }
 
-// Operations of the Mastodon admin API (R37, VIS-29). The route's token is optional (Mastodon's
-// authorize_if_got_token!): a token sent must be valid and cover the route's admin scope, and then, in the same
-// transaction, the caller must be the OAuth admin (adminAccountId, read here, so tokens follow the current match) and
-// `granted` must hold the route's permission. Anyone else, an anonymous caller and an app token included, is refused
-// with `forbidden`, as Mastodon's policies refuse a role without the permission. `granted` is ADMIN_PERMISSIONS
-// outside tests.
+// The admin gate (VIS-29), in the order of Mastodon's admin controllers: Api::BaseController#require_not_suspended!,
+// then Admin::PermissionsConcern#require_moderator_or_admin_permissions (403 "Forbidden" unless the caller's role
+// has a moderation, administration or devops permission), then authorize_if_got_token!. Doorkeeper finds a held row
+// whatever its expiry, so its owner is judged first: no credential or no row the Store holds is nobody
+// (admin_forbidden); a suspended owner is refused as suspended; an owner other than the OAuth admin (adminAccountId,
+// read here, so tokens follow the current match), an app token's included, is admin_forbidden; then the OAuth admin's
+// token is judged as authorize judges it (validToken). A deleted row of the OAuth admin is nobody's, where Mastodon
+// still finds a revoked one (docs/mastodon-deviations.md, MD-2).
+function adminGate(db: Db, credential: UserCredential | null): AuthFailure | { status: "ok"; viewer: UserViewer } {
+  const row = credential === null ? undefined : tokenRow(db, credential.tokenHash);
+  if (credential === null || row === undefined) {
+    return { status: "admin_forbidden" };
+  }
+  if (row.suspended_at !== null) {
+    return { status: "suspended" };
+  }
+  if (row.account_id === null || row.account_id !== adminAccountId(db)) {
+    return { status: "admin_forbidden" };
+  }
+  const auth = validToken(row, credential);
+  // The row has an account, so validToken cannot answer user_required.
+  return auth.status === "ok" ? { status: "ok", viewer: auth.viewer as UserViewer } : auth;
+}
+
+// The admin gate alone: lets the Worker answer a refusal before an answer an admin handler gives without its
+// operation (mastodon/context.ts checkAdminCredential).
+export const checkAdminCredential = readOperation<UserCredential, Authorized<true>>((db, credential) => {
+  const gate = adminGate(db, credential);
+  return gate.status === "ok" ? { status: "ok", value: true } : gate;
+});
+
+// Operations of the Mastodon admin API (R37, VIS-29): the admin gate, then, in the same transaction, `granted` must
+// hold the route's permission, else `forbidden`, as Mastodon's policies refuse a role without the permission.
+// `granted` is ADMIN_PERMISSIONS outside tests.
 export function adminGuarded(declare: Declare, granted: number) {
   return <I, O>(
     permission: AdminPermission,
     run: (db: Db, input: I, admin: Admin) => O,
   ): StoreOperation<I & { credential: UserCredential | null }, Authorized<O>> =>
     declare<I & { credential: UserCredential | null }, Authorized<O>>((db, input) => {
-      if (input.credential === null) {
+      const gate = adminGate(db, input.credential);
+      if (gate.status !== "ok") {
+        return gate;
+      }
+      if ((granted & permission) === 0) {
         return { status: "forbidden" };
       }
-      const auth = authorize(db, input.credential);
-      if (auth.status === "user_required") {
-        return { status: "forbidden" };
-      }
-      if (auth.status !== "ok") {
-        return auth;
-      }
-      const { viewer } = auth;
-      if (viewer.accountId === null || viewer.accountId !== adminAccountId(db) || (granted & permission) === 0) {
-        return { status: "forbidden" };
-      }
+      const { viewer } = gate;
       return {
         status: "ok",
         value: run(db, input, {

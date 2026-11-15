@@ -242,7 +242,7 @@ export function createApp({
     store,
     randomToken: seams.randomToken ?? randomToken,
     images,
-    resolve: createResolver({ build, store, now, keygen, loader }),
+    resolve: createResolver({ build, store, now, keygen, loader, requestJobs: jobs }),
     requestJobs: jobs,
     activity,
     signAsAuthor:

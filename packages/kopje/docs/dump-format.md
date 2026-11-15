@@ -149,6 +149,13 @@ every addressed account a copy of its own at its personal inbox, so it never wid
 repeated `to` or `cc` key, which `json_valid` accepts, is read only at the one each path names, the one checked. A
 body without `addressing` (an unsigned `Delete`) is placed by its activity's own `to` and `cc`.
 
+A received quote's `author_fetches` (migration `0094_quote_author_fetches`) is the integer `0` to `6`, the author
+documents its current verification work applied (RES-6 in [threat-model.md](threat-model.md)); text that reads as one
+of them is stored as that integer by the column's affinity, and anything else fails with `CHECK constraint failed`. A
+dump carries it as it is, so a restored Store's work keeps its count. A dump taken before 0094 has no such column: it
+restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
+quotes.
+
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
 that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it

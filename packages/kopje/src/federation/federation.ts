@@ -41,6 +41,7 @@ import type { PolicyTicket } from "../domain/instance-domain-blocks";
 import type { FeaturedItem } from "../domain/local-notes";
 import type { SnapshotSource } from "../domain/snapshot";
 import { renderFieldValue } from "../domain/status-text";
+import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
@@ -529,10 +530,12 @@ export function createKopjeFederation(
     .setCounter((_ctx, values) => (isInstanceOutbox(values) ? 0 : null))
     .setFirstCursor((_ctx, values) => (isInstanceOutbox(values) ? FIRST_OUTBOX_CURSOR : null));
 
-  // The remote-interaction template, as Mastodon's WebfingerSerializer adds it to every account (v4.5.11): another
-  // server sends a person with an account here to follow from it (app/interaction.tsx).
+  // The remote-interaction templates, as Mastodon's WebfingerSerializer#links gives every account and its instance actor
+  // (v4.7.5): another server sends a person with an account here to open a post or an account, or to follow from it
+  // (app/interaction.tsx). Its FEP-3b86 Create intent is left out (docs/mastodon-deviations.md, WebFinger).
   federation.setWebFingerLinksDispatcher(() => [
-    { rel: "http://ostatus.org/schema/1.0/subscribe", template: `${origin}/authorize_interaction?uri={uri}` },
+    { rel: "http://ostatus.org/schema/1.0/subscribe", template: `${origin}${INTERACTION_PATH}?uri={uri}` },
+    { rel: "https://w3id.org/fep/3b86/Object", template: `${origin}${INTERACTION_PATH}?uri={object}` },
   ]);
 
   federation.setNodeInfoDispatcher("/nodeinfo/2.1", async () => {

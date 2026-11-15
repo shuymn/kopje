@@ -7,7 +7,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
-import { acctOf, resolveAccountId } from "./accounts";
+import { acctOf, routeAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
 import { availableSql, DISTRIBUTABLE_SQL } from "./audience";
@@ -143,7 +143,7 @@ export const accountFeaturedTags = readOperation<
   Judged<FeaturedTag[] | null>
 >((db, { id, present, credential }) =>
   unlessSuspended(db, credential, () => {
-    const accountId = resolveAccountId(db, id);
+    const accountId = routeAccountId(db, id);
     return accountId === null ? null : accountFeaturedTagsOf(db, accountId, present.origin);
   }),
 );
