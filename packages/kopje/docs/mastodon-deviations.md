@@ -162,8 +162,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the public posts whose card has the link as its URL after redirects, each page read from a window of the link's public
   cards (an empty page cut at its window links on, as Kopje's other timelines); `local` and `remote` are not read, since
   Mastodon reads them only to require a user when a topic feed is not public. Its answer may be cached publicly only
-  when no token was sent, as Kopje's trends lists and directory; Mastodon also caches an answer to an app token, which
-  has no user. Accepted, 2026-10-20; the link rules, 2026-10-24.
+  when no token was sent: as Mastodon, any request with an `Authorization` header gets a private answer (WEB-7).
+  Accepted, 2026-10-20; the link rules, 2026-10-24.
 - **MD-6: Media have no short link.** MediaAttachment `text_url` is always null. Mastodon shows it only for a local
   attachment with a shortcode, and has assigned no shortcode to new media since v3.5.0, so only its older local media
   show one; Kopje assigns none and serves no short link route. Accepted, 2026-10-22.
@@ -553,6 +553,29 @@ Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model
   the domain only (no alternate domains), from setup on: a GET or HEAD on another host moves to the same path and
   query on the domain (301), any other method answers 421 Misdirected Request, and a port other than 443 is another
   host. Besides `/health`, it answers the admin API, media URLs and `/` on any host, and streaming is covered.
+
+API caching (`Cache-Control` and `Vary` of the Mastodon API; threat model WEB-7):
+
+- `Vary` names what the route declares. Mastodon's also names `Origin` on every answer (rack-cors) and `Accept` where
+  its controller declares an empty `vary_by` (Rails adds it to a rendered answer). Kopje's CORS answer is `*` for every
+  origin, and an API answer is JSON whatever `Accept` says. Accepted, 2026-11-16.
+- No `ETag` and no 304: every request gets the full answer. Mastodon (Rack's `ETag` and `ConditionalGet`) tags every
+  200 or 201 with a body with a weak ETag and answers an exact `If-None-Match` on a GET or HEAD with 304; a client's
+  cache revalidates the public answers below after their 15 seconds or 5 minutes, and the OAuth answers Rack marks
+  `max-age=0, private, must-revalidate` (revocation, introspection, token info, server metadata) on each use, and gets
+  200 from Kopje each time. A full 200 is always a correct answer to a conditional request, and matching would hash
+  every answer body for a saving only on repeated identical reads. Accepted, 2026-11-16.
+- An error answer is never public; Mastodon's terms of service answer their 404 publicly for 5 minutes (the caching
+  runs in a `before_action`). Accepted, 2026-11-16.
+- Of the instance reads Mastodon lets caches keep for everyone, the nine that read the token (custom emoji,
+  languages, privacy policy, terms of service and their dated form, translation languages, activity, domain blocks,
+  peer search) answer an anonymous request public for 5 minutes with `Vary: Authorization` and a request with
+  `Authorization` `private, no-store`. Mastodon answers both public for 5 minutes with no `Vary`, so a cache may serve
+  an anonymous answer to a suspended owner's token, whose answer is 403, and a user's domain-block list, comments
+  included where the instance shows them to users only, to anyone. Accepted, 2026-11-16.
+- OAuth endpoints keep Doorkeeper's `no-store` on tokens, token info and introspection, and add `Pragma: no-cache` to
+  errors too; a revocation's `{}` and the authorization server metadata carry none, where Mastodon's Rack adds
+  `max-age=0, private, must-revalidate` and an ETag, and `no-cache` to a revocation's error. Accepted, 2026-11-16.
 
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 
