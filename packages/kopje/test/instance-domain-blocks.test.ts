@@ -247,7 +247,11 @@ describe("the no-block fast path in result columns (account presentation)", () =
         `SELECT a.id, (l.suspended_at IS NULL AND ${activeSql("a")}) AS v FROM ${ACCOUNT_FROM} ${where}`,
       ),
       single: await read(`SELECT a.id, ${availableSql("a.id")} AS v FROM accounts a ${where}`),
-      bulk: await rowsRead({ store: h.store }, getAccounts, { ids, present: { origin: "https://kopje.test" } }),
+      bulk: await rowsRead({ store: h.store }, getAccounts, {
+        ids,
+        present: { origin: "https://kopje.test" },
+        credential: null,
+      }),
     };
   }
 

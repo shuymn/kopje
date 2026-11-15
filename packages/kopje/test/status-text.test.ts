@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  blankText,
   exceedsRawLength,
   MAX_RAW_LENGTH,
   MAX_URL_LENGTH,
@@ -78,10 +79,99 @@ describe("status text to HTML (Mastodon TextFormatter)", () => {
     expect(parsed.tags).toEqual(["a1", "日本語", "tag_a"]);
   });
 
+  // Tag::HASHTAG_RE of Mastodon 4.7.5, (?<=^|[[:space:]])[#＃], scanned over the whole text (Extractor): Ruby's
+  // [[:space:]] is White_Space, which holds U+0085 and not U+FEFF.
+  it.each([
+    ["at the start", "#tag"],
+    ["after a space", "x #tag"],
+    ["after a newline", "x\n#tag"],
+    ["after U+00A0", "x\u00A0#tag"],
+    ["after U+0085", "x\u0085#tag"],
+    ["after U+3000", "x\u3000#tag"],
+    ["written ＃ after a space", "x ＃tag"],
+    ["written ＃ at the start", "＃tag"],
+  ])("starts a hashtag %s", (_, text) => {
+    expect(parseStatusText(text).tags).toEqual(["tag"]);
+  });
+
+  it.each([
+    ["after (", "(#tag)"],
+    ["after .", "text.#tag"],
+    ["after a letter", "a#b"],
+    ["after U+FEFF", "x\uFEFF#tag"],
+    ["after U+200B", "x\u200B#tag"],
+    ["after a URL that ends before ＃", "https://example.com/a＃tag"],
+    ["after a URL mid-text", "see https://example.com/a＃tag"],
+  ])("starts no hashtag %s", (_, text) => {
+    const parsed = parseStatusText(text);
+    expect(parsed.tags).toEqual([]);
+    // The text was parsed: a tag written after a space in the same text is found.
+    expect(parseStatusText(`${text} #seen`).tags).toEqual(["seen"]);
+  });
+
+  it("links a ＃ hashtag as # and finds mentions as before", () => {
+    expect(render("＃Tag")).toBe(
+      '<p><a href="https://kopje.test/tags/tag" class="mention hashtag" rel="tag">#<span>Tag</span></a></p>',
+    );
+    expect(parseStatusText("＃Tag").tags).toEqual(["tag"]);
+    const parsed = parseStatusText("@bob x @Carol@Remote.Example https://example.com/a @dave");
+    expect(parsed.mentions).toEqual([
+      { username: "bob", domain: null },
+      { username: "Carol", domain: "remote.example" },
+      { username: "dave", domain: null },
+    ]);
+  });
+
+  // Each stretch between URLs is matched from its own start: an entity before a URL is not emitted again after it.
+  it("splits the text into segments in order, each entity once", () => {
+    const text = "#a @bob https://example.com/x #b @carol https://example.com/y c";
+    expect(parseStatusText(text).segments).toEqual([
+      { kind: "tag", name: "a", text: "#a" },
+      { kind: "text", text: " " },
+      { kind: "mention", username: "bob", domain: null, text: "@bob" },
+      { kind: "text", text: " " },
+      { kind: "url", url: "https://example.com/x", text: "https://example.com/x" },
+      { kind: "text", text: " " },
+      { kind: "tag", name: "b", text: "#b" },
+      { kind: "text", text: " " },
+      { kind: "mention", username: "carol", domain: null, text: "@carol" },
+      { kind: "text", text: " " },
+      { kind: "url", url: "https://example.com/y", text: "https://example.com/y" },
+      { kind: "text", text: " c" },
+    ]);
+  });
+
   it("normalizes tags and keeps the written form in the text", () => {
     expect(render("#Ｋｏｐｊｅ")).toBe(
       '<p><a href="https://kopje.test/tags/kopje" class="mention hashtag" rel="tag">#<span>Ｋｏｐｊｅ</span></a></p>',
     );
+  });
+});
+
+describe("blank text (ActiveSupport's String#blank?)", () => {
+  // [[:space:]] under Unicode, as Ruby matches it.
+  const SPACES = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680]
+    .concat(Array.from({ length: 11 }, (_, i) => 0x2000 + i))
+    .concat([0x2028, 0x2029, 0x202f, 0x205f, 0x3000]);
+
+  it("is blank for the 25 [[:space:]] characters only, over every code point, NUL removed as it is stored", () => {
+    expect(SPACES).toHaveLength(25);
+    expect(blankText("")).toBe(true);
+    expect(blankText(String.fromCodePoint(...SPACES))).toBe(true);
+    const blank: number[] = [];
+    for (let c = 0; c <= 0x10ffff; c++) {
+      if ((c < 0xd800 || c > 0xdfff) && blankText(String.fromCodePoint(c))) {
+        blank.push(c);
+      }
+    }
+    // U+0000 is removed by storedText, which leaves nothing.
+    expect(blank).toEqual([0, ...SPACES]);
+    // JavaScript's trim() removes U+FEFF; U+180E is no longer a space.
+    expect(blankText("\ufeff")).toBe(false);
+    expect(blankText("\u180e")).toBe(false);
+    expect(blankText(" \u0000 ")).toBe(true);
+    // A lone surrogate is stored as U+FFFD.
+    expect(blankText("\ud800")).toBe(false);
   });
 });
 
@@ -91,6 +181,16 @@ describe("status length (StatusLengthValidator)", () => {
     expect(statusLength(`https://example.com/${"x".repeat(100)}`, "")).toBe(23);
     expect(statusLength("@carol@remote.example", "")).toBe("@carol".length);
     expect(statusLength("abc", "cw")).toBe(5);
+  });
+
+  it("counts the warning followed by the text as one string, and a blank text as nothing", () => {
+    // A combining mark that starts the text joins the warning's last grapheme, as Ruby's each_grapheme_cluster counts.
+    expect(statusLength("\u0301x", "x".repeat(499))).toBe(500);
+    expect(statusLength("\u0301xy", "x".repeat(499))).toBe(501);
+    expect(statusLength(" ".repeat(10), "x".repeat(495))).toBe(495);
+    expect(statusLength("\u0085", "")).toBe(0);
+    // A blank text is not parsed, whatever its length.
+    expect(statusLength(" ".repeat(MAX_RAW_LENGTH + 1), "w")).toBe(1);
   });
 });
 

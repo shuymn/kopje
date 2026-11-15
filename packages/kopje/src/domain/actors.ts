@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import type { ImportAuthority } from "../platform/store-admin";
-import { ACCOUNT_EMOJIS_BYTES } from "../platform/stored-bounds";
+import { ACCOUNT_EMOJIS_BYTES, presentedAttributionDomains } from "../platform/stored-bounds";
 import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 import { type FieldSource, fieldSources } from "./accounts";
 import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
@@ -72,7 +72,7 @@ export function localActorOf(db: Db, username: string): LocalActor | null {
     indexable: row.indexable === 1,
     alsoKnownAs: JSON.parse(row.also_known_as) as string[],
     fields: fieldSources(row.fields),
-    attributionDomains: JSON.parse(row.attribution_domains) as string[],
+    attributionDomains: presentedAttributionDomains(row.attribution_domains),
     suspended: row.suspended_at !== null,
     emojis:
       row.suspended_at === null ? localEmojiTags(db, row.emojis, new URL(row.uri).origin, ACCOUNT_EMOJIS_BYTES) : [],
