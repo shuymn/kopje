@@ -19,7 +19,7 @@ import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_REQUEST_JOBS, runJobItem } from "./job-attempts";
 import { MAX_MEANINGFUL_COUNT, NOTIFICATION_CHUNK, REMOVAL_BATCHES, runRemovals } from "./notifications";
 import { writeOperation } from "./operation";
-import { presentation, type Status, statusStream } from "./status-presenter";
+import { presentation, type PresentOptions, type Status, statusStream } from "./status-presenter";
 import { streamMerged } from "./streaming";
 import { edgeRangeSql, readWindow, singleWindow, windowJson, windowPage } from "./windows";
 
@@ -144,7 +144,7 @@ function* requestStream(
   db: Db,
   viewer: { accountId: string; now: string },
   rows: readonly RequestRow[],
-  present: Present,
+  present: Present & Pick<PresentOptions, "proper">,
 ): Generator<NotificationRequest | undefined, undefined> {
   // The last status of each request whose mention the notification rule still shows the viewer (R15 at the time of
   // the read, which includes R2): not after the viewer blocks or mutes its sender, or one it mentions.
@@ -232,7 +232,8 @@ export const listNotificationRequests = userReadOperation<
 });
 
 // GET /api/v1/notifications/requests/:id: one of the viewer's requests, whoever its sender (Mastodon's find has no
-// without_suspended); anyone else's is not found.
+// without_suspended); anyone else's is not found. Rendered without relationships (the list passes them), so a boost as
+// its last status shows its original's flags (PresentOptions.proper).
 export const getNotificationRequest = userReadOperation<{ id: string; present: Present }, NotificationRequest | null>(
   (db, { id, present }, _viewer, viewer) => {
     if (!isIntegerKey(id)) {
@@ -243,7 +244,9 @@ export const getNotificationRequest = userReadOperation<{ id: string; present: P
       viewer.accountId,
       id,
     );
-    return row === undefined ? null : (requestStream(db, viewer, [row], present).next().value ?? null);
+    return row === undefined
+      ? null
+      : (requestStream(db, viewer, [row], { ...present, proper: true }).next().value ?? null);
   },
 );
 

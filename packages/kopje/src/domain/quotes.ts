@@ -1521,43 +1521,24 @@ export function localQuoteOf(db: Db, statusId: string): { quotedStatusId: string
   return row === undefined ? undefined : { quotedStatusId: row.quoted_status_id };
 }
 
-// The answer an Accept or Reject names: our request by its id (the quoting status's uri with #quote-request), or an
-// inlined QuoteRequest whose instrument is our quoting status and whose object is the actor's status (Mastodon's
-// quote_from_request_json). Only a local quoting row of a quote of the actor's status matches, of a quoting status not
-// withdrawn: once its Delete is recorded, no answer applies (statuses.ts deleteStatus ends its quote as well).
-export type QuoteAnswerRef = {
-  id: string | null;
-  type: string | null;
-  object: string | null;
-  instrument: string | null;
-};
-
+// The answer an Accept or Reject names: our request by its id (the quoting status's uri with #quote-request,
+// activities.ts quoteRequestUri), given as a string or as an inlined QuoteRequest's id. Mastodon 4.7 matches by id only
+// (quote_request_from_object, activity.rb:152-154): an inlined QuoteRequest under another id names nothing. Only a
+// local quoting row of a quote of the actor's status matches, of a quoting status not withdrawn: once its Delete is
+// recorded, no answer applies (statuses.ts deleteStatus ends its quote as well).
 type AnsweredQuote = { status_id: string; author_id: string };
 
-function answeredQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef): AnsweredQuote | undefined {
-  const byId =
-    ref.id === null || !ref.id.endsWith("#quote-request")
-      ? undefined
-      : db.first<AnsweredQuote>(
-          `SELECT q.status_id, s.account_id AS author_id
-					FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
-						ON q.status_id = s.id
-					WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND q.activity_uri = ?2 AND q.quoted_account_id = ?3`,
-          ref.id.slice(0, -"#quote-request".length),
-          ref.id,
-          actor.id,
-        );
-  if (byId !== undefined || ref.type !== "QuoteRequest" || ref.instrument === null || ref.object === null) {
-    return byId;
+function answeredQuote(db: Db, actor: { id: string }, requestId: string | null): AnsweredQuote | undefined {
+  if (requestId === null || !requestId.endsWith("#quote-request")) {
+    return undefined;
   }
   return db.first<AnsweredQuote>(
     `SELECT q.status_id, s.account_id AS author_id
 		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
 			ON q.status_id = s.id
-			CROSS JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = q.quoted_status_id
-		WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND t.uri = ?2 AND t.account_id = ?3`,
-    ref.instrument,
-    ref.object,
+		WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND q.activity_uri = ?2 AND q.quoted_account_id = ?3`,
+    requestId.slice(0, -"#quote-request".length),
+    requestId,
     actor.id,
   );
 }
@@ -1580,11 +1561,11 @@ function recordStampUpdate(db: Db, statusId: string, authorId: string, now: numb
 export function acceptOurQuote(
   db: Db,
   actor: { id: string; uri: string },
-  ref: QuoteAnswerRef,
+  requestId: string | null,
   result: string | null,
   now: number,
 ): boolean {
-  const quote = answeredQuote(db, actor, ref);
+  const quote = answeredQuote(db, actor, requestId);
   if (
     quote === undefined ||
     result === null ||
@@ -1615,8 +1596,8 @@ export function acceptOurQuote(
 // quote_revocations, so it still runs revocation batches for received quotes. Keep the stamp until that Delete is
 // forwarded: uniqueness prevents reuse before forwarding (row 9), and the Delete's record afterwards (row 8).
 // Returns whether it applied.
-export function rejectOurQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef, now: number): boolean {
-  const quote = answeredQuote(db, actor, ref);
+export function rejectOurQuote(db: Db, actor: { id: string }, requestId: string | null, now: number): boolean {
+  const quote = answeredQuote(db, actor, requestId);
   if (quote === undefined) {
     return false;
   }

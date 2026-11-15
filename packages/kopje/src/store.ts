@@ -3,7 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { MIGRATIONS } from "./db/migrations";
 import { Db } from "./db/sql";
 import { announceConvertedProfiles } from "./domain/actor-update";
-import { checkCredential, type Credential } from "./domain/auth";
+import { checkCredential, type Credential, type Judged } from "./domain/auth";
 import { HANDSHAKE_REPLAYS_PER_ROUND, handshakeReplaysDue, handshakeReplayStep } from "./domain/handshake-replays";
 import * as inbox from "./domain/inbox";
 import * as instanceActivity from "./domain/instance-activity";
@@ -417,8 +417,12 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.readSnapshot(key);
   }
 
-  // GET /api/v1/instance/activity: the JSON body, or null when the API is off (instance-activity.ts).
-  instanceActivity(callerBuild: string, input: { now: number }): Promise<string | null> {
+  // GET /api/v1/instance/activity: the JSON body, or null when the API is off, unless the token's owner is suspended
+  // (instance-activity.ts).
+  instanceActivity(
+    callerBuild: string,
+    input: { now: number; credential: Credential | null },
+  ): Promise<Judged<string | null>> {
     return instanceActivity.answerInstanceActivity(this.#kernel, callerBuild, input);
   }
 
