@@ -10,8 +10,9 @@
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
 //   jobs, and Kopje's outbound intents with their deliveries in each lane.
 // - Peer: the author R's server, Mastodon v4.7.5, as a sender and a server of its statuses (each rule cites the file
-//   and line it models): the statuses it posted, edited and deleted, the votes in their polls, every message it sent,
-//   each an independent delivery job, and the documents it serves from its render cache.
+//   and line it models): the statuses it posted, edited and deleted, the votes in their polls and the poll Updates they
+//   scheduled, every message it sent, each an independent delivery job, and the documents it serves from its render
+//   cache.
 //
 // A change to a status Create, Update or Delete rule in docs/threat-model.md changes this file with it.
 
@@ -35,6 +36,8 @@ export const UPDATE_CREATES_WITHIN_MS = DAY;
 export const REAL_TIME_WINDOW_MS = 6 * HOUR;
 // Mastodon's render_with_cache keeps a rendered status 3 minutes (cache_concern.rb:31-32 in v4.7.5).
 export const RENDER_CACHE_MS = 3 * MINUTE;
+// VoteService schedules the poll's Update 3 minutes after a vote (vote_service.rb:48 in v4.7.5).
+export const POLL_UPDATE_DELAY_MS = 3 * MINUTE;
 
 // The ANY_ACTOR row of ID-7: "the Delete of a stored status or boost is also recorded for every actor".
 export const ANY = "*";
@@ -678,6 +681,9 @@ export class Peer {
   private last = 0;
   // Its render cache, by status uri.
   private readonly cache = new Map<string, { object: Obj; filledAt: number }>();
+  // The poll Updates scheduled and not yet run, by status uri: when each runs, and the poll's last change (its
+  // updated_at, which names the Update).
+  private readonly polls = new Map<string, { due: number; changed: number }>();
 
   constructor(
     readonly actor: string,
@@ -749,10 +755,10 @@ export class Peer {
     return true;
   }
 
-  // VoteService: a vote counts in the poll (vote_service.rb:21-31), and DistributePollUpdateWorker sends an Update of
-  // the status 3 minutes later (:48), as NoteSerializer writes it: `updated` only once the status was edited
-  // (note_serializer.rb:17), with its current version and counts. Sent here at the vote; the generated delivery orders
-  // cover the delay.
+  // VoteService: a vote counts in the poll (vote_service.rb:21-31) and, the poll being its author's here (:35-36),
+  // schedules DistributePollUpdateWorker 3 minutes later (:48). The job's lock (`lock: :until_executed`,
+  // distribute_poll_update_worker.rb:7) refuses another of the same status until it runs, so a vote while one waits adds
+  // only its count to that one. Nothing is written until the job runs (distribute).
   vote(uri: string, now: number): boolean {
     const status = this.statuses.get(uri)!;
     if (status.state !== "posted") {
@@ -760,17 +766,37 @@ export class Peer {
     }
     const at = this.tick(now);
     status.tally++;
-    const last = status.versions.at(-1)!;
-    const updated = status.versions.length > 1 ? last.at : null;
-    this.send(
-      {
-        type: "Update",
-        id: `${uri}#votes/${at}`,
-        object: this.object(uri, last.snapshot, status.tally, status.published, updated),
-      },
-      at,
-    );
+    const due = this.polls.get(uri)?.due ?? at + POLL_UPDATE_DELAY_MS;
+    this.polls.set(uri, { due, changed: at });
     return true;
+  }
+
+  // DistributePollUpdateWorker#perform (distribute_poll_update_worker.rb:9-22) for each job due by `now`, at its time:
+  // the status as it is when the job runs, read by Status.find, whose default scope leaves a deleted status out
+  // (status.rb:128), so a status deleted since the vote raises RecordNotFound and sends nothing (:20-21); else an Update
+  // of it as NoteSerializer writes it then (:45-46): its current version and counts, `updated` only once edited
+  // (note_serializer.rb:17). Mastodon names the Update by the poll's updated_at (`#updates/`,
+  // update_poll_serializer.rb:9); `#votes/` here tells it from an edit's.
+  distribute(now: number): void {
+    for (const [uri, job] of [...this.polls].toSorted((a, b) => a[1].due - b[1].due)) {
+      if (job.due > now) {
+        continue;
+      }
+      this.polls.delete(uri);
+      const status = this.statuses.get(uri)!;
+      if (status.state === "posted") {
+        const last = status.versions.at(-1)!;
+        const updated = status.versions.length > 1 ? last.at : null;
+        this.send(
+          {
+            type: "Update",
+            id: `${uri}#votes/${job.changed}`,
+            object: this.object(uri, last.snapshot, status.tally, status.published, updated),
+          },
+          job.due,
+        );
+      }
+    }
   }
 
   // RemoveStatusService: a Delete of the status, signed (proven) or not; a status never posted here is deleted too

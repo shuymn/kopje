@@ -505,9 +505,9 @@ against their own instance. TLS is assumed between all parties.
   arrival order of three reactions and their Undos, a burst retried after its 503s, "is retired by the Store’s clock",
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
-  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, its polls'
-  vote `Update`s, L's searches of them served from the author's render cache, local favourites and boosts, job rounds
-  and deliveries, checked after every step against the rules in
+  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, the `Update`s
+  its poll jobs write 3 minutes after a vote, L's searches of them served from the author's render cache, local
+  favourites and boosts, job rounds and deliveries, checked after every step against the rules in
   `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the

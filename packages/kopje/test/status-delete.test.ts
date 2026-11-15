@@ -957,12 +957,23 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     }
     case "tick":
-      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer.
+      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer. The poll Updates due
+      // meanwhile run at their time.
       if (peer.oldest(w.clock + a.ms) <= RETRY_WINDOW_MS) {
+        distribute(w, w.clock + a.ms);
         w.clock += a.ms;
         log(w, `tick ${a.ms}`);
       }
       return;
+  }
+}
+
+// R's server runs the poll Updates due by `until` (Peer.distribute).
+function distribute(w: World, until: number): void {
+  const before = w.peer.sent.length;
+  w.peer.distribute(until);
+  for (const sent of w.peer.sent.slice(before)) {
+    log(w, `R's poll job sends ${describeMsg(R, sent.msg)} at +${sent.at - NOW}`);
   }
 }
 
@@ -1117,7 +1128,9 @@ async function run(actions: readonly Action[], order: readonly number[] = []): P
     await act(w, a);
   }
   w.trace.push("-- settle");
-  // Every message the author sent is delivered at least once, in a generated order.
+  // The poll Updates still scheduled run, and every message the author sent is delivered at least once, in a
+  // generated order.
+  distribute(w, Number.POSITIVE_INFINITY);
   for (let k = 0; w.peer.outbox.length > 0; k++) {
     await deliverSent(w, w.peer.take((order[k] ?? 0) % w.peer.outbox.length).msg, "deliver");
   }
@@ -1379,25 +1392,63 @@ describe("status deletes: the author's orders", () => {
     expect((await project(w)).statuses.find((s) => s.uri === S1)?.snapshot).toEqual(shown(A));
   });
 
-  // ID-7: a vote's Update names no version while the status was never edited, and refreshes the counts; one sent
-  // before the edit and delivered after it changes nothing (Kopje holds the newer counts a later vote's Update carried,
-  // which names the edit's version).
+  // ID-7: a vote's Update names no version while the status was never edited, and refreshes the counts; one its job
+  // wrote before the edit and delivered after it changes nothing (Kopje holds the newer counts a later vote's Update
+  // carried, which names the edit's version). Each job runs 3 minutes after its vote (the ticks).
   it("a vote's Update without a version: applied before any edit, not after one", async () => {
     const w = await run([
       { k: "post", s: 0, snapshot: A },
       deliver(),
       { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
       deliver(),
       { k: "vote", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
       { k: "edit", s: 0, snapshot: B },
       { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
       deliver(1),
       deliver(1),
       deliver(0),
     ]);
     expect(answersOf(w, "Update", S1)).toEqual(["poll-updated", "stale", "edited", "poll-updated"]);
     expect(w.stats["Update without a version of an edited status"]).toBe(1);
-    expect((await project(w)).statuses.find((s) => s.uri === S1)?.tally).toBe(3);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.tally).toBe(4);
+  });
+
+  // VoteService schedules the poll's Update 3 minutes after the vote (vote_service.rb:48), and the job writes it from
+  // the status as it is when it runs (distribute_poll_update_worker.rb:9-22): an edit within the 3 minutes is in it, a
+  // vote while it waits adds only its count (the job's lock, :7), an edit after it is not in it, and a status deleted
+  // before it runs sends nothing.
+  it("a vote's Update is written when its job runs, 3 minutes after the vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      { k: "post", s: 2, snapshot: A },
+      deliver(),
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "edit", s: 0, snapshot: C },
+      { k: "vote", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "tick", ms: 6 * MINUTE },
+    ]);
+    const edit = w.peer.sent.find((s) => s.msg.type === "Update" && s.msg.object.snapshot.content === "B")!;
+    const votes = w.peer.sent.flatMap((s) =>
+      s.msg.type === "Update" && s.msg.id.includes("#votes/")
+        ? [{ uri: s.msg.object.uri, content: s.msg.object.snapshot.content, tally: s.msg.object.tally, at: s.at }]
+        : [],
+    );
+    // The first vote is R's write after both Creates; its job runs 3 minutes later.
+    const voted = w.peer.sent[1]!.at + 1000;
+    expect(votes).toEqual([{ uri: S1, content: "B", tally: 2, at: voted + 3 * MINUTE }]);
+    expect(edit.msg.type === "Update" && edit.msg.object.updated).toBe(edit.at);
+    // The edit B carried the same counts: the job's Update changes nothing.
+    expect(answersOf(w, "Update", S1)).toEqual(["edited", "stale", "edited"]);
   });
 
   // ID-7: L searches s1 (R's server renders it, unedited, and caches it), a vote and R's edit follow and the edit's
