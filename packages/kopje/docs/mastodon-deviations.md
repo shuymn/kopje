@@ -283,6 +283,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
+- A local status's Note lists its card as a FEP-8967 `Link` after its media, as Mastodon 4.7 does, only where the API
+  shows the card (a public or unlisted status, the card fetched, its title not blank), so a Note of another visibility
+  lists none, where Mastodon lists the card it fetched for any visibility.
 - Only public and unlisted originals get a card, a privacy choice: Mastodon fetches the link of every visibility,
   which tells the linked site that the instance holds the post. A status with a shown attachment or any quote, a boost,
   and one whose author is unavailable get none.

@@ -1472,11 +1472,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
   public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
   whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). _Enforced (main):_ `cardEligibleSql` in
+  as decoded (`presentCard` in `src/domain/status-presenter.ts`). A local status's Note (the object endpoint, the
+  outbox, the featured collection, every `Create` and `Update`) lists the card's URL as a FEP-8967 `Link` only where
+  the card is presented: an attached row, judged by the presenter's own rule (`shownCardUrl`, shared with
+  `presentCard`; `statusFacts` in `src/domain/activities.ts`). _Enforced (main):_ `cardEligibleSql` in
   `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
   status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide
-  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row"),
+  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row",
+  "lists none where the API shows none: a private status's imported card, a blank title", "lists none while the card
+  is pending: the Create at posting, a text edit's Update and an imported row"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
@@ -4326,8 +4331,8 @@ not asserted.
 | A moderation_warning notification, its local account at bounds   | 133,178           | 290,594         | 360,727           | 7         | 682   | 4.3%           |
 | Its notification group                                           | 133,178           | 290,783         | 360,916           | 7         | 689   | 4.3%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
 | Listed hashtag (search, followed, suggested), from its caps      |                   | 4,543           | 5,070             |           |       | 0.1%           |
@@ -4408,13 +4413,15 @@ most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
 within the bound is at most the stored bound, and a longer one presents as ''.
 
-A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections and
-its text and attachments as stored (`statusFacts` in `src/domain/activities.ts`), so a converted row's hashtag past its
-bound is left out of both. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
+A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
+and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
+`src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. The card's URL is at most
+2,048 bytes of printable ASCII, which JSON does not escape (`cardUrlPastSql`), so the `Link` adds at most 2,074 bytes
+with its frame. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
 addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170 mentions) never reach
 and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`). With every part at its
 bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes are not within 8 MiB, so
-the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.41 MB with one Note
+the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.46 MB with one Note
 whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts group), so it is at
 most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its accounts, its first status
 (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local, and its reporter (a remote
