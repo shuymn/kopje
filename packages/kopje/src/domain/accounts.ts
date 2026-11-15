@@ -414,11 +414,12 @@ export function accountUrl(
   if (stored !== null) {
     return stored;
   }
-  if (shownHandle(row).invalid) {
+  const handle = shownHandle(row);
+  if (handle.invalid) {
     return href(row.uri) ?? "";
   }
   const actor = httpUrl(row.uri);
-  return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${acctOf(row)}`) ?? "";
+  return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${handle.acct}`) ?? "";
 }
 
 // How a presenter bounds an account's URLs and actor id (RES-2): `href` serializes an http(s) URL within its bound or
@@ -554,7 +555,6 @@ function presentIdentity(
   profile: () => Profile,
 ): Account {
   const suspended = row.available === 0;
-  // Stored URLs are shown only when they are http(s) (httpUrl); anything else reads as unset.
   const url = accountUrl(row, origin, bounds.href);
   const own = cached.get(row.id);
   const avatar = shownImage(
@@ -1266,12 +1266,12 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
     return [];
   }
   const where = terms.map((variants) => `(${variants.map(() => "instr(a.search_text, ?) > 0").join(" OR ")})`);
-  const exactUsername = (query.split("@")[0] ?? "").toLowerCase();
+  const [user = "", exactDomain] = query.toLowerCase().split("@");
+  const exactUsername = user;
   const prefix = (terms[0]?.[0] ?? "").replace(/^@/, "").split("@")[0] ?? "";
   // The exact address: "user" is any account with that username, "user@domain" that one remote account. Only a
   // username addressRow would match names one: any other (an invalidated handle's '! <id>') is bound as NULL, which
   // equals nothing.
-  const [user = "", exactDomain] = query.toLowerCase().split("@");
   const exactUser = isRemoteUsername(user) ? user : null;
   const exact =
     exactDomain === undefined
