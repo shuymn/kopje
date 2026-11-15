@@ -720,7 +720,7 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
   HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
   other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
-  path (`:50-55`).
+  path (`:50-55`). These differences are tracked by #1662.
 
 Hashtags (the `Tag` entity):
 
