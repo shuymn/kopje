@@ -2727,7 +2727,8 @@ describe("the table of maxima (RES-3)", () => {
   // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
   // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
   // status, which a stored row may make a boost of a quote; `notification` its account, its status and a report and
-  // a warning; an announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // a warning (their conservative figures count a fallback each, which a streamed notification does not carry); an
+  // announcement, at its derived maximum (test/announcement-bounds.test.ts).
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
     const c = await conservativeJson();
     const ANNOUNCEMENT = 248_997;
@@ -2741,7 +2742,7 @@ describe("the table of maxima (RES-3)", () => {
     expect({ ...kinds, most }).toEqual({
       status: 5_812_706,
       conversation: 7_537_495,
-      notification: 6_554_774,
+      notification: 6_611_840,
       announcement: ANNOUNCEMENT,
       most: 7_537_495,
     });
