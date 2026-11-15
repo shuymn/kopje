@@ -68,6 +68,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   - 100,000 featured hashtags (from migration 0025_remote_collections on), MAX_FEATURED_TAGS of each of the first
 //     10,000 accounts;
 //   - 10,000 inbound jobs, status deletions of the first statuses, every other one finished;
+//   - a notification policy of each local account (from migration 0020_notification_policies on), every condition at
+//     its default;
 //   - the other job families' rows: 10,000 stamp revocations (from 0033_quotes on), every other one done, by the
 //     remote accounts in turn; 1,000 domain blocks of the local accounts in turn, each with its cleanup; 1,000
 //     notification request jobs of the local accounts in turn, each from another remote account; a clear of each
@@ -107,7 +109,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
-// instance_settings row by its key (it adds an empty table, its index and two triggers). A migration that
+// instance_settings row by its key (it adds an empty table, its index and two triggers);
+// 0094_notification_policy_bots tests its column's CHECK on every notification_policies row. A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -738,6 +741,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.domains,
       Date.parse(now),
     );
+    // A policy of each local account, the rows 0094_notification_policy_bots tests its CHECK on.
+    const hasPolicies = has("notification_policies");
+    if (hasPolicies) {
+      run("INSERT INTO notification_policies (account_id) SELECT account_id FROM local_accounts");
+    }
     // The other job families (0084_family_job_attempts): stamp revocations, every other one done; local accounts'
     // domain blocks with their cleanups, notification request jobs from remote accounts, clears and dismissals.
     if (has("quote_revocations")) {
@@ -926,6 +934,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       cards: hasCards ? count("status_cards WHERE fetched_at IS NOT NULL") : 0,
       pendingCards: hasCards ? count("status_cards WHERE fetched_at IS NULL") : 0,
       featuredTags: hasFeatured ? count("featured_tags") : 0,
+      policies: hasPolicies ? count("notification_policies") : 0,
       inboundJobs: count("inbound_jobs"),
       revocations: has("quote_revocations") ? count("quote_revocations") : 0,
       familyJobs: [
@@ -985,10 +994,24 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => `${row.type} ${row.name}`),
         }
       : undefined;
+    // 0094_notification_policy_bots: the policies holding the new column's default.
+    const botPolicies = has("notification_policies", "for_bots")
+      ? count("notification_policies WHERE for_bots = 'accept'")
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
-        measured: { result, ms, foreignKeyCheck, retryEstimateMs: ms, jamoLeft, pinsLeft, liveQuotes, rejectReplays },
+        measured: {
+          result,
+          ms,
+          foreignKeyCheck,
+          retryEstimateMs: ms,
+          jamoLeft,
+          pinsLeft,
+          liveQuotes,
+          rejectReplays,
+          botPolicies,
+        },
       };
     }
     // A marker-bearing upgrade after the files: the marker written as the kernel writes it before its first file, then
@@ -1018,6 +1041,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         pinsLeft,
         liveQuotes,
         rejectReplays,
+        botPolicies,
       },
     };
   });
@@ -1082,6 +1106,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       ],
     });
     expect(measured.foreignKeyCheck).toBe("store");
+  }
+  // 0094 tested its CHECK on a policy of each local account, which kept the default.
+  if (applied.includes("0094_notification_policy_bots")) {
+    expect([seeded.policies, measured.botPolicies]).toEqual([SHAPE.local, SHAPE.local]);
+    expect(measured.foreignKeyCheck).toBe("skipped");
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));

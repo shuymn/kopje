@@ -439,6 +439,12 @@ in a TEXT column as its decimal text, before the CHECK runs. A chunk past these 
 A dump taken before 0093 has no such table: it restores into a Store at its own migrations, which then upgrades. A
 file built from legacy data has no row. An `instance_settings` row named `wrapstodon` holds `true` or `false`.
 
+Notification policies' bot condition (migration `0094_notification_policy_bots`): `notification_policies.for_bots` is
+`accept`, `filter` or `drop`, as each of the policy's other conditions is; anything else fails with the CHECK's text
+(`CHECK constraint failed: for_bots IN ('accept', 'filter', 'drop')`). A dump taken before 0094 has no such column: it
+restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
+legacy data has no row.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
