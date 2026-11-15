@@ -223,20 +223,24 @@ function graphemeLength(text: string): number {
   return count;
 }
 
-// StatusLengthValidator (for text within MAX_RAW_LENGTH): grapheme count of the text and the spoiler, where a URL counts as 23 characters and a
-// remote mention as its local part only.
+// StatusLengthValidator (for text within MAX_RAW_LENGTH): the grapheme count of the warning followed by the countable
+// text, as one string (combined_text), so a combining mark that starts the text joins the warning's last grapheme. The
+// countable text (countable_text) of a blank text is empty; otherwise a URL counts as 23 characters and a remote
+// mention as its local part only.
 export function statusLength(text: string, spoilerText: string): number {
-  const countable = parseStatusText(text)
-    .segments.map((segment) => {
-      switch (segment.kind) {
-        case "url":
-          return "x".repeat(URL_PLACEHOLDER_LENGTH);
-        case "mention":
-          return `@${segment.username}`;
-        default:
-          return segment.text;
-      }
-    })
-    .join("");
-  return graphemeLength(countable) + graphemeLength(spoilerText);
+  const countable = blankText(text)
+    ? ""
+    : parseStatusText(text)
+        .segments.map((segment) => {
+          switch (segment.kind) {
+            case "url":
+              return "x".repeat(URL_PLACEHOLDER_LENGTH);
+            case "mention":
+              return `@${segment.username}`;
+            default:
+              return segment.text;
+          }
+        })
+        .join("");
+  return graphemeLength(spoilerText + countable);
 }

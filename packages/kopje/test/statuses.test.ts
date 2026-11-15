@@ -374,6 +374,27 @@ describe("POST /api/v1/statuses", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
+  it("counts the warning and the text as one string, as StatusLengthValidator does", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // The combining mark joins the warning's last x: 500 graphemes, then 501.
+    const joined = await posting(h, alice.token, { status: "\u0301x", spoiler_text: "x".repeat(499) });
+    expect(joined.status).toBe(200);
+    expect(await posting(h, alice.token, { status: "\u0301xy", spoiler_text: "x".repeat(499) })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text character limit of 500 exceeded" },
+    });
+    // A blank text counts nothing beside the warning of a quote, which keeps both as sent.
+    const quoted = await post(h, alice, { status: "quote me" });
+    const quote = await posting(h, alice.token, {
+      status: " ".repeat(10),
+      spoiler_text: "x".repeat(495),
+      quoted_status_id: quoted.id,
+    });
+    expect(quote.status, JSON.stringify(quote.body)).toBe(200);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 3 }]);
+  });
+
   it("counts a URL as 23 characters and a remote mention by its username", async () => {
     const h = await community(["alice"]);
     await remoteAccount(h.store, "carol", "a-very-long-remote-domain-name.example");

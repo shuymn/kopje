@@ -120,6 +120,16 @@ describe("status length (StatusLengthValidator)", () => {
     expect(statusLength("@carol@remote.example", "")).toBe("@carol".length);
     expect(statusLength("abc", "cw")).toBe(5);
   });
+
+  it("counts the warning followed by the text as one string, and a blank text as nothing", () => {
+    // A combining mark that starts the text joins the warning's last grapheme, as Ruby's each_grapheme_cluster counts.
+    expect(statusLength("\u0301x", "x".repeat(499))).toBe(500);
+    expect(statusLength("\u0301xy", "x".repeat(499))).toBe(501);
+    expect(statusLength(" ".repeat(10), "x".repeat(495))).toBe(495);
+    expect(statusLength("\u0085", "")).toBe(0);
+    // A blank text is not parsed, whatever its length.
+    expect(statusLength(" ".repeat(MAX_RAW_LENGTH + 1), "w")).toBe(1);
+  });
 });
 
 describe("raw input bound", () => {
