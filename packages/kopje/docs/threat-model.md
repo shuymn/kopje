@@ -500,7 +500,7 @@ against their own instance. TLS is assumed between all parties.
   `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, its polls'
   vote `Update`s, L's searches of them served from the author's render cache, local favourites and boosts, job rounds
   and deliveries, checked after every step against the rules in
-  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.5.11 sender holds
+  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
   proof is asked for, fences it, and two deliveries held at their proofs record one set (`test/forward-delete.test.ts`
