@@ -33,6 +33,7 @@ import {
   blockedSql,
   canView,
   followableBySql,
+  foundSql,
   isDistributable,
   isPublicCollection,
   MENTION_STATUS_COLUMNS,
@@ -1267,8 +1268,9 @@ const updateActor: Handler<"UpdateActor"> = (_db, _actor, _activity, input) =>
 // Mastodon's DeleteAccountService for a remote account, as a durable job: the purge job (the actor's tombstone) is
 // written with the first batch, and each batch removes a bounded part of what the account has (purgeBatch); the
 // account row goes with the last one. The account is unavailable from this transaction on (accounts.deleted_at,
-// availableSql), so nothing of it is shown while the batches remove it, whatever order they remove it in.
-const deleteActor: Handler<"DeleteActor"> = (db, actor, _activity, { now }) => {
+// availableSql), so nothing of it is shown while the batches remove it, whatever order they remove it in. Started by
+// the actor's own Delete (deleteActor) and by a 410 at its URI (actorGone). Returns whether a batch is left.
+function startActorDeletion(db: Db, actor: { id: string; uri: string }, now: number): boolean {
   // A finished purge whose tombstone expired before the sweep removed it (the actor was stored again since) starts
   // over, so this purge runs to its end and renews the tombstone.
   db.run(
@@ -1284,8 +1286,29 @@ const deleteActor: Handler<"DeleteActor"> = (db, actor, _activity, { now }) => {
     new Date(now).toISOString(),
     actor.id,
   );
-  return applied("actor-deleted", runJobBatch(db, { kind: "purge", key: actor.uri }, now) === "advanced");
-};
+  return runJobBatch(db, { kind: "purge", key: actor.uri }, now) === "advanced";
+}
+
+const deleteActor: Handler<"DeleteActor"> = (db, actor, _activity, { now }) =>
+  applied("actor-deleted", startActorDeletion(db, actor, now));
+
+// As Mastodon's FetchRemoteActorService#queue_deletion! (v4.7.5): a stored remote actor whose own URI answered 410,
+// with no redirect (federation/actor-gone.ts decides that), is deleted as by its Delete (startActorDeletion), only
+// while the revision the Worker read before that fetch holds (ID-1's fence, revisionHolds): a 410 fetched before
+// another store of the actor committed changes nothing. No row (no tombstone for an actor never stored), a local row
+// (ID-3) or one whose deletion has started: nothing. jobsPending asks the Worker for a round.
+export type ActorGoneInput = { uri: string; revision: DocumentRevision; now: number };
+
+export const actorGone = writeOperation<ActorGoneInput, { jobsPending: boolean }>((db, { uri, revision, now }) => {
+  if (!revisionHolds(db, uri, revision)) {
+    return { jobsPending: false };
+  }
+  const actor = db.first<{ id: string }>(
+    `SELECT a.id FROM accounts a WHERE a.uri = ? AND a.domain IS NOT NULL AND ${foundSql("a")}`,
+    uri,
+  );
+  return { jobsPending: actor !== undefined && startActorDeletion(db, { id: actor.id, uri }, now) };
+});
 
 // One batch of a deleted actor's purge (RES-6). Every row the batch writes counts against PURGE_BATCH, measured with
 // SQLite's total_changes() so that nothing escapes the count: deletions, counter recounts, and the Undo intent of a

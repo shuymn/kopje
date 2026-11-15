@@ -8,6 +8,7 @@ import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { callStore, type StoreResolver } from "../platform/store-client";
+import { goneSettler } from "./actor-gone";
 import {
   afterRevisionRead,
   createRemoteLoaders,
@@ -17,7 +18,7 @@ import {
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { requestBudget } from "./loader";
-import { fetchActor } from "./remote-actor";
+import { type FetchedActor, fetchActor } from "./remote-actor";
 import { ACTOR_TYPES, idOf, parseRemoteStatus } from "./remote-status";
 
 // Search resolution (GET /api/v2/search?resolve=true, and GET /api/v1/accounts/search?resolve=true for addresses):
@@ -33,14 +34,18 @@ import { ACTOR_TYPES, idOf, parseRemoteStatus } from "./remote-status";
 // read from the Store before its document is fetched (a URL naming an actor is fetched again after that read,
 // actorAfterRevision), and the document is stored only while it holds (ID-1, domain/remote-actors.ts DocumentRevision):
 // the probe, and the WebFinger that follows the fetch on a host another server may name, can delay the store past a
-// newer one.
+// newer one. A URL is first read as a stored actor's id, before any probe: such a URL is resolved as that actor, so a
+// 410 at it deletes the actor under the revision read before the fetch (ID-1, actor-gone.ts); a probe's 410 deletes
+// nothing, having no revision read before it.
 
+// requestJobs: asks for a jobs round (a gone actor's purge, actor-gone.ts); absent, cron runs it.
 export type ResolverDeps = {
   build: (env: Env) => string;
   store: StoreResolver;
   now: () => number;
   keygen: FederationDeps["keygen"];
   loader: FederationDeps["loader"];
+  requestJobs?: (env: Env) => Promise<unknown>;
 };
 
 // start: what the Store's resolution gate answered before any network work (domain/inbox.ts resolutionGate), its
@@ -86,7 +91,13 @@ export function createResolver(deps: ResolverDeps): Resolver {
       state.ticket = read.ticket;
       return read.revision;
     };
-    const resolved = await resolveWith({ ...loaders, revisionOf }, query.trim(), domain);
+    const settle = goneSettler(store, build, deps.now);
+    const settleGone: Resolving["settleGone"] = async (fetched, uri, revision) => {
+      if ((await settle(fetched, uri, revision)).jobsPending) {
+        await deps.requestJobs?.(env);
+      }
+    };
+    const resolved = await resolveWith({ ...loaders, revisionOf, settleGone }, query.trim(), domain);
     if (state.storeError !== null) {
       throw state.storeError;
     }
@@ -94,17 +105,22 @@ export function createResolver(deps: ResolverDeps): Resolver {
   };
 }
 
-// The loaders, and the Store read of an actor's revision.
-type Resolving = RemoteLoaders & { revisionOf: (uri: string) => Promise<DocumentRevision> };
+// The loaders, the Store read of an actor's revision, and what a gone actor's document does (actor-gone.ts).
+type Resolving = RemoteLoaders & {
+  revisionOf: (uri: string) => Promise<DocumentRevision>;
+  settleGone: (fetched: FetchedActor, uri: string, revision: DocumentRevision) => Promise<void>;
+};
 
-// An actor's document, fetched after its revision was read with a memo of its own (afterRevisionRead): the request's
-// loader may already hold a response for that URL fetched before the read (the URL's own probe), which must not be
-// stored under it; the refetch costs one more fetch of the budget (RES-6).
+// An actor's document, fetched after its revision was read (`revision`, when the caller read it already) with a memo
+// of its own (afterRevisionRead): the request's loader may already hold a response for that URL fetched before the
+// read (the URL's own probe), which must not be stored under it; the refetch costs one more fetch of the budget
+// (RES-6).
 async function actorAfterRevision(
   loaders: Resolving,
   uri: string,
-): Promise<{ fetched: Awaited<ReturnType<typeof fetchActor>>; revision: DocumentRevision }> {
-  const revision = await loaders.revisionOf(uri);
+  read?: DocumentRevision,
+): Promise<{ fetched: FetchedActor; revision: DocumentRevision }> {
+  const revision = read === undefined ? await loaders.revisionOf(uri) : read;
   return { fetched: await fetchActor(uri, afterRevisionRead(loaders).document, loaders.context), revision };
 }
 
@@ -119,9 +135,13 @@ async function resolveWith(loaders: Resolving, query: string, domain: string): P
     : resolveUrl(loaders, target.href);
 }
 
-// An actor, with the canonical address its host declares (declaredDomain), and its revision before the fetch.
-async function resolveAccount(loaders: Resolving, uri: string): Promise<Resolved> {
-  const { fetched, revision } = await actorAfterRevision(loaders, uri);
+// An actor, with the canonical address its host declares (declaredDomain), and its revision before the fetch (`read`,
+// when the caller read it already). A 410 at its URI deletes a stored actor under that revision (actor-gone.ts).
+async function resolveAccount(loaders: Resolving, uri: string, read?: DocumentRevision): Promise<Resolved> {
+  const { fetched, revision } = await actorAfterRevision(loaders, uri, read);
+  if (fetched.kind === "gone") {
+    await loaders.settleGone(fetched, uri, revision);
+  }
   if (fetched.kind !== "ok" || fetched.input === null) {
     return NONE;
   }
@@ -231,8 +251,14 @@ async function resolveAddress(loaders: Resolving, username: string, domain: stri
   return href === null ? NONE : resolveAccount(loaders, href);
 }
 
-// A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects).
+// A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
+// remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
+// probed.
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
+  const stored = await loaders.revisionOf(url);
+  if (stored !== null) {
+    return resolveAccount(loaders, url, stored);
+  }
   let document: unknown;
   try {
     document = (await loaders.document(url)).document;

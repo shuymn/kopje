@@ -209,6 +209,10 @@ export const STORE_RPC = {
   // (federation/resolve.ts).
   actorRevision: inbox.getActorRevision,
 
+  // A stored actor whose own URI answered 410 is deleted under the revision read before that fetch
+  // (federation/actor-gone.ts).
+  actorGone: inbox.actorGone,
+
   // The instance domain policy the Worker reads before a fetch (R38; inboxGate reads it before an inbound
   // request is verified): advisory, as the writes decide.
   fetchRefused: instanceDomainBlocks.fetchRefused,
