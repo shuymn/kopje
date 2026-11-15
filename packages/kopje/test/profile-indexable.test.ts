@@ -101,8 +101,10 @@ describe("indexable", () => {
       });
       const input = await remoteActorInput(actor, {});
       expect(input?.indexable).toBe("indexable" in extra);
+      // Its claim confirmed, as WebFinger would confirm it (federation/resolve.ts confirmedInput).
+      const confirmed = { ...input!, confirmed: input!.claim };
       await runInDurableObject(store, (_instance, state) =>
-        state.storage.transactionSync(() => upsertRemoteActor(new Db(state.storage.sql), input!, ORIGIN, NOW)),
+        state.storage.transactionSync(() => upsertRemoteActor(new Db(state.storage.sql), confirmed, ORIGIN, NOW)),
       );
     }
     const rows = await sql<{ id: string; username: string; indexable: number }>(

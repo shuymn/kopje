@@ -37,6 +37,21 @@ export const DateTime: FC<{ iso: string; text: string; local: boolean | "full" |
 
 export const VisuallyHidden: FC<{ children?: Child }> = ({ children }) => <span class="vh">{children}</span>;
 
+// A textarea showing `value` as it is: the HTML parser drops a newline right after the start tag, so the content
+// starts with one for it to drop, and a value that starts with a newline keeps it. What a browser submits from it reads
+// back through textareaText (textarea.ts).
+export const TextArea: FC<{ name: string; rows: number; maxlength: number; describedBy?: string; value: string }> = ({
+  name,
+  rows,
+  maxlength,
+  describedBy,
+  value,
+}) => (
+  <textarea name={name} rows={rows} maxlength={maxlength} aria-describedby={describedBy}>
+    {`\n${value}`}
+  </textarea>
+);
+
 export const Card: FC<{
   as?: "section" | "article" | "div" | "ol" | "dl";
   class?: string;

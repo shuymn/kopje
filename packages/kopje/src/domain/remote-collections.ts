@@ -14,6 +14,14 @@ import {
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { isIntegerText } from "./ids";
 import { writeOperation } from "./operation";
+import {
+  type ActorState,
+  actorState,
+  NO_ACTOR_STATE,
+  type DocumentRevision,
+  type RemoteActorInput,
+  upsertRemoteActor,
+} from "./remote-actors";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
 import { storeRemoteStatus } from "./remote-statuses";
 import { isHashtagName } from "./status-text";
@@ -183,6 +191,12 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 //      cannot be used is dropped, and one that may be fetched later stays. The metadata is never read again for them.
 // A round makes progress when it reads a part not read before or the pending statuses shrink; MAX_SYNC_ATTEMPTS
 // claims without progress give up the read (its pending statuses are still fetched) or drop the sync.
+// A sync asked for with refresh (an invalidated account, remote-actors.ts) first runs a document part (D9, Mastodon's
+// AccountRefreshWorker): a round refetches the account's document and confirms its claim (federation/collections.ts),
+// and completeDocumentRefresh stores it under the revision the claim read, as any store of the actor; that store's own
+// request then reads the collections of the refreshed document. The part runs only while the account is an available
+// remote account whose handle is invalidated; a refresh asked for one that is not any more is dropped at the claim.
+// A failure that may pass leaves the part to a later round; MAX_SYNC_ATTEMPTS claims without progress give it up.
 
 // A sync a round claimed: the account, the collections its stored document names, the phase, the pending statuses
 // (phase pins, in order), and the local follower whose key signs the fetches (FetchFeaturedCollectionService#
@@ -192,7 +206,10 @@ export type CollectionSync = ActorCollections & {
   accountUri: string;
   generation: string;
   token: string;
-  phase: "read" | "pins";
+  phase: "read" | "pins" | "document";
+  // Phase document: the account's state read at the claim (actorState), whose revision its document is stored under
+  // and whose handle its claim is compared with; no row for the other phases.
+  state: ActorState;
   // Phase read: the parts already read for this generation (PART_*), which the round does not read again.
   parts: number;
   // The round's claim among those since the sync last made progress (1 for the first), which picks the part a read
@@ -204,12 +221,20 @@ export type CollectionSync = ActorCollections & {
 };
 
 // generation is read as TEXT and compared with read_through in SQL (DATA-6).
-type SyncRow = { account_id: string; attempts: number; generation: string; unread: number; parts_read: number };
+type SyncRow = {
+  account_id: string;
+  attempts: number;
+  generation: string;
+  unread: number;
+  parts_read: number;
+  refresh: number;
+};
 
 // The sync due first, by a seek of collection_syncs_due: the syncs rounds hold are due later, so none is read.
 function claimable(db: Db, now: number): SyncRow | undefined {
   return db.first<SyncRow>(
-    `SELECT account_id, attempts, CAST(generation AS TEXT) AS generation, generation > read_through AS unread, parts_read
+    `SELECT account_id, attempts, CAST(generation AS TEXT) AS generation, generation > read_through AS unread, parts_read,
+			refresh
 		FROM collection_syncs
 		WHERE due_at <= ? ORDER BY due_at LIMIT 1`,
     now,
@@ -232,22 +257,32 @@ function dropSync(db: Db, accountId: string): void {
   db.run("DELETE FROM collection_syncs WHERE account_id = ?", accountId);
 }
 
-// The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase read while a request has not
-// been read through, else phase pins while statuses are pending. One claimed MAX_SYNC_ATTEMPTS times without progress,
-// of an account that is no longer an available remote account (ProcessAccountService schedules none for a suspended
-// account, and the services return for one), or with nothing left to do, is dropped instead, and the next is taken;
-// at most MAX_SYNC_ATTEMPTS + 1 rows are read. 'more': that many were dropped and another is due, for the next claim;
-// null: none is due.
+// The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase document while a refresh is
+// asked for an account whose handle is invalidated (a refresh of another account, or one out of attempts, is given up),
+// else phase read while a request has not been read through, else phase pins while statuses are pending. One claimed
+// MAX_SYNC_ATTEMPTS times without progress, of an account that is no longer an available remote account
+// (ProcessAccountService schedules none for a suspended account, and the services return for one), or with nothing left
+// to do, is dropped instead, and the next is taken; at most MAX_SYNC_ATTEMPTS + 1 rows are read. 'more': that many were
+// dropped and another is due, for the next claim; null: none is due.
 export const claimCollectionSync = writeOperation<{ now: number }, CollectionSync | "more" | null>((db, { now }) => {
   for (let round = 0; round <= MAX_SYNC_ATTEMPTS; round++) {
     const row = claimable(db, now);
     if (row === undefined) {
       return null;
     }
-    const account = db.first<{ uri: string; raw: string | null }>(
-      `SELECT a.uri, a.raw FROM accounts a WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("?1")}`,
+    const account = db.first<{ uri: string; raw: string | null; invalid: number }>(
+      `SELECT a.uri, a.raw, substr(a.username, 1, 2) = '! ' AS invalid
+			FROM accounts a WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("?1")}`,
       row.account_id,
     );
+    // The prefix test is accounts.ts shownHandle's on the stored username. A refresh is given up when its account's
+    // handle is not invalidated any more, or the part ran out of attempts: the read and the pins go on with attempts of
+    // their own.
+    const refresh = row.refresh === 1 && account?.invalid === 1 && row.attempts < MAX_SYNC_ATTEMPTS;
+    if (row.refresh === 1 && !refresh) {
+      db.run("UPDATE collection_syncs SET refresh = 0, attempts = 0 WHERE account_id = ?", row.account_id);
+      row.attempts = 0;
+    }
     let read = row.unread === 1;
     // A read that ran out of attempts with pinned statuses pending gives way to them: the read is given up, the
     // pending statuses get attempts of their own.
@@ -259,8 +294,8 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       read = false;
       row.attempts = 0;
     }
-    const uris = read ? [] : pendingUris(db, row.account_id);
-    if (account === undefined || row.attempts >= MAX_SYNC_ATTEMPTS || (!read && uris.length === 0)) {
+    const uris = read || refresh ? [] : pendingUris(db, row.account_id);
+    if (account === undefined || row.attempts >= MAX_SYNC_ATTEMPTS || (!refresh && !read && uris.length === 0)) {
       dropSync(db, row.account_id);
       continue;
     }
@@ -275,7 +310,8 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       accountUri: account.uri,
       generation: row.generation,
       token,
-      phase: read ? "read" : "pins",
+      phase: refresh ? "document" : read ? "read" : "pins",
+      state: refresh ? actorState(db, account.uri) : NO_ACTOR_STATE,
       parts: row.parts_read,
       attempt: row.attempts + 1,
       uris,
@@ -292,7 +328,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
 // SYNC_RETRY_MS; deleted when nothing is left. Returns whether a sync is due.
 function endRound(db: Db, accountId: string, generation: string, progressed: boolean, now: number): boolean {
   const row = db.first<{ done: number; requested: number }>(
-    `SELECT generation <= read_through AS done, generation IS NOT CAST(?2 AS INTEGER) AS requested
+    `SELECT generation <= read_through AND refresh = 0 AS done, generation IS NOT CAST(?2 AS INTEGER) AS requested
 		FROM collection_syncs WHERE account_id = ?1`,
     accountId,
     isIntegerText(generation) ? generation : null,
@@ -470,6 +506,35 @@ export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, 
     done += db.run("DELETE FROM collection_pins_pending WHERE account_id = ? AND uri = ?", account.id, uri);
   }
   return endRound(db, account.id, input.generation, done > 0, input.now);
+});
+
+// What the document part fetched of the account (federation/collections.ts): its document with its claim confirmed or
+// refused (RemoteActorInput: confirmed set or null), 'gone' (404 or 410), null when it is unusable, or 'transient' when
+// the fetch or the confirmation may pass later. revision: the account's, read at the claim (CollectionSync.state).
+export type DocumentRefreshInput = RoundInput & {
+  revision: DocumentRevision;
+  document: RemoteActorInput | "gone" | "transient" | null;
+};
+
+// The document part's end (D9): a document of the account is stored under the revision read at the claim, as any store
+// of the actor (upsertRemoteActor: a confirmed handle renamed into, a refused one kept invalidated with the rest of the
+// document stored; a document superseded since stores nothing); a document that cannot be used ends the part as well.
+// The part is then over (refresh = 0) and the round progressed; a failure that may pass changes nothing, the claim
+// having counted its attempt. Returns whether a sync is due.
+export const completeDocumentRefresh = writeOperation<DocumentRefreshInput, boolean>((db, input) => {
+  const account = roundAccount(db, input);
+  if (account === null) {
+    return claimable(db, input.now) !== undefined;
+  }
+  const { document } = input;
+  if (document === "transient") {
+    return endRound(db, account.id, input.generation, false, input.now);
+  }
+  if (document !== null && document !== "gone" && document.uri === account.uri) {
+    upsertRemoteActor(db, document, input.origin, input.now, input.revision);
+  }
+  db.run("UPDATE collection_syncs SET refresh = 0 WHERE account_id = ?", account.id);
+  return endRound(db, account.id, input.generation, true, input.now);
 });
 
 // The account's pins become the statuses the collection lists that are its own and pinnable, the first

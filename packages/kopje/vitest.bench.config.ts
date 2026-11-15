@@ -19,6 +19,7 @@ export default defineConfig({
       benchScale: process.env.KOPJE_BENCH_SCALE ?? "",
       benchReportOnly: Boolean(process.env.KOPJE_BENCH_REPORT_ONLY),
       benchWithdrawnQuotes: process.env.KOPJE_BENCH_WITHDRAWN_QUOTES ?? "",
+      benchSharedHandles: process.env.KOPJE_BENCH_SHARED_HANDLES ?? "",
     },
   },
 });

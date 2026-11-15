@@ -14,7 +14,7 @@ import { harness, NOW, offline } from "./app-helpers";
 import { deleteSignature, remoteAccountsAt, retractionInboxes, signedActivity } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, migratedStore, deferred, drainDeliveries, type SentRow } from "./helpers";
-import { mastodonActor } from "./inbox-helpers";
+import { mastodonActor, serveOwnHandle } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -824,6 +824,7 @@ describe("a Kopje holder of a boost forwards a Kopje author's signed Delete (VIS
     const { t } = await world();
     const document = (await (await author.request("/ap/users/ann", AP)).json()) as Json;
     t.web.serve(ANN_URI, document);
+    serveOwnHandle(t.web, document);
     const ann = {
       uri: ANN_URI,
       keyId: `${ANN_URI}#main-key`,

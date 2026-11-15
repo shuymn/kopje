@@ -5,6 +5,7 @@ import {
   MAX_FIELDS,
   presentedCountSql,
   storedDisplayName,
+  storedProfileDescription,
   storedText,
 } from "../platform/stored-bounds";
 import {
@@ -52,6 +53,13 @@ export type CredentialChanges = {
   fields?: FieldSource[] | undefined;
   // Replaces every attribution domain; normalized and validated by the caller.
   attributionDomains?: string[];
+  // The image descriptions as sent ('' clears one), validated by the caller (migration 0097_profile_descriptions).
+  avatarDescription?: string | undefined;
+  headerDescription?: string | undefined;
+  // The display settings, which only the profile update sets.
+  showFeatured?: boolean | undefined;
+  showMedia?: boolean | undefined;
+  showMediaReplies?: boolean | undefined;
 };
 
 // The uploads (completed, unattached, media.ts) a credentials update makes the account's avatar or header.
@@ -86,14 +94,18 @@ function unlockChanged(db: Db, accountId: string, wasLocked: boolean, locked: bo
   );
 }
 
-// Lengths and values are validated by the caller. display_name and the note are plain text: display_name is stored
-// as is (JSON consumers escape it), the note is stored as escaped paragraphs. Everything applies in this transaction,
-// images included, with one Update(Person), or nothing does (Mastodon's single update!). A media-delete operation:
-// replacing an image dooms the upload behind it (MEDIA-2).
-export const updateCredentials = userMediaDeleteOperation<
-  { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number },
-  CredentialsUpdated
->((db, { changes, images = {}, present, now }, { accountId }) => {
+// The changes update_credentials and the profile update apply, in their operation's transaction. Lengths and values
+// are validated by the caller. display_name and the note are plain text: display_name is stored as is (JSON consumers
+// escape it), the note is stored as escaped paragraphs; the descriptions are stored as sent, within their bound
+// (storedProfileDescription). Everything applies, images included, with one Update(Person), or nothing does
+// (Mastodon's single update!). accepting: as CredentialsUpdated's.
+function applyAccountChanges(
+  db: Db,
+  accountId: string,
+  changes: CredentialChanges,
+  images: ProfileImages,
+  now: number,
+): { status: "ok"; accepting: boolean } | { status: "not_found" } | { status: "upload_gone" } {
   const current = db.first<{
     username: string;
     display_name: string;
@@ -130,7 +142,10 @@ export const updateCredentials = userMediaDeleteOperation<
   // surrogate bytes would come back as three U+FFFD for each, past its bound.
   db.run(
     `UPDATE accounts SET display_name = COALESCE(?, display_name), note = COALESCE(?, note), locked = COALESCE(?, locked),
-			discoverable = COALESCE(?, discoverable), indexable = COALESCE(?, indexable), actor_type = ?, search_text = ?
+			discoverable = COALESCE(?, discoverable), indexable = COALESCE(?, indexable), actor_type = ?, search_text = ?,
+			avatar_description = COALESCE(?, avatar_description), header_description = COALESCE(?, header_description),
+			show_featured = COALESCE(?, show_featured), show_media = COALESCE(?, show_media),
+			show_media_replies = COALESCE(?, show_media_replies)
 		WHERE id = ?`,
     changedName,
     changes.note === undefined ? null : plainTextToHtml(storedText(changes.note)),
@@ -139,6 +154,11 @@ export const updateCredentials = userMediaDeleteOperation<
     bit(changes.indexable),
     actorType,
     accountSearchText(current.username, null, displayName),
+    changes.avatarDescription === undefined ? null : storedProfileDescription(changes.avatarDescription),
+    changes.headerDescription === undefined ? null : storedProfileDescription(changes.headerDescription),
+    bit(changes.showFeatured),
+    bit(changes.showMedia),
+    bit(changes.showMediaReplies),
     accountId,
   );
   db.run(
@@ -184,9 +204,21 @@ export const updateCredentials = userMediaDeleteOperation<
   // collections again and learns it from them, as Mastodon's ProcessAccountService does.
   const hideChanged = hide !== null && hide !== current.hide_collections;
   recordActorUpdate(db, accountId, hideChanged ? null : before, now);
-  const accepting = unlockChanged(db, accountId, current.locked === 1, changes.locked);
+  return { status: "ok", accepting: unlockChanged(db, accountId, current.locked === 1, changes.locked) };
+}
+
+// update_credentials (applyAccountChanges), answered with the CredentialAccount. A media-delete operation: replacing
+// an image dooms the upload behind it (MEDIA-2).
+export const updateCredentials = userMediaDeleteOperation<
+  { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number },
+  CredentialsUpdated
+>((db, { changes, images = {}, present, now }, { accountId }) => {
+  const applied = applyAccountChanges(db, accountId, changes, images, now);
+  if (applied.status !== "ok") {
+    return applied;
+  }
   const account = credentialAccount(db, accountId, present);
-  return account === null ? { status: "not_found" } : { status: "ok", account, accepting };
+  return account === null ? { status: "not_found" } : { status: "ok", account, accepting: applied.accepting };
 });
 
 function bit(value: boolean | undefined): number | null {

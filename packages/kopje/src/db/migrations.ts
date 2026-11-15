@@ -93,6 +93,8 @@ import m0092 from "../../migrations/0092_reject_replays.sql";
 import m0093 from "../../migrations/0093_annual_reports.sql";
 import m0094 from "../../migrations/0094_quote_author_fetches.sql";
 import m0095 from "../../migrations/0095_notification_policy_bots.sql";
+import m0096 from "../../migrations/0096_remote_handles.sql";
+import m0097 from "../../migrations/0097_profile_descriptions.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -194,4 +196,6 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0093_annual_reports", sql: m0093 },
   { name: "0094_quote_author_fetches", sql: m0094, foreignKeys: "unchanged" },
   { name: "0095_notification_policy_bots", sql: m0095, foreignKeys: "unchanged" },
+  { name: "0096_remote_handles", sql: m0096 },
+  { name: "0097_profile_descriptions", sql: m0097, foreignKeys: "unchanged" },
 ];

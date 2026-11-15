@@ -344,6 +344,11 @@ export type Messages = {
     headerFile: string;
     upload: string;
     imageHint: string;
+    // An image's description (alt text), up to `limit` characters.
+    avatarDescription: string;
+    headerDescription: string;
+    descriptionHint: (limit: number) => string;
+    saveDescription: string;
     authorizedApps: string;
     noApps: string;
     authorizedAt: string;

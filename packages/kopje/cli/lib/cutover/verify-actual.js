@@ -43,6 +43,7 @@ export const CATEGORIES = [
   "notifications",
   "threads",
   "conversations",
+  "handle_refreshes",
   "settings",
   "clients",
   "emojis",
@@ -336,6 +337,11 @@ export function actualFromDump(text) {
           t("replies_policy"),
           int(row.exclusive),
         ]);
+        break;
+      // The refresh requests of the accounts the conversion invalidated (requestHandleRefreshes), the only syncs it
+      // writes.
+      case "collection_syncs":
+        put("handle_refreshes", account(t("account_id"))?.uri ?? "", int(row.refresh));
         break;
       case "list_accounts":
         put("list_accounts", `${t("list_id")} ${account(t("account_id"))?.uri}`, 1);

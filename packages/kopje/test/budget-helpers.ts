@@ -2,7 +2,7 @@ import { expect } from "vitest";
 
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import { utf8Length } from "../src/platform/dump-format";
-import { PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
+import { PROFILE_DESCRIPTION_LIMIT, PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
 import { type ApiHarness, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { accountAtCap, statusAtCap } from "./emoji-fixtures";
@@ -244,18 +244,21 @@ export function expectByteCutWalk(
 }
 
 // `count` remote accounts named `prefix` and a number, in id order, each at its bounds (RES-2): a bio of 64 KiB,
-// a display name of 2,048 escaping characters and 16 fields at theirs, about 121 KB of JSON each.
+// a display name of 2,048 escaping characters, two image descriptions of 150 and 16 fields at theirs, about 123 KB of
+// JSON each.
 export async function maximalAccounts(h: ApiHarness, prefix: string, count: number): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < count; i++) {
     const id = await remoteAccount(h.store, `${prefix}${String(i).padStart(3, "0")}`);
     await sql(
       h.store,
-      "UPDATE accounts SET note = ?, display_name = ?, raw = ?, emojis = ? WHERE id = ?",
+      `UPDATE accounts SET note = ?, display_name = ?, raw = ?, emojis = ?, avatar_description = ?5,
+				header_description = ?5 WHERE id = ?6`,
       MAX_BIO,
       C.repeat(2048),
       JSON.stringify({ type: "Person", attachment: maxFields() }),
       JSON.stringify(accountAtCap()),
+      C.repeat(PROFILE_DESCRIPTION_LIMIT),
       id,
     );
     ids.push(id);
