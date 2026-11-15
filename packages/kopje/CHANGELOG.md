@@ -61,6 +61,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
   is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   WebFinger). No Store migration and no `wrangler.jsonc` change.
+- Accounts show `avatar_description`, `header_description`, `show_featured`, `show_media` and `show_media_replies`,
+  and grouped notifications' partial accounts `avatar_description`, as Mastodon 4.6. `update_credentials` and the
+  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; the display settings
+  keep their defaults, as nothing sets them yet. Migration `0096_profile_descriptions` adds the five columns with
+  their defaults and two triggers that bound them; the upgrade checks no reference (261 ms for this file in one local
+  run of the migration bench, at a load average of 10 to 14). `wrangler.jsonc`: unchanged. This adds a Store migration,
+  so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 

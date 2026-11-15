@@ -1411,8 +1411,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   pair, at most `HELD_REJECTS_PER_ACCOUNT` a local account), and the same family records it again with its original
   id; nothing else is confirmed for sending while the recipient is unavailable (docs/visibility.md, "Held
   handshakes"). An account that
-  moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields or
-  emojis, the default images), and an unavailable account shows `moved: null` with its target not read, as
+  moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields, emojis or
+  image descriptions, the default images), and an unavailable account shows `moved: null` with its target not read, as
   REST::AccountSerializer does (`test/account-moved.test.ts`). _Enforced (main)._ Implementation, for accounts:
   `src/domain/remote-suspension.ts`, `actOnAccount` and `unsuspendAdminAccount` in `src/domain/admin-accounts.ts`,
   `availableSql` in `src/domain/audience.ts`, the gate in `receive` in `src/domain/inbox.ts`, `upsertRemoteActor` in
@@ -3035,10 +3035,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   U+FFFD of three bytes), so the display name is read through a cut of 8,192 stored bytes (`displayNameReadSql`, which
   cuts no value a writer stores) and both are bounded again after decoding: the display name at 2,048 code points
   (`presentedDisplayName`) and the bio `''` past 64 KiB of JSON (`presentedNote`), in every Account and in
-  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The local actor's `name` and `summary` read
-  both as stored (#1583). Mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and
-  derive `acct` and a fallback url from the cut username; the admin account search reads candidates' ids and flags only
-  and tests their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
+  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The image descriptions are stored within 150
+  characters, 600 UTF-8 bytes and no NUL, and the display settings as the integer 0 or 1 (the triggers of migration
+  `0096_profile_descriptions`, for imports too), and read as stored; since 0xFF and 599 continuation bytes pass as one
+  character and decode to 600 U+FFFD, each description is cut again at 150 code points after decoding
+  (`presentedProfileDescription`), at most 902 JSON bytes, and is `''` while the account is unavailable
+  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` read both as stored (#1583). Mentions
+  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
+  from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
+  actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the

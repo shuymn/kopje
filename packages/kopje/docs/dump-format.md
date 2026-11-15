@@ -452,6 +452,15 @@ Notification policies' bot condition (migration `0095_notification_policy_bots`)
 restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
 legacy data has no row.
 
+Profile image descriptions and display settings (migration `0096_profile_descriptions`): `accounts.avatar_description`
+and `header_description` are text of at most 600 UTF-8 bytes, with no NUL and at most 150 characters as SQLite counts
+them, `''` for none; `show_featured`, `show_media` and `show_media_replies` are the integer 0 or 1. Column affinity
+applies first, so a number written to a description is stored as its text, and numeric text (`'1'`, `' 1'`, `'1.0'`)
+written to a setting as the integer. Anything else, NULL included, fails with `accounts: profile setting past its
+stored bound`. A description of malformed bytes that SQLite counts as fewer characters is presented cut at 150 code
+points after decoding. A dump taken before 0096 has none of these columns: it restores into a Store at its own
+migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
