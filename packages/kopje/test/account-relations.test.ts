@@ -464,6 +464,7 @@ describe("account batches with stale statistics (RES-7)", () => {
       accounts: await plannedRun(h, /^SELECT .* FROM accounts a/s, getAccounts, {
         ids: requested,
         present: { origin: "https://kopje.test" },
+        credential: null,
       }),
     });
     const { before, after } = await staleStatistics(h, {
@@ -474,7 +475,7 @@ describe("account batches with stale statistics (RES-7)", () => {
     });
     expect(after.relationships.result).toEqual(before.relationships.result);
     expect(after.accounts.result).toEqual(before.accounts.result);
-    expect((after.accounts.result as unknown[]).length).toBe(3);
+    expect(after.accounts.result).toMatchObject({ status: "ok", value: { length: 3 } });
     for (const [name, { plans }] of Object.entries(after)) {
       expect(plans, name).toHaveLength(1);
       const { plan, rows } = plans[0]!;

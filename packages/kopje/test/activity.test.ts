@@ -2,8 +2,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { lookupAccount } from "../src/domain/accounts";
-import { noteActivity } from "../src/domain/auth";
 import { INSTANCE_COUNTS_SQL, instanceInfo } from "../src/domain/instance";
+import { noteActivity } from "../src/domain/instance-activity";
 import { ACTIVITY_MEMO_LIMIT, ActivityMemo } from "../src/mastodon/activity";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
@@ -15,9 +15,9 @@ import { storeWith } from "./setup-helpers";
 import { community } from "./status-helpers";
 import { signIn } from "./web-helpers";
 
-// RES-6: activity recording (domain/auth.ts noteActivity, mastodon/activity.ts). At most one Store call per isolate,
-// token and UTC day after the response, at most one row write per account and UTC day, by key only; what it may not
-// write, and how a failure leaves the day to a later request.
+// RES-6: activity recording (domain/instance-activity.ts noteActivity, mastodon/activity.ts). At most one Store call
+// per isolate, token and UTC day after the response, at most one row write per account and UTC day, by key only; what
+// it may not write, and how a failure leaves the day to a later request.
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
@@ -353,9 +353,14 @@ describe("activity plans with stale statistics (RES-7)", () => {
             };
           },
         } as unknown as SqlStorage;
-        const account = lookupAccount.run(observed, { username: "DUP", domain: "remote.test", present });
+        const account = lookupAccount.run(observed, {
+          username: "DUP",
+          domain: "remote.test",
+          present,
+          credential: null,
+        });
         const info = instanceInfo.run(observed, { now: NOW, storeNow: NOW, present });
-        return { id: account?.id, contact: info.contactAccount?.id, seen };
+        return { id: account.status === "ok" ? account.value?.id : undefined, contact: info.contactAccount?.id, seen };
       });
     await sql(h.store, "INSERT INTO instance_settings (name, value) VALUES ('contact_username', 'dup@remote.test')");
     await duplicates(1, 1);

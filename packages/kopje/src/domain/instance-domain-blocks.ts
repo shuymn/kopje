@@ -370,8 +370,8 @@ function* publicBlocks(db: Db, rationale: boolean): Generator<PublicDomainBlock>
 
 // The public block list, as Mastodon's controller serves it (VIS-30): a suspended user's token is refused first
 // (require_not_suspended!, 403), then show_domain_blocks decides (absent: disabled): `all` lists to anyone, `users`
-// to a user's valid token, `disabled` to no one (null: Mastodon's empty 404). An unknown, expired or stale token and
-// an app token read as anonymous. show_domain_blocks_rationale decides the comments alike. RES-3: the blocks are
+// to a user's valid token, `disabled` to no one (null: Mastodon's empty 404). An unknown token, an expired or stale
+// one of an available user and an app token read as anonymous. show_domain_blocks_rationale decides the comments alike. RES-3: the blocks are
 // admitted whole in domain order within ARRAY_ANSWER_BYTES, with no continuation; rows read are at most the admitted
 // ones and one chunk.
 export const publicDomainBlocks = readOperation<

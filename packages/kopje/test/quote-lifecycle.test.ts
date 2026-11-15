@@ -98,7 +98,6 @@ const refOf = (ref: AnswerRef) => ({
   type: ref.type,
   actor: ref.type === null ? null : L,
   object: ref.object,
-  instrument: ref.instrument,
 });
 
 // The peer's message as the Worker hands it to the Store.
@@ -1267,7 +1266,7 @@ type P2Action =
   | { k: "lRevoke" | "lDeleteQuote"; i: number }
   | { k: "lDeleteSl"; s: number }
   | { k: "qr"; actor: number; object: number; owner: number; existing: boolean; reuse: boolean }
-  | { k: "answer"; accept: boolean; embedded: boolean; actor: number; stamp: number; i: number }
+  | { k: "answer"; accept: boolean; embedded: false | "ours" | "other"; actor: number; stamp: number; i: number }
   | { k: "stampDelete"; actor: number; stamp: number; proven: boolean }
   | { k: "note"; variant: number; update: boolean }
   | { k: "jobs" };
@@ -1293,7 +1292,7 @@ const p2Arb: fc.Arbitrary<P2Action> = fc.oneof(
     arbitrary: fc.record({
       k: fc.constant("answer" as const),
       accept: fc.boolean(),
-      embedded: fc.boolean(),
+      embedded: fc.constantFrom(false as const, "ours" as const, "other" as const),
       actor: fc.constantFrom(0, 0, 0, 1),
       stamp: fc.nat(3),
       i: pick,
@@ -1436,14 +1435,16 @@ async function p2Act(w: PolicyWorld, a: P2Action): Promise<void> {
       const actor = ACTORS[a.actor]!;
       const uri = uriOf(w, label)!;
       const quoted = p.quotes.get(label)?.quoted;
-      const ref: AnswerRef = a.embedded
-        ? {
-            id: `${new URL(actor).origin}/requests/p2-${++p2Sequence}`,
-            type: "QuoteRequest",
-            object: quoted == null ? null : (uriOf(w, quoted) ?? null),
-            instrument: uri,
-          }
-        : { id: `${uri}#quote-request`, type: null, object: null, instrument: null };
+      // An inlined QuoteRequest names our request under its id, and nothing under another.
+      const ref: AnswerRef =
+        a.embedded === false
+          ? { id: `${uri}#quote-request`, type: null, object: null }
+          : {
+              id:
+                a.embedded === "ours" ? `${uri}#quote-request` : `${new URL(actor).origin}/requests/p2-${++p2Sequence}`,
+              type: "QuoteRequest",
+              object: quoted == null ? null : (uriOf(w, quoted) ?? null),
+            };
       const id = `${actor}#answers/p2-${++p2Sequence}`;
       await receive(
         w,
@@ -2072,7 +2073,7 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     const [q1, q2] = [uriOf(w, "LQ1")!, uriOf(w, "LQ2")!];
     const s = `${R}/quote_authorizations/shared`;
     const answer = (uri: string, type: "Accept" | "Reject"): Msg => {
-      const ref = { id: `${uri}#quote-request`, type: null, object: null, instrument: null };
+      const ref = { id: `${uri}#quote-request`, type: null, object: null };
       return type === "Accept"
         ? { type, id: `${R}#accepts/${uri}`, ref, result: s }
         : { type, id: `${R}#rejects/${uri}`, ref };
@@ -2249,7 +2250,7 @@ describe("quote lifecycle witnesses", { timeout: 60_000 }, () => {
     await lPost(w, 0);
     const q1 = uriOf(w, "LQ1")!;
     const s = `${R}/quote_authorizations/c21`;
-    const ref = { id: `${q1}#quote-request`, type: null, object: null, instrument: null };
+    const ref = { id: `${q1}#quote-request`, type: null, object: null };
     await receive(w, R, { type: "Accept", id: `${R}#accepts/c21`, ref, result: s }, true, -1, "receive");
     expect(await stateOf(w, "LQ1")).toBe("accepted");
     await receive(w, F, { type: "StampDelete", id: `${s}#delete-f`, object: s, proven: true }, false, -1, "receive");

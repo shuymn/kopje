@@ -18,7 +18,7 @@ import { addToConversation } from "./conversations";
 import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_CLEARS, NOTIFICATION_DISMISSALS, runJobItem } from "./job-attempts";
 import { presentReport, type Report } from "./report-presenter";
-import { presentation, type Status, statusStream } from "./status-presenter";
+import { presentation, type PresentOptions, type Status, statusStream } from "./status-presenter";
 import { readWindow, windowJson, windowOf, windowPage } from "./windows";
 
 // The follow and follow request notifications of a follow (?2 following ?1) as it ends, as Mastodon destroys them with
@@ -327,7 +327,7 @@ function* notificationStream(
   db: Db,
   rows: readonly WithVisibleStatus<NotificationRow, "status_id">[],
   viewer: UserContext,
-  present: Present,
+  present: Present & Pick<PresentOptions, "proper">,
 ): Generator<Notification | undefined, undefined> {
   const statusIds = [...new Set(rows.flatMap((row) => (row.status_id === null ? [] : [row.status_id])))];
   const shared = presentation(db, statusIds, { ...present, viewer });
@@ -465,15 +465,18 @@ export const listNotifications = userReadOperation<ListNotificationsInput, Page<
 );
 
 export const getNotification = userReadOperation<{ id: string; present: Present }, Notification | null>(
-  // Api::V1::NotificationsController#show finds any of the viewer's notifications, filtered or not.
-  (db, { id, present }, _viewer, viewer) => notificationById(db, viewer, id, present, true),
+  // Api::V1::NotificationsController#show finds any of the viewer's notifications, filtered or not, and renders it
+  // without relationships (index passes them), so a boost it names shows its original's flags (PresentOptions.proper).
+  (db, { id, present }, _viewer, viewer) => notificationById(db, viewer, id, { ...present, proper: true }, true),
 );
 
 // R33 for a `notification` event (domain/streaming.ts): the viewer's notification list positioned at notification
 // `id`, which is the list read (R15, unfiltered and kept, any type) restricted to that id, since ids are unique; and
 // its presentation. Null when the list would not show it now.
 export function streamedNotification(db: Db, viewer: UserContext, id: string, present: Present): Notification | null {
-  return notificationById(db, viewer, id, present, false);
+  // NotifyService#push_to_streaming_api! renders the notification without relationships (InlineRenderer), so a boost
+  // it names shows its original's flags (PresentOptions.proper); an imported row can name one.
+  return notificationById(db, viewer, id, { ...present, proper: true }, false);
 }
 
 // The mention reference of R33 (domain/streaming.ts), for `status.update` on `user` (with a notification scope) and on
@@ -508,7 +511,7 @@ function notificationById(
   db: Db,
   viewer: UserContext,
   id: string,
-  present: Present,
+  present: Present & Pick<PresentOptions, "proper">,
   includeFiltered: boolean,
 ): Notification | null {
   if (!isIntegerKey(id)) {

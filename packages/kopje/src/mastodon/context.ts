@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 
 import type { Present } from "../domain/accounts";
 import type { StoredKey } from "../domain/actors";
-import type { AuthFailure, Authorized, Credential, UserCredential } from "../domain/auth";
+import type { AuthFailure, Authorized, Credential, Suspended, UserCredential } from "../domain/auth";
 import type { ResolutionStart } from "../domain/inbox";
 import type { Resolved } from "../domain/remote-statuses";
 import { webPushKeys } from "../platform/config";
@@ -42,7 +42,9 @@ export type AuthorSignature = { activity: Record<string, unknown>; keyId: string
 // every API route: null on a public route. It is not validated there; the Store validates it in the operation.
 type RequestCredential = { tokenHash: string; scope: RequiredScope | null };
 
-export type ApiEnv = { Bindings: Env; Variables: { credential: RequestCredential | null } };
+// ownerJudged: on an anonymous route with a token, whether an operation judged the token's owner (judged), so the
+// access middleware does not judge the answer again.
+export type ApiEnv = { Bindings: Env; Variables: { credential: RequestCredential | null; ownerJudged: boolean } };
 
 export type ApiContext = Context<ApiEnv>;
 
@@ -107,6 +109,22 @@ export function authorized<O>(result: Authorized<O>): O {
     throw authError(result.status);
   }
   return result.value;
+}
+
+// The answer of an anonymous route's operation that judged the token's owner (refuseSuspended, domain/auth.ts): the
+// request is marked judged, and a suspended owner's answer is the 403.
+export function judged<R extends { status: string }>(c: ApiContext, result: R | Suspended): Exclude<R, Suspended> {
+  c.set("ownerJudged", true);
+  if (result.status === "suspended") {
+    throw authError("suspended");
+  }
+  return result as Exclude<R, Suspended>;
+}
+
+// A suspended owner's 403, in place of any answer of an anonymous route (mastodon/access.ts).
+export function suspendedError(): Response {
+  const { status, message } = AUTH_ERRORS.suspended;
+  return mastodonError(status, message);
 }
 
 // The error answer to an authorization failure, carried to the app's error handler; an invalid token's carries its

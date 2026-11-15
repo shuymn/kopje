@@ -2158,7 +2158,11 @@ describe("the moved-to account (RES-3)", () => {
             target,
           );
         }
-        const m = await measured(t, getAccount as never, { id: source, present: { origin: ORIGIN } } as never);
+        const m = await measured(
+          t,
+          getAccount as never,
+          { id: source, present: { origin: ORIGIN }, credential: null } as never,
+        );
         const [rows] = [...m.heaps].filter(([query]) => query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns)));
         expect(rows![1].rows).toBe(MOVED_ACCOUNT_MAXIMA.rows);
         const heap = 64 + [...rows![1].columns.values()].reduce((sum, column) => sum + column.total, 0);
@@ -2201,7 +2205,11 @@ describe("static images (RES-2, RES-3)", () => {
       ).toEqual([{ n: STATIC_URL_LIMIT }]);
       const source = await maximalAccount(t, true);
       await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", ALICE, source);
-      const m = await measured(t, getAccount as never, { id: source, present: { origin: ORIGIN } } as never);
+      const m = await measured(
+        t,
+        getAccount as never,
+        { id: source, present: { origin: ORIGIN }, credential: null } as never,
+      );
       const [rows] = [...m.heaps].filter(([query]) => query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns)));
       expect(64 + [...rows![1].columns.values()].reduce((sum, column) => sum + column.total, 0)).toBeLessThanOrEqual(
         MOVED_ROW_HEAP_MAX,
@@ -2209,8 +2217,9 @@ describe("static images (RES-2, RES-3)", () => {
       const moved = (m.answer as { moved: Record<string, string> }).moved;
       expect(jsonBytes(moved)).toBeLessThanOrEqual(MOVED_ACCOUNT_JSON_MAX);
       expect(moved.avatar_static).toBe(typeof still === "string" ? still : image);
-      const full = (await measured(t, getAccount as never, { id: ALICE, present: { origin: ORIGIN } } as never))
-        .answer as Record<string, string>;
+      const full = (
+        await measured(t, getAccount as never, { id: ALICE, present: { origin: ORIGIN }, credential: null } as never)
+      ).answer as Record<string, string>;
       for (const key of ["avatar", "avatar_static", "header", "header_static"]) {
         expect(utf8Length(JSON.stringify(full[key])), key).toBeLessThanOrEqual(PROFILE_URL_LIMIT + 2);
       }
@@ -2395,7 +2404,7 @@ describe("remote field verification (RES-3)", () => {
       `https://${HOST}/users/${id}`,
       links,
     );
-    const m = await measured(t, getAccount as never, { id, present: { origin: ORIGIN } } as never);
+    const m = await measured(t, getAccount as never, { id, present: { origin: ORIGIN }, credential: null } as never);
     const fields = (m.answer as { fields: { value: string; verified_at: string | null }[] }).fields;
     expect(fields.filter((field) => field.verified_at !== null).length).toBe(REMOTE_VERIFIED_SHOWN);
     expect(jsonBytes(fields)).toBeLessThanOrEqual(REMOTE_FIELDS_JSON_MAX);
@@ -2534,7 +2543,11 @@ describe("the table of maxima (RES-3)", () => {
       const id = await maximalAccount(t, false, fill);
       for (const set of ["username = '! ' || id", "url = NULL"]) {
         await sql(t.store, `UPDATE accounts SET ${set} WHERE id = ?`, id);
-        const { answer } = await measured(t, getAccount as never, { id, present: { origin: ORIGIN } } as never);
+        const { answer } = await measured(
+          t,
+          getAccount as never,
+          { id, present: { origin: ORIGIN }, credential: null } as never,
+        );
         expect(answer).toMatchObject({ username: id, acct: `${id}@handle.invalid`, invalid_handle: true });
         expect(jsonBytes(answer)).toBeLessThanOrEqual(FILL_SHAPES[fill].account.json);
       }

@@ -27,6 +27,7 @@ import {
   authorized,
   credential,
   credential as tokenCredential,
+  judged,
   optionalCredential,
   optionalTokenCredential,
   present,
@@ -334,7 +335,11 @@ export const removeHeader = removeProfileImage("header");
 
 export const getAccount: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
-  const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
+  const credential = optionalTokenCredential(c, deps);
+  const account = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c), credential })),
+  ).value;
   return account === null ? recordNotFound() : c.json(account);
 };
 
@@ -345,7 +350,10 @@ export const getAccounts: ApiHandler = withParams(async (c, deps, p) => {
   if (ids.length > MAX_ACCOUNTS_BY_ID) {
     return mastodonError(422, "Mastodon::ValidationError");
   }
-  return c.json(await storeCall(c, deps, (s, b) => s.getAccounts(b, { ids, present: present(c) })));
+  const credential = optionalTokenCredential(c, deps);
+  return c.json(
+    judged(c, await storeCall(c, deps, (s, b) => s.getAccounts(b, { ids, present: present(c), credential }))).value,
+  );
 });
 
 // POST /api/v1/accounts (AccountsController#create): Kopje has no open registration, so it answers as Mastodon does
@@ -373,7 +381,11 @@ export const lookupAccount: ApiHandler = async (c, deps) => {
     return recordNotFound();
   }
   const domain = host === null || host === new URL(c.req.url).host ? null : host;
-  const account = await storeCall(c, deps, (s, b) => s.lookupAccount(b, { username, domain, present: present(c) }));
+  const credential = optionalTokenCredential(c, deps);
+  const account = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.lookupAccount(b, { username, domain, present: present(c), credential })),
+  ).value;
   return account === null ? recordNotFound() : c.json(account);
 };
 
