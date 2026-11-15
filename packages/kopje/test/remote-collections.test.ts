@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { FEATURED_COUNT_WINDOW, MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
+import { QUOTE_HOPS } from "../src/domain/quotes";
 import {
   ALL_PARTS,
   type CollectionCounts,
@@ -21,6 +22,7 @@ import {
   syncCollections,
 } from "../src/federation/collections";
 import { DOCUMENT_BODY_LIMIT, MAX_REDIRECTS, REQUEST_MAX_BYTES, REQUEST_MAX_FETCHES } from "../src/federation/loader";
+import { verifyQuotes } from "../src/federation/quotes";
 import { MAX_ACCOUNT_COUNT } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { countingStore, harness, inboxDeps, NOW } from "./app-helpers";
@@ -29,6 +31,7 @@ import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
+  accountId,
   ALICE,
   ALICE_URI,
   AS,
@@ -37,6 +40,7 @@ import {
   followed,
   mastodonNote,
   nextId,
+  type Note,
   OTHER,
   PUBLIC,
   remove,
@@ -44,6 +48,7 @@ import {
   setup,
   update,
 } from "./inbox-status-helpers";
+import { quoting, serveFeatured, serveStamp } from "./quote-helpers";
 
 // A remote account's pinned statuses, featured hashtags and hide_collections (Mastodon 4.5's ActivityPub::Activity::Add
 // and Remove, FetchFeaturedCollectionService, FetchFeaturedTagsCollectionService and
@@ -961,6 +966,126 @@ describe("a round’s claim of a sync", () => {
     expect(await sql(t.store, "SELECT generation, read_through FROM collection_syncs")).toEqual([
       { generation: 1, read_through: 0 },
     ]);
+  });
+});
+
+describe("ends discovery at a synced pin", () => {
+  // A sync stores the synced account's own statuses with no quote budget and promotes none it holds (RES-6), so it
+  // leads to no other author. Each chain has more authors than a quote budget has links, each on a server of its own,
+  // and starts with a delivered activity.
+  const LINKS = QUOTE_HOPS + 3;
+
+  // Every job round's collection syncs and quote verifications, as the Queue and cron run them, until none is due.
+  async function allRounds(t: Setup) {
+    const at = deps(t);
+    for (let round = 0; ; round++) {
+      expect(round).toBeLessThan(50);
+      const syncing = await syncCollections(t.env, at);
+      const verifying = await verifyQuotes(t.env, at);
+      if (!syncing && !verifying && (await rows(t, "collection_syncs"))[0]!.n === 0) {
+        return;
+      }
+    }
+  }
+
+  async function authors(t: Setup): Promise<TestActor[]> {
+    const made: TestActor[] = [];
+    for (let i = 0; i < LINKS; i++) {
+      made.push(await mastodonActor(t.web, `a${i}`, { origin: `https://a${i}.example`, key: 10 + i }));
+    }
+    return made;
+  }
+
+  // `author`'s status quoting `target` by `quoted`, under a valid stamp of `quoted`, served.
+  function quotingServed(t: Setup, author: TestActor, target: string, quoted: TestActor): Note {
+    const stamp = `${quoted.uri}/quote_authorizations/${nextId()}`;
+    const note = quoting(author, target, stamp);
+    serveStamp(t.web, stamp, quoted, note.id, target);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    return note;
+  }
+
+  const quoteOf = async (t: Setup, uri: string) =>
+    (
+      await sql<{ state: string; hops: number; verify_after: number | null }>(
+        t.store,
+        "SELECT q.state, q.hops, q.verify_after FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
+        uri,
+      )
+    )[0];
+
+  const requested = (t: Setup, actor: TestActor) =>
+    t.web.fetched.some((url) => url.startsWith(new URL(actor.uri).origin));
+
+  it("leaves a new pin's quote unworked: the next author is never requested (chain 1)", async () => {
+    const t = await setup();
+    const a = await authors(t);
+    // Aᵢ pins Pᵢ, which quotes Sᵢ₊₁ by Aᵢ₊₁.
+    const s = a.map((author) => mastodonNote(author));
+    const p = a.slice(0, -1).map((author, i) => quotingServed(t, author, s[i + 1]!.id, a[i + 1]!));
+    a.forEach((author, i) => {
+      t.web.serve(s[i]!.id, { "@context": AS, ...s[i] });
+      serveFeatured(t.web, author, i < p.length ? [p[i]!.id] : []);
+    });
+    await followed(t, a[0]!);
+    expect(await t.post(a[0]!, create(a[0]!, s[0]!))).toBe(202);
+    await allRounds(t);
+    expect(await pinned(t, (await accountId(t.store, a[0]!.uri))!, null)).toEqual([p[0]!.id]);
+    expect(await quoteOf(t, p[0]!.id)).toEqual({ state: "pending", hops: 0, verify_after: null });
+    for (const author of a.slice(1)) {
+      expect(requested(t, author)).toBe(false);
+      expect(await accountId(t.store, author.uri)).toBeUndefined();
+    }
+
+    // The same pin delivered in an Add (after a Remove: an Add of a pinned status changes nothing) arrives as a root:
+    // its quote is verified, which stores A₁, whose sync stores P₁ with its quote unworked in turn.
+    expect(await t.post(a[0]!, addOrRemove("Remove", a[0]!, p[0]!.id))).toBe(202);
+    expect(await t.post(a[0]!, addOrRemove("Add", a[0]!, p[0]!.id))).toBe(202);
+    await allRounds(t);
+    expect(await quoteOf(t, p[0]!.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
+    expect(t.web.fetched).toEqual(expect.arrayContaining([s[1]!.id, a[1]!.uri, featuredOf(a[1]!), p[1]!.id]));
+    expect(await quoteOf(t, p[1]!.id)).toEqual({ state: "pending", hops: 0, verify_after: null });
+    for (const author of a.slice(2)) {
+      expect(requested(t, author)).toBe(false);
+    }
+  });
+
+  it("promotes no pin it holds: the quoted chain stops at its budget (chain 2)", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const a = await authors(t);
+    // Pᵢ by Aᵢ quotes Pᵢ₊₁ by Aᵢ₊₁, and Aᵢ's featured collection lists Pᵢ; bob's delivered status quotes P₀.
+    const last = mastodonNote(a.at(-1)!);
+    t.web.serve(last.id, { "@context": AS, ...last });
+    const p: Note[] = [last];
+    for (let i = LINKS - 2; i >= 0; i--) {
+      p.unshift(quotingServed(t, a[i]!, p[0]!.id, a[i + 1]!));
+    }
+    a.forEach((author, i) => serveFeatured(t.web, author, [p[i]!.id]));
+    await followed(t, bob);
+    const root = quotingServed(t, bob, p[0]!.id, a[0]!);
+    expect(await t.post(bob, create(bob, root))).toBe(202);
+    await allRounds(t);
+    // P₀ is stored by verification at one hop less, P₁ at none; A₀'s and A₁'s syncs find them held and pin them.
+    expect(await quoteOf(t, root.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
+    expect(await quoteOf(t, p[0]!.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS - 1 });
+    expect(await quoteOf(t, p[1]!.id)).toEqual({ state: "pending", hops: 0, verify_after: null });
+    for (const i of [0, 1]) {
+      expect(await pinned(t, (await accountId(t.store, a[i]!.uri))!, null)).toEqual([p[i]!.id]);
+    }
+    for (const author of a.slice(2)) {
+      expect(requested(t, author)).toBe(false);
+    }
+
+    // The same P₁ delivered in an Add is promoted: its quote is verified, which stores P₂ and A₂.
+    expect(await t.post(a[1]!, addOrRemove("Remove", a[1]!, p[1]!.id))).toBe(202);
+    expect(await t.post(a[1]!, addOrRemove("Add", a[1]!, p[1]!.id))).toBe(202);
+    await allRounds(t);
+    expect(await quoteOf(t, p[1]!.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
+    expect(t.web.fetched).toEqual(expect.arrayContaining([p[2]!.id, a[2]!.uri]));
+    for (const author of a.slice(4)) {
+      expect(requested(t, author)).toBe(false);
+    }
   });
 });
 

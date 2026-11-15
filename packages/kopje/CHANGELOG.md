@@ -93,6 +93,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
+  there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
+  way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"; RES-6 in
+  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. No Store migration and no
+  `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

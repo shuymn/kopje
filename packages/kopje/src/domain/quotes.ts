@@ -81,7 +81,8 @@ export type StoreRemoteStatus = typeof storeRemoteStatus;
 // quoted target during verification gets one hop less of work, so one traversal stops two levels below the status
 // that arrived; a status that arrives again as a root promotes its quote back to the full budget (promoteQuote).
 
-// The work budget of a quote whose status arrived as a root (delivered, boosted, searched, fetched as a pin).
+// The work budget of a quote whose status arrived as a root: delivered, boosted, added to its author's featured
+// collection or resolved by a user. A collection sync's pin gets none (remote-collections.ts completePinFetches).
 export const QUOTE_HOPS = 2;
 // Quotes one job round verifies at most, oldest due first, within one request's fetch budget.
 export const QUOTE_ROUND = 10;

@@ -3709,7 +3709,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   due). A status stored for a verification gets one hop less of work, so one traversal stops two levels below the
   status that arrived, however long a chain of quotes; a failed verification is retried five times (1, 5, 30, 120 and
   720 minutes later), then given up until its status arrives
-  again. A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
+  again. Only a delivered activity or a user's request gives a status's quote its budget or renews it; a collection
+  sync's pin, newly fetched or already stored, gets none and renews none (`completePinFetches`, `replacePins` in
+  `src/domain/remote-collections.ts`), so a sync stores only its account's own statuses and leads to no other account
+  (`test/quotes.test.ts` ("gives or renews a quote budget only from outside paths"), `test/remote-collections.test.ts`
+  ("ends discovery at a synced pin")).
+  A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
   500 rows counted with `total_changes()` (a row and its count trigger), the first in the request and the rest in the
   inbound job rounds, each of which runs at most 100 revocation batches (`REVOCATION_BATCHES`) within one 500-row
   allowance, every batch's rows counted against it (a failed one's rolled-back writes included) and its retry state's
