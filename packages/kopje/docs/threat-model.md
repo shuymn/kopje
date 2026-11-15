@@ -2772,7 +2772,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
   image metadata walk: `test/image-bytes.test.ts` ("walks a worst-case file at the upload bound"). Remote HTML:
-  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"). _Enforced (main)_ for JSON-LD
+  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"). Stripping request and remote text:
+  _Enforced (main):_ each strip scans the ends it strips by index (`src/platform/strip.ts`); `test/accounts.test.ts`
+  ("filling the body within a generous time"), `test/polls.test.ts` ("reads a choice filling the body within a generous
+  time"), `test/error-pages.test.ts` ("reads an Accept header at the request header limit within a generous time"),
+  `test/link-details.test.ts` ("reads a round of headlines at the JSON-LD cap within a generous time").
+  _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD

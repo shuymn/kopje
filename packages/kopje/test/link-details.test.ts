@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CARD_ROUND_CLAIMS } from "../src/domain/link-cards";
 import {
   CARD_OUTPUT_MAX_UNITS,
   CARD_SCAN,
@@ -231,6 +232,24 @@ describe("link details: the rules Kopje follows", () => {
     expect((await details(`<script type="application/ld+json">${ld}</script>`)).title).toBe("t");
     // U+00A0 is not Ruby's whitespace.
     expect((await details("<title> t</title>")).title).toBe(" t");
+  });
+
+  // The strip is linear (platform/strip.ts): a round's pages (CARD_ROUND_CLAIMS), each a JSON-LD script at the scan's
+  // cap (jsonLdChars) whose headline holds a run of spaces inside, are read within a generous time.
+  it("reads a round of headlines at the JSON-LD cap within a generous time", async () => {
+    const script = (headline: string) => JSON.stringify({ "@type": "WebPage", headline });
+    const headline = `x${" ".repeat(SCAN_LIMITS.jsonLdChars - script("xx").length)}x`;
+    const html = new TextEncoder().encode(`<script type="application/ld+json">${script(headline)}</script>`);
+    const scan = await scanHtml(html, { label: "utf-8", bomLength: 0 }, CARD_SCAN);
+    if ("failed" in scan) {
+      throw new Error(`scan failed: ${scan.failed}`);
+    }
+    expect(scan.jsonLd.map((raw) => raw.length)).toEqual([SCAN_LIMITS.jsonLdChars]);
+    const started = performance.now();
+    for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
+      expect(linkDetails(scan, ORIGINAL).title === headline).toBe(true);
+    }
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it("takes the first HTML <title> anywhere", async () => {

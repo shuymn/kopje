@@ -193,6 +193,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
   `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
   Mastodon's streaming does.
+- Text stripping takes linear time on long whitespace. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

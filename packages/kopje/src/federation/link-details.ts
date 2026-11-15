@@ -6,6 +6,7 @@ import { outputMaxUnits, type PageMeta, type PageScan, SCAN_LIMITS, type ScanLim
 import { httpUrl } from "../platform/http-url";
 import { railsBlank } from "../platform/rails-blank";
 import { CARD_URL_LIMIT, cardDimension, iframeDimension, presentedEmbedSrc } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 
 // A link card's fields from a scanned page (platform/html-scan.ts), as Mastodon's LinkDetailsExtractor reads them from
 // OpenGraph, JSON-LD and the title (app/lib/link_details_extractor.rb, v4.5.11). Pure: the round (link-cards.ts) bounds
@@ -46,8 +47,6 @@ const SUPPORTED_TYPES = new Set(["NewsArticle", "WebPage"]);
 // CDATA_JUNK_PATTERN (:10-18): a line holding only a CDATA opening or closing in comment style. Ruby's ^ and $ match at
 // line boundaries, and its \s* may span blank lines before it, as JavaScript's does with the m flag.
 const CDATA_JUNK = /^\s*(?:\/\*\s*<!\[CDATA\[\s*\*\/|\/\/\s*<!\[CDATA\[|\/\*\s*\]\]>\s*\*\/|\/\/\s*\]\]>)\s*$/gm;
-// Ruby's String#strip: NUL, tab, LF, VT, FF, CR and space at either end.
-const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -265,7 +264,7 @@ export function linkDetails(scan: PageScan, finalUrl: string): LinkDetails {
   const src = player === null ? null : presentedEmbedSrc(player);
   const [width, height] = [og("twitter:player:width"), og("twitter:player:height")];
   return {
-    title: title === null ? "" : title.replace(RUBY_STRIP, ""),
+    title: title === null ? "" : rubyStrip(title),
     description: decode(sd?.description ?? og("og:description") ?? metaContent(metas, "description", true)) ?? "",
     authorName: decode(sd?.authorName ?? og("og:author") ?? og("og:author:username")) ?? "",
     authorUrl: httpUrl(sd?.authorUrl ?? null)?.href ?? "",

@@ -16,6 +16,7 @@ import {
   UPDATE_DELAY_MS,
 } from "../src/domain/polls";
 import { endPolls } from "../src/jobs/scheduled";
+import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -166,6 +167,32 @@ describe("posting a poll", () => {
     await polled(h, alice, { options: ["a", family], expires_in: MIN_EXPIRATION_S });
     await polled(h, alice, { options: ["a", "b", "c", "d"], expires_in: MAX_EXPIRATION_S });
     expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 2 }]);
+  });
+
+  // The strip is linear (platform/strip.ts): a choice with a run inside, filling the body (API_BODY_LIMIT), is read
+  // within a generous time, with an invalid token (checked after the poll is read) and with alice's, whose 422 shows
+  // the choice reached its length check.
+  it("reads a choice filling the body within a generous time", async () => {
+    const h = await community(["alice"]);
+    const body = (choice: string) => ({ status: "q", poll: { options: ["a", choice], expires_in: 300 } });
+    const choice = `x${" ".repeat(API_BODY_LIMIT - JSON.stringify(body("xx")).length)}x`;
+    expect(JSON.stringify(body(choice))).toHaveLength(API_BODY_LIMIT);
+    for (const [token, expected] of [
+      ["nope", { status: 401 }],
+      [
+        h.users.alice.token,
+        {
+          status: 422,
+          body: { error: `Validation failed: Choices cannot be longer than ${MAX_OPTION_CHARS} characters each` },
+        },
+      ],
+    ] as const) {
+      const started = performance.now();
+      const response = await h.request("/api/v1/statuses", bearer(token, json(body(choice))));
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(await refusal(response)).toMatchObject(expected);
+    }
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
   });
 
   it("takes media with a poll, as Mastodon 4.6 does", async () => {
