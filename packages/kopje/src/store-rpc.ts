@@ -181,6 +181,8 @@ export const STORE_RPC = {
   claimReplyWalk: replyWalks.claimReplyWalk,
   completeReplyStep: replyWalks.completeReplyStep,
   releaseReplyWalk: replyWalks.releaseReplyWalk,
+  // A context read's start of a refresh (mastodon/statuses.ts statusContext).
+  startRepliesRefresh: replyWalks.startRepliesRefresh,
 
   // Verification of local profile links (domain/field-links.ts): claimed, recorded and finished by the cron's round
   // (federation/field-links.ts).

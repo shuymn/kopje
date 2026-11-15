@@ -10,6 +10,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- A signed-in read of a remote public or unlisted status's context fetches its replies collection in the background, as
+  Mastodon 4.7.5 does, and answers with `Mastodon-Async-Refresh` while that runs, a header the API exposes to browser
+  clients. A refresh reads at most 200 statuses and 100 collection documents (Mastodon: 1,000 and 500), from 5 minutes
+  after the status was published and at most every 15 minutes, and at most 16 run at once
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). The replies it fetches notify as
+  other fetched statuses do, only when published within the last 6 hours. Migration `0099_reply_walks`: two empty tables
+  and their indexes, kept out of dumps; as it creates a table, the upgrade checks every reference of the Store (7,059 ms
+  for this file in one local run of the migration bench, at a load average of 6 to 8). `wrangler.jsonc`: unchanged. This
+  adds a Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time
+  restore.
 - Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
   `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`

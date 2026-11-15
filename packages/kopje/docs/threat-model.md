@@ -873,7 +873,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   explicit rule for a parent the viewer may not see; `reblogged_by` lists only `public` and `unlisted` boosts and both
   interactor lists only accounts the viewer may see; a write response (such as deleting a boost) applies VIS-1 to every
   status it embeds, and `source` appears only on the viewer's own status. Aggregate counters are excepted (see accepted
-  risks). Parent references follow Mastodon: `in_reply_to_id` and `in_reply_to_account_id` are shown even when the
+  risks), and so is a replies refresh's `result_count`, which counts the statuses the refresh created whoever may see
+  them, as Mastodon's (`test/async-refreshes.test.ts`, "starts for a signed-in reader and is named, while it runs, to
+  any reader"). Parent references follow Mastodon: `in_reply_to_id` and `in_reply_to_account_id` are shown even when the
   parent is hidden, because they belong to the reply (its ActivityPub object carries `inReplyTo` to every recipient);
   the parent itself stays behind VIS-1. _Enforced (main):_ `src/domain/status-presenter.ts`,
   `src/domain/statuses.ts`, `ACCOUNT_COLUMN_MAP` in `src/domain/account-columns.ts`; `test/statuses.test.ts` ("review
@@ -1820,13 +1822,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `/api/*`, `/oauth/token`, `/oauth/revoke`, `/oauth/userinfo` (bearer tokens), and for GET to the public documents
   `/.well-known/*`, `/nodeinfo/*` and local actor documents (`/ap/users/:username`), as Mastodon opens them, only.
   `/oauth/authorize`, `/admin/*`, `/setup` and the web UI send no CORS headers; the profile page `/@:username`, which
-  Mastodon opens, is open only in its ActivityPub form (the actor document), not as HTML. _Enforced (main):_ CORS is
-  added on those paths only (`API_CORS_PATHS` and `DOCUMENT_CORS_PATHS` in `src/app/app.ts`); `test/oauth.test.ts`
-  ("opens the API and token endpoints to browser clients, errors included", which also finds none on the consent
-  page), `test/federation.test.ts` ("documents open to browsers", "opens the profile page only as the actor document,
-  not as HTML"); UI routes send none even for a request with a foreign `Origin` (`test/web-pages.test.ts`,
-  `test/web-session.test.ts`), nor does `/setup`, preflight included (`test/setup.test.ts`). _Gap:_ no test sends
-  `/admin/*` a foreign `Origin`.
+  Mastodon opens, is open only in its ActivityPub form (the actor document), not as HTML. The API exposes `Link` and
+  `Mastodon-Async-Refresh` to scripts, the headers of Mastodon's list Kopje sends. _Enforced (main):_ CORS is added on
+  those paths only (`API_CORS_PATHS` and `DOCUMENT_CORS_PATHS` in `src/app/app.ts`); `test/oauth.test.ts` ("opens the
+  API and token endpoints to browser clients, errors included", which also finds none on the consent page),
+  `test/federation.test.ts` ("documents open to browsers", "opens the profile page only as the actor document, not as
+  HTML"), `test/async-refreshes.test.ts` ("exposes the header to browser clients"); UI routes send none even for a
+  request with a foreign `Origin` (`test/web-pages.test.ts`, `test/web-session.test.ts`), nor does `/setup`, preflight
+  included (`test/setup.test.ts`). _Gap:_ no test sends `/admin/*` a foreign `Origin`.
 - **WEB-4: the web UI applies WEB-1 to every state change.** Each form that changes state checks `Origin` and its
   session; a return or redirect target is a validated local path. _Enforced (main):_ every POST (profile, avatar,
   header, revoking an app, signing out other sessions, sign-out) first requires `Origin` equal to the instance origin

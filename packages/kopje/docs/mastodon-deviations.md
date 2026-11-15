@@ -504,6 +504,33 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
+Replies collections (the context's refresh; Mastodon's `ContextsController#show`, `FetchAllRepliesWorker` and
+`AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
+
+- A signed-in reader's context read of a remote public or unlisted status starts a refresh of its replies, as Mastodon
+  4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
+  `Mastodon-Async-Refresh` while it runs. Kopje also starts none while 16 run, where Mastodon has no such cap, nor while
+  the instance does not accept writes (the env's `MAINTENANCE=readonly`, the Store's readonly maintenance, an
+  unpublished import), a state Mastodon does not have; a read then answers as one not due. Accepted, 2026-11-16.
+- A refresh records at most 200 statuses, the root included, and reads at most 100 collection documents, each fetched
+  at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
+  ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
+  work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
+- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found
+  stored; a status listed whose parent is not such a reply is not stored, and a stored one is judged by its stored
+  parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
+  only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
+- Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
+  refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
+  quote one hop short of a delivered status's, so its quoted status is stored with no quote work of its own.
+  Accepted, 2026-11-16.
+- A refresh's id belongs to the status, as Mastodon's: a refresh started again while its record is kept (until an hour
+  after it finished, or a day after a start it never finished) keeps the id, running again with `result_count` 0. Once
+  the record is gone, the next refresh has a new id, where Mastodon's repeats. `result_count` counts the statuses the
+  latest refresh created, whoever may see them, as Mastodon's. Accepted, 2026-11-16.
+- A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
+  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does (#1607). Gap.
+
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
 - Kopje makes the report within the `generate` request and answers 200 `{}`; Mastodon answers 202 with

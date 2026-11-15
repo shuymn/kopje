@@ -4,6 +4,7 @@ import { sameOrigin } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql } from "../platform/stored-bounds";
+import { userWriteOperation } from "./auth";
 import { fetchedAuthor, type Prefetched } from "./inbox";
 import { writeOperation } from "./operation";
 import { QUOTE_HOPS } from "./quotes";
@@ -11,12 +12,17 @@ import { type DocumentRevision, isDeletedActor, type RemoteActorInput } from "./
 import type { RemoteStatusInput } from "./remote-status-reads";
 import { storeRemoteStatus } from "./remote-statuses";
 import {
+  recentlyRefreshed,
   REFRESH_FINISHED_MS,
   REFRESH_RUNNING_MS,
+  type Refresh,
+  refreshesFull,
   REPLIES_COOLDOWN_MS,
   REPLIES_INITIAL_WAIT_MS,
+  runningRefresh,
   walkRoot,
 } from "./reply-walk-reads";
+import { viewable } from "./statuses";
 
 // Walks of remote replies collections (Mastodon 4.7.5's ActivityPub::FetchAllRepliesWorker and
 // FetchAllRepliesService, which a context read starts: reply-walk-reads.ts), in the rows of migration
@@ -532,4 +538,47 @@ export const releaseReplyWalk = writeOperation.atStoreTime("now")<
     }
   }
   return dueWalk(db, now) !== undefined;
+});
+
+// ---- Starts (the context read's refresh: mastodon/statuses.ts statusContext)
+
+// A refresh's id: 32 lowercase hex characters, drawn when the status's walk row is created and kept on it, as
+// Mastodon's AsyncRefresh key belongs to the status.
+function newRefreshId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Starts a context refresh of the status `id` for a signed-in reader (Mastodon's ContextsController#show,
+// AsyncRefresh.create when should_fetch_replies?), deciding again in its own transaction what the context read
+// advised (reply-walk-reads.ts refreshDue): a status the reader may see (R3) that is a walk root published at least
+// REPLIES_INITIAL_WAIT_MS ago, with no refresh started within REPLIES_COOLDOWN_MS, while fewer than
+// MAX_RUNNING_REFRESHES run. A refresh already running is answered as it is. The status's row is created with a drawn
+// id, or a kept one (finished, or running past REFRESH_RUNNING_MS) is rewritten with its own: running from now with
+// result_count 0, its nodes replaced by the root's. Answers the running refresh, or null.
+export const startRepliesRefresh = userWriteOperation.atStoreTime("now")<{ id: string; now: number }, Refresh | null>((
+  db,
+  { id, now },
+  viewer,
+) => {
+  const statusId = viewable(db, viewer.accountId, id);
+  const root = statusId === null ? undefined : walkRoot(db, statusId, now);
+  if (statusId === null || root === undefined || !root.waited) {
+    return null;
+  }
+  if (recentlyRefreshed(db, statusId, now) || refreshesFull(db)) {
+    return runningRefresh(db, statusId, now);
+  }
+  db.run(
+    `INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes)
+		VALUES (?1, 0, ?2, ?3, ?3, 1, 1)
+		ON CONFLICT (status_id) DO UPDATE SET kind = 0,
+			refresh_id = COALESCE(reply_walks.refresh_id, excluded.refresh_id), queued_at = ?3, due_at = ?3,
+			finished_at = NULL, token = NULL, next_seq = 1, nodes = 1, pages = 0, result_count = 0`,
+    statusId,
+    newRefreshId(),
+    now,
+  );
+  db.run("DELETE FROM reply_walk_nodes WHERE status_id = ?", statusId);
+  db.run("INSERT INTO reply_walk_nodes (status_id, uri, seq, valid) VALUES (?, ?, 0, 1)", statusId, root.uri);
+  return runningRefresh(db, statusId, now);
 });
