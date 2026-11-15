@@ -4058,10 +4058,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   account has a follower on the reporter's server is two probes of at most `FOLLOWER_PROBE` (1,000) rows each (its
   followers, the server's accounts), so a private status of an account with more followers, on a server with more stored
   accounts, none of them in either window, is not attached (accepted). The admin's list filtered by reporter and
-  reported account reads `reports_pair_state` (no residual, however many others report the account), and a local
-  suspension's reach reads the account's reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account
-  read each, resumed by account id (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`,
-  `test/admin-suspension.test.ts` ("the account's reporters")).
+  reported account reads `reports_pair_state` (no residual, however many others report the account); every report
+  (`resolved` and `unresolved` both true) reads the two states' ranges of the filter's index, each cut at the limit
+  and merged by id, so at most 2 × limit index entries and 5 × limit + 1 rows (1,001 at the cap of 200) however many
+  reports lie around them (`test/admin-reports.test.ts` ("every report reads two ranges")); and a local suspension's
+  reach reads the account's reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account read each,
+  resumed by account id (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`, `test/admin-suspension.test.ts`
+  ("the account's reporters")).
   _Enforced (main)_ for trends (MD-5): the round reads the newest 4,000 public originals from yesterday 00:00 UTC, at
   most 100 hashtag rows of each and 8,000 in all, cut raw before any rule (materialized), returns at most 1,600 hashtag
   groups (each takes 5 of the 8,000 rows), keeps the first 400 whose names are well-formed and in their own normalized

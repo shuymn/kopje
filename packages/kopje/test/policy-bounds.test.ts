@@ -5053,19 +5053,19 @@ describe("the admin's report list reads a page, however many reports do not matc
   const CASES: Case[] = [
     {
       name: "unresolved",
-      filter: { resolved: false, accountId: null, targetAccountId: null },
+      filter: { state: "unresolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [{ reporter: A, target: T, resolved: true }],
     },
     {
       name: "resolved",
-      filter: { resolved: true, accountId: null, targetAccountId: null },
+      filter: { state: "resolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: true },
       bulk: [{ reporter: B, target: U, resolved: false }],
     },
     {
       name: "by reporter",
-      filter: { resolved: false, accountId: A, targetAccountId: null },
+      filter: { state: "unresolved", accountId: A, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5074,7 +5074,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by reported account",
-      filter: { resolved: false, accountId: null, targetAccountId: T },
+      filter: { state: "unresolved", accountId: null, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5083,7 +5083,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by both",
-      filter: { resolved: false, accountId: A, targetAccountId: T },
+      filter: { state: "unresolved", accountId: A, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },

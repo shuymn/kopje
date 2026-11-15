@@ -85,7 +85,7 @@ describe("the Store RPC returns a maximal answer of each family (RES-3)", () => 
       } as never),
       reports: await h.store.adminReports(BUILD, {
         credential: await as(admin, "admin:read:reports"),
-        filter: { resolved: false, accountId: null, targetAccountId: null },
+        filter: { state: "unresolved", accountId: null, targetAccountId: null },
         page: { limit: 100 },
         present,
       } as never),
