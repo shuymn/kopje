@@ -379,6 +379,11 @@ Accounts (the `Account` and credential account entities):
   stored entries, those that are a name and a value of strings within 255 code points each, in their order; a stored
   value past 16 KiB of JSON, or one that is not a JSON array, shows none. Mastodon presents every stored field.
   Kopje's own writer stores at most 4 within those limits, so only a converted or imported row can differ.
+- A remote account shows at most its first 16 fields, within 32 KiB of names and values as presented, each name cut at
+  255 UTF-16 code units and each value at 4,096 before it is sanitized (`remoteAttachmentSql` in
+  `src/domain/account-columns.ts`); Mastodon keeps 50 and cuts each at 2,047 characters. Each name and value is
+  stripped as Ruby's `strip` strips it, as Mastodon's `Account::Field` does, but after Kopje's cut where Mastodon
+  strips first, so a name or value whose leading whitespace pushes its text past the cut keeps less of it.
 - `noindex` is `false` for every local account, Mastodon's default: no setting stores it, and the profile and status
   pages do not ask search engines to skip them. A remote account shows none, as in Mastodon.
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is

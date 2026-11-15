@@ -1779,6 +1779,41 @@ describe("profile fields of remote accounts (HTML-1, HTML-3)", () => {
       { name: "Bad", value: '<a rel="nofollow noopener" target="_blank">x</a>', verified_at: null },
     ]);
   });
+
+  // Account::Field#sanitize strips each name and value as Ruby's String#strip does (NUL, tab, LF, VT, FF, CR and space)
+  // before it is cut, scanned for emoji and shown.
+  it("strips remote field names and values as Ruby", async () => {
+    const t = await setup();
+    const far = {
+      id: `${MASTODON}/emojis/far`,
+      type: "Emoji",
+      name: ":far:",
+      updated: "2026-10-01T00:00:00Z",
+      icon: { type: "Image", mediaType: "image/png", url: `${MASTODON}/emoji/far.png` },
+    };
+    const bob = await mastodonActor(t.web, "bob", {
+      extra: {
+        attachment: [
+          { type: "PropertyValue", name: "\t Site \n", value: ' <a href="https://example.com/">example.com</a>\n' },
+          { type: "PropertyValue", name: "\u00a0Wide\u3000", value: "\u00a0v\u3000" },
+          // 137 code points, which the projection keeps; 259 code units, cut at 255 unless stripped first.
+          { type: "PropertyValue", name: `${" ".repeat(10)}${"😀".repeat(122)}:far:`, value: "\u000b\fv\r" },
+        ],
+        tag: [far],
+      },
+    });
+    const bobId = await followed(t, bob);
+    const shown = await t.api<{ fields: { name: string; value: string }[]; emojis: { shortcode: string }[] }>(
+      `/api/v1/accounts/${bobId}`,
+    );
+    expect(shown.body.fields.map(({ name, value }) => [name, value])).toEqual([
+      ["Site", '<a href="https://example.com/" rel="nofollow noopener" target="_blank">example.com</a>'],
+      ["\u00a0Wide\u3000", "\u00a0v\u3000"],
+      [`${"😀".repeat(122)}:far:`, "v"],
+    ]);
+    // The emoji snapshot scans the same text: :far: is whole only in the stripped name.
+    expect(shown.body.emojis.map((emoji) => emoji.shortcode)).toEqual(["far"]);
+  });
 });
 
 // HTML-1: MASTODON_STRICT keeps lang on every element (`mastodon#39114`); a heading's goes on its strong.

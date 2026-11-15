@@ -19,6 +19,7 @@ import {
   presentedNote,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { sanitizeRemoteHtml } from "../security/html";
 import {
   ACCOUNT_COLUMN_MAP,
@@ -715,8 +716,10 @@ function remoteFieldEntries(
   const fields: { field: Field; src: string | null }[] = [];
   let bytes = 0;
   for (const [index, entry] of (JSON.parse(attachment) as { name: string; value: string; src?: string }[]).entries()) {
-    const name = entry.name.slice(0, FIELD_NAME_LIMIT);
-    const raw = entry.value.slice(0, FIELD_VALUE_RAW_LIMIT);
+    // Account::Field#sanitize: each stripped as Ruby's String#strip strips, then cut, after the projection's cut
+    // (REMOTE_ATTACHMENT_SQL; mastodon-deviations.md, Accounts).
+    const name = rubyStrip(entry.name).slice(0, FIELD_NAME_LIMIT);
+    const raw = rubyStrip(entry.value).slice(0, FIELD_VALUE_RAW_LIMIT);
     const time = verified.get(index);
     const href = time === undefined ? null : remoteFieldLink(raw);
     const value = href === null ? sanitizeRemoteHtml(raw) : linkHtml(href);

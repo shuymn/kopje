@@ -269,6 +269,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Store migration and no `wrangler.jsonc` change.
 - Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
+- A post's text and content warning are stripped of surrounding whitespace, and a content warning of only whitespace no
+  longer marks the post sensitive, as in Mastodon; a poll choice of only U+0085 is dropped and one of U+FEFF kept; a
+  remote post whose content or content warning is only whitespace reads its language map; a remote account's profile
+  fields are shown without surrounding whitespace. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
