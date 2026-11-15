@@ -3960,8 +3960,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status sought by id, so a page's history is flat in a hashtag's volume: about 21 rows per entry in the dearest world
   (suspend blocks, available authors on eight-label domains), and a whole authenticated page at most 90,000 rows for 200
   `followed_tags` (imported follows; the follow cap bounds only the follow), 115,000 for 40 v2 search hashtags with
-  every window full and no two sharing a candidate (4,000), 9,000 for 10 suggestions (`test/tag-history-bounds.test.ts`)
-  and 70,000 for 20 trending hashtags (`test/trends-maxima.test.ts`); the rules
+  every window full and no two sharing a candidate (4,000), 9,000 for 10 suggestions from 1,000 own statuses of one
+  hashtag each (`test/tag-history-bounds.test.ts`; _Gap:_ suggestions read every hashtag row of the newest 1,000 own
+  statuses of the year, and nothing caps a status's hashtag rows (a local post holds what its 500 characters fit, an
+  import any number); a cap in the statement read more than the uncapped one for every status a local post can
+  write, so it waits for an index or a bound at the edges) and 70,000 for 20 trending hashtags
+  (`test/trends-maxima.test.ts`); the rules
   read only their setting; familiar followers reads at most 10,000 of the viewer's accepted follows (above
   Mastodon's default follow limit of 7,500) and checks each against the account through the pair index; suggestions
   read fixed windows of follow ids as index ranges and judge at most 10,000 distinct candidates (docs/visibility.md,

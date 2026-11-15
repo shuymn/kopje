@@ -86,6 +86,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
+  leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 - A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
   (`mastodon#39203`); Kopje answered 422 `Cannot attach more than 4 files`. Its `Question` carries the attachments. No
   Store migration and no `wrangler.jsonc` change.
