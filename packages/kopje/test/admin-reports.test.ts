@@ -154,15 +154,19 @@ describe("admin report routes: who is answered", () => {
         ["non-admin", alice.admin],
         ["app", app],
         ["anonymous", null],
+        ["unknown token", "not-a-token"],
       ] as const) {
         const answer = await call(h, route.path(id), token, init);
         expect(answer, `${route.method} ${route.path(":id")} as ${who}`).toMatchObject({
           status: 403,
-          body: { error: "This action is not allowed" },
+          body: { error: "Forbidden" },
         });
       }
       // A missing report is refused as an existing one is: its existence is not disclosed.
-      expect((await call(h, route.path("999999"), alice.admin, init)).status).toBe(403);
+      expect(await call(h, route.path("999999"), alice.admin, init)).toMatchObject({
+        status: 403,
+        body: { error: "Forbidden" },
+      });
     }
     expect(await sql(h.store, "SELECT * FROM reports")).toEqual(before);
     expect(await logRows(h.store)).toEqual([]);
@@ -180,7 +184,7 @@ describe("admin report routes: who is answered", () => {
     }
   });
 
-  it("refuse a token without the route's scope, whoever holds it", async () => {
+  it("refuse the OAuth admin's token without the route's scope", async () => {
     const { h, alice, carol } = await world();
     const id = await fileReport(h, alice, { account_id: carol });
     const plain = await userToken(h, OWNER, "read write");
@@ -195,7 +199,6 @@ describe("admin report routes: who is answered", () => {
         });
       }
       expect((await call(h, route.path(id), route.scope === "read" ? reader : writer, init)).status).toBe(200);
-      expect((await call(h, route.path(id), "not-a-token", init)).status).toBe(401);
     }
     expect((await logRows(h.store)).length).toBe(6);
   });

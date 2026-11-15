@@ -12,7 +12,8 @@ import { homeStatus, homeTimeline, listTimeline, tagTimeline } from "../../src/d
 // no suspend block, 100 that cover none of the accounts, and blocks that cover the original authors (the walks the
 // rule reaches last), each with every candidate passing ("pass"), the viewer blocking or muting every sender first
 // ("reject"), and the candidates at the caps the flows read ("max"). This module runs on main's code as on the
-// rewrite's (test-node/witness-recording.test.ts records both): it names nothing only one of them has.
+// rewrite's (test-node/witness-recording.test.ts records both): it names nothing only one of them has, but for an input
+// main's code passes over (notify's `limited`, main-allowances.ts).
 
 export const BLOCKS = ["none", "noncovering", "covering"] as const;
 export const SHAPES = ["pass", "reject", "max"] as const;
@@ -372,6 +373,21 @@ export const FLOWS: Record<string, { run: Run; writes?: string }> = {
       },
     ]),
   ),
+  // A mention its writer marks limited (#1582 D5; remote-statuses.ts notifyCreated), from an account the viewer does
+  // not follow, so the policy reaches the limited term: main's code has no such input and passes over it, and the
+  // viewer's policy filters that sender on either side, so the two compare with the term read.
+  "notify mention limited": {
+    run: (sql: SqlStorage) =>
+      notify(new Db(sql), {
+        recipientId: VIEWER,
+        type: "mention",
+        fromId: FOLLOWER,
+        statusId: S.mentionFresh,
+        now: NOW,
+        limited: true,
+      }),
+    writes: "SELECT CAST(id AS TEXT) AS id, type, filtered, group_key FROM notifications ORDER BY id",
+  },
   // A status notified to each local account (the author's local followers in a "max" world).
   "notify status fan-out": {
     run: (sql) => {

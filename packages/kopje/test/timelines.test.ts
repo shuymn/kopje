@@ -281,6 +281,61 @@ describe("account statuses", () => {
     expect(await ids(h, `${path}?pinned=true`)).toEqual([]);
     expect((await h.request("/api/v1/accounts/999999999999999999/statuses")).status).toBe(404);
   });
+
+  // exclude_direct (AccountStatusesFilter, mastodon#37763): the public, unlisted and private statuses, alone, with each
+  // other filter and pinned (a remote account may feature a direct status); absent, false and 0 leave them all.
+  it("leaves direct statuses out with exclude_direct, with each filter and pinned, and links on with it", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const bobs = await post(h, bob, { status: "bob" });
+    const first = await post(h, alice, { status: "first #x" });
+    const reply = await post(h, alice, { status: "@bob reply", in_reply_to_id: bobs.id, visibility: "private" });
+    const direct = await post(h, alice, { status: "@bob direct #x", visibility: "direct" });
+    const boost = await (await act(h, alice, `/api/v1/statuses/${bobs.id}/reblog`)).json<{ id: string }>();
+    for (const [n, id] of [first.id, direct.id].entries()) {
+      await sql(
+        h.store,
+        "INSERT INTO media_attachments (id, account_id, status_id, type, url) VALUES (?, ?, ?, 'image', 'u')",
+        `10000000000000000${n}`,
+        alice.id,
+        id,
+      );
+    }
+    const path = `/api/v1/accounts/${alice.id}/statuses`;
+    for (const off of ["", "?exclude_direct=false", "?exclude_direct=0"]) {
+      expect(await ids(h, `${path}${off}`, alice.token)).toEqual([boost.id, direct.id, reply.id, first.id]);
+    }
+    const without = async (query: string) => ids(h, `${path}?exclude_direct=true${query}`, alice.token);
+    expect(await without("")).toEqual([boost.id, reply.id, first.id]);
+    expect(await without("&exclude_reblogs=true")).toEqual([reply.id, first.id]);
+    expect(await without("&exclude_replies=true")).toEqual([boost.id, first.id]);
+    expect(await without("&only_media=true")).toEqual([first.id]);
+    expect(await without("&tagged=x")).toEqual([first.id]);
+    expect(await ids(h, `${path}?only_media=true&tagged=x`, alice.token)).toEqual([direct.id, first.id]);
+    // The next page keeps it (Mastodon's Link drops it: docs/mastodon-deviations.md).
+    const response = await h.request(`${path}?exclude_direct=true&limit=1`, bearer(alice.token));
+    expect(response.headers.get("link")).toContain(`${path}?exclude_direct=true&limit=1&max_id=${boost.id}>`);
+    // A remote account's featured statuses: a direct one that mentions alice is pinned too.
+    const far = await remoteAccount(h.store, "far");
+    const featured = await seedStatus(h.store, { accountId: far, visibility: "public" });
+    const featuredDirect = await seedStatus(h.store, {
+      accountId: far,
+      visibility: "direct",
+      mentions: [{ accountId: alice.id }],
+    });
+    for (const [i, id] of [featured, featuredDirect].entries()) {
+      await sql(
+        h.store,
+        "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?)",
+        far,
+        id,
+        new Date(NOW + i * 60_000).toISOString(),
+      );
+    }
+    const pins = `/api/v1/accounts/${far}/statuses?pinned=true`;
+    expect(await ids(h, pins, alice.token)).toEqual([featuredDirect, featured]);
+    expect(await ids(h, `${pins}&exclude_direct=true`, alice.token)).toEqual([featured]);
+  });
 });
 
 describe("home: conversations, languages and posting notifications (FeedManager, FeedInsertWorker)", () => {

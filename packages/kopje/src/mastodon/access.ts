@@ -3,7 +3,7 @@ import { createMiddleware } from "hono/factory";
 import type { RequiredScope } from "../security/scopes";
 import { sha256Hex } from "../security/tokens";
 import { noteActivitySoon } from "./activity";
-import { type ApiDeps, type ApiEnv, storeCall, suspendedError } from "./context";
+import { adminForbiddenError, type ApiDeps, type ApiEnv, storeCall, suspendedError } from "./context";
 import { invalidTokenError } from "./errors";
 
 // What a route requires of the caller:
@@ -22,13 +22,17 @@ import { invalidTokenError } from "./errors";
 //                     reads as anonymous (Mastodon's authorize_if_got_token!)
 //   optional        : the same with no scope: a token sent must be valid, whatever its scopes (Mastodon's reads that
 //                     declare no doorkeeper scope but use the current user)
+//   scope, admin    : the admin API (VIS-29): no token is answered 403 Forbidden here, with no Store call, and a token
+//                     sent passes the admin gate (domain/auth.ts adminGate) before its validity and scope are judged,
+//                     as Mastodon's Admin::PermissionsConcern runs before authorize_if_got_token!
 export type RouteAccess =
   | "public"
   | "anonymous"
   | "token"
-  | { scope: RequiredScope; optional?: true; app?: never }
-  | { scope: RequiredScope; app: true; optional?: never }
-  | { scope?: never; optional: true; app?: never };
+  | { scope: RequiredScope; optional?: true; app?: never; admin?: never }
+  | { scope: RequiredScope; app: true; optional?: never; admin?: never }
+  | { scope: RequiredScope; admin: true; optional?: never; app?: never }
+  | { scope?: never; optional: true; app?: never; admin?: never };
 
 // The one middleware that reads the bearer token and declares the route's scope for every API route. It does not
 // validate the token: the Store does, in the transaction of the operation the request performs (domain/auth.ts).
@@ -67,7 +71,11 @@ export function requireAccess(access: RouteAccess, deps: Pick<ApiDeps, "build" |
       }
       return;
     }
+    const admin = typeof access === "object" && access.admin === true;
     if (token === undefined) {
+      if (admin) {
+        return adminForbiddenError();
+      }
       if (typeof access === "object" && access.optional === true) {
         c.set("credential", null);
         return next();
@@ -75,7 +83,8 @@ export function requireAccess(access: RouteAccess, deps: Pick<ApiDeps, "build" |
       return invalidTokenError();
     }
     const tokenHash = await sha256Hex(token);
-    c.set("credential", { tokenHash, scope: access === "token" ? null : (access.scope ?? null) });
+    const scope = access === "token" ? null : (access.scope ?? null);
+    c.set("credential", admin ? { tokenHash, scope, admin } : { tokenHash, scope });
     await next();
     if (c.res.status < 400) {
       noteActivitySoon(c, deps, tokenHash);

@@ -30,7 +30,7 @@ import * as adminDomainBlocks from "./domain/admin-domain-blocks";
 import { adminMeasure } from "./domain/admin-measures";
 import * as announcements from "./domain/announcements";
 import * as annualReports from "./domain/annual-reports";
-import { checkCredential, checkNotSuspended } from "./domain/auth";
+import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
 import * as conversations from "./domain/conversations";
@@ -259,9 +259,11 @@ export const STORE_RPC = {
   registerApp: oauth.registerApp,
 
   // Protected operations take the request's credential and validate it in their own transaction (domain/auth.ts).
-  // checkCredential() only validates; checkNotSuspended() judges an anonymous route's token (mastodon/access.ts).
+  // checkCredential() only validates; checkNotSuspended() judges an anonymous route's token (mastodon/access.ts);
+  // checkAdminCredential() is the admin API's gate alone (mastodon/context.ts).
   checkCredential,
   checkNotSuspended,
+  checkAdminCredential,
 
   // After an authenticated request's response (mastodon/activity.ts): its account's active day.
   noteActivity: instanceActivity.noteActivity,

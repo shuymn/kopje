@@ -80,6 +80,12 @@ export const REQUIRES_MENTION_SQL = visibilitySetSql(requiresMention);
 // list, in this order, and SQLite uses it only for the same list.
 export const REACHES_FOLLOWERS_SQL = visibilitySetSql((visibility) => !requiresMention(visibility));
 
+// Mastodon's Status.list_eligible_visibility on the status `alias`: public, unlisted and private, what an account's
+// statuses keep with exclude_direct (AccountStatusesFilter, R11). The predicate of the partial index statuses_feed.
+export function listEligibleSql(alias: string): string {
+  return `${alias}.visibility IN ${REACHES_FOLLOWERS_SQL}`;
+}
+
 // status_tags.public of a hashtag of the status `id`: whether the status is public, the only visibility hashtag timelines
 // and a tag's history count (publicConditions in timelines.ts). A status's visibility is fixed when it is written, so
 // the writers of status_tags set it with each row, and the partial index status_tags_public holds just those rows.
@@ -1461,20 +1467,31 @@ export const FILTERABLE_TYPES: readonly string[] = [
   "quote",
 ];
 
-// A policy's choice for a condition (NotificationPolicy's enums, app/models/notification_policy.rb:34-38).
+// A policy's choice for a condition (NotificationPolicy's enums, app/models/notification_policy.rb:35-40 in v4.7.5).
 export type PolicyChoice = "accept" | "filter" | "drop";
 
-// The policy's columns and Mastodon's defaults (the schema's, app/models/notification_policy.rb:11-15), which an
-// account without a notification_policies row has.
+// The policy's columns and Mastodon's defaults (the schema's, app/models/notification_policy.rb:8-13 in v4.7.5;
+// for_bots from 4.6), which an account without a notification_policies row has.
 export const POLICY_DEFAULTS = {
   for_not_following: "accept",
   for_not_followers: "accept",
   for_new_accounts: "accept",
   for_private_mentions: "filter",
   for_limited_accounts: "filter",
+  for_bots: "accept",
 } as const satisfies Record<string, PolicyChoice>;
 
 export type PolicyColumn = keyof typeof POLICY_DEFAULTS;
+
+// The actor types Mastodon counts as automated (Account::AUTOMATED_ACTOR_TYPES, app/models/account.rb:90 in v4.7.5).
+// An account is a bot when its stored actor_type is one of them exactly, case and bytes included (Account#bot?,
+// :213-215): the account entity's `bot` (isBotActorType) and the policy's bot condition (botSql) judge by this list.
+const BOT_ACTOR_TYPES = ["Application", "Service"] as const;
+
+// Whether a stored actor_type is a bot's (BOT_ACTOR_TYPES): a value of any other type or spelling is not.
+export function isBotActorType(actorType: unknown): boolean {
+  return (BOT_ACTOR_TYPES as readonly unknown[]).includes(actorType);
+}
 
 // BaseCondition::NEW_FOLLOWER_THRESHOLD and NEW_ACCOUNT_THRESHOLD (app/services/notify_service.rb:20-22).
 const NEW_FOLLOWER_DAYS = 3;
@@ -1514,6 +1531,14 @@ function newAccountSql(from: string, now: string): string {
 		AND pn.created_at > ${daysBeforeSql(now, NEW_ACCOUNT_DAYS)})`;
 }
 
+// BaseCondition#from_bot? (app/services/notify_service.rb:101-103 in v4.7.5): the sender's stored actor_type is one of
+// BOT_ACTOR_TYPES, compared as stored (BINARY, so an imported 'service' or a BLOB is no bot, as isBotActorType judges
+// it), a key lookup.
+function botSql(from: string): string {
+  return `EXISTS (SELECT 1 FROM main.accounts pb INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pb.id = ${from}
+		AND pb.actor_type IN (${BOT_ACTOR_TYPES.map((t) => `'${t}'`).join(", ")}))`;
+}
+
 // BaseCondition#private_mention_not_in_response? (:76-109): a mention in a direct status that does not answer a
 // private mention of the sender by the recipient. Mastodon's statuses_that_mention_sender walks the thread up from the
 // status's parent: the parent counts when it mentions the sender (not silently), whoever wrote it, and an ancestor
@@ -1538,8 +1563,11 @@ function privateMentionNotInResponseSql(r: string, type: string, from: string, s
 }
 
 // Whether a condition of the recipient's policy chose `choice` for the notification: Mastodon's
-// blocked_by_*_policy? (:154-172) for drop and filtered_by_*_policy? (:190-208) for filter. Kopje has no silenced
-// (limited) accounts, so for_limited_accounts is kept and shown but never matches.
+// blocked_by_*_policy? (:154-172) for drop and filtered_by_*_policy? (:190-208) for filter. The limited accounts
+// condition (notify_service.rb:165-167 and :206-208 in v4.7.5) matches a notification its writer marks `limited` (1, a
+// bound parameter: NotifyService's `silenced` option, from mastodon#37583), since Kopje silences no account; the bot
+// condition (:169-171 and :210-212, from mastodon#38809 and mastodon#39377) a sender of BOT_ACTOR_TYPES. Both need the
+// recipient not to follow the sender, as the other conditions of that group do.
 function policyMatchesSql(
   choice: Exclude<PolicyChoice, "accept">,
   r: string,
@@ -1547,11 +1575,14 @@ function policyMatchesSql(
   from: string,
   status: string,
   now: string,
+  limited: string,
 ): string {
   const is = (column: PolicyColumn) => `${policyChoiceSql(r, column)} = '${choice}'`;
   return `(${notFollowingSql(r, from)} AND (${is("for_not_following")}
 			OR (${is("for_new_accounts")} AND ${newAccountSql(from, now)})
-			OR (${is("for_private_mentions")} AND ${privateMentionNotInResponseSql(r, type, from, status)})))
+			OR (${is("for_private_mentions")} AND ${privateMentionNotInResponseSql(r, type, from, status)})
+			OR (${limited} = 1 AND ${is("for_limited_accounts")})
+			OR (${is("for_bots")} AND ${botSql(from)})))
 		OR (${is("for_not_followers")} AND ${notFollowerSql(r, from, now)})`;
 }
 
@@ -1560,14 +1591,22 @@ function policyMatchesSql(
 // 'filter' or 'drop'. A type that is not filterable, or a sender the recipient accepted a request from
 // (override_for_sender?, a notification_permissions row), is accepted; otherwise a condition whose choice is drop
 // drops it, else one whose choice is filter filters it. The blocks, mutes, domain blocks and conversation mutes that
-// drop a notification are notifiedSql's. Kopje has no staff role that bypasses blocks (from_staff? is false), and
-// no silenced accounts (from_limited? is false).
-export function notificationPolicySql(r: string, type: string, from: string, status: string, now: string): string {
+// drop a notification are notifiedSql's. Kopje has no staff role that bypasses blocks (from_staff? is false). Kopje
+// has no silenced accounts: the limited condition matches a notification its caller marks `limited` (1 or 0,
+// NotifyService's `silenced` option).
+export function notificationPolicySql(
+  r: string,
+  type: string,
+  from: string,
+  status: string,
+  now: string,
+  limited: string,
+): string {
   return `(CASE WHEN ${type} NOT IN (${FILTERABLE_TYPES.map((t) => `'${t}'`).join(", ")})
 			OR EXISTS (SELECT 1 FROM main.notification_permissions pp WHERE pp.account_id = ${r} AND pp.from_account_id = ${from})
 		THEN 'accept'
-		WHEN ${policyMatchesSql("drop", r, type, from, status, now)} THEN 'drop'
-		WHEN ${policyMatchesSql("filter", r, type, from, status, now)} THEN 'filter'
+		WHEN ${policyMatchesSql("drop", r, type, from, status, now, limited)} THEN 'drop'
+		WHEN ${policyMatchesSql("filter", r, type, from, status, now, limited)} THEN 'filter'
 		ELSE 'accept' END)`;
 }
 

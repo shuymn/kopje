@@ -41,6 +41,7 @@ import {
   SPOILER_BYTES,
 } from "../security/html";
 import { asArray, isObject, typeIs } from "./json-shapes";
+import { remoteDescription } from "./lang-string";
 import { isTransientLoadError } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -182,14 +183,14 @@ function mediaOf(object: Json): RemoteMediaInput[] {
       continue;
     }
     const icon = attachment.icon;
-    const description = (languageString(attachment, "summary") ?? languageString(attachment, "name") ?? "").trim();
     media.push({
       type: mediaType(attachment.type, attachment.mediaType),
       url,
       previewUrl: storedMediaLink(
         httpString(typeof icon === "string" ? icon : isObject(icon) ? (text(icon.url) ?? null) : null),
       ),
-      description: storedMediaDescription(description),
+      // MediaAttachmentParser#description (`mastodon#39590`).
+      description: storedMediaDescription(remoteDescription(attachment)),
       focus: focusOf(attachment.focalPoint),
       width: dimension(attachment.width),
       height: dimension(attachment.height),

@@ -24,7 +24,20 @@ Other documents point here rather than repeat the release.
   - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
-  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
+  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
+  API sends it, passes 512 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged: the `update`,
+  `status.update`, `notification` or `conversation` frame is missing, and the status or notification is there on the
+  next REST read. Mastodon sends every event. The payload is the event's media descriptions and everything else it
+  shows, both as encoded: a description's character takes 1 byte (ASCII) to 4 (characters past U+FFFF, such as most
+  emoji, and `"` and `\`), and at most 7, for the control characters written as `\u00XX`, such as U+0001 (a tab,
+  newline, carriage return, backspace or form feed takes 3); the rest expands with formatted text (a link is written
+  twice, in its address and its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event
+  whose rest takes R bytes is sent while its descriptions take at most 524,288 − R. A post and its quote with eight
+  descriptions of 10,000 characters (320,000 bytes of emoji, 560,000 of U+0001) are sent beside plain text, a poll and
+  profiles (R about 84,000), and skipped beside three long links in each post (R about 224,000) or with descriptions of
+  U+0001; a post without a quote is sent with four such descriptions beside any of these. Events whose statuses are
+  near their stored bounds (remote statuses, or content filled by mentions) are skipped too. The figures are pinned by
+  `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
   remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
@@ -82,10 +95,14 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the admin's, made by `/setup`, an account is made only by invitation: the first sign-in through Cloudflare Access of
   an email the Access admin invited ([setup.md](setup.md), "Adding accounts"; threat model AUTH-9). Accepted,
   2026-10-15; the invitation rule, 2026-10-27.
-- **MD-2: Admin operations withheld from Mastodon's API.** Domain allows, IP, email domain and canonical email blocks,
-  link publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
-  retention answer `[]` to the OAuth admin and 403 to everyone else, retention after its 400 for a missing `start_at` or
-  `end_at` and 422 for an invalid date, as Mastodon 4.5.21 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
+- **MD-2: Admin operations withheld from Mastodon's API.** Every admin route answers anyone but the OAuth admin 403
+  `Forbidden` first, after a suspended owner's 403, as Mastodon 4.7.5's `Admin::PermissionsConcern` does, before the
+  token's validity or scope, any lookup or the body is judged. A token of the OAuth admin that was revoked, or swept
+  once expired, is deleted, so it answers `Forbidden` where Mastodon, whose Doorkeeper 5.9.9 finds such a token's owner
+  until its vacuum, answers 401. To the OAuth admin, domain allows, IP, email domain and canonical email blocks, link
+  publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
+  retention answer `[]`, retention after its 400 for a missing `start_at` or `end_at` and 422 for an invalid date, as
+  Mastodon 4.7.5 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
   Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin reviews trends
   (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje
   keeps login days only for the instance activity, from the upgrade that added them and for today, the 184 days before
@@ -93,12 +110,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   measure takes any range), `interactions` (no count of replies, boosts, follows, votes and favourites by day survives
   their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's
   API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
-  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
-  a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
-  caller is refused (403) before the body is read. Accepted, 2026-10-22. Kopje does not offer silencing or
-  memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships writes
-  no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
-  never sent. Accepted, 2026-11-15.
+  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.7.5's 400 for
+  a missing `keys` or object and 422 for an invalid date come first. Accepted, 2026-10-22. Kopje does not offer
+  silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
+  relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
+  notification's `event` are never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
@@ -333,8 +349,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - The endpoint cache holds at most 2,048 hosts (a new host past them is not cached), for 24 hours from when the page
   declared it; a failed cached endpoint does not renew it.
 - JSON-LD shapes Mastodon fails on or reads oddly (an `@type` that is an array, a number in the root array, a string
-  author read as a substring) are skipped; a value that is not a string reads as absent; times are read as ISO 8601
-  only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
+  author read as a substring) are skipped; a language-tagged `headline` or `description` is read as its `@value`, as
+  Mastodon does, and a value that is not a string, such an `@value` included, reads as absent; times are read as ISO
+  8601 only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
   reference to its code point, a double-escaped NUL then removed), but keeps a reference to a surrogate or past
   U+10FFFF as written, where Mastodon raises, and reads names by the HTML5 table. The texts are cut to their bounds,
   Kopje's own (Mastodon bounds only the url): a title of 512 JSON-escaped UTF-8 bytes, a description of 1,024, an
@@ -537,7 +554,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
   six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
   had.
-- `thumbnail` is always Kopje's default image; there is no upload.
+- `thumbnail` is always Kopje's default image, with its fixed description on `/api/v2/instance`; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
 - The reading preferences, `reading:autoplay:gifs` included, are Mastodon's defaults; no setting stores them.
@@ -817,14 +834,29 @@ Request parameters:
 
 Paged status lists with request conditions:
 
-- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged` or `exclude_replies`, `GET
-  /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the profile's Posts, Media and
-  tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page before applying the
-  conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first holds what it found,
-  possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev` by `min_id` for a
-  `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next` only when the page
-  is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
-  status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged`, `exclude_replies`, or `exclude_direct` with
+  `exclude_reblogs`, `GET /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the
+  profile's Posts, Media and tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page
+  before applying the conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first
+  holds what it found, possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev`
+  by `min_id` for a `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next`
+  only when the page is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by
+  `Link` reach every status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- The `Link` of `GET /api/v1/accounts/:id/statuses` keeps `exclude_direct`, as it keeps every other parameter, so the
+  next page leaves direct posts out too. Mastodon's drops it (`AccountStatusesFilter::KEYS` lacks it), so its next page
+  lists them.
+
+Notification policy (`PATCH`/`PUT /api/v1/notifications/policy` and `/api/v2/notifications/policy`; the policy's
+conditions themselves follow 4.7.5):
+
+- The v1 booleans (`filter_not_following`, `filter_not_followers`, `filter_new_accounts`, `filter_private_mentions`,
+  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `false`, `off` and a blank value accept. Mastodon's
+  setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or `off` filters there
+  and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted, 2026-11-15.
+- A v2 value (`for_not_following`, `for_not_followers`, `for_new_accounts`, `for_private_mentions`,
+  `for_limited_accounts`, `for_bots`) other than `accept`, `filter`, `drop` or 0 to 2 answers 422
+  `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
+  answers 500. Accepted, 2026-11-15.
 
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
@@ -879,8 +911,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
-Custom emoji (the `CustomEmoji` entities of a status, its poll and an account):
+Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, and `GET /api/v1/custom_emojis`):
 
+- A local emoji's category is a name with no featured emoji, so the listing shows `featured: false` beside each
+  `category`.
 - A remote emoji's `url` is Kopje's cached copy on the instance's own origin (`/media/r/…`) once the cron has fetched
   it, kept per (domain, url), the domain being the account's whose object named it; `static_url` is a still remuxed
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a
@@ -913,6 +947,9 @@ Media (the `MediaAttachment` entity):
   each accepted explicit `Update` (an Update whose version is missing or not newer may refresh only a poll, which
   leaves it as it was); an attachment stored by an earlier release shows null until its next accepted explicit
   `Update`.
+- A remote attachment's description is read as Mastodon 4.7 reads it (its `summary`, else its `name`, each a string,
+  an array's first element or a language-tagged value, then a language map), except that one Mastodon cannot read (a
+  numeric `@value` or language-map value) is none, where Mastodon fails the activity.
 - A remote attachment's `url` is Kopje's cached copy of its file on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
@@ -947,6 +984,9 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
   (an upgrade, a cutover, an import) or whose text an import holds as another type counts at an upper bound of its
   text (its bytes, markup and entities included, or 10,000), so an answer of such statuses may be cut, and a keyword
   missed, though its text would fit.
+- A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
+  (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
+  and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 
