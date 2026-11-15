@@ -13,6 +13,7 @@ import {
 import { MAX_STATUS_MENTION_ROWS } from "../src/domain/status-bounds";
 import { getTag } from "../src/domain/tags";
 import { tagTimeline } from "../src/domain/timelines";
+import { REQUEST_MAX_BYTES } from "../src/federation/loader";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH } from "../src/platform/json-bounds";
@@ -285,6 +286,53 @@ describe("Create (Mastodon and Misskey)", () => {
     // Types Mastodon neither stores nor converts are not stored.
     await t.post(bob, create(bob, mastodonNote(bob, { type: "Collection" })));
     expect(await statuses(t.store)).toHaveLength(1);
+  });
+
+  // StatusParser#text, #spoiler_text and #title read the plain value only when it is present? (railsBlank: U+0085 is
+  // blank, U+FEFF is not), else the language map's first value.
+  it("reads blank content as absent", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const stored = async (fields: Record<string, unknown>) => {
+      const note = mastodonNote(bob, fields);
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+      const row = (await statusRow(t.store, note.id))!;
+      return { content: row.content, spoiler_text: row.spoiler_text };
+    };
+    expect(
+      await stored({
+        content: " \t\u0085\u3000",
+        contentMap: { en: "<p>hello</p>" },
+        summary: " ",
+        summaryMap: { en: "warned" },
+      }),
+    ).toEqual({ content: "<p>hello</p>", spoiler_text: "warned" });
+    expect(await stored({ content: "\n", contentMap: undefined, summary: "\u00a0" })).toEqual({
+      content: "",
+      spoiler_text: "",
+    });
+    // U+FEFF is not blank: the plain value is read.
+    expect(await stored({ content: "\ufeff", contentMap: { en: "<p>map</p>" } })).toEqual({
+      content: "\ufeff",
+      spoiler_text: "",
+    });
+    // A converted object's blank name is no heading.
+    const article = mastodonNote(bob, { type: "Article", name: "  ", content: "<p>body</p>", url: `${MASTODON}/a/2` });
+    expect(await t.post(bob, create(bob, article))).toBe(202);
+    expect((await statusRow(t.store, article.id))!.content).toBe(
+      `<a href="${MASTODON}/a/2" rel="nofollow noopener" target="_blank">${MASTODON}/a/2</a>`,
+    );
+  });
+
+  // RES-2: the blank test (railsBlank) reads the plain value before any cut, so it runs over a whole fetched document.
+  it("judges blank content within a generous time at the fetch cap", () => {
+    const content = `${" ".repeat(REQUEST_MAX_BYTES - 1)}x`;
+    const started = performance.now();
+    const parsed = parseRemoteStatus({ id: `${MASTODON}/notes/blank`, type: "Note", attributedTo: MASTODON, content });
+    expect(performance.now() - started).toBeLessThan(1000);
+    // Not blank: the plain value is read (the sanitizer then keeps its leading part).
+    expect(parsed?.content).not.toBe("");
   });
 
   it("keeps a Misskey note whole in raw (_misskey_content, _misskey_quote, quoteUrl) and stores its HTML", async () => {
