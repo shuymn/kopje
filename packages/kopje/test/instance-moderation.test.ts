@@ -45,7 +45,7 @@ import { world as adminWorld } from "./remote-suspension-helpers";
 // steps run through the production admin API, Store receive, moderation rounds and delivery operations. After every
 // step the Store's projection and every answer must equal the world policy's (test/instance-moderation-model.ts), and
 // each round is checked against the work ledger and the job's durable frontier. P1 compares a run with its twin whose
-// rounds all run at settlement; P2 compares R1's follows of L1 both ways with machine 1's Mastodon v4.5.11 peer once
+// rounds all run at settlement; P2 compares R1's follows of L1 both ways with machine 1's Mastodon v4.7.5 peer once
 // settled, except where an accepted risk or a known defect names the difference.
 
 const D = "d.example";
@@ -642,8 +642,8 @@ function expected(w: World) {
 }
 
 // Records the inbox of every intent recorded since the last step: the remote's current inbox (shared, else
-// personal), but the personal one for a severing Reject (visibility.md R38, as Mastodon v4.5.11's
-// reject_remote_follows! sends it to inbox_url: suspend_account_service.rb:37; delete_account_service.rb:116-129).
+// personal), but the personal one for a severing Reject (visibility.md R38, as Mastodon v4.7.5's
+// reject_remote_follows! sends it to inbox_url: suspend_account_service.rb:37; delete_account_service.rb:121-134).
 function assignInboxes(w: World) {
   for (const l of LOCALS) {
     for (const r of REMOTES) {
@@ -1418,7 +1418,7 @@ describe("instance moderation P1 witnesses", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// P2: federation while decisions are in force (R1's server is machine 1's Mastodon v4.5.11 peer for R1 and L1)
+// P2: federation while decisions are in force (R1's server is machine 1's Mastodon v4.7.5 peer for R1 and L1)
 // ---------------------------------------------------------------------------------------------------------------
 
 type Variant = "name" | "key" | "routing";
@@ -1759,12 +1759,12 @@ function rlException(w: World, mine: { state: string; uri: string } | null): str
   const theirs = peer.rl;
   const ignoredAt = w.ignoredFollows.get(g);
   // X1 (accepted risk): g arrived while R1 was unavailable and was ignored, with no answer, as in Mastodon
-  // (process_collection_service.rb:55-60); R1's server keeps it requested.
+  // (process_activity_service.rb:87-93); R1's server keeps it requested.
   if (ignoredAt !== undefined && mine === null && theirs?.state === "requested" && theirs.uri === g) {
     return "X1";
   }
   // X1, the late answer: an Accept of an earlier generation h, confirmed before Kopje received g, reached R1's server
-  // after g and was applied to it by the pair (accept.rb:4-35).
+  // after g and was applied to it by the pair (accept.rb:4-34).
   const applied = peer.events.pairAnswer.get(g);
   if (
     ignoredAt !== undefined &&
@@ -2298,7 +2298,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
   }, 60_000);
 
   // #1424 (visibility.md R38): an individual suspension's job ends R1's accepted follow of L1 and keeps its pending
-  // request to locked L2, as Mastodon v4.5.11's reject_remote_follows! keeps FollowRequests: unanswerable while R1 is
+  // request to locked L2, as Mastodon v4.7.5's reject_remote_follows! keeps FollowRequests: unanswerable while R1 is
   // suspended, with no Reject and no retraction, and answerable after the unsuspension. The ledger's rule 1 refuses a
   // severed request in mode `account`.
   it("#1424: an individual suspension keeps a pending request, answerable after the unsuspension", async () => {
@@ -2322,7 +2322,7 @@ describe("instance moderation witnesses: federation with R1's server", () => {
   }, 60_000);
 
   // #1425 (visibility.md R38): the severing Reject goes to R1's personal inbox, though its shared one is known, as
-  // Mastodon v4.5.11's reject_remote_follows! sends it to inbox_url.
+  // Mastodon v4.7.5's reject_remote_follows! sends it to inbox_url.
   it("#1425: the severing Reject's row is at the personal inbox", async () => {
     const w = await p1World(without("R2>L1", "R4>L1"));
     await steps(w, [{ k: "suspend", r: "R1" }, ROUND, ROUND]);

@@ -21,12 +21,14 @@ const ENCODER = new TextEncoder();
 
 // A remote username: Mastodon's remote format (Account::USERNAME_ONLY_RE, app/models/account.rb:75,78,115, v4.5.0;
 // same language as USERNAME_RE), ASCII, capped at REMOTE_USERNAME_LIMIT (RES-1); Mastodon sets no remote cap.
-// Without the m flag, JavaScript's `$` matches only the string end, unlike Ruby's, so a trailing newline fails.
+// Without the m flag, JavaScript's `$` matches only the string end, unlike Ruby's, so a trailing newline fails. Written
+// in an equivalent form matched in linear time; domain-name.ts USERNAME is the same pattern (each module is loaded
+// alone by the cutover CLI), and test/username.test.ts holds both to that language.
 export const REMOTE_USERNAME_LIMIT = 255;
 
 // A domain name as an address shows it, in UTF-8 bytes: a DNS name is at most 253.
 export const DOMAIN_BYTES = 253;
-const REMOTE_USERNAME = /^[a-z0-9_]+([a-z0-9_.-]+[a-z0-9_]+)?$/i;
+const REMOTE_USERNAME = /^[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?$/i;
 
 export function isRemoteUsername(value: string): boolean {
   return value.length <= REMOTE_USERNAME_LIMIT && REMOTE_USERNAME.test(value);

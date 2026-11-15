@@ -283,13 +283,22 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
+- A local status's Note lists its card as a FEP-8967 `Link` after its media, as Mastodon 4.7 does, only where the API
+  shows the card (a public or unlisted status, the card fetched, its title not blank), so a Note of another visibility
+  lists none, where Mastodon lists the card it fetched for any visibility.
 - Only public and unlisted originals get a card, a privacy choice: Mastodon fetches the link of every visibility,
   which tells the linked site that the instance holds the post. A status with a shown attachment or any quote, a boost,
   and one whose author is unavailable get none.
-- A remote status's link is the first of its first 16 anchors that is not a hashtag's (`rel` holding `tag`), a
-  microformats one (`class` holding `u-url` or `h-card`), a mentioned account's URL, relative, of another scheme or the
-  instance's own (by host and non-default port); anchors inside the elements the sanitizer drops whole are not seen. A
-  local status's is the first `http(s)` link of its text that is not the instance's. That link is final: when it is
+- A remote status's link is its first `Link` attachment (an `attachment` with a non-blank `href`) whose `href` is an
+  `http(s)` URL with an authority (`https://`), as Mastodon 4.7 reads FEP-8967: one of another scheme, without an
+  authority (`https:b.example`) or with an empty one that ends the `href` or precedes a query or fragment
+  (`https://?x`), whatever its length, or one that does not parse is skipped; one with an empty authority before a
+  path (`https:///b`) is taken and gives no card; one whose `href` is not a string is skipped, where Mastodon fails the
+  activity. A `Link` naming a mentioned account's URL or the instance is taken, as Mastodon takes it. Only without one
+  is the link the first of its first 16 anchors that is not a hashtag's (`rel` holding `tag`), a microformats one
+  (`class` holding `u-url` or `h-card`), a mentioned account's URL, relative, of another scheme or the instance's own
+  (by host and non-default port); anchors inside the elements the sanitizer drops whole are not seen. A local status's
+  is the first `http(s)` link of its text that is not the instance's. That link is final: when it is
   `http`, has a port, names an IP literal or a local name, passes 2,048 characters, holds a character outside printable
   ASCII or one of ``"<>\^`{|}``, or does not parse, there is no card (Mastodon fetches `http` links and other ports).
   Hosts the domain policy refuses are never contacted, after any redirect either.
@@ -349,8 +358,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - The endpoint cache holds at most 2,048 hosts (a new host past them is not cached), for 24 hours from when the page
   declared it; a failed cached endpoint does not renew it.
 - JSON-LD shapes Mastodon fails on or reads oddly (an `@type` that is an array, a number in the root array, a string
-  author read as a substring) are skipped; a value that is not a string reads as absent; times are read as ISO 8601
-  only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
+  author read as a substring) are skipped; a language-tagged `headline` or `description` is read as its `@value`, as
+  Mastodon does, and a value that is not a string, such an `@value` included, reads as absent; times are read as ISO
+  8601 only, an offset past 23 hours or 59 minutes refused. The texts' second decoding follows HTMLEntities (a numeric
   reference to its code point, a double-escaped NUL then removed), but keeps a reference to a surrogate or past
   U+10FFFF as written, where Mastodon raises, and reads names by the HTML5 table. The texts are cut to their bounds,
   Kopje's own (Mastodon bounds only the url): a title of 512 JSON-escaped UTF-8 bytes, a description of 1,024, an
@@ -360,7 +370,8 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - Each status keeps its own copy: a status that links a URL another status fetched within 14 days copies that card
   without a request, but a later fetch does not update earlier copies, and an edit that keeps the URL fetches it again
   unless another status holds a fresh copy. A local edit resets the card only when the text changes, a remote update
-  only when it is significant; a change of the quote alone resets nothing.
+  only when it is significant; a change of the quote alone resets nothing, and neither does a change of the `Link`
+  attachments alone, as in Mastodon.
 
 Accounts (the `Account` and credential account entities):
 
@@ -683,6 +694,24 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   readonly maintenance, an unpublished import): nothing is fetched, and the search answers from local data as without
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
+- A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
+  `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
+  (`src/federation/resolve.ts`):
+  - Several `Link` header fields reach Kopje joined into one value, so an alternate in a later field can be taken
+    where Mastodon reads the first field only; a value past 8,192 characters or 64 links is not read (the page's
+    alternate is then tried).
+  - No page alternate is taken at or after a `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>`
+    start tag or a `<link>` whose `rel` is past 2,048 characters decoded or 8,192 as written, nor on a page holding
+    `<frameset>` bytes or one the scanner fails on: there workerd's HTMLRewriter cannot place a `<link>` as Mastodon's
+    Nokogiri HTML5 tree does (in presence or in order), so Kopje resolves nothing where Mastodon may resolve, never
+    another document. An href past 2,048 characters decoded or 8,192 as written resolves nothing too, however short its
+    character references decode (Mastodon decodes any length).
+  - The page and both alternates are charged to the request's 2 MiB of fetched bytes, so a page alternate after a
+    large header alternate can be refused for that budget; Mastodon has no request-wide byte budget.
+  - A failure Kopje adds to Mastodon's on a header alternate (the domain policy, which Mastodon applies only after
+    fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
+  - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
+    to any origin; the alternates follow none, as Mastodon's.
 
 Hashtags (the `Tag` entity):
 
@@ -945,6 +974,9 @@ Media (the `MediaAttachment` entity):
   each accepted explicit `Update` (an Update whose version is missing or not newer may refresh only a poll, which
   leaves it as it was); an attachment stored by an earlier release shows null until its next accepted explicit
   `Update`.
+- A remote attachment's description is read as Mastodon 4.7 reads it (its `summary`, else its `name`, each a string,
+  an array's first element or a language-tagged value, then a language map), except that one Mastodon cannot read (a
+  numeric `@value` or language-map value) is none, where Mastodon fails the activity.
 - A remote attachment's `url` is Kopje's cached copy of its file on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
@@ -979,6 +1011,9 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
   (an upgrade, a cutover, an import) or whose text an import holds as another type counts at an upper bound of its
   text (its bytes, markup and entities included, or 10,000), so an answer of such statuses may be cut, and a keyword
   missed, though its text would fit.
+- A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
+  (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
+  and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 

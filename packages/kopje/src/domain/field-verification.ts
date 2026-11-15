@@ -1,4 +1,5 @@
 import { REMOTE_FIELD_LINK_BYTES } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 
 // Whether a local profile field's value is a link Kopje verifies (rel=me, domain/field-links.ts): a subset of
 // Mastodon's Account::Field#verifiable? (app/models/account/field.rb:35-51, v4.7.5) on Addressable 2.9.2, so that a
@@ -81,7 +82,6 @@ export function verifiableLink(value: string): boolean {
 export { REMOTE_FIELD_LINK_BYTES as REMOTE_FIELD_HREF_BYTES };
 export const REMOTE_FIELD_SOURCE_BYTES = 2047;
 
-const RUBY_STRIP = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g;
 const WS = "[\\t\\n\\f\\r ]";
 // One character of a text run: printable ASCII but ", & and <, or &amp; (an href is printable ASCII without ", so a
 // text equal to it is too).
@@ -112,7 +112,7 @@ export function remoteFieldLink(value: string): string | null {
   if (value.includes("\u0000") || ENCODER.encode(value).length > REMOTE_FIELD_SOURCE_BYTES) {
     return null;
   }
-  const parts = ANCHOR.exec(value.replace(RUBY_STRIP, ""));
+  const parts = ANCHOR.exec(rubyStrip(value));
   const attributes = parts === null ? null : attributesOf(parts[1] ?? "");
   const children = parts?.[2] ?? "";
   const spans = children.match(/<span[^>]*>/g) ?? [];

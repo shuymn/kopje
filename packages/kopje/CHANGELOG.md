@@ -10,6 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
+  `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
+- A local post's ActivityPub Note lists its link card as a `Link` attachment once the card is fetched, as Mastodon 4.7
+  does. No Store migration and no `wrangler.jsonc` change.
 - Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
   year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
   `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in
@@ -61,6 +67,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
   is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   WebFinger). No Store migration and no `wrangler.jsonc` change.
+- A remote post's FEP-8967 `Link` attachment is the link its card is fetched from, as Mastodon 4.7 reads it; the
+  content's links are used only without one. An attachment with an empty `href` is now read as media. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -170,9 +179,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   languages, translation languages, privacy policy and terms of service), until the suspension's cleanup deletes the
   token. Any other token on those routes is still ignored; streaming still answers with 401. No Store migration and no
   `wrangler.jsonc` change.
+- Remote posts, bios and profile fields keep the `lang` attributes of their HTML, a heading's on the bold paragraph it
+  becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
+  post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
+  as one without does. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
+  and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
+  an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
 - WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
   subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
   before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
@@ -235,6 +251,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
   `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
   Mastodon's streaming does.
+- A link card's title and description are read from a page's language-tagged JSON-LD values, as Mastodon 4.6 does
+  (`mastodon#39190`), and a remote attachment's description from a `summary` or `name` given as an array or a
+  language-tagged value, or from `name` when `summary` is blank, and stripped as Mastodon strips it, as Mastodon 4.7
+  does (`mastodon#39590`). A post whose attachments now read differently counts its next update as an edit once. No
+  Store migration and no `wrangler.jsonc` change.
+- Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
+  linear time on long input. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

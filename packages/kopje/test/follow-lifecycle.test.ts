@@ -16,7 +16,7 @@ import { community, remoteAccount } from "./status-helpers";
 // VIS-13 in docs/threat-model.md). Generated sequences of R's server's actions, L's API actions and Kopje's delivery
 // steps run through the Store and the API; after every step the Store's projection and each answer must equal the
 // policy's (test/follow-model.ts), and once everything has settled Kopje's edges and blocks must equal those of the
-// peer, a Mastodon v4.5.11 model fed the bytes Kopje confirmed, except where an accepted risk names
+// peer, a Mastodon v4.7.5 model fed the bytes Kopje confirmed, except where an accepted risk names
 // the generation that differs (`exceptions`).
 
 const ORIGIN = "https://remote.example";
@@ -1264,7 +1264,7 @@ describe("follow lifecycle transitions", () => {
     ]);
     expect(w.stats["reordered processing at the peer"]).toBe(1);
     expect(w.stats["reordered delivery to Kopje"]).toBe(1);
-    // L's Undo processed before its Follow at R's server: the Follow is suppressed (activity.rb:92-98, follow.rb:9).
+    // L's Undo processed before its Follow at R's server: the Follow is suppressed (activity.rb:98-104, follow.rb:9).
     expect(w.stats["peer: an Undo before its Follow"]).toBe(1);
   });
 
@@ -1357,7 +1357,7 @@ describe("follow lifecycle transitions", () => {
 describe("follow lifecycle accepted races", () => {
   // L blocks R and unblocks at once; R's Follow reaches Kopje after the unblock but before R's server processed the
   // Block. Kopje accepts it and sends Block, its Undo and the Accept in lane order; Mastodon's Block handler drops R's
-  // request (block.rb:16), so the Accept finds nothing (accept.rb:24-29).
+  // request (block.rb:16), so the Accept finds nothing (accept.rb:23-28).
   it("a block and unblock racing a new Follow", async () => {
     const w = await run([{ k: "block" }, { k: "unblock" }, { k: "peerFollow" }, { k: "deliver", ...at(0) }]);
     expect(w.stats["exception block-race"]).toBe(1);
@@ -1366,7 +1366,7 @@ describe("follow lifecycle accepted races", () => {
   });
 
   // NET-2: L's Accept of R's first request, confirmed before R's new Follow reached Kopje, is applied at R's server to
-  // the new request by the account pair (accept.rb:24), while Kopje waits for L's decision on it.
+  // the new request by the account pair (accept.rb:23), while Kopje waits for L's decision on it.
   it("an answer in flight applied to the next generation", async () => {
     const w = await run([
       { k: "lock", locked: true },
@@ -1439,7 +1439,7 @@ describe("follow lifecycle accepted races", () => {
   });
 
   // The newer Undo, processed before its Follow while the earlier follow stood, ends that one instead of being
-  // cached (activity.rb:92-98), so the newer Follow then applies; no Follow was POSTed twice.
+  // cached (activity.rb:98-104), so the newer Follow then applies; no Follow was POSTed twice.
   it("L's newer Undo processed before its Follow at R's server", async () => {
     const w = await run([
       ...cycle("follow", "unfollow"),
@@ -1475,7 +1475,7 @@ describe("follow lifecycle accepted races", () => {
 });
 
 // R's Block of L while R's own follow of L stands or waits (VIS-13, docs/visibility.md R21), as Mastodon handles it on
-// both sides: BlockService keeps the blocker's request at R's server (block_service.rb:9-11), and the receiver's Block
+// both sides: BlockService keeps the blocker's request at R's server (block_service.rb:26-30), and the receiver's Block
 // handler keeps it too and ends an accepted follow with a Reject (block.rb:14-16, unfollow_service.rb:35-36).
 describe("follow lifecycle: the blocker's own follow", () => {
   it("a remote Block keeps the blocker's pending request", async () => {
@@ -1555,7 +1555,7 @@ describe("follow lifecycle kept answers", () => {
 
   // NET-2's accepted risk of a kept Reject: L removes R's follow h, then R undoes h and follows again (g), and g
   // reaches Kopje before h's Undo. g keeps the Reject of h, which reaches R's server before h's Undo reaches Kopje, and
-  // Mastodon applies it to g by the pair (reject.rb:25). Kopje holds g; R's server holds nothing.
+  // Mastodon applies it to g by the pair (reject.rb:24). Kopje holds g; R's server holds nothing.
   it("a kept Reject of an undone generation ends the next one at R's server", async () => {
     const w = await run([
       { k: "peerFollow" },

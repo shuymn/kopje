@@ -164,11 +164,11 @@ against their own instance. TLS is assumed between all parties.
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
   of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
   `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
-  revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe found
-  again after reading its revision, so a probe is never stored), the refresh of a stale boosted or quoted author (the
-  revision read when the refresh was decided travels with the need or the quote's work; staleness stays the refresh
-  policy, since a `Move` changes the revision but not `fetched_at`), and a collection sync's document part, the refresh
-  of an invalidated account (by the revision read at its claim). A document stored under
+  revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe or its
+  alternate found again after reading its revision, so neither is ever stored), the refresh of a stale boosted or quoted
+  author (the revision read when the refresh was decided travels with the need or the quote's work; staleness stays the
+  refresh policy, since a `Move` changes the revision but not `fetched_at`), and a collection sync's document part, the
+  refresh of an invalidated account (by the revision read at its claim). A document stored under
   an expectation is fetched after it was read: an expectation read before the request's first fetch (the inbox gate's, a
   quote stage's) pairs with the request's loaders, and one read later (a refresh need's, a search resolution's) takes a
   document loader with a memo of its own (`afterRevisionRead` in `src/federation/federation.ts`), so no response cached
@@ -282,7 +282,14 @@ against their own instance. TLS is assumed between all parties.
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
   after JSON-LD processing, and it must have the origin of the final response URL. The loader's literal `id` check is a
   pre-filter. Cross-origin redirects are refused. _Enforced (main):_ `src/federation/loader.ts`;
-  `test/remote-identity.test.ts`, `test/loader.test.ts`.
+  `test/remote-identity.test.ts`, `test/loader.test.ts`. A search resolution's alternate (the document an HTML or
+  other non-ActivityPub answer names in its `Link` header or `<link rel="alternate">`, NET-4) may be on another
+  origin than the page, as Mastodon's `FetchResourceService` allows; its request follows no redirect, and its
+  document is taken only when its `id` is the href literally and the URL requested (Mastodon's `json['id'] != @url ||
+  json['id'] != response.uri`), so the rule above holds for it as for any fetch. _Enforced (main):_ `fetchAlternate`
+  in `src/federation/resolve.ts`; `test/resolve-alternate.test.ts` ("takes an alternate on another origin whose id is
+  the href, and none whose id is not", "makes no second hop: an alternate answering HTML that names its own alternate
+  resolves nothing").
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
@@ -1475,11 +1482,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
   public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
   whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). _Enforced (main):_ `cardEligibleSql` in
+  as decoded (`presentCard` in `src/domain/status-presenter.ts`). A local status's Note (the object endpoint, the
+  outbox, the featured collection, every `Create` and `Update`) lists the card's URL as a FEP-8967 `Link` only where
+  the card is presented: an attached row, judged by the presenter's own rule (`shownCardUrl`, shared with
+  `presentCard`; `statusFacts` in `src/domain/activities.ts`). _Enforced (main):_ `cardEligibleSql` in
   `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
   status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide
-  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row"),
+  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row",
+  "lists none where the API shows none: a private status's imported card, a blank title", "lists none while the card
+  is pending: the Create at posting, a text edit's Update and an imported row"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
@@ -1971,9 +1983,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   signals. A signed request answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
   (`@method`, `@target-uri`), after the same checks and within the same load, hop by hop: the hop so answered is sent
   again and the next starts with draft-cavage, where Mastodon 4.7's `Request#perform` resends the whole request from
-  its first URL ([mastodon-deviations.md](mastodon-deviations.md), "Outbound HTTP signatures"). _Enforced (main):_
-  `src/federation/loader.ts`;
-  `test/loader.test.ts`. Every global `fetch()` (documents,
+  its first URL ([mastodon-deviations.md](mastodon-deviations.md), "Outbound HTTP signatures"). Search resolution's
+  requests (`createResolveLoader`) follow the same rules with Mastodon's `FetchResourceService` Accept: its first
+  request follows redirects as any document fetch, an alternate's follows none and takes a 200 answer only, and a 200
+  answer of another type is handed back unread; a `text/html` body is read only when its alternate is needed, whole,
+  refused past 1 MiB by `Content-Length` or as read (Mastodon's `body_with_limit`), within its own 5 s and the request's
+  deadline. _Enforced (main):_ `src/federation/loader.ts`;
+  `test/loader.test.ts`, `test/resolve-alternate.test.ts` ("sends Mastodon's Accept on the first request and on the
+  alternate's", "follows no redirect of an alternate: the page's resolves nothing, the header's falls back to the
+  page", "resolves nothing for an alternate on a blocked domain or at a private address", "resolves nothing for a page
+  past DOCUMENT_BODY_LIMIT, by Content-Length or as read"). Every global `fetch()` (documents,
   deliveries, Web Push, backups, the Access and Cloudflare APIs) is also strictly public: the compatibility flag
   `global_fetch_strictly_public` routes it through Cloudflare's front door like a request from the Internet, so a host
   in the instance's own zone gets the Workers and security settings of its route instead of reaching the zone's origin
@@ -2096,7 +2115,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Mastodon's `NokogiriHandler.link_rel_include` downcases both; a rel past 2,048 decoded characters is not tokenized and
   no rel=me at or after it is collected, so a later anchor never stands first where Mastodon finds an earlier one
   (`test/html-scan.test.ts` ("finds the token me past the first relTokens tokens of a rel", "collects no rel=me at or
-  after a rel past REL_CHARS")); `links[].rel` is lowercased for card extraction. The DNS check does not pin the address
+  after a rel past REL_CHARS")); `links[].rel` is lowercased for card extraction. Search resolution's HTML page
+  (NET-4) is a document fetch (NET-1), not this sink's, but its body is decoded as this sink decodes a page
+  (`readHtmlBody` in `src/platform/html-body.ts`: the same Content-Encodings and charset), read whole within 1 MiB, and
+  scanned by `scanAlternate` in `src/platform/html-scan.ts`, which returns one href of at most 2,048 decoded units
+  (and 8,192 as written): the first alternate `<link>` as Mastodon's `FetchResourceService#process_html` selects it,
+  and none at or after a `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>` start tag or a rel past
+  2,048 decoded units or 8,192 as written, or on a page with `<frameset>` bytes, where lol-html cannot place a `<link>`
+  as an HTML5 tree does. Its time witness is this sink's, through the resolve path: a 1 MiB page of `<link>` elements
+  none of which matches, with and without a refused context first, is read and scanned within the request's deadline
+  (`test/resolve-alternate.test.ts` ("reads and scans a 1 MiB page of <link> elements, %s, within the request's
+  deadline"); `test/resolve-extractor.test.ts` ("never takes an alternate other than the HTML5 tree's first", "takes
+  no alternate %s")). The DNS check does not pin the address
   the request connects to: protection against DNS rebinding rests on production `deps.fetch` being the Worker's global
   fetch, never a service binding, which NET-1 makes strictly public. Each caller's differences from Mastodon's parser
   are listed in docs/mastodon-deviations.md. Local profile link verification (`src/federation/field-links.ts`) runs only
@@ -2255,7 +2285,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. Nothing is resolved, and
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A URL that answers 200
+  with another type is followed as Mastodon 4.7.5's `FetchResourceService` follows it (`process_link_headers ||
+  process_html`): to the document its `Link` header names (`rel` exactly `alternate`, `type` exactly
+  `application/activity+json`, else the ActivityStreams-profiled `application/ld+json`) and, when that alternate gives
+  one of Mastodon's nil answers (another status, a redirect, another type, context or id, a body that is no document),
+  to the first such `<link>` of a `text/html` page; each alternate is fetched once, as the instance actor, with no
+  redirect and no second hop, and a failure Mastodon raises (a transport error, the deadline, NET-1, a body past 1 MiB,
+  an href that is not an absolute URL) or the domain policy ends the resolution with nothing (`alternateOf` in
+  `src/federation/resolve.ts`, which `/authorize_interaction` resolves through too; `test/resolve-alternate.test.ts`).
+  The actor an alternate names, or its status's author, is fetched again after its state read and its handle confirmed
+  as on a direct URL. Nothing is resolved, and
   the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker) or
   the Store refuses writes (OPS-8). The Store decides the latter before any DNS check or fetch in one read after the
   host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
@@ -2315,29 +2355,42 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the stored actor document and sanitized when presented, at most 16 fields): the same `sanitizeRemoteHtml`;
   `test/inbox-statuses.test.ts` ("sanitizes content by allowlist with http(s) links only", "shows PropertyValue fields
   with sanitized values").
+  As `MASTODON_STRICT` does (`mastodon#39114`), every kept element keeps its `lang`, any value, an empty one included,
+  and a heading's goes on the `strong` it becomes. The sanitizer writes it double-quoted and escaped, the `br` and
+  heading rewrites included; it has no bound of its own beyond the output's (RES-1, RES-2). _Enforced (main):_
+  `test/html.test.ts` ("keeps a hostile lang as one attribute of one %s", "keeps lang on every kept element"),
+  `test/inbox-statuses.test.ts` ("keeps it in a status’s content, a bio and a field value"), `test/web-pages.test.ts`
+  ("keeps the lang of stored HTML at the sink").
   The web UI sanitizes again at the sink: bios, status content and field values reach a page only as the sanitizer's
-  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. _Enforced (main):_ `test/web-pages.test.ts`
-  ("sanitizes stored HTML at the sink and drops non-http links"). Only `Rich` (`src/web/components/basics.tsx`) sets
-  `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`, only the doctype
-  (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never a string:
+  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. That pass cuts its input at
+  `STORED_HTML_LIMIT` (`src/security/html.ts`: 131,072 UTF-16 code units, the largest stored bound of status content,
+  bios and presented field values), not at the raw cap: sanitizing lengthens its input (`"` in an attribute value
+  becomes `&quot;`), and a cut inside an attribute would drop the element and everything after it.
+  _Enforced (main):_ `test/web-pages.test.ts` ("sanitizes stored HTML at the sink and drops non-http links", "shows
+  stored HTML that sanitizing lengthened past the raw cap"), `test/html.test.ts` ("keeps a stored value whose %s
+  sanitizing lengthened past the raw cap", "cuts at a bound that admits every stored value"). Only `Rich`
+  (`src/web/components/basics.tsx`) sets `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`,
+  only the doctype (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never
+  a string:
   _Enforced (main):_ `test-node/raw-html.test.ts`.
   Custom emoji in that HTML are added in the same pass (`sanitizedWithEmoji`): sanitize-html hands each run of text it
   keeps, already escaped, to a filter whose output it writes unescaped, and the filter keeps the text as given and adds
   only an image whose attributes it escapes, for a shortcode within `EMOJI_SHORTCODE` and a url that passes the
   stored bounds again at the sink; attribute values and dropped elements never reach it. In names, warnings, field
   names and poll choices, which are text, an emoji is an element hono/jsx escapes. _Enforced (main):_
-  `src/security/html.ts` (`sanitizeRemoteHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
+  `src/security/html.ts` (`sanitizeStoredHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
   each run of text escaped and writes what it returns unescaped", "are refused at the sink for a shortcode or url the
   stored bounds would refuse").
   The operator's documents (the extended description, the privacy policy and the terms of service) are stored as the
   admin wrote them or the cutover converted them and sanitized once per sink by `sanitizeDocumentHtml`, the same
-  allowlist with h2 to h4 kept as headings, without attributes ([mastodon-deviations.md](mastodon-deviations.md),
-  Instance and apps): in the Store for the API (`instanceDocument` in `src/domain/instance.ts`), at the page for the
-  web (`webDocument`, then `SafeHtml`). A link that is not absolute http(s) loses its href and stays as text (HTML-3).
-  At most 50,000 UTF-8 bytes each (RES-2, the instance's public settings), so the sanitizer's raw cap never cuts one,
-  however sanitizing lengthens it.
+  allowlist with h2 to h4 kept as headings, without attributes (`lang` included; the other elements keep it)
+  ([mastodon-deviations.md](mastodon-deviations.md), Instance and apps): in the Store for the API (`instanceDocument`
+  in `src/domain/instance.ts`), at the page for the web (`webDocument`, then `SafeHtml`). A link that is not absolute
+  http(s) loses its href and stays as text (HTML-3). At most 50,000 UTF-8 bytes each (RES-2, the instance's public
+  settings), so the sanitizer's raw cap never cuts one, however sanitizing lengthens it.
   _Enforced (main):_ `test/html.test.ts` (the vector suites through it too, "keeps headings as h2 to h4, without
-  attributes, under the page’s own h1"), `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
+  attributes, under the page’s own h1", "keeps lang on its other elements and none on its headings"),
+  `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
   pages show them", "serves the privacy policy sanitized", "keeps the end of a document that sanitizing lengthens past
   the raw cap"), `test/web-pages.test.ts` ("serve the privacy policy and
   the terms of service as stored, sanitized at the sink", "shows the extended description sanitized at the sink").
@@ -2773,6 +2826,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   by the schema (migration `0011_scheduled_statuses`); `test/migrations.test.ts`, `test/scheduled-statuses.test.ts`.
   `scheduled_at` must name a date and time the calendar has (Ruby's `DateTime.parse`: no February 29 outside leap years,
   no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. Other query strings: _Gap._
+  _Enforced (main)_ for a search resolution's non-ActivityPub answer (NET-4): its `Link` header is read only within
+  8,192 characters and 64 links, and not at all past either (`LINK_HEADER_CHARS`, `LINK_HEADER_LINKS` in
+  `src/platform/link-header.ts`), in time linear in the value, and its HTML body only within 1 MiB, by
+  `Content-Length` before any byte or as read (NET-1); `test/resolve-alternate.test.ts` ("ignores a Link value past
+  LINK_HEADER_CHARS, and reads one at it",
+  "resolves nothing for a page past DOCUMENT_BODY_LIMIT, by Content-Length or as read"),
+  `test/resolve-extractor.test.ts` ("reads nothing past LINK_HEADER_CHARS or LINK_HEADER_LINKS", "reads a value at
+  LINK_HEADER_CHARS in linear time, where the gem's href pattern backtracks").
   _Enforced (main)_ for status text a remote server sends: content is stored within `STATUS_CONTENT_BYTES` (128 KiB) as
   a JSON string, the sanitized form of a shorter raw prefix when the whole does not fit, so it stays sanitizer output
   (`sanitizeRemoteContent` in `src/security/html.ts`, the search `sanitizeRemoteBio` uses); a content warning within
@@ -2796,7 +2857,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
   image metadata walk: `test/image-bytes.test.ts` ("walks a worst-case file at the upload bound"). Remote HTML:
-  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"). _Enforced (main)_ for JSON-LD
+  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"), and for stored HTML sanitized again
+  at the web sink, at `STORED_HTML_LIMIT` (HTML-1): `test/html.test.ts` ("at the stored cap within a generous time").
+  Stripping request and remote text: _Enforced (main):_ each strip scans the ends it strips by index
+  (`src/platform/strip.ts`); `test/accounts.test.ts` ("filling the body within a generous time"), `test/polls.test.ts`
+  ("reads a choice filling the body within a generous time"), `test/error-pages.test.ts` ("reads an Accept header at the
+  request header limit within a generous time"), `test/link-details.test.ts` ("reads a round of headlines at the JSON-LD
+  cap within a generous time"). Removing the CDATA lines of a card's JSON-LD: _Enforced (main):_ `removeCdataJunk`
+  (`src/federation/link-details.ts`) passes over a script in linear time; `test/link-details.test.ts` ("removes CDATA
+  lines from a round of scripts at the JSON-LD cap within a generous time", "removes CDATA lines as the pattern does").
+  Matching a username: _Enforced (main):_ `USERNAME` (`src/platform/domain-name.ts`) and `REMOTE_USERNAME`
+  (`src/platform/identity-bounds.ts`) are written in a form matched in linear time; `test/username.test.ts` ("matches
+  what the baseline matches"), `test/interaction.test.ts` ("reads an address at INTERACTION_TARGET_BYTES within a
+  generous time").
+  _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
@@ -3372,18 +3446,30 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
   resolution makes one more Store call (`actorState`) before each actor fetch and before a URL's probe, and fetches the
-  actor document a probe found a second time after it (within the request's fetch budget of 8). A fetch whose actor
-  answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the deletion's first purge
-  batch, `PURGE_BATCH`), so at most one per fetch of the budget. Confirming an actor's handle (NET-4) loads at most two
-  WebFinger answers, within the same budget, each after a policy read (`fetchRefused`), since a Store answer's verdict
-  is spent on its first fetch; a `Move` from a new actor to a new target, both confirming through a redirect, stays
-  within it and answers 503 (`test/inbox-handles.test.ts`, "the fetch budget"). A collection sync's document part, the
-  refresh of an invalidated account, reads at most three documents with the other parts' room for a redirect or a retry
-  each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every actor state read (revision and stored handle) is one
-  seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh
-  need's and a quote's author stage's author, a search resolution's actor, a sync's document part, and the comparison in
-  the writing transaction (`test/inbox-actor-revision.test.ts`, "the actor state reads’ plans"). Delivery backlog and
-  concurrency are bounded.
+  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). A
+  probe answered 200 with another type follows at most two alternates, the `Link` header's and then the page's, one
+  fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
+  alternate, is charged to the request's bytes like any document, so a page alternate after a large header alternate
+  can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md), Search);
+  `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A fetch
+  whose actor answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the deletion's
+  first purge batch, `PURGE_BATCH`), so at most one per fetch of the budget. Confirming an actor's handle (NET-4) loads
+  at most two WebFinger answers, within the same budget, each after a policy read (`fetchRefused`), since a Store
+  answer's verdict is spent on its first fetch; a `Move` from a new actor to a new target, both confirming through a
+  redirect, stays within it and answers 503 (`test/inbox-handles.test.ts`, "the fetch budget"). A search resolution's
+  longest path makes six requests where no redirect hop, RFC 9421 retry or uncached context is needed: a page's probe,
+  its header alternate giving a nil answer, its page alternate naming an actor or a status, that actor's or the
+  status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
+  subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
+  each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
+  transient failure: a cut probe, alternate or actor fetch resolves nothing (the search answers as without
+  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle. A collection sync's
+  document part, the refresh of an invalidated account, reads at most three documents with the other parts' room for a
+  redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every actor state read (revision and
+  stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and
+  `Move` target, a refresh need's and a quote's author stage's author, a search resolution's actor, a sync's document
+  part, and the comparison in the writing transaction
+  (`test/inbox-actor-revision.test.ts`, "the actor state reads’ plans"). Delivery backlog and concurrency are bounded.
   Anonymous app registration, inbox spooling and media transformations have rate or storage budgets with a visible
   refusal. Inbox spooling: _Enforced (main):_ the spool's budget (RES-4), refused with 503 (`createAdmission` in
   `src/federation/spool.ts`; `test/maintenance-worker.test.ts` ("in Kopje's own maintenance gate: the same budget,
@@ -4324,8 +4410,8 @@ not asserted.
 | A moderation_warning notification, its local account at bounds   | 133,178           | 290,594         | 360,727           | 7         | 682   | 4.3%           |
 | Its notification group                                           | 133,178           | 290,783         | 360,916           | 7         | 689   | 4.3%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
 | Listed hashtag (search, followed, suggested), from its caps      |                   | 4,543           | 5,070             |           |       | 0.1%           |
@@ -4406,13 +4492,15 @@ most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
 within the bound is at most the stored bound, and a longer one presents as ''.
 
-A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections and
-its text and attachments as stored (`statusFacts` in `src/domain/activities.ts`), so a converted row's hashtag past its
-bound is left out of both. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
+A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
+and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
+`src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. The card's URL is at most
+2,048 bytes of printable ASCII, which JSON does not escape (`cardUrlPastSql`), so the `Link` adds at most 2,074 bytes
+with its frame. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
 addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170 mentions) never reach
 and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`). With every part at its
 bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes are not within 8 MiB, so
-the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.41 MB with one Note
+the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.46 MB with one Note
 whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts group), so it is at
 most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its accounts, its first status
 (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local, and its reporter (a remote

@@ -213,6 +213,19 @@ describe("404", () => {
     ]);
   });
 
+  // The OWS trim is linear (platform/strip.ts): an Accept header as long as the platform's whole request header limit
+  // (128 KB, read as KiB), with a run of spaces inside a range, is read within a generous time; the page answers, so
+  // the range before it was read.
+  it("reads an Accept header at the request header limit within a generous time", async () => {
+    const { request } = harness(await migratedStore());
+    const accept = `text/html, a${" ".repeat(128 * 1024 - "text/html, ab".length)}b`;
+    expect(accept).toHaveLength(128 * 1024);
+    const started = performance.now();
+    const response = await request("/nope", { headers: { accept } });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect([response.status, response.headers.get("content-type")]).toEqual([404, "text/html; charset=UTF-8"]);
+  });
+
   it.each<[string, string, string, string | undefined, Bytes]>([
     // Negotiated: the plain variant varies with Accept too.
     ["no Accept", "GET", "/nope", undefined, plain404(VARY)],
