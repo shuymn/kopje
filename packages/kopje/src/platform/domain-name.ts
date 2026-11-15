@@ -66,8 +66,11 @@ export function hostDomain(uri: string): string {
 }
 
 // An address: user@domain, @user@domain or acct:user@domain, split into its parts first and its domain then
-// normalized, so Unicode and punycode spellings of a domain are the same address. null when it is not one.
-const USERNAME = /^[a-z0-9_]+([a-z0-9_.-]+[a-z0-9_]+)?$/i;
+// normalized, so Unicode and punycode spellings of a domain are the same address. null when it is not one. The
+// username is Mastodon's USERNAME_RE (/[a-z0-9_]+([a-z0-9_.-]+[a-z0-9_]+)?/i) in an equivalent form matched in linear
+// time; identity-bounds.ts REMOTE_USERNAME is the same pattern (each module is loaded alone by the cutover CLI), and
+// test/username.test.ts holds both to that language.
+const USERNAME = /^[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?$/i;
 
 export function parseAddress(query: string): { username: string; domain: string } | null {
   const parts = query

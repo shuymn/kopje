@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
 import {
   type ApiHarness,
@@ -354,6 +355,32 @@ describe("credentials", () => {
     expect(await stored()).toEqual(kept);
     expect((await patch({ display_name: `${"😀".repeat(20)}\u0000${"😀".repeat(19)}` })).status).toBe(200);
     expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
+  });
+
+  // The strip is linear (platform/strip.ts): a run inside one value filling the body (API_BODY_LIMIT) is read within a
+  // generous time, with an invalid token (checked after the values are read) and with alice's, whose 422 shows the
+  // value reached its check.
+  it.each([
+    ["display_name", (value: string) => ({ display_name: value }), "Display name is too long"],
+    ["note", (value: string) => ({ note: value }), "Note is too long"],
+    ["attribution_domains", (value: string) => ({ attribution_domains: [value] }), "is not a valid domain name"],
+  ])("reads %s filling the body within a generous time", async (_name, body, problem) => {
+    const h = await aliceSession();
+    const value = `x${" ".repeat(API_BODY_LIMIT - JSON.stringify(body("xx")).length)}x`;
+    expect(JSON.stringify(body(value))).toHaveLength(API_BODY_LIMIT);
+    for (const [token, status] of [
+      ["nope", 401],
+      [h.token, 422],
+    ] as const) {
+      const started = performance.now();
+      const init = bearer(token, json(body(value), { method: "PATCH" }));
+      const response = await h.request("/api/v1/accounts/update_credentials", init);
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(response.status).toBe(status);
+      if (status === 422) {
+        expect((await response.json<{ error: string }>()).error).toContain(problem);
+      }
+    }
   });
 
   // Mastodon's TextFormatter for a local note (app/lib/text_formatter.rb:34, :48): '' for a blank note, else Rails'

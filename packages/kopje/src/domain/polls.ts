@@ -3,6 +3,7 @@ import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_I
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { yieldsMoreThan } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { type Present, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
 import { mayVoteSql, viewableStatusId } from "./audience";
@@ -52,11 +53,7 @@ export type PollRequest = {
 // A local poll as it is checked and written: its choices, its duration in seconds and its options.
 export type PollInput = { options: string[]; expiresIn: number; multiple: boolean; hideTotals: boolean };
 
-// Ruby's String#strip (ASCII whitespace and NUL) and Object#blank? (Unicode whitespace only).
-function strip(value: string): string {
-  return value.replace(/^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g, "");
-}
-
+// Object#blank? (Unicode whitespace only), applied after Ruby's String#strip (rubyStrip).
 function isBlank(value: string | undefined): boolean {
   return value === undefined || /^\s*$/u.test(value);
 }
@@ -88,7 +85,7 @@ function rubyInteger(value: string): number {
 // most MAX_OPTIONS, each at most MAX_OPTION_CHARS grapheme clusters, no two alike; the duration present (expires_in,
 // read as Ruby's to_i) and between MIN_EXPIRATION_S and MAX_EXPIRATION_S.
 export function checkPoll(request: PollRequest): PollInput | { error: string } {
-  const options = request.options.map(strip).filter((option) => !isBlank(option));
+  const options = request.options.map(rubyStrip).filter((option) => !isBlank(option));
   const errors: string[] = [];
   if (options.length === 0) {
     errors.push("Choices can't be blank");
