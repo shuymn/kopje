@@ -1,5 +1,6 @@
 import { LinkifyIt } from "linkify-it";
 
+import { storedText } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { escapeHtml } from "./plain-text";
 import { normalizeTag } from "./tag-name";
@@ -41,6 +42,17 @@ export const MAX_URL_LENGTH = 4096;
 
 export function exceedsRawLength(text: string, spoilerText: string): boolean {
   return text.length + spoilerText.length > MAX_RAW_LENGTH;
+}
+
+// StatusLengthValidator::MAX_CHARS: the most a local status's counted length (statusLength) may be.
+export const MAX_STATUS_CHARACTERS = 500;
+
+// ActiveSupport's String#blank? (/\A[[:space:]]*\z/; [[:space:]] under Unicode, as Ruby has it), over the text as
+// it is stored (storedText): U+0085 is blank and U+FEFF is not, where JavaScript's trim() has it the other way.
+const BLANK = /^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
+
+export function blankText(text: string): boolean {
+  return BLANK.test(storedText(text));
 }
 
 export type MentionRef = { username: string; domain: string | null };
@@ -218,20 +230,24 @@ function graphemeLength(text: string): number {
   return count;
 }
 
-// StatusLengthValidator (for text within MAX_RAW_LENGTH): grapheme count of the text and the spoiler, where a URL counts as 23 characters and a
-// remote mention as its local part only.
+// StatusLengthValidator (for text within MAX_RAW_LENGTH): the grapheme count of the warning followed by the countable
+// text, as one string (combined_text), so a combining mark that starts the text joins the warning's last grapheme. The
+// countable text (countable_text) of a blank text is empty; otherwise a URL counts as 23 characters and a remote
+// mention as its local part only.
 export function statusLength(text: string, spoilerText: string): number {
-  const countable = parseStatusText(text)
-    .segments.map((segment) => {
-      switch (segment.kind) {
-        case "url":
-          return "x".repeat(URL_PLACEHOLDER_LENGTH);
-        case "mention":
-          return `@${segment.username}`;
-        default:
-          return segment.text;
-      }
-    })
-    .join("");
-  return graphemeLength(countable) + graphemeLength(spoilerText);
+  const countable = blankText(text)
+    ? ""
+    : parseStatusText(text)
+        .segments.map((segment) => {
+          switch (segment.kind) {
+            case "url":
+              return "x".repeat(URL_PLACEHOLDER_LENGTH);
+            case "mention":
+              return `@${segment.username}`;
+            default:
+              return segment.text;
+          }
+        })
+        .join("");
+  return graphemeLength(spoilerText + countable);
 }

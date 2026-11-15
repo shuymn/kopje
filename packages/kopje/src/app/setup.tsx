@@ -27,7 +27,7 @@ import {
   teamDomainOf,
 } from "../platform/cloudflare-api";
 import { readConfig, userKek } from "../platform/config";
-import { normalizeDomain } from "../platform/domain-name";
+import { DNS_NAME_OCTETS, normalizeDomain } from "../platform/domain-name";
 import { errorFields } from "../platform/error-message";
 import { sniffImageType } from "../platform/image-bytes";
 import { ImageCodecError } from "../platform/images";
@@ -88,11 +88,12 @@ class ReconcileStopped extends Error {}
 type Status = 200 | 400 | 403 | 409 | 422 | 429 | 503;
 
 // Step 1: why the host the request came to cannot be the instance domain, or null. A workers.dev host is refused:
-// Access protects paths only on a zone of the account, and the domain can never change afterwards.
+// Access protects paths only on a zone of the account, and the domain can never change afterwards. A host past DNS's
+// 253 octets, which WHATWG URL does not enforce, is refused too: the instance origin's bound (FALLBACK_JSON_MAX).
 export function hostProblem(host: string): string | null {
   const domain = normalizeDomain(host);
-  if (domain === null || domain !== host) {
-    return `${host} is not a domain name Kopje can use (no IP address, port or unusual spelling).`;
+  if (domain === null || domain !== host || domain.length > DNS_NAME_OCTETS) {
+    return `${host} is not a domain name Kopje can use (no IP address, port, unusual spelling or more than ${DNS_NAME_OCTETS} characters).`;
   }
   if (domain === "workers.dev" || domain.endsWith(".workers.dev")) {
     return "A workers.dev address cannot be the instance domain: open this page on the custom domain of your zone.";

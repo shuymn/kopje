@@ -219,9 +219,10 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     if (username === null || username === "") {
       return notFound(c, gate.site);
     }
-    const account = await storeCall(c, deps, (s, b) =>
-      s.lookupAccount(b, { username, domain: null, present: present(c) }),
+    const found = await storeCall(c, deps, (s, b) =>
+      s.lookupAccount(b, { username, domain: null, present: present(c), credential: null }),
     );
+    const account = found.status === "ok" ? found.value : null;
     return account === null
       ? withVary(new Response("Not Found", { status: 404 }))
       : withVary(await forward(c, `/ap/users/${encodeURIComponent(account.username)}`));

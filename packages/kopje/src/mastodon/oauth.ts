@@ -9,6 +9,8 @@ import {
   type ApiHandler,
   authorized,
   credential,
+  judged,
+  optionalTokenCredential,
   present,
   storeCall,
   userCredential,
@@ -95,16 +97,21 @@ export const registerApp: ApiHandler = async (c, deps) => {
   }
   const clientId = deps.randomToken();
   const secret = deps.randomToken();
-  const registered = await storeCall(c, deps, (s, b) =>
-    s.registerApp(b, {
-      clientId,
-      secret,
-      name,
-      redirectUris: [...new Set(redirectUris)],
-      website: website === "" ? null : website,
-      scopes,
-      now: deps.now(),
-    }),
+  const credential = optionalTokenCredential(c, deps);
+  const registered = judged(
+    c,
+    await storeCall(c, deps, (s, b) =>
+      s.registerApp(b, {
+        clientId,
+        secret,
+        name,
+        redirectUris: [...new Set(redirectUris)],
+        website: website === "" ? null : website,
+        scopes,
+        now: deps.now(),
+        credential,
+      }),
+    ),
   );
   if (registered.status === "over_budget") {
     return mastodonError(429, "Too many applications are waiting for authorization. Try again later.");

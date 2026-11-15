@@ -56,7 +56,7 @@ export type InstanceSettings = {
 // What /api/v2/instance presents beyond the settings.
 type InstanceUsage = InstanceSettings & {
   // The available local accounts with an authenticated request on one of the last ACTIVE_DAYS UTC days, today
-  // included (local_accounts.active_on, written by auth.ts noteActivity).
+  // included (local_accounts.active_on, written by instance-activity.ts noteActivity).
   activeMonth: number;
   // The account contact_username names, presented (an unavailable one redacted, VIS-30); null when none is set or
   // it names no account.

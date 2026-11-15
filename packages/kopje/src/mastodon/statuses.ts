@@ -1,11 +1,11 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
-import { exceedsRawLength, statusLength } from "../domain/status-text";
+import { blankText, exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
 import {
   type Acted,
   MAX_STATUSES_BY_ID,
   type MediaAttributes,
-  TOO_MANY_FILES,
+  TOO_LONG,
   UNEXPECTED_MENTIONS,
   type Viewed,
 } from "../domain/statuses";
@@ -36,9 +36,9 @@ const REPLY_NOT_FOUND = () => mastodonError(404, "The post you are trying to rep
 // StatusesController#set_quoted_status: any failure, a status R36 refuses included.
 const QUOTE_NOT_FOUND = () => mastodonError(404, "The post you are trying to quote does not appear to exist.");
 
-const MAX_CHARACTERS = 500;
 const MAX_MEDIA_ATTACHMENTS = 4;
-const TOO_LONG = `Validation failed: Text character limit of ${MAX_CHARACTERS} exceeded`;
+// Mastodon's media_attachments.validations.too_many.
+const TOO_MANY_FILES = "Cannot attach more than 4 files";
 
 // ISO 639 codes, optionally with a region or script (zh-TW, zh-Hant). Anything else is ignored, as Mastodon does.
 const LANGUAGE = /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/;
@@ -104,19 +104,23 @@ function pollOf(p: Params): PollInput | string | undefined {
 }
 
 // What POST and PUT share: text, spoiler, sensitive, language, media and a poll, with Mastodon's request validation:
-// the number of media first (PostStatusService#validate_media!'s too_many, which also refuses media with a poll), then
-// the text, then the poll. Which ids are usable is the Store's (statuses.ts mediaToAttach), checked after these. An
-// empty entry is no id, so JSON `media_ids: []` (which the parser reads as one empty entry) removes an edit's media.
+// the number of media first (PostStatusService#validate_media!'s too_many), then the text, then the poll. Which ids
+// are usable is the Store's (statuses.ts mediaToAttach), checked after these. An empty entry is no id, so JSON
+// `media_ids: []` (which the parser reads as one empty entry) removes an edit's media.
 function composition(p: Params): Composition | string {
   const text = p.get("status") ?? "";
   const spoilerText = p.get("spoiler_text") ?? "";
   const mediaIds = p.getAll("media_ids").filter((id) => id !== "");
-  const sendsPoll = p.hasObject("poll");
-  if (mediaIds.length > MAX_MEDIA_ATTACHMENTS || (mediaIds.length > 0 && sendsPoll)) {
+  if (mediaIds.length > MAX_MEDIA_ATTACHMENTS) {
     return TOO_MANY_FILES;
   }
-  // The raw bound comes first, so over-long input is refused before it is parsed.
-  if (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_CHARACTERS) {
+  // The raw bound comes first, so over-long input is refused before it is parsed. The counted length of a blank text is
+  // the Store's (statuses.ts convertedPost, editStatus): its warning may become the text, whose URLs and mentions count
+  // as text, and only the Store knows whether an edited status quotes.
+  if (
+    exceedsRawLength(text, spoilerText) ||
+    (!blankText(text) && statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)
+  ) {
     return TOO_LONG;
   }
   const poll = pollOf(p);
