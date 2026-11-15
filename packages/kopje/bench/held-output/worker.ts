@@ -11,13 +11,15 @@
 //   GET  /state                                the start, the listed sockets, per name what was handed and its ends,
 //                                              and the runtime's WebSocket surface
 //
-// Each request carries the run's token (`BENCH_TOKEN`, made per run by run.mjs) as `Authorization: Bearer <token>`,
-// or is refused with 403: the deployed object is reachable on workers.dev while it runs.
+// Each request carries the run's token (the secret `BENCH_TOKEN`, made per run by run.mjs) as
+// `Authorization: Bearer <token>`, or is refused with 403: the deployed object is reachable on workers.dev while it
+// runs.
 //
 // A frame is `<seq> <hand time in ms> ` padded with `x` to its size, so a client reads each frame's age without the
-// object keeping one record per frame. Totals and ends live in the object's storage, so a reset loses none; the start
-// id is random per start of the object, and `kind` says whether the start found sockets still listed (a wake from
-// hibernation, which the runtime keeps connected) or none (a fresh start, which after a reset means its sockets ended).
+// object keeping one record per frame; frame 0 also names the start that accepted the socket (`<id> <kind> `). Totals
+// and ends live in the object's storage, so a reset loses none; the start id is random per start of the object, and
+// `kind` says whether the start found sockets still listed (a wake from hibernation, which the runtime keeps
+// connected) or none (a fresh start, which after a reset means its sockets ended).
 import { DurableObject } from "cloudflare:workers";
 
 interface Env {
@@ -49,8 +51,8 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
-function frame(seq: number, at: number, bytes: number): string {
-  const head = `${seq} ${at} `;
+function frame(seq: number, at: number, bytes: number, extra: string): string {
+  const head = `${seq} ${at} ${extra}`;
   return head + "x".repeat(Math.max(0, bytes - head.length));
 }
 
@@ -133,7 +135,7 @@ export class HeldOutput extends DurableObject<Env> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, [name]);
     this.#record(Date.now(), name, "accept", null, null);
-    this.#sendFrames(server, name, 1, HELLO_BYTES);
+    this.#sendFrames(server, name, 1, HELLO_BYTES, `${this.#start.id} ${this.#start.kind} `);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -157,7 +159,7 @@ export class HeldOutput extends DurableObject<Env> {
 
   // Sends `frames` frames to `ws` and adds them to `name`'s totals; a send that throws ends the batch, and only the
   // frames sent before it count.
-  #sendFrames(ws: WebSocket, name: string, frames: number, bytes: number) {
+  #sendFrames(ws: WebSocket, name: string, frames: number, bytes: number, extra = "") {
     const sql = this.ctx.storage.sql;
     const row = sql.exec<{ seq: number }>("SELECT seq FROM totals WHERE name = ?", name).toArray()[0];
     const first = row?.seq ?? 0;
@@ -166,7 +168,7 @@ export class HeldOutput extends DurableObject<Env> {
     let sentBytes = 0;
     let failure: string | null = null;
     for (; sent < frames; sent += 1) {
-      const text = frame(first + sent, at, bytes);
+      const text = frame(first + sent, at, bytes, sent === 0 ? extra : "");
       try {
         const returned: unknown = ws.send(text);
         if (this.#sendReturns === "unknown") {

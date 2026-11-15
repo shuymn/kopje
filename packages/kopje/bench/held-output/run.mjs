@@ -2,8 +2,9 @@
 // itself, since no signal of unsent output reaches JavaScript (RES-6). It deploys `worker.ts` as a temporary Worker
 // named `kopje-bench-held-<random>` at the compatibility date and flags of the package's wrangler.jsonc, drives it
 // with clients of its own, writes what it observed as JSON lines and the outcomes `classify.mjs` gives them, and
-// deletes the Worker, also when a run fails (printing the delete command if that fails too). `--local` runs the same
-// object under `wrangler dev` on the pinned workerd instead and samples the workerd process's resident memory.
+// deletes the Worker, also when a run fails or the process gets SIGINT, SIGTERM or SIGHUP (printing the delete command
+// if the delete fails too). `--local` runs the same object under `wrangler dev` on the pinned workerd instead and
+// samples the workerd process's resident memory.
 //
 //   pnpm --filter kopje bench:held-output [--local] [--runs m1,m2,...] [--out <dir>] [--quick]
 //
@@ -126,6 +127,7 @@ function planOf(quick) {
 /**
  * @typedef {{ start: Start, at: number, heldMib: number, keepalive: boolean,
  *   sockets: { name: string, readyState: number }[],
+ *   names: Record<string, { frames: number, bytes: number, seq: number }>,
  *   events: { at: number, name: string, kind: string, code: number | null, reason: string | null }[],
  *   surface: unknown }} State
  */
@@ -196,9 +198,16 @@ class Client {
   #timer = null;
   #paused = false;
 
+  // Bytes handed, hands whose answer was lost included (`unknownBytes`), and received; frame 0 counts on both sides.
   handedBytes = 0;
+  unknownBytes = 0;
   receivedBytes = 0;
   receivedFrames = 0;
+  // When frame 0 arrived, and when the socket ended or the driver closed it.
+  /** @type {number | null} */
+  connectedAt = null;
+  /** @type {number | null} */
+  endedAt = null;
   ended = false;
   /** @type {Promise<void>} */
   closed;
@@ -283,7 +292,10 @@ class Client {
         this.#closeReason ||= String(error);
         fail(error);
       });
-      socket.on("close", () => this.#ended());
+      socket.on("close", () => {
+        this.#ended();
+        fail(new Error(`${this.name}: closed before the handshake`));
+      });
     });
   }
 
@@ -355,6 +367,8 @@ class Client {
       const payload = Buffer.concat(this.#control);
       this.#control = [];
       if (frame.opcode === 8) {
+        // What arrived before the Close is recorded as it arrives, not when the connection finally ends.
+        this.flush();
         this.#closeCode = payload.length >= 2 ? payload.readUInt16BE(0) : 1005;
         this.#closeReason = payload.subarray(2).toString("utf8");
         this.#write(8, payload.subarray(0, 2));
@@ -368,12 +382,16 @@ class Client {
       return;
     }
     const head = Buffer.concat(this.#head).toString("latin1");
-    const match = /^(\d+) (\d+) /.exec(head);
+    const match = /^(\d+) (\d+) (?:(\S+) (fresh|wake) )?/.exec(head);
     const seq = Number(match?.[1] ?? -1);
     const handAt = Number(match?.[2] ?? Number.NaN);
     const age = Date.now() - handAt;
     if (seq === 0) {
-      // Frame 0 is handed by the object as it accepts the socket.
+      // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it.
+      if (match?.[3] !== undefined) {
+        this.run.saw({ id: match[3], kind: match[4] === "wake" ? "wake" : "fresh" });
+      }
+      this.connectedAt = Date.now();
       this.handedBytes += this.#messageBytes;
       this.run.record({
         type: "hand",
@@ -452,7 +470,8 @@ class Client {
     if (this.#socket === null || this.ended) {
       return;
     }
-    this.run.record({ type: "closed", client: this.name, at: Date.now(), by: "client" });
+    this.endedAt ??= Date.now();
+    this.run.record({ type: "closed", client: this.name, at: this.endedAt, by: "client" });
     this.#socket.destroy();
   }
 
@@ -461,6 +480,7 @@ class Client {
       return;
     }
     this.ended = true;
+    this.endedAt ??= Date.now();
     if (this.#timer !== null) {
       clearInterval(this.#timer);
     }
@@ -472,6 +492,8 @@ class Client {
       side: "client",
       code: this.#closeCode ?? 1006,
       reason: this.#closeReason,
+      receivedFrames: this.receivedFrames,
+      receivedBytes: this.receivedBytes,
     });
     this.#onClosed();
   }
@@ -505,8 +527,8 @@ function parseFrameHeader(buffer, length) {
 
 /**
  * Where a run's object answers.
- * @typedef {{ base: string, host: string, port: number, token: string, local: boolean, workerdPid: number | null }}
- *   Target
+ * @typedef {{ base: string, host: string, port: number, token: string, local: boolean, workerdPid: number | null,
+ *   signal: AbortSignal }} Target
  */
 
 /**
@@ -519,7 +541,7 @@ async function call(target, method, path) {
   const response = await fetch(target.base + path, {
     method,
     headers: { authorization: `Bearer ${target.token}` },
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.any([target.signal, AbortSignal.timeout(60_000)]),
   });
   const text = await response.text();
   let body;
@@ -565,17 +587,25 @@ async function answeringState(target, timeoutMs, signal) {
 }
 
 /** One run: its records, its clients, and the poller that reads the object's state. */
-class Run {
+export class Run {
   /** @type {Client[]} */
   clients = [];
   probing = false;
   // The MiB the running headroom probe holds.
   probeHeld = 0;
+  // The start last seen in any answer (a state, a hand, a close, an alloc, a frame 0), and when.
+  /** @type {{ id: string, at: number } | null} */
+  #start = null;
+  // Starts seen before it: a late answer from one of them is no new start.
+  /** @type {Set<string>} */
+  #retired = new Set();
+  #listed = 0;
+  #heldMib = 0;
   /** @type {State | null} */
-  #last = null;
-  #lastAt = 0;
+  #state = null;
   #seenEvents = 0;
   #listing = "";
+  #surface = "";
   /** @type {Promise<void>} */
   #polling = Promise.resolve();
   /** @type {NodeJS.Timeout | null} */
@@ -593,6 +623,16 @@ class Run {
     this.id = id;
     this.signal = context.signal;
     this.record({ type: "run", at: Date.now(), mode: target.local ? "local" : "deployed", ...head });
+    // A stop closes the run's sockets, so nothing waits on a client that will not end by itself.
+    this.signal.addEventListener(
+      "abort",
+      () => {
+        for (const client of this.clients) {
+          client.close();
+        }
+      },
+      { once: true },
+    );
   }
 
   /** @param {Record<string, unknown>} observation */
@@ -602,10 +642,8 @@ class Run {
 
   async begin() {
     const state = await answeringState(this.target, 60_000, this.signal);
-    this.#last = state;
-    this.#lastAt = Date.now();
     this.#seenEvents = state.events.length;
-    this.record({ type: "surface", at: Date.now(), surface: state.surface });
+    this.#observe(state);
     this.#timer = setInterval(() => {
       void this.poll();
       for (const client of this.clients) {
@@ -616,27 +654,61 @@ class Run {
 
   /** Reads the object's state once, after any read already running. */
   poll() {
-    this.#polling = this.#polling.then(() => this.#pollOnce());
+    this.#polling = this.#polling.then(async () => {
+      const state = await stateOf(this.target);
+      if (state !== null) {
+        this.#observe(state);
+      }
+    });
     return this.#polling;
   }
 
-  async #pollOnce() {
-    const state = await stateOf(this.target);
-    if (state === null) {
+  /**
+   * Notes the start an answer came from. A new one is recorded with what the run held under the one before: the
+   * sockets listed, every client connected and not yet ended by the last answer from that start (so a reset between
+   * two polls is not missed), and the heap.
+   * @param {{ id: string, kind: "fresh" | "wake" }} start
+   */
+  saw(start) {
+    const now = Date.now();
+    if (this.#start === null) {
+      this.#start = { id: start.id, at: now };
       return;
     }
-    const last = this.#last;
-    if (last !== null && state.start.id !== last.start.id) {
-      this.record({
-        type: "start",
-        at: Date.now(),
-        id: state.start.id,
-        kind: state.start.kind,
-        since: this.#lastAt,
-        listedBefore: last.sockets.filter((s) => s.name.startsWith(`${this.id}.`)).length,
-        heldMibBefore: Math.max(last.heldMib, this.probing ? this.probeHeld : 0),
-        probe: this.probing,
-      });
+    if (start.id === this.#start.id) {
+      this.#start.at = now;
+      return;
+    }
+    if (this.#retired.has(start.id)) {
+      return;
+    }
+    const since = this.#start.at;
+    // An end within the millisecond of that last answer may be the reset's own: it counts as held.
+    const connected = this.clients.filter(
+      (c) => c.connectedAt !== null && (c.endedAt === null || c.endedAt >= since),
+    ).length;
+    this.record({
+      type: "start",
+      at: now,
+      id: start.id,
+      kind: start.kind,
+      since,
+      listedBefore: Math.max(this.#listed, connected),
+      heldMibBefore: Math.max(this.#heldMib, this.probing ? this.probeHeld : 0),
+      probe: this.probing,
+    });
+    this.#retired.add(this.#start.id);
+    this.#start = { id: start.id, at: now };
+  }
+
+  /** @param {State} state */
+  #observe(state) {
+    this.saw(state.start);
+    // The runtime's surface, per start, whenever it changes: `sendReturns` is known only once the start has sent.
+    const surface = `${state.start.id} ${JSON.stringify(state.surface)}`;
+    if (surface !== this.#surface) {
+      this.#surface = surface;
+      this.record({ type: "surface", at: Date.now(), start: state.start.id, surface: state.surface });
     }
     const mine = state.sockets.filter((s) => s.name.startsWith(`${this.id}.`));
     const listing = JSON.stringify(mine.map((s) => [s.name, s.readyState]));
@@ -644,8 +716,12 @@ class Run {
       this.#listing = listing;
       this.record({ type: "listed", at: Date.now(), sockets: mine.map((s) => [s.name, s.readyState]) });
     }
+    this.#listed = mine.length;
+    this.#heldMib = state.heldMib;
     for (const event of state.events.slice(this.#seenEvents)) {
       if ((event.kind === "close" || event.kind === "error") && event.name.startsWith(`${this.id}.`)) {
+        // No frame follows the object's view of an end, so what the client has received by now is what it received.
+        const client = this.clients.find((c) => c.name === event.name);
         this.record({
           type: "end",
           client: event.name,
@@ -653,16 +729,26 @@ class Run {
           side: "server",
           code: event.code,
           reason: event.reason ?? "",
+          ...(client === undefined
+            ? {}
+            : { receivedFrames: client.receivedFrames, receivedBytes: client.receivedBytes }),
         });
       }
     }
     this.#seenEvents = state.events.length;
-    this.#last = state;
-    this.#lastAt = Date.now();
+    // The object's totals are what it sent: a hand whose answer was lost is found here, and never counted below them.
+    for (const client of this.clients) {
+      const totals = state.names[client.name];
+      if (totals !== undefined) {
+        client.handedBytes = Math.max(client.handedBytes, totals.bytes);
+      }
+    }
+    this.#state = state;
   }
 
   /**
-   * Opens a client named `<run>.<role>` and waits for its frame 0.
+   * Opens a client named `<run>.<role>` and waits for its frame 0; after the run's first, reads the state, so the
+   * runtime's surface is sampled once the start has sent.
    * @param {string} role
    * @param {ConstructorParameters<typeof Client>[2]} reading
    */
@@ -671,11 +757,14 @@ class Run {
     this.clients.push(client);
     await client.connect();
     await until(() => client.receivedFrames > 0 || client.ended, 60_000, this.signal);
+    if (this.clients.length === 1) {
+      await this.poll();
+    }
     return client;
   }
 
   /**
-   * Hands `frames` frames of `bytes` to `client`; null when its socket is no longer open.
+   * Hands `frames` frames of `bytes` to `client`; null when it was refused or its answer was lost.
    * @param {Client} client
    * @param {number} frames
    * @param {number} bytes
@@ -687,20 +776,35 @@ class Run {
     // What the client received so far is recorded before the hand, so the backlog read from the records is the one
     // the driver saw.
     client.flush();
+    // Reserved before asking: the object may send every frame and the answer still be lost, so a hand counts as held
+    // until its answer says otherwise.
+    const planned = frames * bytes;
+    client.handedBytes += planned;
+    /** @param {{ error: string } | { status: number }} why */
+    const unknown = (why) => {
+      client.unknownBytes += planned;
+      this.record({ type: "hand-unknown", client: client.name, at: Date.now(), frames, bytes: planned, ...why });
+      return null;
+    };
     const query = `name=${encodeURIComponent(client.name)}&frames=${frames}&bytes=${bytes}`;
     let answer;
     try {
       answer = await call(this.target, "POST", `/hand?${query}`);
     } catch (error) {
-      this.record({ type: "hand-failed", client: client.name, at: Date.now(), error: String(error) });
-      return null;
+      return unknown({ error: String(error) });
     }
     if (answer.status !== 200) {
-      this.record({ type: "hand-failed", client: client.name, at: Date.now(), status: answer.status });
+      // 400 and 409 are answered before any frame is sent; any other status may come after the sends.
+      if (answer.status !== 400 && answer.status !== 409) {
+        return unknown({ status: answer.status });
+      }
+      client.handedBytes -= planned;
+      this.record({ type: "hand-refused", client: client.name, at: Date.now(), status: answer.status });
       return null;
     }
     const hand = /** @type {HandAnswer} */ (answer.body);
-    client.handedBytes += hand.bytes;
+    this.saw(hand.start);
+    client.handedBytes += hand.bytes - planned;
     this.record({
       type: "hand",
       client: client.name,
@@ -718,7 +822,9 @@ class Run {
    */
   async closeByObject(client) {
     const { body } = await call(this.target, "POST", `/close?name=${encodeURIComponent(client.name)}`);
-    this.record({ type: "closed", client: client.name, at: /** @type {{ at: number }} */ (body).at, by: "object" });
+    const closed = /** @type {{ at: number, start: Start }} */ (body);
+    this.saw(closed.start);
+    this.record({ type: "closed", client: client.name, at: closed.at, by: "object" });
   }
 
   /**
@@ -737,20 +843,32 @@ class Run {
   }
 
   /**
-   * The headroom probe: /alloc in 1 MiB steps until the object resets, records the MiB it held before.
+   * The headroom probe: /alloc in 1 MiB steps until the object resets, records the MiB it held before. With `holders`
+   * (M1's stopped clients), it also records what they held when it began: the bytes handed and not received, the
+   * bytes of hands whose answer was lost, the clients already ended, and whether one ended while the probe ran.
    * @param {number} attempt
    * @param {string | undefined} stage
+   * @param {Client[]} [holders]
    */
-  async probe(attempt, stage) {
+  async probe(attempt, stage, holders = []) {
     await this.poll();
     const cap = this.target.local ? PROBE_CAP_MIB.local : PROBE_CAP_MIB.deployed;
     const before = (await answeringState(this.target, 60_000, this.signal)).start.id;
+    const held =
+      holders.length === 0
+        ? undefined
+        : {
+            bytes: holders.reduce((sum, c) => sum + c.handedBytes - c.unknownBytes - c.receivedBytes, 0),
+            unknown: holders.reduce((sum, c) => sum + c.unknownBytes, 0),
+            ended: holders.filter((c) => c.ended).length,
+            endedDuringProbe: 0,
+          };
     this.probing = true;
-    let held = 0;
+    let mib = 0;
     let capped = false;
     let error = null;
     for (;;) {
-      if (held >= cap) {
+      if (mib >= cap) {
         capped = true;
         break;
       }
@@ -766,8 +884,12 @@ class Run {
         error = `status ${answer.status}`;
         break;
       }
-      held = body.heldMib ?? held;
-      this.probeHeld = held;
+      mib = body.heldMib ?? mib;
+      this.probeHeld = mib;
+      // The object answered from the same start, so a holder that ended by now did not end by the probe's reset.
+      if (held !== undefined) {
+        held.endedDuringProbe = holders.filter((c) => c.ended).length - held.ended;
+      }
     }
     const after = await answeringState(this.target, 5 * MINUTE_MS, this.signal);
     // A wake from hibernation also starts the object anew, but keeps its sockets and loses no output: not a reset.
@@ -783,13 +905,17 @@ class Run {
       at: Date.now(),
       attempt,
       ...(stage === undefined ? {} : { stage }),
-      bytes: reset ? held * MIB : null,
+      ...(held === undefined ? {} : { held }),
+      bytes: reset ? mib * MIB : null,
       capped,
       error: reset ? null : error,
     });
   }
 
-  /** Ends the run: its last summaries and state, then the `done` record; then closes the clients still open. */
+  /**
+   * Ends the run: its last summaries and state, the object's totals for each client, then the `done` record; then
+   * closes the clients still open.
+   */
   async done() {
     if (this.#timer !== null) {
       clearInterval(this.#timer);
@@ -798,6 +924,12 @@ class Run {
       client.flush();
     }
     await this.poll();
+    for (const client of this.clients) {
+      const totals = this.#state?.names[client.name];
+      if (totals !== undefined) {
+        this.record({ type: "totals", client: client.name, at: Date.now(), ...totals });
+      }
+    }
     this.record({ type: "done", at: Date.now() });
     for (const client of this.clients) {
       client.close();
@@ -814,7 +946,7 @@ class Run {
  * @param {Context} context
  * @param {Target} target
  */
-async function m1(context, target) {
+export async function m1(context, target) {
   const { plan, signal } = context;
   const { volumes, shapes, attempts, batchMs, stopped } = plan.m1;
   await call(target, "POST", "/keepalive?on=1");
@@ -858,7 +990,7 @@ async function m1(context, target) {
           await sleep(Math.max(0, tick + batchMs - Date.now()), signal);
         }
         context.log(`${id}: headroom with ${handed} bytes handed, attempt ${attempt}`);
-        await run.probe(attempt, undefined);
+        await run.probe(attempt, undefined, clients);
         for (const client of clients) {
           client.resume();
         }
@@ -1083,16 +1215,14 @@ async function compatibility() {
 /**
  * @param {string} name
  * @param {{ date: string, flags: string[] }} compat
- * @param {string} token what every request to the object must carry
  */
-function workerConfig(name, compat, token) {
+function workerConfig(name, compat) {
   return {
     name,
     main: "worker.ts",
     compatibility_date: compat.date,
     compatibility_flags: compat.flags,
     workers_dev: true,
-    vars: { BENCH_TOKEN: token },
     durable_objects: { bindings: [{ name: "HELD", class_name: "HeldOutput" }] },
     migrations: [{ tag: "v1", new_sqlite_classes: ["HeldOutput"] }],
   };
@@ -1146,13 +1276,24 @@ async function withTarget({ local, compat, out, label, signal, log }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "kopje-bench-held-"));
   const name = `kopje-bench-held-${randomBytes(4).toString("hex")}`;
   // The deployed object is public on workers.dev while it runs: it answers only requests that carry this run's token.
+  // The token is a secret binding (`.dev.vars` locally, a secrets file deployed), whose value wrangler never prints,
+  // unlike a var's; and every wrangler output kept in the output directory is masked, its own logs included.
   const token = randomBytes(32).toString("hex");
   const config = join(dir, "wrangler.jsonc");
   // A copy of the object's source: `wrangler dev` reloads on a change to its main module, which would reset the
   // object mid-run if the tree were edited.
   copyFileSync(join(here, "worker.ts"), join(dir, "worker.ts"));
-  writeFileSync(config, JSON.stringify(workerConfig(name, compat, token), null, 2));
-  const setup = { dir, name, config, token, logFile: join(out, `wrangler-${label}.log`), signal, log };
+  writeFileSync(config, JSON.stringify(workerConfig(name, compat), null, 2));
+  if (local) {
+    writeFileSync(join(dir, ".dev.vars"), `BENCH_TOKEN=${token}\n`, { mode: 0o600 });
+  } else {
+    writeFileSync(join(dir, "secrets.json"), JSON.stringify({ BENCH_TOKEN: token }), { mode: 0o600 });
+  }
+  /** @param {string} text */
+  const mask = (text) => text.replaceAll(token, "<token>");
+  // wrangler's own debug logs go to the temporary directory, which is removed with the token in it.
+  const env = { ...process.env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(dir, "logs") };
+  const setup = { dir, name, config, token, mask, env, logFile: join(out, `wrangler-${label}.log`), signal, log };
   try {
     if (local) {
       await runLocal(setup, fn);
@@ -1165,18 +1306,20 @@ async function withTarget({ local, compat, out, label, signal, log }, fn) {
 }
 
 /**
- * @typedef {{ dir: string, name: string, config: string, token: string, logFile: string, signal: AbortSignal,
- *   log: (line: string) => void }} Setup
+ * @typedef {{ dir: string, name: string, config: string, token: string, mask: (text: string) => string,
+ *   env: NodeJS.ProcessEnv, logFile: string, signal: AbortSignal, log: (line: string) => void }} Setup
  */
 
 /**
  * @param {Setup} setup
  * @param {(target: Target) => Promise<void>} fn
  */
-async function runLocal({ dir, config, token, logFile, signal, log }, fn) {
+async function runLocal({ dir, config, token, mask, env, logFile, signal, log }, fn) {
   const port = await freePort();
   const inspector = await freePort();
-  const output = createWriteStream(logFile);
+  // The output stays in the temporary directory until wrangler stops; only its masked copy is kept.
+  const raw = join(dir, "dev.log");
+  const output = createWriteStream(raw);
   const child = spawn(
     process.execPath,
     [
@@ -1195,7 +1338,7 @@ async function runLocal({ dir, config, token, logFile, signal, log }, fn) {
       "--log-level",
       "warn",
     ],
-    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
+    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env },
   );
   child.stdout.pipe(output);
   child.stderr.pipe(output);
@@ -1210,6 +1353,7 @@ async function runLocal({ dir, config, token, logFile, signal, log }, fn) {
       token,
       local: true,
       workerdPid: null,
+      signal,
     };
     await answeringState(target, 2 * MINUTE_MS, signal);
     workerd = child.pid === undefined ? null : workerdUnder(child.pid);
@@ -1233,7 +1377,8 @@ async function runLocal({ dir, config, token, logFile, signal, log }, fn) {
         // Already gone.
       }
     }
-    output.end();
+    await new Promise((done) => output.end(done));
+    writeFileSync(logFile, mask(readFileSync(raw, "utf8")));
   }
 }
 
@@ -1241,29 +1386,29 @@ async function runLocal({ dir, config, token, logFile, signal, log }, fn) {
  * @param {Setup} setup
  * @param {(target: Target) => Promise<void>} fn
  */
-async function runDeployed({ dir, name, config, token, logFile, signal, log }, fn) {
+async function runDeployed({ dir, name, config, token, mask, env, logFile, signal, log }, fn) {
   try {
     log(`deploying ${name}`);
     let printed;
     try {
-      printed = execFileSync(process.execPath, [wrangler, "deploy", "--config", config], {
-        cwd: dir,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      printed = execFileSync(
+        process.execPath,
+        [wrangler, "deploy", "--config", config, "--secrets-file", join(dir, "secrets.json")],
+        { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env },
+      );
     } catch (error) {
       const { stdout, stderr } = /** @type {{ stdout?: string, stderr?: string }} */ (error);
-      writeFileSync(logFile, `${stdout ?? ""}${stderr ?? ""}`);
+      writeFileSync(logFile, mask(`${stdout ?? ""}${stderr ?? ""}`));
       throw error;
     }
-    writeFileSync(logFile, printed);
+    writeFileSync(logFile, mask(printed));
     const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(printed)?.[0];
     if (url === undefined) {
       throw new Error(`${name}: deploy printed no workers.dev URL (${logFile})`);
     }
     const host = new URL(url).host;
     /** @type {Target} */
-    const target = { base: url, host, port: 443, token, local: false, workerdPid: null };
+    const target = { base: url, host, port: 443, token, local: false, workerdPid: null, signal };
     await answeringState(target, 5 * MINUTE_MS, signal);
     log(`${name}: ${url}`);
     await fn(target);
@@ -1273,6 +1418,7 @@ async function runDeployed({ dir, name, config, token, logFile, signal, log }, f
       execFileSync(process.execPath, [wrangler, "delete", "--config", config, "--force"], {
         cwd: dir,
         stdio: ["ignore", "ignore", "inherit"],
+        env,
       });
     } catch {
       console.error(`held-output: deleting ${name} failed; delete it with: pnpm exec wrangler delete ${name} --force`);
@@ -1305,10 +1451,30 @@ async function main(argv) {
   mkdirSync(out, { recursive: true });
   const observations = join(out, "observations.jsonl");
   const stream = createWriteStream(observations, { flags: "a" });
-  const controller = new AbortController();
-  process.once("SIGINT", () => controller.abort(new Error("interrupted")));
   /** @param {string} line */
   const log = (line) => console.log(`held-output: ${line}`);
+  // Every way the process is asked to stop takes one path: the abort ends each run's waits and sockets, and each
+  // Worker is deleted (or wrangler dev stopped) before the process exits. A further signal while that runs is ignored,
+  // so it cannot cut a deletion short; an uncaught error takes the same path. Only SIGKILL skips it: the delete
+  // command for each Worker is then `pnpm exec wrangler delete <name> --force`, the name printed when it was deployed.
+  const controller = new AbortController();
+  /**
+   * @param {string} why
+   * @param {unknown} [error]
+   */
+  const stop = (why, error) => {
+    if (controller.signal.aborted) {
+      log(`${why}: already stopping`);
+      return;
+    }
+    log(`${why}: stopping, then removing what was started`);
+    controller.abort(new Error(why, { cause: error }));
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => stop(signal));
+  }
+  process.on("uncaughtException", (error) => stop("uncaught exception", error));
+  process.on("unhandledRejection", (error) => stop("unhandled rejection", error));
   /** @type {Context} */
   const context = {
     signal: controller.signal,

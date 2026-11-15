@@ -235,12 +235,44 @@ describe("held-output outcomes", () => {
     expect(many.largestTotal).toBeGreaterThan(TOTAL_BACKLOG_BYTES - PACED_FRAME_BYTES);
     expect(many.largestTotal).toBeLessThanOrEqual(TOTAL_BACKLOG_BYTES);
   });
+  it("takes what was handed from the object's totals, and otherwise counts hands whose answer was lost", () => {
+    const frame = 16 * KIB;
+    const handedAt = (seq: number) => seq * 1_000;
+    const observations = (totals: boolean): Observation[] => [
+      run("m3", "m3"),
+      ...hands("m3", "m3.t", [0, 1_000], 1, frame),
+      // An answer lost: the driver cannot tell whether these two frames left.
+      { type: "hand-unknown", run: "m3", client: "m3.t", at: 2_000, frames: 2, bytes: 2 * frame },
+      recv("m3", "m3.t", 30_000, 0, 1, frame, handedAt),
+      ...(totals
+        ? [{ type: "totals", run: "m3", client: "m3.t", at: 59_000, frames: 2, bytes: 2 * frame, seq: 2 } as const]
+        : []),
+      { type: "done", run: "m3", at: 60_000 },
+    ];
+    // The object's totals say they did not: everything handed was received.
+    const known = outcome(observations(true), "m3");
+    expect(known.clients[0]).toMatchObject({ handed: { frames: 2, bytes: 2 * frame }, unfinishedTail: false });
+    expect(known.class).toBe("observed");
+    // Without them, the lost hand counts as handed, and the run is an unfinished tail.
+    const unknown = outcome(observations(false), "m3");
+    expect(unknown.clients[0]).toMatchObject({ handed: { frames: 4, bytes: 4 * frame }, unfinishedTail: true });
+    expect(unknown.class).toBe("inconclusive");
+  });
 });
 
 describe("M1, held output against the headroom", () => {
   const baselineBytes = 100 * MIB;
   // A run of `attempts` headroom probes, each ending in the probe's own reset, with stopped clients listed if held.
-  function m1Run(id: string, volume: number, headroom: number[], extra: Observation[] = []): Observation[] {
+  type Held = { bytes: number; unknown: number; ended: number; endedDuringProbe: number };
+  // What the stopped clients held when each probe began: the whole volume, unless an attempt says otherwise.
+  const full = (volume: number): Held => ({ bytes: volume, unknown: 0, ended: 0, endedDuringProbe: 0 });
+  function m1Run(
+    id: string,
+    volume: number,
+    headroom: number[],
+    extra: Observation[] = [],
+    held: (attempt: number) => Held = () => full(volume),
+  ): Observation[] {
     return [
       run(id, "m1", {
         volume,
@@ -259,7 +291,15 @@ describe("M1, held output against the headroom", () => {
           heldMibBefore: bytes / MIB,
           probe: true,
         },
-        { type: "headroom", run: id, at: (i + 1) * 1_000 + 100, attempt: i + 1, bytes, capped: false },
+        {
+          type: "headroom",
+          run: id,
+          at: (i + 1) * 1_000 + 100,
+          attempt: i + 1,
+          bytes,
+          capped: false,
+          ...(volume === 0 ? {} : { held: held(i + 1) }),
+        },
       ]),
       ...extra,
       { type: "done", run: id, at: 100_000 },
@@ -332,6 +372,25 @@ describe("M1, held output against the headroom", () => {
     const mixed = classify([...baseline, ...quiet, ...cut, ...counted]).m1;
     expect(mixed?.volumes.map((v) => v.class)).toEqual(["not detected", "inconclusive", "counted"]);
     expect(mixed?.class).toBe("counted");
+  });
+  it("counts no attempt whose stopped clients did not hold the volume through its probe", () => {
+    const volume = 64 * MIB;
+    const lowered = [0, 1, 2].map(() => baselineBytes - 32 * MIB);
+    // The same headroom with each attempt's holding intact is counted: the cases below differ only in what was held.
+    expect(classify([...baseline, ...m1Run("m1-64m", volume, lowered)]).m1?.class).toBe("counted");
+    const shortfalls: [string, Partial<Held>][] = [
+      ["a short fill", { bytes: volume - 1 }],
+      ["a hand whose answer was lost", { unknown: 512 * KIB }],
+      ["a client that ended before the probe", { ended: 1 }],
+      ["a client that ended while the probe ran", { endedDuringProbe: 1 }],
+    ];
+    for (const [why, shortfall] of shortfalls) {
+      const held = m1Run("m1-64m", volume, lowered, [], (attempt) => ({
+        ...full(volume),
+        ...(attempt === 2 ? shortfall : {}),
+      }));
+      expect([why, classify([...baseline, ...held]).m1?.class]).toEqual([why, "inconclusive"]);
+    }
   });
 });
 

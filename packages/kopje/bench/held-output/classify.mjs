@@ -3,14 +3,19 @@
 // - A run with a reset other than the headroom probe's own, or with frames handed and neither received nor ended by
 //   the run's end (an unfinished tail), is inconclusive for what it measures; an unfinished tail's largest age is a
 //   lower bound. An end after a reset is the reset's, never a client drop; what follows the run's `done` record is
-//   the driver's cleanup, not the run's.
+//   the driver's cleanup, not the run's. What was handed is the object's own totals where the run recorded them, and
+//   otherwise every hand, those whose answer was lost included.
 // - M1 (does held output count against the Store's memory?) is "counted" at a held volume when the headroom falls by
 //   more than the probe's step plus the spread of its attempts; "not detected" when it does not, which excludes
-//   accounting of more than (step + spread) / volume of what is held and no less; "inconclusive" when either run is.
-//   Mixed results resolve to the more conservative: counted, then inconclusive, then not detected.
+//   accounting of more than (step + spread) / volume of what is held and no less; "inconclusive" when either run is,
+//   or when any attempt's stopped clients did not hold the volume through its probe (a short fill, a hand whose
+//   answer was lost, a client that ended before the probe's reset). Mixed results resolve to the more conservative:
+//   counted, then inconclusive, then not detected.
 // - M2, M3 and M4 report each end, and the ages and backlogs seen: envelopes of what was observed.
 // - M5 and M6 report aggregate scenario deltas (resident memory, headroom), each named with its scenario. They include
 //   transport buffers and the allocator's retention, so they are no cost per frame or per connection.
+// - The runtime's WebSocket surface is reported as sampled, per start; `afterSend` says whether a sample followed a
+//   send (only then is what `send` returns known), and `signal` whether any sample offers a signal of unsent output.
 //
 //   node bench/held-output/classify.mjs <observations.jsonl>    prints the outcomes as JSON
 import { readFileSync } from "node:fs";
@@ -27,20 +32,25 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
  *   listedBefore: number, heldMibBefore: number, probe: boolean }} StartRecord
  * @typedef {{ type: "hand", run: string, client: string, at: number, firstSeq: number, frames: number,
  *   bytes: number }} HandRecord
+ * @typedef {{ type: "hand-unknown", run: string, client: string, at: number, frames: number, bytes: number }}
+ *   UnknownHandRecord
+ * @typedef {{ type: "totals", run: string, client: string, at: number, frames: number, bytes: number, seq: number }}
+ *   TotalsRecord
  * @typedef {{ type: "recv", run: string, client: string, at: number, frames: number, bytes: number,
  *   lastSeq: number, minAge: number, maxAge: number }} RecvRecord
  * @typedef {{ type: "pause" | "resume", run: string, client: string, at: number }} PauseRecord
  * @typedef {{ type: "closed", run: string, client: string, at: number, by: "object" | "client" }} ClosedRecord
  * @typedef {{ type: "end", run: string, client: string, at: number, side: "client" | "server",
- *   code: number | null, reason?: string }} EndRecord
+ *   code: number | null, reason?: string, receivedFrames?: number, receivedBytes?: number }} EndRecord
  * @typedef {{ type: "listed", run: string, at: number, sockets: [string, number][] }} ListedRecord
+ * @typedef {{ bytes: number, unknown: number, ended: number, endedDuringProbe: number }} Held
  * @typedef {{ type: "headroom", run: string, at: number, attempt: number, stage?: string, bytes: number | null,
- *   capped?: boolean }} HeadroomRecord
+ *   capped?: boolean, held?: Held }} HeadroomRecord
  * @typedef {{ type: "rss", run: string, at: number, attempt: number, stage: string, bytes: number }} RssRecord
- * @typedef {{ type: "surface", run: string, at: number, surface: unknown }} SurfaceRecord
+ * @typedef {{ type: "surface", run: string, at: number, start?: string, surface: unknown }} SurfaceRecord
  * @typedef {{ type: "done", run: string, at: number }} DoneRecord
- * @typedef {RunRecord | StartRecord | HandRecord | RecvRecord | PauseRecord | ClosedRecord | EndRecord | ListedRecord
- *   | HeadroomRecord | RssRecord | SurfaceRecord | DoneRecord} Observation
+ * @typedef {RunRecord | StartRecord | HandRecord | UnknownHandRecord | TotalsRecord | RecvRecord | PauseRecord
+ *   | ClosedRecord | EndRecord | ListedRecord | HeadroomRecord | RssRecord | SurfaceRecord | DoneRecord} Observation
  *
  * @typedef {{ ms: number, bound: "observed" | "lowerBound" }} Age
  * @typedef {{ at: number, side: "client" | "server", code: number | null, cause: "reset" | "closed" | "platform",
@@ -56,7 +66,10 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
  * @typedef {"counted" | "inconclusive" | "not detected"} M1Class
  * @typedef {{ run: string, volume: number, frameBytes: number | null, class: M1Class, difference: number | null,
  *   step: number, spread: number | null, fraction: number | null, excludesAbove: number | null }} M1Volume
- * @typedef {{ runs: RunOutcome[], m1: { class: M1Class, volumes: M1Volume[] } | null, surface: unknown }} Report
+ * @typedef {{ samples: { run: string, start: string | null, surface: unknown }[], afterSend: boolean,
+ *   signal: boolean }} SurfaceOutcome
+ * @typedef {{ runs: RunOutcome[], m1: { class: M1Class, volumes: M1Volume[] } | null, surface: SurfaceOutcome }}
+ *   Report
  */
 
 /** @param {number[]} values */
@@ -106,14 +119,15 @@ function trendOf(recvs) {
  * @param {StartRecord[]} resets
  */
 function clientsOf(records, end, resets) {
-  /** @type {Map<string, { hands: HandRecord[], recvs: RecvRecord[], pauses: PauseRecord[], resumes: PauseRecord[],
-   *   closed: ClosedRecord[], ends: EndRecord[] }>} */
+  /** @type {Map<string, { hands: HandRecord[], unknown: UnknownHandRecord[], totals: TotalsRecord | null,
+   *   recvs: RecvRecord[], pauses: PauseRecord[], resumes: PauseRecord[], closed: ClosedRecord[],
+   *   ends: EndRecord[] }>} */
   const byClient = new Map();
   /** @param {string} client */
   const of = (client) => {
     let entry = byClient.get(client);
     if (entry === undefined) {
-      entry = { hands: [], recvs: [], pauses: [], resumes: [], closed: [], ends: [] };
+      entry = { hands: [], unknown: [], totals: null, recvs: [], pauses: [], resumes: [], closed: [], ends: [] };
       byClient.set(client, entry);
     }
     return entry;
@@ -124,6 +138,12 @@ function clientsOf(records, end, resets) {
     switch (record.type) {
       case "hand":
         of(record.client).hands.push(record);
+        break;
+      case "hand-unknown":
+        of(record.client).unknown.push(record);
+        break;
+      case "totals":
+        of(record.client).totals = record;
         break;
       case "recv":
         of(record.client).recvs.push(record);
@@ -149,11 +169,17 @@ function clientsOf(records, end, resets) {
   }
   /** @type {ClientOutcome[]} */
   const outcomes = [];
-  for (const [client, { hands, recvs, pauses, resumes, closed, ends }] of byClient) {
+  for (const [client, { hands, unknown, totals, recvs, pauses, resumes, closed, ends }] of byClient) {
+    // Hands whose answer was lost count as handed in full: the object may have sent every frame.
+    const handsAndUnknown = [...hands, ...unknown];
     const handed = { frames: 0, bytes: 0 };
-    for (const hand of hands) {
+    for (const hand of handsAndUnknown) {
       handed.frames += hand.frames;
       handed.bytes += hand.bytes;
+    }
+    if (totals !== null) {
+      handed.frames = totals.frames;
+      handed.bytes = totals.bytes;
     }
     const received = { frames: 0, bytes: 0 };
     let lastSeq = -1;
@@ -168,21 +194,26 @@ function clientsOf(records, end, resets) {
     let largestBacklog = 0;
     let backlog = 0;
     const steps = [
-      ...hands.map((h) => ({ at: h.at, delta: h.bytes })),
+      ...handsAndUnknown.map((h) => ({ at: h.at, delta: h.bytes })),
       ...recvs.map((r) => ({ at: r.at, delta: -r.bytes })),
     ].toSorted((a, b) => a.at - b.at || b.delta - a.delta);
     for (const step of steps) {
       backlog += step.delta;
       largestBacklog = Math.max(largestBacklog, backlog);
     }
-    const lastHanded = hands.reduce((most, h) => Math.max(most, h.firstSeq + h.frames - 1), -1);
-    const unfinishedTail = ends.length === 0 && lastHanded > lastSeq;
+    const lastHanded = Math.max(
+      hands.reduce((most, h) => Math.max(most, h.firstSeq + h.frames - 1), -1),
+      totals === null ? -1 : totals.seq - 1,
+    );
+    const unfinishedTail = ends.length === 0 && (lastHanded > lastSeq || received.bytes < handed.bytes);
     /** @type {Age | null} */
     let largestAge = Number.isFinite(observedAge) ? { ms: observedAge, bound: "observed" } : null;
     if (unfinishedTail) {
       // Frames arrive in order, so the oldest outstanding frame is the one after the last received.
-      const oldest = hands.find((h) => h.firstSeq <= lastSeq + 1 && lastSeq + 1 < h.firstSeq + h.frames);
-      const waited = oldest === undefined ? -Infinity : end - oldest.at;
+      // A frame of a hand whose answer was lost left by the time that loss was recorded.
+      const oldest =
+        hands.find((h) => h.firstSeq <= lastSeq + 1 && lastSeq + 1 < h.firstSeq + h.frames)?.at ?? unknown[0]?.at;
+      const waited = oldest === undefined ? -Infinity : end - oldest;
       largestAge = { ms: Math.max(observedAge, waited), bound: "lowerBound" };
     }
     // The listing that first left the client out after one that held it; the run's end while it is still listed.
@@ -209,7 +240,8 @@ function clientsOf(records, end, resets) {
       unfinishedTail,
       ends: ends.map((e) => {
         const pause = pauses.findLast((p) => p.at <= e.at);
-        const reset = resets.find((r) => r.since < e.at);
+        // An end within the millisecond of the last answer before a reset may be the reset's own: never a drop.
+        const reset = resets.find((r) => r.since <= e.at);
         /** @type {End["cause"]} */
         let cause = "platform";
         if (reset !== undefined) {
@@ -223,7 +255,7 @@ function clientsOf(records, end, resets) {
           code: e.code,
           cause,
           sincePause: pause === undefined ? null : e.at - pause.at,
-          receivedFrames: recvs.filter((r) => r.at <= e.at).reduce((sum, r) => sum + r.frames, 0),
+          receivedFrames: e.receivedFrames ?? recvs.filter((r) => r.at <= e.at).reduce((sum, r) => sum + r.frames, 0),
           handedFrames: handed.frames,
         };
       }),
@@ -328,13 +360,28 @@ function classifyM1(byRun, outcomes) {
   }
   /** @param {string} run */
   const headroomOf = (run) => (byRun.get(run) ?? []).filter((r) => r.type === "headroom");
-  /** @param {string} run */
-  const conclusive = (run) => {
+  /**
+   * Every attempt of the run ended in the probe's own reset, and with a volume held, its stopped clients held all of
+   * it, with no hand whose answer was lost, until the probe's reset.
+   * @param {string} run
+   * @param {number} volume
+   */
+  const conclusive = (run, volume) => {
     const records = headroomOf(run);
     return (
       outcomes.find((o) => o.run === run)?.class === "observed" &&
       records.length > 0 &&
-      records.every((h) => h.bytes !== null && h.capped !== true)
+      records.every(
+        (h) =>
+          h.bytes !== null &&
+          h.capped !== true &&
+          (volume === 0 ||
+            (h.held !== undefined &&
+              h.held.bytes >= volume &&
+              h.held.unknown === 0 &&
+              h.held.ended === 0 &&
+              h.held.endedDuringProbe === 0)),
+      )
     );
   };
   /** @type {M1Volume[]} */
@@ -357,7 +404,7 @@ function classifyM1(byRun, outcomes) {
       fraction: null,
       excludesAbove: null,
     };
-    if (conclusive(head.run) && conclusive(baseline)) {
+    if (conclusive(head.run, volume) && conclusive(baseline, 0)) {
       const base = headroomOf(baseline).map((h) => Number(h.bytes));
       const held = headroomOf(head.run).map((h) => Number(h.bytes));
       const difference = median(base) - median(held);
@@ -392,8 +439,26 @@ export function classify(observations) {
     byRun.set(record.run, list);
   }
   const runs = [...byRun].map(([run, records]) => classifyRun(run, records));
-  const surfaces = observations.filter((r) => r.type === "surface");
-  return { runs, m1: classifyM1(byRun, runs), surface: surfaces.at(-1)?.surface ?? null };
+  const samples = observations
+    .filter((r) => r.type === "surface")
+    .map((r) => ({ run: r.run, start: r.start ?? null, surface: r.surface }));
+  const shapes = samples.map(
+    (s) => /** @type {{ bufferedAmount?: boolean, ping?: boolean, sendReturns?: string }} */ (s.surface ?? {}),
+  );
+  return {
+    runs,
+    m1: classifyM1(byRun, runs),
+    surface: {
+      samples,
+      afterSend: shapes.some((s) => s.sendReturns !== undefined && s.sendReturns !== "unknown"),
+      signal: shapes.some(
+        (s) =>
+          s.bufferedAmount === true ||
+          s.ping === true ||
+          (s.sendReturns !== undefined && s.sendReturns !== "unknown" && s.sendReturns !== "undefined"),
+      ),
+    },
+  };
 }
 
 /**
