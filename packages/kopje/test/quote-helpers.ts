@@ -79,6 +79,18 @@ export function serveStamp(
 
 const FEP_QUOTE_REQUEST = "https://w3id.org/fep/044f#QuoteRequest";
 
+// `actor`'s QuoteRequest for its status `instrument` (named by id) quoting `object`.
+export function quoteRequest(actor: TestActor, object: string, instrument: string) {
+  return {
+    "@context": [AS, { QuoteRequest: FEP_QUOTE_REQUEST }],
+    id: `${actor.uri}/quote_requests/${nextId()}`,
+    type: "QuoteRequest",
+    actor: actor.uri,
+    object,
+    instrument,
+  };
+}
+
 // The quoted author's Accept of our QuoteRequest for the quoting status `quoting` (named by id), with its stamp.
 export function quoteAccept(
   actor: TestActor,

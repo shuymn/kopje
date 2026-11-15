@@ -369,9 +369,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - A failure attaches nothing, where Mastodon may attach an older card of a redirect's or canonical URL.
 - Each status keeps its own copy: a status that links a URL another status fetched within 14 days copies that card
   without a request, but a later fetch does not update earlier copies, and an edit that keeps the URL fetches it again
-  unless another status holds a fresh copy. A local edit resets the card only when the text changes, a remote update
-  only when it is significant; a change of the quote alone resets nothing, and neither does a change of the `Link`
-  attachments alone, as in Mastodon.
+  unless another status holds a fresh copy. The edits that reset a card are Mastodon's: a local edit that changes the
+  text, and a remote update that is significant, which a change of the `Link` attachments or of the quote alone is not
+  (`process_status_update_service.rb` judges significance before it reads the quote).
 
 Accounts (the `Account` and credential account entities):
 
@@ -1043,6 +1043,11 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   RES-6); Mastodon removes an app only when its owner deletes it. An app a user authorized is never removed, so the
   statuses posted through it keep showing it. A status or scheduled status whose app is gone all the same (one a dump
   or a legacy import names) shows `application: null`, and such a scheduled status is published; Mastodon drops it.
+- An edit whose only change is `quote_approval_policy` stores the policy, sends an `Update` and notifies as an edit
+  does, but records no history entry and leaves `edited_at` as it was: the policy is not part of a status's versions,
+  as with `PUT /api/v1/statuses/:id/interaction_policy`. Mastodon counts such a change as an edit
+  (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
+  `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 

@@ -799,7 +799,7 @@ describe("a mention a remote Create tags but does not address (the limited accou
       updateRemoteStatus(db, author, parseRemoteStatus({ ...tagged, updated })!, ctx);
     expect(await policyRuns(t, edit("2026-10-11T13:00:00Z"))).toBe(1);
     expect(await mentions(t)).toEqual([{ account_id: DAVE, filtered: 0 }]);
-    // A later edit that keeps the tag notifies nobody again: no notify, so no policy read.
+    // A later version with the same text is not significant: no update fan-out, so no notify and no policy read.
     expect(await policyRuns(t, edit("2026-10-11T14:00:00Z"))).toBe(0);
     expect(await mentions(t)).toEqual([{ account_id: DAVE, filtered: 0 }]);
     // The later edit was taken (its version recorded).
@@ -1295,7 +1295,8 @@ describe("search with resolve=true (NET-4, VIS-1)", () => {
       { uri: note.id, content: "<p>found </p>", account: { acct: "bob@mastodon.example" } },
     ]);
     expect(new Set(t.web.signers)).toEqual(new Set([`${LOCAL}/actor#main-key`]));
-    // Stored, but not notified, and outside the public timelines' rules as any fetched status.
+    // Stored, and outside the public timelines' rules as any fetched status; not notified, since it mentions no local
+    // account (and was published more than the real-time window before it arrived).
     expect(await notifications(t.store)).toEqual([]);
     // A second search answers from the Store's row.
     const again = await t.api<{ statuses: { id: string }[] }>(
