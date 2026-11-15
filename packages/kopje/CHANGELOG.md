@@ -72,11 +72,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - Accounts show `avatar_description`, `header_description`, `show_featured`, `show_media` and `show_media_replies`,
   and grouped notifications' partial accounts `avatar_description`, as Mastodon 4.6. `update_credentials` and the
-  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; the display settings
-  keep their defaults, as nothing sets them yet. Migration `0097_profile_descriptions` adds the five columns with
-  their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
-  run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
-  so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; a local account's
+  display settings keep their defaults, as nothing sets them yet. Migration `0097_profile_descriptions` adds the five
+  columns with their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file
+  in one local run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a
+  Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts' image descriptions (up to 150 characters) and display settings are read from their actors, as
+  Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
+  account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 

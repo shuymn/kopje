@@ -2824,8 +2824,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB and 16,777,216 pixels, read
   with the body bound before parsing): `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts`
   ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for remote profiles:
-  bios are cut at 50,000 code units before sanitizing and display names at 2,048 (`src/security/html.ts`,
-  `src/federation/remote-actor.ts`). _Enforced (main):_ a
+  bios are cut at 50,000 code units before sanitizing, display names at 2,048 and image descriptions at 150 code points
+  (`src/security/html.ts`, `src/federation/remote-actor.ts`; `test/profile-descriptions.test.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;
   `test/markers.test.ts` ("answers 422 with Mastodon's validation message")). _Enforced (main)_ for scheduled statuses:
   `scheduled_at` is read only up to 64 characters, and a scheduled status's params are a JSON object of a fixed shape
