@@ -579,6 +579,21 @@ Remote interaction (`/authorize_interaction`, the subscribe template of WebFinge
 - The status page's embed code is offered in a dialog with a copy button (Mastodon's web client: the post's menu,
   "Embed"); the code is the oEmbed `html`, the same as Mastodon's.
 
+WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `WebfingerSerializer`):
+
+- The instance actor answers for its URI (`/actor`) and for its handle, `acct:<domain>@<domain>`, whose username must
+  be the domain exactly, as Mastodon's `account_from_acct` matches its own instance actor. Its `preferredUsername` is
+  the domain, where Mastodon's is `mastodon.internal`, so its subject is `acct:<domain>@<domain>`. Account lookup,
+  search, mentions and the public pages never find it. Mastodon asks for the instance actor before any local account;
+  Kopje asks after, so a local account whose username is the domain (which conversion, import and configuration now
+  refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
+- Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
+  type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
+  there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its
+  aliases are the actor id alone (Mastodon adds a local account's profile URL); asked for a URI, its subject is that
+  URI, where Mastodon's is always the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a
+  400, 404 or 410).
+
 Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
 - With `resolve=true`, an `acct:user@domain` query is resolved as `user@domain` is; Mastodon's `MENTION_RE` gate
