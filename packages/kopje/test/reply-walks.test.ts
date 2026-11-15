@@ -541,10 +541,11 @@ describe("plans (RES-7)", () => {
 
 describe("a completion's transaction (RES-4)", () => {
   // A reply W by a new author, erin, published at `published` and tagging both local accounts, that embeds erin's own
-  // quoted status Q, alike; 100 nodes deferred on W before it, and W's first page listing 98 new items, so that the
-  // walk holds WALK_STATUSES nodes once W is read. The completion that stores W (its step's second, with the author)
-  // is measured: rows changed (total_changes(), triggers and cascades included), the rows written to the walk's
-  // tables, and the notifications inserted. The rounds stop there.
+  // quoted status Q, alike and published a second before W (so Q's id is lower, whatever the ids' random bits); 100
+  // nodes deferred on W before it, and W's first page listing 98 new items, so that the walk holds WALK_STATUSES nodes
+  // once W is read. The completion that stores W (its step's second, with the author) is measured: rows changed
+  // (total_changes(), triggers and cascades included), the rows written to the walk's tables, and the notifications
+  // inserted. The rounds stop there.
   async function measured(published: number) {
     const t = await setup();
     const root = await mastodonActor(t.web, "root");
@@ -555,7 +556,7 @@ describe("a completion's transaction (RES-4)", () => {
       tag: [ALICE_URI, DAVE_URI].map((href) => ({ type: "Mention", href, name: "@x" })),
     };
     const note = mastodonNote(root);
-    const q = mastodonNote(erin, tagged);
+    const q = mastodonNote(erin, { ...tagged, published: new Date(published - 1000).toISOString() });
     const w = mastodonNote(erin, { ...tagged, inReplyTo: note.id, quote: q, quoteUri: q.id });
     const deferred = Array.from({ length: 100 }, () => reply(t.web, erin, w.id));
     const items = Array.from({ length: WALK_STATUSES - 2 - deferred.length }, (_, i) => missing(`w${i}`));
@@ -630,9 +631,10 @@ describe("a completion's transaction (RES-4)", () => {
       expect(fresh.out.changes - stale.out.changes).toBeGreaterThan(0);
       expect(fresh.out.changes - stale.out.changes).toBeLessThanOrEqual(4 * 7);
       // The rest, the same in both: the walk's rows above and what the two statuses' and erin's stores write for any
-      // fetched status (rows, mentions, the quote, the account, and the triggers' counters).
+      // fetched status (rows, mentions, the quote, the account, and the triggers' counters; erin's last status moves to
+      // W only, Q's id being lower).
       const walkRows = Object.values(stale.out.walk).reduce((a, b) => a + b, 0);
-      expect(stale.out.changes - walkRows).toBe(20);
+      expect(stale.out.changes - walkRows).toBe(19);
     },
   );
 });
