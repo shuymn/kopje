@@ -9,7 +9,8 @@ import { UNROUTED } from "./mastodon-routes-exceptions";
 
 // Every route of the API table (src/mastodon/routes.ts) asks of its caller what Mastodon's same route asks, read from
 // Mastodon's source by scripts/mastodon-scopes.mjs (the fixture's header says how to regenerate it). Compared:
-//   token   none (no token read), optional (a token sent is checked), required
+//   token   none (no token required: Kopje's public routes read none, its anonymous routes read one sent only for its
+//           owner's suspension, as Mastodon's do), optional (a token sent is checked), required
 //   scopes  the token scopes accepted (null: any valid token): Kopje's required scope with the scopes that cover it
 //           (src/security/scopes.ts), Mastodon's doorkeeper list
 //   user    whether a token without a user (an app token) is refused
@@ -184,17 +185,17 @@ const EXCEPTIONS: Record<string, Exception> = {
   "GET /api/v1/accounts/lookup": {
     kopje: "none token, scopes any, no user required",
     mastodon: "optional token, scopes read read:accounts, no user required",
-    reason: "a stale token is not read (access.ts); Mastodon checks a token sent",
+    reason: "anonymous: a token sent is read only for its owner's suspension (access.ts); Mastodon checks a token sent",
   },
   "GET /api/v1/accounts/:id": {
     kopje: "none token, scopes any, no user required",
     mastodon: "optional token, scopes read read:accounts, no user required",
-    reason: "a stale token is not read (access.ts); Mastodon checks a token sent",
+    reason: "anonymous: a token sent is read only for its owner's suspension (access.ts); Mastodon checks a token sent",
   },
   "GET /api/v1/accounts": {
     kopje: "none token, scopes any, no user required",
     mastodon: "optional token, scopes read read:accounts, no user required",
-    reason: "shows what GET /api/v1/accounts/:id shows, which reads no token either (access.ts)",
+    reason: "anonymous, as GET /api/v1/accounts/:id, whose accounts it shows (access.ts); Mastodon checks a token sent",
   },
   "GET /api/v2/search": {
     kopje: "required token, scopes read read:search, user required",
@@ -229,7 +230,7 @@ function acceptedScopes(required: RequiredScope, covers = grants): string[] {
 }
 
 function kopjeAccess(access: RouteAccess, covers = grants): Access {
-  if (access === "public") {
+  if (access === "public" || access === "anonymous") {
     return { token: "none", scopes: null, user: false };
   }
   if (access === "token") {
@@ -311,6 +312,26 @@ describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
           `  Mastodon: ${exception.mastodon}\nRevisit it (${exception.reason}).`,
       );
     }
+  });
+
+  // AUTH-2: a route under /api/ reads a token sent at least for its owner's suspension (require_not_suspended!), but
+  // the five instance reads whose Mastodon controllers read a user only in limited federation mode; the OAuth and
+  // /.well-known routes, outside Mastodon's API controllers, read none either.
+  it("reads a sent token on every /api route but the five instance reads", () => {
+    const unread = ROUTES.filter((route) => route.access === "public").map((route) => `${route.method} ${route.path}`);
+    expect(unread).toEqual([
+      "POST /oauth/token",
+      "POST /oauth/revoke",
+      "GET /oauth/token/info",
+      "POST /oauth/introspect",
+      "GET /.well-known/oauth-authorization-server",
+      "GET /api/v1/instance",
+      "GET /api/v2/instance",
+      "GET /api/v1/instance/rules",
+      "GET /api/v1/instance/peers",
+      "GET /api/v1/instance/extended_description",
+    ]);
+    expect(ROUTES.filter((route) => route.access === "anonymous")).toHaveLength(14);
   });
 
   it("lists exceptions only for routes of the table", () => {
