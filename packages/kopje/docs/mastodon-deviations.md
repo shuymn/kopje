@@ -537,7 +537,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
   six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
   had.
-- `thumbnail` is always Kopje's default image; there is no upload.
+- `thumbnail` is always Kopje's default image, with its fixed description on `/api/v2/instance`; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
 - The reading preferences, `reading:autoplay:gifs` included, are Mastodon's defaults; no setting stores them.
@@ -861,8 +861,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
-Custom emoji (the `CustomEmoji` entities of a status, its poll and an account):
+Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, and `GET /api/v1/custom_emojis`):
 
+- A local emoji's category is a name with no featured emoji, so the listing shows `featured: false` beside each
+  `category`.
 - A remote emoji's `url` is Kopje's cached copy on the instance's own origin (`/media/r/…`) once the cron has fetched
   it, kept per (domain, url), the domain being the account's whose object named it; `static_url` is a still remuxed
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a
