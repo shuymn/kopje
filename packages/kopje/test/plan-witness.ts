@@ -22,8 +22,8 @@ export type Statistics = (typeof STATISTICS)[number];
 // text, whitespace collapsed, back to main's) or `text` (the rewrite exactly, whitespace collapsed). `writes`: a query
 // listing the rows the statement writes, read before and after it on both sides. `result`: where the rewrite returns
 // rows of another shape that its caller turns into the same answer (mergedWindow's rows and their bound), each side's
-// rows as its caller reads them, compared in their place. `params`: where the rewrite binds parameters main's
-// statement does not take, main's bindings from the rewrite's (the rewrite runs with its own).
+// rows as its caller reads them, compared in their place. `params`: main's parameters, taken from the rewrite's where
+// the rewrite binds more than main's statement takes (a bound it adds), since a statement refuses a binding it lacks.
 export type Baseline = {
   sql: string;
   pins?: (text: string) => string;

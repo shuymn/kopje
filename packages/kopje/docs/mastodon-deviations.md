@@ -654,6 +654,10 @@ Hashtags (the `Tag` entity):
   most the hashtag's newest public entries of the 7 days, taken before the rule above: 20 in v2 search hashtags,
   `followed_tags` and `featured_tags/suggestions`, 200 in the trends lists (MD-5). Newer public boosts and statuses of
   unavailable authors take those places, so a list can count fewer than the single hashtag does.
+- `featured_tags/suggestions` reads the newest 1,000 of the account's statuses of the last year, as Mastodon 4.7.5
+  does, but a deleted status whose removal is still pending keeps its place among them and counts no hashtag, so it
+  can read fewer than the newest 1,000 statuses Mastodon reads, which leave deleted ones out. The year starts at the
+  request's millisecond; Mastodon's at a random millisecond of that second.
 - A hashtag name, normalized, is at most 256 code points and 1,024 UTF-8 bytes to be followed or featured (and a
   featured hashtag's spelling too), the bound a status's hashtags are read by; past it the write answers 422 `Name is
   too long (maximum is 256 characters)`, even for a name the account already holds (an import's), and a remote
@@ -921,8 +925,14 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   scheduled post is then lost when it is published.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
-- Text length, the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
+- Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
+  as Mastodon), the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
   Mastodon checks the media first.
+- A scheduled post whose text is blank and whose content warning is not, and which quotes nothing, is scheduled with
+  the warning as its text, no warning and `sensitive` true, as an immediate post is written, and is published so.
+  Mastodon keeps the blank text and drops the warning from the stored parameters
+  (`PostStatusService#scheduled_options`), so its publication fails without media and posts the blank text without the
+  warning with media.
 - `allowed_mentions[]` is compared with the mentions Kopje writes: accounts it already knows (nothing is fetched), not
   blocked by the author and not suspended. `unexpected_accounts` lists the accounts that fit the 8 MiB answer, in
   mention order. A scheduled post's parameters, the list included, must fit 128 KiB of JSON (`Record invalid`); the

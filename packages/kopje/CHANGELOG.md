@@ -97,9 +97,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
+  leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 - A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
   (`mastodon#39203`); Kopje answered 422 `Cannot attach more than 4 files`. Its `Question` carries the attachments. No
   Store migration and no `wrangler.jsonc` change.
+- A post with a blank text and a content warning, quoting nothing, takes the warning as its text, with no warning and
+  marked sensitive, as Mastodon does; Kopje answered 422 `Text can't be blank` without media and kept the warning over
+  a blank text with media. A scheduled one is converted when it is scheduled. An edit with a blank text, of a status
+  that quotes nothing, takes the warning sent as its text and keeps the status's warning, as Mastodon does; an earlier
+  post with a blank text and a warning is converted so on its next such edit. A post's length counts the warning and
+  the text as one string, as Mastodon does (a combining mark that starts the text no longer counts apart), a blank
+  text's length is counted after the conversion, and blank means what Mastodon's `blank?` means (U+0085 is blank,
+  U+FEFF is not). No Store migration and no `wrangler.jsonc` change.
 - A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
   written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
   their hashtags until edited.

@@ -166,24 +166,22 @@ describe("the sequence", () => {
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
   });
 
-  it("binds main's statement to the parameters its baseline maps, and the rewrite to its own", async () => {
+  it("runs main's statement with the parameters its baseline takes from a rewrite that binds one more", async () => {
     const id = await statementId(SELECT);
-    // The rewrite takes a flag main's statement does not; its rows need the flag bound.
-    const flagged = "SELECT id FROM t WHERE k = ?1 AND ?2 = 1 ORDER BY id";
-    const mapped = await witnessed(
-      { [id]: { sql: SELECT, text: flagged, params: (params) => params.slice(0, 1) } },
-      () => [id],
-      [[flagged, 3, 1]],
-    );
-    expect(mapped.result).toEqual([[{ id: 7 }, { id: 8 }]]);
-    expect(mapped.sides[0]!.main.result).toEqual([{ id: 7 }, { id: 8 }]);
-    expectBeside("analyzed", mapped);
-    // Without the mapping main's statement is bound to the rewrite's two parameters, and the pair fails.
-    const unmapped = await witnessed({ [id]: { sql: SELECT, text: flagged } }, () => [id], [[flagged, 3, 1]], {
-      catching: true,
+    const bounded = "SELECT id FROM t INDEXED BY t_k WHERE k = ?1 AND id >= ?2 ORDER BY id";
+    const entry = (params?: Baseline["params"]) => ({
+      [id]: { sql: SELECT, text: bounded, ...(params === undefined ? {} : { params }) },
     });
+    const mapped = await witnessed(
+      entry((mine) => mine.slice(0, 1)),
+      () => [id],
+      [[bounded, 3, 0]],
+    );
+    expectBeside("analyzed", mapped);
+    expect(mapped.sides.map((side) => side.main.result)).toEqual([[{ id: 7 }, { id: 8 }]]);
+    const unmapped = await witnessed(entry(), () => [id], [[bounded, 3, 0]], { catching: true });
+    expect(unmapped.result).toEqual([expect.stringContaining("Wrong number of parameter bindings")]);
     expect(unmapped.sides.map((side) => side.fault)).toEqual(["incomplete"]);
-    expect(() => expectBeside("analyzed", unmapped)).toThrow(/main's statements, every one in order/);
   });
 
   it("fails a statement of the family that is no baseline's rewrite", async () => {
