@@ -152,6 +152,17 @@ describe("GET /api/v1/announcements", () => {
   });
 });
 
+describe("announcement hashtags", () => {
+  // The status text parser (status-text.ts): a hashtag starts at the text's start or after whitespace, # or ＃.
+  it("finds hashtags as a post does", async () => {
+    const h = await announcementHarness(["alice"]);
+    await h.admin.create({ text: "(#paren) x\u00A0#spaced ＃wide" });
+    const [entity] = await list(h, h.users.alice.token);
+    expect(entity!.tags.map((tag) => tag.name)).toEqual(["spaced", "wide"]);
+    expect(entity!.content).toContain("(#paren)");
+  });
+});
+
 describe("POST /api/v1/announcements/:id/dismiss", () => {
   it("marks it read for the viewer only, idempotently", async () => {
     const h = await announcementHarness(["alice", "bob"]);

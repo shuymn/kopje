@@ -74,6 +74,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
+  written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
+  their hashtags until edited.
 - A suspended user's token is refused with 403 "Your login is currently disabled" before its expiry is judged, as
   Mastodon does, on every API route but `GET /api/v1/instance`, `/api/v2/instance`, `/api/v1/instance/rules`,
   `/api/v1/instance/peers` and `/api/v1/instance/extended_description`, which read no token, as Mastodon reads no user
@@ -122,6 +125,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- A boost answered on its own (the reblog response, `GET /api/v1/statuses/:id`, `GET /api/v1/statuses`, its deletion
+  and its interaction-policy update), a reported boost in the admin API's reports, and a boost named by a notification
+  or a notification request shown alone (`GET /api/v1/notifications/:id`, `GET /api/v2/notifications/:group_key`, a
+  streamed notification, `GET /api/v1/notifications/requests/:id`) show its original's `favourited`, `reblogged` and
+  `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
+  `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
+  Mastodon's streaming does.
 
 ## [0.5.2] - 2026-11-14
 
