@@ -343,8 +343,9 @@ against their own instance. TLS is assumed between all parties.
   author's own (its `attributedTo` the author, its id on the author's origin), with one hop less of work. `revokeStamp`
   and `verifyQuote` in `src/domain/quotes.ts`; `test/quotes.test.ts` ("is not taken from anyone but the quoted author",
   "leaves a quote pending when its stamp is …", "wins over a quote that arrives after it"). For locally authored quotes
-  of remote statuses, `Accept`/`Reject` must come from the quoted author and name our request by id or inline it with
-  our quoting status as instrument and their status as object. An `Accept`'s `result` must share their origin;
+  of remote statuses, `Accept`/`Reject` must come from the quoted author and name our request by its id, as a string
+  or as an inlined `QuoteRequest`'s id (Mastodon 4.7's `quote_request_from_object`); a `QuoteRequest` inlined under
+  another id changes nothing, whatever its instrument and object. An `Accept`'s `result` must share their origin;
   `test/quote-authoring.test.ts` ("7: Accept and Reject are each one compare-and-set"). _Enforced (main)_ for `Flag`
   (a row of the same table): the actor is the reporter, available and not covered by a domain block (the inbox gate),
   and a domain block with `reject_reports` ruling its stored domain (not its actor host) refuses it; the reported
