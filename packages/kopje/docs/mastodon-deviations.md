@@ -369,6 +369,21 @@ Accounts (the `Account` and credential account entities):
   username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
+  Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
+  `GET /api/v1/accounts` and relationships leave it out whatever `with_suspended`, as Mastodon 4.7 answers for a
+  deleted account (`without_requested_deletion`, `accounts_controller.rb:86-91`, `accounts/base_controller.rb:7`,
+  `lookup_controller.rb:16`, `relationships_controller.rb:8-9`); nested in another entity it is shown redacted. Kopje's
+  `identity_proofs` placeholder answers 404 for it too, as for an id that names no account, where Mastodon answers
+  `[]` for any id.
+- An actor whose own URI answers 410 to a fetch Kopje makes of it is deleted as by its `Delete`, as Mastodon's
+  `FetchRemoteActorService` deletes a stored account on a 410 (`fetch_remote_actor_service.rb:21-24,46-54`); a 404 is
+  not. Kopje follows same-origin redirects on an actor fetch where Mastodon follows none (`json_ld_helper.rb:242`), and
+  deletes only on a 410 at the actor URI itself: a 410 at the end of a redirect deletes nothing. The 410 counts only
+  under the Store revision read before that fetch (ID-1 in `docs/threat-model.md`), so a search by a URL first reads
+  whether it is a stored actor's id, and resolves such a URL as that actor; the 410 of any other URL's probe, a
+  status's included, deletes nothing.
+- `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
+  deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
   verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
   an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
@@ -414,12 +429,13 @@ Accounts (the `Account` and credential account entities):
   `FetchRemoteStatusService#account_from_uri` refetches a `possibly_stale?` account
   (`fetch_remote_status_service.rb:67-71`, `account.rb:71,254-256`). An account the instance suspended or a domain block
   covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch does not look the account
-  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon; a 404 or 410
-  that arrives after another request's failed refetch of the same account is not applied. Where any other failure would
-  make Mastodon store nothing or retry the job, Kopje stores the status under the stored account and tries that account
-  again only a day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The
-  pinned statuses a collection sync fetches use the stored account however long ago the sync was asked for, where
-  Mastodon checks the account when it fetches them. Search always fetches the account.
+  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon, and a 410 at
+  its URI deletes it (above); a 404 or 410 that arrives after another request's failed refetch of the same account is
+  not applied. Where any other failure would make Mastodon store nothing or retry the job, Kopje stores the status
+  under the stored account and tries that account again only a day later. A sender's own statuses are stored under the
+  sender, as fresh as its key (24 hours, ID-1). The pinned statuses a collection sync fetches use the stored account
+  however long ago the sync was asked for, where Mastodon checks the account when it fetches them. Search always
+  fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
   Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
