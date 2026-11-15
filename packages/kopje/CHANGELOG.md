@@ -112,6 +112,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
   written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
   their hashtags until edited.
+- `GET /api/v1/admin/reports` reads `resolved` and `unresolved` as booleans, as Mastodon 4.7.5 does: both true lists
+  every report, `resolved` alone the resolved ones, otherwise the unresolved ones. `resolved=false` now lists the
+  unresolved reports; it listed the resolved ones. No Store migration and no `wrangler.jsonc` change.
 - An `Accept` or `Reject` of a quote request is matched by the request's id only, as Mastodon 4.7 does; one that
   embeds a request under another id changes nothing.
 - A suspended user's token is refused with 403 "Your login is currently disabled" before its expiry is judged, as
