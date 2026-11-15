@@ -64,10 +64,12 @@ async function upload(h: ApiHarness, user: User, n: number): Promise<string> {
   const id = String(800000000000000000n + BigInt(n));
   await sql(
     h.store,
-    `INSERT INTO media_attachments (id, account_id, type, url, processed, gc_at) VALUES (?, ?, 'image', ?, 1, ?)`,
+    `INSERT INTO media_attachments (id, account_id, type, content_type, url, description, processed, gc_at)
+		VALUES (?, ?, 'image', 'image/png', ?, ?, 1, ?)`,
     id,
     user.id,
     `https://kopje.test/media/${id}.png`,
+    `image ${n}`,
     at(NOW + DAY),
   );
   return id;
@@ -572,6 +574,48 @@ describe("editing a status with media and a poll", () => {
       { media: [second], poll: null },
       { media: [second], poll: choices },
     ]);
+  });
+});
+
+describe("a local status with media and a poll over ActivityPub", () => {
+  it("is a Question with its attachments, sent on its Create and its Update and served", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await remoteFollows(h.store, await remoteAccount(h.store, "dave"), alice.id);
+    const [first, second] = [await upload(h, alice, 1), await upload(h, alice, 2)];
+    const status = await polled(h, alice, { options: ["a", "b"], expires_in: 600 }, { media_ids: [first] });
+    const document = (id: string, n: number) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `https://kopje.test/media/${id}.png`,
+      name: `image ${n}`,
+    });
+    const question = (media: string[], choices: string[]) => ({
+      type: "Question",
+      attachment: media.map((id, i) => document(id, i + 1)),
+      oneOf: choices.map((name) => ({ type: "Note", name, replies: { type: "Collection", totalItems: 0 } })),
+    });
+    const sent = async () =>
+      (await outbound(h.store)).map((o) => ({ type: o.activity.type, object: o.activity.object }));
+    expect(await sent()).toEqual([{ type: "Create", object: expect.objectContaining(question([first], ["a", "b"])) }]);
+    const edited = await send(
+      h,
+      alice,
+      `/api/v1/statuses/${status.id}`,
+      { status: "which?", media_ids: [first, second], poll: { options: ["a", "c"], expires_in: 600 } },
+      "PUT",
+    );
+    expect(edited.status).toBe(200);
+    // The Create still waiting carries the current version (deliveries.ts), as the Update does.
+    const current = expect.objectContaining(question([first, second], ["a", "c"]));
+    expect(await sent()).toEqual([
+      { type: "Create", object: current },
+      { type: "Update", object: current },
+    ]);
+    const served = await h.request(new URL(String(status.uri)).pathname, {
+      headers: { accept: "application/activity+json" },
+    });
+    expect(await served.json()).toMatchObject(question([first, second], ["a", "c"]));
   });
 });
 
