@@ -706,8 +706,10 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     Nokogiri HTML5 tree does (in presence or in order), so Kopje resolves nothing where Mastodon may resolve, never
     another document. An href past 2,048 characters decoded or 8,192 as written resolves nothing too, however short its
     character references decode (Mastodon decodes any length).
-  - The page and both alternates are charged to the request's 2 MiB of fetched bytes, so a page alternate after a
-    large header alternate can be refused for that budget; Mastodon has no request-wide byte budget.
+  - The page and both alternates are charged to the request's 8 fetches and 2 MiB of fetched bytes, as are the
+    actor's fetch and the WebFinger answers that confirm its handle after them, so a page alternate after a large
+    header alternate, or a confirmation after them, can be refused for that budget, and a new actor whose
+    confirmation is refused so is not stored; Mastodon has no request-wide budget.
   - A failure Kopje adds to Mastodon's on a header alternate (the domain policy, which Mastodon applies only after
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
