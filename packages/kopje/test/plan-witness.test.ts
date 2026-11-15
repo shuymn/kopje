@@ -184,6 +184,31 @@ describe("the sequence", () => {
     expect(unmapped.sides.map((side) => side.fault)).toEqual(["incomplete"]);
   });
 
+  it("gives each side's caller its rows with the parameters that side ran with", async () => {
+    const id = await statementId(SELECT);
+    const bounded = "SELECT id FROM t INDEXED BY t_k WHERE k = ?1 AND id >= ?2 ORDER BY id";
+    const read = (rows: SqlRow[], params: readonly SqlStorageValue[]) => ({ rows, params });
+    const run = await witnessed(
+      {
+        [id]: {
+          sql: SELECT,
+          text: bounded,
+          params: (mine) => mine.slice(0, 1),
+          result: { main: read, mine: read },
+        },
+      },
+      () => [id],
+      [[bounded, 3, 0]],
+    );
+    const rows = [{ id: 7 }, { id: 8 }];
+    expect(run.sides.map((side) => [side.main.result, side.mine.result])).toEqual([
+      [
+        { rows, params: [3] },
+        { rows, params: [3, 0] },
+      ],
+    ]);
+  });
+
   it("fails a statement of the family that is no baseline's rewrite", async () => {
     const run = await witnessed(await baselines(), () => [], [["SELECT id FROM t WHERE k > ? ORDER BY id", 3]], {
       family: /^SELECT id FROM t /,

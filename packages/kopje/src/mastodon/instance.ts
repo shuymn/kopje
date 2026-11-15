@@ -2,7 +2,7 @@ import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
-import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../platform/stored-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT } from "../platform/stored-bounds";
 import {
   type ApiContext,
   type ApiHandler,
@@ -120,11 +120,13 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
       // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
-      // in code points (credentialChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
-      // and the pins' in rows.
+      // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
+      // and the pins' in rows. Mastodon's v1 serializer has none of them.
       accounts: {
         max_display_name_length: MAX_DISPLAY_NAME,
         max_note_length: MAX_NOTE,
+        max_avatar_description_length: PROFILE_DESCRIPTION_LIMIT,
+        max_header_description_length: PROFILE_DESCRIPTION_LIMIT,
         max_featured_tags: MAX_FEATURED_TAGS,
         max_pinned_statuses: PIN_LIMIT,
         max_profile_fields: MAX_FIELDS,
