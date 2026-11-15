@@ -8,7 +8,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { csrfToken } from "../src/web/session";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { countingStore, NOW, seedInstanceKey } from "./app-helpers";
-import { fixtureKeyGen } from "./federation-helpers";
+import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
 import { BUILD } from "./helpers";
 import { MASTODON, mastodonActor, RemoteWeb } from "./inbox-helpers";
 import { AS, mastodonNote } from "./inbox-status-helpers";
@@ -156,6 +156,161 @@ describe("GET /authorize_interaction (WEB-4)", () => {
     for (const refused of ["javascript:alert(1)", "https://a.example/ b", "https://a.example/\u0000", "bob", "x@y@z"]) {
       expect(await prefill(refused), refused).toBe("");
     }
+  });
+});
+
+// Mastodon 4.7.5's remote interaction helper, which reads another server's WebFinger answer from the browser, ported
+// literally (app/javascript/entrypoints/remote_interaction_helper.ts:13-88 at v4.7.5, with Array.isArray for its
+// `instanceof Array`, the same within one realm): the template of the action's FEP-3b86 intent, else the Object
+// intent's, else the subscribe template.
+interface JRDLink {
+  rel: string;
+  template?: string;
+  href?: string;
+}
+
+const isJRDLink = (link: unknown): link is JRDLink =>
+  typeof link === "object" &&
+  link !== null &&
+  "rel" in link &&
+  typeof link.rel === "string" &&
+  (!("template" in link) || typeof link.template === "string") &&
+  (!("href" in link) || typeof link.href === "string");
+
+const findLink = (rel: string, data: unknown): JRDLink | undefined => {
+  if (typeof data === "object" && data !== null && "links" in data && Array.isArray(data.links)) {
+    return data.links.find((link): link is JRDLink => isJRDLink(link) && link.rel === rel);
+  } else {
+    return undefined;
+  }
+};
+
+const intentParams = (intent: string): [string, string] | null => {
+  switch (intent) {
+    case "follow":
+      return ["https://w3id.org/fep/3b86/Follow", "object"];
+    case "reblog":
+      return ["https://w3id.org/fep/3b86/Announce", "object"];
+    case "favourite":
+      return ["https://w3id.org/fep/3b86/Like", "object"];
+    case "vote":
+    case "reply":
+      return ["https://w3id.org/fep/3b86/Object", "object"];
+    default:
+      return null;
+  }
+};
+
+const findTemplateLink = (data: unknown, intent: string): [string, string] | [null, null] => {
+  const [needle, param] = intentParams(intent) ?? ["http://ostatus.org/schema/1.0/subscribe", "uri"];
+  const match = findLink(needle, data);
+  if (match?.template) {
+    return [match.template, param];
+  }
+  let fallback = findLink("https://w3id.org/fep/3b86/Object", data);
+  if (fallback?.template) {
+    return [fallback.template, "object"];
+  }
+  fallback = findLink("http://ostatus.org/schema/1.0/subscribe", data);
+  if (fallback?.template) {
+    return [fallback.template, "uri"];
+  }
+  return [null, null];
+};
+
+// The interaction modal's fill of the chosen template, where it then sends the browser
+// (app/javascript/mastodon/features/interaction_modal/index.tsx:169-176 at v4.7.5).
+const filledTemplate = (template: string, param: string, resourceUrl: string) =>
+  new URL(template.replace(`{${param}}`, encodeURIComponent(resourceUrl))).toString();
+
+// FEP-3b86's Object intent, which every WebFinger answer carries (federation/federation.ts), opens the look-up form at
+// the GET above, which fetches, stores and follows nothing (WEB-4, FEP-3b86 §6.1).
+describe("the FEP-3b86 Object intent (WEB-4)", () => {
+  const OBJECT_TEMPLATE = `${ORIGIN}/authorize_interaction?uri={object}`;
+
+  // alice with a key her actor document can publish (seedAccount stores none that parses), so WebFinger answers her.
+  async function withKey(t: World) {
+    const { privkey, salt, pubkey } = LEGACY_EMPTY_KEK;
+    await sql(
+      t.store,
+      "UPDATE local_accounts SET privkey = ?, privkey_salt = ?, pubkey = ? WHERE account_id = ?",
+      privkey.slice().buffer,
+      salt.slice().buffer,
+      pubkey,
+      t.aliceId,
+    );
+  }
+
+  // A WebFinger answer of this instance, as another server's browser reads it.
+  async function webFinger(t: World, resource: string): Promise<unknown> {
+    const response = await t.request(`/.well-known/webfinger?resource=${encodeURIComponent(resource)}`);
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+
+  // The `uri` field of the look-up form at an absolute URL of this instance.
+  async function prefilled(t: World, url: string, cookie: string | null) {
+    const { origin, pathname, search } = new URL(url);
+    expect(origin).toBe(ORIGIN);
+    const page = await t.request(`${pathname}${search}`, cookie === null ? {} : { headers: { cookie } });
+    expect(page.status).toBe(200);
+    expect(headersOf(page)).toEqual(PRIVATE_HEADERS);
+    return formOf(await page.text(), "/authorize_interaction").get("uri");
+  }
+
+  it("opens the look-up form from the Object template, prefilled with the object's id exactly, fetching, storing and following nothing", async () => {
+    const t = await world();
+    const local = `${ORIGIN}/ap/o/0f8fad5b-d9cb-469f-a165-70867728950e`;
+    await seedStatus(t.store, { accountId: t.aliceId, visibility: "public", uri: local });
+    await withKey(t);
+    const answer = await webFinger(t, "acct:alice@kopje.test");
+    const template = findLink("https://w3id.org/fep/3b86/Object", answer)?.template;
+    expect(template).toBe(OBJECT_TEMPLATE);
+    const browser = await signIn(t);
+    const before = await everyRow(t.store);
+    for (const id of [
+      "https://mastodon.example/users/bob/statuses/115123456789012345",
+      "https://mastodon.example/@bob",
+      "https://mastodon.example/objects/a%2Fb?x=1&y=a+b=c#part",
+      "https://mastodon.example/@bob/ノート",
+      local,
+    ]) {
+      // FEP-3b86 §3.3: the value is percent-encoded.
+      const url = template!.replace("{object}", encodeURIComponent(id));
+      for (const cookie of [null, browser.cookie]) {
+        expect([id, cookie !== null, await prefilled(t, url, cookie)]).toEqual([id, cookie !== null, id]);
+      }
+    }
+    expect(t.web.fetched).toEqual([]);
+    expect(await everyRow(t.store)).toBe(before);
+    expect(t.doorbell).not.toHaveBeenCalled();
+    expect(t.jobs).not.toHaveBeenCalled();
+  });
+
+  it("leads Mastodon 4.7.5's remote interaction helper to the Object intent for every action", async () => {
+    const t = await world();
+    await withKey(t);
+    const status = "https://mastodon.example/users/bob/statuses/115123456789012345";
+    // What the modal names (resourceUrl): a status's uri, and the account's url for a follow.
+    const actions = [
+      ["follow", "https://mastodon.example/@bob"],
+      ["reblog", status],
+      ["favourite", status],
+      ["vote", status],
+      ["reply", status],
+    ];
+    // The helper asks by the address a person types (fromAcct) or by the URL they paste (fromURL).
+    for (const resource of ["acct:alice@kopje.test", `${ORIGIN}/ap/users/alice`]) {
+      const answer = await webFinger(t, resource);
+      for (const [intent, resourceUrl] of actions) {
+        const [template, param] = findTemplateLink(answer, intent!);
+        expect([resource, intent, template, param]).toEqual([resource, intent, OBJECT_TEMPLATE, "object"]);
+        const url = filledTemplate(template!, param!, resourceUrl!);
+        expect(url).toBe(`${ORIGIN}/authorize_interaction?uri=${encodeURIComponent(resourceUrl!)}`);
+        expect(await prefilled(t, url, null)).toBe(resourceUrl);
+      }
+    }
+    expect(t.web.fetched).toEqual([]);
   });
 });
 

@@ -131,6 +131,18 @@ export class PolicyModel {
     return !account.suspended && !(!account.local && (account.deleting || this.domainCovered(x)));
   }
 
+  // R1's account reads: an account is found by id or address unless it is a remote account whose deletion has started;
+  // a suspended or covered account is found (and shown redacted).
+  accountFound(x: number): boolean {
+    const account = this.account(x);
+    return account.local || !account.deleting;
+  }
+
+  // R1: relationships list a found account, and without with_suspended only an available one.
+  relationshipListed(x: number, withSuspended: boolean): boolean {
+    return this.accountFound(x) && (withSuspended || this.available(x));
+  }
+
   // R38: an instance domain block covers `domain` (lowercase, no trailing dot) when the block that rules it is a
   // suspend: the block of the domain itself or of its nearest parent, the longest match (Mastodon's
   // DomainBlock.rule_for). A child noop exempts its subdomains from a parent's suspend.

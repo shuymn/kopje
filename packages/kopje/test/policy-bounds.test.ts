@@ -1506,7 +1506,7 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
     const reads: GrownRead[] = [
       // A full page of the friend's statuses, none of the stranger's.
       { name: "home", operation: homeTimeline, input: { credential, page: PAGE, present: PRESENT }, shows: fullPage },
-      // An empty page, answered to the viewer.
+      // An empty page, answered to the viewer; for an account whose deletion has started, none (R1's account reads).
       ...Object.entries(HIDDEN_AUTHORS).map(([name, account]): GrownRead => ({
         name: `account statuses of ${name}`,
         operation: accountStatuses,
@@ -1522,7 +1522,9 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
           tagged: null,
           present: PRESENT,
         },
-        shows: (output) => (output as { status: string }).status === "ok" && shown(output) === 0,
+        shows: (output) =>
+          (output as { status: string }).status === "ok" &&
+          (account === DELETING_ID ? (output as { value: unknown }).value === null : shown(output) === 0),
       })),
     ];
     expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);
@@ -5053,19 +5055,19 @@ describe("the admin's report list reads a page, however many reports do not matc
   const CASES: Case[] = [
     {
       name: "unresolved",
-      filter: { resolved: false, accountId: null, targetAccountId: null },
+      filter: { state: "unresolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [{ reporter: A, target: T, resolved: true }],
     },
     {
       name: "resolved",
-      filter: { resolved: true, accountId: null, targetAccountId: null },
+      filter: { state: "resolved", accountId: null, targetAccountId: null },
       match: { reporter: A, target: T, resolved: true },
       bulk: [{ reporter: B, target: U, resolved: false }],
     },
     {
       name: "by reporter",
-      filter: { resolved: false, accountId: A, targetAccountId: null },
+      filter: { state: "unresolved", accountId: A, targetAccountId: null },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5074,7 +5076,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by reported account",
-      filter: { resolved: false, accountId: null, targetAccountId: T },
+      filter: { state: "unresolved", accountId: null, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },
@@ -5083,7 +5085,7 @@ describe("the admin's report list reads a page, however many reports do not matc
     },
     {
       name: "by both",
-      filter: { resolved: false, accountId: A, targetAccountId: T },
+      filter: { state: "unresolved", accountId: A, targetAccountId: T },
       match: { reporter: A, target: T, resolved: false },
       bulk: [
         { reporter: A, target: T, resolved: true },

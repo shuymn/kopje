@@ -8,6 +8,7 @@ import {
   type Present,
   presentAccountsWithin,
   resolveAccountId,
+  routeAccountId,
   windowAccountIds,
 } from "./accounts";
 import { ANSWER_BYTES } from "./answer-budget";
@@ -308,7 +309,7 @@ export const removeListAccounts = userWriteOperation<{ id: string; accounts: str
 // GET /api/v1/accounts/:id/lists: the viewer's lists that hold the account, oldest first; none for an unavailable
 // account (Account#suspended?). Null when no account has the id.
 export const accountLists = userReadOperation<{ account: string }, List[] | null>((db, input, { accountId }) => {
-  const member = resolveAccountId(db, input.account);
+  const member = routeAccountId(db, input.account);
   if (member === null) {
     return null;
   }

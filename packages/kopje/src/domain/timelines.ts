@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { CARD_PUBLIC_LINK_INDEX } from "../platform/stored-bounds";
-import { type Page, type PageQuery, type Present, resolveAccountId } from "./accounts";
+import { type Page, type PageQuery, type Present, routeAccountId } from "./accounts";
 import { admit, type Admitted, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   audienceSql,
@@ -892,7 +892,7 @@ export function accountStatusesWithin(
   admission: StatusAdmission,
 ): StatusList | null {
   const { accountId: viewerId, now } = viewer;
-  const accountId = resolveAccountId(db, input.account);
+  const accountId = routeAccountId(db, input.account);
   if (accountId === null) {
     return null;
   }

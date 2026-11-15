@@ -369,6 +369,21 @@ Accounts (the `Account` and credential account entities):
   username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
+  Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
+  `GET /api/v1/accounts` and relationships leave it out whatever `with_suspended`, as Mastodon 4.7 answers for a
+  deleted account (`without_requested_deletion`, `accounts_controller.rb:86-91`, `accounts/base_controller.rb:7`,
+  `lookup_controller.rb:16`, `relationships_controller.rb:8-9`); nested in another entity it is shown redacted. Kopje's
+  `identity_proofs` placeholder answers 404 for it too, as for an id that names no account, where Mastodon answers
+  `[]` for any id.
+- An actor whose own URI answers 410 to a fetch Kopje makes of it is deleted as by its `Delete`, as Mastodon's
+  `FetchRemoteActorService` deletes a stored account on a 410 (`fetch_remote_actor_service.rb:21-24,46-54`); a 404 is
+  not. Kopje follows same-origin redirects on an actor fetch where Mastodon follows none (`json_ld_helper.rb:242`), and
+  deletes only on a 410 at the actor URI itself: a 410 at the end of a redirect deletes nothing. The 410 counts only
+  under the Store revision read before that fetch (ID-1 in `docs/threat-model.md`), so a search by a URL first reads
+  whether it is a stored actor's id, and resolves such a URL as that actor; the 410 of any other URL's probe, a
+  status's included, deletes nothing.
+- `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
+  deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
   verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
   an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
@@ -414,12 +429,13 @@ Accounts (the `Account` and credential account entities):
   `FetchRemoteStatusService#account_from_uri` refetches a `possibly_stale?` account
   (`fetch_remote_status_service.rb:67-71`, `account.rb:71,254-256`). An account the instance suspended or a domain block
   covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch does not look the account
-  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon; a 404 or 410
-  that arrives after another request's failed refetch of the same account is not applied. Where any other failure would
-  make Mastodon store nothing or retry the job, Kopje stores the status under the stored account and tries that account
-  again only a day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The
-  pinned statuses a collection sync fetches use the stored account however long ago the sync was asked for, where
-  Mastodon checks the account when it fetches them. Search always fetches the account.
+  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon, and a 410 at
+  its URI deletes it (above); a 404 or 410 that arrives after another request's failed refetch of the same account is
+  not applied. Where any other failure would make Mastodon store nothing or retry the job, Kopje stores the status
+  under the stored account and tries that account again only a day later. A sender's own statuses are stored under the
+  sender, as fresh as its key (24 hours, ID-1). The pinned statuses a collection sync fetches use the stored account
+  however long ago the sync was asked for, where Mastodon checks the account when it fetches them. Search always
+  fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
   Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
@@ -521,7 +537,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
   six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
   had.
-- `thumbnail` is always Kopje's default image; there is no upload.
+- `thumbnail` is always Kopje's default image, with its fixed description on `/api/v2/instance`; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
 - The reading preferences, `reading:autoplay:gifs` included, are Mastodon's defaults; no setting stores them.
@@ -584,7 +600,7 @@ Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campa
   any other Bearer token, an unknown one included, costs one Store call (`checkNotSuspended`) even when the limiter
   refuses it. Accepted, 2026-11-15.
 
-Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
+Remote interaction (`/authorize_interaction`, the subscribe template and the FEP-3b86 `Object` intent of WebFinger):
 
 - Mastodon signs a signed-out browser in on the GET, then resolves `uri` on the GET and redirects to its web client's
   page for the account or status. Kopje's GET fetches nothing: it shows a form prefilled with `uri` (or `acct`), and
@@ -594,8 +610,10 @@ Remote interaction (`/authorize_interaction`, the subscribe template of WebFinge
 - `uri` is used only when it is an http(s) URL or an address of at most 2,048 UTF-8 bytes; anything else leaves the
   form empty.
 - Following or opening a post from the viewer's own server (a profile's Follow, a status's "Open on your server"):
-  Mastodon's web client asks the named server, from the browser, for its interaction URL template (its WebFinger
-  `http://ostatus.org/schema/1.0/subscribe` link, falling back to `/authorize_interaction?uri={uri}`) and opens it.
+  Mastodon's web client asks the named server, from the browser, for its WebFinger answer (by handle, by URL, or
+  `https://<server>` for a server name) and opens the FEP-3b86 intent of the action (`Follow`, `Announce`, `Like`;
+  `Object` for a reply or a vote), else `Object`, else the subscribe template, else `/authorize_interaction?uri={uri}`
+  (Mastodon 4.6 and later).
   Kopje's pages work without script and fetch nothing: the dialog's form names the server to a handoff page here,
   which links to `https://<server>/authorize_interaction?uri=<uri>` and shows the handle or URL to paste into that
   server's search, for a server whose template is another path. The server is accepted only as a bounded DNS name.
@@ -612,10 +630,17 @@ WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `Webfing
   refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
 - Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
   type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
-  there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its
-  aliases are the actor id alone (Mastodon adds a local account's profile URL); asked for a URI, its subject is that
-  URI, where Mastodon's is always the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a
-  400, 404 or 410).
+  there) and the subscribe template and FEP-3b86's `Object` intent, both to `/authorize_interaction`. There is no
+  `Create` intent (Mastodon's `/share?text={content}`): Kopje has no web compose page, and posting happens in clients.
+  The links come in Fedify's order, `self`, `profile-page`, the avatar, the subscribe template, `Object`; Mastodon's is
+  `profile-page`, `self`, subscribe, `Create`, `Object`, the avatar. RFC 7033 makes order a preference only among
+  links of one `rel`, and each answer has one link of each. Asked for a handle, its aliases are the actor id alone
+  (Mastodon adds a local account's profile URL); asked for a URI, its subject is that URI, where Mastodon's is always
+  the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a 400, 404 or 410).
+- A resource that is the domain itself (`https://<domain>`, with or without a trailing `/`, `http://` or no scheme) has
+  no answer (404, or 400 without a scheme); Mastodon answers its instance actor, and its web client, given only a
+  server name, asks for `https://<domain>` and on a 404 opens `https://<domain>/authorize_interaction?uri={uri}`, which
+  is Kopje's page.
 
 Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
@@ -848,8 +873,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
 
-Custom emoji (the `CustomEmoji` entities of a status, its poll and an account):
+Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, and `GET /api/v1/custom_emojis`):
 
+- A local emoji's category is a name with no featured emoji, so the listing shows `featured: false` beside each
+  `category`.
 - A remote emoji's `url` is Kopje's cached copy on the instance's own origin (`/media/r/…`) once the cron has fetched
   it, kept per (domain, url), the domain being the account's whose object named it; `static_url` is a still remuxed
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a
@@ -923,6 +950,11 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   answers 422 `Media 0 not found or already attached to another post` for the form's.
 - Media a scheduled status holds cannot be attached by another post (422, not found); Mastodon attaches it, and the
   scheduled post is then lost when it is published.
+- `GET /api/v1/scheduled_statuses` answers within 8 MiB: a page cut there holds fewer scheduled statuses and its
+  `Link` continues after the last one shown. A scheduled status shows at most 4 of the media it holds (Mastodon holds no
+  more).
+- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`; Mastodon cannot store such
+  a row.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,

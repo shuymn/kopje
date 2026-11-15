@@ -48,6 +48,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
   handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
   migration and no `wrangler.jsonc` change.
+- `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
+  profile fields and their name and value lengths) and a description of the default thumbnail, and
+  `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
+- WebFinger answers, the instance actor's included, carry FEP-3b86's `Object` intent,
+  `https://<domain>/authorize_interaction?uri={object}`, after the subscribe template, as Mastodon 4.6 and later do, so
+  a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
+  is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  WebFinger). No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -95,6 +104,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
   included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
   migration and no `wrangler.jsonc` change.
+- A remote account whose deletion has started answers 404 to `GET /api/v1/accounts/:id`, to every
+  `/api/v1/accounts/:id/...` route and to lookup, and is left out of `GET /api/v1/accounts` and of relationships, with
+  or without `with_suspended`, as Mastodon 4.7 does; it was shown redacted. This breaks clients that read deleting
+  accounts. An actor whose own URI answers 410, without a redirect, is deleted as by its `Delete`; a 404 deletes
+  nothing. A search by a URL that is a stored actor's id fetches it as that actor, without a probe. No Store migration
+  and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
@@ -114,6 +129,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
   written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
   their hashtags until edited.
+- `GET /api/v1/admin/reports` reads `resolved` and `unresolved` as booleans, as Mastodon 4.7.5 does: both true lists
+  every report, `resolved` alone the resolved ones, otherwise the unresolved ones. `resolved=false` now lists the
+  unresolved reports; it listed the resolved ones. No Store migration and no `wrangler.jsonc` change.
 - An `Accept` or `Reject` of a quote request is matched by the request's id only, as Mastodon 4.7 does; one that
   embeds a request under another id changes nothing.
 - A suspended user's token is refused with 403 "Your login is currently disabled" before its expiry is judged, as
@@ -167,6 +185,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
+  media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
 - The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
   there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
   way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
