@@ -707,6 +707,19 @@ describe("settings page", () => {
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: forty }]);
   });
 
+  // The note round-trips through the form as Mastodon keeps it: stripped of ASCII whitespace and NUL at its ends, its
+  // Unicode spaces kept (test/accounts.test.ts).
+  it("saves a note with Unicode spaces and shows it back in the form", async () => {
+    const h = await withAlice();
+    const browser = await signIn(h);
+    const csrf = await csrfOf(h, browser);
+    expect((await postForm(h, browser, "/settings/profile", { csrf, note: " bio\u3000" })).status).toBe(303);
+    expect(await sql(h.store, "SELECT note FROM accounts")).toEqual([{ note: "<p>bio\u3000</p>" }]);
+    const textarea = one(parseHtml(await (await settings(h, browser)).text()), "textarea");
+    expect(attr(textarea, "name")).toBe("note");
+    expect(textarea.childNodes.map((node) => (node as { value?: string }).value ?? "").join("")).toBe("bio\u3000");
+  });
+
   it("shows only notices it knows", async () => {
     const h = await withAlice();
     const browser = await signIn(h);

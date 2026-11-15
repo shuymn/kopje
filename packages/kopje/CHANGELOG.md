@@ -94,9 +94,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
-  spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them. One at its limit
-  with such a character at an end was refused, and a display name was stored with its spaces, tabs and line breaks.
-  No Store migration and no `wrangler.jsonc` change.
+  spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
+  every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
+  display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
+  paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

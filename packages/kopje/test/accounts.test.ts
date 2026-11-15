@@ -322,6 +322,30 @@ describe("credentials", () => {
     expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
   });
 
+  // Mastodon's TextFormatter for a local note (app/lib/text_formatter.rb:34, :48): '' for a blank note, else Rails'
+  // simple_format (split_paragraphs), which trims no paragraph or line: what Ruby's strip leaves is kept, Unicode spaces
+  // included, and source.note gives it back. A blank note is stored empty (docs/mastodon-deviations.md).
+  it("keeps a note's whitespace as Mastodon formats it, and stores a blank one empty", async () => {
+    const h = await aliceSession();
+    for (const [sent, source, html] of [
+      [" bio\u3000", "bio\u3000", "<p>bio\u3000</p>"],
+      ["a\n\n\u3000\n\nb", "a\n\n\u3000\n\nb", "<p>a</p><p>\u3000</p><p>b</p>"],
+      ["a \n b \n\n\u00a0c", "a \n b \n\n\u00a0c", "<p>a <br> b </p><p>\u00a0c</p>"],
+      ["x", "x", "<p>x</p>"],
+      ["\u3000\u0085\n\n\u00a0", "", ""],
+    ]) {
+      const response = await h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(h.token, json({ note: sent }, { method: "PATCH" })),
+      );
+      expect(response.status, JSON.stringify(sent)).toBe(200);
+      expect(await response.json(), JSON.stringify(sent)).toMatchObject({ note: html, source: { note: source } });
+      expect(await sql(h.store, "SELECT note FROM accounts WHERE id = ?", h.aliceId)).toEqual([{ note: html }]);
+      const me = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+      expect(await me.json()).toMatchObject({ note: html, source: { note: source } });
+    }
+  });
+
   it("refuses invalid values without changing anything", async () => {
     const h = await aliceSession();
     for (const body of [{ note: "x".repeat(501) }, { source: { privacy: "secret" } }]) {
