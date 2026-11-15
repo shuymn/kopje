@@ -49,10 +49,13 @@ const RULES = [
   { id: "r2", text: "No spam", hint: "", translations: {} },
 ];
 
-// v2's configuration.accounts: the constants that enforce each limit, in REST::InstanceSerializer's order.
+// v2's configuration.accounts: the constants that enforce each limit, in REST::InstanceSerializer's order (the image
+// descriptions' at Mastodon's MAX_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT). v1's has none of them.
 const ACCOUNT_LIMITS = {
   max_display_name_length: MAX_DISPLAY_NAME,
   max_note_length: MAX_NOTE,
+  max_avatar_description_length: 150,
+  max_header_description_length: 150,
   max_featured_tags: MAX_FEATURED_TAGS,
   max_pinned_statuses: PIN_LIMIT,
   max_profile_fields: MAX_FIELDS,

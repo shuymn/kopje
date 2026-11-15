@@ -17,6 +17,7 @@ import {
   presentedCountSql,
   presentedDisplayName,
   presentedNote,
+  presentedProfileDescription,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -99,8 +100,11 @@ export type Account = {
   uri: string;
   avatar: string;
   avatar_static: string;
+  // The image descriptions (Account#avatar_description, header_description): '' for none, and while unavailable.
+  avatar_description: string;
   header: string;
   header_static: string;
+  header_description: string;
   followers_count: number;
   following_count: number;
   statuses_count: number;
@@ -108,6 +112,11 @@ export type Account = {
   // Whether the account hides its network (Account#hide_collections): set by a local account, learned of a remote one
   // (remote-collections.ts); null for a remote account Kopje has not learned it of.
   hide_collections: boolean | null;
+  // The display settings (Account#show_media, show_media_replies, show_featured), presented as stored, also while
+  // unavailable, as Mastodon does. Kopje's pages and timelines do not honour them.
+  show_media: boolean;
+  show_media_replies: boolean;
+  show_featured: boolean;
   emojis: CustomEmoji[];
   fields: Field[];
   // A local account's only, as Mastodon's `if: :local?`: false, Mastodon's default, as Kopje has no such setting.
@@ -197,10 +206,16 @@ export type AccountRow = {
   // The still of an animated uploaded image (migration 0061_account_static_images), or null: the image itself.
   avatar_static_url: string | null;
   header_static_url: string | null;
+  // The image descriptions and display settings (migration 0097_profile_descriptions), bounded by its triggers.
+  avatar_description: string;
+  header_description: string;
   locked: number;
   discoverable: number | null;
   // NULL for a remote account not stored again since migration 0058.
   indexable: number | null;
+  show_featured: number;
+  show_media: number;
+  show_media_replies: number;
   followers_count: number;
   following_count: number;
   statuses_count: number;
@@ -231,9 +246,22 @@ export type AccountRow = {
 
 type MovedRow = Omit<
   AccountRow,
-  "note" | "local_fields" | "verified_links" | "attachment" | "moved_to_account_id" | "locked"
+  | "note"
+  | "local_fields"
+  | "verified_links"
+  | "attachment"
+  | "moved_to_account_id"
+  | "locked"
+  | "avatar_description"
+  | "header_description"
+  | "show_featured"
+  | "show_media"
+  | "show_media_replies"
 > & {
   locked: number | null;
+  show_featured: number | null;
+  show_media: number | null;
+  show_media_replies: number | null;
 };
 
 // The moved-to accounts of `rows` that are available (an unavailable one shows `moved: null`, its target not read),
@@ -342,11 +370,20 @@ export function* accountsOf(
   }
 }
 
-// REST::DedupNotificationGroupSerializer::PartialAccountSerializer.
-export type PartialAccount = Pick<Account, "id" | "acct" | "locked" | "bot" | "url" | "avatar" | "avatar_static">;
+// REST::PartialAccountSerializer (grouped notifications' partial_accounts), each key as Account presents it.
+export type PartialAccount = {
+  id: string;
+  acct: string;
+  locked: boolean;
+  bot: boolean;
+  url: string;
+  avatar: string;
+  avatar_static: string;
+  avatar_description: string;
+};
 
 type PartialRow = Pick<AccountRow, "id" | "uri" | "username" | "domain" | "actor_type" | "url" | "avatar_url"> &
-  Pick<AccountRow, "avatar_static_url" | "locked" | "available">;
+  Pick<AccountRow, "avatar_static_url" | "avatar_description" | "locked" | "available">;
 
 // The partial accounts of `ids` in order (an id may repeat), as presentAccount shows those fields, reading only their
 // columns, `chunk` at a time as the stream reaches them; undefined for an id with no account.
@@ -362,7 +399,7 @@ export function* partialAccountsOf(
       db
         .all<PartialRow>(
           `SELECT a.id, ${actorUriSql("a.uri")} AS uri, ${usernameSql("a.username")} AS username, a.domain, a.actor_type,
-						a.url, a.avatar_url, a.avatar_static_url, a.locked,
+						a.url, a.avatar_url, a.avatar_static_url, a.avatar_description, a.locked,
 						${availableJoinedSql("a", "l")} AS available
 					FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
 					${LOCAL_ROW_JOIN}`,
@@ -393,6 +430,7 @@ export function* partialAccountsOf(
         url: accountUrl(row, present.origin),
         avatar: avatar.image,
         avatar_static: avatar.still,
+        avatar_description: suspended ? "" : presentedProfileDescription(row.avatar_description),
       };
     }
   }
@@ -512,15 +550,18 @@ export function acctOf(row: { id: string; username: string; domain: string | nul
 
 // An unavailable account (R1: suspended, or a remote account whose deletion has started, as the row's query read it
 // live) is shown redacted, as Mastodon's REST::AccountSerializer shows an unavailable one: no display name, note,
-// fields or emojis, the default avatar and header, locked, bot, discoverable and indexable false, and
-// `suspended: true`. The uri and noindex are shown as for an available one, as Mastodon shows them. `moved`: the
-// account it moved to, from `moved` (movedOf), absent when it names none Kopje reads, null while it is unavailable.
+// fields, emojis or image descriptions, the default avatar and header, locked, bot, discoverable and indexable false,
+// and `suspended: true`. The uri, noindex and the display settings are shown as for an available one, as Mastodon shows
+// them. `moved`: the account it moved to, from `moved` (movedOf), absent when it names none Kopje reads, null while it
+// is unavailable.
 function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, cached }: Related): Account {
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
     ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
       display_name: presentedDisplayName(row.display_name),
       note: presentedNote(row.note),
+      avatar_description: presentedProfileDescription(row.avatar_description),
+      header_description: presentedProfileDescription(row.header_description),
       emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
@@ -535,9 +576,9 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
   };
 }
 
-// A moved-to account nested in Account#moved (MOVED_ACCOUNT_COLUMNS): every text within its decoded limit, no note
-// or fields, and the emojis its display name references while their JSON fits MOVED_EMOJIS_BYTES. It never shows a
-// `moved` of its own (Mastodon's AccountDecorator#moved? is false).
+// A moved-to account nested in Account#moved (MOVED_ACCOUNT_COLUMNS): every text within its decoded limit, no note,
+// fields or image descriptions, and the emojis its display name references while their JSON fits MOVED_EMOJIS_BYTES. It
+// never shows a `moved` of its own (Mastodon's AccountDecorator#moved? is false).
 function presentMovedAccount(db: Db, row: MovedRow, origin: string, cached: CachedImages): Account {
   const displayName = cutCodePoints(row.display_name, MOVED_DISPLAY_NAME_LIMIT);
   const cut = {
@@ -549,12 +590,18 @@ function presentMovedAccount(db: Db, row: MovedRow, origin: string, cached: Cach
   return presentIdentity(db, cut, origin, MOVED_BOUNDS, cached, () => ({
     display_name: displayName,
     note: "",
+    avatar_description: "",
+    header_description: "",
     emojis: referencedEmojis(row.emojis, [displayName], MOVED_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
     fields: [],
   }));
 }
 
-type Profile = Pick<Account, "display_name" | "note" | "emojis" | "fields">;
+// The texts an account shows only while it is available.
+type ProfileText = Pick<
+  Account,
+  "display_name" | "note" | "avatar_description" | "header_description" | "emojis" | "fields"
+>;
 
 // The keys an account shows, its URLs and actor id within `bounds`; `profile`, of an available account only.
 function presentIdentity(
@@ -563,7 +610,7 @@ function presentIdentity(
   origin: string,
   bounds: IdentityBounds,
   cached: CachedImages,
-  profile: () => Profile,
+  profile: () => ProfileText,
 ): Account {
   const suspended = row.available === 0;
   const url = accountUrl(row, origin, bounds.href);
@@ -582,7 +629,9 @@ function presentIdentity(
     `${origin}${DEFAULT_HEADER}`,
     cachedImageUrls(own?.header ?? null, origin),
   );
-  const shown: Profile = suspended ? { display_name: "", note: "", emojis: [], fields: [] } : profile();
+  const shown: ProfileText = suspended
+    ? { display_name: "", note: "", avatar_description: "", header_description: "", emojis: [], fields: [] }
+    : profile();
   const handle = shownHandle(row);
   return {
     id: row.id,
@@ -601,13 +650,18 @@ function presentIdentity(
     uri: withinIdentityBound(row.uri, bounds.uri) ? row.uri : "",
     avatar: avatar.image,
     avatar_static: avatar.still,
+    avatar_description: shown.avatar_description,
     header: header.image,
     header_static: header.still,
+    header_description: shown.header_description,
     followers_count: row.followers_count,
     following_count: row.following_count,
     statuses_count: row.statuses_count,
     last_status_at: row.last_status_at,
     hide_collections: row.hide_collections === null ? null : row.hide_collections === 1,
+    show_media: row.show_media !== 0,
+    show_media_replies: row.show_media_replies !== 0,
+    show_featured: row.show_featured !== 0,
     emojis: shown.emojis,
     fields: shown.fields,
     // The admin is looked up only for an available local account, once per operation (adminAccountIdOnce).
