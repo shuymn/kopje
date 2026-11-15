@@ -688,14 +688,16 @@ describe("settings page", () => {
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: "Alice" }]);
   });
 
-  // The server decides the display name's limit in code points (40, Mastodon's); the field's native limit lets through
-  // more (browser job), so 41 BMP characters reach this check.
+  // The server decides the display name's limit in code points (40, Mastodon's), after stripping it as Mastodon does
+  // (test/accounts.test.ts); the field's native limit lets through more (browser job), so 41 BMP characters reach this
+  // check.
   it("saves a display name of 40 code points, astral ones included, and refuses 41", async () => {
     const h = await withAlice();
     const browser = await signIn(h);
     const csrf = await csrfOf(h, browser);
     const forty = `${"😀".repeat(20)}${"あ".repeat(20)}`;
-    expect((await postForm(h, browser, "/settings/profile", { csrf, display_name: forty })).status).toBe(303);
+    const saved = await postForm(h, browser, "/settings/profile", { csrf, display_name: `\u0000 ${forty}\t\u0000` });
+    expect(saved.status).toBe(303);
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: forty }]);
     for (const value of ["😀".repeat(41), "x".repeat(41)]) {
       const refused = await postForm(h, browser, "/settings/profile", { csrf, display_name: value });

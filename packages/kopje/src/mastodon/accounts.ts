@@ -61,6 +61,8 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
 
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
+// Ruby's String#strip as Mastodon 4.7.5's Ruby (4.0) has it: NUL, tab, LF, VT, FF, CR and space at either end.
+const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 
 // The changes update_credentials asks for, and the validation problems with them (Mastodon's messages). Shared by the
 // API and the settings page (app/web.tsx), which posts the same names. Avatar and header come through the media
@@ -68,14 +70,16 @@ const LANGUAGE = /^[a-z]{2,3}$/;
 export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
   const changes: CredentialChanges = {};
   const problems: string[] = [];
-  const displayName = p.get("display_name");
+  // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
+  // dropped when stored (storedText).
+  const displayName = p.get("display_name")?.replace(RUBY_STRIP, "");
   if (displayName !== undefined) {
     if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
       problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
     }
     changes.displayName = displayName;
   }
-  const note = p.get("note");
+  const note = p.get("note")?.replace(RUBY_STRIP, "");
   if (note !== undefined) {
     if (yieldsMoreThan(note, MAX_NOTE)) {
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);

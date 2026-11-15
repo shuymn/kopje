@@ -93,6 +93,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
+  spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them. One at its limit
+  with such a character at an end was refused, and a display name was stored with its spaces, tabs and line breaks.
+  No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

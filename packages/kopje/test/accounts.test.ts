@@ -259,8 +259,7 @@ describe("credentials", () => {
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
   });
 
-  // Account::DISPLAY_NAME_LENGTH_LIMIT (Mastodon 4.6, `mastodon#39458`): 40 code points, whatever plane they are in; a
-  // NUL counts as one, as it does in Mastodon, and is dropped when stored.
+  // Account::DISPLAY_NAME_LENGTH_LIMIT (Mastodon 4.6, `mastodon#39458`): 40 code points, whatever plane they are in.
   it("accepts a display name of 40 code points and refuses 41", async () => {
     const h = await aliceSession();
     const patch = (display_name: string) =>
@@ -271,7 +270,7 @@ describe("credentials", () => {
     expect(await accepted.json()).toMatchObject({ display_name: forty });
     const stored = () => sql(h.store, "SELECT display_name FROM accounts WHERE id = ?", h.aliceId);
     expect(await stored()).toEqual([{ display_name: forty }]);
-    for (const value of [`${"😀".repeat(40)}\u0000`, "x".repeat(41), `${"😀".repeat(20)}${"x".repeat(21)}`]) {
+    for (const value of ["😀".repeat(41), "x".repeat(41), `${"😀".repeat(20)}${"x".repeat(21)}`]) {
       const refused = await patch(value);
       expect(refused.status, value).toBe(422);
       expect(await refused.json()).toEqual({
@@ -279,9 +278,48 @@ describe("credentials", () => {
       });
     }
     expect(await stored()).toEqual([{ display_name: forty }]);
-    // The NUL is one of the 40 and is not stored.
-    expect((await patch(`${"😀".repeat(39)}\u0000`)).status).toBe(200);
-    expect(await stored()).toEqual([{ display_name: "😀".repeat(39) }]);
+  });
+
+  // Account#prepare_contents strips the display name and the note before validating and storing them, as Ruby's
+  // String#strip strips: NUL, tab, LF, VT, FF, CR and space at either end, and no other whitespace. A NUL inside is
+  // one of the code points counted and is dropped when stored.
+  it("strips the display name and the note as Mastodon does before counting and storing them", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, string>) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
+    const stored = () => sql(h.store, "SELECT display_name, note FROM accounts WHERE id = ?", h.aliceId);
+    const ends = "\u0000\t\n\v\f\r ";
+    for (const [i, [before, after]] of [
+      ["", "\u0000"],
+      ["", " "],
+      [ends, ends],
+    ].entries()) {
+      const name = `${"😀".repeat(39)}${i}`;
+      const note = `${"x".repeat(499)}${i}`;
+      const response = await patch({ display_name: `${before}${name}${after}`, note: `${before}${note}${after}` });
+      expect(response.status, JSON.stringify([before, after])).toBe(200);
+      expect(await response.json()).toMatchObject({ display_name: name, source: { note } });
+      expect(await stored()).toEqual([{ display_name: name, note: `<p>${note}</p>` }]);
+    }
+    const kept = await stored();
+    // Other whitespace is kept and counted (it is not Ruby's to strip), and so is a NUL inside.
+    for (const value of [
+      `${"😀".repeat(40)}\u3000`,
+      `\u00a0${"😀".repeat(40)}`,
+      `${"😀".repeat(20)}\u0000${"😀".repeat(20)}`,
+    ]) {
+      const refused = await patch({ display_name: value });
+      expect(refused.status, JSON.stringify(value)).toBe(422);
+      expect(await refused.json()).toEqual({
+        error: "Validation failed: Display name is too long (maximum is 40 characters)",
+      });
+    }
+    const note = await patch({ note: `${"x".repeat(500)}\u3000` });
+    expect(note.status).toBe(422);
+    expect(await note.json()).toEqual({ error: "Validation failed: Note is too long (maximum is 500 characters)" });
+    expect(await stored()).toEqual(kept);
+    expect((await patch({ display_name: `${"😀".repeat(20)}\u0000${"😀".repeat(19)}` })).status).toBe(200);
+    expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
   });
 
   it("refuses invalid values without changing anything", async () => {
