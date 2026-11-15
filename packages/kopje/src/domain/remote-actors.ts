@@ -47,6 +47,14 @@ export type RemoteActorInput = {
   url: string | null;
   avatarUrl: string | null;
   headerUrl: string | null;
+  // The icon's and image's descriptions, storedProfileDescription's output ('' for none: a store clears a stored one).
+  avatarDescription: string;
+  headerDescription: string;
+  // The display settings (showFeatured, showMedia, showRepliesInMedia) when the document holds a JSON boolean for
+  // them, else null: the stored value is kept (a new account's is true).
+  showFeatured: boolean | null;
+  showMedia: boolean | null;
+  showRepliesInMedia: boolean | null;
   locked: boolean;
   discoverable: boolean | null;
   // The actor's toot:indexable, true only when the document says so (ProcessAccountService: `@json['indexable']`).
@@ -352,7 +360,11 @@ export function upsertRemoteActor(
     accountSearchText(searched.username, searched.domain, actor.displayName),
     createdAt,
     emojis,
+    actor.avatarDescription,
+    actor.headerDescription,
   ];
+  // The display settings, ?23 to ?25: a new account takes true for one the document leaves out, a stored one keeps it.
+  const setting = (value: boolean | null) => (value === null ? null : value ? 1 : 0);
   insertWithFreshId(
     "accounts",
     () => remoteId(actor.published ?? "", now),
@@ -360,22 +372,30 @@ export function upsertRemoteActor(
       db.run(
         `INSERT INTO accounts (id, uri, username, domain, actor_type, display_name, note, url, avatar_url, header_url,
 					locked, discoverable, indexable, inbox_url, shared_inbox_url, raw, fetched_at, search_text, created_at,
-					emojis, document_revision)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nextDocumentRevisionSql(null)})
-				ON CONFLICT (uri) DO UPDATE SET username = CASE WHEN ?21 THEN accounts.username ELSE excluded.username END,
+					emojis, avatar_description, header_description, show_featured, show_media, show_media_replies,
+					document_revision)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?23, 1), COALESCE(?24, 1),
+					COALESCE(?25, 1), ${nextDocumentRevisionSql(null)})
+				ON CONFLICT (uri) DO UPDATE SET username = CASE WHEN ?26 THEN accounts.username ELSE excluded.username END,
 					document_revision = ${nextDocumentRevisionSql("accounts.document_revision")}, actor_type = excluded.actor_type,
 					display_name = excluded.display_name, note = excluded.note, url = excluded.url,
 					avatar_url = excluded.avatar_url, header_url = excluded.header_url, locked = excluded.locked,
 					discoverable = excluded.discoverable, indexable = excluded.indexable, inbox_url = excluded.inbox_url,
 					shared_inbox_url = excluded.shared_inbox_url, raw = excluded.raw, fetched_at = excluded.fetched_at,
-					search_text = excluded.search_text, domain = CASE WHEN ?21 THEN accounts.domain ELSE excluded.domain END,
-					emojis = excluded.emojis,
+					search_text = excluded.search_text, domain = CASE WHEN ?26 THEN accounts.domain ELSE excluded.domain END,
+					emojis = excluded.emojis, avatar_description = excluded.avatar_description,
+					header_description = excluded.header_description, show_featured = COALESCE(?23, accounts.show_featured),
+					show_media = COALESCE(?24, accounts.show_media),
+					show_media_replies = COALESCE(?25, accounts.show_media_replies),
 					suspended_at = CASE WHEN accounts.suspension_source = 'domain' THEN NULL ELSE accounts.suspended_at END,
 					suspension_source = CASE WHEN accounts.suspension_source = 'domain' THEN NULL
 						ELSE accounts.suspension_source END
 				WHERE accounts.domain IS NOT NULL`,
         id,
         ...values,
+        setting(actor.showFeatured),
+        setting(actor.showMedia),
+        setting(actor.showRepliesInMedia),
         keep ? 1 : 0,
       ),
   );

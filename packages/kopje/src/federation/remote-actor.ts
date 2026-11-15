@@ -6,9 +6,11 @@ import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
-import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
+import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
+import { isObject } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
+import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -111,6 +113,26 @@ async function imageUrl(get: () => Promise<{ url: URL | Link | null } | null>): 
   }
 }
 
+// An icon's or image's description as Mastodon 4.7 reads it from the document's JSON by spelling
+// (ProcessAccountService#image_url_and_description, process_account_service.rb:354-379): the property's first value,
+// when it is an object whose type is the string "Image", read by remoteDescription (summary, else name), cut to
+// PROFILE_DESCRIPTION_LIMIT code points (Mastodon cuts at 10,000; docs/mastodon-deviations.md); anything else, a
+// reference included (Kopje fetches no image, NO_FETCH), reads as ''. Mastodon assigns `description || ''` on every
+// processing, so a document without one clears the stored one.
+function imageDescription(value: unknown): string {
+  const first: unknown = Array.isArray(value) ? value[0] : value;
+  return isObject(first) && first.type === "Image" ? storedProfileDescription(remoteDescription(first)) : "";
+}
+
+// A display setting (Mastodon 4.6's showFeatured, showMedia, showRepliesInMedia, read from the document's JSON by
+// spelling, process_account_service.rb:258-260) when the document holds a JSON boolean for it; else null, and the
+// stored value is kept, as Mastodon keeps it when the key is absent (docs/mastodon-deviations.md: it casts any other
+// value, and fails on null).
+function displaySetting(document: Record<string, unknown>, key: string): boolean | null {
+  const value = document[key];
+  return typeof value === "boolean" ? value : null;
+}
+
 // The keys of this actor (ID-1): its FEP-521a Multikeys (assertionMethod), then its legacy keys (publicKey), embedded
 // in its document, the first of each id kept, as Mastodon 4.7 orders them (ProcessAccountService#public_keys). A key
 // is the actor's only if its id has the actor's origin, it names no other owner (a legacy key's owner, a Multikey's
@@ -202,6 +224,7 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
   const sharedInboxUrl = httpUrl(actor.endpoints?.sharedInbox?.href ?? null)?.href ?? null;
   const options = { documentLoader: NO_FETCH, contextLoader: NO_FETCH };
   const images: Images = actor;
+  const json = isObject(document) ? document : {};
   return {
     uri: uri.href,
     claim,
@@ -212,6 +235,11 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     url: href(actor.url),
     avatarUrl: await imageUrl(() => images.getIcon(options)),
     headerUrl: await imageUrl(() => images.getImage(options)),
+    avatarDescription: imageDescription(json.icon),
+    headerDescription: imageDescription(json.image),
+    showFeatured: displaySetting(json, "showFeatured"),
+    showMedia: displaySetting(json, "showMedia"),
+    showRepliesInMedia: displaySetting(json, "showRepliesInMedia"),
     locked: actor.manuallyApprovesFollowers === true,
     discoverable: actor.discoverable,
     indexable: actor.indexable === true,

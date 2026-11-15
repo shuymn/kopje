@@ -179,6 +179,9 @@ const MASTODON_CONTEXT = [
     indexable: "toot:indexable",
     attributionDomains: { "@id": "toot:attributionDomains", "@type": "@id" },
     focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+    showFeatured: "toot:showFeatured",
+    showMedia: "toot:showMedia",
+    showRepliesInMedia: "toot:showRepliesInMedia",
   },
 ];
 
@@ -381,6 +384,11 @@ export function actorDefaults(): Omit<
     url: null,
     avatarUrl: null,
     headerUrl: null,
+    avatarDescription: "",
+    headerDescription: "",
+    showFeatured: null,
+    showMedia: null,
+    showRepliesInMedia: null,
     locked: false,
     discoverable: null,
     indexable: false,
