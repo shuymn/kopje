@@ -120,8 +120,8 @@ Commands
                                 extended_description, privacy_policy, terms_of_service,
                                 terms_of_service_effective_date (YYYY-MM-DD), show_domain_blocks and
                                 show_domain_blocks_rationale (disabled, users or all), trends,
-                                trendable_by_default and activity_api_enabled (true or false). They are data:
-                                set them after a cutover import, which refuses a Store that holds them
+                                trendable_by_default, activity_api_enabled and wrapstodon (true or false). They are
+                                data: set them after a cutover import, which refuses a Store that holds them
   instance <document> --file <path> [<name>=<value> ...]
                                 set a document (extended_description, privacy_policy or terms_of_service) to the HTML
                                 in <path>, with the other values in the same request, e.g. terms_of_service --file

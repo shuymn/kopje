@@ -4,6 +4,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db, type Savepoint } from "../src/db/sql";
+import { stampDeleteActivity } from "../src/domain/activities";
 import { PURGE_BATCH, receiveActivity, runInboundJobs } from "../src/domain/inbox";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { completeQuote } from "../src/domain/quote-verification";
@@ -24,12 +25,22 @@ import { syncCollections } from "../src/federation/collections";
 import { REQUEST_DEADLINE_MS } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";
 import { parseRemoteStatus } from "../src/federation/remote-status";
+import { handleQueue } from "../src/jobs/queue";
 import type { StoreStub } from "../src/platform/store-client";
 import { StoreUnavailableError } from "../src/platform/store-errors";
 import { RSA_ALGORITHM } from "../src/security/key-wrap";
 import { settle, sql } from "./api-helpers";
-import { inboxDeps, NOW } from "./app-helpers";
-import { mastodon47Signed, mastodonSigned, mastodonStampDelete } from "./author-proof-helpers";
+import { harness, inboxDeps, NOW } from "./app-helpers";
+import {
+  MASTODON_47_FORWARDED_CONTEXT,
+  MASTODON_FORWARDED_CONTEXTS,
+  mastodon47Signed,
+  mastodonForwarded,
+  mastodonSigned,
+  mastodonStampDelete,
+  signTime,
+} from "./author-proof-helpers";
+import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, deferred } from "./helpers";
 import {
   actorDefaults,
@@ -40,6 +51,7 @@ import {
   misskeyActor,
   MISSKEY_CONTEXT,
   type RemoteWeb,
+  signedInit,
   type TestActor,
 } from "./inbox-helpers";
 import {
@@ -72,6 +84,11 @@ import { rowsRead, watchedCursor } from "./read-helpers";
 
 const OTHER = "https://other.example";
 const RELAY = "https://relay.example";
+const THIRD = "https://third.example";
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+type Json = Record<string, unknown>;
 
 type QuoteRow = {
   quoted_uri: string | null;
@@ -1145,6 +1162,150 @@ describe("relayed revocations (ID-1’s exception)", () => {
     expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted" });
     expect(await t.post(dan, json)).toBe(202);
     expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "revoked" });
+  });
+
+  // carol's stamp Delete as a Mastodon holding the quoting status forwards it (Activity::Delete#revoke_quote): her
+  // body and signature, its @context replaced by the forwarder's full_context (author-proof.ts PROFILES).
+  const revocations = (t: Setup) => sql(t.store, "SELECT authorization, actor_uri FROM quote_revocations");
+  const retractions = (t: Setup, actor: TestActor) =>
+    sql(t.store, "SELECT target_uri FROM inbound_retractions WHERE actor_uri = ?", actor.uri);
+  type Pair = { stamp: string; quote: Note; target: Note };
+  const stampDelete = (carol: TestActor, { stamp, quote, target }: Pair) =>
+    mastodonStampDelete(carol, { uri: stamp, quoting: quote.id, quoted: target.id });
+  const SENDERS = [
+    ["Mastodon's", (carol: TestActor, pair: Pair) => mastodonSigned(stampDelete(carol, pair), carol)],
+    [
+      "Mastodon 4.7's with expires",
+      (carol: TestActor, pair: Pair) => mastodon47Signed(stampDelete(carol, pair), carol),
+    ],
+    ["Kopje's", (carol: TestActor, pair: Pair) => ldSigned(stampDeleteActivity(carol.uri, pair.stamp), carol)],
+  ] as const;
+
+  it.each(
+    MASTODON_FORWARDED_CONTEXTS.flatMap(([release, context]) =>
+      SENDERS.map(([name, sign]) => [name, release, context, sign] as const),
+    ),
+  )(
+    "applies a stamp's Delete as a Mastodon forwards it, its author's signature kept, with no fetch of the stamp: %s, under %s",
+    async (_name, _release, context, sign) => {
+      const { t, carol, dan, stamp, quote, target } = await relayWorld();
+      const body = mastodonForwarded(await sign(carol, { stamp, quote, target }), context);
+      const from = t.web.fetched.length;
+      expect(await loggedRefusals(() => t.post(dan, body))).toEqual({ status: 202, refused: [] });
+      await settle(t.store);
+      expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+      expect(await revocations(t)).toEqual([{ authorization: stamp, actor_uri: carol.uri }]);
+      expect(await retractions(t, carol)).toEqual([{ target_uri: stamp }]);
+      // The job rounds included: carol's document once, the stamp never.
+      expect(t.web.fetched.slice(from).filter((url) => url === carol.uri)).toHaveLength(1);
+      expect(t.web.fetched.slice(from)).not.toContain(stamp);
+      // Another server holding the quoting status forwards it too: one more author fetch, no row added.
+      const eve = await mastodonActor(t.web, "eve", { origin: THIRD, key: 7 });
+      expect(await t.post(eve, body)).toBe(202);
+      await settle(t.store);
+      expect(await revocations(t)).toEqual([{ authorization: stamp, actor_uri: carol.uri }]);
+      expect(await retractions(t, carol)).toEqual([{ target_uri: stamp }]);
+      expect(t.web.fetched.slice(from).filter((url) => url === carol.uri)).toHaveLength(2);
+      expect(t.web.fetched.slice(from)).not.toContain(stamp);
+    },
+  );
+
+  it.each([
+    [
+      "the object changed after signing",
+      async (carol: TestActor, _dan: TestActor, pair: Pair) => {
+        const signed = mastodonForwarded(
+          await mastodonSigned(stampDelete(carol, pair), carol),
+          MASTODON_47_FORWARDED_CONTEXT,
+        );
+        return { ...signed, object: { ...(signed.object as Json), interactingObject: `${pair.quote.id}0` } };
+      },
+    ],
+    [
+      "signed by the relayer's key under the author's key id",
+      async (carol: TestActor, dan: TestActor, pair: Pair) =>
+        mastodonForwarded(
+          await mastodonSigned(stampDelete(carol, pair), { ...carol, privateKey: dan.privateKey }),
+          MASTODON_47_FORWARDED_CONTEXT,
+        ),
+    ],
+    [
+      "a Mastodon 4.7 signature whose expires is earlier than the request",
+      async (carol: TestActor, _dan: TestActor, pair: Pair) =>
+        mastodonForwarded(
+          await mastodon47Signed(stampDelete(carol, pair), carol, {
+            created: signTime(NOW - 2 * DAY),
+            expires: signTime(NOW - 1000),
+          }),
+          MASTODON_47_FORWARDED_CONTEXT,
+        ),
+    ],
+    [
+      "the 4.7 context with a stamp term redefined",
+      async (carol: TestActor, _dan: TestActor, pair: Pair) => {
+        const context = [
+          ...MASTODON_47_FORWARDED_CONTEXT.slice(0, -1),
+          {
+            ...(MASTODON_47_FORWARDED_CONTEXT.at(-1) as Json),
+            interactingObject: { "@id": "as:object", "@type": "@id" },
+          },
+        ];
+        // Signed under that context, so that its signature verifies.
+        return mastodonSigned({ ...stampDelete(carol, pair), "@context": context }, carol);
+      },
+    ],
+  ])(
+    "drops a forwarded stamp Delete whose proof does not hold, the quote kept though its stamp is gone: %s",
+    async (_name, build) => {
+      const { t, carol, dan, stamp, quote, target } = await relayWorld();
+      // Gone: handed on unproven, the relay would have the quote verified again and revoked.
+      t.web.fail(stamp, 404);
+      const body = await build(carol, dan, { stamp, quote, target });
+      const from = t.web.fetched.length;
+      expect(await loggedRefusals(() => t.post(dan, body))).toEqual({
+        status: 202,
+        refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "proof-invalid" }]],
+      });
+      await settle(t.store);
+      expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+      expect(await revocations(t)).toEqual([]);
+      expect(await retractions(t, carol)).toEqual([]);
+      expect(t.web.fetched.slice(from)).not.toContain(stamp);
+    },
+  );
+
+  // OPS-1: carol's stamp Delete as Mastodon 4.7.5 forwards it, her signature expiring at NOW + 1 h, spooled by dan at
+  // `at` and replayed at NOW + 3 h.
+  it("judges a forwarded stamp Delete's expires at its spool time", async () => {
+    const replayed = async (at: number) => {
+      const { t, carol, dan, stamp, quote, target } = await relayWorld();
+      const signed = await mastodon47Signed(stampDelete(carol, { stamp, quote, target }), carol, {
+        expires: signTime(NOW + HOUR),
+      });
+      const maintenance = harness(
+        t.store,
+        { MAINTENANCE: "readonly" },
+        BUILD,
+        { keygen: fixtureKeyGen, loader: t.web.loader },
+        () => at,
+      );
+      const body = mastodonForwarded(signed, MASTODON_47_FORWARDED_CONTEXT);
+      const spooled = await maintenance.request("/inbox", await signedInit(dan, "/inbox", body, { at }));
+      expect(spooled.status).toBe(202);
+      expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+      const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW + 3 * HOUR };
+      const { refused } = await loggedRefusals(async () => {
+        await maintenance.queue.deliver((batch) => handleQueue(batch, { ...t.env, MAINTENANCE: "off" } as Env, deps));
+        return 202;
+      });
+      expect(maintenance.queue.pending).toEqual([]);
+      return { state: (await quoteOf(t, quote.id))?.state, refused };
+    };
+    expect(await replayed(NOW)).toEqual({ state: "revoked", refused: [] });
+    expect(await replayed(NOW + 2 * HOUR)).toEqual({
+      state: "accepted",
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "proof-invalid" }]],
+    });
   });
 });
 

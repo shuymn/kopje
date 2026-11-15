@@ -230,22 +230,24 @@ kopje-admin trends approve-link https://news.example/a --publisher  # or reject-
 kopje-admin trends approve-publisher news.example      # or reject-publisher: the domain and its subdomains
 kopje-admin instance trends=false                      # turn trends off (the lists answer [])
 kopje-admin instance activity_api_enabled=false        # turn the weekly activity off (it answers 404)
+kopje-admin instance wrapstodon=false                  # turn the annual reports campaign off
 ```
 
-| Name                                                 | Bound                                 | Shown by                                                 |
-| ---------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `title`                                              | 1,024 code points                     | `/api/v1/instance`, `/api/v2/instance`, `/about`         |
-| `description`                                        | 200 code points (Mastodon's limit)    | the same                                                 |
-| `contact_email`                                      | an email address, 254 UTF-8 bytes     | the same                                                 |
-| `contact_username`                                   | an account's address, 509 UTF-8 bytes | `contact_account` (v1), `contact.account` (v2)           |
-| `extended_description`                               | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/extended_description`, `/about`        |
-| `privacy_policy`                                     | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/privacy_policy`, `/privacy-policy`     |
-| `terms_of_service`                                   | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/terms_of_service`, `/terms-of-service` |
-| `terms_of_service_effective_date`                    | a date, `YYYY-MM-DD`                  | the same                                                 |
-| `show_domain_blocks`, `show_domain_blocks_rationale` | `disabled`, `users` or `all`          | `/api/v1/instance/domain_blocks`                         |
-| `trends`                                             | `true` (default) or `false`           | `/api/v1/trends/tags` and `/statuses` (off: `[]`)        |
-| `trendable_by_default`                               | `true` or `false` (default)           | the same: unreviewed hashtags and posts trend when true  |
-| `activity_api_enabled`                               | `true` (default) or `false`           | `/api/v1/instance/activity` (off: 404)                   |
+| Name                                                 | Bound                                 | Shown by                                                                        |
+| ---------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------- |
+| `title`                                              | 1,024 code points                     | `/api/v1/instance`, `/api/v2/instance`, `/about`                                |
+| `description`                                        | 200 code points (Mastodon's limit)    | the same                                                                        |
+| `contact_email`                                      | an email address, 254 UTF-8 bytes     | the same                                                                        |
+| `contact_username`                                   | an account's address, 509 UTF-8 bytes | `contact_account` (v1), `contact.account` (v2)                                  |
+| `extended_description`                               | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/extended_description`, `/about`                               |
+| `privacy_policy`                                     | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/privacy_policy`, `/privacy-policy`                            |
+| `terms_of_service`                                   | HTML, 50,000 UTF-8 bytes              | `/api/v1/instance/terms_of_service`, `/terms-of-service`                        |
+| `terms_of_service_effective_date`                    | a date, `YYYY-MM-DD`                  | the same                                                                        |
+| `show_domain_blocks`, `show_domain_blocks_rationale` | `disabled`, `users` or `all`          | `/api/v1/instance/domain_blocks`                                                |
+| `trends`                                             | `true` (default) or `false`           | `/api/v1/trends/tags` and `/statuses` (off: `[]`)                               |
+| `trendable_by_default`                               | `true` or `false` (default)           | the same: unreviewed hashtags and posts trend when true                         |
+| `activity_api_enabled`                               | `true` (default) or `false`           | `/api/v1/instance/activity` (off: 404)                                          |
+| `wrapstodon`                                         | `true` (default) or `false`           | `/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance` (off: no campaign) |
 
 - Values are trimmed of spaces, tabs, line feeds, vertical tabs, form feeds and carriage returns; a blank value is
   refused (send an empty value to remove one). The whole request is refused if any value is.

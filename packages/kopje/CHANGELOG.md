@@ -10,15 +10,26 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
-- Annual reports answer as Mastodon 4.7.5 with Wrapstodon off. `GET /api/v1/annual_reports/:id/state` answers
-  `{"state":"ineligible"}`, `POST /api/v1/annual_reports/:id/generate` answers `{}` and starts nothing, and
-  `/api/v2/instance` has `wrapstodon: null`. Kopje makes no annual report yet.
+- Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
+  year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
+  `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in
+  `wrapstodon`. An account whose year holds more than 200,000 statuses, 200,000 hashtag uses or 8 MiB of hashtag names,
+  or that has more than 200,000 followers, gets no report (`state` answers `ineligible`). The operator switches the
+  campaign off with `kopje-admin instance wrapstodon=false`. Reports have no share page
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), MD-9 and "Annual reports"). Migration
+  `0093_annual_reports`: an empty table, its index and two triggers on `instance_settings`, and it deletes a
+  `wrapstodon` setting row other than `true` or `false`; as it creates a table, the upgrade checks every reference of
+  the Store (7,003 ms for this file in one local run of the migration bench, at a load average of 3 to 10).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
+  `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
 
 ### Changed
 
@@ -65,6 +76,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
+  subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
+  before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
+  The instance actor is still no account to lookup, search, mentions or the public pages, and never takes the handle
+  of a local account whose username is the domain. No Store migration and no `wrangler.jsonc` change.
+- A local account whose username is the instance domain, in any case, is refused: the cutover's conversion stops on
+  it (`accounts:local-username-is-domain`) and verification fails on it, a Store import fails its verification, and
+  the configuration refuses such a domain. It would hold the instance actor's WebFinger handle.
 - `source.follow_requests_count` (`verify_credentials`, `update_credentials`) counts only requests from available
   accounts, at most 40, as Mastodon 4.5.21 does. It counted every pending request, those of suspended accounts
   included, without a limit, and read all of them. It counts among the newest 120 requests, as the first page of
@@ -85,6 +104,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A request signed with draft-cavage by a key that is not RSA (an Ed25519 key, which only RFC 9421 signatures use) is
   answered 401, as one whose signature does not verify. It failed with an error (500), a queued one was retried until
   dropped, and the cutover rollback's drain stopped at it.
+- A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
+  author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
+  `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

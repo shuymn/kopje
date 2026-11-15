@@ -190,32 +190,33 @@ against their own instance. TLS is assumed between all parties.
   `src/federation/actor-gone.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`, `test/quotes.test.ts`
   ("keeps a Move committed during a stale-author stage’s fetch"). A second exception: a `Delete`
   another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
-  quoting server forwarding the quoted author's revocation of a quote's stamp, as Mastodon forwards both). Its HTTP
-  signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that actor's
-  own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before
-  the Store is called, against a key the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an
-  `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request,
-  never from a cache, so a key the actor has since replaced proves nothing (no other key is ever loaded).
+  server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
+  Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
+  actor's own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the
+  Worker, before the Store is called, against a key the actor's current document embeds (a legacy key or, for an
+  FEP-8b32 proof, an `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew
+  in the request, never from a cache, so a key the actor has since replaced proves nothing (no other key is ever
+  loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
-  Mastodon's status and stamp `Delete` (the same bodies from 4.4 to 4.7, signed by `LinkedDataSignature#sign!`, which
-  writes `expires` from 4.7.0); Kopje's status and stamp `Delete`; Mastodon's and Kopje's status `Delete` as a
-  Mastodon 4.4 to 4.7 holding a boost or quote of the status forwards it; and a `Delete` Fedify 2.4.5 signs with an
-  FEP-8b32 proof (its default `Delete` context, the object an IRI, the body keys `@context`, `id`, `type`, `actor`,
-  `object`, `to` and `cc`, and a single `eddsa-jcs-2022` proof with exactly the keys Fedify's `createProof` writes, no
-  `expires`). An `mldsa44-jcs-2024` proof is in no profile: no sender of one writes it, and Fedify 2.4.5's verifier
-  does not include the suite; none is handed to a verifier. Mastodon forwards a body compacted under its `full_context`,
-  so a forwarded profile's `@context` is one release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`:
-  activitystreams and security/v1, then webfinger from 4.6, cid/v1 and webfinger from 4.7) and one object whose every
-  term is in `MASTODON_CONTEXT_TERMS` with a definition some release gave it: the union of `full_context` in
-  `app/helpers/context_helper.rb` at every release tag from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or
-  cid/v1 defines, is or aliases one the decision reads (cid/v1's scoped contexts apply only under keys and types a
-  profile body cannot have). A stamp's `Delete` has no forwarded profile yet (#1599): Mastodon 4.7.5 forwards it with
-  its author's signature, compacted under its `full_context`, and such a relay is dropped (202, logged), the quote
-  staying accepted. In a profile the `@context` is deep-equal to the sender's (or, forwarded, in that form), every URL
-  in it preloaded, and every key at every level is one the sender writes (`type` the string `Delete`, the object an IRI
-  or the sender's Tombstone or QuoteAuthorization, the signature or the single proof in the sender's shape, Mastodon's
-  signature with an optional `expires`, a string in the form `sign!` writes, a proof's own `@context` the body's), so
-  the body's JSON-LD meaning is its literal JSON:
+  Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
+  `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and
+  Kopje's status and stamp `Delete` as a Mastodon 4.4 to 4.7 holding a boost or quote of the status (for a stamp, of the
+  quoting status) forwards it; and a `Delete` Fedify 2.4.5 signs with an FEP-8b32 proof (its default `Delete` context,
+  the object an IRI, the body keys `@context`, `id`, `type`, `actor`, `object`, `to` and `cc`, and a single
+  `eddsa-jcs-2022` proof with exactly the keys Fedify's `createProof` writes, no `expires`). An `mldsa44-jcs-2024` proof
+  is in no profile: no sender of one writes it, and Fedify 2.4.5's verifier does not include the suite; none is handed
+  to a verifier. Mastodon forwards a body compacted under its `full_context`, so a forwarded profile's `@context` is one
+  release line's named contexts in order (`MASTODON_NAMED_CONTEXTS`: activitystreams and security/v1, then webfinger
+  from 4.6, cid/v1 and webfinger from 4.7) and one object whose every term is in `MASTODON_CONTEXT_TERMS` with a
+  definition some release gave it: the union of `full_context` in `app/helpers/context_helper.rb` at every release tag
+  from v4.4.0 to v4.7.5, none of whose terms, nor any webfinger or cid/v1 defines, is or aliases one the decision reads
+  (cid/v1's scoped contexts apply only under keys and types a profile body cannot have). A Mastodon before 4.5.10, whose
+  `full_context` lacks the stamp's terms, forwards Mastodon's stamp `Delete` without its signature
+  (`safe_for_forwarding?`): a relay without a proof. In a profile the `@context` is deep-equal to the sender's (or,
+  forwarded, in that form), every URL in it preloaded, and every key at every level is one the sender writes (`type` the
+  string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single proof
+  in the sender's shape, Mastodon's signature with an optional `expires`, a string in the form `sign!` writes, a proof's
+  own `@context` the body's), so the body's JSON-LD meaning is its literal JSON:
   no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
   between verification and parsing. Contexts are served from Fedify's preloaded set alone, for the verification and
   every parse. The proven `Delete` has exactly the literal id, one actor (the author) and one object (the literal
@@ -250,15 +251,21 @@ against their own instance. TLS is assumed between all parties.
   v4.7.5), Mastodon's Ruby compaction not run; Mastodon 4.7's `expires` hashed as `sign!` hashes it; a refusal for each
   profile check above that Fedify alone would pass (the named contexts out of order, missing or repeated, an `expires`
   not in `sign!`'s form or on Fedify's signature), and for the JSON-LD type, signature, proof and context confusion
-  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an FEP-8b32
-  proof with `expires`, which Fedify accepts, refused, and no verifier run for an `mldsa44-jcs-2024` proof; an `expires`
-  changed, added or removed after signing refused by Fedify and by Kopje; stamp `Delete`s in the forwarded form refused
-  under each release's context; no allowed term, nor any term webfinger or cid/v1 defines, that is or aliases a decision
-  term; no network fetch while verifying, and an actor document naming a context that is not preloaded refused; the
-  request's shared context cache is not observed by a test), `test/quotes.test.ts` ("relayed revocations (ID-1’s
-  exception)": Mastodon's stamp `Delete`, signed with or without `expires`, a missing proof, a forged signature, a proof
-  by another actor's key, a proof covering another object, a valid proof on another activity type, a signed graph with
-  no `Delete` type, a signed `Update` of the stamp read as a `Delete` through a nested signature), `test/inbox.test.ts`
+  cases; an `expires` earlier than the request refused before Fedify runs, one equal to it passing; an FEP-8b32 proof
+  with `expires`, which Fedify accepts, refused, and no verifier run for an `mldsa44-jcs-2024` proof; an `expires`
+  changed, added or removed after signing refused by Fedify and by Kopje; Mastodon's and Kopje's stamp `Delete`s in the
+  forwarded form passing under each release's context, and refused with a key added to the object or a `cc`, another
+  object type, the other sender's signature form or a redefined stamp term; no allowed term, nor any term webfinger or
+  cid/v1 defines, that is or aliases a decision term; no network fetch while verifying, and an actor document naming a
+  context that is not preloaded refused; the request's shared context cache is not observed by a test),
+  `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, signed with or without
+  `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a
+  valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a
+  `Delete` through a nested signature; a stamp `Delete` forwarded under each release's context revoking with no fetch of
+  the stamp, "applies a stamp's Delete as a Mastodon forwards it"; one whose proof does not hold dropped, the quote kept
+  although its stamp is gone, "drops a forwarded stamp Delete whose proof does not hold"; its `expires` judged at the
+  spool time, "judges a forwarded stamp Delete's expires at its spool time"), `test/forward-delete.test.ts` ("a stamp's
+  Delete forwarded by a Mastodon revokes the local quote and forwards the body as received"), `test/inbox.test.ts`
   ("records no retraction for input that fails ID-1", "judges a relayed author proof's expires against the spool time").
   Kopje's own stamp `Delete`s (VIS-28) and its `Delete`s of public or unlisted statuses (VIS-3) carry such a proof, an
   RsaSignature2017 signature by the author's `#main-key`, so a server relaying one can be believed.
@@ -276,9 +283,13 @@ against their own instance. TLS is assumed between all parties.
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
-  written", "an actor updates only itself"). _Enforced (main)_ for statuses, favourites and boosts: a remote object
-  must have its actor's origin and name no other author, and only its stored author updates or deletes it, so a local
-  status is never created, updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
+  written", "an actor updates only itself"). An actor document on the instance's origin, the instance actor's
+  included, is never stored as a remote account, even when another server's WebFinger names it, and search resolution
+  fetches nothing for an address or URL on the instance's domain (`upsertRemoteActor`, `resolutionTarget` in
+  `src/domain/remote-statuses.ts`); `test/instance-actor-handle.test.ts`. _Enforced (main)_ for statuses, favourites
+  and boosts: a remote object must have its actor's origin and name no other author, and only its stored author
+  updates or deletes it, so a local status is never created, updated or deleted from outside (`storeRemoteStatus` and
+  `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)").
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
@@ -293,8 +304,20 @@ against their own instance. TLS is assumed between all parties.
   (`test/inbox-actor-revision.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
-  no key pair. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently cased path",
-  "another host, an unknown user, and the request host"), `test/signed-fetch.test.ts` ("no key pairs for a spelling").
+  no key pair. The instance actor is served at `/actor` only, and WebFinger answers it for that URI and for its handle,
+  `acct:<domain>@<domain>` with the domain exactly as the username (`isInstanceHandle`); it has no `accounts` row, so
+  it is no account to lookup, search, mentions or the public pages. A local account keeps its own WebFinger identity:
+  no local username is the domain in any case (`localUsernameIsDomain` in `src/platform/identity-bounds.ts`, compared
+  as local usernames are looked up): the cutover's conversion and verification, the Store's import verification
+  (against the domain the Store keeps) and its configuration of the domain refuse one, and invitations and `/setup`
+  take only `LOCAL_USERNAME`, which has no `.`. A Store that holds one from before these refusals answers WebFinger for
+  that handle with the account (`mapHandle` asks for a local account first), and its instance actor then has no handle
+  answer, only its URI one. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently
+  cased path", "another host, an unknown user, and the request host", "by its handle, the domain at the domain", "no
+  other handle at the domain", "never answers its handle for a local account whose username is the domain"),
+  `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/instance-actor-handle.test.ts` ("names no account
+  in lookup, mentions or the public pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance
+  domain"), `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require
@@ -860,6 +883,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   first login with the bootstrap", "a failure at the first login's insert, after the registration is counted, rolls it
   back"); `test-node/activity-writers.test.ts` is the inventory of the writers of local statuses and accounts, so a new
   one needs a witness of its own.
+  An annual report's top status is a stored id: the presenter shows it, and the status, only when
+  `viewableStatusIds` admits it for the owner (R3), so one deleted or withdrawn since, or an imported row naming a
+  status the owner may not see, discloses nothing (R44). _Enforced (main):_ `src/domain/annual-reports.ts`;
+  `test/annual-reports.test.ts` ("presents the report as REST::AnnualReportSerializer, its top status only while the
+  owner may view it").
 - **VIS-13: a block cuts both ways, as Mastodon's does.** A local block ends the follows between the two accounts in
   both directions and in either state. A remote `Block` (one that passes ID-6) does what Mastodon's
   `ActivityPub::Activity::Block` does (`block.rb:14-16`): it ends the blocker's accepted follow with a `Reject` that
@@ -1533,6 +1561,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   records is the validated credential's client (a scheduled status's, taken when it was scheduled), never a field of the
   body (`postStatus` in `src/domain/scheduled-statuses.ts`; `test/statuses.test.ts` ("ignores an application or
   application_id the request sends")).
+  _Enforced (main)_ for annual reports: every read and change of `annual_reports` is the owner's (`annualReportOwnSql`,
+  R44, all in `src/domain/annual-reports.ts`, which `test-node/policy-boundary.test.ts` keeps alone in touching the
+  table), and `state` and `generate` read and write the caller's own year only, so another account's report answers as
+  one that does not exist; `test/annual-reports.test.ts` ("shows the owner's report of a year, read or not, and no one
+  else's", "marks the owner's report read at the Store's time, which the list then leaves out").
 - **AUTH-7: opaque credentials are unguessable and stored as digests.** Client ids and secrets, codes and access tokens
   are 32 random bytes. Codes and access tokens are stored and looked up only by their full SHA-256, at token info and
   introspection too, so a lookup reveals no prefix; a hit and a miss do not take the same time, and what keeps a token
@@ -2179,6 +2212,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   activities do not look up WebFinger, so an account first seen inbound shows its actor's host until it is resolved, and
   a renamed actor keeps its host until it is resolved again. `test/inbox-canonical-address.test.ts` ("the canonical
   address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
+  invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
+  by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
   `createRemoteLoaders` in `src/federation/federation.ts`, `src/federation/resolve.ts`; `test/inbox-statuses.test.ts`
   ("signed by the instance actor (NET-4)", "resolves a status URL as the instance actor", "answers 401 without a token
   and fetches nothing", "account search with resolve=true (NET-4, VIS-1)"), `test/inbox-statuses-edge.test.ts` ("NET-4:
@@ -2893,7 +2929,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/account-reads.test.ts` ("bounds the ids and the accounts shown"). _Enforced (main):_ follow suggestions answer
   at most 40 accounts (`SUGGESTIONS_KEPT`) within `ANSWER_BYTES` in both versions, v2's wrapper counted with each
   account (`src/domain/suggestions.ts`); `test/suggestions-bounds.test.ts` ("answers SUGGESTIONS_KEPT accounts at
-  their bounds"). _Enforced (main)_ for the profile fields
+  their bounds"). _Enforced (main)_ for annual reports: `GET /api/v1/annual_reports` lists at most
+  `REPORTS_LISTED` (40) pending reports, newest year first, each at most `REPORT_JSON_BYTES` (a name of
+  `TAG_NAME_JSON_BYTES`, counts of 16 digits, 18-digit ids), then the owner's account and the top statuses the owner may
+  view admitted whole within what `ANSWER_BYTES` leaves, with no continuation (`src/domain/annual-reports.ts`);
+  `test/annual-report-bounds.test.ts` ("presents a report at its bounds in REPORT_JSON_BYTES, and an answer of
+  REPORTS_LISTED of them within ANSWER_BYTES"), `test/annual-reports.test.ts` ("lists the owner's pending reports,
+  newest first, at most REPORTS_LISTED, with the owner's account"). _Enforced (main)_ for the profile fields
   of each presented account: a remote account's row carries at most 16 fields, each name and value cut, 32 KiB of
   JSON in all, chosen in SQL from the stored actor document; the presenter then shows only the leading fields whose
   sanitized names and values fit 32 KiB once serialized as JSON, dropping the rest whole. So one account answers at
@@ -4028,6 +4070,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reference by key, a quoting status's own quote row by key at its deletion's barrier, and the oldest retraction still
   staging of a pair by `outbound_activities_object`; 10,000 received and 10,000 withdrawn local quotes of the original
   add no read.
+  _Enforced (main)_ for annual reports (R44): `state` and `generate` for the campaign year without a report read the
+  owner's year through statements that pin `statuses_account`, `follows_target`, the primary key of `status_tags` and
+  the polls index (`INDEXED BY`, `CROSS JOIN`), each inner stage a `LIMIT` subquery and every residual outside it
+  (`src/domain/annual-reports.ts`). Four caps bound them, each counted raw to cap + 1 before the rest is read, in cost
+  order: `REPORT_YEAR_STATUSES` (200,000) rows of the owner's year range, boosts and withdrawn rows included;
+  `REPORT_FOLLOWERS` (200,000) accepted follows naming the owner; `REPORT_HASHTAG_USES` (200,000) tag rows of the
+  year's rows and `REPORT_HASHTAG_BYTES` (8 MiB) of their names. An account past one gets no report: `state` answers
+  `ineligible`, `generate` writes nothing, and `kopje.annual_reports.capped` is logged (the "Annual reports" entry of
+  `docs/mastodon-deviations.md`). Within the caps each statement reads at most its candidates times what each costs (an
+  index entry, a table row, a probe), so `state` reads at most 1,200,010 rows and `generate` 2,600,049, derived from the
+  caps; outside the campaign both read the setting and the report's key only, and once the owner's report exists the
+  report's key (and the setting, for `generate`), whatever the year holds. The top hashtag's grouping takes in at most
+  the tag rows and name bytes the cap counted in the same transaction, a bound enforced at run time; its ordering keeps
+  `REPORT_TAG_CANDIDATES` (32) groups, each a hex key of at most twice `TAG_NAME_BYTES` and a count, of which the first
+  name `listedTagName` admits is the report's. No memory ceiling is claimed for the grouping itself: its records'
+  layout and spill are SQLite's internals. `test/annual-report-bounds.test.ts` holds each statement to its derived
+  bound and to at least its slowest path on the all-caps witness (every input at its cap at once, every statement on
+  its slowest path, in three variants of the hashtag ranking), with statistics taken before the data grew and with
+  singleton statistics; it checks each plan, and that growing the keys around the owner's year leaves every read flat
+  and each cap passed alone stops the read there; `test/annual-reports.test.ts` ("at the cap the report is made, one
+  past it it is not, and the reason is logged", "leaves an existing report available past every cap, reading none of
+  the year"). The caps are the largest of 20,000, 50,000, 100,000 and 200,000 for which `state` and then `generate` on
+  that witness, every cap at its value, run within 1,000 ms together; measured with `test/bench/annual-report.bench.ts`
+  (three samples in a Store populated as the migration bench's: 1,000,000 accounts, 3,000,000 follows, 2,000,000
+  statuses with their hashtags; local workerd, a load average of 5 to 9), the medians are 123 ms for `state` and 431 ms
+  for `generate`, 554 ms together, reading 1,180,006 and 2,380,043 rows. These are measurements, not bounds; the
+  enforced bound is the rows-read ceiling. During the campaign an account without a report pays these reads on each
+  `state` call (accepted; Mastodon's are two `EXISTS` queries); they end once the report exists.
 
 #### Maxima of presented units (RES-3)
 
@@ -4697,9 +4767,10 @@ heap).
   snapshot rule; `maintenance-worker` refuses unless one KEK unwraps every local key and verifies against its public key
   (DATA-14), and every actor document publishes exactly its legacy public key, under `<actor>#main-key`, owned by that
   actor, at that actor's path, for every local actor. The snapshot holds no private key, no email and no instance
-  actor (its key does not exist before the import; `/actor` is 503). _Enforced (main):_
-  `src/maintenance-render.ts`, `cli/lib/cutover/maintenance.js`; `test/maintenance-worker.test.ts` ("serves byte for
-  byte what the Store serves after the import, keys included"), `test-node/cutover-maintenance.test.ts` ("refuses a
+  actor (its key does not exist before the import; `/actor` and its WebFinger by URI or handle are 503,
+  `src/maintenance.ts`). _Enforced (main):_ `src/maintenance-render.ts`, `cli/lib/cutover/maintenance.js`;
+  `test/maintenance-worker.test.ts` ("serves byte for byte what the Store serves after the import, keys included",
+  "answers anything it cannot tell exactly with 503"), `test-node/cutover-maintenance.test.ts` ("refuses a
   snapshot with …": another public key, key id, owner or actor at the path; "leaves a local actor out", mixed KEKs,
   another domain, "the snapshot is fresh when it is deployed": a profile changed or keys swapped make
   `maintenance-worker-check` say stale).

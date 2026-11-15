@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { getAccount, getAccounts, relationships } from "../src/domain/accounts";
 import {
+  annualReportCountedSql,
   availableLocalSql,
   availableSql,
   cardEligibleSql,
@@ -283,6 +284,21 @@ describe("the policy fragments agree with the model of their rules", () => {
   it("cardEligibleSql (R43, status cards)", () =>
     agree(pairs(`SELECT st.id AS x FROM statuses st WHERE ${cardEligibleSql("st.id")}`), (m) =>
       statuses(m.world).flatMap((s) => (m.cardEligible(s) ? [m.status(s).name] : [])),
+    ));
+
+  // Over every local owner, the statuses its report counts: the caller names the author, the fragment the rest.
+  it("annualReportCountedSql (R44, annual reports)", () =>
+    agree(
+      pairs(`SELECT l.account_id AS x, st.id AS y FROM local_accounts l CROSS JOIN statuses st
+				WHERE st.account_id = l.account_id AND ${annualReportCountedSql("st")}`),
+      (m) =>
+        accounts(m.world)
+          .filter((x) => m.world.accounts[x]?.local === true)
+          .flatMap((owner) =>
+            statuses(m.world).flatMap((s) =>
+              m.reportCounted(s, owner) ? [`${name(m.world, owner)} ${m.status(s).name}`] : [],
+            ),
+          ),
     ));
 
   it("listableSql (R8)", () => viewerStatusPairs(listableSql, (m, s, viewer) => m.listable(s, viewer), true));
