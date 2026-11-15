@@ -1248,10 +1248,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   existing tokens follow the current match, and the role's permissions are exactly the route groups Kopje serves. No
   admin action targets the admin's own account; a suspension fences the account's tokens; every admin write is logged;
   and the OAuth admin never holds A5 (AUTH-5). `ADMIN_PERMISSIONS` is 1080 (manage_reports, manage_users,
-  manage_federation, view_dashboard); every other admin route answers as Mastodon answers a role without the permission.
-  _Enforced (main):_ the match and the check: `oauthAdmin` and `adminAccountId` in `src/domain/admin-authority.ts`,
-  `adminReadOperation` and `adminWriteOperation` in `src/domain/auth.ts`, setup's admin in `src/domain/setup.ts`;
-  `test/admin-api.test.ts`, `test/setup-access.test.ts`. Reports (manage_reports): anyone but the OAuth admin is refused
+  manage_federation, view_dashboard); every other admin route answers the OAuth admin as Mastodon answers a role without
+  the permission. Every admin route is gated first, in Mastodon 4.7.5's order
+  (`Api::BaseController#require_not_suspended!`, then `Admin::PermissionsConcern`, then `authorize_if_got_token!`): a
+  held token of a suspended owner answers 403 `Your login is currently disabled` (AUTH-1); anyone else but the OAuth
+  admin (no token, a token the Store does not hold, an app token, another account's token whatever its scopes, expiry
+  or epoch) answers 403 `Forbidden` before the token's validity or scope, any lookup or any parameter is judged, so
+  such a caller learns only that the route exists;
+  then the OAuth admin's token must be valid and cover the route's scope (401, 403), and then come the route's lookups
+  (404), parameters (400, 422) and permission (403 `This action is not allowed`). A request without a token is answered
+  by the Worker with no Store call; every other answer passes the gate in the Store, in the admin operation's
+  transaction or, for an answer a handler gives before or without one (a parameter error, a route Kopje does not
+  serve), in its own read first. _Enforced (main):_ the match and the check: `oauthAdmin` and `adminAccountId` in
+  `src/domain/admin-authority.ts`, `adminGate`, `checkAdminCredential`, `adminReadOperation` and `adminWriteOperation`
+  in `src/domain/auth.ts`, the admin routes' access in `src/mastodon/access.ts`, `checkAdminCredential` and
+  `refuseAfterAuth` in `src/mastodon/context.ts`, setup's admin in `src/domain/setup.ts`; `test/admin-api.test.ts`
+  ("admin routes"), `test/mastodon-access.test.ts` ("gates exactly the routes Mastodon's Admin::PermissionsConcern
+  guards"), `test/setup-access.test.ts`. Reports (manage_reports): anyone but the OAuth admin is refused
   before a report is read, so not even its existence is disclosed; the admin sees every report with its accounts (local
   emails included) and only the statuses its reporter may still see (R37); every admin write, and every Access repair
   below, writes its moderation log row (`admin_actions`, actor, account and client or Access identity, newest 10,000
@@ -1316,11 +1329,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   parameters, refusals and log rows: `actOnAccount` in `src/domain/admin-accounts.ts`, `accountAction` in
   `src/mastodon/admin.ts`, `writeAccountWarning` in `src/domain/account-warnings.ts`; `test/admin-suspension.test.ts`
   ("account warnings"). Domain blocks and allows
-  (manage_federation): the block API of VIS-30; domain allows list none, and their create answers 403 to everyone. The
+  (manage_federation): the block API of VIS-30; domain allows list none, and their create answers 403. The
   measures (view_dashboard) are counts, never rows: each served key's walk is bounded (docs/visibility.md, the admin
   measures) and answers 422 beyond its bound, never an undercount, and the keys Kopje does not serve answer 422
-  (MD-2); dimensions and retention answer `[]`. Any other caller is refused (403) before the body is read, in
-  Mastodon 4.5.21's refusal order.
+  (MD-2); dimensions and retention answer `[]`. Any other caller is refused by the gate (403 `Forbidden`) before the
+  body is read, in Mastodon 4.7.5's refusal order.
   `src/domain/admin-domain-blocks.ts`, `src/domain/admin-measures.ts`; `test/admin-domain-blocks.test.ts`,
   `test/admin-measures.test.ts`, `test/admin-measures-keys.test.ts`, `test/admin-measures-bounds.test.ts`,
   `test/admin-domain-blocks-replay.test.ts`.
@@ -1514,11 +1527,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`
   (`src/domain/accounts.ts`); `test/placeholders.test.ts` (the donation and e-mail subscriptions cases, and "answers
   an expired or revoked token as no token on the feature-off routes"), and `test/mastodon-access.test.ts` (the two
-  routes' access exceptions). _Enforced (main):_ the admin API's routes are optional-token routes with admin scopes
-  (Mastodon's `authorize_if_got_token!`): a token sent must be valid and cover the route's scope, and who may act is
-  decided in the Store (VIS-29);
-  `test/mastodon-access.test.ts` compares them with Mastodon's, setting aside only each admin route's role policy, and
-  `test/admin-api.test.ts` ("admin routes").
+  routes' access exceptions). _Enforced (main):_ the admin API's routes are `admin` routes with admin scopes: no token
+  answers 403 `Forbidden` at the route, and a token sent passes the admin gate before it must be valid and cover the
+  route's scope (Mastodon's `Admin::PermissionsConcern`, then `authorize_if_got_token!`); who may act is decided in
+  the Store (VIS-29); `test/mastodon-access.test.ts` compares them with Mastodon's optional-token routes, setting aside
+  only each admin route's role policy, and checks that they are exactly the routes Mastodon guards with
+  `require_moderator_or_admin_permissions`, and `test/admin-api.test.ts` ("admin routes").
 - **AUTH-3: OAuth follows the supported contract.** _Enforced (main):_ `src/app/authorize.tsx`, `src/mastodon/oauth.ts`,
   `src/domain/oauth.ts`; `test/oauth.test.ts`, `test/vectors.test.ts`. - Grants: authorization code and client
   credentials. Codes expire after 10 minutes and are single-use. PKCE is optional and S256 only; a bound code needs the

@@ -212,7 +212,7 @@ describe("admin domain blocks", () => {
     ]);
   });
 
-  it("answer everyone but the OAuth admin 403, before reading any block", async () => {
+  it("answer everyone but the OAuth admin 403 Forbidden, before reading any block", async () => {
     const w = await world();
     const block = await created(w, { domain: "kept.example", severity: "noop" });
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
@@ -227,7 +227,7 @@ describe("admin domain blocks", () => {
       ] as const) {
         expect(await call(w, path, init, token)).toMatchObject({
           status: 403,
-          body: { error: "This action is not allowed" },
+          body: { error: "Forbidden" },
         });
       }
     }
@@ -367,19 +367,27 @@ describe("admin domain allows", () => {
     const allows = "/api/v1/admin/domain_allows";
     expect(await call(w, allows)).toMatchObject({ status: 200, body: [] });
     for (const token of [null, alice]) {
-      expect(await call(w, allows, {}, token)).toMatchObject({ status: 403 });
-    }
-    for (const token of [w.admin, alice, null]) {
+      expect(await call(w, allows, {}, token)).toMatchObject({ status: 403, body: { error: "Forbidden" } });
       expect(await call(w, allows, form({ domain: "a.example" }), token)).toMatchObject({
         status: 403,
-        body: { error: "This action is not allowed" },
+        body: { error: "Forbidden" },
       });
       for (const method of ["GET", "DELETE"]) {
         expect(await call(w, `${allows}/1`, { method }, token)).toMatchObject({
-          status: 404,
-          body: { error: "Record not found" },
+          status: 403,
+          body: { error: "Forbidden" },
         });
       }
+    }
+    expect(await call(w, allows, form({ domain: "a.example" }), w.admin)).toMatchObject({
+      status: 403,
+      body: { error: "This action is not allowed" },
+    });
+    for (const method of ["GET", "DELETE"]) {
+      expect(await call(w, `${allows}/1`, { method }, w.admin)).toMatchObject({
+        status: 404,
+        body: { error: "Record not found" },
+      });
     }
   });
 });

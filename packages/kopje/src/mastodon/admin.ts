@@ -44,7 +44,7 @@ import {
   type ApiDeps,
   type ApiHandler,
   authorized,
-  checkOptionalToken,
+  checkAdminCredential,
   optionalCredential,
   present,
   storeCall,
@@ -54,39 +54,42 @@ import { mastodonError, moderatingError, recordNotFound as notFound } from "./er
 import { Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 
-// The Mastodon admin API (/api/v1/admin/*, /api/v2/admin/*). Every route is Mastodon's authorize_if_got_token!: the
-// token is optional, a token sent must be valid and cover the route's admin scope, and an app token is let through.
-// Mastodon's Pundit policy then refuses any role without the route's permission bit, so anonymous callers, app tokens
-// and users who are not staff are answered 403 "This action is not allowed".
+// The Mastodon admin API (/api/v1/admin/*, /api/v2/admin/*). Every route is gated as Mastodon's admin controllers
+// are (VIS-29): require_not_suspended!, then Admin::PermissionsConcern refuses anyone but the OAuth admin with 403
+// "Forbidden", no token, an app token and a token that is not valid included (domain/auth.ts adminGate; the access
+// middleware answers a request without a token). Only then authorize_if_got_token! judges the OAuth admin's token
+// (401, the route's admin scope), then the route's lookups (404) and parameters (400, 422), and Mastodon's Pundit
+// policy refuses a role without the route's permission bit (403 "This action is not allowed"). Every answer a handler
+// gives before or without its admin operation passes the gate first (checkAdminCredential, refuseAfterAuth).
 //
 // Reports, accounts, domain blocks and allows, and the metrics (below) are served as admin operations
 // (adminReadOperation, domain/auth.ts), granting only ADMIN_PERMISSIONS to the OAuth admin. The other handlers are
-// routes Kopje does not serve: they answer as Mastodon does a role without the route's permission, the same to every
-// caller, so they check only the token (no admin check or further Store read). A route that finds its record before
-// authorizing (a before_action with find) answers 404 for a kind Kopje stores none of; one that authorizes first, or
-// whose records Kopje stores (accounts, reports, domain blocks, tags), answers 403.
+// routes Kopje does not serve: past the gate, they answer the OAuth admin as Mastodon does a role without the route's
+// permission, with no further Store read. A route that finds its record before authorizing (a before_action with find)
+// answers 404 for a kind Kopje stores none of; one that authorizes first, or whose records Kopje stores (accounts,
+// reports, domain blocks, tags), answers 403.
 
 const NOT_ALLOWED = "This action is not allowed";
 
-const afterToken =
+const afterGate =
   (answer: (c: ApiContext) => Response): ApiHandler =>
   async (c, deps) => {
-    await checkOptionalToken(c, deps);
+    await checkAdminCredential(c, deps);
     return answer(c);
   };
 
 // Mastodon's policy refusal for a role without the route's permission (ApplicationPolicy, Api::ErrorHandling's
 // Mastodon::NotPermittedError rescue).
-export const notAllowed = afterToken(() => mastodonError(403, NOT_ALLOWED));
+export const notAllowed = afterGate(() => mastodonError(403, NOT_ALLOWED));
 
 // A route whose before_action finds the record by id before the policy runs (set_domain_allow,
 // set_ip_block, set_email_domain_block, set_canonical_email_block): RecordNotFound, since Kopje stores no domain
 // allows, IP blocks, email domain blocks or canonical email blocks.
-export const recordNotFound = afterToken(notFound);
+export const recordNotFound = afterGate(notFound);
 
 // ---- Reports (Api::V1::Admin::ReportsController, app/controllers/api/v1/admin/reports_controller.rb;
-// domain/reports.ts). Mastodon's set_report precedes manage_reports policy (404/403 leaks existence). Kopje authorizes
-// the OAuth admin first (R37, VIS-29): others always get 403; an authorized lookup of a missing report returns 404.
+// domain/reports.ts). Mastodon's set_report precedes manage_reports policy, after the gate; Kopje's operation checks
+// the permission first (R37, VIS-29), and an authorized lookup of a missing report returns 404.
 
 const CURSOR = /^\d{1,19}$/;
 
@@ -354,13 +357,13 @@ function accountFilter(version: 1 | 2, p: Params): ParsedAccountFilter {
   };
 }
 
-// GET /api/v1/admin/accounts and /api/v2/admin/accounts. An unknown origin or status is answered 400 after the token
-// is checked and before the policy (set_accounts runs before index's authorize), so to every caller.
+// GET /api/v1/admin/accounts and /api/v2/admin/accounts. An unknown origin or status is answered 400 after the gate
+// and before the policy (set_accounts runs before index's authorize), so to the OAuth admin only.
 export function adminAccounts(version: 1 | 2): ApiHandler {
   return withParams(async (c, deps, p) => {
     const parsed = accountFilter(version, p);
     if ("error" in parsed) {
-      await checkOptionalToken(c, deps);
+      await checkAdminCredential(c, deps);
       return mastodonError(400, parsed.error);
     }
     const input = {
@@ -550,7 +553,7 @@ export const deleteDomainBlock: ApiHandler = async (c, deps) => {
 };
 
 // GET /api/v1/admin/domain_allows: no allow exists without limited federation mode, so the OAuth admin's list is
-// empty. Its :id answers 404 and its create 403, to everyone (recordNotFound, notAllowed).
+// empty. Its :id answers it 404 and its create 403 (recordNotFound, notAllowed).
 export const domainAllows: ApiHandler = async (c, deps) => {
   const input = { credential: optionalCredential(c, deps) };
   authorized(await storeCall(c, deps, (s, b) => s.adminFederationGranted(b, input)));
@@ -559,9 +562,10 @@ export const domainAllows: ApiHandler = async (c, deps) => {
 
 // ---- Metrics (Api::V1::Admin::{Measures,Dimensions,Retention}Controller; domain/admin-measures.ts), view_dashboard.
 
-// The refusal order of Mastodon 4.5.21's metrics: the optional token (authorize_if_got_token!), then any caller other
-// than the OAuth admin (require_moderator_or_admin_permissions, permissions_concern.rb:7,14), each before the body is
-// read (set_measures, set_retention). adminDashboardGranted makes both checks.
+// The refusal order of Mastodon 4.7.5's metrics: the admin gate (require_not_suspended!, then
+// require_moderator_or_admin_permissions, permissions_concern.rb), then the optional token (authorize_if_got_token!),
+// each before the body is read (set_measures, set_retention). adminDashboardGranted makes both checks, and checks
+// view_dashboard, which the OAuth admin holds.
 async function dashboardGranted(c: ApiContext, deps: ApiDeps): Promise<void> {
   const input = { credential: optionalCredential(c, deps) };
   authorized(await storeCall(c, deps, (s, b) => s.adminDashboardGranted(b, input)));
@@ -696,7 +700,7 @@ function presentMeasure(key: ServedMeasure, measure: MeasureValue) {
 
 // POST /api/v1/admin/measures (measures_controller.rb, Admin::Metrics::Measure.retrieve, measure.rb:21-26): one
 // measure per known key in `keys`, in order, repeats included; unknown keys are left out (filter_map). In Mastodon
-// 4.5.21's refusal order (dashboardParams), only the OAuth admin's body is read. Then, to the OAuth admin:
+// 4.7.5's refusal order (dashboardParams), only the OAuth admin's body is read. Then, to the OAuth admin:
 // - no `keys` answers 400 (params.require(:keys), measures_controller.rb:21): absent, blank, `[]` or `{}`;
 // - in retrieve's order, a key that reads its object without one answers 400 (params.require) and, at the first known
 //   key, a date that is none 422 (Date::Error, error_handling.rb:15-17);

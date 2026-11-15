@@ -82,10 +82,14 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the admin's, made by `/setup`, an account is made only by invitation: the first sign-in through Cloudflare Access of
   an email the Access admin invited ([setup.md](setup.md), "Adding accounts"; threat model AUTH-9). Accepted,
   2026-10-15; the invitation rule, 2026-10-27.
-- **MD-2: Admin operations withheld from Mastodon's API.** Domain allows, IP, email domain and canonical email blocks,
-  link publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
-  retention answer `[]` to the OAuth admin and 403 to everyone else, retention after its 400 for a missing `start_at` or
-  `end_at` and 422 for an invalid date, as Mastodon 4.5.21 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
+- **MD-2: Admin operations withheld from Mastodon's API.** Every admin route answers anyone but the OAuth admin 403
+  `Forbidden` first, after a suspended owner's 403, as Mastodon 4.7.5's `Admin::PermissionsConcern` does, before the
+  token's validity or scope, any lookup or the body is judged. A token of the OAuth admin that was revoked, or swept
+  once expired, is deleted, so it answers `Forbidden` where Mastodon, whose Doorkeeper 5.9.9 finds such a token's owner
+  until its vacuum, answers 401. To the OAuth admin, domain allows, IP, email domain and canonical email blocks, link
+  publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
+  retention answer `[]`, retention after its 400 for a missing `start_at` or `end_at` and 422 for an invalid date, as
+  Mastodon 4.7.5 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
   Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin reviews trends
   (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje
   keeps login days only for the instance activity, from the upgrade that added them and for today, the 184 days before
@@ -93,12 +97,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   measure takes any range), `interactions` (no count of replies, boosts, follows, votes and favourites by day survives
   their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's
   API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
-  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.5.21's 400 for
-  a missing `keys` or object and 422 for an invalid date come first. In Mastodon 4.5.21's refusal order, every other
-  caller is refused (403) before the body is read. Accepted, 2026-10-22. Kopje does not offer silencing or
-  memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships writes
-  no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
-  never sent. Accepted, 2026-11-15.
+  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.7.5's 400 for
+  a missing `keys` or object and 422 for an invalid date come first. Accepted, 2026-10-22. Kopje does not offer
+  silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
+  relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
+  notification's `event` are never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
   admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
