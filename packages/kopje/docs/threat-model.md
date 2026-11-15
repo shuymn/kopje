@@ -2866,6 +2866,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`verifiedLinksPastBoundSql`, `unverifiedLinksPastBoundSql`) refuses of the exact value written, never failing;
   `test/migrations.test.ts` ("0066_field_verification", "0076_field_link_checks"), `test/field-links.test.ts`
   ("records a value beside imported entries escaped up to the bound").
+  _Enforced (main)_ for attribution domains: `local_accounts.attribution_domains` keeps only its shape CHECK (migration
+  `0024_attribution_domains`), so a stored value may be any JSON array: an import, or a list an earlier writer accepted
+  with domains padded by characters IDNA ignores (100 of them pass `ATTRIBUTION_DOMAINS_BYTES`). Every reader
+  (CredentialAccount's `source`, the actor endpoint, the profile Update) reads it through `attributionDomainsSql`
+  (`'[]'` past `ATTRIBUTION_DOMAINS_BYTES`, 102,302 bytes) and presents it through `presentedAttributionDomains`, which
+  never throws: of the first 100 entries, the strings whose JSON is within `ATTRIBUTION_DOMAIN_BYTES` + 2 (1,022 bytes)
+  after decoding, at most `ATTRIBUTION_DOMAINS_JSON_MAX` (102,301 bytes) in all. What passes these bounds stays stored
+  and is hidden from the presentation; the writer refuses a domain past the same rule (`withinAttributionDomainBound` in
+  `src/platform/stored-bounds.ts`); `test/attribution-domains.test.ts`,
+  `test/accounts.test.ts` ("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES"), `test/actor-update.test.ts`
+  ("sends the same document as the endpoint for imported attribution domains past their bounds").
   _Enforced (main)_ for account moves: `accounts.moved_to_account_id` holds NULL or the 18-digit id of another
   account, on a remote row only; the triggers `accounts_moved_to_insert` and `accounts_moved_to_update` of migration
   `0060_account_moves` refuse any other value, imports included, judged by storage class, bytes, NUL, digits, then the
@@ -2996,11 +3007,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   profile URL (`url`, icon, image) over `PROFILE_URL_LIMIT` (2,048) is not stored, and an image (`avatar`, `header`) or
   its static shows only while its JSON is within `PROFILE_URL_LIMIT` bytes too, both defaults otherwise; the display
   name is cut at 2,048 code points, and a username over 255 is refused. Converted rows hold the same bounds (RES-2,
-  stored values), so `ACCOUNT_COLUMN_MAP` reads the bio, display name and URLs as stored and cuts the username at 255
-  code points; mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct`
-  and a fallback url from the cut username; the admin account search reads candidates' ids and flags only and tests
-  their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and refused at
-  the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
+  stored values), so `ACCOUNT_COLUMN_MAP` reads the bio and URLs as stored and cuts the username at 255 code points.
+  An import may still hold malformed UTF-8 that passes the display name's character cut and the bio's byte bound and
+  decodes past them (0xFF and any number of continuation bytes is one character to SQLite, and each byte decodes to a
+  U+FFFD of three bytes), so the display name is read through a cut of 8,192 stored bytes (`displayNameReadSql`, which
+  cuts no value a writer stores) and both are bounded again after decoding: the display name at 2,048 code points
+  (`presentedDisplayName`) and the bio `''` past 64 KiB of JSON (`presentedNote`), in every Account and in
+  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The local actor's `name` and `summary` read
+  both as stored (#1583). Mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and
+  derive `acct` and a fallback url from the cut username; the admin account search reads candidates' ids and flags only
+  and tests their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
+  refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the
   presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note or
@@ -3082,9 +3099,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   keeps a read-time projection (uris included) is read outside its helper in `src/domain` or a helper is given another
   column; its header states what it checks, where it fails closed, and its known gaps. It is an architectural aid; the
   aggregate response tests prove the budgets. Maxima of each presented shape: "Maxima of presented units" below
-  (`test/status-bounds.test.ts`). _Enforced (main)_ for announcements: the list holds at most 16 (every published one),
-  each within its derived conservative maximum of 248,997 JSON bytes ("Maxima of presented units"), admitted within
-  `ARRAY_ANSWER_BYTES` as a backstop that never cuts; the Access admin's page holds at most 50;
+  (`test/status-bounds.test.ts`; a notification's `fallback` within `FALLBACK_JSON_MAX`, derived by
+  `test/notification-fallback.test.ts`). _Enforced (main)_ for announcements: the list holds at most 16 (every
+  published one), each within its derived conservative maximum of 248,997 JSON bytes ("Maxima of presented units"),
+  admitted within `ARRAY_ANSWER_BYTES` as a backstop that never cuts; the Access admin's page holds at most 50;
   `test/announcement-bounds.test.ts`. _Enforced (main)_ for trends: `GET /api/v1/trends/tags` holds at most 20 hashtags
   (Count), `/statuses` at most 40 statuses within the answer budget, continued at the statuses it consumed (Budget,
   Offset), `/links` at most 20 links of at most 10,268 bytes each (205,381 a page); the Access admin's pages hold at
@@ -4182,7 +4200,12 @@ operation. No one fill holds a status's emoji arrays and its polls' at their bou
 choices need displace escaped characters), so the conservative JSON of a shape is the escaped fill's plus 12,286 bytes
 for each poll it shows, at least every fill's (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape
 within 85%, above every fill")); shares are of it. Each remote account of the fills carries its actor id (`uri`) at its
-bound, 2,048 bytes as JSON, the most it presents. A local account also shows `noindex` and `roles`, at most the Owner's
+bound, 2,048 bytes as JSON, the most it presents. An imported account whose display name and bio hold malformed UTF-8
+(0xFF and 1,048,575 continuation bytes, and 65,534 continuation bytes) is no fill, since a fill measures decoded values
+in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192 and 65,534
+bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of the row and
+that within the raw fill's, and presenting within the escaped fill's account occurrence (`test/status-bounds.test.ts`
+("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
@@ -4195,12 +4218,19 @@ escaped, raw and as malformed imported bytes (`test/status-bounds.test.ts` ("sta
 boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill; the boost's
 own row one too, which is not read), and each status a shape shows that may show one (not a boost, and not a quoted
 status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image
-URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). Through the real Store RPC, a public
-timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget, return 7.82 MB
-of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost of a quote above,
-alone or as the one status a lookup of it, the quote and the quoted status admits, returns within `ANSWER_BYTES` (8
-MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and the raw fill; the
-sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
+URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). The notification shapes are read
+with every fallback type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group
+counts its `fallback` at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two
+links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six, and the instance origin
+at a domain of 253 octets: the origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets
+and which a request reaches only as a DNS name of at most 253, so a Store configured earlier with a longer name
+receives no request for it). Through the real Store
+RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget,
+return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost
+of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns within
+`ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and
+the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements,
+not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
@@ -4212,9 +4242,9 @@ sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read
 | Conversation: 12 participants presented, its last status a quote | 8,510,724         | 7,070,504       | 7,122,857         | 2,001     | 7,867 | 84.9%          |
 | Notification group: 8 sample accounts, its status a quote        | 7,893,450         | 6,509,239       | 6,548,372         | 1,994     | 7,072 | 78.1%          |
 | Report: its first status a quote past the 2 MiB allowance        | 7,209,180         | 5,981,808       | 6,001,111         | 1,948     | 6,423 | 71.5%          |
-| An admin.report notification of that report                      | 2,361,286         | 403,264         | 409,874           | 1,068     | 518   | 4.9%           |
-| A moderation_warning notification, its local account at bounds   | 133,178           | 290,370         | 332,194           | 7         | 679   | 4.0%           |
-| Its notification group                                           | 133,178           | 290,559         | 332,383           | 7         | 686   | 4.0%           |
+| An admin.report notification of that report                      | 2,366,450         | 406,117         | 438,407           | 1,070     | 521   | 5.2%           |
+| A moderation_warning notification, its local account at bounds   | 133,178           | 290,594         | 360,727           | 7         | 682   | 4.3%           |
+| Its notification group                                           | 133,178           | 290,783         | 360,916           | 7         | 689   | 4.3%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,697,531         | 4,243,523       |                   | 1,337     | 3,169 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,299,611       |                   |           |       | 75.1%          |
@@ -4232,8 +4262,9 @@ four local fields at their limits, each value a verified 255-character link whos
 2,594 JSON bytes, and its `verified_links` padded to its 4,096-byte bound) beside a text at its 10,000-byte bound
 (U+0001, or malformed bytes read back as U+FFFD) and 100 status ids. Its conservative JSON counts each of the eight
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
-six-byte escape, and one link's markup per 9 characters). As a stream payload, encoded again as a string, it is at most
-332,952 bytes measured and 415,032 conservative (the encoding at most doubles a byte), under the hub's 512 KiB. The
+six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
+as a string, it is at most 332,952 bytes measured and 471,650 conservative (the encoding at most doubles a byte), under
+the hub's 512 KiB. The
 conversation's conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above the 4,096 bytes a change may not
 cross without a review (#1142). Every remote account shown but the account occurrence counts its fields at 33,485 JSON
 bytes, derived from the constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31

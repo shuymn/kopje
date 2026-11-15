@@ -7,12 +7,16 @@ import { boundedHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
+  attributionDomainsSql,
   cutCodePoints,
   isIsoTime,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  presentedAttributionDomains,
   presentedCountSql,
+  presentedDisplayName,
+  presentedNote,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteHtml } from "../security/html";
@@ -132,10 +136,7 @@ export type Field = { name: string; value: string; verified_at: string | null };
 // A local field as the owner wrote it (plain text), stored in local_accounts.fields.
 export type FieldSource = { name: string; value: string };
 
-export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
-
-// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
-export const MAX_ATTRIBUTION_DOMAINS = 100;
+export { MAX_ATTRIBUTION_DOMAINS, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
 
 // Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
 // name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
@@ -516,8 +517,8 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
     ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
-      display_name: row.display_name,
-      note: row.note,
+      display_name: presentedDisplayName(row.display_name),
+      note: presentedNote(row.note),
       emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
@@ -958,7 +959,8 @@ type CredentialRow = {
 export function credentialAccount(db: Db, accountId: string, present: Present): CredentialAccount | null {
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
-    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
+    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy,
+			${attributionDomainsSql("attribution_domains")} AS attribution_domains,
 			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
 					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
@@ -976,13 +978,13 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       privacy: local.default_visibility,
       sensitive: local.default_sensitive === 1,
       language: local.default_language,
-      note: htmlToPlainText(row.note),
+      note: htmlToPlainText(presentedNote(row.note)),
       fields: localFields(row),
       follow_requests_count: Math.min(local.follow_requests_count, FOLLOW_REQUESTS_COUNT),
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,
-      attribution_domains: JSON.parse(local.attribution_domains) as string[],
+      attribution_domains: presentedAttributionDomains(local.attribution_domains),
       quote_policy: local.default_quote_policy,
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.

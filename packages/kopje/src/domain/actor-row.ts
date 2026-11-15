@@ -1,7 +1,8 @@
-import { presentedLocalFieldsSql } from "../platform/stored-bounds";
+import { attributionDomainsSql, presentedLocalFieldsSql } from "../platform/stored-bounds";
 
 // A local actor's row as ACTOR_ROW_COLUMNS selects it, from accounts a and local_accounts l: what the actor endpoint
-// (actors.ts localActorOf) and the profile Update (actor-update.ts) render.
+// (actors.ts localActorOf) and the profile Update (actor-update.ts) render. attribution_domains is read within
+// ATTRIBUTION_DOMAINS_BYTES (attributionDomainsSql) and presented by presentedAttributionDomains.
 export type ActorRow = {
   uri: string;
   username: string;
@@ -24,4 +25,5 @@ export type ActorRow = {
 
 export const ACTOR_ROW_COLUMNS = `a.uri, a.username, a.actor_type, a.display_name, a.note, a.avatar_url, a.header_url,
 	a.locked, a.discoverable, a.indexable, l.also_known_as, ${presentedLocalFieldsSql("l.fields")} AS fields,
-	l.attribution_domains, l.suspended_at, l.pubkey, a.created_at, a.emojis`;
+	${attributionDomainsSql("l.attribution_domains")} AS attribution_domains, l.suspended_at, l.pubkey, a.created_at,
+	a.emojis`;
