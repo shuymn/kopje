@@ -20,6 +20,7 @@ import { checkPoll, isPollInput, type PollInput } from "./polls";
 import { type MediaAttachment, type MediaRow, presentMedia, type Status } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 import {
+  convertedPost,
   type CreateStatusInput,
   type CreateStatusResult,
   isPrepared,
@@ -31,6 +32,7 @@ import {
   postTargetsOf,
   preparePost,
   refusedPost,
+  TOO_LONG,
   writePost,
 } from "./statuses";
 import { ABOVE_EVERY_ID, BELOW_EVERY_ID, statusCursor } from "./windows";
@@ -310,9 +312,10 @@ export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: 
 // from the row's created_at) answers with what the first request made, a Status or a ScheduledStatus, and makes
 // nothing (so a key that reserved a scheduled status is never posted twice, once now and once when it is published).
 // An expired key is taken from the older rows, in this transaction, and posts anew.
-// Then no scheduled_at, or a time not in the future, posts at once; otherwise the post is checked as an immediate one
-// (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and kept with its
-// media held.
+// Then the pair as sent is held to the raw bound, and a blank text takes its warning (convertedPost), whether the post
+// is made now or scheduled. No scheduled_at, or a time not in the future, posts at once; otherwise the post is checked
+// as an immediate one (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and
+// kept with its media held.
 export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db, input, caller, viewer) => {
   const { accountId } = caller;
   // AUTH-6: the app of the credential, which the Worker cannot name.
@@ -341,12 +344,16 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
     }
     releaseKey(db, accountId, input.idempotencyKey);
   }
-  if (input.scheduledAt === undefined || Date.parse(input.scheduledAt) <= input.now) {
-    return postNow(db, viewer, input, applicationId);
+  const post = convertedPost(input);
+  if (post === null) {
+    return { status: "invalid", error: TOO_LONG };
   }
-  const scheduledAt = input.scheduledAt;
+  if (post.scheduledAt === undefined || Date.parse(post.scheduledAt) <= post.now) {
+    return postNow(db, viewer, post, applicationId);
+  }
+  const scheduledAt = post.scheduledAt;
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
-  const prepared = preparePost(db, accountId, { ...input, allowedMentions: undefined }, null);
+  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, input.present);
   }
@@ -356,7 +363,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   }
   const params = JSON.stringify(
     paramsOf(
-      input,
+      post,
       prepared.media,
       prepared.parent?.id ?? null,
       prepared.quoted?.id ?? null,

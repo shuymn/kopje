@@ -12,7 +12,7 @@ import {
   replaceBootstrapRows,
   settingsFromRows,
 } from "./access-settings";
-import { normalizeDomain } from "./domain-name";
+import { DNS_NAME_OCTETS, normalizeDomain } from "./domain-name";
 import { CatalogError, readCatalog } from "./dump-catalog";
 import {
   type DumpHeader,
@@ -1887,10 +1887,10 @@ function parseConfigValues(value: unknown): Record<string, string | null> | stri
     }
     if (name === "domain") {
       // Stored as /setup stores it, the canonical host (lowercase, IDNA to ASCII) that request hosts are compared
-      // with (WEB-1).
+      // with (WEB-1), within DNS's 253 octets as /setup bounds it.
       const domain = normalizeDomain(text);
-      if (domain === null) {
-        return "domain must be a domain name: no IP address, port, path or trailing dot";
+      if (domain === null || domain.length > DNS_NAME_OCTETS) {
+        return `domain must be a domain name of at most ${DNS_NAME_OCTETS} characters: no IP address, port, path or trailing dot`;
       }
       changes[name] = domain;
       continue;

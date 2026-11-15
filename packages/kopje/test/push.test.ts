@@ -101,6 +101,35 @@ describe("push subscription endpoints", () => {
     expect(await sql(h.store, "SELECT endpoint FROM push_subscriptions")).toEqual([{ endpoint: `${ENDPOINT}2` }]);
   });
 
+  it("keeps the collection alerts of Mastodon 4.6 on every write, and still drops an unknown one", async () => {
+    const h = await harness();
+    const { alice } = h.users;
+    const alerts = { "data[alerts][added_to_collection]": "true", "data[alerts][collection_update]": "false" };
+    const client = await newClient();
+    const created = await h.request(
+      PATH,
+      bearer(
+        alice.token,
+        form({
+          "subscription[endpoint]": ENDPOINT,
+          "subscription[keys][p256dh]": client.p256dh,
+          "subscription[keys][auth]": client.auth,
+          ...alerts,
+          "data[alerts][x]": "true",
+        }),
+      ),
+    );
+    const expected = { added_to_collection: true, collection_update: false };
+    expect((await created.json<Record<string, unknown>>()).alerts).toEqual(expected);
+    expect((await call(h, alice, "GET")).body.alerts).toEqual(expected);
+    for (const method of ["PUT", "PATCH"]) {
+      const flipped = { added_to_collection: method === "PATCH", collection_update: method === "PUT" };
+      const updated = await call(h, alice, method, { data: { alerts: { ...flipped, x: true } } });
+      expect(updated.body.alerts, method).toEqual(flipped);
+      expect((await call(h, alice, "GET")).body.alerts, method).toEqual(flipped);
+    }
+  });
+
   it("PUSH-1: another token, of another user or the same one, cannot read, change or delete a subscription", async () => {
     const h = await harness();
     const { alice, bob } = h.users;

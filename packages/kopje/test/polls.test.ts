@@ -59,6 +59,22 @@ async function polled(h: ApiHarness, user: User, poll: Record<string, unknown>, 
   return (await post(h, user, { status: "which?", poll, ...extra })) as PolledStatus;
 }
 
+// A completed, unattached upload of the user's, attachable for a day.
+async function upload(h: ApiHarness, user: User, n: number): Promise<string> {
+  const id = String(800000000000000000n + BigInt(n));
+  await sql(
+    h.store,
+    `INSERT INTO media_attachments (id, account_id, type, content_type, url, description, processed, gc_at)
+		VALUES (?, ?, 'image', 'image/png', ?, ?, 1, ?)`,
+    id,
+    user.id,
+    `https://kopje.test/media/${id}.png`,
+    `image ${n}`,
+    at(NOW + DAY),
+  );
+  return id;
+}
+
 async function voteOn(h: ApiHarness, user: User, pollId: string, choices: unknown[]) {
   return send(h, user, `/api/v1/polls/${pollId}/votes`, { choices });
 }
@@ -152,16 +168,40 @@ describe("posting a poll", () => {
     expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 2 }]);
   });
 
-  it("refuses media with a poll as Mastodon does, before anything else", async () => {
+  it("takes media with a poll, as Mastodon 4.6 does", async () => {
     const h = await community(["alice"]);
-    const response = await send(h, h.users.alice, "/api/v1/statuses", {
-      status: "x".repeat(600),
-      media_ids: ["1"],
-      poll: { options: ["a"] },
-    });
-    expect(await refusal(response)).toEqual({ status: 422, body: { error: "Cannot attach more than 4 files" } });
+    const media = await upload(h, h.users.alice, 1);
+    const status = await polled(h, h.users.alice, { options: ["a", "b"], expires_in: 600 }, { media_ids: [media] });
+    expect(status.media_attachments).toEqual([expect.objectContaining({ id: media, type: "image" })]);
+    expect(status.poll).toMatchObject({ options: [{ title: "a" }, { title: "b" }] });
+    expect(await sql(h.store, "SELECT status_id FROM media_attachments")).toEqual([{ status_id: status.id }]);
+    expect(await sql(h.store, "SELECT status_id FROM polls")).toEqual([{ status_id: status.id }]);
     // An empty poll object is no poll.
     expect((await post(h, h.users.alice, { status: "plain", poll: {} })).poll).toBeNull();
+  });
+
+  it("refuses more than four media ids with a poll before the text, as without one, writing nothing", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const own = await polled(h, alice, { options: ["a", "b"], expires_in: 600 });
+    const tooMany = {
+      status: "x".repeat(600),
+      media_ids: await Promise.all([1, 2, 3, 4, 5].map((n) => upload(h, alice, n))),
+      poll: { options: ["a"] },
+    };
+    for (const [path, method] of [
+      ["/api/v1/statuses", "POST"],
+      [`/api/v1/statuses/${own.id}`, "PUT"],
+    ] as const) {
+      expect(await refusal(await send(h, alice, path, tooMany, method)), method).toEqual({
+        status: 422,
+        body: { error: "Cannot attach more than 4 files" },
+      });
+    }
+    expect(await sql(h.store, "SELECT id, edited_at FROM statuses")).toEqual([{ id: own.id, edited_at: null }]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM media_attachments WHERE status_id IS NOT NULL")).toEqual([
+      { n: 0 },
+    ]);
   });
 });
 
@@ -483,16 +523,8 @@ describe("editing a status with a poll", () => {
       voted: false,
       own_votes: [],
     });
-    // No poll removes it; media and a poll together are refused.
+    // No poll removes it.
     expect((await edit({})).poll).toBeNull();
-    const refused = await send(
-      h,
-      alice,
-      `/api/v1/statuses/${status.id}`,
-      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 600 } },
-      "PUT",
-    );
-    expect(await refusal(refused)).toEqual({ status: 422, body: { error: "Cannot attach more than 4 files" } });
     // The history shows each version's choices.
     const history = (await getJson<{ poll: unknown }[]>(h, `/api/v1/statuses/${status.id}/history`, bob.token)).body;
     expect(history.map((entry) => entry.poll)).toEqual([
@@ -501,6 +533,89 @@ describe("editing a status with a poll", () => {
       { options: [{ title: "a" }, { title: "c" }] },
       null,
     ]);
+  });
+});
+
+describe("editing a status with media and a poll", () => {
+  it("adds media to a poll and a poll to media, each version keeping both in the history", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const [first, second] = [await upload(h, alice, 1), await upload(h, alice, 2)];
+    const poll = { options: ["a", "b"], expires_in: 600 };
+    const edit = async (id: string, body: Record<string, unknown>) => {
+      const response = await send(h, alice, `/api/v1/statuses/${id}`, { status: "which?", ...body }, "PUT");
+      expect(response.status, await response.clone().text()).toBe(200);
+      return await response.json<PolledStatus>();
+    };
+    const history = async (id: string) =>
+      (
+        await getJson<{ poll: unknown; media_attachments: { id: string }[] }[]>(
+          h,
+          `/api/v1/statuses/${id}/history`,
+          bob.token,
+        )
+      ).body.map((entry) => ({ media: entry.media_attachments.map((m) => m.id), poll: entry.poll }));
+    const choices = { options: [{ title: "a" }, { title: "b" }] };
+    // A poll, then media added.
+    const polledFirst = await polled(h, alice, poll);
+    const withMedia = await edit(polledFirst.id, { poll, media_ids: [first] });
+    expect(withMedia.media_attachments).toEqual([expect.objectContaining({ id: first })]);
+    expect(withMedia.poll).toMatchObject(choices);
+    expect(await history(polledFirst.id)).toEqual([
+      { media: [], poll: choices },
+      { media: [first], poll: choices },
+    ]);
+    // Media, then a poll added.
+    const mediaFirst = await post(h, alice, { status: "which?", media_ids: [second] });
+    const withPoll = await edit(mediaFirst.id, { poll, media_ids: [second] });
+    expect(withPoll.media_attachments).toEqual([expect.objectContaining({ id: second })]);
+    expect(withPoll.poll).toMatchObject(choices);
+    expect(await history(mediaFirst.id)).toEqual([
+      { media: [second], poll: null },
+      { media: [second], poll: choices },
+    ]);
+  });
+});
+
+describe("a local status with media and a poll over ActivityPub", () => {
+  it("is a Question with its attachments, sent on its Create and its Update and served", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await remoteFollows(h.store, await remoteAccount(h.store, "dave"), alice.id);
+    const [first, second] = [await upload(h, alice, 1), await upload(h, alice, 2)];
+    const status = await polled(h, alice, { options: ["a", "b"], expires_in: 600 }, { media_ids: [first] });
+    const document = (id: string, n: number) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `https://kopje.test/media/${id}.png`,
+      name: `image ${n}`,
+    });
+    const question = (media: string[], choices: string[]) => ({
+      type: "Question",
+      attachment: media.map((id, i) => document(id, i + 1)),
+      oneOf: choices.map((name) => ({ type: "Note", name, replies: { type: "Collection", totalItems: 0 } })),
+    });
+    const sent = async () =>
+      (await outbound(h.store)).map((o) => ({ type: o.activity.type, object: o.activity.object }));
+    expect(await sent()).toEqual([{ type: "Create", object: expect.objectContaining(question([first], ["a", "b"])) }]);
+    const edited = await send(
+      h,
+      alice,
+      `/api/v1/statuses/${status.id}`,
+      { status: "which?", media_ids: [first, second], poll: { options: ["a", "c"], expires_in: 600 } },
+      "PUT",
+    );
+    expect(edited.status).toBe(200);
+    // The Create still waiting carries the current version (deliveries.ts), as the Update does.
+    const current = expect.objectContaining(question([first, second], ["a", "c"]));
+    expect(await sent()).toEqual([
+      { type: "Create", object: current },
+      { type: "Update", object: current },
+    ]);
+    const served = await h.request(new URL(String(status.uri)).pathname, {
+      headers: { accept: "application/activity+json" },
+    });
+    expect(await served.json()).toMatchObject(question([first, second], ["a", "c"]));
   });
 });
 
