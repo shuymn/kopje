@@ -7,11 +7,13 @@ import { boundedHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
+  attributionDomainsSql,
   cutCodePoints,
   isIsoTime,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  presentedAttributionDomains,
   presentedCountSql,
   presentedDisplayName,
   presentedNote,
@@ -129,10 +131,7 @@ export type Field = { name: string; value: string; verified_at: string | null };
 // A local field as the owner wrote it (plain text), stored in local_accounts.fields.
 export type FieldSource = { name: string; value: string };
 
-export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
-
-// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
-export const MAX_ATTRIBUTION_DOMAINS = 100;
+export { MAX_ATTRIBUTION_DOMAINS, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
 
 export type Visibility = "public" | "unlisted" | "private" | "direct";
 
@@ -870,7 +869,8 @@ type CredentialRow = {
 export function credentialAccount(db: Db, accountId: string, present: Present): CredentialAccount | null {
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
-    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
+    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy,
+			${attributionDomainsSql("attribution_domains")} AS attribution_domains,
 			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
 					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
@@ -894,7 +894,7 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,
-      attribution_domains: JSON.parse(local.attribution_domains) as string[],
+      attribution_domains: presentedAttributionDomains(local.attribution_domains),
       quote_policy: local.default_quote_policy,
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.

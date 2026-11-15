@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
 import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
@@ -257,6 +258,29 @@ describe("credentials", () => {
       h.aliceId,
     );
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
+  });
+
+  it("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, unknown>) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
+    // Compliant hosts padded with U+00AD (two UTF-8 bytes), which IDNA drops: a.example and ab.example.
+    const over = `a${"\u00ad".repeat(506)}.example`;
+    const at = `ab${"\u00ad".repeat(505)}.example`;
+    expect([over, at].map((domain) => new TextEncoder().encode(domain).length)).toEqual([
+      ATTRIBUTION_DOMAIN_BYTES + 1,
+      ATTRIBUTION_DOMAIN_BYTES,
+    ]);
+    const refused = await patch({ attribution_domains: ["ok.example", over] });
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toEqual({
+      error: `Validation failed: Attribution domains ${over} is not a valid domain name`,
+    });
+    const accepted = await patch({ attribution_domains: ["ok.example", at] });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
+    const verified = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+    expect(await verified.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
   });
 
   it("refuses invalid values without changing anything", async () => {

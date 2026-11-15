@@ -236,6 +236,50 @@ export function presentedNote(stored: string): string {
   return ENCODER.encode(JSON.stringify(stored)).length <= BIO_JSON_BYTES ? stored : "";
 }
 
+// ---- Attribution domains (local_accounts.attribution_domains)
+
+// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
+export const MAX_ATTRIBUTION_DOMAINS = 100;
+// One domain as written, in UTF-8 bytes: a compliant host is shorter than 256 ASCII characters
+// (DomainValidator::MAX_DOMAIN_LENGTH), and each code point of the written form that IDNA keeps takes at least one of
+// them, so only a host padded with characters IDNA ignores (U+00AD) is longer (docs/mastodon-deviations.md).
+export const ATTRIBUTION_DOMAIN_BYTES = 4 * 255;
+// The most the writer's JSON array takes: each domain as a JSON string (no character a compliant domain holds is
+// escaped) and its comma, and the brackets.
+export const ATTRIBUTION_DOMAINS_BYTES = MAX_ATTRIBUTION_DOMAINS * (ATTRIBUTION_DOMAIN_BYTES + 3) + 2;
+// The most presentedAttributionDomains shows, as a JSON array: one comma fewer than ATTRIBUTION_DOMAINS_BYTES counts.
+export const ATTRIBUTION_DOMAINS_JSON_MAX = ATTRIBUTION_DOMAINS_BYTES - 1;
+
+// The column as read: '[]' past ATTRIBUTION_DOMAINS_BYTES stored bytes. Migration 0024's CHECK holds only its shape,
+// so an imported value may be of any size.
+export function attributionDomainsSql(column: string): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${ATTRIBUTION_DOMAINS_BYTES} THEN ${column} ELSE '[]' END`;
+}
+
+// The one rule a domain is written and presented by: its JSON string is at most ATTRIBUTION_DOMAIN_BYTES + 2 UTF-8
+// bytes, which for a decoded import also bounds what escaping and U+FFFD add.
+export function withinAttributionDomainBound(value: string): boolean {
+  return ENCODER.encode(JSON.stringify(value)).length <= ATTRIBUTION_DOMAIN_BYTES + 2;
+}
+
+// The domains as presented (CredentialAccount's source, the actor): of the stored array's first
+// MAX_ATTRIBUTION_DOMAINS entries, the strings that pass withinAttributionDomainBound, in order; none for anything
+// else. Never throws.
+export function presentedAttributionDomains(stored: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed
+    .slice(0, MAX_ATTRIBUTION_DOMAINS)
+    .filter((domain): domain is string => typeof domain === "string" && withinAttributionDomainBound(domain));
+}
+
 // ---- Migration 0048_stored_bounds and its triggers
 
 // A covered column: its projection P and, where P's value cannot be stored (a NOT NULL column), what is stored.

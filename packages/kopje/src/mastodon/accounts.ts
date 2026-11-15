@@ -16,6 +16,7 @@ import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { withinAttributionDomainBound } from "../platform/stored-bounds";
 import { grantsAny } from "../security/scopes";
 import {
   type ApiContext,
@@ -126,7 +127,9 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
   const attribution = p.list("attribution_domains");
   if (attribution !== undefined) {
     const domains = normalizeAttributionDomains(attribution);
-    for (const domain of domains.filter((d) => !compliantDomain(d))) {
+    // A domain past ATTRIBUTION_DOMAIN_BYTES (a host padded with characters IDNA ignores) is refused as not valid,
+    // so every stored domain is presented (presentedAttributionDomains; docs/mastodon-deviations.md).
+    for (const domain of domains.filter((d) => !compliantDomain(d) || !withinAttributionDomainBound(d))) {
       problems.push(`Attribution domains ${domain} is not a valid domain name`);
     }
     if (domains.length > MAX_ATTRIBUTION_DOMAINS) {
