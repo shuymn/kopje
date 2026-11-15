@@ -400,7 +400,9 @@ async function fetchAlternate(loaders: Resolving, href: string): Promise<object 
   }
   const record = document as { "@context"?: unknown; type?: unknown; id?: unknown };
   const context = record["@context"];
-  const supported = Array.isArray(context) ? context.includes(ACTIVITYSTREAMS) : context === ACTIVITYSTREAMS;
+  const supported = Array.isArray(context)
+    ? context.some((entry) => entry === ACTIVITYSTREAMS)
+    : context === ACTIVITYSTREAMS;
   return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href
     ? document
     : undefined;
