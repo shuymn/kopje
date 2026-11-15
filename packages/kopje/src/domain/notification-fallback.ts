@@ -26,6 +26,9 @@ export type NotificationFallback = { title: string; summary: string; description
 // The most JSON a fallback takes (RES-3): an admin.report's title naming two accounts by link_to_mention, each with its
 // href at PROFILE_URL_LIMIT and its username at USERNAME_LIMIT bytes, every byte at six (escapeHtml's `&quot;` or a
 // JSON escape), and the summary over the instance origin at its longest (https, a DNS name of DOMAIN_BYTES and a port).
+// The origin is the stored domain, as the API answers only on it (WEB-6): /setup (app/setup.tsx hostProblem) and the
+// configuration (platform/store-admin.ts parseConfigValues) store it within DNS's 253 octets, and a request reaches it
+// only as a DNS name, at most 253 octets, so a Store configured earlier with a longer name receives no request for it.
 // A moderation_warning's is under 1 KB. test/notification-fallback.test.ts derives it.
 export const FALLBACK_JSON_MAX = 28_521;
 

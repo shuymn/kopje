@@ -400,7 +400,9 @@ describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
     expect([...fallbackSet(many)]).toEqual([]);
   });
 
-  // The instance origin at its longest: https, a DNS name of DOMAIN_BYTES and a port.
+  // The instance origin at its longest: https, a DNS name of DOMAIN_BYTES and a port. The API answers only on the
+  // stored domain (WEB-6), which /setup and the configuration refuse past 253 octets (test/setup.test.ts "/setup step
+  // 1: the domain", test/ops-authority.test.ts "stores the domain as setup does").
   const LONG_ORIGIN = `https://${["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(".")}:65535`;
 
   it("derives FALLBACK_JSON_MAX, at or above every fill", async () => {

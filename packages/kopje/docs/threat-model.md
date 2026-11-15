@@ -4136,7 +4136,10 @@ status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`,
 URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). The notification shapes are read
 with every fallback type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group
 counts its `fallback` at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two
-links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six). Through the real Store
+links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six, and the instance origin
+at a domain of 253 octets: the origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets
+and which a request reaches only as a DNS name of at most 253, so a Store configured earlier with a longer name
+receives no request for it). Through the real Store
 RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget,
 return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost
 of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns within
