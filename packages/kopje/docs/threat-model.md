@@ -1312,7 +1312,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
-  resolution's `resolutionGate` and its `actorRevision` before the actor's fetch) comes with that answer and is spent
+  resolution's `resolutionGate` and its `actorState` before the actor's fetch) comes with that answer and is spent
   on that request alone; every other request, redirect hops and RFC 9421 retries included, reads it anew
   (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
@@ -2163,28 +2163,32 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the Store refuses writes (OPS-8). The Store decides the latter before any DNS check or fetch in one read after the
   host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
   hands over no signer or key; a write refused while resolving (the final store, or the instance key's creation) also
-  leaves the answer to the plain search (`resolveQuery` in `src/mastodon/search.ts`). An account's canonical address is
-  decided as Mastodon 4.7.5's `ActivityPub::ProcessAccountService#check_webfinger!` and `ResolveAccountService` decide
-  it: the actor's own host
-  declares it in the subject of its WebFinger answer for `acct:<preferredUsername>@<host>`; another domain there is a
-  candidate, which must answer for that subject with the same actor id; otherwise the address is on the host
-  (`declaredDomain` in `src/federation/resolve.ts`). Every domain from an address or a subject goes through one strict
-  parser (`normalizeDomain`): lowercase, punycode for an IDN, a hostname of two labels or more, and nothing else (no
-  port, userinfo, path, trailing dot or IP literal); a subject needs exactly one `@` and no empty part. Domains are
-  queried, compared and stored only in that form, so the domain stored is the one queried and confirmed. An address is
-  split into its parts before its domain is normalized, for resolution, exact account search and lookup, so a Unicode
-  and a punycode spelling find the same account. The fallback domain is the actor id's host as Mastodon takes it
-  (`Addressable::URI#normalized_host`: lowercase, punycode, without the port), also without a trailing dot
-  (`hostDomain` in `src/platform/domain-name.ts`); the id itself is kept whole for origin checks. Only an
-  authoritative answer (404 or 410, or another subject or actor) drops a confirmation: a transient failure (network,
-  timeout, 5xx, the fetch budget) keeps the stored address for that username. The confirmation is bound to its
-  (username, domain, actor id): `accounts.confirmed_username` holds the username it was made for, and an actor whose
-  `preferredUsername` changes falls back to its host until it is confirmed again. A search by an alias (any address
-  whose WebFinger names an existing actor) finds the account by its actor id and never sets or replaces its address. One
-  helper (`accountDomain` in `src/domain/remote-actors.ts`) decides the stored domain for every path. _Gap:_ inbound
-  activities do not look up WebFinger, so an account first seen inbound shows its actor's host until it is resolved, and
-  a renamed actor keeps its host until it is resolved again. `test/inbox-canonical-address.test.ts` ("the canonical
-  address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  leaves the answer to the plain search (`resolveQuery` in `src/mastodon/search.ts`). An account's handle is decided as
+  Mastodon 4.7.5's `ActivityPub::ProcessAccountService#check_webfinger!` decides it. The actor document claims one: its
+  FEP-2c59 `webfinger`, else its `preferredUsername` at the actor id's host (`claimedHandle` in
+  `src/federation/remote-actor.ts`). WebFinger confirms the claim before the Store takes it (`confirmHandle` in
+  `src/federation/resolve.ts`): the answer for `acct:<claim>`, fetched unsigned within the request's fetch budget and
+  deadline, must name the claim as its subject and the actor id as its `self` link; another subject is looked up once,
+  must answer with that subject and the same actor id, and is the handle confirmed. A claim or a subject on this
+  instance's domain is refused without a fetch. The `self` equalities and the second subject's equality are what keep
+  an actor from taking an address on a domain it does not control: that domain's WebFinger must name this actor. A
+  claim equal to the stored handle is not looked up again. The Store decides the handle for every path in one place
+  (`acceptedHandle` in `src/domain/remote-actors.ts`): a confirmed handle is taken; otherwise a stored account keeps its
+  handle and the rest of the document is stored; otherwise nothing is stored, and a confirmation that may pass later
+  (network, timeout, 5xx, the fetch budget) is answered as a document that may load later (503 from the inbox). One
+  remote account holds an address (the UNIQUE `accounts_domain_username`): a confirmed handle another account holds
+  invalidates that account's (`! <id>`, Mastodon's `invalidate_username!`), which keeps its rows and relationships and
+  is refreshed, at most once a day by an invalidation (`accounts.handle_refreshed_at`). Every domain from an address, a
+  claim or a subject goes through one strict parser (`normalizeDomain`): lowercase, punycode for an IDN, a hostname of
+  two labels or more, and nothing else (no port, userinfo, path, trailing dot or IP literal); a subject needs exactly
+  one `@` and no empty part. Domains are queried, compared and stored only in that form, so the domain stored is the
+  one confirmed. An address is split into its parts before its domain is normalized, for resolution, exact account
+  search and lookup, so a Unicode and a punycode spelling find the same account. The host a claim falls back to is the
+  actor id's host as Mastodon takes it (`Addressable::URI#normalized_host`: lowercase, punycode, without the port),
+  also without a trailing dot (`hostDomain` in `src/platform/domain-name.ts`); the id itself is kept whole for origin
+  checks. A search by an alias (any address whose WebFinger names an existing actor) finds the account by its actor id,
+  whose own claim decides its address. `test/inbox-handles.test.ts`, `test/inbox-canonical-address.test.ts` ("the
+  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
   Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
   invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
   by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
@@ -3237,11 +3241,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
-  resolution makes one more Store call (`actorRevision`) before each actor fetch, and fetches a URL's actor document a
-  second time after it (within the request's fetch budget of 8). Every revision read is one seek by `accounts`' uri
-  index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a refresh need's and a quote's
-  author stage's author, a search resolution's actor, and the comparison in the writing transaction
-  (`test/inbox-actor-revision.test.ts`, "the revision reads’ plans"). Delivery backlog and concurrency are bounded.
+  resolution makes one more Store call (`actorState`) before each actor fetch, and fetches a URL's actor document a
+  second time after it (within the request's fetch budget of 8). Confirming an actor's handle (NET-4) loads at most two
+  WebFinger answers, within the same budget, each after a policy read (`fetchRefused`), since a Store answer's verdict
+  is spent on its first fetch; a `Move` from a new actor to a new target, both confirming through a redirect, stays
+  within it and answers 503 (`test/inbox-handles.test.ts`, "the fetch budget"). A collection sync's document part, the
+  refresh of an invalidated account, reads at most three documents with the other parts' room for a redirect or a
+  retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every actor state read (revision and stored handle)
+  is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and `Move` target, a
+  refresh need's and a quote's author stage's author, a search resolution's actor, a sync's document part, and the
+  comparison in the writing transaction (`test/inbox-actor-revision.test.ts`, "the actor state reads’ plans").
+  Delivery backlog and concurrency are bounded.
   Anonymous app registration, inbox spooling and media transformations have rate or storage budgets with a visible
   refusal. Inbox spooling: _Enforced (main):_ the spool's budget (RES-4), refused with 503 (`createAdmission` in
   `src/federation/spool.ts`; `test/maintenance-worker.test.ts` ("in Kopje's own maintenance gate: the same budget,
