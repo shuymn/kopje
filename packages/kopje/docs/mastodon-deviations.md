@@ -569,7 +569,7 @@ Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campa
   any other Bearer token, an unknown one included, costs one Store call (`checkNotSuspended`) even when the limiter
   refuses it. Accepted, 2026-11-15.
 
-Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
+Remote interaction (`/authorize_interaction`, the subscribe template and the FEP-3b86 `Object` intent of WebFinger):
 
 - Mastodon signs a signed-out browser in on the GET, then resolves `uri` on the GET and redirects to its web client's
   page for the account or status. Kopje's GET fetches nothing: it shows a form prefilled with `uri` (or `acct`), and
@@ -579,8 +579,10 @@ Remote interaction (`/authorize_interaction`, the subscribe template of WebFinge
 - `uri` is used only when it is an http(s) URL or an address of at most 2,048 UTF-8 bytes; anything else leaves the
   form empty.
 - Following or opening a post from the viewer's own server (a profile's Follow, a status's "Open on your server"):
-  Mastodon's web client asks the named server, from the browser, for its interaction URL template (its WebFinger
-  `http://ostatus.org/schema/1.0/subscribe` link, falling back to `/authorize_interaction?uri={uri}`) and opens it.
+  Mastodon's web client asks the named server, from the browser, for its WebFinger answer (by handle, by URL, or
+  `https://<server>` for a server name) and opens the FEP-3b86 intent of the action (`Follow`, `Announce`, `Like`;
+  `Object` for a reply or a vote), else `Object`, else the subscribe template, else `/authorize_interaction?uri={uri}`
+  (Mastodon 4.6 and later).
   Kopje's pages work without script and fetch nothing: the dialog's form names the server to a handoff page here,
   which links to `https://<server>/authorize_interaction?uri=<uri>` and shows the handle or URL to paste into that
   server's search, for a server whose template is another path. The server is accepted only as a bounded DNS name.
@@ -597,10 +599,17 @@ WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `Webfing
   refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
 - Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
   type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
-  there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its
-  aliases are the actor id alone (Mastodon adds a local account's profile URL); asked for a URI, its subject is that
-  URI, where Mastodon's is always the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a
-  400, 404 or 410).
+  there) and the subscribe template and FEP-3b86's `Object` intent, both to `/authorize_interaction`. There is no
+  `Create` intent (Mastodon's `/share?text={content}`): Kopje has no web compose page, and posting happens in clients.
+  The links come in Fedify's order, `self`, `profile-page`, the avatar, the subscribe template, `Object`; Mastodon's is
+  `profile-page`, `self`, subscribe, `Create`, `Object`, the avatar. RFC 7033 makes order a preference only among
+  links of one `rel`, and each answer has one link of each. Asked for a handle, its aliases are the actor id alone
+  (Mastodon adds a local account's profile URL); asked for a URI, its subject is that URI, where Mastodon's is always
+  the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a 400, 404 or 410).
+- A resource that is the domain itself (`https://<domain>`, with or without a trailing `/`, `http://` or no scheme) has
+  no answer (404, or 400 without a scheme); Mastodon answers its instance actor, and its web client, given only a
+  server name, asks for `https://<domain>` and on a 404 opens `https://<domain>/authorize_interaction?uri={uri}`, which
+  is Kopje's page.
 
 Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
