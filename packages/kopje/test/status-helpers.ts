@@ -169,6 +169,34 @@ export async function act(h: ApiHarness, user: User, path: string, body: Record<
   return h.request(path, bearer(user.token, json(body)));
 }
 
+// `user` favourites, bookmarks and boosts the status `id`, each answered 200: its favourited, reblogged and
+// bookmarked are true for `user`.
+export async function interactWith(h: ApiHarness, user: User, id: string): Promise<void> {
+  for (const action of ["favourite", "bookmark", "reblog"]) {
+    const response = await act(h, user, `/api/v1/statuses/${id}/${action}`);
+    if (response.status !== 200) {
+      throw new Error(`${action} failed: ${response.status} ${await response.text()}`);
+    }
+  }
+}
+
+// A `status` notification of `recipientId` from `senderId` naming `statusId`, written straight into the Store: Kopje's
+// writers notify about originals, so one naming a boost is import-shaped.
+export async function importedNotification(
+  store: StoreStub,
+  recipientId: string,
+  senderId: string,
+  statusId: string,
+): Promise<void> {
+  await sql(
+    store,
+    "INSERT INTO notifications (account_id, type, from_account_id, status_id) VALUES (?, 'status', ?, ?)",
+    recipientId,
+    senderId,
+    statusId,
+  );
+}
+
 export async function follow(h: ApiHarness, user: User, targetId: string): Promise<void> {
   const response = await act(h, user, `/api/v1/accounts/${targetId}/follow`);
   if (response.status !== 200) {

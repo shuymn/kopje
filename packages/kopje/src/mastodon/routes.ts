@@ -53,7 +53,7 @@ const put = route("PUT");
 const del = route("DELETE");
 
 export const ROUTES: readonly Route[] = [
-  post("/api/v1/apps", "public", oauth.registerApp),
+  post("/api/v1/apps", "anonymous", oauth.registerApp),
   get("/api/v1/apps/verify_credentials", "token", oauth.verifyApp),
   post("/oauth/token", "public", oauth.tokenHandler),
   post("/oauth/revoke", "public", oauth.revokeHandler),
@@ -64,11 +64,14 @@ export const ROUTES: readonly Route[] = [
   post("/oauth/userinfo", { scope: "profile" }, oauth.userinfo),
   get("/.well-known/oauth-authorization-server", "public", oauth.authorizationServerMetadata),
 
+  // Mastodon's instance controllers read a user only in limited federation mode (their current_user override), which
+  // Kopje does not have: the instance details here and the rules, peers and extended description below read no token
+  // (AUTH-2).
   get("/api/v1/instance", "public", instance.instanceV1),
   get("/api/v2/instance", "public", instance.instanceV2),
-  get("/api/v1/custom_emojis", "public", instance.customEmojis),
-  // Api::OEmbedController: no token is read.
-  get("/api/oembed", "public", oembed.oembed),
+  get("/api/v1/custom_emojis", "anonymous", instance.customEmojis),
+  // Api::OEmbedController: no token is required.
+  get("/api/oembed", "anonymous", oembed.oembed),
 
   // Reads clients make at startup (instance details, preferences, tags, familiar followers), and the empty answers of
   // features Kopje has no data for yet (mastodon/placeholders.ts). Kept before the accounts routes, so
@@ -76,13 +79,13 @@ export const ROUTES: readonly Route[] = [
   get("/api/v1/instance/rules", "public", instance.rules),
   get("/api/v1/instance/peers", "public", instance.peers),
   get("/api/v1/instance/extended_description", "public", instance.extendedDescription),
-  get("/api/v1/instance/languages", "public", instance.languages),
-  get("/api/v1/instance/privacy_policy", "public", instance.privacyPolicy),
-  get("/api/v1/instance/terms_of_service", "public", instance.termsOfService),
-  get("/api/v1/instance/terms_of_service/:date", "public", instance.termsOfService),
-  get("/api/v1/instance/translation_languages", "public", instance.translationLanguages),
-  get("/api/v1/peers/search", "public", instance.searchPeers),
-  get("/api/v1/instance/activity", "public", instance.activity),
+  get("/api/v1/instance/languages", "anonymous", instance.languages),
+  get("/api/v1/instance/privacy_policy", "anonymous", instance.privacyPolicy),
+  get("/api/v1/instance/terms_of_service", "anonymous", instance.termsOfService),
+  get("/api/v1/instance/terms_of_service/:date", "anonymous", instance.termsOfService),
+  get("/api/v1/instance/translation_languages", "anonymous", instance.translationLanguages),
+  get("/api/v1/peers/search", "anonymous", instance.searchPeers),
+  get("/api/v1/instance/activity", "anonymous", instance.activity),
   // A token is read: a suspended user's is refused, and show_domain_blocks may list to users only.
   get("/api/v1/instance/domain_blocks", { optional: true }, instance.domainBlocks),
   get("/api/v1/preferences", { scope: "read:accounts" }, accounts.preferences),
@@ -98,7 +101,7 @@ export const ROUTES: readonly Route[] = [
   get("/api/v1/featured_tags", { scope: "read:accounts" }, tags.featuredTags),
   post("/api/v1/featured_tags", { scope: "write:accounts" }, tags.createFeaturedTag),
   del("/api/v1/featured_tags/:id", { scope: "write:accounts" }, tags.deleteFeaturedTag),
-  get("/api/v1/accounts/:id/featured_tags", "public", tags.accountFeaturedTags),
+  get("/api/v1/accounts/:id/featured_tags", "anonymous", tags.accountFeaturedTags),
   // The profile directory: optional token, no scope (Api::V1::DirectoriesController).
   get("/api/v1/directory", { optional: true }, accounts.directory),
   get("/api/v1/endorsements", { scope: "read:accounts" }, accounts.endorsements),
@@ -148,12 +151,12 @@ export const ROUTES: readonly Route[] = [
   patch("/api/v1/accounts/update_credentials", { scope: "write:accounts" }, accounts.updateCredentials),
   get("/api/v1/accounts/relationships", { scope: "read:follows" }, accounts.relationships),
   get("/api/v1/accounts/search", { scope: "read:accounts" }, accounts.searchAccounts),
-  get("/api/v1/accounts/lookup", "public", accounts.lookupAccount),
+  get("/api/v1/accounts/lookup", "anonymous", accounts.lookupAccount),
   // Accounts by id, as /api/v1/accounts/:id shows them; registration answers as Mastodon's with registrations closed
   // (any token here: the handler checks write:accounts, then that the token has no user).
-  get("/api/v1/accounts", "public", accounts.getAccounts),
+  get("/api/v1/accounts", "anonymous", accounts.getAccounts),
   post("/api/v1/accounts", "token", accounts.register),
-  get("/api/v1/accounts/:id", "public", accounts.getAccount),
+  get("/api/v1/accounts/:id", "anonymous", accounts.getAccount),
   post("/api/v1/accounts/:id/follow", { scope: "write:follows" }, accounts.follow),
   post("/api/v1/accounts/:id/unfollow", { scope: "write:follows" }, accounts.unfollow),
   get("/api/v1/accounts/:id/followers", { scope: "read:accounts", optional: true }, accounts.followers),

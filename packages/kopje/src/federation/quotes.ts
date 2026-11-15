@@ -33,9 +33,10 @@ import { fetchRemoteStatus, idOf } from "./remote-status";
 // recipient of the quoting status, or a local follower of its author) or else the instance actor's (DATA-7). The Store
 // keeps what each stage completed and decides in one transaction; every failure of a stage is charged (a budget or
 // deadline that ran out included), so a stage that never fits a budget is given up after the last attempt, except a
-// stale stored author's refetch, whose fallback to the stored account is uncharged (domain/remote-actors.ts
-// applyRefresh). The stamp's embedded objects are never trusted: only their ids are read. Nothing of this instance's
-// origin is fetched.
+// stale stored author's refetch, whose fallback to the stored account charges no attempt (domain/remote-actors.ts
+// applyRefresh). Every author document a work applies is counted apart, and an author stage with none left
+// (domain/quotes.ts QUOTE_AUTHOR_FETCHES) fetches nothing and ends the work. The stamp's embedded objects are never
+// trusted: only their ids are read. Nothing of this instance's origin is fetched.
 
 // A round's claim must outlast the round (domain/quotes.ts QUOTE_LEASE_MS): twice its worst case of fetching.
 const QUOTE_ROUND_WORST_MS = QUOTE_ROUND * QUOTE_STAGES * REQUEST_DEADLINE_MS;

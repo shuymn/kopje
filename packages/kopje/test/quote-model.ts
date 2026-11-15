@@ -44,7 +44,7 @@ export type PeerNote = {
   policy: { automatic: string[]; manual: string[] } | null;
 };
 
-export type AnswerRef = { id: string | null; type: string | null; object: string | null; instrument: string | null };
+export type AnswerRef = { id: string | null; type: string | null; object: string | null };
 
 // What R's server (or, in the policy-only property, another remote actor) sends Kopje, as the Worker hands it to the
 // Store. personal: delivered to L's personal inbox (the Store's recipient).
@@ -883,25 +883,23 @@ export class QuotePolicy {
     return { applied: true, reason: "quote-accepted" };
   }
 
-  // The answer an Accept or Reject names: our request by its id, or an inlined QuoteRequest whose instrument is our
-  // quoting status and whose object is the actor's status; only of a quoting status not withdrawn (G4), and only from
-  // the quoted author (ID-6), whose quote a detach has not cleared (G4).
+  // The answer an Accept or Reject names: our request by its id, as a string or an inlined QuoteRequest's (Mastodon
+  // 4.7's quote_request_from_object; an inlined one under another id names nothing); only of a quoting status not
+  // withdrawn (G4), and only from the quoted author (ID-6), whose quote a detach has not cleared (G4).
   private answeredQuote(actor: string, ref: AnswerRef): string | undefined {
     const who = this.who(actor);
-    const ours = [...this.quotes].filter(([label, q]) => {
+    return [...this.quotes].find(([label, q]) => {
       const s = this.statuses.get(label);
       return (
-        s !== undefined && !s.withdrawn && q.local && q.quoted !== null && this.statuses.get(q.quoted)?.author === who
+        s !== undefined &&
+        !s.withdrawn &&
+        q.local &&
+        q.quoted !== null &&
+        this.statuses.get(q.quoted)?.author === who &&
+        ref.id !== null &&
+        ref.id === q.activityUri
       );
-    });
-    const byId = ours.find(([, q]) => ref.id !== null && ref.id === q.activityUri);
-    if (byId !== undefined || ref.type !== "QuoteRequest") {
-      return byId?.[0];
-    }
-    return ours.find(
-      ([label, q]) =>
-        ref.instrument === this.statuses.get(label)!.uri && ref.object === this.statuses.get(q.quoted!)?.uri,
-    )?.[0];
+    })?.[0];
   }
 
   private originOf(uri: string | null): string | null {
@@ -1341,7 +1339,7 @@ export class QuotePeer {
     const allowed = sr.policy === "public" || (sr.policy === "followers" && this.follows.lr);
     const inline = body.instrument as Record<string, unknown> | string;
     const instrument = typeof inline === "string" ? inline : (inline.id as string);
-    const ref: AnswerRef = { id: request, type: "QuoteRequest", object, instrument };
+    const ref: AnswerRef = { id: request, type: "QuoteRequest", object };
     if (!allowed) {
       // :55-65 an unsaved Quote; reject_quote_request_serializer.rb:8-10 names it by an empty quote id.
       const msg = this.send({ type: "Reject", id: `${this.rUri}#rejects/quote_requests/`, ref }, true);

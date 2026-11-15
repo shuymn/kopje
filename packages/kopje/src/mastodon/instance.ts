@@ -5,6 +5,7 @@ import {
   type ApiContext,
   type ApiHandler,
   authorized,
+  judged,
   optionalTokenCredential,
   present,
   storeCall,
@@ -145,8 +146,10 @@ export const instanceV2: ApiHandler = async (c, deps) => {
 
 // GET /api/v1/custom_emojis: the enabled local emoji shown in the picker (domain/local-emojis.ts customEmojis), to
 // anyone, as Mastodon's CustomEmojisController#index.
-export const customEmojis: ApiHandler = async (c, deps) =>
-  c.json(await storeCall(c, deps, (s, b) => s.customEmojis(b)));
+export const customEmojis: ApiHandler = async (c, deps) => {
+  const credential = optionalTokenCredential(c, deps);
+  return c.json(judged(c, await storeCall(c, deps, (s, b) => s.customEmojis(b, { credential }))).value);
+};
 
 // The rest of /api/v1/instance/*, the endpoints clients read at startup and on an instance's about page.
 
@@ -235,7 +238,11 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
 const ACTIVITY_CACHE = "public, max-age=300, stale-while-revalidate=30, stale-if-error=86400";
 
 export const activity: ApiHandler = async (c, deps) => {
-  const body = await storeCall(c, deps, (s, b) => s.instanceActivity(b, { now: deps.now() }));
+  const credential = optionalTokenCredential(c, deps);
+  const body = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.instanceActivity(b, { now: deps.now(), credential })),
+  ).value;
   return body === null
     ? new Response(null, { status: 404 })
     : c.body(body, 200, { "content-type": "application/json", "cache-control": ACTIVITY_CACHE });

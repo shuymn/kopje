@@ -3,7 +3,8 @@
 // its verification apply. The triggers of 0048_stored_bounds refuse what is not a fixed point of P
 // (domain/stored-triggers.ts), and reads take the columns of STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
 // output, as SQLite stores it, is a fixed point of the column's P, and P(P(x)) = P(x) for any stored string
-// (test/stored-bounds.test.ts).
+// (test/stored-bounds.test.ts). An account's display name and note, which malformed UTF-8 can pass P with, are read
+// and presented through their own bounds ("Account text as presented").
 //
 // Text writers replace a lone surrogate with U+FFFD and remove U+0000 (storedText), then cut by code points, as
 // SQLite's substr and length count them. JSON-bounded columns (bio, content, content warning, source text) keep the
@@ -61,6 +62,11 @@ export function jsonBoundSql(column: string, bytes: number, over: string): strin
 // at most six JSON bytes (a control character escaped, or a malformed byte decoded to U+FFFD: three).
 export function byteCut(column: string, bytes: number): string {
   return `CAST(substr(CAST(${column} AS BLOB), 1, ${bytes}) AS TEXT)`;
+}
+
+// byteCut of a NOT NULL column: substr of an empty BLOB is NULL, read as ''.
+export function textCut(column: string, bytes: number): string {
+  return `coalesce(${byteCut(column, bytes)}, '')`;
 }
 
 // A NULL past `bytes` UTF-8 bytes.
@@ -201,6 +207,78 @@ export function storedMediaUrl(url: string): string {
 // media_attachments.meta as stored: none past MEDIA_META_BYTES.
 export function storedMediaMeta(meta: string | null): string | null {
   return withinBytes(meta, MEDIA_META_BYTES);
+}
+
+// ---- Account text as presented (RES-3)
+
+// An imported display name or note may hold malformed UTF-8 that passes displayNameSql's and noteSql's character
+// and byte counts and decodes past them: 0xFF and any number of continuation bytes is one character to SQLite, and
+// each byte decodes to a U+FFFD of three UTF-8 bytes. The read cuts the display name by its stored bytes, and the
+// presenters bound both again after decoding, as the moved-to account's text is bounded (account-columns.ts).
+
+// The stored bytes a display name is read with: DISPLAY_NAME_LIMIT code points of at most four bytes, so a writer's
+// value (storedDisplayName) is never cut.
+export const DISPLAY_NAME_READ_BYTES = 4 * DISPLAY_NAME_LIMIT;
+
+// accounts.display_name as an Account or the local actor reads it: its first DISPLAY_NAME_READ_BYTES stored bytes,
+// SQL octet_length of the projected value.
+export function displayNameReadSql(column: string): string {
+  return textCut(column, DISPLAY_NAME_READ_BYTES);
+}
+
+// A display name as presented: its first DISPLAY_NAME_LIMIT code points after decoding (each at most six JSON bytes).
+export function presentedDisplayName(stored: string): string {
+  return cutCodePoints(stored, DISPLAY_NAME_LIMIT);
+}
+
+// A note as presented: noteSql's rule after decoding, '' when its JSON string passes BIO_JSON_BYTES. For well-formed
+// text JSON.stringify and json_quote write the same bytes, so no note a writer stored changes.
+export function presentedNote(stored: string): string {
+  return ENCODER.encode(JSON.stringify(stored)).length <= BIO_JSON_BYTES ? stored : "";
+}
+
+// ---- Attribution domains (local_accounts.attribution_domains)
+
+// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
+export const MAX_ATTRIBUTION_DOMAINS = 100;
+// One domain as written, in UTF-8 bytes: a compliant host is shorter than 256 ASCII characters
+// (DomainValidator::MAX_DOMAIN_LENGTH), and each code point of the written form that IDNA keeps takes at least one of
+// them, so only a host padded with characters IDNA ignores (U+00AD) is longer (docs/mastodon-deviations.md).
+export const ATTRIBUTION_DOMAIN_BYTES = 4 * 255;
+// The most the writer's JSON array takes: each domain as a JSON string (no character a compliant domain holds is
+// escaped) and its comma, and the brackets.
+export const ATTRIBUTION_DOMAINS_BYTES = MAX_ATTRIBUTION_DOMAINS * (ATTRIBUTION_DOMAIN_BYTES + 3) + 2;
+// The most presentedAttributionDomains shows, as a JSON array: one comma fewer than ATTRIBUTION_DOMAINS_BYTES counts.
+export const ATTRIBUTION_DOMAINS_JSON_MAX = ATTRIBUTION_DOMAINS_BYTES - 1;
+
+// The column as read: '[]' past ATTRIBUTION_DOMAINS_BYTES stored bytes. Migration 0024's CHECK holds only its shape,
+// so an imported value may be of any size.
+export function attributionDomainsSql(column: string): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${ATTRIBUTION_DOMAINS_BYTES} THEN ${column} ELSE '[]' END`;
+}
+
+// The one rule a domain is written and presented by: its JSON string is at most ATTRIBUTION_DOMAIN_BYTES + 2 UTF-8
+// bytes, which for a decoded import also bounds what escaping and U+FFFD add.
+export function withinAttributionDomainBound(value: string): boolean {
+  return ENCODER.encode(JSON.stringify(value)).length <= ATTRIBUTION_DOMAIN_BYTES + 2;
+}
+
+// The domains as presented (CredentialAccount's source, the actor): of the stored array's first
+// MAX_ATTRIBUTION_DOMAINS entries, the strings that pass withinAttributionDomainBound, in order; none for anything
+// else. Never throws.
+export function presentedAttributionDomains(stored: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed
+    .slice(0, MAX_ATTRIBUTION_DOMAINS)
+    .filter((domain): domain is string => typeof domain === "string" && withinAttributionDomainBound(domain));
 }
 
 // ---- Migration 0048_stored_bounds and its triggers

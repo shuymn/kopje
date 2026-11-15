@@ -74,7 +74,7 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
-import { contexts, QUOTE_CONTEXT, quoting, serveStamp } from "./quote-helpers";
+import { contexts, QUOTE_CONTEXT, quoting, serveFeatured, serveStamp } from "./quote-helpers";
 import { rowsRead, watchedCursor } from "./read-helpers";
 
 // Quotes received from remote servers (Mastodon 4.5's Quote, StatusParser's quote properties, VerifyQuoteService and the
@@ -502,97 +502,266 @@ describe("durable work on every ingestion path", () => {
   });
 });
 
-describe("promotion: a status cached as a quoted target verifies its quote when it arrives as a root", () => {
-  // carol's status quotes dan's (both on the other server, with a valid stamp), and is first stored only as the
-  // target of bob's quote two levels down, with no work of its own. Each root path then promotes it.
-  async function cached() {
-    const { t, bob, carol } = await world();
-    const dan = await mastodonActor(t.web, "dan", { origin: OTHER, key: 4 });
-    const deep = mastodonNote(dan);
-    t.web.serve(deep.id, { "@context": AS, ...deep });
-    const middle = quoting(carol, deep.id, null);
-    const stamp = stampUri(dan);
-    middle.quoteAuthorization = stamp;
-    serveStamp(t.web, stamp, dan, middle.id, deep.id);
-    t.web.serve(middle.id, { "@context": AS, ...middle });
-    // bob's quote of middle, stored as a target with one hop: its own quote gets hops 1 and is verified too. Make it
-    // hops 0 to stand for a status two levels down.
-    const top = quoting(bob, middle.id, null);
-    expect(await t.post(bob, create(bob, top))).toBe(202);
-    await sql(
-      t.store,
-      "UPDATE quotes SET state = 'pending', hops = 0, verify_after = NULL WHERE status_id = (SELECT id FROM statuses WHERE uri = ?)",
-      middle.id,
-    );
-    await sql(t.store, "UPDATE statuses SET quotes_count = 0 WHERE uri = ?", deep.id);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "pending", hops: 0, verify_after: null });
-    return { t, bob, carol, middle, deep };
-  }
+describe("gives or renews a quote budget only from outside paths", () => {
+  // A status's quote is given its budget when the status is stored (recordQuote) and renewed when a stored one arrives
+  // again (promoteQuote): QUOTE_HOPS for a delivered activity or a user's request, nothing from a collection sync,
+  // which stores the synced account's own statuses only (RES-6). Each row of a path that renews is against a quote
+  // pending at 0 hops with no work; each row of a path that gives is a new status's quote.
 
-  it("on a delivered Create of the known status", async () => {
-    const { t, carol, middle } = await cached();
-    await followed(t, carol);
-    expect(await t.post(carol, create(carol, middle))).toBe(202);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
-  });
+  type Paths = Awaited<ReturnType<typeof world>>;
 
-  it("on a boost of the cached original", async () => {
-    const { t, middle } = await cached();
-    const erin = await mastodonActor(t.web, "erin", { key: 3 });
-    await followed(t, erin);
-    expect(await t.post(erin, announce(erin, middle.id))).toBe(202);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
-  });
-
-  it("on an Add of the cached status to its author’s featured collection", async () => {
-    const { t, carol, middle } = await cached();
-    await followed(t, carol);
-    const add = {
-      "@context": AS,
-      id: `${carol.uri}#add-${nextId()}`,
-      type: "Add",
-      actor: carol.uri,
-      target: `${carol.uri}/collections/featured`,
-      object: middle.id,
-    };
-    expect(await t.post(carol, add)).toBe(202);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
-  });
-
-  it("on a sync of its author’s featured collection that lists the cached status", async () => {
-    const { t, carol, middle } = await cached();
-    await followed(t, carol);
-    t.web.serve(`${carol.uri}/collections/featured`, {
-      "@context": AS,
-      id: `${carol.uri}/collections/featured`,
-      type: "OrderedCollection",
-      orderedItems: [middle.id],
-    });
-    const deps = inboxDeps(() => t.store, t.web.loader);
+  // Job rounds' collection syncs until none waits, through `loader`.
+  async function syncs(t: Setup, loader = t.web.loader) {
+    const deps = inboxDeps(() => t.store, loader);
     for (let round = 0; round < 5 && (await syncCollections(t.env, deps)); round++) {
       // Another phase waits.
     }
-    expect(await sql(t.store, "SELECT count(*) AS n FROM status_pins")).toEqual([{ n: 1 }]);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ verify_after: NOW, hops: QUOTE_HOPS });
-    await rounds(t, NOW);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted" });
+    expect(await sql(t.store, "SELECT count(*) AS n FROM collection_syncs")).toEqual([{ n: 0 }]);
+  }
+
+  function add(actor: TestActor, object: string) {
+    return {
+      "@context": AS,
+      id: `${actor.uri}#add-${nextId()}`,
+      type: "Add",
+      actor: actor.uri,
+      target: `${actor.uri}/collections/featured`,
+      object,
+    };
+  }
+
+  function search(t: Setup, uri: string) {
+    return t.api<{ statuses: { uri: string }[] }>(
+      `/api/v2/search?q=${encodeURIComponent(uri)}&resolve=true&type=statuses`,
+    );
+  }
+
+  // carol's status quotes dan's (both on the other server, with a valid stamp); cache() stores it only as the target of
+  // bob's quote, its own quote then pending at 0 hops with no work, as a status two levels down has.
+  async function quotedTarget() {
+    const paths = await world();
+    const { t, bob, carol } = paths;
+    const dan = await mastodonActor(t.web, "dan", { origin: OTHER, key: 4 });
+    const deep = mastodonNote(dan);
+    t.web.serve(deep.id, { "@context": AS, ...deep });
+    const stamp = stampUri(dan);
+    const middle = quoting(carol, deep.id, stamp);
+    serveStamp(t.web, stamp, dan, middle.id, deep.id);
+    t.web.serve(middle.id, { "@context": AS, ...middle });
+    const cache = async () => {
+      expect(await t.post(bob, create(bob, quoting(bob, middle.id, null)))).toBe(202);
+      await sql(
+        t.store,
+        "UPDATE quotes SET state = 'pending', hops = 0, verify_after = NULL WHERE status_id = (SELECT id FROM statuses WHERE uri = ?)",
+        middle.id,
+      );
+      await sql(t.store, "UPDATE statuses SET quotes_count = 0 WHERE uri = ?", deep.id);
+      expect(await quoteOf(t, middle.id)).toMatchObject({ state: "pending", hops: 0, verify_after: null });
+      t.web.fetched.length = 0;
+    };
+    return { ...paths, middle, stamp, cache };
+  }
+
+  const renewals: [string, boolean, (target: Awaited<ReturnType<typeof quotedTarget>>) => Promise<void>][] = [
+    [
+      "a delivered Create of it",
+      true,
+      async ({ t, carol, middle, cache }) => {
+        await cache();
+        await followed(t, carol);
+        expect(await t.postOnly(carol, create(carol, middle))).toBe(202);
+      },
+    ],
+    [
+      "an Update of it naming no newer version",
+      true,
+      async ({ t, carol, middle, cache }) => {
+        await cache();
+        const activity = { ...update(carol, middle, "2026-10-11T13:00:00Z"), object: middle };
+        expect(await t.postOnly(carol, activity)).toBe(202);
+      },
+    ],
+    [
+      "an Update of it to a newer version",
+      true,
+      async ({ t, carol, middle, cache }) => {
+        await cache();
+        expect(await t.postOnly(carol, update(carol, middle, "2026-10-11T13:00:00Z"))).toBe(202);
+      },
+    ],
+    [
+      "a boost of it",
+      true,
+      async ({ t, middle, cache }) => {
+        await cache();
+        const erin = await mastodonActor(t.web, "erin", { key: 3 });
+        await followed(t, erin);
+        expect(await t.postOnly(erin, announce(erin, middle.id))).toBe(202);
+      },
+    ],
+    [
+      "an Add of it to its author’s featured collection",
+      true,
+      async ({ t, carol, middle, cache }) => {
+        await cache();
+        expect(await t.postOnly(carol, add(carol, middle.id))).toBe(202);
+      },
+    ],
+    [
+      "a search resolving it through the fetched answer",
+      true,
+      async ({ t, middle, cache }) => {
+        await cache();
+        expect((await search(t, middle.id)).body.statuses.map((status) => status.uri)).toEqual([middle.id]);
+      },
+    ],
+    [
+      "a search resolving it as stored (nothing fetched)",
+      true,
+      async ({ t, middle, cache }) => {
+        await cache();
+        t.web.fail(middle.id, 404);
+        expect((await search(t, middle.id)).body.statuses.map((status) => status.uri)).toEqual([middle.id]);
+      },
+    ],
+    [
+      "a sync of its author’s featured collection listing it",
+      false,
+      async ({ t, carol, middle, cache }) => {
+        await cache();
+        await followed(t, carol);
+        serveFeatured(t.web, carol, [middle.id]);
+        await syncs(t);
+        expect(await sql(t.store, "SELECT count(*) AS n FROM status_pins")).toEqual([{ n: 1 }]);
+      },
+    ],
+    [
+      "a sync storing it as a pin after another path stored it",
+      false,
+      async ({ t, carol, middle, cache }) => {
+        // The sync lists it while Kopje does not have it; the quote round stores it while the sync fetches it.
+        await followed(t, carol);
+        serveFeatured(t.web, carol, [middle.id]);
+        let cached = false;
+        const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (new Request(input, init).url === middle.id && !cached) {
+            cached = true;
+            await cache();
+          }
+          return t.web.fetch(input, init);
+        }) as typeof globalThis.fetch;
+        await syncs(t, { ...t.web.loader, fetch });
+        expect(cached).toBe(true);
+        expect(await sql(t.store, "SELECT count(*) AS n FROM status_pins")).toEqual([{ n: 1 }]);
+      },
+    ],
+  ];
+
+  it.each(renewals)("a held status’s quote, on %s: renewed %s", async (_name, outside, arrive) => {
+    const target = await quotedTarget();
+    const { t, middle, stamp } = target;
+    await arrive(target);
+    if (outside) {
+      expect(await quoteOf(t, middle.id)).toMatchObject({ hops: QUOTE_HOPS, verify_after: NOW });
+      await rounds(t, NOW);
+      expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted" });
+      expect(t.web.fetched).toContain(stamp);
+    } else {
+      expect(await quoteOf(t, middle.id)).toMatchObject({ state: "pending", hops: 0, verify_after: null });
+      await rounds(t, NOW);
+      expect(await quoteOf(t, middle.id)).toMatchObject({ state: "pending", hops: 0 });
+      expect(t.web.fetched).not.toContain(stamp);
+    }
   });
 
-  it.each([
-    ["the fetched answer", true],
-    ["the stored status (nothing fetched)", false],
-  ])("on search resolution through %s", async (_name, served) => {
-    const { t, middle } = await cached();
-    if (!served) {
-      t.web.fail(middle.id, 404);
-    }
-    const found = await t.api<{ statuses: { uri: string }[] }>(
-      `/api/v2/search?q=${encodeURIComponent(middle.id)}&resolve=true&type=statuses`,
-    );
-    expect(found.body.statuses.map((status) => status.uri)).toEqual([middle.id]);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ verify_after: NOW, hops: QUOTE_HOPS });
+  const gifts: [string, number, (paths: Paths, quote: Note) => Promise<void>][] = [
+    [
+      "a delivered Create",
+      QUOTE_HOPS,
+      async ({ t, bob }, quote) => {
+        expect(await t.postOnly(bob, create(bob, quote))).toBe(202);
+      },
+    ],
+    [
+      "an Update of an unknown recent status",
+      QUOTE_HOPS,
+      async ({ t, bob }, quote) => {
+        expect(await t.postOnly(bob, update(bob, quote, "2026-10-11T13:00:00Z"))).toBe(202);
+      },
+    ],
+    [
+      "a boost embedding its booster’s own status",
+      QUOTE_HOPS,
+      async ({ t, bob }, quote) => {
+        expect(await t.postOnly(bob, announce(bob, quote.id, { object: quote }))).toBe(202);
+      },
+    ],
+    [
+      "a boost of a status fetched",
+      QUOTE_HOPS,
+      async ({ t }, quote) => {
+        const erin = await mastodonActor(t.web, "erin", { key: 3 });
+        await followed(t, erin);
+        expect(await t.postOnly(erin, announce(erin, quote.id))).toBe(202);
+      },
+    ],
+    [
+      "an Add of a status fetched",
+      QUOTE_HOPS,
+      async ({ t, bob }, quote) => {
+        expect(await t.postOnly(bob, add(bob, quote.id))).toBe(202);
+      },
+    ],
+    [
+      "a search resolving a status fetched",
+      QUOTE_HOPS,
+      async ({ t }, quote) => {
+        expect((await search(t, quote.id)).body.statuses.map((status) => status.uri)).toEqual([quote.id]);
+      },
+    ],
+    [
+      "a sync of its author’s featured collection, as a new pin",
+      0,
+      async ({ t, bob }, quote) => {
+        serveFeatured(t.web, bob, [quote.id]);
+        await syncs(t);
+        expect(await sql(t.store, "SELECT count(*) AS n FROM status_pins")).toEqual([{ n: 1 }]);
+      },
+    ],
+  ];
+
+  it.each(gifts)("a new status’s quote, on %s: %i hops", async (_name, hops, arrive) => {
+    const paths = await world();
+    const { t, bob, carol } = paths;
+    const { target, quote } = quotedPair(t, bob, carol);
+    t.web.serve(quote.id, { "@context": AS, ...quote });
+    await arrive(paths, quote);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "pending", hops, verify_after: hops > 0 ? NOW : null });
     await rounds(t, NOW);
-    expect(await quoteOf(t, middle.id)).toMatchObject({ state: "accepted" });
+    if (hops > 0) {
+      expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+    } else {
+      expect(await quoteOf(t, quote.id)).toMatchObject({ state: "pending", verify_after: null });
+      expect(t.web.fetched).not.toContain(target.id);
+    }
+  });
+
+  it("a new status’s quote, on a QuoteRequest naming it as the instrument: QUOTE_HOPS", async () => {
+    const { t, bob } = await world();
+    const mine = await localStatus(t, { status: "quote me", visibility: "public" });
+    const quote = quoting(bob, mine.uri, null);
+    t.web.serve(quote.id, { "@context": AS, ...quote });
+    const request = {
+      "@context": [AS, { QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest" }],
+      id: `${bob.uri}/quote_requests/${nextId()}`,
+      type: "QuoteRequest",
+      actor: bob.uri,
+      object: mine.uri,
+      instrument: quote.id,
+    };
+    expect(await t.postOnly(bob, request)).toBe(202);
+    // A quote of a local status gets no verification work (Kopje's answer decides it), but the budget it is given.
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
   });
 });
 

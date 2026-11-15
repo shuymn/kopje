@@ -3,6 +3,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import type { InboundActivity } from "../src/domain/inbox";
 import { readOperation } from "../src/domain/operation";
 import { holdsLocalStamp, MAX_QUOTED_UPDATES, quotedUpdates } from "../src/domain/quotes";
 import { RETRACTION_TTL_MS } from "../src/domain/retractions";
@@ -29,6 +30,7 @@ import {
   type Setup,
   update,
 } from "./inbox-status-helpers";
+import { storeReceive } from "./inbox-store-helpers";
 import { contexts, deliveryDeps, quoteAccept as accept, quoteReject as reject } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { outbound } from "./status-helpers";
@@ -340,6 +342,23 @@ describe("posting a quote (PostStatusService, R36)", () => {
       body: { error: "Validation failed: Text can't be blank" },
     });
   });
+
+  it("keeps a blank text and its CW as sent on a quote, where a post that quotes nothing takes the CW as its text", async () => {
+    const t = await setup();
+    const daves = await localStatus(t, { status: "dave", visibility: "public" }, "dave");
+    const quote = await quotePost(t, daves.id, { status: "", spoiler_text: "cw" });
+    expect(quote).toMatchObject({ spoiler_text: "cw", sensitive: true });
+    expect((await api(t, "GET", `/api/v1/statuses/${quote.id}/source`)).body).toMatchObject({
+      text: "",
+      spoiler_text: "cw",
+    });
+    // The guarded branch: without the quote, the CW becomes the text.
+    const plain = await postRaw(t, { status: "", spoiler_text: "cw" });
+    expect((await api(t, "GET", `/api/v1/statuses/${String(plain.body.id)}/source`)).body).toMatchObject({
+      text: "cw",
+      spoiler_text: "",
+    });
+  });
 });
 
 async function statusAuthor(t: Setup, id: string): Promise<string> {
@@ -370,8 +389,8 @@ describe("the content fallback (TextFormatter#add_quote_fallback)", () => {
   it("an edit of a quote to empty text with a CW keeps the text empty and the CW as the warning", async () => {
     const { t, theirs } = await world();
     const quote = await quotePost(t, theirs.id, { status: "hello" });
-    // Mastodon 4.5.21's UpdateStatusService moves a CW into a blank text only when the status has no quote
-    // (update_status_service.rb:114-117).
+    // UpdateStatusService moves a CW into a blank text only when the status has no quote (v4.7.5
+    // update_status_service.rb:115-116); the guarded branch: test/statuses.test.ts, "an edit to a blank text".
     const edited = await api(t, "PUT", `/api/v1/statuses/${quote.id}`, { status: "", spoiler_text: "careful" });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ spoiler_text: "careful", sensitive: true });
@@ -748,12 +767,6 @@ describe("Concurrency: the test table", () => {
     expect(await t.post(bob, accept(bob, third.uri, "https://other.example/stamp"))).toBe(202);
     expect(await t.post(bob, accept(bob, third.uri, null))).toBe(202);
     expect(await quoteRow(t, third.uri)).toMatchObject({ state: "pending", approval_uri: null });
-    // The inlined form matches too (Mastodon's quote_from_request_json).
-    const inlined = accept(bob, third.uri, stampOf(bob), {
-      object: { type: "QuoteRequest", id: "https://other.example/any", object: theirs.uri, instrument: third.uri },
-    });
-    expect(await t.post(bob, inlined)).toBe(202);
-    expect(await quoteRow(t, third.uri)).toMatchObject({ state: "accepted" });
   });
 
   it("8: an Accept of a stamp its author deleted leaves the quote pending, until the retraction expires", async () => {
@@ -1304,28 +1317,47 @@ describe("a Reject, then the stamp’s Delete", () => {
     expect(await sql(t.store, "SELECT pending FROM quote_revocations")).toEqual([{ pending: 0 }]);
   });
 
-  it("a Reject inlining our QuoteRequest under another id rejects the quote by its instrument and object", async () => {
+  // Mastodon 4.7 matches an answer by its object's id only (quote_request_from_object, activity.rb:152-154); the
+  // instrument and object of an inlined QuoteRequest are not read.
+  it("applies an Accept or Reject only when it names our request by its id, as a string or inlined", async () => {
     const { t, bob, theirs } = await world();
-    const mine = await quotePost(t, theirs.id);
-    expect(await quoteRow(t, mine.uri)).toMatchObject({ state: "pending" });
-    // Mastodon 4.5.21's reject_embedded_quote_request rejects the quote quote_from_request_json finds by instrument
-    // and object when the id names no request of ours (reject.rb:35-40).
-    const inlined = (instrument: string, object: string) =>
-      reject(bob, mine.uri, {
-        object: {
-          id: `${bob.uri}#quote_requests/elsewhere`,
-          type: "QuoteRequest",
-          actor: ALICE_URI,
-          instrument,
-          object,
-        },
+    const inlined = (quoting: string, id: string) => ({
+      id,
+      type: "QuoteRequest",
+      actor: ALICE_URI,
+      instrument: quoting,
+      object: theirs.uri,
+    });
+    const elsewhere = `${bob.uri}#quote_requests/elsewhere`;
+    // Under another id, with our quoting status as instrument and theirs as object: nothing changes.
+    const accepted = await quotePost(t, theirs.id);
+    const strayStamp = stampOf(bob);
+    expect(await t.post(bob, accept(bob, accepted.uri, strayStamp, { object: inlined(accepted.uri, elsewhere) }))).toBe(
+      202,
+    );
+    const rejected = await quotePost(t, theirs.id);
+    expect(await t.post(bob, reject(bob, rejected.uri, { object: inlined(rejected.uri, elsewhere) }))).toBe(202);
+    expect(await quoteRow(t, accepted.uri)).toMatchObject({ state: "pending", approval_uri: null });
+    expect(await quoteRow(t, rejected.uri)).toMatchObject({ state: "pending" });
+    // The quote path answered them, as the Worker parses them (the object's id, type, actor and object).
+    const parsed = { id: elsewhere, type: "QuoteRequest", actor: ALICE_URI, object: theirs.uri };
+    const answers: InboundActivity[] = [
+      { type: "Accept", id: `${bob.uri}#accepts/store`, object: parsed, result: strayStamp },
+      { type: "Reject", id: `${bob.uri}#rejects/store`, object: parsed },
+    ];
+    for (const activity of answers) {
+      expect(await storeReceive(t.store, bob.uri, activity)).toMatchObject({
+        applied: false,
+        reason: "quote-unchanged",
       });
-    // An instrument that is not ours, or an object that is not the actor's: nothing changes.
-    expect(await t.post(bob, inlined(`${mine.uri}/other`, theirs.uri))).toBe(202);
-    expect(await t.post(bob, inlined(mine.uri, `${theirs.uri}/other`))).toBe(202);
-    expect(await quoteRow(t, mine.uri)).toMatchObject({ state: "pending" });
-    expect(await t.post(bob, inlined(mine.uri, theirs.uri))).toBe(202);
-    expect(await quoteRow(t, mine.uri)).toMatchObject({ state: "rejected" });
+    }
+    // Our request's id, inlined: accepted, and rejected.
+    const stamp = stampOf(bob);
+    const ours = (quoting: string) => ({ object: inlined(quoting, `${quoting}#quote-request`) });
+    expect(await t.post(bob, accept(bob, accepted.uri, stamp, ours(accepted.uri)))).toBe(202);
+    expect(await quoteRow(t, accepted.uri)).toMatchObject({ state: "accepted", approval_uri: stamp });
+    expect(await t.post(bob, reject(bob, rejected.uri, ours(rejected.uri)))).toBe(202);
+    expect(await quoteRow(t, rejected.uri)).toMatchObject({ state: "rejected" });
   });
 
   it("after a Reject with no Delete, the stamp still accepts no other local quote", async () => {

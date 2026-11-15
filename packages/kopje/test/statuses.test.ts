@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { postStatus, type ScheduleInput } from "../src/domain/scheduled-statuses";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
-import { getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
+import { editStatus, getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
 import { API_BODY_LIMIT } from "../src/mastodon/params";
 import type { StoreStub } from "../src/platform/store-client";
 import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT, MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
@@ -27,6 +27,8 @@ import {
   follow,
   getJson,
   ids,
+  importedNotification,
+  interactWith,
   outbound,
   post,
   remoteAccount,
@@ -124,6 +126,14 @@ describe("POST /api/v1/statuses", () => {
     expect(status.tags).toEqual([{ name: "kopje", url: "https://kopje.test/tags/kopje" }]);
   });
 
+  it("starts a hashtag at the text's start or after whitespace, written # or ＃ (Mastodon 4.7.5)", async () => {
+    const h = await community(["alice"]);
+    const status = await post(h, h.users.alice, { status: "#start (#paren) text.#dot x\u00A0#spaced ＃wide" });
+    expect(status.tags.map((tag) => tag.name)).toEqual(["spaced", "start", "wide"]);
+    expect(status.content).toContain("(#paren) text.#dot");
+    expect(status.content).toContain('rel="tag">#<span>wide</span></a>');
+  });
+
   it("reads a mention of the instance's own host as a local mention", async () => {
     const h = await community(["alice", "bob"]);
     const status = await post(h, h.users.alice, { status: "@bob@kopje.test @BOB" });
@@ -194,6 +204,25 @@ describe("POST /api/v1/statuses", () => {
     }
   });
 
+  it("judges a blank text as Mastodon's blank? does: U+0085 is blank, U+FEFF is not", async () => {
+    const h = await community(["alice"]);
+    const { token } = h.users.alice;
+    expect(await posting(h, token, { status: "\u0085" })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
+    const accepted = await posting(h, token, { status: "\ufeff" });
+    expect(accepted.status).toBe(200);
+    expect(await sql(h.store, "SELECT source_text FROM statuses")).toEqual([{ source_text: "\ufeff" }]);
+    // An edit to U+0085 alone is blank too.
+    const id = (accepted.body as { id: string }).id;
+    expect(await posting(h, token, { status: "\u0085" }, { method: "PUT", path: `/api/v1/statuses/${id}` })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+  });
+
   // StatusesController#set_thread and #set_quoted_status run before the create action: a status replied to or quoted
   // that is missing, or hidden from the poster, answers 404 before any 422 and before the Idempotency-Key is looked up.
   describe("the status replied to or quoted comes first (StatusesController before_actions)", () => {
@@ -204,7 +233,6 @@ describe("POST /api/v1/statuses", () => {
       { status: "x".repeat(501) },
       { status: "x", visibility: "everyone" },
       { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
-      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
       { status: "x", poll: { options: ["a"], expires_in: 3600 } },
       { status: "x", quote_approval_policy: "everyone" },
       { status: "x", scheduled_at: "not a time" },
@@ -355,7 +383,40 @@ describe("POST /api/v1/statuses", () => {
     expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, json({ status: longUrls })))).status).toBe(
       200,
     );
+    // The same as a blank text's warning, which the Store counts as the text it becomes, on a post and an edit.
+    const edited = await post(h, h.users.alice, { status: "edited" });
+    for (const [warning, status] of [
+      [worst, 422],
+      [longUrls, 200],
+    ] as const) {
+      const body = { status: "", spoiler_text: warning };
+      expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, json(body)))).status).toBe(status);
+      const path = `/api/v1/statuses/${edited.id}`;
+      const edit = await h.request(path, bearer(h.users.alice.token, json(body, { method: "PUT" })));
+      expect(edit.status).toBe(status);
+    }
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("counts the warning and the text as one string, as StatusLengthValidator does", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // The combining mark joins the warning's last x: 500 graphemes, then 501.
+    const joined = await posting(h, alice.token, { status: "\u0301x", spoiler_text: "x".repeat(499) });
+    expect(joined.status).toBe(200);
+    expect(await posting(h, alice.token, { status: "\u0301xy", spoiler_text: "x".repeat(499) })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text character limit of 500 exceeded" },
+    });
+    // A blank text counts nothing beside the warning of a quote, which keeps both as sent.
+    const quoted = await post(h, alice, { status: "quote me" });
+    const quote = await posting(h, alice.token, {
+      status: " ".repeat(10),
+      spoiler_text: "x".repeat(495),
+      quoted_status_id: quoted.id,
+    });
+    expect(quote.status, JSON.stringify(quote.body)).toBe(200);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 3 }]);
   });
 
   it("counts a URL as 23 characters and a remote mention by its username", async () => {
@@ -795,7 +856,6 @@ describe("editing", () => {
     const REFUSED: Record<string, unknown>[] = [
       { status: "x".repeat(501) },
       { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
-      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
       { status: "x", poll: { options: ["a"], expires_in: 3600 } },
       { status: "x", quote_approval_policy: "everyone" },
       { status: "x", media_attributes: [{ id: "1", description: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }] },
@@ -930,7 +990,7 @@ describe("favourite, reblog, bookmark", () => {
     expect(first).toMatchObject({
       account: { id: bob.id },
       content: "",
-      reblogged: false,
+      reblogged: true,
       reblog: { id: status.id, reblogged: true, reblogs_count: 1 },
     });
     const second = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
@@ -943,6 +1003,86 @@ describe("favourite, reblog, bookmark", () => {
     const undone = await (await act(h, bob, `/api/v1/statuses/${status.id}/unreblog`)).json<Status>();
     expect(undone).toMatchObject({ id: status.id, reblogged: false, reblogs_count: 0 });
     expect((await getJson(h, `/api/v1/statuses/${first.id}`)).status).toBe(404);
+  });
+
+  // Mastodon renders these without a relationships presenter, so Account::Interactions reads status.proper; with one
+  // (timelines, notifications) its maps are keyed by the boost's id.
+  it("shows a boost answered on its own with its original's flags, and its own elsewhere", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const status = await post(h, alice, { status: "x" });
+    await act(h, bob, `/api/v1/statuses/${status.id}/favourite`);
+    await act(h, bob, `/api/v1/statuses/${status.id}/bookmark`);
+    const original = { favourited: true, reblogged: true, bookmarked: true };
+    const own = { favourited: false, reblogged: false, bookmarked: false };
+    const boosted = { ...original, reblog: { id: status.id, ...original } };
+    const created = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    expect(created).toMatchObject({ account: { id: bob.id }, ...boosted });
+    const again = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    expect(again).toMatchObject({ id: created.id, ...boosted });
+    expect((await getJson<Status>(h, `/api/v1/statuses/${created.id}`, bob.token)).body).toMatchObject(boosted);
+    const listed = await getJson<Status[]>(h, `/api/v1/statuses?id[]=${created.id}&id[]=${status.id}`, bob.token);
+    expect(listed.body).toMatchObject([
+      { id: created.id, ...boosted },
+      { id: status.id, ...original },
+    ]);
+    const policy = await h.request(
+      `/api/v1/statuses/${created.id}/interaction_policy`,
+      bearer(bob.token, json({ quote_approval_policy: "nobody" }, { method: "PUT" })),
+    );
+    expect(await policy.json()).toMatchObject({ id: created.id, ...boosted });
+    // Presented with relationships: the boost's own flags, its original's under `reblog`. The notification is
+    // import-shaped, so the notifications' presentation of a boost is reached.
+    await importedNotification(h.store, bob.id, alice.id, created.id);
+    const elsewhere = { ...own, reblog: { id: status.id, ...original } };
+    for (const path of ["/api/v1/timelines/home", `/api/v1/accounts/${bob.id}/statuses`]) {
+      const { body } = await getJson<Status[]>(h, path, bob.token);
+      expect(
+        body.find((item) => item.id === created.id),
+        path,
+      ).toMatchObject(elsewhere);
+    }
+    const notifications = await getJson<{ id: string; status: Status }[]>(h, "/api/v1/notifications", bob.token);
+    expect(notifications.body.map((n) => n.status)).toMatchObject([{ id: created.id, ...elsewhere }]);
+    type Grouped = { statuses: Status[]; notification_groups: { group_key: string }[] };
+    const grouped = await getJson<Grouped>(h, "/api/v2/notifications", bob.token);
+    expect(grouped.body.statuses).toMatchObject([{ id: created.id, ...elsewhere }]);
+    // A notification shown alone (v1 and v2 show) is rendered without relationships: its original's flags.
+    const notificationId = notifications.body[0]!.id;
+    const shown = await getJson<{ status: Status }>(h, `/api/v1/notifications/${notificationId}`, bob.token);
+    expect(shown.body.status).toMatchObject(boosted);
+    const groupKey = grouped.body.notification_groups[0]!.group_key;
+    const group = await getJson<Grouped>(h, `/api/v2/notifications/${groupKey}`, bob.token);
+    expect(group.body.statuses).toMatchObject([{ id: created.id, ...boosted }]);
+    // Deleting the boost answers with it as it was, before the withdrawal.
+    const deleted = await h.request(`/api/v1/statuses/${created.id}`, bearer(bob.token, { method: "DELETE" }));
+    expect(await deleted.json()).toMatchObject({ id: created.id, ...boosted });
+  });
+
+  // NotificationRequestsController#show renders without relationships (index passes them). The request is
+  // import-shaped: Kopje's requests name the mention that filtered them.
+  it("shows a request's last status, a boost, with its original's flags, and its own in the list", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    const status = await post(h, alice, { status: "x" });
+    await interactWith(h, bob, status.id);
+    const boost = await (await act(h, carol, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    await sql(
+      h.store,
+      "INSERT INTO notification_requests (account_id, from_account_id, last_status_id, notifications_count) VALUES (?, ?, ?, 1)",
+      bob.id,
+      carol.id,
+      boost.id,
+    );
+    const proper = { favourited: true, reblogged: true, bookmarked: true };
+    const own = { favourited: false, reblogged: false, bookmarked: false };
+    type Request = { id: string; last_status: Status | null };
+    const listed = await getJson<Request[]>(h, "/api/v1/notifications/requests", bob.token);
+    expect(listed.body.map((request) => request.last_status)).toMatchObject([
+      { id: boost.id, ...own, reblog: { id: status.id, ...proper } },
+    ]);
+    const shown = await getJson<Request>(h, `/api/v1/notifications/requests/${listed.body[0]!.id}`, bob.token);
+    expect(shown.body.last_status).toMatchObject({ id: boost.id, ...proper, reblog: { id: status.id, ...proper } });
   });
 
   it("refuses to boost direct and others’ private statuses (StatusPolicy#reblog?)", async () => {
@@ -1499,6 +1639,206 @@ describe("reblogged_by pages after filtering", () => {
   });
 });
 
+// PostStatusService#preprocess_attributes!: a blank text with a content warning, quoting nothing, takes the warning
+// as its text (the quote case: test/quote-authoring.test.ts; scheduling: test/scheduled-statuses.test.ts).
+describe("a blank text with a content warning", () => {
+  type Source = { text: string; spoiler_text: string };
+  const source = async (h: ApiHarness, token: string, id: string) =>
+    (await getJson<Source>(h, `/api/v1/statuses/${id}/source`, token)).body;
+
+  it("is posted with the warning as its text, no warning and sensitive, with or without media", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await sql(
+      h.store,
+      `INSERT INTO media_attachments (id, account_id, type, url, processed, gc_at)
+			VALUES ('100000000000000001', ?1, 'image', 'https://kopje.test/media/1.png', 1, ?2)`,
+      alice.id,
+      new Date(NOW + HOUR).toISOString(),
+    );
+    const cases: [string, Record<string, unknown>][] = [
+      ["no media", {}],
+      ["media", { media_ids: ["100000000000000001"] }],
+      ["sensitive: false", { sensitive: false }],
+    ];
+    for (const [name, extra] of cases) {
+      const posted = await posting(h, alice.token, { status: "", spoiler_text: "cw", ...extra });
+      expect(posted.status, name).toBe(200);
+      const status = posted.body as Status & { spoiler_text: string; sensitive: boolean };
+      expect({ content: status.content, spoiler_text: status.spoiler_text, sensitive: status.sensitive }, name).toEqual(
+        {
+          content: "<p>cw</p>",
+          spoiler_text: "",
+          sensitive: true,
+        },
+      );
+      expect(await source(h, alice.token, status.id), name).toMatchObject({ text: "cw", spoiler_text: "" });
+    }
+  });
+
+  it("counts the length of the text it becomes, its URLs as 23 characters, and writes nothing past it", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // 20 URLs of 490 characters: 9,819 code units, 479 counted as text (9,819 as a warning).
+    const urls = Array.from({ length: 20 }, () => `https://example.com/${"r".repeat(470)}`).join(" ");
+    expect(urls.length).toBe(9_819);
+    const accepted = await posting(h, alice.token, { status: "", spoiler_text: urls });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(await source(h, alice.token, (accepted.body as Status).id)).toEqual({
+      id: (accepted.body as Status).id,
+      text: urls,
+      spoiler_text: "",
+    });
+    // 500 characters as a warning, 504 as text (a URL counts 23).
+    const long = `${"x".repeat(480)} https://example.com`;
+    expect(long.length).toBe(500);
+    expect(await posting(h, alice.token, { status: "", spoiler_text: long })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text character limit of 500 exceeded" },
+    });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 1 }]);
+  });
+
+  it("is held to the raw bound as sent, in the Store, before the warning moves, posted now or scheduled", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const blank = { text: " ".repeat(MAX_RAW_LENGTH + 1), spoilerText: "w" };
+    for (const scheduledAt of [undefined, new Date(NOW + HOUR).toISOString()]) {
+      const { result } = await postPlans(h, alice.token, { ...blank, scheduledAt }, /^$/);
+      expect(result, String(scheduledAt)).toMatchObject({
+        value: { status: "invalid", error: "Validation failed: Text character limit of 500 exceeded" },
+      });
+    }
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM scheduled_statuses")).toEqual([{ n: 0 }]);
+    // Within the bound, the same pair converts and posts.
+    const { result } = await postPlans(h, alice.token, { ...blank, text: " ".repeat(MAX_RAW_LENGTH - 1) }, /^$/);
+    expect(result).toMatchObject({ value: { status: "ok", value: { content: "<p>w</p>", spoiler_text: "" } } });
+  });
+});
+
+// UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
+// sent as its text and the status keeps its own (the quote case: test/quote-authoring.test.ts).
+describe("an edit to a blank text", () => {
+  type Shown = { text: string; spoiler_text: string; sensitive: boolean };
+  const MEDIA = "100000000000000001";
+  async function setup() {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await sql(
+      h.store,
+      `INSERT INTO media_attachments (id, account_id, type, url, processed, gc_at)
+			VALUES (?1, ?2, 'image', 'https://kopje.test/media/1.png', 1, ?3)`,
+      MEDIA,
+      alice.id,
+      new Date(NOW + HOUR).toISOString(),
+    );
+    const put = (id: string, body: Record<string, unknown>) =>
+      posting(h, alice.token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
+    const shown = async (id: string): Promise<Shown> => {
+      const source = (await getJson<Shown>(h, `/api/v1/statuses/${id}/source`, alice.token)).body;
+      const status = (await getJson<Shown>(h, `/api/v1/statuses/${id}`, alice.token)).body;
+      return { text: source.text, spoiler_text: source.spoiler_text, sensitive: status.sensitive };
+    };
+    const versions = async (id: string) =>
+      (await sql<{ n: number }>(h.store, "SELECT count(*) AS n FROM status_edits WHERE status_id = ?", id))[0]!.n;
+    return { h, alice, put, shown, versions };
+  }
+
+  it("takes the warning sent as its text, keeps the status's warning, and is sensitive only as sent", async () => {
+    const { h, alice, put, shown, versions } = await setup();
+    const a = await post(h, alice, { status: "a", spoiler_text: "old" });
+    expect((await put(a.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "new", spoiler_text: "old", sensitive: false });
+    // The written pair is the stored one: nothing changes and no version is recorded.
+    const recorded = await versions(a.id);
+    expect((await put(a.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect(await versions(a.id)).toBe(recorded);
+    expect((await put(a.id, { status: "", spoiler_text: "new", sensitive: true })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "new", spoiler_text: "old", sensitive: true });
+    // No warning sent: the text is blank, and needs media.
+    expect(await put(a.id, { status: "" })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+    expect((await put(a.id, { status: "", media_ids: [MEDIA] })).status).toBe(200);
+    expect(await shown(a.id)).toEqual({ text: "", spoiler_text: "old", sensitive: false });
+  });
+
+  it("converts a status an earlier release stored with a blank text, a warning and media on its next such edit", async () => {
+    const { h, alice, put, shown } = await setup();
+    const earlier = await post(h, alice, { status: "x", spoiler_text: "nsfw", media_ids: [MEDIA] });
+    await sql(h.store, "UPDATE statuses SET source_text = '', content = '' WHERE id = ?", earlier.id);
+    expect(await shown(earlier.id)).toEqual({ text: "", spoiler_text: "nsfw", sensitive: true });
+    // An alt-text edit that sends the text and warning back as they are shown.
+    const alt = await put(earlier.id, {
+      status: "",
+      spoiler_text: "nsfw",
+      media_ids: [MEDIA],
+      media_attributes: [{ id: MEDIA, description: "a cat" }],
+    });
+    expect(alt.status).toBe(200);
+    expect(await shown(earlier.id)).toEqual({ text: "nsfw", spoiler_text: "nsfw", sensitive: false });
+  });
+
+  it("keeps a kept warning as stored, an imported one's malformed bytes included", async () => {
+    const { h, alice, put, shown } = await setup();
+    const imported = await post(h, alice, { status: "x", spoiler_text: "nsfw" });
+    await sql(h.store, "UPDATE statuses SET spoiler_text = 'nsfw' || CAST(X'FF' AS TEXT) WHERE id = ?", imported.id);
+    const bytes = () => sql(h.store, "SELECT hex(spoiler_text) AS hex FROM statuses WHERE id = ?", imported.id);
+    expect(await bytes()).toEqual([{ hex: "6E736677FF" }]);
+    expect((await put(imported.id, { status: "", spoiler_text: "cw" })).status).toBe(200);
+    expect(await shown(imported.id)).toMatchObject({ text: "cw", spoiler_text: "nsfw\ufffd" });
+    expect(await bytes()).toEqual([{ hex: "6E736677FF" }]);
+  });
+
+  it("counts the text and the kept warning as written, as one string", async () => {
+    const { h, alice, put, shown } = await setup();
+    const TOO_LONG = { status: 422, body: { error: "Validation failed: Text character limit of 500 exceeded" } };
+    // The combining mark joins the kept warning's last x: 500 graphemes, then 501.
+    const joined = await post(h, alice, { status: "a", spoiler_text: "x".repeat(499) });
+    expect((await put(joined.id, { status: "", spoiler_text: "\u0301x" })).status).toBe(200);
+    expect(await shown(joined.id)).toMatchObject({ text: "\u0301x", spoiler_text: "x".repeat(499) });
+    expect(await put(joined.id, { status: "", spoiler_text: "\u0301xy" })).toEqual(TOO_LONG);
+    // A warning sent becomes the text, its URLs counted as 23 characters.
+    const plain = await post(h, alice, { status: "b" });
+    const urls = Array.from({ length: 20 }, () => `https://example.com/${"r".repeat(470)}`).join(" ");
+    expect((await put(plain.id, { status: "", spoiler_text: urls })).status).toBe(200);
+    expect(await shown(plain.id)).toMatchObject({ text: urls, spoiler_text: "" });
+    expect(await put(plain.id, { status: "", spoiler_text: `${"x".repeat(480)} https://example.com` })).toEqual(
+      TOO_LONG,
+    );
+    expect(await shown(plain.id)).toMatchObject({ text: urls, spoiler_text: "" });
+    // The raw bound holds on the pair written, though its counted length passes: a kept warning of 80 graphemes in
+    // 8,080 code units beside a text of four long URLs (1,923 code units, 95 counted).
+    const warning = `a${"\u0301".repeat(100)}`.repeat(80);
+    const wide = await post(h, alice, { status: "c", spoiler_text: warning });
+    const links = Array.from({ length: 4 }, () => `https://example.com/${"r".repeat(460)}`).join(" ");
+    expect(warning.length + links.length).toBe(MAX_RAW_LENGTH + 3);
+    expect(await put(wide.id, { status: "", spoiler_text: links })).toEqual(TOO_LONG);
+    expect(await shown(wide.id)).toMatchObject({ text: "c", spoiler_text: warning });
+  });
+
+  it("federates as written: the Create of a converted post and the Update of a converted edit", async () => {
+    const { h, alice, put } = await setup();
+    await remoteFollows(h.store, await remoteAccount(h.store, "dave"), alice.id);
+    await post(h, alice, { status: "", spoiler_text: "cw" });
+    const objects = async () =>
+      (await outbound(h.store)).map((o) => {
+        const object = o.activity.object as Record<string, unknown>;
+        return { type: o.activity.type, content: object.content, summary: object.summary, sensitive: object.sensitive };
+      });
+    expect(await objects()).toEqual([{ type: "Create", content: "<p>cw</p>", summary: null, sensitive: true }]);
+    await settle(h.store);
+    const edited = await post(h, alice, { status: "a", spoiler_text: "old" });
+    expect((await put(edited.id, { status: "", spoiler_text: "new" })).status).toBe(200);
+    expect((await objects()).slice(-2)).toEqual([
+      { type: "Create", content: "<p>new</p>", summary: "old", sensitive: false },
+      { type: "Update", content: "<p>new</p>", summary: "old", sensitive: false },
+    ]);
+  });
+});
+
 describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
   type Pair = ApiHarness & { users: Record<"alice" | "bob", User> };
   const ID = "100000000000000001";
@@ -1649,6 +1989,45 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
     expect(await posting(h, alice.token, { status: "z", media_ids: [`0${"1".repeat(19)}`] })).toEqual(
       mediaNotFound("1".repeat(19)),
     );
+  });
+
+  it("writes media with a poll for a Store caller that skips the Worker, on a post and an edit", async () => {
+    const h: Pair = await community(["alice", "bob"]);
+    const { alice } = h.users;
+    await insertMedia(h, alice.id);
+    await insertMedia(h, alice.id, "100000000000000002");
+    const poll = { options: ["a", "b"], expiresIn: 600, multiple: false, hideTotals: false };
+    const { result } = await postPlans(h, alice.token, { mediaIds: [ID], poll }, /^$/);
+    expect(result).toMatchObject({ value: { status: "ok" } });
+    const posted = (result as { value: { value: { id: string } } }).value.value.id;
+    const edited = await plannedRun(h, /^$/, editStatus, {
+      credential: { tokenHash: await sha256Hex(alice.token), scope: "write:statuses", now: NOW },
+      id: posted,
+      text: "edited",
+      spoilerText: "",
+      mediaIds: ["100000000000000002"],
+      mediaAttributes: [],
+      poll: { ...poll, options: ["c", "d"] },
+      now: NOW,
+      present: { origin: "https://kopje.test" },
+    });
+    expect(edited.result).toMatchObject({ value: { status: "ok" } });
+    // The media the edit removed stays with the status for its history, no longer shown.
+    expect(await sql(h.store, "SELECT id, status_id, shown FROM media_attachments ORDER BY id")).toEqual([
+      { id: ID, status_id: posted, shown: 0 },
+      { id: "100000000000000002", status_id: posted, shown: 1 },
+    ]);
+    expect(await sql(h.store, "SELECT status_id, options FROM polls")).toEqual([
+      { status_id: posted, options: JSON.stringify(["c", "d"]) },
+    ]);
+    // The original version kept its media and its poll.
+    const history = (
+      await getJson<{ media_attachments: { id: string }[]; poll: unknown }[]>(h, `/api/v1/statuses/${posted}/history`)
+    ).body;
+    expect(history.map((entry) => [entry.media_attachments.map((m) => m.id), entry.poll])).toEqual([
+      [[ID], { options: [{ title: "a" }, { title: "b" }] }],
+      [["100000000000000002"], { options: [{ title: "c" }, { title: "d" }] }],
+    ]);
   });
 
   it("answers an id of any length with a message no longer than the request", async () => {

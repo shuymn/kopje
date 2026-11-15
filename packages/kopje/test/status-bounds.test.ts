@@ -2,9 +2,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { parseFragment } from "parse5";
 import { describe, expect, it } from "vitest";
 
-import { selectSql } from "../src/db/columns";
-import { Db, VALUE_BYTES } from "../src/db/sql";
+import { rowHeapSql, selectSql } from "../src/db/columns";
+import { Db, rowHeapBytes, VALUE_BYTES } from "../src/db/sql";
 import {
+  ACCOUNT_COLUMN_MAP,
   MAX_REMOTE_FIELDS,
   MOVED_ACCOUNT_COLUMNS,
   MOVED_CREATED_AT_LIMIT,
@@ -16,6 +17,7 @@ import {
   REMOTE_VERIFIED_JSON_BYTES,
 } from "../src/domain/account-columns";
 import {
+  ACCOUNT_FROM,
   fieldSources,
   getAccount,
   MAX_FIELD_NAME,
@@ -30,6 +32,7 @@ import { OWNER_ROLE } from "../src/domain/auth";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
 import { MAX_FILTER_KEYWORD, MAX_FILTER_KEYWORDS, MAX_FILTER_TITLE, MAX_FILTERS } from "../src/domain/filters";
 import { getFeatured, OUTBOX_BYTES } from "../src/domain/local-notes";
+import { FALLBACK_JSON_MAX, FALLBACK_TYPES } from "../src/domain/notification-fallback";
 import { listGroupedNotifications } from "../src/domain/notification-groups";
 import { listNotifications } from "../src/domain/notifications";
 import { ACTOR_URI_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT } from "../src/domain/profile-bounds";
@@ -1455,9 +1458,13 @@ type FillMeasure = {
   localFields: Record<string, { count: number; deficit: number }>;
   // The remote accounts each shape shows: how many, and what their fields' JSON lacks of REMOTE_FIELDS_JSON_MAX.
   remoteFields: Record<string, { count: number; deficit: number }>;
+  // The fallbacks each shape shows (its notifications read with every fallback type): how many, and what their JSON
+  // lacks of FALLBACK_JSON_MAX.
+  fallbacks: Record<string, { count: number; deficit: number }>;
   // The JSON of the fields of the account occurrence (a remote account's, at REMOTE_FIELDS_BYTES).
   accountFields: number;
-  // The moderation_warning notification as a stream payload: its JSON encoded again as a string (stream-hub.ts).
+  // The moderation_warning notification as a stream payload: its JSON, which carries no fallback, encoded again as a
+  // string (stream-hub.ts).
   warningPayload: number;
   // The escaped fill's streamed witnesses of the turn's hard bound: the conversation and the notification whose status
   // is the boost of the quote, as the stream presents them (their JSON), and the conversation's payload.
@@ -1642,6 +1649,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       excludeTypes: [],
       accountId: null,
       includeFiltered: false,
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1723,6 +1731,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       excludeTypes: [],
       accountId: null,
       includeFiltered: false,
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1744,6 +1753,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       groupedTypes: null,
       includeFiltered: false,
       expandAccounts: "full",
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1838,9 +1848,10 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       notification: jsonBytes(notified),
     };
   }
+  const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
   return {
     streamed,
-    warningPayload: utf8Length(JSON.stringify(JSON.stringify(warningNotification))),
+    warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
     accountFields: jsonBytes((account as { fields: unknown }).fields),
     moved: Object.fromEntries(
       Object.entries(answers).map(([name, answer]) => {
@@ -1895,6 +1906,16 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
           expect(jsonBytes(account.fields)).toBeLessThanOrEqual(REMOTE_FIELDS_JSON_MAX);
         }
         const deficit = shown.reduce((sum, account) => sum + REMOTE_FIELDS_JSON_MAX - jsonBytes(account.fields), 0);
+        return [name, { count: shown.length, deficit }];
+      }),
+    ),
+    fallbacks: Object.fromEntries(
+      Object.entries(answers).map(([name, answer]) => {
+        const shown = presentedFallbacks(answer);
+        for (const fallback of shown) {
+          expect(jsonBytes(fallback)).toBeLessThanOrEqual(FALLBACK_JSON_MAX);
+        }
+        const deficit = shown.reduce((sum: number, fallback) => sum + FALLBACK_JSON_MAX - jsonBytes(fallback), 0);
         return [name, { count: shown.length, deficit }];
       }),
     ),
@@ -2045,6 +2066,19 @@ function verifiedFields(value: unknown): { value: string; verified_at: string }[
   return [...own, ...Object.values(value).flatMap(verifiedFields)];
 }
 
+// The fallbacks a shape presents (notification-fallback.ts).
+function presentedFallbacks(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(presentedFallbacks);
+  }
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, item]: [string, unknown]) =>
+    key === "fallback" && typeof item === "object" && item !== null ? [item] : presentedFallbacks(item),
+  );
+}
+
 function presentedStatuses(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) {
     return value.flatMap(presentedStatuses);
@@ -2125,9 +2159,9 @@ const LOCAL_ACCOUNT_KEYS_JSON =
 // MEDIA_URL_JSON_BYTES and its blurhash at BLURHASH_JSON_MAX, and each verified local field's value at
 // LOCAL_FIELD_VALUE_JSON_MAX. Every remote account shown but the account occurrence counts its fields at
 // REMOTE_FIELDS_JSON_MAX (verified remote fields); the account occurrence keeps the larger of the local and remote
-// fields' maxima.
+// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX.
 async function conservativeJson(): Promise<Record<string, number>> {
-  const { shapes, moved, applications, cards, media, localFields, remoteFields, accountFields } =
+  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, accountFields } =
     await measureFill("escaped");
   return Object.fromEntries(
     Object.entries(shapes).map(([name, shape]) => [
@@ -2142,7 +2176,8 @@ async function conservativeJson(): Promise<Record<string, number>> {
         applications[name]!.deficit +
         cards[name]!.deficit +
         media[name]!.deficit +
-        localFields[name]!.deficit,
+        localFields[name]!.deficit +
+        fallbacks[name]!.deficit,
     ]),
   );
 }
@@ -2201,7 +2236,11 @@ describe("the moved-to account (RES-3)", () => {
             target,
           );
         }
-        const m = await measured(t, getAccount as never, { id: source, present: { origin: ORIGIN } } as never);
+        const m = await measured(
+          t,
+          getAccount as never,
+          { id: source, present: { origin: ORIGIN }, credential: null } as never,
+        );
         const [rows] = [...m.heaps].filter(([query]) => query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns)));
         expect(rows![1].rows).toBe(MOVED_ACCOUNT_MAXIMA.rows);
         const heap = 64 + [...rows![1].columns.values()].reduce((sum, column) => sum + column.total, 0);
@@ -2244,7 +2283,11 @@ describe("static images (RES-2, RES-3)", () => {
       ).toEqual([{ n: STATIC_URL_LIMIT }]);
       const source = await maximalAccount(t, true);
       await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", ALICE, source);
-      const m = await measured(t, getAccount as never, { id: source, present: { origin: ORIGIN } } as never);
+      const m = await measured(
+        t,
+        getAccount as never,
+        { id: source, present: { origin: ORIGIN }, credential: null } as never,
+      );
       const [rows] = [...m.heaps].filter(([query]) => query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns)));
       expect(64 + [...rows![1].columns.values()].reduce((sum, column) => sum + column.total, 0)).toBeLessThanOrEqual(
         MOVED_ROW_HEAP_MAX,
@@ -2252,8 +2295,9 @@ describe("static images (RES-2, RES-3)", () => {
       const moved = (m.answer as { moved: Record<string, string> }).moved;
       expect(jsonBytes(moved)).toBeLessThanOrEqual(MOVED_ACCOUNT_JSON_MAX);
       expect(moved.avatar_static).toBe(typeof still === "string" ? still : image);
-      const full = (await measured(t, getAccount as never, { id: ALICE, present: { origin: ORIGIN } } as never))
-        .answer as Record<string, string>;
+      const full = (
+        await measured(t, getAccount as never, { id: ALICE, present: { origin: ORIGIN }, credential: null } as never)
+      ).answer as Record<string, string>;
       for (const key of ["avatar", "avatar_static", "header", "header_static"]) {
         expect(utf8Length(JSON.stringify(full[key])), key).toBeLessThanOrEqual(PROFILE_URL_LIMIT + 2);
       }
@@ -2438,7 +2482,7 @@ describe("remote field verification (RES-3)", () => {
       `https://${HOST}/users/${id}`,
       links,
     );
-    const m = await measured(t, getAccount as never, { id, present: { origin: ORIGIN } } as never);
+    const m = await measured(t, getAccount as never, { id, present: { origin: ORIGIN }, credential: null } as never);
     const fields = (m.answer as { fields: { value: string; verified_at: string | null }[] }).fields;
     expect(fields.filter((field) => field.verified_at !== null).length).toBe(REMOTE_VERIFIED_SHOWN);
     expect(jsonBytes(fields)).toBeLessThanOrEqual(REMOTE_FIELDS_JSON_MAX);
@@ -2452,6 +2496,95 @@ describe("remote field verification (RES-3)", () => {
       VALUE_BYTES + 2 * (REMOTE_VERIFIED_JSON_BYTES - REMOTE_VERIFIED_SHOWN),
     );
   }, 120_000);
+});
+
+// An Account whose imported display name and note hold malformed UTF-8 that passes 0048's triggers (D14 of RES-3).
+// measured counts the UTF-8 of decoded values, which triples such a byte (the projected name re-encodes to 24,576
+// bytes, the note to 196,602), so this is a check of its own, not a fill, in the three units the bounds are in: the
+// stored bytes read (SQL octet_length of each projected value), the heap (rowHeapBytes of the decoded row against
+// rowHeapSql of the same row) and the presented JSON (UTF-8 of the answer).
+describe("an account of malformed imported text (RES-3)", () => {
+  it("reads and presents within the fills' maxima", async () => {
+    const t = await setup();
+    // A conversation of MAX_PRESENTED_PARTICIPANTS accounts of the raw fill, each display name 0xFF and 1,048,575
+    // continuation bytes (one character to 0048's cut) and each note 65,534 continuation bytes (within noteSql's
+    // bound, as json_quote copies them); its last status is by an account of the raw fill as it is, the reference.
+    const participants: string[] = [];
+    for (let i = 0; i < MAX_PRESENTED_PARTICIPANTS; i++) {
+      participants.push(await maximalAccount(t, false, "raw"));
+    }
+    const reference = await maximalAccount(t, false, "raw");
+    const name = new Uint8Array(1_048_576).fill(0x80);
+    name[0] = 0xff;
+    await sql(
+      t.store,
+      `UPDATE accounts SET display_name = CAST(?1 AS TEXT), note = CAST(?2 AS TEXT)
+			WHERE id IN (SELECT value FROM json_each(?3))`,
+      name.buffer,
+      new Uint8Array(65_534).fill(0x80).buffer,
+      JSON.stringify(participants),
+    );
+    const last = await storedStatus(t, reference, {
+      content: "",
+      spoiler: "",
+      media: [],
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    await sql(
+      t.store,
+      "INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th', ?, ?)",
+      ALICE,
+      JSON.stringify(participants.toSorted()),
+      last,
+    );
+    const rows = await runInDurableObject(t.store, (_instance, state) =>
+      [...participants, reference].map((id) => {
+        const bounds = state.storage.sql
+          .exec<{ stored: number; name: number; note: number; heap: number }>(
+            `SELECT octet_length(a.display_name) AS stored, octet_length(${ACCOUNT_COLUMN_MAP.display_name}) AS name,
+							octet_length(${ACCOUNT_COLUMN_MAP.note}) AS note, ${rowHeapSql(ACCOUNT_COLUMN_MAP)} AS heap
+						FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
+            id,
+          )
+          .one();
+        const row = state.storage.sql
+          .exec<{ display_name: string; note: string }>(
+            `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
+            id,
+          )
+          .one();
+        return { ...bounds, decoded: rowHeapBytes(row), names: row.display_name.length, notes: row.note.length };
+      }),
+    );
+    const own = rows.pop()!;
+    expect(own).toMatchObject({ stored: 4 * 2048, name: 4 * 2048, note: utf8Length(RAW_BIO) });
+    for (const row of rows) {
+      // Read: the raw fill's bytes, of the 1,048,576 stored.
+      expect(row).toMatchObject({ stored: 1_048_576, name: own.name, note: own.note });
+      // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
+      // that bound is the reference's.
+      expect({ names: row.names, notes: row.notes }).toEqual({ names: row.name, notes: row.note });
+      expect(row.decoded).toBeLessThanOrEqual(row.heap);
+      expect(row.heap).toBeLessThanOrEqual(own.heap);
+    }
+    // Presented: each account within the escaped fill's account occurrence, its display name within the escaped
+    // fill's (2,048 code points of six JSON bytes) and its note within BIO_JSON_BYTES.
+    const listed = await measured(
+      t,
+      listConversations as never,
+      { credential: await credential(t), page: { limit: 1 }, present: { origin: ORIGIN } } as never,
+    );
+    const [talk] = (listed.answer as { items: { accounts: Record<string, unknown>[] }[] }).items;
+    expect(talk!.accounts.map((a) => a.id)).toEqual(participants.toSorted());
+    for (const account of talk!.accounts) {
+      expect(jsonBytes(account.display_name)).toBeLessThanOrEqual(jsonBytes(C.repeat(2048)));
+      expect(jsonBytes(account.note)).toBeLessThanOrEqual(REMOTE_BIO_BYTES);
+      expect(jsonBytes(account)).toBeLessThanOrEqual(FILL_SHAPES.escaped.account.json);
+      expect({ name: account.display_name, note: account.note }).toEqual({ name: "\uFFFD".repeat(2048), note: "" });
+    }
+  }, 300_000);
 });
 
 describe("the table of maxima (RES-3)", () => {
@@ -2488,7 +2621,11 @@ describe("the table of maxima (RES-3)", () => {
       const id = await maximalAccount(t, false, fill);
       for (const set of ["username = '! ' || id", "url = NULL"]) {
         await sql(t.store, `UPDATE accounts SET ${set} WHERE id = ?`, id);
-        const { answer } = await measured(t, getAccount as never, { id, present: { origin: ORIGIN } } as never);
+        const { answer } = await measured(
+          t,
+          getAccount as never,
+          { id, present: { origin: ORIGIN }, credential: null } as never,
+        );
         expect(answer).toMatchObject({ username: id, acct: `${id}@handle.invalid`, invalid_handle: true });
         expect(jsonBytes(answer)).toBeLessThanOrEqual(FILL_SHAPES[fill].account.json);
       }
@@ -2552,7 +2689,7 @@ describe("the table of maxima (RES-3)", () => {
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
     expect({ measured: Math.max(...payloads), conservative: payload }).toEqual({
       measured: 332_952,
-      conservative: 415_032,
+      conservative: 471_650,
     });
     expect(payload).toBeLessThan(STREAM_LIMITS.payloadBytes);
     // The derived bounds of a local field value and of a local account's fields, and the fill's linked value.
