@@ -348,10 +348,11 @@ Accounts (the `Account` and credential account entities):
 - `uri` is `''` for an imported actor id whose JSON passes 2,048 bytes; ingestion stores none.
 - An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
   `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
-  as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it: a
-  lookup, an account search, a new post's mention and the web's featured hashtag page of `! <id>@<domain>` match
-  nothing, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
-  `finder_concern.rb:27-35`). A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
+  as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
+  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
+  `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
+  search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
   where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
   hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
   username.
