@@ -3,11 +3,13 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
+import { railsBlank } from "../platform/rails-blank";
 import {
   ACCOUNT_EMOJIS_BYTES,
   presentedAttributionDomains,
   presentedDisplayName,
   presentedNote,
+  presentedProfileDescription,
 } from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
@@ -47,9 +49,16 @@ const CONTEXT = [
 // The context of a suspended actor's Update, which names `suspended` (toot:suspended) as Mastodon's context does.
 const SUSPENDED_CONTEXT = [...CONTEXT.slice(0, 3), { ...(CONTEXT[3] as object), suspended: "toot:suspended" }];
 
-function image(stored: string | null): { type: "Image"; url: string } | undefined {
+// An image as the actor endpoint publishes it (federation.ts image): `summary` only when the presented description is
+// not railsBlank.
+function image(
+  stored: string | null,
+  description: string,
+): { type: "Image"; url: string; summary?: string } | undefined {
   const url = httpUrl(stored);
-  return url === null ? undefined : { type: "Image", url: url.href };
+  return url === null
+    ? undefined
+    : { type: "Image", url: url.href, ...(railsBlank(description) ? {} : { summary: description }) };
 }
 
 function actorRow(db: Db, accountId: string): ActorRow | undefined {
@@ -93,8 +102,8 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
           manuallyApprovesFollowers: row.locked === 1,
           discoverable: row.discoverable === null ? undefined : row.discoverable === 1,
           indexable: row.indexable === 1,
-          icon: image(row.avatar_url),
-          image: image(row.header_url),
+          icon: image(row.avatar_url, presentedProfileDescription(row.avatar_description)),
+          image: image(row.header_url, presentedProfileDescription(row.header_description)),
           alsoKnownAs: (JSON.parse(row.also_known_as) as string[]).flatMap((uri) => httpUrl(uri)?.href ?? []),
           attachment: fieldSources(row.fields).map((field) => ({
             type: "PropertyValue",

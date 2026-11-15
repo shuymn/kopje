@@ -45,6 +45,7 @@ import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
+import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { bytesToBase64, generateWrappedKey, importPublicKeyPem, type KeyGen } from "../security/key-wrap";
@@ -628,8 +629,8 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
         discoverable: actor.discoverable,
         indexable: actor.indexable,
         // Only http(s) URLs are published; anything else stored is left out (HTML-3), aliases included.
-        icon: image(actor.avatarUrl),
-        image: image(actor.headerUrl),
+        icon: image(actor.avatarUrl, actor.avatarDescription),
+        image: image(actor.headerUrl, actor.headerDescription),
         aliases: actor.alsoKnownAs.flatMap((uri) => httpUrl(uri) ?? []),
         // Profile fields as Mastodon publishes them: the value escaped and linked (HTML-2).
         attachments: actor.fields.map(
@@ -706,9 +707,11 @@ function emojiObject(emoji: LocalActor["emojis"][number]): Emoji {
   });
 }
 
-function image(stored: string | null): Image | null {
+// An image as ActivityPub::ImageSerializer writes one: its description as `summary` only when present? (railsBlank:
+// U+0085 is blank, U+FEFF is not), as the Update writes it (domain/actor-update.ts).
+function image(stored: string | null, description: string): Image | null {
   const url = httpUrl(stored);
-  return url === null ? null : new Image({ url });
+  return url === null ? null : new Image({ url, ...(railsBlank(description) ? {} : { summary: description }) });
 }
 
 // The instance actor, as Mastodon's: an Application at /actor with its own inbox and the shared inbox.

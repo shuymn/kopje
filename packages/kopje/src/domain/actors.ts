@@ -7,6 +7,7 @@ import {
   presentedAttributionDomains,
   presentedDisplayName,
   presentedNote,
+  presentedProfileDescription,
 } from "../platform/stored-bounds";
 import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 import { type FieldSource, fieldSources } from "./accounts";
@@ -29,6 +30,10 @@ export type LocalActor = {
   note: string;
   avatarUrl: string | null;
   headerUrl: string | null;
+  // The image descriptions as presented (presentedProfileDescription), published as the icon's and image's `summary`
+  // (federation.ts).
+  avatarDescription: string;
+  headerDescription: string;
   locked: boolean;
   discoverable: boolean | null;
   indexable: boolean;
@@ -73,6 +78,8 @@ export function localActorOf(db: Db, username: string): LocalActor | null {
     note: presentedNote(row.note),
     avatarUrl: row.avatar_url,
     headerUrl: row.header_url,
+    avatarDescription: presentedProfileDescription(row.avatar_description),
+    headerDescription: presentedProfileDescription(row.header_description),
     locked: row.locked === 1,
     discoverable: row.discoverable === null ? null : row.discoverable === 1,
     indexable: row.indexable === 1,

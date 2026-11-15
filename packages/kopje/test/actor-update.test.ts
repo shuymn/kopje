@@ -10,6 +10,8 @@ import {
   BIO_JSON_BYTES,
   DISPLAY_NAME_LIMIT,
   DISPLAY_NAME_READ_BYTES,
+  PROFILE_DESCRIPTION_BYTES,
+  PROFILE_DESCRIPTION_LIMIT,
 } from "../src/platform/stored-bounds";
 import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -338,6 +340,38 @@ describe("Update(Person)", () => {
   }, 30_000);
 });
 
+// The local actor's document at the endpoint, in the Update a later profile change records, in a moderation Update
+// and in actorSnapshot; with what ACTOR_ROW_COLUMN_MAP reads of the display name and the decoded row's heap against
+// its rowHeapSql.
+async function documents(h: Awaited<ReturnType<typeof setup>>, locked: boolean) {
+  const id = h.users.alice.id;
+  const from = "FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?";
+  const [row] = await sql<ActorRow>(h.store, `SELECT ${selectSql(ACTOR_ROW_COLUMN_MAP)} ${from}`, id);
+  const [bound] = await sql<{ read: number; heap: number }>(
+    h.store,
+    `SELECT octet_length(${ACTOR_ROW_COLUMN_MAP.display_name}) AS read, ${rowHeapSql(ACTOR_ROW_COLUMN_MAP)} AS heap
+			${from}`,
+    id,
+  );
+  expect((await patch(h, { locked })).status).toBe(200);
+  const update = (await updates(h)).at(-1)?.activity.object;
+  expect(update).toMatchObject({ manuallyApprovesFollowers: locked });
+  const snapshot = await runInDurableObject(h.store, (_instance, state) =>
+    actorSnapshot(new Db(state.storage.sql), id),
+  );
+  const moderation = await runInDurableObject(
+    h.store,
+    (_instance, state) => moderationUpdate(new Db(state.storage.sql), id, NOW)?.activity.object,
+  );
+  const endpoint = await (
+    await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
+  ).json<Record<string, unknown>>();
+  for (const document of [update, moderation, JSON.parse(snapshot)]) {
+    expect(comparable(document)).toEqual(comparable(endpoint));
+  }
+  return { endpoint, read: bound?.read, heap: { decoded: rowHeapBytes(row!), sql: bound?.heap } };
+}
+
 // RES-3: the local actor's display name and note as an import may hold them, in malformed UTF-8 that passes the
 // triggers of 0048_stored_bounds and decodes past their bounds. The endpoint and every Update read the display name
 // through displayNameReadSql (ACTOR_ROW_COLUMN_MAP) and present both through presentedDisplayName and presentedNote, as
@@ -347,38 +381,6 @@ describe("the actor's display name and note (RES-3)", () => {
   // continuation bytes: within noteSql's BIO_JSON_BYTES, since json_quote copies them, and 196,604 JSON bytes decoded.
   const NAME_BYTES = 1_048_576;
   const NOTE_BYTES = 65_534;
-
-  // The local actor's document at the endpoint, in the Update a later profile change records, in a moderation Update
-  // and in actorSnapshot; with what ACTOR_ROW_COLUMN_MAP reads of the display name and the decoded row's heap against
-  // its rowHeapSql.
-  async function documents(h: Awaited<ReturnType<typeof setup>>, locked: boolean) {
-    const id = h.users.alice.id;
-    const from = "FROM accounts a JOIN local_accounts l ON l.account_id = a.id WHERE a.id = ?";
-    const [row] = await sql<ActorRow>(h.store, `SELECT ${selectSql(ACTOR_ROW_COLUMN_MAP)} ${from}`, id);
-    const [bound] = await sql<{ read: number; heap: number }>(
-      h.store,
-      `SELECT octet_length(${ACTOR_ROW_COLUMN_MAP.display_name}) AS read, ${rowHeapSql(ACTOR_ROW_COLUMN_MAP)} AS heap
-			${from}`,
-      id,
-    );
-    expect((await patch(h, { locked })).status).toBe(200);
-    const update = (await updates(h)).at(-1)?.activity.object;
-    expect(update).toMatchObject({ manuallyApprovesFollowers: locked });
-    const snapshot = await runInDurableObject(h.store, (_instance, state) =>
-      actorSnapshot(new Db(state.storage.sql), id),
-    );
-    const moderation = await runInDurableObject(
-      h.store,
-      (_instance, state) => moderationUpdate(new Db(state.storage.sql), id, NOW)?.activity.object,
-    );
-    const endpoint = await (
-      await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
-    ).json<Record<string, unknown>>();
-    for (const document of [update, moderation, JSON.parse(snapshot)]) {
-      expect(comparable(document)).toEqual(comparable(endpoint));
-    }
-    return { endpoint, read: bound?.read, heap: { decoded: rowHeapBytes(row!), sql: bound?.heap } };
-  }
 
   it("bounds a malformed display name and note alike at the endpoint and in the Update", async () => {
     const h = await setup();
@@ -432,6 +434,53 @@ describe("the actor's display name and note (RES-3)", () => {
     const { endpoint, read } = await documents(h, true);
     expect({ name: endpoint.name, summary: endpoint.summary }).toEqual({ name, summary: note });
     expect(read).toBe(DISPLAY_NAME_READ_BYTES);
+  });
+});
+
+// The image descriptions as ActivityPub::ImageSerializer publishes them (summary only when present?), presented by
+// presentedProfileDescription, alike at the endpoint and in the Update.
+describe("the actor's image descriptions", () => {
+  const AVATAR = "https://kopje.test/media/AAAA/full.webp";
+
+  it("publishes a summary unless Rails judges the description blank, alike at the endpoint and in the Update", async () => {
+    const h = await setup();
+    await sql(h.store, "UPDATE accounts SET avatar_url = ? WHERE id = ?", AVATAR, h.users.alice.id);
+    const actor = async () =>
+      (await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })).json<{
+        icon: Record<string, unknown>;
+      }>();
+    // U+FEFF is not White_Space, so present?; U+0085 and U+3000 are, so blank (trim() reads U+FEFF as blank and leaves
+    // U+0085). Each is written by a description-only change, which records an Update when the document changes.
+    let last: unknown;
+    for (const [description, summary, recorded] of [
+      ["\uFEFF", "\uFEFF", true],
+      ["\u0085", undefined, true],
+      ["\u3000", undefined, false],
+    ] as const) {
+      expect((await patch(h, { avatar_description: description })).status).toBe(200);
+      const sent = await updates(h);
+      expect(sent.at(-1)?.activity.id !== last, description).toBe(recorded);
+      last = sent.at(-1)?.activity.id;
+      const served = await actor();
+      expect(served.icon, description).toEqual({ type: "Image", url: AVATAR, ...(summary ? { summary } : {}) });
+      expect(comparable(sent.at(-1)?.activity.object), description).toEqual(comparable(served));
+    }
+  });
+
+  it("publishes an imported malformed description cut at PROFILE_DESCRIPTION_LIMIT, alike in both", async () => {
+    const h = await setup();
+    // 0xFF and 599 continuation bytes: one character to 0097's trigger, 600 U+FFFD once decoded.
+    await sql(
+      h.store,
+      "UPDATE accounts SET avatar_url = ?, header_url = ?, avatar_description = CAST(? AS TEXT) WHERE id = ?",
+      AVATAR,
+      AVATAR,
+      rawBytes(`\u00ff${"\u0080".repeat(PROFILE_DESCRIPTION_BYTES - 1)}`),
+      h.users.alice.id,
+    );
+    const { endpoint } = await documents(h, true);
+    expect(endpoint.icon).toEqual({ type: "Image", url: AVATAR, summary: "\uFFFD".repeat(PROFILE_DESCRIPTION_LIMIT) });
+    expect(endpoint.image).toEqual({ type: "Image", url: AVATAR });
   });
 });
 
