@@ -72,9 +72,11 @@ describe("account presentation with stale statistics (RES-7)", () => {
           const plans: PlannedStatement[] = [];
           reads[name] = { result: run(plannedSql(state.storage.sql, /\baccounts a\b/, plans)), plans };
         };
-        read("getAccount", (s) => getAccount.run(s, { id: carol, present }, transaction));
+        read("getAccount", (s) => getAccount.run(s, { id: carol, present, credential: null }, transaction));
         read("credentialAccount", (s) => credentialAccount(new Db(s), alice.id, present));
-        read("getAccounts", (s) => getAccounts.run(s, { ids: [alice.id, carol], present }, transaction));
+        read("getAccounts", (s) =>
+          getAccounts.run(s, { ids: [alice.id, carol], present, credential: null }, transaction),
+        );
         read("accountsOf", (s) => [...accountsOf(new Db(s), [alice.id, carol], present)]);
         read("partialAccountsOf", (s) => [...partialAccountsOf(new Db(s), [alice.id, carol], present)]);
         read("endorsements", (s) => accountEndorsementsWithin(new Db(s), alice.id, { page: { limit: 40 }, present }));

@@ -131,7 +131,7 @@ describe("instance activity: the answer", () => {
     const lookup = await runInDurableObject(h.store, (_instance, state) =>
       instanceActivity.run(
         observedSql(state.storage.sql, (_rows, query) => read.push(query)),
-        { now: NOW },
+        { now: NOW, credential: null },
       ),
     );
     // The guarded branch ran: the setting was read, and nothing else.
@@ -213,7 +213,10 @@ describe("instance activity: the answer", () => {
     const { text } = await dumpViaRpc(source);
     const target = await migratedStore();
     await copyConfig(source, target);
-    const first = async () => (JSON.parse((await target.instanceActivity(BUILD, { now: NOW }))!) as ActivityWeek[])[0];
+    const first = async () => {
+      const answer = await target.instanceActivity(BUILD, { now: NOW, credential: null });
+      return (JSON.parse(answer.status === "ok" ? answer.value! : "") as ActivityWeek[])[0];
+    };
     // The empty Store's answer is kept, then the import brings a count in.
     expect(await first()).toMatchObject({ registrations: "0" });
     expect(await keptRow(target)).toHaveLength(1);
@@ -307,14 +310,17 @@ describe("instance activity: the answer", () => {
           },
         } as Parameters<typeof answerInstanceActivity>[0];
         try {
-          return await answerInstanceActivity(gated, BUILD, { now: NOW });
+          return await answerInstanceActivity(gated, BUILD, { now: NOW, credential: null });
         } finally {
           if (cursor !== null) {
             await instance.dumpFinish(BUILD, cursor, true);
           }
         }
       });
-      expect((JSON.parse(body!) as ActivityWeek[])[0], change).toMatchObject({ statuses: "1" });
+      expect(body.status, change).toBe("ok");
+      expect((JSON.parse(body.status === "ok" ? body.value! : "") as ActivityWeek[])[0], change).toMatchObject({
+        statuses: "1",
+      });
       expect(await keptRow(h.store), change).toEqual([]);
     }
     // The guarded path: with no dump, the answer is kept.
@@ -855,13 +861,15 @@ describe("instance activity: bounds", () => {
     );
     expect(new TextEncoder().encode(result!).length).toBeLessThanOrEqual(MAX_ANSWER_BYTES);
     // The request's whole path: the lookup, then the read that keeps the answer.
-    const lookup = await rowsRead(h, instanceActivity, { now: NOW });
+    const lookup = await rowsRead(h, instanceActivity, { now: NOW, credential: null });
     const keep = await rowsRead(h, keepInstanceActivity, { now: NOW });
     expect(lookup).toBeLessThanOrEqual(4);
     expect(keep).toBeLessThanOrEqual(4 + ACTIVITY_WEEKS * WINDOW_ROWS);
     // A day's answer is read again, not made: the lookup alone.
     expect(
-      await runInDurableObject(h.store, (_i, state) => instanceActivity.run(state.storage.sql, { now: NOW })),
+      await runInDurableObject(h.store, (_i, state) =>
+        instanceActivity.run(state.storage.sql, { now: NOW, credential: null }),
+      ),
     ).toEqual({ status: "kept", body: result });
   }, 120_000);
 
