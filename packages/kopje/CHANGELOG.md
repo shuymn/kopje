@@ -99,6 +99,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
   media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
+- The streaming API's turns count each event in UTF-8 bytes, as its 512 KiB limit does; an event of characters past
+  U+007F was counted at a half to a third of its size, so a turn could send up to three times its budget. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

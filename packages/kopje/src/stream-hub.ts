@@ -34,6 +34,7 @@ import {
   type StreamUnitAfter,
 } from "./domain/streaming";
 import { normalizeTag } from "./domain/tag-name";
+import { utf8Length } from "./platform/dump-format";
 import { errorFields } from "./platform/error-message";
 import { toStoreUnavailable } from "./platform/store-errors";
 import type { StoreKernel, StoreOperation } from "./platform/store-kernel";
@@ -79,8 +80,11 @@ type Charge = { checks: number; presentations: number; bytes: number; sends: num
 // mention, one for each list, `public*` and `hashtag*` key: an account has at most 16 keys, and an edit reads home and
 // the mention whatever it subscribes to; and the mention filter once a feed returned the status), one presentation,
 // and a send to each of 16 subscriptions on each of 16 sockets. A delete reads at most 16 lists and its tombstone.
+// Bytes are presented payloads' UTF-8 bytes, a unit's charged whole once presented, sent or skipped: a turn starts no
+// unit once less than a unit's worst is left, and the unit that crosses TURN_BUDGET.bytes is bounded by the most a
+// streamed subject presents (RES-6, docs/threat-model.md).
 export const TURN_BUDGET: Charge = { checks: 512, presentations: 64, bytes: 4 * 1024 * 1024, sends: 4096 };
-const UNIT_WORST: Charge = { checks: 35, presentations: 1, bytes: STREAM_LIMITS.payloadBytes, sends: 256 };
+export const UNIT_WORST: Charge = { checks: 35, presentations: 1, bytes: STREAM_LIMITS.payloadBytes, sends: 256 };
 
 // Journal events read per scan of a turn.
 const SCAN = 64;
@@ -782,10 +786,12 @@ export class StreamHub {
     let payload: string | null = null;
     if (made.streams.length > 0) {
       payload = JSON.stringify(typeof made.payload === "string" ? made.payload : JSON.stringify(made.payload));
+      // One measure for the charge and the limit: the payload's UTF-8 bytes, charged whole, sent or skipped.
+      const bytes = utf8Length(payload);
       if (typeof made.payload !== "string") {
-        budget.charge({ presentations: 1, bytes: payload.length });
+        budget.charge({ presentations: 1, bytes });
       }
-      if (exceeds(payload, STREAM_LIMITS.payloadBytes)) {
+      if (bytes > STREAM_LIMITS.payloadBytes) {
         console.warn({ event: "kopje.stream.payload-skipped", kind });
         payload = null;
       }

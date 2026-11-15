@@ -3736,10 +3736,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
-  spends at most 512 checks, 64 presentations, 4 MiB of presented payload and 4,096 sends, runs a unit only while what
-  is left covers a unit's worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds)
-  and the feeds' mention filter; one presentation, 256 sends) and leaves the rest to the next turn; a payload over 512
-  KiB is skipped and logged. The journal records nothing once it spans 4,096 ids, and is pruned behind the position, at
+  spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
+  worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
+  filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
+  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
+  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
+  turn presents at most 18,745,008 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,537,495 being the most JSON a streamed subject presents (`update` and
+  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
+  status, report and warning together, an announcement), derived from the maxima table
+  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
   send, before it stops for its budget. a delete's capture is one journal row and at most one row per account in the
