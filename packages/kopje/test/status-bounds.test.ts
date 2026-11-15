@@ -1809,17 +1809,18 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
     fill,
   ).toEqual([0, 10, 1, 1, 1, 9]);
   // The escaped fill's streamed witnesses of the turn's hard bound (stream-hub.ts): a conversation of alice's with the
-  // table's participants whose last status is the boost of the quote, and a favourite notification of alice's whose
-  // status is that boost, each presented as a stream unit presents it (unfiltered, as R33 reads it).
+  // table's participants whose last status is the quote (it shows no boost: conversationStream), and a favourite
+  // notification of alice's whose status is the boost of the quote, each presented as a stream unit presents it
+  // (unfiltered, as R33 reads it).
   let streamed: FillMeasure["streamed"];
   if (fill === "escaped") {
     const [conversation] = await sql<{ id: string }>(
       t.store,
-      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-boost', ?, ?)
+      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-streamed', ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,
       ALICE,
       JSON.stringify(participants.toSorted()),
-      boost,
+      quote,
     );
     const [notification] = await sql<{ id: string }>(
       t.store,
@@ -1838,13 +1839,13 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       expect(made.payload, kind).not.toBeNull();
       return made.payload as Record<string, unknown>;
     };
-    const talkOfBoost = await unit("conversation", conversation!.id);
-    expect((talkOfBoost.last_status as { id: string }).id).toBe(boost);
+    const talkOfQuote = await unit("conversation", conversation!.id);
+    expect((talkOfQuote.last_status as { id: string }).id).toBe(quote);
     const notified = await unit("notification", notification!.id);
     expect((notified.status as { id: string }).id).toBe(boost);
     streamed = {
-      conversation: jsonBytes(talkOfBoost),
-      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfBoost))),
+      conversation: jsonBytes(talkOfQuote),
+      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfQuote))),
       notification: jsonBytes(notified),
     };
   }
@@ -2726,9 +2727,10 @@ describe("the table of maxima (RES-3)", () => {
   // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
   // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
   // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
-  // status, which a stored row may make a boost of a quote; `notification` its account, its status and a report and
-  // a warning (their conservative figures count a fallback each, which a streamed notification does not carry); an
-  // announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // status, counted as a boost of a quote, which it no longer shows (conversationStream shows at most a quote), so S is
+  // conservative until it is re-derived from the quote conversation (#1610); `notification` its account, its status
+  // and a report and a warning (their conservative figures count a fallback each, which a streamed notification does
+  // not carry); an announcement, at its derived maximum (test/announcement-bounds.test.ts).
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
     const c = await conservativeJson();
     const ANNOUNCEMENT = 248_997;
@@ -2748,7 +2750,7 @@ describe("the table of maxima (RES-3)", () => {
     });
     expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_745_008);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_455_236, conversationPayload: 8_269_925, notification: 5_910_647 });
+    expect(streamed).toEqual({ conversation: 7_046_302, conversationPayload: 7_802_992, notification: 5_910_647 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
