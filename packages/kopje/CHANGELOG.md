@@ -91,6 +91,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
+  media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

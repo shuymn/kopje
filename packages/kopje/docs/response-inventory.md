@@ -154,6 +154,16 @@ size (a first that uses it up ends them without reading the next), and a page of
 `ADMIN_REPORT_STATUS_BUDGET` statuses, which bounds the statuses it reads. See `src/domain/reports.ts`
 (`REPORT_STATUS_BYTES`, `ADMIN_REPORT_STATUS_BUDGET`, `adminReportStream`).
 
+## Scheduled statuses
+
+| Operation                                                   | Mechanism                                                                       | Continuation |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------ |
+| `listScheduled`                                             | Budget: up to 40 scheduled statuses, each read by key when admission reaches it | Id cursor    |
+| `getScheduled`, `postStatus` (scheduled), `updateScheduled` | Unit                                                                            |              |
+
+A scheduled status shows at most `MAX_STATUS_MEDIA` held media; its maximum is in "Maxima of presented units"
+(`threat-model.md`).
+
 ## Notifications
 
 | Operation                                       | Mechanism                                                      | Continuation       |
