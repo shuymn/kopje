@@ -10,7 +10,7 @@ import { IMAGE_MATRIX_LIMIT, IMAGE_SIZE_LIMIT, processImage, type ProcessedImage
 import { fileKey, mediaKeys, originalKey } from "../platform/media-files";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
-import { yieldsMoreThan } from "../platform/stored-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, yieldsMoreThan } from "../platform/stored-bounds";
 import {
   afterResponse,
   type AfterResponse,
@@ -43,11 +43,9 @@ import { type FileRule, type Params, parseBody } from "./params";
 // Images is called (domain/media.ts), so an unauthenticated, over-budget or expired request costs no transformation. Processing is synchronous, so v2 answers 200 like v1 (Mastodon answers 200 when
 // processing finished in the request).
 
-// MediaAttachment::MAX_DESCRIPTION_LENGTH.
-export const MAX_DESCRIPTION = 1500;
-
 // The file plus the form's other fields (description, focus, and a thumbnail, which counts toward this bound and is
-// refused).
+// refused): a description of MAX_MEDIA_DESCRIPTION_LENGTH four-byte code points (40,000 bytes) with its part headers
+// fits beside a file at IMAGE_SIZE_LIMIT.
 const MEDIA_BODY_LIMIT = IMAGE_SIZE_LIMIT + 64 * 1024;
 
 export const THUMBNAIL_MUST_BE_BLANK = "Validation failed: Thumbnail must be blank";
@@ -92,23 +90,28 @@ export function parseFocus(value: string | undefined): { x: number; y: number } 
   return { x, y };
 }
 
-// Whether `text` has more than `max` characters (code points), counting no further than max + 1.
+// Whether `text` has more than `max` characters (code points): by its length when that settles it (a code point is one
+// or two UTF-16 code units), else counting no further than max + 1.
 function exceedsCharacters(text: string, max: number): boolean {
   if (text.length <= max) {
     return false;
   }
-  return yieldsMoreThan(text, max);
+  return text.length > 2 * max || yieldsMoreThan(text, max);
 }
 
+// A local description is at most MAX_MEDIA_DESCRIPTION_LENGTH code points (MediaAttachment::MAX_DESCRIPTION_LENGTH),
+// the bound its stored value is cut at, so storedMediaDescription never shortens one this accepts.
 export function descriptionProblem(description: string | undefined): string | undefined {
-  return description !== undefined && exceedsCharacters(description, MAX_DESCRIPTION)
-    ? `Validation failed: Description is too long (maximum is ${MAX_DESCRIPTION} characters)`
+  return description !== undefined && exceedsCharacters(description, MAX_MEDIA_DESCRIPTION_LENGTH)
+    ? `Validation failed: Description is too long (maximum is ${MAX_MEDIA_DESCRIPTION_LENGTH} characters)`
     : undefined;
 }
 
-// Each text field of the upload form is bounded on its own (a description is at most 1,500 characters, at most 6 KB
-// in UTF-16), and so is their number, so a small image cannot carry megabytes of text into later processing (RES-1).
-const MAX_FIELD_LENGTH = 4 * MAX_DESCRIPTION;
+// Each text field of the upload form is bounded on its own, and so is their number, so a small image cannot carry
+// megabytes of text into later processing (RES-1): the description by its own rule (descriptionProblem, which reads a
+// longer one by its length and counts no further than one code point past the limit), so every description too long
+// gets the description's message whatever its plane; the others at the longest valid description's UTF-16 length.
+export const MAX_FIELD_LENGTH = 2 * MAX_MEDIA_DESCRIPTION_LENGTH;
 const MAX_FIELDS = 16;
 
 type MediaForm = { file: Uint8Array; params: Params } | { error: string };
@@ -160,9 +163,11 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
     return { error: TOO_LARGE };
   }
   // The bounds hold for what is used: body fields and query parameters together. A thumbnail is only checked for
-  // presence and refused, so its length is not bounded here (the body's is).
+  // presence and refused, and a description is judged by its own rule, so neither length is bounded here (the body's
+  // is).
   const params = form.withQuery([...new URL(request.url).searchParams.entries()], UPLOAD_FILES);
-  const long = ([key, value]: readonly [string, string]) => key !== "thumbnail" && value.length > MAX_FIELD_LENGTH;
+  const long = ([key, value]: readonly [string, string]) =>
+    key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
   if (params.entries.length > MAX_FIELDS || params.entries.some(long)) {
     return { error: "Validation failed: A form field is too long" };
   }

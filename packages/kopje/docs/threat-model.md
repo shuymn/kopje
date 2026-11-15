@@ -3085,11 +3085,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. The
-  raw presenters (`present` and `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in
-  accounts.ts) are not exported, so the compiler refuses direct use outside their module; the exported paths present one
-  unit or admit within a budget. _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS`
-  hold their stored bounds (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
+  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
+  length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
+  bounds do (remote ones, or local content filled by mentions). The skip is an accepted departure
+  (`docs/mastodon-deviations.md`, "Streaming."; `test/streaming/public.test.ts`). The raw presenters (`present` and
+  `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
+  compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
+  _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
+  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. Columns that keep a read-time projection are read through their helper in
@@ -3878,10 +3883,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
-  spends at most 512 checks, 64 presentations, 4 MiB of presented payload and 4,096 sends, runs a unit only while what
-  is left covers a unit's worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds)
-  and the feeds' mention filter; one presentation, 256 sends) and leaves the rest to the next turn; a payload over 512
-  KiB is skipped and logged. The journal records nothing once it spans 4,096 ids, and is pruned behind the position, at
+  spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
+  worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
+  filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
+  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
+  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
+  turn presents at most 18,745,008 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,537,495 being the most JSON a streamed subject presents (`update` and
+  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
+  status, report and warning together, an announcement), derived from the maxima table
+  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
   send, before it stops for its budget. a delete's capture is one journal row and at most one row per account in the

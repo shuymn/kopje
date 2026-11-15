@@ -24,7 +24,20 @@ Other documents point here rather than repeat the release.
   - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
-  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7).
+  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
+  API sends it, passes 512 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged: the `update`,
+  `status.update`, `notification` or `conversation` frame is missing, and the status or notification is there on the
+  next REST read. Mastodon sends every event. The payload is the event's media descriptions and everything else it
+  shows, both as encoded: a description's character takes 1 byte (ASCII) to 4 (characters past U+FFFF, such as most
+  emoji, and `"` and `\`), and at most 7, for the control characters written as `\u00XX`, such as U+0001 (a tab,
+  newline, carriage return, backspace or form feed takes 3); the rest expands with formatted text (a link is written
+  twice, in its address and its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event
+  whose rest takes R bytes is sent while its descriptions take at most 524,288 − R. A post and its quote with eight
+  descriptions of 10,000 characters (320,000 bytes of emoji, 560,000 of U+0001) are sent beside plain text, a poll and
+  profiles (R about 84,000), and skipped beside three long links in each post (R about 224,000) or with descriptions of
+  U+0001; a post without a quote is sent with four such descriptions beside any of these. Events whose statuses are
+  near their stored bounds (remote statuses, or content filled by mentions) are skipped too. The figures are pinned by
+  `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
   remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A

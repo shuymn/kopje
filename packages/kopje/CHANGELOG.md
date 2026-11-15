@@ -134,6 +134,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A media description may have 10,000 characters on upload, media update and status edit, and
+  `configuration.media_attachments.description_limit` is 10000, as in Mastodon 4.6 (`mastodon#39306`); the limit was
+  1,500. A post and its quote with long descriptions can pass the streaming API's 512 KiB event limit, together with
+  formatted text that expands as it is sent (links, profile fields, poll choices) or with descriptions of control
+  characters such as U+0001; such an event is not streamed and shows on the next refresh
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
   leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
   migration and no `wrangler.jsonc` change.
@@ -209,6 +215,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
   media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
+- The streaming API's turns count each event in UTF-8 bytes, as its 512 KiB limit does; an event of characters past
+  U+007F was counted at a half to a third of its size, so a turn could send up to three times its budget. No Store
+  migration and no `wrangler.jsonc` change.
 - The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
   there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
   way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
