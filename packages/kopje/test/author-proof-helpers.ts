@@ -272,11 +272,18 @@ export const MASTODON_47_FORWARDED_CONTEXT = [
   MASTODON_46_EXTENSIONS,
 ];
 
+// The @context a Mastodon of each release line forwards under (full_context at v4.5.21, v4.6.11 and v4.7.5).
+export const MASTODON_FORWARDED_CONTEXTS = [
+  ["4.5.21", MASTODON_45_FORWARDED_CONTEXT],
+  ["4.6.11", MASTODON_46_FORWARDED_CONTEXT],
+  ["4.7.5", MASTODON_47_FORWARDED_CONTEXT],
+] as const;
+
 // `signed` with its @context replaced by `context` and its signature kept: what a Mastodon holding a boost or quote of a
 // status forwards of its signed Delete (JsonLdHelper#compact under full_context, then patch_for_forwarding! putting back
 // every value but the @context). Every key of Mastodon's and Kopje's status Deletes is a full_context term, so the
-// compaction changes nothing else (checked once with jsonld.js, not with Mastodon's Ruby). A stamp's Delete in this
-// form stands for how Mastodon 4.7.5 forwards it, its signature kept, a form no profile accepts yet (#1599).
+// compaction changes nothing else (checked once with jsonld.js, not with Mastodon's Ruby). Mastodon's stamp Delete
+// (4.5.10 on) and Kopje's are forwarded this way too (checked with jsonld.js, not with Mastodon's Ruby).
 export function mastodonForwarded(signed: Json, context: unknown = MASTODON_45_FORWARDED_CONTEXT): Json {
   return { ...signed, "@context": context };
 }

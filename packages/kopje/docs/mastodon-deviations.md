@@ -1014,9 +1014,11 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 - An author's proof on a `Delete`, relayed or the author's own, is considered only on a body in one of the sender
   profiles (`PROFILES` in `src/federation/author-proof.ts`; ID-1 in [threat-model.md](threat-model.md) defines them):
   Mastodon's status `Delete` (`DeleteSerializer`, `DeleteNoteSerializer` from 4.6) and stamp `Delete`
-  (`DeleteQuoteAuthorizationSerializer`), the same bodies from 4.4 to 4.7, each with the `@context` Mastodon writes and
-  the keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
-  reached the inbox); Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 to 4.7 forwards it,
+  (`DeleteQuoteAuthorizationSerializer`, as 4.5.10 to 4.7 write it), each with the `@context` Mastodon writes and the
+  keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
+  reached the inbox); Kopje's own; Mastodon's and Kopje's status and stamp `Delete` as a Mastodon 4.4 to 4.7 forwards it
+  (a stamp's by `Activity::Delete#revoke_quote`, through the local sharers of the quoting status, with no `forwardable?`
+  check; a Mastodon before 4.5.10 drops Mastodon's stamp signature, its `full_context` lacking the stamp's terms),
   compacted under its `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an
   FEP-8b32 proof (`eddsa-jcs-2022`, without `expires`). Mastodon verifies a signature whatever the body's context and
   keys, refusing only JSON-LD features it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a
@@ -1032,9 +1034,10 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
 
 Relayed activities (an activity whose HTTP signer is not its actor; ID-1 in [threat-model.md](threat-model.md)):
 
-- Of the activities another server relays, Kopje applies only a status's `Delete` that carries its author's proof
-  (Forwarded deletes, above); any other changes nothing, answered 202 and dropped once the relaying server owns its key,
-  and 401 when it does not. Mastodon applies a relayed activity of any type whose RsaSignature2017 signature by its
+- Of the activities another server relays, Kopje applies only a status's or a stamp's `Delete` that carries its author's
+  proof (Forwarded deletes, above), and a stamp's `Delete` without one only as a reason to verify the quote naming it
+  again, which Mastodon drops; any other changes nothing, answered 202 and dropped once the relaying server owns its
+  key, and 401 when it does not. Mastodon applies a relayed activity of any type whose RsaSignature2017 signature by its
   actor verifies (`ActivityPub::ProcessActivityService`; before 4.7, `ProcessCollectionService#verify_account!`), and
   from 4.7.0 one whose FEP-8b32 proof by its actor verifies (`process_activity_service.rb:42-75`). An inbound activity
   acts only for its signer, and Kopje weighs an author's proof only on a body it has a profile for

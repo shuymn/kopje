@@ -9,8 +9,8 @@ import { NOW } from "./app-helpers";
 import {
   fepActor,
   MASTODON_45_FORWARDED_CONTEXT,
-  MASTODON_46_FORWARDED_CONTEXT,
   MASTODON_47_FORWARDED_CONTEXT,
+  MASTODON_FORWARDED_CONTEXTS,
   mastodon47Actor,
   mastodon47Signed,
   mastodonDelete,
@@ -37,12 +37,6 @@ const WEBFINGER = "https://purl.archive.org/socialweb/webfinger";
 const RELAY = "https://relay.example";
 const DAY = 24 * 60 * 60 * 1000;
 
-// The @context a Mastodon of each release line forwards (full_context at v4.5.21, v4.6.11 and v4.7.5).
-const FORWARDED = [
-  ["4.5.21", MASTODON_45_FORWARDED_CONTEXT],
-  ["4.6.11", MASTODON_46_FORWARDED_CONTEXT],
-  ["4.7.5", MASTODON_47_FORWARDED_CONTEXT],
-] as const;
 // The extension object Mastodon 4.6 and 4.7 forward under.
 const EXTENSIONS_46 = MASTODON_47_FORWARDED_CONTEXT.at(-1) as Json;
 
@@ -489,13 +483,15 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
     quoting: "https://quoter.example/notes/1",
     quoted: status,
   });
+  // `body` in the form a Mastodon forwards it, under 4.7.5's context unless another is given.
+  const forwarded = (body: Json, context: unknown = MASTODON_47_FORWARDED_CONTEXT) => mastodonForwarded(body, context);
 
   it("passes for Mastodon's and Kopje's status Deletes, under the context Mastodon 4.5.21, 4.6.11 or 4.7.5 forwards", async () => {
     const { bob, status } = await world();
     const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
     const kopje = await fedifySigned((signing as { activity: Json }).activity, bob);
     const mastodon = await mastodonSigned(mastodonDelete(bob, status), bob);
-    for (const [release, context] of FORWARDED) {
+    for (const [release, context] of MASTODON_FORWARDED_CONTEXTS) {
       expect(await proves(mastodonForwarded(mastodon, context), bob, status), `Mastodon's, ${release}`).toBe(true);
       expect(await proves(mastodonForwarded(kopje, context), bob, status), `Kopje's, ${release}`).toBe(true);
     }
@@ -504,12 +500,12 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
   it("passes for Mastodon 4.7's status Delete, signed with expires, under each forwarded context", async () => {
     const { bob, status } = await world();
     const signed = await mastodon47Signed(mastodonDelete(bob, status), bob);
-    for (const [release, context] of FORWARDED) {
+    for (const [release, context] of MASTODON_FORWARDED_CONTEXTS) {
       expect(await proves(mastodonForwarded(signed, context), bob, status), release).toBe(true);
     }
   });
 
-  it("refuses a stamp's Delete in the forwarded form under each context, as Mastodon 4.7.5 forwards it signed (#1599)", async () => {
+  it("passes for Mastodon's and Kopje's stamp Deletes, under the context Mastodon 4.5.21, 4.6.11 or 4.7.5 forwards", async () => {
     const { bob, status } = await world();
     const stamp = STAMP(bob, status);
     const bodies = [
@@ -518,12 +514,58 @@ describe("a Delete a Mastodon forwards (ID-1)", () => {
       ["Kopje's stamp", await fedifySigned(stampDeleteActivity(bob.uri, stamp.uri), bob)],
     ] as const;
     for (const [name, body] of bodies) {
-      // Its own sender form passes: the forwarded @context alone refuses it.
-      expect(await proves(body, bob, stamp.uri), name).toBe(true);
-      for (const [release, context] of FORWARDED) {
-        await refused(mastodonForwarded(body, context), bob, stamp.uri, `${name}, ${release}`);
+      for (const [release, context] of MASTODON_FORWARDED_CONTEXTS) {
+        expect(await proves(mastodonForwarded(body, context), bob, stamp.uri), `${name}, ${release}`).toBe(true);
       }
     }
+  });
+
+  // Each signed in its forwarded form, so that Fedify alone accepts it: the stamp profiles' own clauses refuse it.
+  it.each([
+    [
+      "Mastodon's stamp with one more key in its QuoteAuthorization",
+      (bob: TestActor, status: string) => {
+        const body = mastodonStampDelete(bob, STAMP(bob, status));
+        return mastodonSigned(
+          { ...forwarded(body), object: { ...(body.object as Json), published: "2026-11-13T00:00:00Z" } },
+          bob,
+        );
+      },
+    ],
+    [
+      "Mastodon's stamp with the object's type Tombstone",
+      (bob: TestActor, status: string) => {
+        const body = mastodonStampDelete(bob, STAMP(bob, status));
+        return mastodonSigned({ ...forwarded(body), object: { ...(body.object as Json), type: "Tombstone" } }, bob);
+      },
+    ],
+    [
+      "a Fedify-form signature over Mastodon's stamp, its QuoteAuthorization embedded",
+      (bob: TestActor, status: string) => fedifySigned(forwarded(mastodonStampDelete(bob, STAMP(bob, status))), bob),
+    ],
+    [
+      "a Mastodon-form signature over Kopje's stamp, its object an IRI",
+      (bob: TestActor, status: string) =>
+        mastodonSigned(forwarded(stampDeleteActivity(bob.uri, STAMP(bob, status).uri)), bob),
+    ],
+    [
+      "Mastodon's stamp with a cc",
+      (bob: TestActor, status: string) =>
+        mastodonSigned({ ...forwarded(mastodonStampDelete(bob, STAMP(bob, status))), cc: [PUBLIC] }, bob),
+    ],
+    [
+      "Mastodon's stamp under the 4.7 sequence whose object redefines interactingObject as as:object",
+      (bob: TestActor, status: string) => {
+        const context = [
+          ...MASTODON_47_FORWARDED_CONTEXT.slice(0, -1),
+          { ...EXTENSIONS_46, interactingObject: { "@id": "as:object", "@type": "@id" } },
+        ];
+        return mastodonSigned(forwarded(mastodonStampDelete(bob, STAMP(bob, status)), context), bob);
+      },
+    ],
+  ])("refuses a forwarded stamp Delete not in its sender's form: %s", async (_name, build) => {
+    const { bob, status } = await world();
+    await refused(await build(bob, status), bob, STAMP(bob, status).uri);
   });
 
   it("passes with any subset of the allowed terms, the author's own alone included", async () => {

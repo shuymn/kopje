@@ -63,7 +63,8 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
     object: TOMBSTONE,
   },
   // Mastodon's stamp Delete: ActivityPub::DeleteQuoteAuthorizationSerializer, its object the
-  // QuoteAuthorizationSerializer's (context_helper.rb quote_authorizations), signed as above (RevokeQuoteService).
+  // QuoteAuthorizationSerializer's as 4.5.10 and later write it (context_helper.rb quote_authorizations), signed as
+  // above (RevokeQuoteService).
   mastodonStamp: {
     form: "mastodon",
     context: [
@@ -92,16 +93,20 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   },
   // Kopje's stamp Delete (domain/activities.ts stampDeleteActivity; federation/ld-sign.ts).
   kopjeStamp: { form: "fedify", context: [AS, SECURITY], extra: ["to"], object: "iri" },
-  // Mastodon's and Kopje's status Delete, as a Mastodon (4.4 to 4.7) that holds a boost or quote of the status
-  // forwards it: ActivityPub::ProcessCollectionService (ProcessActivityService from 4.7) replaces the body with its
-  // compaction under full_context (JsonLdHelper#compact, the signature kept as received), patch_for_forwarding! puts
-  // back the values compaction changed (Public, single-item arrays) but not the @context, and ActivityPub::Forwarder
-  // sends that copy. Its @context is one of the three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The
-  // keys of these senders' bodies are all full_context terms, so only the @context changes. A stamp's Delete has no
-  // forwarded profile yet (#1599): Mastodon 4.7.5 forwards it in this form, its author's signature kept, and
-  // inbound.ts relayed drops it (202, logged), the quote staying accepted.
+  // Mastodon's and Kopje's status and stamp Delete, as a Mastodon (4.4 to 4.7) forwards them: a status's when it holds
+  // a boost or quote of the status, a stamp's when it holds a quote naming the stamp (Activity::Delete#revoke_quote,
+  // with no forwardable? check, through the local sharers of the quoting status). ActivityPub::ProcessCollectionService
+  // (ProcessActivityService from 4.7) replaces the body with its compaction under full_context (JsonLdHelper#compact,
+  // the signature kept as received), patch_for_forwarding! puts back the values compaction changed (Public,
+  // single-item arrays) but not the @context, and ActivityPub::Forwarder sends that copy. Its @context is one of the
+  // three MASTODON_NAMED_CONTEXTS sequences, then the extension object. The keys of these senders' bodies are all
+  // full_context terms (Mastodon's stamp's from 4.5.10, which added its terms), so only the @context changes. A
+  // forwarder before 4.5.10 drops the signature of Mastodon's stamp Delete (safe_for_forwarding?): a relay without a
+  // proof.
   mastodonForwardedStatus: { form: "mastodon", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
+  mastodonForwardedStamp: { form: "mastodon", context: "forwarded", extra: ["to"], object: QUOTE_AUTHORIZATION },
+  kopjeForwardedStamp: { form: "fedify", context: "forwarded", extra: ["to"], object: "iri" },
   // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
   // Delete#toJsonLd docContext), which copies that context into the proof.
   fedifyProof: {
