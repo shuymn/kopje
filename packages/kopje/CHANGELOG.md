@@ -46,6 +46,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Link` keeps the parameter, where Mastodon's drops it
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). `api_versions.mastodon` stays 7. No Store migration and
   no `wrangler.jsonc` change.
+- `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
+  profile fields and their name and value lengths) and a description of the default thumbnail, and
+  `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 - WebFinger answers, the instance actor's included, carry FEP-3b86's `Object` intent,
   `https://<domain>/authorize_interaction?uri={object}`, after the subscribe template, as Mastodon 4.6 and later do, so
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent

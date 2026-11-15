@@ -3336,8 +3336,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   push service answers", "keeps the subscription and retries when the push service answers", "sends pushes from the
   delivery doorbell, and not without a VAPID_JWK or in maintenance", "RES-4: a notification fanned out to several
   subscriptions fills the backlog only up to its cap", "records no push beyond the backlog cap"). _Enforced (main)_ for
-  local emoji: `GET /api/v1/custom_emojis` holds at most 1,000 entries of at most 1,489 JSON bytes each with its
-  separator, 1,489,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
+  local emoji: `GET /api/v1/custom_emojis` holds at most 1,000 entries of at most 1,506 JSON bytes each with its
+  separator, 1,506,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
   it); `GET /admin/emojis` pages hold at most 200.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
