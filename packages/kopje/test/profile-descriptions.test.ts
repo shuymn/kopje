@@ -167,11 +167,11 @@ describe("profile image descriptions through update_credentials", () => {
 
   it("are stored as sent and shown on the CredentialAccount and the Account; '' clears one, an absent one is kept", async () => {
     const { h, alice, patch, stored } = await writer();
-    const written = await patch({ avatar_description: " A cat\n", header_description: "A field" });
+    const written = await patch({ avatar_description: " A cat\r\n", header_description: "A field" });
     expect(written.status).toBe(200);
-    expect(descriptions(written.body)).toEqual([" A cat\n", "A field"]);
+    expect(descriptions(written.body)).toEqual([" A cat\r\n", "A field"]);
     expect(descriptions((await getJson<Shown>(h, `/api/v1/accounts/${alice.id}`, alice.token)).body)).toEqual([
-      " A cat\n",
+      " A cat\r\n",
       "A field",
     ]);
     expect(descriptions((await patch({ avatar_description: "" })).body)).toEqual(["", "A field"]);

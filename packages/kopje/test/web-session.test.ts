@@ -765,6 +765,40 @@ describe("settings page", () => {
     expect(await stored()).toEqual({ ...before, avatar_description: "😀".repeat(150), header_description: "" });
   });
 
+  // A browser submits a textarea's line breaks as CRLF (HTML's form-data newline normalization), which the textarea
+  // holds as LF, and the HTML parser drops a newline right after <textarea>: an image description is stored as its
+  // textarea holds it, its code points counted so, and one that starts with a newline shows as stored, so saving what
+  // the browser read stores it unchanged (browser job: the real form).
+  it("keeps an image description as its textarea holds it, a leading newline included, through the form", async () => {
+    const h = await withAlice();
+    const browser = await signIn(h);
+    const csrf = await csrfOf(h, browser);
+    const values = { avatar_description: "\nA cat", header_description: "\n\nA field\n" };
+    const submitted = (value: string) => value.replaceAll("\n", "\r\n");
+    const stored = async () =>
+      (await sql<typeof values>(h.store, "SELECT avatar_description, header_description FROM accounts"))[0];
+    for (const [name, value] of Object.entries(values)) {
+      expect((await postForm(h, browser, "/settings/profile", { csrf, [name]: submitted(value) })).status).toBe(303);
+    }
+    expect(await stored()).toEqual(values);
+    for (const [name, value] of Object.entries(values)) {
+      const shown = await textareaOf(h, browser, name);
+      expect(shown, name).toBe(value);
+      expect((await postForm(h, browser, "/settings/profile", { csrf, [name]: submitted(shown) })).status).toBe(303);
+    }
+    expect(await stored()).toEqual(values);
+    // PROFILE_DESCRIPTION_LIMIT code points with a line break, as the textarea's maxlength counts them; a lone CR.
+    const full = `${"x".repeat(74)}\n${"x".repeat(75)}`;
+    expect(
+      (await postForm(h, browser, "/settings/profile", { csrf, avatar_description: submitted(full) })).status,
+    ).toBe(303);
+    expect((await postForm(h, browser, "/settings/profile", { csrf, header_description: "a\rb" })).status).toBe(303);
+    expect(await stored()).toEqual({ avatar_description: full, header_description: "a\nb" });
+    // The bio is stripped when saved, so only a stored note shows one: a line break first in its paragraph.
+    await sql(h.store, "UPDATE accounts SET note = '<p><br>bio</p>'");
+    expect(await textareaOf(h, browser, "note")).toBe("\nbio");
+  });
+
   it("shows only notices it knows", async () => {
     const h = await withAlice();
     const browser = await signIn(h);

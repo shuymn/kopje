@@ -4,7 +4,7 @@ import { type CredentialAccount, MAX_DISPLAY_NAME, MAX_NOTE, type Visibility } f
 import type { Authorizations } from "../../domain/web-session";
 import { httpUrl } from "../../platform/http-url";
 import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, PROFILE_DESCRIPTION_LIMIT } from "../../platform/stored-bounds";
-import { Alert, Csrf, DateTime } from "../components/basics";
+import { Alert, Csrf, DateTime, TextArea } from "../components/basics";
 import { Icon } from "../components/icon";
 import { type Chrome, Layout } from "../components/layout";
 import { utcDate } from "../format";
@@ -112,14 +112,13 @@ const ImageForm: FC<{ kind: "avatar" | "header"; current: string; description: s
           <div class="field">
             <label>
               {kind === "avatar" ? m.settings.avatarDescription : m.settings.headerDescription}
-              <textarea
+              <TextArea
                 name={`${kind}_description`}
                 rows={2}
                 maxlength={codeUnitsFor(PROFILE_DESCRIPTION_LIMIT)}
-                aria-describedby={descriptionHint}
-              >
-                {description}
-              </textarea>
+                describedBy={descriptionHint}
+                value={description}
+              />
             </label>
             <p class="hint" id={descriptionHint}>
               {m.settings.descriptionHint(PROFILE_DESCRIPTION_LIMIT)}
@@ -183,9 +182,7 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
               </label>
               <label>
                 {m.settings.bio}
-                <textarea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)}>
-                  {account.source.note}
-                </textarea>
+                <TextArea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)} value={account.source.note} />
               </label>
               <fieldset class="pairs">
                 <legend>{m.settings.fields}</legend>

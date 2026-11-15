@@ -199,7 +199,9 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   never drops a stored field. Its text controls take twice the server's limit in code points as their `maxlength`,
   which counts UTF-16 code units (`codeUnitsFor`), so every value the server accepts can be typed or pasted; the server
   refuses a longer one with its message (browser job). Each image card holds, after its upload form, a form for the
-  image's description, which posts the description alone to the profile's route, so it changes nothing else.
+  image's description, which posts the description alone to the profile's route, so it changes nothing else. A
+  textarea (`TextArea`) shows its value whole, a leading newline included, and the route reads a description as its
+  textarea holds it, the CRLF line breaks a browser submits as LF (`textareaText`), before counting it.
 - An app's consent page names its website by host (the whole URL in hidden text), the account in full and the
   permissions in plain language by group, the scopes' own names behind a "Technical scopes" disclosure, and admin
   ones in a fail (danger) alert: amber reads as "go" on this site. Settings' authorized apps name the same groups
