@@ -1,8 +1,7 @@
-import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../domain/accounts";
+import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../domain/accounts";
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
-import { MAX_DISPLAY_NAME, MAX_NOTE } from "./accounts";
 import {
   type ApiContext,
   type ApiHandler,

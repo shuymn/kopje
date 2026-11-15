@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../src/domain/accounts";
+import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../src/domain/accounts";
 import { PIN_LIMIT } from "../src/domain/activities";
 import { MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
-import { MAX_DISPLAY_NAME, MAX_NOTE } from "../src/mastodon/accounts";
 import { type ApiHarness, apiHarness, bearer, json, seedAccount, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -225,8 +224,8 @@ describe("instance account limits", () => {
       );
       return [response.status, (await response.json<{ error?: string }>()).error];
     };
-    // n code points: a NUL and astral characters (two UTF-16 code units each).
-    const text = (n: number) => `\u0000${"\u{1F600}".repeat(n - 1)}`;
+    // n code points: astral characters (two UTF-16 code units each) and a NUL inside, which the strip keeps.
+    const text = (n: number) => `\u{1F600}\u0000${"\u{1F600}".repeat(n - 2)}`;
     const fields = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `n${i}`, value: "v" }));
     const cases: [string, (n: number) => Record<string, unknown>, (n: number) => string][] = [
       [

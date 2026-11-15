@@ -3,9 +3,11 @@ import {
   type FieldSource,
   MAX_ACCOUNTS_BY_ID,
   MAX_ATTRIBUTION_DOMAINS,
+  MAX_DISPLAY_NAME,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  MAX_NOTE,
   type RelationshipResult,
   type Visibility,
 } from "../domain/accounts";
@@ -16,6 +18,7 @@ import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { yieldsMoreThan } from "../platform/stored-bounds";
 import { grantsAny } from "../security/scopes";
 import {
   type ApiContext,
@@ -56,15 +59,10 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
   return account === null ? recordNotFound() : c.json(account);
 };
 
-// In code points; /api/v2/instance advertises both.
-export const MAX_DISPLAY_NAME = 30;
-export const MAX_NOTE = 500;
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
-
-function characters(text: string): number {
-  return [...text].length;
-}
+// Ruby's String#strip as Mastodon 4.7.5's Ruby (4.0) has it: NUL, tab, LF, VT, FF, CR and space at either end.
+const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 
 // The changes update_credentials asks for, and the validation problems with them (Mastodon's messages). Shared by the
 // API and the settings page (app/web.tsx), which posts the same names. Avatar and header come through the media
@@ -72,16 +70,18 @@ function characters(text: string): number {
 export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
   const changes: CredentialChanges = {};
   const problems: string[] = [];
-  const displayName = p.get("display_name");
+  // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
+  // dropped when stored (storedText).
+  const displayName = p.get("display_name")?.replace(RUBY_STRIP, "");
   if (displayName !== undefined) {
-    if (characters(displayName) > MAX_DISPLAY_NAME) {
+    if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
       problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
     }
     changes.displayName = displayName;
   }
-  const note = p.get("note");
+  const note = p.get("note")?.replace(RUBY_STRIP, "");
   if (note !== undefined) {
-    if (characters(note) > MAX_NOTE) {
+    if (yieldsMoreThan(note, MAX_NOTE)) {
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
     }
     changes.note = note;
@@ -119,7 +119,7 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
     if (fields.length > MAX_FIELDS) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELDS} fields)`);
     }
-    if (fields.some((field) => characters(field.name) > MAX_FIELD_NAME || characters(field.value) > MAX_FIELD_VALUE)) {
+    if (fields.some((f) => yieldsMoreThan(f.name, MAX_FIELD_NAME) || yieldsMoreThan(f.value, MAX_FIELD_VALUE))) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELD_NAME} characters each)`);
     }
     changes.fields = fields;
