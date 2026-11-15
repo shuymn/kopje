@@ -266,6 +266,30 @@ describe("link details: the rules Kopje follows", () => {
     expect((await details(`${ld({ headline: 7 })}<title>t</title>`)).title).toBe("t");
   });
 
+  // StructuredData#text_or_language_tagged_string (`mastodon#39190`): an object whose @value and @language are both
+  // truthy in Ruby reads as its @value; anything else as before, a value that is not a string being absent.
+  describe("a language-tagged headline or description", () => {
+    const ld = (fields: object) =>
+      `<script type="application/ld+json">${JSON.stringify({ "@type": "WebPage", ...fields })}</script>` +
+      `<meta property="og:title" content="og"><meta property="og:description" content="og d">`;
+    // [case, the headline and the description, the card's title and description]
+    it.each<[string, unknown, [string, string]]>([
+      ["reads its @value", { "@value": "T", "@language": "en" }, ["T", "T"]],
+      // "" and 0 are truthy in Ruby.
+      ["reads its @value with an empty @language", { "@value": "T", "@language": "" }, ["T", "T"]],
+      ["reads its @value with an @language of 0", { "@value": "T", "@language": 0 }, ["T", "T"]],
+      ["reads as absent without an @language", { "@value": "T" }, ["og", "og d"]],
+      ["reads as absent with a null @language", { "@value": "T", "@language": null }, ["og", "og d"]],
+      ["reads as absent with a false @language", { "@value": "T", "@language": false }, ["og", "og d"]],
+      ["reads as absent with an @value that is not a string", { "@value": 5, "@language": "en" }, ["og", "og d"]],
+      ["reads as absent in an array", [{ "@value": "T", "@language": "en" }], ["og", "og d"]],
+      ["stops the chain at an empty @value, so the title is blank", { "@value": "", "@language": "en" }, ["", ""]],
+    ])("%s", async (_, value, expected) => {
+      const card = await details(ld({ headline: value, description: value }));
+      expect([card.title, card.description]).toEqual(expected);
+    });
+  });
+
   it("decodes the texts a second time, references closed by a semicolon only", async () => {
     expect(
       await details('<title>a &amp;amp; b &amp;lt c</title><meta name="description" content="&amp;quot;x&amp;quot;">'),

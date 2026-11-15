@@ -39,8 +39,9 @@ export type ApiDeps = {
 export type AuthorSignature = { activity: Record<string, unknown>; keyId: string; key: StoredKey };
 
 // The bearer token's digest and the scope the route declares, set by the access middleware (mastodon/access.ts) on
-// every API route: null on a public route. It is not validated there; the Store validates it in the operation.
-type RequestCredential = { tokenHash: string; scope: RequiredScope | null };
+// every API route: null on a public route. It is not validated there; the Store validates it in the operation. admin:
+// the route is the admin API's, whose every answer passes the admin gate first (checkAdminCredential).
+type RequestCredential = { tokenHash: string; scope: RequiredScope | null; admin?: true };
 
 // ownerJudged: on an anonymous route with a token, whether an operation judged the token's owner (judged), so the
 // access middleware does not judge the answer again.
@@ -73,7 +74,7 @@ export function credential(c: ApiContext, deps: Pick<ApiDeps, "now">): Credentia
   if (value === null) {
     throw authError("unauthenticated");
   }
-  return { ...value, now: deps.now() };
+  return { tokenHash: value.tokenHash, scope: value.scope, now: deps.now() };
 }
 
 // The credential of a route that declares a scope, which a user-bound operation of the Store takes.
@@ -100,6 +101,7 @@ const AUTH_ERRORS: Record<AuthFailure["status"], { status: 401 | 403 | 422; mess
   suspended: { status: 403, message: "Your login is currently disabled" },
   insufficient_scope: { status: 403, message: "This action is outside the authorized scopes" },
   user_required: { status: 422, message: "This method requires an authenticated user" },
+  admin_forbidden: { status: 403, message: "Forbidden" },
   forbidden: { status: 403, message: "This action is not allowed" },
 };
 
@@ -127,6 +129,12 @@ export function suspendedError(): Response {
   return mastodonError(status, message);
 }
 
+// The admin gate's 403, the answer of an admin route to a request without a token (mastodon/access.ts).
+export function adminForbiddenError(): Response {
+  const { status, message } = AUTH_ERRORS.admin_forbidden;
+  return mastodonError(status, message);
+}
+
 // The error answer to an authorization failure, carried to the app's error handler; an invalid token's carries its
 // Bearer challenge.
 function authError(failure: AuthFailure["status"]): HTTPException {
@@ -138,25 +146,26 @@ function authError(failure: AuthFailure["status"]): HTTPException {
 }
 
 // A request error the Worker found before calling the Store. Mastodon authenticates first, so a request with a bad
-// token is answered as unauthenticated even when its parameters are wrong too.
+// token is answered as unauthenticated even when its parameters are wrong too; on an admin route, the admin gate
+// comes first (checkAdminCredential).
 export async function refuseAfterAuth(c: ApiContext, deps: ApiDeps, response: Response): Promise<Response> {
-  if (c.get("credential") !== null) {
+  const sent = c.get("credential");
+  if (sent?.admin === true) {
+    await checkAdminCredential(c, deps);
+  } else if (sent !== null) {
     const value = credential(c, deps);
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, value)));
   }
   return response;
 }
 
-// Mastodon's authorize_if_got_token!: a token sent must be valid and cover the route's scope; an app token is let
-// through.
-export async function checkOptionalToken(c: ApiContext, deps: ApiDeps): Promise<void> {
-  if (c.get("credential") !== null) {
-    const value = credential(c, deps);
-    const result = await storeCall(c, deps, (s, b) => s.checkCredential(b, value));
-    if (result.status !== "user_required") {
-      authorized(result);
-    }
-  }
+// The admin gate (domain/auth.ts adminGate, VIS-29), which every answer an admin handler gives before or without its
+// admin operation passes first: anyone but the OAuth admin is refused (403 Forbidden, after the suspension's 403),
+// then the OAuth admin's token must be valid and cover the route's scope. The access middleware answers a request
+// without a token, with no Store call.
+export async function checkAdminCredential(c: ApiContext, deps: Pick<ApiDeps, "build" | "store" | "now">) {
+  const value = userCredential(c, deps);
+  authorized(await storeCall(c, deps, (s, b) => s.checkAdminCredential(b, value)));
 }
 
 // A handler given the request's parameters, or the error answer for an unreadable body (after authentication, as

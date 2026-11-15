@@ -2,7 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
-import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
+import {
+  type ApiHarness,
+  apiHarness,
+  bearer,
+  form,
+  json,
+  login,
+  seedAccount,
+  sql,
+  STORED_ACTOR_TYPES,
+} from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { appToken, scopedToken } from "./read-helpers";
@@ -472,6 +482,18 @@ describe("account lookup", () => {
       fields: [],
       suspended: true,
     });
+  });
+
+  // Account#bot?, by the list the notification policy's bot condition reads (audience.ts).
+  it("presents bot by the exact stored actor type", async () => {
+    const h = await apiHarness();
+    const id = await seedAccount(h.store, { username: "maybe" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, id);
+      expect(await (await h.request(`/api/v1/accounts/${id}`)).json<{ bot: boolean }>(), label).toMatchObject({
+        bot,
+      });
+    }
   });
 
   // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.

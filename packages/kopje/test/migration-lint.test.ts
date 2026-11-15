@@ -42,6 +42,7 @@ describe("migration lint", () => {
       "0090_exact_conversation_seq",
       "0091_live_local_quotes",
       "0094_quote_author_fetches",
+      "0095_notification_policy_bots",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

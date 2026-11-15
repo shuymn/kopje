@@ -11,6 +11,7 @@ import {
   MAX_FILTERS,
 } from "../src/domain/filters";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
+import { sanitizeRemoteContent } from "../src/security/html";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -840,6 +841,30 @@ describe("filter review fixes", () => {
       (shown.find((s) => s.id === id)!.filtered as FilterResult[]).map((r) => r.keyword_matches);
     expect(matches(broken)).toEqual([["news\nmore"]]);
     expect(matches(joined)).toEqual([["breaking news"]]);
+  });
+
+  // #1586: a remote status's content is stored as the sanitizer writes it, so <BR> is a br, and a br with lang (kept,
+  // HTML-1) ends a line as one without. Mastodon breaks at <BR> too, but not at <br lang> (Filters in
+  // docs/mastodon-deviations.md).
+  it("matches a remote status on its lines at a <BR> and at a br with lang", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const remote = await remoteAccount(h.store, "carol");
+    const ids = [];
+    for (const html of ["<p>foo<BR>bar</p>", '<p>foo<br lang="en">bar</p>', "<p>foobar</p>"]) {
+      ids.push(
+        await seedStatus(h.store, { accountId: remote, visibility: "public", content: sanitizeRemoteContent(html) }),
+      );
+    }
+    await createFilter(h, alice, {
+      title: "joined",
+      context: ["account"],
+      keywords_attributes: [{ keyword: "foobar", whole_word: false }],
+    });
+    const shown = await timeline(h, `/api/v1/accounts/${remote}/statuses`, alice.token);
+    const matches = (id: string) =>
+      (shown.find((s) => s.id === id)!.filtered as FilterResult[]).map((r) => r.keyword_matches);
+    expect(ids.map(matches)).toEqual([[], [], [["foobar"]]]);
   });
 
   it("shares the text budget evenly over a thread's statuses, and matches every status on its beginning", async () => {

@@ -129,7 +129,7 @@ describe("instance contract", () => {
         vapid: { public_key: VAPID_PUBLIC_KEY },
         ...CONFIGURATION,
         accounts: ACCOUNT_LIMITS,
-        media_attachments: { ...CONFIGURATION.media_attachments, description_limit: 1500 },
+        media_attachments: { ...CONFIGURATION.media_attachments, description_limit: 10000 },
         translation: { enabled: false },
         timelines_access: {
           live_feeds: { local: "public", remote: "public" },
