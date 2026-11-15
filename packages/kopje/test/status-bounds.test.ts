@@ -2465,6 +2465,25 @@ describe("the table of maxima (RES-3)", () => {
     300_000,
   );
 
+  // An invalidated handle (accounts.ts shownHandle) shows the 18-digit id as username and `<id>@handle.invalid` (33
+  // bytes) as acct, where the occurrence shows a username and an acct at their bounds, and its url (the stored one, else
+  // the actor id) through the same href bound: an account with every other column at its bound stays within the
+  // occurrence measured for its fill.
+  it.each<Fill>(["escaped", "raw"])(
+    "presents an invalidated account at its bounds within the %s account occurrence",
+    async (fill) => {
+      const t = await setup();
+      const id = await maximalAccount(t, false, fill);
+      for (const set of ["username = '! ' || id", "url = NULL"]) {
+        await sql(t.store, `UPDATE accounts SET ${set} WHERE id = ?`, id);
+        const { answer } = await measured(t, getAccount as never, { id, present: { origin: ORIGIN } } as never);
+        expect(answer).toMatchObject({ username: id, acct: `${id}@handle.invalid`, invalid_handle: true });
+        expect(jsonBytes(answer)).toBeLessThanOrEqual(FILL_SHAPES[fill].account.json);
+      }
+    },
+    120_000,
+  );
+
   // The conservative JSON of every shape is within the ceiling too, and bounds the emoji-poll fill, whose polls each
   // show the most emoji JSON less what their references displace (37 escaped characters: 185 bytes).
   it("keeps the conservative JSON of every shape within 85%, above every fill", async () => {

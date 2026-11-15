@@ -14,6 +14,7 @@ import {
 import { bindAll, LiteralError, quoteIdentifier, readColumn, textLiteral, valueLiteral } from "./dump-literals";
 import { hasRows, type ScannedRow } from "./dump-scan";
 import { errorMessage } from "./error-message";
+import { LOCAL_USERNAME_SEEK_SQL, localUsernameIsDomain } from "./identity-bounds";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.
 export function parseHeader(value: unknown): DumpHeader {
@@ -225,6 +226,20 @@ export class BoostChainCheck {
       ? null
       : "statuses: a boost of a boost (reblog_of_id names a status that is itself a boost); Kopje stores no boost of a boost, so this dump cannot be restored";
   };
+}
+
+// ID-5: the problem of a local account whose username is `domain` (localUsernameIsDomain), which would hold the
+// instance actor's WebFinger handle, or null. One seek of the unique accounts_local_username finds the one candidate;
+// the shared rule decides (a username that is not text, which no writer stores, is refused).
+export function localUsernameDomainProblem(sql: SqlStorage, domain: string | null): string | null {
+  if (domain === null) {
+    return null;
+  }
+  const row = sql.exec<{ id: string; username: SqlStorageValue }>(LOCAL_USERNAME_SEEK_SQL, domain).toArray()[0];
+  if (row === undefined || (typeof row.username === "string" && !localUsernameIsDomain(row.username, domain))) {
+    return null;
+  }
+  return `accounts: the username of local account ${row.id} is the instance domain, which is the instance actor's WebFinger handle; rename the account first`;
 }
 
 export function hasStagedLinks(sql: SqlStorage): boolean {

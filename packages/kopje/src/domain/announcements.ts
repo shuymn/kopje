@@ -17,7 +17,7 @@ import {
   storedAnnouncementText,
 } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
-import { accountUrl, acctOf } from "./accounts";
+import { accountUrl, shownHandle } from "./accounts";
 import { accessAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES, jsonBytes, unitJsonBytes } from "./answer-budget";
 import { announcementShownSql, availableSql } from "./audience";
@@ -286,12 +286,10 @@ function render(db: Db, text: string, origin: string): Rendered {
     )
     .slice(0, MAX_ANNOUNCEMENT_TAGS)
     .map((name) => ({ name, url: tagUrl(name) }));
-  const mentions = [...new Map([...resolved.values()].map((row) => [row.id, row])).values()].map((row) => ({
-    id: row.id,
-    username: row.username,
-    url: accountUrl(row, origin),
-    acct: acctOf(row),
-  }));
+  const mentions = [...new Map([...resolved.values()].map((row) => [row.id, row])).values()].map((row) => {
+    const handle = shownHandle(row);
+    return { id: row.id, username: handle.username, url: accountUrl(row, origin), acct: handle.acct };
+  });
   return { content, linked, mentions, tags };
 }
 

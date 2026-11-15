@@ -7,7 +7,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
-import { resolveAccountId } from "./accounts";
+import { acctOf, resolveAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
 import { availableSql, DISTRIBUTABLE_SQL } from "./audience";
@@ -51,6 +51,7 @@ type FeaturedRow = {
   display_name: string;
   statuses_count: number;
   last_status_at: string | null;
+  account_id: string;
   username: string;
   domain: string | null;
 };
@@ -76,7 +77,7 @@ const COUNT_COLUMNS = `CASE WHEN a.domain IS NULL THEN ${presentedCountSql("f.st
 		ELSE (SELECT count(*) ${REMOTE_COUNTED}) END AS statuses_count,
 	CASE WHEN a.domain IS NULL THEN ${byteCut("f.last_status_at", LAST_STATUS_BYTES)}
 		ELSE (SELECT substr(${statusPublishedSql("s")}, 1, 10) ${REMOTE_COUNTED} ORDER BY s.id DESC LIMIT 1) END AS last_status_at,
-	${usernameSql("a.username")} AS username, a.domain`;
+	a.id AS account_id, ${usernameSql("a.username")} AS username, a.domain`;
 const FEATURED_COLUMNS = `f.id, f.name, f.display_name, ${COUNT_COLUMNS}`;
 const LISTED_FEATURED_COLUMNS = `f.id, ${listedTagNameSql("f.name")} AS name, ${listedTagNameSql("f.display_name")} AS display_name,
 	${COUNT_COLUMNS}`;
@@ -84,12 +85,13 @@ const LISTED_FEATURED_COLUMNS = `f.id, ${listedTagNameSql("f.name")} AS name, ${
 const FEATURED_FROM = `FROM featured_tags f INDEXED BY ${FEATURED_TAGS_ACCOUNT_INDEX}
 	CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = f.account_id`;
 
-// The URL of the account's statuses with the hashtag (Mastodon's short_account_tag_url): its profile, tagged. A remote
-// account's is named by its address (/@username@domain/tagged/:tag, Mastodon's account_with_domain route), which the
-// web answers with a redirect to its profile; Mastodon's REST::FeaturedTagSerializer builds /@username/tagged/:tag for
-// it too, which names a local account of the same username.
-export function taggedUrl(origin: string, username: string, name: string, domain: string | null = null): string {
-  return `${origin}/@${domain === null ? username : `${username}@${domain}`}/tagged/${encodeURIComponent(name)}`;
+// The URL of the account's statuses with the hashtag (Mastodon's short_account_tag_url): its profile, tagged. `acct` is
+// the account's as presented (acctOf): a remote account's is named by its address (/@username@domain/tagged/:tag,
+// Mastodon's account_with_domain route, `<id>@handle.invalid` for an invalidated handle), which the web answers with a
+// redirect to its profile; Mastodon's REST::FeaturedTagSerializer builds /@username/tagged/:tag for it too, which
+// names a local account of the same username.
+export function taggedUrl(origin: string, acct: string, name: string): string {
+  return `${origin}/@${acct}/tagged/${encodeURIComponent(name)}`;
 }
 
 // The rows of a list (LISTED_FEATURED_COLUMNS) with their names decoded, those the list bound refuses left out.
@@ -105,7 +107,7 @@ function presentFeatured(row: FeaturedRow, origin: string): FeaturedTag {
   return {
     id: row.id,
     name: row.display_name,
-    url: taggedUrl(origin, row.username, row.name, row.domain),
+    url: taggedUrl(origin, acctOf({ id: row.account_id, username: row.username, domain: row.domain }), row.name),
     statuses_count: String(row.statuses_count),
     // Mastodon shows the date of the newest status only (last_status_at.to_date.iso8601).
     last_status_at: row.last_status_at?.slice(0, 10) ?? null,
