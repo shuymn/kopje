@@ -46,7 +46,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "b8e748cffb88c07e",
+    id: "d2a7dd4c4d986645",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountByLookup < src/domain/web-pages/profile.ts#remoteTagged < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> < src/domain/web-pages/site.ts#<anonymous>",
     disposition: "deliberate",
