@@ -814,6 +814,18 @@ Paged status lists with request conditions:
   next page leaves direct posts out too. Mastodon's drops it (`AccountStatusesFilter::KEYS` lacks it), so its next page
   lists them.
 
+Notification policy (`PATCH`/`PUT /api/v1/notifications/policy` and `/api/v2/notifications/policy`; the policy's
+conditions themselves follow 4.7.5):
+
+- The v1 booleans (`filter_not_following`, `filter_not_followers`, `filter_new_accounts`, `filter_private_mentions`,
+  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `false`, `off` and a blank value accept. Mastodon's
+  setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or `off` filters there
+  and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted, 2026-11-15.
+- A v2 value (`for_not_following`, `for_not_followers`, `for_new_accounts`, `for_private_mentions`,
+  `for_limited_accounts`, `for_bots`) other than `accept`, `filter`, `drop` or 0 to 2 answers 422
+  `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
+  answers 500. Accepted, 2026-11-15.
+
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
 

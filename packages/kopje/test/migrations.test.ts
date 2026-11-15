@@ -12566,3 +12566,73 @@ describe("0094_quote_author_fetches", () => {
     });
   });
 });
+
+describe("0095_notification_policy_bots", () => {
+  const NAME = "0095_notification_policy_bots";
+  const at = NAMES.indexOf(NAME);
+  const [SAVED, UNSAVED] = ["100000000000000001", "100000000000000002"];
+
+  it("follows 0094, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0094_quote_author_fetches");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("gives every stored policy for_bots accept, and holds the column to its three choices", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [id, name] of [
+        [SAVED, "saved"],
+        [UNSAVED, "unsaved"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          id,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          id,
+          `${name}@x.test`,
+        );
+      }
+      // A policy saved by the previous release, every condition chosen; the other account has none.
+      sql.exec(
+        `INSERT INTO notification_policies (account_id, for_not_following, for_not_followers, for_new_accounts,
+					for_private_mentions, for_limited_accounts) VALUES (?, 'drop', 'filter', 'drop', 'accept', 'drop')`,
+        SAVED,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(sql.exec("SELECT * FROM notification_policies").toArray()).toEqual([
+        expect.objectContaining({
+          account_id: SAVED,
+          for_not_following: "drop",
+          for_not_followers: "filter",
+          for_new_accounts: "drop",
+          for_private_mentions: "accept",
+          for_limited_accounts: "drop",
+          for_bots: "accept",
+        }),
+      ]);
+      // A new row takes the default; each choice is stored; anything else is refused by the CHECK.
+      sql.exec("INSERT INTO notification_policies (account_id) VALUES (?)", UNSAVED);
+      expect(sql.exec("SELECT for_bots FROM notification_policies WHERE account_id = ?", UNSAVED).one()).toEqual({
+        for_bots: "accept",
+      });
+      for (const choice of ["filter", "drop", "accept"]) {
+        sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", choice, SAVED);
+      }
+      const refused = /CHECK constraint failed: for_bots IN \('accept', 'filter', 'drop'\)/;
+      for (const value of ["block", "Filter", "", null, 1]) {
+        expect(
+          () => sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", value, SAVED),
+          String(value),
+        ).toThrow(value === null ? /NOT NULL constraint failed/ : refused);
+      }
+      sql.exec("DELETE FROM notification_policies WHERE account_id = ?", UNSAVED);
+      expect(() =>
+        sql.exec("INSERT INTO notification_policies (account_id, for_bots) VALUES (?, 'block')", UNSAVED),
+      ).toThrow(refused);
+    });
+  });
+});

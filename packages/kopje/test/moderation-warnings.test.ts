@@ -336,12 +336,15 @@ describe("moderation_warning: push and the notification policy", () => {
             for_new_accounts: "drop",
             for_private_mentions: "drop",
             for_limited_accounts: "drop",
+            for_bots: "drop",
           },
           { method: "PATCH" },
         ),
       ),
     );
     expect(response.status).toBe(200);
+    // The warning is from its target, here a bot.
+    await sql(h.store, "UPDATE accounts SET actor_type = 'Service' WHERE id = ?", bob.id);
     await warn(h, admin, bob.id);
     expect((await list(h, bob)).map((n) => n.type)).toEqual(["moderation_warning"]);
   });
