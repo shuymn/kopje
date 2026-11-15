@@ -700,12 +700,15 @@ describe("relationships of unavailable accounts (R1, with_suspended)", () => {
     expect(await relationshipsOf(h, h.unavailable)).toEqual([]);
   });
 
-  it("includes them, in request order and once each, with a true with_suspended", async () => {
+  // But one whose deletion has started, which the account reads do not find (foundSql; Mastodon 4.7's
+  // without_requested_deletion, whatever with_suspended).
+  it("includes them, in request order and once each, with a true with_suspended, but a deleting one", async () => {
     const h = await unavailableWorld();
-    const requested = [h.unavailable[2]!, h.available, ...h.unavailable, h.unavailable[0]!];
+    const deleting = h.unavailable[2]!;
+    const requested = [h.unavailable[3]!, h.available, ...h.unavailable, h.unavailable[0]!];
     for (const suffix of ["&with_suspended=true", "&with_suspended=1"]) {
       const entries = await relationshipsOf(h, requested, suffix);
-      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)]);
+      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)].filter((id) => id !== deleting));
       for (const entry of entries) {
         expect(entry).toMatchObject({ following: true, note: "n" });
       }

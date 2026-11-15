@@ -7,7 +7,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
-import { resolveAccountId } from "./accounts";
+import { routeAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
 import { availableSql, DISTRIBUTABLE_SQL } from "./audience";
@@ -137,7 +137,7 @@ const ACCOUNT_FEATURED_SQL = `SELECT ${LISTED_FEATURED_COLUMNS}
 // available (Accounts::FeaturedTagsController: @account.unavailable? ? []). Null for an unknown account.
 export const accountFeaturedTags = readOperation<{ id: string; present: { origin: string } }, FeaturedTag[] | null>(
   (db, { id, present }) => {
-    const accountId = resolveAccountId(db, id);
+    const accountId = routeAccountId(db, id);
     return accountId === null ? null : accountFeaturedTagsOf(db, accountId, present.origin);
   },
 );
