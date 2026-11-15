@@ -1065,11 +1065,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (main):_ `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS`
   and `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
   `src/domain/notification-groups.ts`, `src/domain/push.ts`, `purgeRelationships` and `STATUS_CHILDREN` in
-  `src/domain/inbox.ts`, migrations `0020_notification_policies` and `0094_notification_policy_bots`;
+  `src/domain/inbox.ts`, `notifyCreated` in `src/domain/remote-statuses.ts` (which marks a tagged, unaddressed mention
+  limited), migrations `0020_notification_policies` and `0094_notification_policy_bots`;
   `test/notification-policy.test.ts` (among others, "dismisses in bulk a sender with more filtered notifications than
-  the request’s batches; the job rounds delete the rest"), `test/streaming/streaming.test.ts`,
-  `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`, `test/policy-bounds.test.ts`,
-  `test/migrations.test.ts`, `test/notification-policy-dump.test.ts`, `test/cascade-guard.test.ts`.
+  the request’s batches; the job rounds delete the rest"), `test/inbox-statuses.test.ts` ("a mention a remote Create
+  tags but does not address"), `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`,
+  `test/policy-writes.test.ts`, `test/policy-bounds.test.ts`, `test/migrations.test.ts`,
+  `test/notification-policy-dump.test.ts`, `test/cascade-guard.test.ts`.
 
 - **VIS-25: a report reveals to the servers it is forwarded to only what its reporter may see, and never its reporter.**
   A report (`Report`) is its reporter's: it is read only where it is written and answered once to its reporter (R34,

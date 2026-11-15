@@ -44,6 +44,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
+- A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
+  accounts they limit) notifies its local account, under the notification policy's limited accounts condition:
+  filtered by default unless the account follows the author. Such a mention was never notified. A mention an edit adds
+  is notified as an ordinary one, whether or not the edit addresses the account. No Store migration and no
+  `wrangler.jsonc` change.
 - Inbound RFC 9421 signatures must cover the method, the target URI and, with a body, the content digest, as Mastodon
   4.7 requires (`@method`, `@target-uri` and `content-digest` in `Signature-Input`, each without parameters). A
   request whose signature covers less is refused with 401, as one whose signature does not verify; draft-cavage

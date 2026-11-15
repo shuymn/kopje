@@ -166,6 +166,26 @@ describe("the sequence", () => {
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
   });
 
+  it("binds main's statement to the parameters its baseline maps, and the rewrite to its own", async () => {
+    const id = await statementId(SELECT);
+    // The rewrite takes a flag main's statement does not; its rows need the flag bound.
+    const flagged = "SELECT id FROM t WHERE k = ?1 AND ?2 = 1 ORDER BY id";
+    const mapped = await witnessed(
+      { [id]: { sql: SELECT, text: flagged, params: (params) => params.slice(0, 1) } },
+      () => [id],
+      [[flagged, 3, 1]],
+    );
+    expect(mapped.result).toEqual([[{ id: 7 }, { id: 8 }]]);
+    expect(mapped.sides[0]!.main.result).toEqual([{ id: 7 }, { id: 8 }]);
+    expectBeside("analyzed", mapped);
+    // Without the mapping main's statement is bound to the rewrite's two parameters, and the pair fails.
+    const unmapped = await witnessed({ [id]: { sql: SELECT, text: flagged } }, () => [id], [[flagged, 3, 1]], {
+      catching: true,
+    });
+    expect(unmapped.sides.map((side) => side.fault)).toEqual(["incomplete"]);
+    expect(() => expectBeside("analyzed", unmapped)).toThrow(/main's statements, every one in order/);
+  });
+
   it("fails a statement of the family that is no baseline's rewrite", async () => {
     const run = await witnessed(await baselines(), () => [], [["SELECT id FROM t WHERE k > ? ORDER BY id", 3]], {
       family: /^SELECT id FROM t /,

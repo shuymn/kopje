@@ -1550,10 +1550,11 @@ function privateMentionNotInResponseSql(r: string, type: string, from: string, s
 }
 
 // Whether a condition of the recipient's policy chose `choice` for the notification: Mastodon's
-// blocked_by_*_policy? (:154-172) for drop and filtered_by_*_policy? (:190-208) for filter. The bot condition
-// (blocked_by_bots_policy? and filtered_by_bots_policy?, notify_service.rb:169-171 and :210-212 in v4.7.5, from
-// mastodon#38809 and mastodon#39377) needs the recipient not to follow the sender, as the other conditions of that
-// group do. Kopje has no silenced (limited) accounts, so for_limited_accounts is kept and shown but never matches.
+// blocked_by_*_policy? (:154-172) for drop and filtered_by_*_policy? (:190-208) for filter. The limited accounts
+// condition (notify_service.rb:165-167 and :206-208 in v4.7.5) matches a notification its writer marks `limited` (1, a
+// bound parameter: NotifyService's `silenced` option, from mastodon#37583), since Kopje silences no account; the bot
+// condition (:169-171 and :210-212, from mastodon#38809 and mastodon#39377) a sender of BOT_ACTOR_TYPES. Both need the
+// recipient not to follow the sender, as the other conditions of that group do.
 function policyMatchesSql(
   choice: Exclude<PolicyChoice, "accept">,
   r: string,
@@ -1561,11 +1562,13 @@ function policyMatchesSql(
   from: string,
   status: string,
   now: string,
+  limited: string,
 ): string {
   const is = (column: PolicyColumn) => `${policyChoiceSql(r, column)} = '${choice}'`;
   return `(${notFollowingSql(r, from)} AND (${is("for_not_following")}
 			OR (${is("for_new_accounts")} AND ${newAccountSql(from, now)})
 			OR (${is("for_private_mentions")} AND ${privateMentionNotInResponseSql(r, type, from, status)})
+			OR (${limited} = 1 AND ${is("for_limited_accounts")})
 			OR (${is("for_bots")} AND ${botSql(from)})))
 		OR (${is("for_not_followers")} AND ${notFollowerSql(r, from, now)})`;
 }
@@ -1575,14 +1578,22 @@ function policyMatchesSql(
 // 'filter' or 'drop'. A type that is not filterable, or a sender the recipient accepted a request from
 // (override_for_sender?, a notification_permissions row), is accepted; otherwise a condition whose choice is drop
 // drops it, else one whose choice is filter filters it. The blocks, mutes, domain blocks and conversation mutes that
-// drop a notification are notifiedSql's. Kopje has no staff role that bypasses blocks (from_staff? is false), and
-// no silenced accounts (from_limited? is false).
-export function notificationPolicySql(r: string, type: string, from: string, status: string, now: string): string {
+// drop a notification are notifiedSql's. Kopje has no staff role that bypasses blocks (from_staff? is false). Kopje
+// has no silenced accounts: the limited condition matches a notification its caller marks `limited` (1 or 0,
+// NotifyService's `silenced` option).
+export function notificationPolicySql(
+  r: string,
+  type: string,
+  from: string,
+  status: string,
+  now: string,
+  limited: string,
+): string {
   return `(CASE WHEN ${type} NOT IN (${FILTERABLE_TYPES.map((t) => `'${t}'`).join(", ")})
 			OR EXISTS (SELECT 1 FROM main.notification_permissions pp WHERE pp.account_id = ${r} AND pp.from_account_id = ${from})
 		THEN 'accept'
-		WHEN ${policyMatchesSql("drop", r, type, from, status, now)} THEN 'drop'
-		WHEN ${policyMatchesSql("filter", r, type, from, status, now)} THEN 'filter'
+		WHEN ${policyMatchesSql("drop", r, type, from, status, now, limited)} THEN 'drop'
+		WHEN ${policyMatchesSql("filter", r, type, from, status, now, limited)} THEN 'filter'
 		ELSE 'accept' END)`;
 }
 

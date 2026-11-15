@@ -83,6 +83,10 @@ export type NotifyInput = {
   reportId?: string;
   // The warning of a moderation_warning.
   accountWarningId?: string;
+  // Mastodon's `silenced` option (LocalNotificationWorker to NotifyService): the policy's limited accounts condition
+  // applies. Set only for a remote Create's tagged mention of a local account it does not address
+  // (remote-statuses.ts notifyCreated).
+  limited?: boolean;
   now: number;
 };
 
@@ -128,12 +132,13 @@ export function notify(db: Db, input: NotifyInput): void {
   const policy = !FILTERABLE_TYPES.includes(input.type)
     ? "accept"
     : (db.first<{ policy: PolicyChoice }>(
-        `SELECT ${notificationPolicySql("?1", "?2", "?3", "?4", "?5")} AS policy`,
+        `SELECT ${notificationPolicySql("?1", "?2", "?3", "?4", "?5", "?6")} AS policy`,
         input.recipientId,
         input.type,
         input.fromId,
         input.statusId,
         now,
+        input.limited === true ? 1 : 0,
       )?.policy ?? "accept");
   if (policy === "drop") {
     return;

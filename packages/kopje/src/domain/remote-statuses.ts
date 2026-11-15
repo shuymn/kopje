@@ -452,6 +452,7 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       id,
       author,
       rows,
+      local: known.local,
       audience,
       language: input.language,
       replyTarget,
@@ -489,14 +490,18 @@ function linkReplies(
   }
 }
 
-// Mastodon's mention notifications (only accounts in the audience: one tagged but not addressed is not notified) and
-// FeedInsertWorker#notify? for followers who asked to hear of the author's posts. notify() applies the audience rule.
+// Mastodon's mention notifications (FanOutOnWriteService#notify_mentioned_accounts!, fan_out_on_write_service.rb:68-75
+// in v4.7.5): each local account the status mentions (not silently), and one it tags without addressing it (not in
+// `audience`, to/cc and the owner of the personal inbox it came to: Create#process_audience's silenced_account_ids,
+// create.rb:155) marked `limited`, so the policy's limited accounts condition applies; and FeedInsertWorker#notify? for
+// followers who asked to hear of the author's posts. notify() applies the audience rule.
 function notifyCreated(
   db: Db,
   created: {
     id: string;
     author: Author;
     rows: readonly StatusMention[];
+    local: ReadonlySet<string>;
     audience: ReadonlySet<string>;
     language: string | null;
     replyTarget: string | null;
@@ -506,8 +511,15 @@ function notifyCreated(
 ): void {
   const { id, author, now } = created;
   for (const mention of created.rows) {
-    if (!mention.silent && created.audience.has(mention.accountId)) {
-      notify(db, { recipientId: mention.accountId, type: "mention", fromId: author.id, statusId: id, now });
+    if (!mention.silent && created.local.has(mention.accountId)) {
+      notify(db, {
+        recipientId: mention.accountId,
+        type: "mention",
+        fromId: author.id,
+        statusId: id,
+        now,
+        limited: !created.audience.has(mention.accountId),
+      });
     }
   }
   // No post notification for a reply other than in the author's own conversation, its partner unknown included
@@ -670,14 +682,13 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     statusEmojis(input),
     existing.id,
   );
-  // As for a Create: a newly mentioned local account is notified if the status addresses it.
+  // A newly mentioned local account is notified as an ordinary mention, addressed or not: update_mentions! makes every
+  // tagged account an active mention (process_status_update_service.rb:299 in v4.7.5) and broadcast_updates! fans out
+  // without silenced ids (:453). The addressed accounts only order the cap's eviction (updateMentions).
   const audience = knownAccounts(db, [...input.to, ...input.cc].slice(0, MAX_STATUS_AUDIENCE));
   const addressed = new Set([...audience.local, ...(ctx.deliveredTo === null ? [] : [ctx.deliveredTo])]);
-  const mentioned = updateMentions(db, existing, input, addressed);
-  for (const id of mentioned) {
-    if (addressed.has(id)) {
-      notify(db, { recipientId: id, type: "mention", fromId: author.id, statusId: existing.id, now: ctx.now });
-    }
+  for (const id of updateMentions(db, existing, input, addressed)) {
+    notify(db, { recipientId: id, type: "mention", fromId: author.id, statusId: existing.id, now: ctx.now });
   }
   writeTags(db, existing.id, input.tags.slice(0, MAX_STATUS_TAGS));
   writeMedia(db, existing.id, author, media, ctx);
@@ -713,7 +724,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
 }
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
-// Returns the accounts that are mentioned now and were not before (silent recipients included).
+// Returns the local accounts that are mentioned now and were not before (silent recipients included).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
 // in place of a remote recipient no longer mentioned (silent ones first); a non-public audience stays frozen.
 function updateMentions(
@@ -760,7 +771,7 @@ function updateMentions(
     existing.id,
     JSON.stringify(allowed),
   );
-  return allowed.filter((id) => !mentionedBefore.has(id));
+  return allowed.filter((id) => !mentionedBefore.has(id) && known.local.has(id));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
