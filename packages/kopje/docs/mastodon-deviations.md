@@ -100,13 +100,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event` are
   never sent. Accepted, 2026-11-15.
 - **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Annual reports
-  answer as with Wrapstodon off (below, Annual reports), and no notification carries an `annual_report`. Donation
+  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
-  `email_subscriptions`. Accepted, 2026-10-20; annual reports, donation campaigns and e-mail subscriptions,
-  2026-11-15.
+  `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds the
   statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most 16
   mentions (of available accounts, among the first 64 references, each the account that holds the handle when the
@@ -167,6 +165,9 @@ A pull request that fixes a gap removes the exceptions that cite it.
   sees. No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are
   enabled without query-string redaction; the shipped configuration records neither (DATA-5 in
   [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
+- **MD-9: Annual reports have no share page.** An annual report's `share_url` is always null, and Kopje serves no
+  `/@:username/wrapstodon/:year/:share_key` page. No notification carries an `annual_report`: Mastodon 4.7.5 writes
+  none, and Kopje has none from earlier versions. Accepted, 2026-11-15.
 
 ## Differences the checks cannot see
 
@@ -442,14 +443,28 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
-Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-3):
+Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
-- Kopje answers as Mastodon 4.7.5 does with Wrapstodon off (its admin setting, on by default). No report is made:
-  the list is `{"annual_reports": [], "accounts": [], "statuses": []}`, a year's report and its `read` answer 404,
-  `state` answers `ineligible` for any year, `generate` answers 200 `{}` and starts nothing, and `wrapstodon` is
-  null. With Wrapstodon on, Mastodon lets a user generate the year's report from December 10 to 31 (UTC). A
-  Mastodon admin can also generate one by hand from a console, which its owner then reads and marks read; Kopje
-  has no such path.
+- Kopje makes the report within the `generate` request and answers 200 `{}`; Mastodon answers 202 with
+  `Mastodon-Async-Refresh` and makes it in a job. `state` never answers `generating`. Accepted, 2026-11-15.
+- An account whose year holds more than 200,000 statuses (`REPORT_YEAR_STATUSES`, boosts and withdrawn ones included),
+  whose statuses of the year hold more than 200,000 hashtag uses (`REPORT_HASHTAG_USES`) or more than 8 MiB of hashtag
+  names (`REPORT_HASHTAG_BYTES`), or that has more than 200,000 followers (`REPORT_FOLLOWERS`) gets no report: `state`
+  answers `ineligible`, `generate` makes none, and Kopje logs `kopje.annual_reports.capped`
+  ([observability.md](observability.md)). Mastodon reads any number. Reports past the caps are tracked by #1601.
+- The year is the UTC year exactly; Mastodon's bounds fall at random within its first and last second. Accepted,
+  2026-11-15.
+- The top status is chosen among public or unlisted originals with a reply, boost or favourite, ties to the oldest;
+  Mastodon chooses among those with a stats row, which stays when the counts fall back to 0, and leaves ties
+  unordered. The top hashtag is counted by its normalized name, ties by name; a name the hashtag bound leaves out (only
+  an imported one can be) is passed over among the 32 most used, and none is shown when all 32 are left out. Accepted,
+  2026-11-15.
+- A follow counts in the year its request was made; Mastodon counts the year it was accepted. Accepted, 2026-11-15.
+- `index` lists at most 40 pending reports, newest year first, and the top statuses within the answer budget; Mastodon
+  lists every pending report, unordered. Accepted, 2026-11-15.
+- The campaign runs from December 10 to 31 (UTC) by the Store's clock, and is switched off with
+  `kopje-admin instance wrapstodon=false` (Mastodon's admin setting, on by default). A Mastodon admin can also generate
+  a report by hand from a console, which its owner then reads; Kopje has no such path. Accepted, 2026-11-15.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
@@ -886,6 +901,27 @@ Inbound HTTP signatures (Mastodon's `SignedRequest`, `app/lib/signed_request.rb`
   (`signed_request.rb:150-153`). The signature Kopje selects meets Mastodon's required parameters and covered
   components: a `created` parameter, and `@method`, `@target-uri` and, for a POST, `content-digest` among its
   components, each without parameters (`signed_request.rb:182-184`). Accepted, 2026-11-15.
+- A `Multikey` an actor lists by reference in `assertionMethod` is not fetched, so a signature by it does not verify;
+  Mastodon 4.7 fetches it (`process_account_service.rb:434-444`). No sender in the sources lists one so, and fetching
+  it would cost a fetch per key (RES-6). Accepted, 2026-11-15.
+- An ML-DSA-44 key is not read, where Mastodon 4.7 stores one for proofs (`multibase.rb:62-66`): Fedify 2.4.5 cannot
+  import it. The actor stays usable (ID-1). Accepted, 2026-11-15.
+- An Ed25519 key in a legacy `publicKey`, or in a key document of its own its actor lists, verifies an RFC 9421
+  signature, where Mastodon reads every legacy key as RSA (`process_account_service.rb:396`, `:414`). Its owner is
+  judged by the rule of every key, so no actor gains anything over its own keys. Accepted, 2026-11-15.
+- An unreadable key in a document whose context Kopje does not recognize as giving `publicKey` or `assertionMethod`
+  their key meaning (a context its instance serves, as Pleroma's `litepub-0.1.jsonld`, or one that redefines either
+  term), or spelled otherwise than Mastodon and Fedify write it (either property or its key material under a compact
+  or absolute IRI, an entry with its own `@context` or a `@nest`), still makes that actor unusable, where Mastodon
+  skips the key (`process_account_service.rb:448-452`) or reads only the plain spelling: recognizing more contexts and
+  spellings would mean fetching or expanding them, and no sender in the sources writes an unreadable key under any
+  context or such a spelling. Accepted, 2026-11-15.
+- A key whose `publicKeyPem` or `publicKeyMultibase` is a one-element array of a string, or a value object holding
+  one (`{"@value": …}`), is read, as Fedify 2.4.5 reads it; Mastodon 4.7 takes the member as given
+  (`process_account_service.rb:392`, `:425`), so only a string is a key it uses. Accepted, 2026-11-15.
+- An entry of `publicKey` or `assertionMethod` that is itself an array is skipped and the actor stays usable, where
+  Mastodon 4.7 takes it for a key id and fails to process the document (`json_ld_helper.rb:96` raises on an array).
+  Neither reads a key from it. Accepted, 2026-11-15.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
@@ -978,11 +1014,15 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   the keys its serializer and `LinkedDataSignature#sign!` write (`expires` from 4.7.0, judged at the time the request
   reached the inbox); Kopje's own; Mastodon's and Kopje's status `Delete` as a Mastodon 4.4 to 4.7 forwards it,
   compacted under its `full_context` (`app/helpers/context_helper.rb`); and a `Delete` Fedify 2.4.5 signs with an
-  FEP-8b32 proof. Mastodon verifies a signature whatever the body's context and keys, refusing only JSON-LD features
-  it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a relayed `Delete` from Misskey, or
-  forwarded by a Mastodon whose `full_context` holds a named context, term or definition outside 4.4 to 4.7, is
-  dropped with 202, as Mastodon drops one whose signature does not verify, and an author's own `Delete` in such a form
-  applies but is not forwarded. Adding a profile is a change of its own. Accepted, 2026-11-13.
+  FEP-8b32 proof (`eddsa-jcs-2022`, without `expires`). Mastodon verifies a signature whatever the body's context and
+  keys, refusing only JSON-LD features it does not support (`json_ld_helper.rb` `unsupported_jsonld_features?`). So a
+  relayed `Delete` from Misskey, or forwarded by a Mastodon whose `full_context` holds a named context, term or
+  definition outside 4.4 to 4.7, is dropped with 202, as Mastodon drops one whose signature does not verify, and an
+  author's own `Delete` in such a form applies but is not forwarded. Adding a profile is a change of its own.
+  Accepted, 2026-11-13. Mastodon 4.7 also verifies an `mldsa44-jcs-2024` proof and a proof with `expires`, judged at
+  receipt (`object_integrity_proof.rb:7`, `:19`). Kopje answers either as a proof that does not verify: no sender of a
+  profile writes them, its verifier (Fedify 2.4.5) does not include the ML-DSA-44 suite although the runtime could
+  verify it, and it judges `expires` at its own clock. Accepted, 2026-11-15.
 - The local boosts still get their `Undo(Announce)`, after the forwarded `Delete` in each lane; Mastodon's
   `RemoveStatusService` sends none for them.
 

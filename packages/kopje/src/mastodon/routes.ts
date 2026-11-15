@@ -4,6 +4,7 @@ import { requireAccess, type RouteAccess } from "./access";
 import * as accounts from "./accounts";
 import * as admin from "./admin";
 import * as announcements from "./announcements";
+import * as annualReports from "./annual-reports";
 import * as blocks from "./blocks";
 import type { ApiDeps, ApiEnv, ApiHandler } from "./context";
 import * as conversations from "./conversations";
@@ -128,12 +129,13 @@ export const ROUTES: readonly Route[] = [
   get("/api/v1/suggestions", { scope: "read:accounts" }, suggestions.suggestionsV1),
   del("/api/v1/suggestions/:id", { scope: "write:accounts" }, suggestions.dismissSuggestion),
   get("/api/v2/suggestions", { scope: "read:accounts" }, suggestions.suggestionsV2),
-  get("/api/v1/annual_reports", { scope: "read:accounts" }, placeholders.annualReports),
-  // As Mastodon's: read and generate ask write:accounts, the others read:accounts.
-  get("/api/v1/annual_reports/:id", { scope: "read:accounts" }, placeholders.annualReport),
-  get("/api/v1/annual_reports/:id/state", { scope: "read:accounts" }, placeholders.annualReportState),
-  post("/api/v1/annual_reports/:id/read", { scope: "write:accounts" }, placeholders.annualReport),
-  post("/api/v1/annual_reports/:id/generate", { scope: "write:accounts" }, placeholders.generateAnnualReport),
+  // Annual reports (mastodon/annual-reports.ts). As Mastodon's: read and generate ask write:accounts, the others
+  // read:accounts.
+  get("/api/v1/annual_reports", { scope: "read:accounts" }, annualReports.index),
+  get("/api/v1/annual_reports/:id", { scope: "read:accounts" }, annualReports.show),
+  get("/api/v1/annual_reports/:id/state", { scope: "read:accounts" }, annualReports.state),
+  post("/api/v1/annual_reports/:id/read", { scope: "write:accounts" }, annualReports.read),
+  post("/api/v1/annual_reports/:id/generate", { scope: "write:accounts" }, annualReports.generate),
   // E-mail confirmation (any token at the route: placeholders.resendConfirmation checks write:accounts, since Mastodon
   // takes app tokens there), and async refreshes, which Kopje never starts.
   post("/api/v1/emails/confirmations", "token", placeholders.resendConfirmation),

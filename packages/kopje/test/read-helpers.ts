@@ -76,6 +76,38 @@ export async function measuredRead<I, O>(
   });
 }
 
+// One statement an operation ran: its SQL, the rows it read and the rows its cursor returned.
+export type MeasuredStatement = { query: string; rows: number; returned: number };
+
+// Runs an operation as measuredRead does, recording each statement on its own instead of one sum; with
+// `transaction`, in one Store transaction, as a write operation runs.
+export async function measuredStatements<I, O>(
+  h: Pick<ApiHarness, "store">,
+  operation: StoreOperation<I, O>,
+  input: I,
+  transaction = false,
+): Promise<{ output: O; statements: MeasuredStatement[] }> {
+  return runInDurableObject(h.store, (_instance, state) => {
+    const statements: MeasuredStatement[] = [];
+    const real = state.storage.sql;
+    const counting = {
+      exec: (query: string, ...params: SqlStorageValue[]) => {
+        const cursor = real.exec(query, ...params);
+        const entry: MeasuredStatement = { query, rows: 0, returned: 0 };
+        statements.push(entry);
+        return watchedCursor(
+          cursor,
+          () => (entry.rows = cursor.rowsRead),
+          (rows) => (entry.returned = rows.length),
+        );
+      },
+    } as unknown as SqlStorage;
+    const run = () => operation.run(counting, input, (fn) => state.storage.transactionSync(fn));
+    const output = transaction ? state.storage.transactionSync(run) : run();
+    return { output, statements };
+  });
+}
+
 // A read of a growth witness (RES-7): the operation, its input (`manyInput` in the grown Store, where its ids differ)
 // and what it must answer in each Store, so that a read that answered nothing (a refused credential, an empty page)
 // cannot pass as flat. `extra` is rows it may add past the allowance, which the caller names the reason for.
