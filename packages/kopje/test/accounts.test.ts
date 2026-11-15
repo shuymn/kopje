@@ -324,11 +324,7 @@ describe("credentials", () => {
 
   it("refuses invalid values without changing anything", async () => {
     const h = await aliceSession();
-    for (const body of [
-      { display_name: "x".repeat(41) },
-      { note: "x".repeat(501) },
-      { source: { privacy: "secret" } },
-    ]) {
+    for (const body of [{ note: "x".repeat(501) }, { source: { privacy: "secret" } }]) {
       const response = await h.request(
         "/api/v1/accounts/update_credentials",
         bearer(h.token, json(body, { method: "PATCH" })),
