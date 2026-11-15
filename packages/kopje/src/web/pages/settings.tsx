@@ -1,9 +1,9 @@
 import type { FC } from "hono/jsx";
 
-import type { CredentialAccount, Visibility } from "../../domain/accounts";
+import { type CredentialAccount, MAX_DISPLAY_NAME, MAX_NOTE, type Visibility } from "../../domain/accounts";
 import type { Authorizations } from "../../domain/web-session";
 import { httpUrl } from "../../platform/http-url";
-import { MAX_FIELDS } from "../../platform/stored-bounds";
+import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../../platform/stored-bounds";
 import { Alert, Csrf, DateTime } from "../components/basics";
 import { Icon } from "../components/icon";
 import { type Chrome, Layout } from "../components/layout";
@@ -64,6 +64,13 @@ const Checkbox: FC<{ name: string; checked: boolean; label: string; hint?: strin
 const VISIBILITIES: Visibility[] = ["public", "unlisted", "private", "direct"];
 const FIELD_NAME = "field-name";
 const FIELD_VALUE = "field-value";
+
+// A text control's native limit for a server limit of `points` code points. `maxlength` counts UTF-16 code units, of
+// which a code point takes at most two, so this lets through every value the server accepts; the server's check
+// (credentialChanges in mastodon/accounts.ts) decides, and answers a longer value with its message.
+function codeUnitsFor(points: number): number {
+  return 2 * points;
+}
 
 // The avatar's or header's section: its heading above its card, the current image, then the upload form.
 const ImageForm: FC<{ kind: "avatar" | "header"; current: string; csrf: string }> = ({ kind, current, csrf }) => {
@@ -140,11 +147,16 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
               <Csrf token={csrf} />
               <label>
                 {m.settings.displayName}
-                <input type="text" name="display_name" value={account.display_name} maxlength={30} />
+                <input
+                  type="text"
+                  name="display_name"
+                  value={account.display_name}
+                  maxlength={codeUnitsFor(MAX_DISPLAY_NAME)}
+                />
               </label>
               <label>
                 {m.settings.bio}
-                <textarea name="note" rows={4} maxlength={500}>
+                <textarea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)}>
                   {account.source.note}
                 </textarea>
               </label>
@@ -165,14 +177,14 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
                       type="text"
                       name={`fields_attributes[${index}][name]`}
                       value={field.name}
-                      maxlength={255}
+                      maxlength={codeUnitsFor(MAX_FIELD_NAME)}
                       aria-labelledby={FIELD_NAME}
                     />
                     <input
                       type="text"
                       name={`fields_attributes[${index}][value]`}
                       value={field.value}
-                      maxlength={255}
+                      maxlength={codeUnitsFor(MAX_FIELD_VALUE)}
                       aria-labelledby={FIELD_VALUE}
                     />
                   </div>
