@@ -6,6 +6,7 @@ import {
   MAX_FAMILIAR_FOLLOWERS,
   MAX_FAMILIAR_FOLLOWERS_IDS,
 } from "../src/domain/accounts";
+import { ROUTES, type Route } from "../src/mastodon/routes";
 import { sha256Hex } from "../src/security/tokens";
 import { apiHarness, bearer, json, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -272,5 +273,93 @@ describe("familiar followers", () => {
         expect(await listed(`/api/v1/accounts/${account.id}/following`)).toContain(target);
       }
     }
+  });
+});
+
+// R1's account reads (domain/accounts.ts routeAccountId, foundSql): a remote account whose deletion has started is not
+// found, as Mastodon 4.7's AccountsController, Accounts::BaseController, LookupController and RelationshipsController
+// leave a deleted account out (Account.without_requested_deletion); a suspended account is still found, redacted.
+describe("a remote account whose deletion has started", () => {
+  // Every /api/v1/accounts/:id route the route table holds, but email_subscriptions, which reads local accounts only
+  // (emailSubscriptionTarget). identity_proofs is a placeholder that answers [] for an account getAccount finds.
+  const NOT_ACCOUNT_READS = new Set(["/api/v1/accounts/:id/email_subscriptions"]);
+  const ACCOUNT_ROUTES = ROUTES.filter(
+    (route) => /^\/api\/v1\/accounts\/:id(?:\/|$)/.test(route.path) && !NOT_ACCOUNT_READS.has(route.path),
+  );
+
+  async function fixture() {
+    const h = await community(["alice"]);
+    const remote = await seedAccount(h.store, { username: "erin", domain: "remote.example" });
+    await sql(h.store, "UPDATE accounts SET legacy_id = 'erin-legacy' WHERE id = ?", remote);
+    return { h, remote };
+  }
+
+  const deleting = (h: Awaited<ReturnType<typeof community>>, id: string) =>
+    sql(h.store, "UPDATE accounts SET deleted_at = ? WHERE id = ?", new Date(NOW).toISOString(), id);
+
+  async function statusOf(h: Awaited<ReturnType<typeof community>>, route: Route, id: string, token: string) {
+    const path = route.path.replace(":id", encodeURIComponent(id));
+    const init: RequestInit =
+      route.method === "GET" ? {} : route.path.endsWith("/note") ? json({ comment: "n" }) : { method: route.method };
+    return (await h.request(path, bearer(token, init))).status;
+  }
+
+  it("answers 404 to every /api/v1/accounts/:id route, by id and by legacy id", async () => {
+    const { h, remote } = await fixture();
+    const { token } = h.users.alice;
+    expect(ACCOUNT_ROUTES.map((route) => `${route.method} ${route.path}`)).toEqual(
+      expect.arrayContaining(["GET /api/v1/accounts/:id", "GET /api/v1/accounts/:id/statuses"]),
+    );
+    expect(ACCOUNT_ROUTES.length).toBe(20);
+    // Each route reaches the account first: before the deletion none answers 404.
+    for (const route of ACCOUNT_ROUTES) {
+      expect({ route: route.path, status: await statusOf(h, route, remote, token) }).not.toMatchObject({ status: 404 });
+    }
+    await deleting(h, remote);
+    for (const id of [remote, "erin-legacy"]) {
+      for (const route of ACCOUNT_ROUTES) {
+        expect({ route: `${route.method} ${route.path}`, status: await statusOf(h, route, id, token) }).toEqual({
+          route: `${route.method} ${route.path}`,
+          status: 404,
+        });
+      }
+    }
+  });
+
+  it("is not found by lookup, and is left out of the batch read and of relationships either way", async () => {
+    const { h, remote } = await fixture();
+    const { alice } = h.users;
+    const lookup = "/api/v1/accounts/lookup?acct=erin@remote.example";
+    const batch = `/api/v1/accounts?id[]=${remote}&id[]=${alice.id}`;
+    const related = (withSuspended: boolean) =>
+      `/api/v1/accounts/relationships?id[]=${remote}&id[]=${alice.id}&with_suspended=${withSuspended}`;
+    const idsOf = async (path: string) =>
+      (await getJson<{ id: string }[]>(h, path, alice.token)).body.map((entry) => entry.id);
+    // Found before.
+    expect((await getJson(h, lookup)).status).toBe(200);
+    expect(await idsOf(batch)).toEqual([remote, alice.id]);
+    expect(await idsOf(related(false))).toEqual([remote, alice.id]);
+    expect(await idsOf(related(true))).toEqual([remote, alice.id]);
+    await deleting(h, remote);
+    expect((await getJson(h, lookup)).status).toBe(404);
+    expect(await idsOf(batch)).toEqual([alice.id]);
+    expect(await idsOf(related(false))).toEqual([alice.id]);
+    expect(await idsOf(related(true))).toEqual([alice.id]);
+  });
+
+  it("leaves a suspended account found and redacted", async () => {
+    const { h } = await fixture();
+    const bob = await seedAccount(h.store, { username: "bob", email: "bob@example.com" });
+    await sql(h.store, "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?", "2026-01-01", bob);
+    const { status, body } = await getJson<{ id: string; suspended?: boolean }>(h, `/api/v1/accounts/${bob}`);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ id: bob, suspended: true });
+    expect((await getJson(h, "/api/v1/accounts/lookup?acct=bob")).status).toBe(200);
+    const related = await getJson<{ id: string }[]>(
+      h,
+      `/api/v1/accounts/relationships?id[]=${bob}&with_suspended=true`,
+      h.users.alice.token,
+    );
+    expect(related.body.map((entry) => entry.id)).toEqual([bob]);
   });
 });

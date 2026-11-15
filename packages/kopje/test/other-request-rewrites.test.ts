@@ -43,6 +43,7 @@ const credential = (scope: "read" | "write") => ({ tokenHash: "viewer", scope, n
 // Every other statement the flows make, literally: PlanWitness's allowed list, so a statement the witness does not
 // measure fails the case.
 const OTHER_STATEMENTS = [
+  "SELECT 1 AS found FROM accounts a WHERE a.id = ? AND a.deleted_at IS NULL",
   "SELECT count(*) AS n FROM (SELECT 1 FROM scheduled_statuses ss WHERE ss.account_id = ?1 AND ss.id IS NOT ?2 LIMIT ?3)",
   "SELECT id FROM accounts WHERE id = ?",
   "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, m.focus_x AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position LIMIT 4",

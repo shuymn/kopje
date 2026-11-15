@@ -93,6 +93,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
   included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
   migration and no `wrangler.jsonc` change.
+- A remote account whose deletion has started answers 404 to `GET /api/v1/accounts/:id`, to every
+  `/api/v1/accounts/:id/...` route and to lookup, and is left out of `GET /api/v1/accounts` and of relationships, with
+  or without `with_suspended`, as Mastodon 4.7 does; it was shown redacted. This breaks clients that read deleting
+  accounts. An actor whose own URI answers 410, without a redirect, is deleted as by its `Delete`; a 404 deletes
+  nothing. A search by a URL that is a stored actor's id fetches it as that actor, without a probe. No Store migration
+  and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,

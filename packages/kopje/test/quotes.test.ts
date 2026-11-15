@@ -2564,7 +2564,8 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     },
   );
 
-  it.each([404, 410])(
+  // A 410 at the author's URI deletes the author (test/inbox-gone.test.ts).
+  it.each([404])(
     "a stale quoted author’s refresh answering %i leaves the quote pending, its work done, and stamps nothing",
     async (status) => {
       const { t, bob } = await world();

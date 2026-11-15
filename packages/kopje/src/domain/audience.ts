@@ -164,6 +164,13 @@ export function deletingSql(a: string): string {
   return `${a}.deleted_at IS NOT NULL`;
 }
 
+// R1's account reads: the account `a` is found by id or address unless its deletion has started (Mastodon 4.7's
+// Account.without_requested_deletion). A suspended account is found, and shown redacted. Read from the account's row:
+// only a remote account is ever deleting (the schema refuses deleted_at on a local one).
+export function foundSql(a: string): string {
+  return `${a}.deleted_at IS NULL`;
+}
+
 // The remote accounts the instance suspended or a domain block's job marked (R38: suspension_source 'account' or
 // 'domain'), the entries of the partial index accounts_suspended (migration 0045_remote_suspension): its range in id
 // order is what the admin's list of suspended accounts reads of them, and what the domain job's clearing walks.

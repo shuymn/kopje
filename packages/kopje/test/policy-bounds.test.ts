@@ -1503,7 +1503,7 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
     const reads: GrownRead[] = [
       // A full page of the friend's statuses, none of the stranger's.
       { name: "home", operation: homeTimeline, input: { credential, page: PAGE, present: PRESENT }, shows: fullPage },
-      // An empty page, answered to the viewer.
+      // An empty page, answered to the viewer; for an account whose deletion has started, none (R1's account reads).
       ...Object.entries(HIDDEN_AUTHORS).map(([name, account]): GrownRead => ({
         name: `account statuses of ${name}`,
         operation: accountStatuses,
@@ -1519,7 +1519,9 @@ describe("reads skip an author's history the viewer never sees (RES-7)", () => {
           tagged: null,
           present: PRESENT,
         },
-        shows: (output) => (output as { status: string }).status === "ok" && shown(output) === 0,
+        shows: (output) =>
+          (output as { status: string }).status === "ok" &&
+          (account === DELETING_ID ? (output as { value: unknown }).value === null : shown(output) === 0),
       })),
     ];
     expect(await grownReads(few, many, reads, { allowance: ALLOWANCE })).toEqual([]);

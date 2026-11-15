@@ -1191,10 +1191,8 @@ describe("an actor whose deletion has started (R1)", () => {
     expect(await fromBob()).toBe(0);
     const [left] = await sql<{ id: string }>(h.store, "SELECT id FROM statuses WHERE account_id = ? LIMIT 1", bobId);
     expect((await read(alice.token, `/api/v1/statuses/${left!.id}`)).status).toBe(404);
-    expect((await read(alice.token, `/api/v1/accounts/${bobId}`)).body).toMatchObject({
-      display_name: "",
-      suspended: true,
-    });
+    // The account reads no longer find it (Mastodon 4.7's without_requested_deletion).
+    expect((await read(alice.token, `/api/v1/accounts/${bobId}`)).status).toBe(404);
     expect((await h.request(`/api/v1/accounts/${bobId}/follow`, bearer(alice.token, { method: "POST" }))).status).toBe(
       404,
     );

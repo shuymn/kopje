@@ -77,6 +77,7 @@ describe("indexable", () => {
     expect(await sql(h.store, "SELECT indexable FROM accounts WHERE id = ?", alice.id)).toEqual([{ indexable: 1 }]);
   });
 
+  // A suspended remote account is shown redacted (false); one whose deletion has started is not found (R1).
   it("reads a remote actor as true only when it says so, and false when unavailable", async () => {
     const h = await setup();
     const { store } = h;
@@ -84,6 +85,7 @@ describe("indexable", () => {
       ["yes", { indexable: true }],
       ["no", {}],
       ["gone", { indexable: true }],
+      ["held", { indexable: true }],
     ] as const;
     for (const [name, extra] of actors) {
       const actor = await Person.fromJsonLd({
@@ -109,14 +111,21 @@ describe("indexable", () => {
     );
     expect(rows.map((row) => [row.username, row.indexable])).toEqual([
       ["gone", 1],
+      ["held", 1],
       ["no", 0],
       ["yes", 1],
     ]);
     await sql(store, "UPDATE accounts SET deleted_at = ? WHERE username = 'gone'", new Date(NOW).toISOString());
+    await sql(
+      store,
+      "UPDATE accounts SET suspended_at = ?, suspension_source = 'account' WHERE username = 'held'",
+      new Date(NOW).toISOString(),
+    );
     const presented = [];
     for (const row of rows) {
-      presented.push((await getJson<{ indexable: boolean }>(h, `/api/v1/accounts/${row.id}`)).body.indexable);
+      const shown = await getJson<{ indexable: boolean }>(h, `/api/v1/accounts/${row.id}`);
+      presented.push(shown.status === 200 ? shown.body.indexable : shown.status);
     }
-    expect(presented).toEqual([false, false, true]);
+    expect(presented).toEqual([404, false, false, true]);
   });
 });
