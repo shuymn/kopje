@@ -4,7 +4,14 @@ import { iso } from "../platform/iso-time";
 import { loginEmailMatchSql } from "../platform/login-email";
 import { withinScopes } from "../security/scopes";
 import { constantTimeEqual } from "../security/tokens";
-import { type Authorized, authorize, type Credential, CREDENTIAL_EPOCH_SQL } from "./auth";
+import {
+  type Authorized,
+  authorize,
+  type Credential,
+  CREDENTIAL_EPOCH_SQL,
+  refuseSuspended,
+  type Suspended,
+} from "./auth";
 import { readOperation, sessionOperation, writeOperation } from "./operation";
 import { sweepWebState } from "./web-state";
 
@@ -58,6 +65,8 @@ export type RegisterAppInput = {
   website: string | null;
   scopes: string[];
   now: number;
+  // The token the request sent (an anonymous route, AUTH-2): its suspended owner is refused before any write.
+  credential: Credential | null;
 };
 
 // RES-6, the storage budget of anonymous app registration. A pending app is one no user has authorized:
@@ -118,7 +127,11 @@ function pendingApps(db: Db): number {
 
 export type Registered = { status: "ok"; client: Client } | { status: "over_budget" };
 
-export const registerApp = sessionOperation<RegisterAppInput, Registered>((db, input) => {
+export const registerApp = sessionOperation<RegisterAppInput, Registered | Suspended>((db, input) => {
+  const refused = refuseSuspended(db, input.credential);
+  if (refused !== null) {
+    return refused;
+  }
   if (pendingApps(db) >= MAX_PENDING_APPS) {
     deleteClients(db, pendingAppsSql(`${UNUSED} AND c.created_at < ?`), iso(input.now - UNUSED_APP_TTL_MS));
   }

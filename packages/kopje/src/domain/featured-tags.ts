@@ -11,7 +11,7 @@ import { acctOf, resolveAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
 import { availableSql, DISTRIBUTABLE_SQL } from "./audience";
-import { userReadOperation, userWriteOperation } from "./auth";
+import { type Credential, type Judged, unlessSuspended, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { readOperation } from "./operation";
 import { usernameSql } from "./profile-bounds";
@@ -136,12 +136,16 @@ const ACCOUNT_FEATURED_SQL = `SELECT ${LISTED_FEATURED_COLUMNS}
 	WHERE ${availableSql("?1")} ORDER BY f.id`;
 
 // GET /api/v1/accounts/:id/featured_tags: an account's featured hashtags, to anyone, none for an account that is not
-// available (Accounts::FeaturedTagsController: @account.unavailable? ? []). Null for an unknown account.
-export const accountFeaturedTags = readOperation<{ id: string; present: { origin: string } }, FeaturedTag[] | null>(
-  (db, { id, present }) => {
+// available (Accounts::FeaturedTagsController: @account.unavailable? ? []). Null for an unknown account. A suspended
+// owner of the token sent is refused first (AUTH-2's anonymous routes).
+export const accountFeaturedTags = readOperation<
+  { id: string; present: { origin: string }; credential: Credential | null },
+  Judged<FeaturedTag[] | null>
+>((db, { id, present, credential }) =>
+  unlessSuspended(db, credential, () => {
     const accountId = resolveAccountId(db, id);
     return accountId === null ? null : accountFeaturedTagsOf(db, accountId, present.origin);
-  },
+  }),
 );
 
 // The featured hashtags of the account `accountId` as accountFeaturedTags shows them, in its order

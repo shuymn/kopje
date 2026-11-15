@@ -6,6 +6,7 @@ import type { ImportAuthority } from "../platform/store-admin";
 import { MAX_ENABLED_EMOJIS, presentedCategory, storedMediaMeta } from "../platform/stored-bounds";
 import { accessAdmin, oauthAdmin } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES } from "./answer-budget";
+import { type Credential, type Judged, unlessSuspended } from "./auth";
 import { emojiHref, type EmojiTag, emojiTag } from "./custom-emojis";
 import {
   chargeInstanceTransforms,
@@ -373,29 +374,33 @@ export type ListedEmoji = {
 // the picker). In shortcode order, through custom_emojis_enabled (Mastodon's order is unspecified). RES-3: at most
 // MAX_ENABLED_EMOJIS rows, each within 1,506 JSON bytes with its separator (docs/threat-model.md), admitted whole
 // within ARRAY_ANSWER_BYTES with no continuation; an entry whose url fails emojiHref is left out (HTML-3).
-export const customEmojis = readOperation<void, ListedEmoji[]>((db) => {
-  const rows = db.all<{ shortcode: string; category: string | null; url: string }>(
-    `SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled
+export const customEmojis = readOperation<{ credential: Credential | null }, Judged<ListedEmoji[]>>(
+  (db, { credential }) =>
+    // AUTH-2's anonymous routes: a suspended owner of the token sent is refused.
+    unlessSuspended(db, credential, () => {
+      const rows = db.all<{ shortcode: string; category: string | null; url: string }>(
+        `SELECT e.shortcode, e.category, m.url FROM custom_emojis e INDEXED BY custom_emojis_enabled
 		CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.id
 		WHERE e.disabled = 0 AND e.visible_in_picker = 1 ORDER BY e.shortcode LIMIT ?`,
-    MAX_ENABLED_EMOJIS,
-  );
-  const entries = rows.map((row): ListedEmoji | undefined => {
-    const url = emojiHref(row.url);
-    if (url === null) {
-      return undefined;
-    }
-    const category = presentedCategory(row.category);
-    return {
-      shortcode: row.shortcode,
-      url,
-      static_url: url,
-      visible_in_picker: true,
-      ...(category === null ? {} : { category, featured: false as const }),
-    };
-  });
-  return admit(entries, ARRAY_ANSWER_BYTES, true).items;
-});
+        MAX_ENABLED_EMOJIS,
+      );
+      const entries = rows.map((row): ListedEmoji | undefined => {
+        const url = emojiHref(row.url);
+        if (url === null) {
+          return undefined;
+        }
+        const category = presentedCategory(row.category);
+        return {
+          shortcode: row.shortcode,
+          url,
+          static_url: url,
+          visible_in_picker: true,
+          ...(category === null ? {} : { category, featured: false as const }),
+        };
+      });
+      return admit(entries, ARRAY_ANSWER_BYTES, true).items;
+    }),
+);
 
 // GET /emojis/:id (Mastodon's EmojisController#show, CustomEmoji.local.find): any local emoji, disabled ones included,
 // as its Emoji object; null for none, or when its url fails emojiHref or its time is not an instant (emojiTag).
