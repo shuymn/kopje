@@ -22,7 +22,7 @@ import {
   storedBlurhash,
 } from "../platform/stored-bounds";
 import { remotePlainText } from "../security/html";
-import { type Account, accountsOf, accountUrl, acctOf, type Present } from "./accounts";
+import { type Account, accountsOf, accountUrl, acctOf, type Present, shownHandle } from "./accounts";
 import { admit, type Admitted, jsonBytes } from "./answer-budget";
 import {
   type ApiQuoteState,
@@ -841,12 +841,10 @@ function hydrate(
       ...(row.author_domain === null ? { application: presentApplication(row) } : {}),
       account,
       media_attachments: (media.get(row.id) ?? []).map((m) => presentMedia(m, options.origin)),
-      mentions: (mentions.get(row.id) ?? []).map((m) => ({
-        id: m.id,
-        username: m.username,
-        url: accountUrl(m, options.origin),
-        acct: acctOf(m),
-      })),
+      mentions: (mentions.get(row.id) ?? []).map((m) => {
+        const handle = shownHandle(m);
+        return { id: m.id, username: handle.username, url: accountUrl(m, options.origin), acct: handle.acct };
+      }),
       tags: (tags.get(row.id) ?? []).map((t) => ({
         name: t.name,
         url: `${options.origin}/tags/${encodeURIComponent(t.name)}`,
@@ -1018,14 +1016,17 @@ export function statusLinks(db: Db, ids: readonly VisibleStatusId[]): Map<string
   return new Map(
     rows.map((row) => [
       row.id,
-      { url: statusUrl(row), acct: acctOf({ username: row.author_username, domain: row.author_domain }) },
+      {
+        url: statusUrl(row),
+        acct: acctOf({ id: row.account_id, username: row.author_username, domain: row.author_domain }),
+      },
     ]),
   );
 }
 
 type StatusUrlRow = Pick<
   StatusRow,
-  "id" | "uri" | "url" | "reblog_of_id" | "author_uri" | "author_username" | "author_domain"
+  "id" | "uri" | "url" | "reblog_of_id" | "account_id" | "author_uri" | "author_username" | "author_domain"
 >;
 
 const STATUS_LINK_COLUMNS = {
@@ -1033,6 +1034,7 @@ const STATUS_LINK_COLUMNS = {
   uri: STATUS_COLUMN_MAP.uri,
   url: STATUS_COLUMN_MAP.url,
   reblog_of_id: STATUS_COLUMN_MAP.reblog_of_id,
+  account_id: STATUS_COLUMN_MAP.account_id,
   author_uri: STATUS_COLUMN_MAP.author_uri,
   author_username: STATUS_COLUMN_MAP.author_username,
   author_domain: STATUS_COLUMN_MAP.author_domain,

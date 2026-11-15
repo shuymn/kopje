@@ -28,6 +28,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
+  `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
 
 ### Changed
 

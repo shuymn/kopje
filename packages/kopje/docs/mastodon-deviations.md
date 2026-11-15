@@ -105,10 +105,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
   `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
-- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
-  the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
-  16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
-  hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
+- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds the
+  statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most 16
+  mentions (of available accounts, among the first 64 references, each the account that holds the handle when the
+  announcement is read, as Mastodon's `Announcement#mentions` resolves it) and 16 hashtags are listed; `content` links
+  every hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
   mentioned account's URL grew) is shown escaped with no link. A scheduled announcement is published by the 5-minute
   cron within 5 minutes after `scheduled_at`, with `published_at` = `scheduled_at`. At most 16 are published or
   scheduled and 1,000 kept. Reactions are grouped by name (Mastodon groups by name and emoji), and a Unicode reaction is
@@ -346,6 +347,16 @@ Accounts (the `Account` and credential account entities):
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is
   available, otherwise `[]`: Kopje has no other role to highlight. A remote account shows none, as in Mastodon.
 - `uri` is `''` for an imported actor id whose JSON passes 2,048 bytes; ingestion stores none.
+- An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
+  `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
+  as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
+  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
+  `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
+  search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
+  where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
+  hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
+  username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
