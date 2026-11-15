@@ -9,6 +9,7 @@ import { followAnswerActivity, PIN_LIMIT, recordOutbound } from "../src/domain/a
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { claimDeliveries, HELD_REJECTS_PER_ACCOUNT, heldFollowUriSql } from "../src/domain/deliveries";
+import { HANDLE_REFRESH_REQUESTS } from "../src/domain/handle-refreshes";
 import { instanceInfo } from "../src/domain/instance";
 import {
   HANDSHAKE_REPLAYS,
@@ -26,6 +27,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
@@ -12504,6 +12506,146 @@ describe("0093_annual_reports", () => {
       expect(sql.exec("SELECT sql FROM sqlite_master WHERE name = 'annual_reports_pending'").one().sql).toContain(
         "WHERE viewed_at IS NULL",
       );
+    });
+  });
+});
+
+describe("0094_remote_handles", () => {
+  const NAME = "0094_remote_handles";
+  const at = NAMES.indexOf(NAME);
+  const id = (n: number) => String(100000000000000000n + BigInt(n));
+  // Rows in rowid order: [n, username, domain, search_text (undefined: as accountSearchText writes it)].
+  const ROWS: [number, string, string | null, string | undefined][] = [
+    // One handle in mixed case on one domain, a fourth on another domain, and a local row of the same username.
+    [1, "alice", "d.example", undefined],
+    [2, "Alice", "d.example", undefined],
+    [3, "ALICE", "d.example", undefined],
+    [4, "alice", "e.example", undefined],
+    [5, "alice", null, undefined],
+    // An imported nonconforming username, alone at its address; and one sharing an address with a search_text that is
+    // not the derived one.
+    [6, "not a username", "d.example", undefined],
+    [7, "aLiCe", "d.example", "imported text"],
+    // A reserved-form row naming its own id already.
+    [8, "! " + String(100000000000000008n), "d.example", undefined],
+    // The collision: '! <id11>' as row 9, then alice as 10 and Alice as 11 on one domain.
+    [9, "! " + String(100000000000000011n), "c.example", undefined],
+    [10, "alice", "c.example", undefined],
+    [11, "Alice", "c.example", undefined],
+  ];
+  const seed = (sql: SqlStorage) => {
+    for (const [n, username, domain, search] of ROWS) {
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain, display_name, search_text, raw, fetched_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id(n),
+        domain === null ? `https://kopje.test/ap/users/${username}` : `https://${domain}/actors/${n}`,
+        username,
+        domain,
+        `Name ${n}`,
+        search ?? accountSearchText(username, domain, `Name ${n}`),
+        domain === null ? null : JSON.stringify({ id: `https://${domain}/actors/${n}`, preferredUsername: username }),
+        domain === null ? null : "2026-01-01T00:00:00.000Z",
+      );
+    }
+    // A sync waiting for an account the file invalidates, and one for an account it leaves.
+    sql.exec("INSERT INTO collection_syncs (account_id, due_at, generation) VALUES (?, 5000, 3)", id(2));
+    sql.exec("INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 7000)", id(4));
+  };
+
+  it("follows 0093, runs the refresh requests the cutover runs, and checks every reference", () => {
+    expect(NAMES[at - 1]).toBe("0093_annual_reports");
+    expect(MIGRATIONS[at]?.sql).toContain(HANDLE_REFRESH_REQUESTS);
+    // The index is recreated UNIQUE, which a file declared foreignKeys: 'unchanged' may not do.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+  });
+
+  it("keeps each address on its oldest row, invalidates the others and asks for their refresh", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      const rows = sql
+        .exec<{ id: string; username: string; search_text: string; handle_refreshed_at: number | null }>(
+          "SELECT id, username, search_text, handle_refreshed_at FROM accounts ORDER BY rowid",
+        )
+        .toArray();
+      const invalid = (n: number) => `! ${id(n)}`;
+      expect(rows.map((row) => row.username)).toEqual([
+        "alice",
+        invalid(2),
+        invalid(3),
+        "alice",
+        "alice",
+        "not a username",
+        invalid(7),
+        invalid(8),
+        invalid(9),
+        "alice",
+        invalid(11),
+      ]);
+      // search_text as accountSearchText writes it for the new username, or as it was when it is not the derived one.
+      expect(rows.map((row) => row.search_text)).toEqual(
+        ROWS.map(([n, , domain, search], i) => search ?? accountSearchText(rows[i]!.username, domain, `Name ${n}`)),
+      );
+      expect(rows[6]?.search_text).toBe("imported text");
+      expect(rows.every((row) => row.handle_refreshed_at === null)).toBe(true);
+      // A refresh request for exactly the reserved-form remote rows, due at once; a waiting sync gains it.
+      expect(
+        sql.exec("SELECT account_id, due_at, generation, refresh FROM collection_syncs ORDER BY account_id").toArray(),
+      ).toEqual([
+        { account_id: id(2), due_at: 5000, generation: 3, refresh: 1 },
+        { account_id: id(3), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(4), due_at: 7000, generation: 1, refresh: 0 },
+        { account_id: id(7), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(8), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(9), due_at: 0, generation: 1, refresh: 1 },
+        { account_id: id(11), due_at: 0, generation: 1, refresh: 1 },
+      ]);
+      // The index is UNIQUE under its name: a second remote row of an address is refused, a local one is not.
+      expect(
+        sql.exec("SELECT \"unique\" FROM pragma_index_list('accounts') WHERE name = 'accounts_domain_username'").one(),
+      ).toEqual({ unique: 1 });
+      // accounts_local_username is unchanged and again the newer of the two (pragma_index_list lists the newest first).
+      expect(
+        sql
+          .exec(
+            `SELECT name, "unique", partial FROM pragma_index_list('accounts')
+						WHERE name IN ('accounts_domain_username', 'accounts_local_username')`,
+          )
+          .toArray(),
+      ).toEqual([
+        { name: "accounts_local_username", unique: 1, partial: 1 },
+        { name: "accounts_domain_username", unique: 1, partial: 0 },
+      ]);
+      expect(() =>
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://e.example/x', 'ALICE', 'e.example')",
+          id(20),
+        ),
+      ).toThrow(/UNIQUE constraint failed/);
+      expect(() => sql.exec("UPDATE collection_syncs SET refresh = 2 WHERE account_id = ?", id(4))).toThrow(
+        /CHECK constraint failed/,
+      );
+    });
+  });
+
+  it("fails on the collision when reserved-form usernames are not given their own id first", async () => {
+    // The file without its first statement: row 9's '! <id11>' and row 11's invalidation share an address.
+    const sql = MIGRATIONS[at]!.sql;
+    const first = sql.indexOf("UPDATE accounts");
+    const withoutFirst = sql.slice(0, first) + sql.slice(sql.indexOf("UPDATE accounts", first + 1));
+    expect(withoutFirst).not.toBe(sql);
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      seed(state.storage.sql);
+      expect(() => state.storage.transactionSync(() => state.storage.sql.exec(withoutFirst))).toThrow(
+        /UNIQUE constraint failed/,
+      );
+      expect(state.storage.transactionSync(() => state.storage.sql.exec(sql).toArray())).toEqual([]);
     });
   });
 });

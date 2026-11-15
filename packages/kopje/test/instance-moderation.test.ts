@@ -2363,7 +2363,7 @@ async function remotesOn(f: Bare, n: number, domain: string, base: bigint, marke
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
 		INSERT INTO accounts (id, uri, username, domain, created_at, inbox_url, suspended_at, suspension_source)
 		SELECT printf('%018d', CAST(?2 AS INTEGER) + i), 'https://' || ?3 || '/users/u' || (CAST(?2 AS INTEGER) + i),
-			'u' || i, ?3, ?4, 'https://' || ?3 || '/users/u' || (CAST(?2 AS INTEGER) + i) || '/inbox',
+			'u' || (CAST(?2 AS INTEGER) + i), ?3, ?4, 'https://' || ?3 || '/users/u' || (CAST(?2 AS INTEGER) + i) || '/inbox',
 			CASE WHEN ?5 THEN ?4 END, CASE WHEN ?5 THEN 'domain' END FROM n`,
     n,
     String(base),

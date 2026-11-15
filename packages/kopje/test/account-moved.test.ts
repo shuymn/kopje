@@ -457,7 +457,7 @@ describe("query plans of moves (RES-7)", () => {
     const actor = (uri: string, movedTo: string | null): RemoteActorInput => ({
       ...actorDefaults(),
       uri,
-      username: "mover",
+      username: uri.split("/").at(-1)!,
       domain: "remote.example",
       displayName: "mover",
       inboxUrl: `${uri}/inbox`,

@@ -29,6 +29,7 @@ import {
   REMOTE_BIO_BYTES,
   REMOTE_HTML_RAW_LIMIT,
   remoteHtmlText,
+  requestHandleRefreshes,
   sanitizeRemoteBio,
   sanitizeRemoteContent,
   sanitizeRemoteHtml,
@@ -551,6 +552,10 @@ export function convertLegacy(
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const pendingAccounts = [];
+  // The remote handles written so far, as `<host> <lowercased username>` (migration 0094_remote_handles: one remote
+  // account per address).
+  /** @type {Set<string>} */
+  const handles = new Set();
   for (const actor of actors) {
     const uri = String(actor.id);
     const properties = json(actor.properties);
@@ -615,6 +620,16 @@ export function convertLegacy(
         count(problems, "remote-actor-username-invalid");
         continue;
       }
+      // An address an earlier row holds is invalidated on this one, as migration 0094_remote_handles invalidates every
+      // row but the oldest of an address (the reserved form of src/domain/accounts.ts shownHandle); its refresh is
+      // requested below.
+      const handle = `${host} ${username.toLowerCase()}`;
+      if (handles.has(handle)) {
+        count(normalized, "remote-actor-handle-shared");
+        username = `! ${id}`;
+      } else {
+        handles.add(handle);
+      }
     }
     const displayName = stored("accounts.display_name", carried(properties.name), storedDisplayName);
     const endpoints =
@@ -652,6 +667,8 @@ export function convertLegacy(
       created,
     });
   }
+  // Each invalidated remote account is refreshed by its first sync round after the import (the Store's own requests).
+  requestHandleRefreshes(kopje);
   /** @param {unknown} uri */
   const accountOf = (uri) => (typeof uri === "string" ? accounts.get(uri) : undefined);
 

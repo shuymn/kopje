@@ -45,7 +45,7 @@ function actor(attachment: unknown, extra: Partial<RemoteActorInput> = {}, uri =
   return {
     ...actorDefaults(),
     uri,
-    username: "a",
+    username: uri.split("/").at(-1)!,
     domain: "remote.example",
     displayName: "a",
     inboxUrl: `${uri}/inbox`,

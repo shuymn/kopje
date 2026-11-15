@@ -5112,7 +5112,7 @@ describe("the admin's report list reads a page, however many reports do not matc
       }
       for (const id of [T, U]) {
         sql.exec(
-          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 't', 'far.example')",
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, ?2, 't' || ?1, 'far.example')",
           id,
           `https://far.example/users/${id}`,
         );

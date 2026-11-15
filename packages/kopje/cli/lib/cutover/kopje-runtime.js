@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
  *   & typeof import('../../../src/domain/tag-name.ts') & typeof import('../../../src/domain/language.ts')
  *   & typeof import('../../../src/platform/image-bytes.ts') & typeof import('../../../src/platform/domain-name.ts')
  *   & typeof import('../../../src/domain/conversation-rows.ts')
+ *   & typeof import('../../../src/domain/handle-refreshes.ts')
  *   & typeof import('../../../src/platform/identity-bounds.ts')
  *   & typeof import('../../../src/platform/stored-bounds.ts') & typeof import('../../../src/platform/media-files.ts')
  *   & typeof import('../../../src/platform/dump-catalog.ts') & typeof import('../../../src/platform/dump-literals.ts')
@@ -28,6 +29,7 @@ const runtime = fromSources
       ...(await import("../../../src/platform/image-bytes.ts")),
       ...(await import("../../../src/platform/domain-name.ts")),
       ...(await import("../../../src/domain/conversation-rows.ts")),
+      ...(await import("../../../src/domain/handle-refreshes.ts")),
       ...(await import("../../../src/platform/identity-bounds.ts")),
       ...(await import("../../../src/platform/stored-bounds.ts")),
       ...(await import("../../../src/platform/media-files.ts")),
@@ -54,6 +56,7 @@ export const {
   sniffImageType,
   blockedDomain,
   backfillConversations,
+  requestHandleRefreshes,
   ACTOR_URI_LIMIT,
   isRemoteUsername,
   MAX_LOCAL_ADDRESSED,
