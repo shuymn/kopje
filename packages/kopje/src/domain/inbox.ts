@@ -2196,7 +2196,7 @@ function namedStatus(
 // the object cannot appear afterwards (ID-7), whether or not it was seen before, for any id of the actor's origin.
 // A stored status or boost is removed only by its author (ID-6; a local status never has a remote author, ID-3): a
 // boost at once, a status in bounded batches (deleteStatusBatch). One found by the object's atomUri (namedStatus) is
-// removed as by its id, and retracted and recorded as deleted under both (retractMatched).
+// removed as by its id and retracted under both ids (retractMatched); only its own uri is recorded as deleted.
 // The removal needs its retraction: at the per-actor cap nothing changes and the Delete is answered 503, to be
 // delivered again (a Delete of an unknown object at the cap is not recorded, and answered 202).
 //
@@ -2227,10 +2227,10 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (!retractMatched(db, actor.uri, activity.object, matched, now)) {
     return retryLater("retraction-cap");
   }
-  recordDeletedObject(db, activity.object, now);
-  if (matched !== null) {
-    recordDeletedObject(db, matched, now);
-  }
+  // The tombstone for every actor names the stored status's own uri only: an object id it was found under by atomUri
+  // was never stored or shown to be the actor's, so it stays the actor's retraction alone, as an unknown object's
+  // (ID-7); naming it for everyone would let the actor suppress another actor's later status of its origin.
+  recordDeletedObject(db, matched ?? activity.object, now);
   if (status.reblog_of_id !== null) {
     return applied("boost-deleted", removeBoost(db, actor, { id: status.id, original: status.reblog_of_id }, now));
   }

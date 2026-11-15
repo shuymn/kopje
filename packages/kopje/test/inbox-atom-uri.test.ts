@@ -341,12 +341,26 @@ describe("a Delete or an Undo naming a status by atomUri (Delete#delete_status, 
     // Without the fallback, A stays and only x is recorded.
     expect(await idOf(t, a.note.id)).toBeUndefined();
     expect(await retracted(t, bob.uri)).toEqual([a.note.id, x].toSorted());
-    expect(await retracted(t, "*")).toEqual([a.note.id, x].toSorted());
+    // Only the stored status's own uri is deleted for every actor; x was never shown to be bob's.
+    expect(await retracted(t, "*")).toEqual([a.note.id]);
     // Neither id brings it back.
     expect(await t.post(bob, create(bob, a.note))).toBe(202);
     expect(await t.post(bob, create(bob, mastodonNote(bob, { id: x, atomUri: x })))).toBe(202);
     expect(await idOf(t, a.note.id)).toBeUndefined();
     expect(await idOf(t, x)).toBeUndefined();
+  });
+
+  it("keeps the object id of a Delete matched by atomUri the deleting actor's: another actor's later status stays", async () => {
+    const { t, bob, erin } = await world();
+    const a = await stored(t, bob);
+    // bob names erin's future status (one origin) as the object and his own A by atomUri.
+    const future = mastodonNote(erin);
+    expect(await t.post(bob, deletion(bob, future.id, a.note.id))).toBe(202);
+    await settle(t.store);
+    expect(await idOf(t, a.note.id)).toBeUndefined();
+    // Recorded as deleted for every actor, erin's Create of it would be refused as retracted.
+    expect(await t.post(erin, create(erin, future))).toBe(202);
+    expect(await idOf(t, future.id)).toBeDefined();
   });
 
   it("does not delete another author's status by atomUri: the Delete is of an unknown object", async () => {

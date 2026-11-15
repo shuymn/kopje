@@ -353,12 +353,14 @@ against their own instance. TLS is assumed between all parties.
   `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` whose id or `atomUri` was retracted or deleted is not stored, and a `Delete` or `Undo` that found its status
-  by `atomUri` records both ids as retracted (a `Delete` also as deleted), both or neither within the cap
-  (`retractMatched` in `src/domain/retractions.ts`), so neither id brings it back (`test/inbox-atom-uri.test.ts`). A
-  `Delete` of an unknown object of the actor's origin is recorded for that
-  actor only, so it cannot suppress another actor's objects never seen here; the `Delete` of a stored status or boost is
-  also recorded for every actor (`ANY_ACTOR`), so nobody, another actor of the same origin included, creates or updates
-  that uri again (bounded by the authors' caps: it is written only with the author's own retraction of the uri, which
+  by `atomUri` records both ids as the actor's retractions, both or neither within the cap (`retractMatched` in
+  `src/domain/retractions.ts`), so neither id brings it back; such a `Delete` records the stored status's own uri as
+  deleted for every actor, and the object's id, never shown to be the actor's, only as the actor's retraction, as an
+  unknown object's (`test/inbox-atom-uri.test.ts`). A `Delete` of an unknown object of the actor's origin is recorded
+  for that actor only, so it cannot suppress another actor's objects never seen here; the `Delete` of a stored status
+  or boost is also recorded for every actor (`ANY_ACTOR`), so nobody, another actor of the same origin included, creates
+  or updates that uri again (bounded by the authors' caps: it is written only with the author's own retraction of the
+  uri, which
   counts against the author's cap). The wildcard's deadline is the one the last `Delete` that found the author's stored
   row gave it: a `Delete` delivered again after the removal finished finds no row and renews only the author's own
   retraction (`retractUnknown`), so the two can expire apart; renewing the wildcard there would let another actor on the
