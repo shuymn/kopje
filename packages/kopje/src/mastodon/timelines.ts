@@ -148,6 +148,7 @@ export const accountStatuses: ApiHandler = withParams(async (c, deps, p) => {
         onlyMedia: parseBoolean(p.get("only_media")) ?? false,
         excludeReplies: parseBoolean(p.get("exclude_replies")) ?? false,
         excludeReblogs: parseBoolean(p.get("exclude_reblogs")) ?? false,
+        excludeDirect: parseBoolean(p.get("exclude_direct")) ?? false,
         pinned: parseBoolean(p.get("pinned")) ?? false,
         tagged: tagged === undefined || tagged === "" ? null : tagged,
         present: present(c),

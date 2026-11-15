@@ -259,6 +259,7 @@ describe("the status read endpoints agree with the model of their rules", () => 
       [
         "account search",
         "account statuses",
+        "account statuses with exclude_direct",
         "bookmarks",
         "context",
         "conversation without its last status",
@@ -279,6 +280,7 @@ describe("the status read endpoints agree with the model of their rules", () => 
         "list",
         "notifications",
         "pinned statuses",
+        "pinned statuses with exclude_direct",
         "profile featured",
         "profile followers",
         "profile following",
@@ -697,25 +699,9 @@ function check(sql: SqlStorage, c: Case): string[] {
       }
     }
     world.accounts.forEach((_, a) => {
-      const actual = pages((page) =>
-        ok<Page<Status> | null>(
-          run(accountStatuses, {
-            ...optional(viewer),
-            account: accountId(a),
-            page,
-            onlyMedia: false,
-            excludeReplies: false,
-            excludeReblogs: false,
-            pinned: false,
-            tagged: null,
-            present: PRESENT,
-          }),
-          "account statuses",
-        ),
-      ).map((value) => status("account statuses", viewer, value, () => true));
       // Status.permitted_for: visible, the viewer does not block the account, and a boost's original is visible
       // and its author not filtered.
-      const expected = all.filter((s) => {
+      const permitted = all.filter((s) => {
         const { author, reblogOf } = m.status(s);
         return (
           author === a &&
@@ -724,29 +710,37 @@ function check(sql: SqlStorage, c: Case): string[] {
           (reblogOf === null || (m.visible(reblogOf, viewer) && !m.filteredFor(m.status(reblogOf).author, viewer)))
         );
       });
-      equal(`account statuses of ${world.accounts[a]?.name}`, viewer, actual, newestFirst(expected));
-      // pinned=true: of those, the account's pins, newest pin first (a pin is of an original, so the boost terms
-      // never apply).
-      const pinned = (
-        ok<Page<Status> | null>(
-          run(accountStatuses, {
-            ...optional(viewer),
-            account: accountId(a),
-            page: { limit: 40 },
-            onlyMedia: false,
-            excludeReplies: false,
-            excludeReblogs: false,
-            pinned: true,
-            tagged: null,
-            present: PRESENT,
-          }),
-          "pinned statuses",
-        )?.items ?? []
-      ).map((value) => status("pinned statuses", viewer, value, () => true));
-      const pins = world.pins
-        .flatMap((p) => (p.account === a && expected.includes(p.status) ? [p.status] : []))
-        .toReversed();
-      equal(`pinned statuses of ${world.accounts[a]?.name}`, viewer, pinned, pins);
+      // The account's pins among `listed`, newest pin first.
+      const pinsOf = (listed: number[]) =>
+        world.pins.flatMap((p) => (p.account === a && listed.includes(p.status) ? [p.status] : [])).toReversed();
+      // exclude_direct=true keeps the list-eligible ones (AccountStatusesFilter, mastodon#37763), pinned or not.
+      for (const excludeDirect of [false, true]) {
+        const suffix = excludeDirect ? " with exclude_direct" : "";
+        const expected = excludeDirect ? permitted.filter((s) => m.listEligible(s)) : permitted;
+        const input = {
+          ...optional(viewer),
+          account: accountId(a),
+          onlyMedia: false,
+          excludeReplies: false,
+          excludeReblogs: false,
+          excludeDirect,
+          tagged: null,
+          present: PRESENT,
+        };
+        const actual = pages((page) =>
+          ok<Page<Status> | null>(run(accountStatuses, { ...input, page, pinned: false }), `account statuses${suffix}`),
+        ).map((value) => status(`account statuses${suffix}`, viewer, value, () => true));
+        equal(`account statuses${suffix} of ${world.accounts[a]?.name}`, viewer, actual, newestFirst(expected));
+        // pinned=true: of those, the account's pins, newest pin first (a pin is of an original, so the boost terms
+        // never apply).
+        const pinned = (
+          ok<Page<Status> | null>(
+            run(accountStatuses, { ...input, page: { limit: 40 }, pinned: true }),
+            `pinned statuses${suffix}`,
+          )?.items ?? []
+        ).map((value) => status(`pinned statuses${suffix}`, viewer, value, () => true));
+        equal(`pinned statuses${suffix} of ${world.accounts[a]?.name}`, viewer, pinned, pinsOf(expected));
+      }
       // The profile page's tabs, for a local account: its Posts tab is these statuses less replies to others (a
       // reply whose partner is not the author), boosts included (VIS-6), its first page led by the pins; Posts and
       // replies, its media tab (the posts with media they show) and a hashtag's tab list replies and no boosts. A
@@ -776,10 +770,15 @@ function check(sql: SqlStorage, c: Case): string[] {
             continue;
           }
           const shownOf = (list: Status[], what: string) =>
-            list.map((value) => status(what, viewer, value, (s) => expected.includes(s)));
-          equal(`${endpoint} of ${name}`, viewer, shownOf(read.items, endpoint), newestFirst(expected.filter(filter)));
+            list.map((value) => status(what, viewer, value, (s) => permitted.includes(s)));
+          equal(`${endpoint} of ${name}`, viewer, shownOf(read.items, endpoint), newestFirst(permitted.filter(filter)));
           if (tab.kind === "posts") {
-            equal(`profile pins of ${name}`, viewer, shownOf(read.pins, "profile pins"), pins.slice(0, PIN_LIMIT));
+            equal(
+              `profile pins of ${name}`,
+              viewer,
+              shownOf(read.pins, "profile pins"),
+              pinsOf(permitted).slice(0, PIN_LIMIT),
+            );
           } else if (read.pins.length > 0) {
             problems.push(`${endpoint} of ${name}: shows pins`);
           }

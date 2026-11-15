@@ -355,6 +355,12 @@ export class PolicyModel {
     return this.visible(s, viewer) && (reblogOf === null || this.visible(reblogOf, viewer));
   }
 
+  // R11 with exclude_direct: Mastodon's list_eligible visibilities, public, unlisted and private (listEligibleSql).
+  listEligible(s: number): boolean {
+    const { visibility } = this.status(s);
+    return visibility === "public" || visibility === "unlisted" || visibility === "private";
+  }
+
   // R8: viewable, and the viewer filters neither the author nor a reblogged original's author.
   listable(s: number, viewer: Viewer): boolean {
     const { author, reblogOf } = this.status(s);

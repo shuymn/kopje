@@ -80,6 +80,12 @@ export const REQUIRES_MENTION_SQL = visibilitySetSql(requiresMention);
 // list, in this order, and SQLite uses it only for the same list.
 export const REACHES_FOLLOWERS_SQL = visibilitySetSql((visibility) => !requiresMention(visibility));
 
+// Mastodon's Status.list_eligible_visibility on the status `alias`: public, unlisted and private, what an account's
+// statuses keep with exclude_direct (AccountStatusesFilter, R11). The predicate of the partial index statuses_feed.
+export function listEligibleSql(alias: string): string {
+  return `${alias}.visibility IN ${REACHES_FOLLOWERS_SQL}`;
+}
+
 // status_tags.public of a hashtag of the status `id`: whether the status is public, the only visibility hashtag timelines
 // and a tag's history count (publicConditions in timelines.ts). A status's visibility is fixed when it is written, so
 // the writers of status_tags set it with each row, and the partial index status_tags_public holds just those rows.

@@ -802,14 +802,17 @@ Request parameters:
 
 Paged status lists with request conditions:
 
-- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged` or `exclude_replies`, `GET
-  /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the profile's Posts, Media and
-  tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page before applying the
-  conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first holds what it found,
-  possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev` by `min_id` for a
-  `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next` only when the page
-  is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by `Link` reach every
-  status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- `GET /api/v1/accounts/:id/statuses` with `only_media`, `tagged`, `exclude_replies`, or `exclude_direct` with
+  `exclude_reblogs`, `GET /api/v1/timelines/tag/:hashtag` with `local`, `remote`, `only_media`, `all` or `none`, the
+  profile's Posts, Media and tagged tabs and `/tags/:name` read at most 2,000 index entries within the audience a page
+  before applying the conditions ([visibility.md](visibility.md), "Read bounds"). A page whose budget runs out first
+  holds what it found, possibly nothing, and its `Link` continues from the last entry read: `next` by `max_id` (`prev`
+  by `min_id` for a `min_id` request). Mastodon applies the conditions in SQL and answers a full page, sending `next`
+  only when the page is full (`AccountStatusesFilter#results`, `TagFeed#get`, `records_continue?`). Clients that page by
+  `Link` reach every status; one that stops at a short or empty page stops early. Accepted, 2026-11-11.
+- The `Link` of `GET /api/v1/accounts/:id/statuses` keeps `exclude_direct`, as it keeps every other parameter, so the
+  next page leaves direct posts out too. Mastodon's drops it (`AccountStatusesFilter::KEYS` lacks it), so its next page
+  lists them.
 
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
