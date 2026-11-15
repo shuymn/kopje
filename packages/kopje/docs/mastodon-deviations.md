@@ -896,6 +896,17 @@ Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their
   the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
   statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
 
+Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Mastodon's `FanOutOnWriteService` and its
+streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
+
+- A status on `public*` and `hashtag*` is presented as REST presents it to the subscriber: its `favourited`,
+  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
+  `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
+  match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
+  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; a client that replaces the
+  status on `status.update`, as Mastodon's web client and Elk do, then shows the subscriber's own marks as unset.
+  Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
+
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
