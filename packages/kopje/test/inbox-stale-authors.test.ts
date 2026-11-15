@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
+import { webfingerUrl } from "../src/domain/remote-statuses";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -240,6 +241,18 @@ describe("a stale author of a fetched original (VIS-6, NET-4; Mastodon possibly_
     const note3 = served(t, erin);
     expect(await t.post(bob, announce(bob, note3.id))).toBe(202);
     expect(await author(t, erin.uri)).toMatchObject({ domain: "other.example", username: "erin2" });
+  });
+
+  // D9 (a), Mastodon's possibly_stale?: an invalidated author is stale however recently it was fetched. Fails if
+  // staleAccount ignores the invalidated prefix: nothing is refetched and erin stays invalidated.
+  it("refreshes an invalidated author whatever its fetched_at, and a confirmed claim renames it back", async () => {
+    const { t, bob, erin } = await staleAuthorWorld();
+    await ageAccount(t, erin.uri, iso(NOW));
+    await sql(t.store, "UPDATE accounts SET username = '! ' || id WHERE uri = ?", erin.uri);
+    const note2 = served(t, erin);
+    expect(await t.post(bob, announce(bob, note2.id))).toBe(202);
+    expect(t.web.fetched).toEqual([note2.id, erin.uri, webfingerUrl("erin", "other.example")]);
+    expect(await author(t, erin.uri)).toMatchObject({ username: "erin", domain: "other.example" });
   });
 
   it("VIS-6: a private original by a stale author stores no status or boost; the author is refreshed", async () => {

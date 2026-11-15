@@ -5,6 +5,7 @@ import {
   type CollectionCounts,
   type CollectionReadInput,
   type CollectionSync,
+  type DocumentRefreshInput,
   MAX_REMOTE_PINS,
   PART_FEATURED,
   PART_NETWORK,
@@ -14,7 +15,7 @@ import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import { readConfig, userKek } from "../platform/config";
 import { callStore } from "../platform/store-client";
 import { storedCount } from "../platform/stored-bounds";
-import { createRemoteLoaders, type FederationState } from "./federation";
+import { createRemoteLoaders, type FederationState, type RemoteLoaders } from "./federation";
 import type { InboxDeps } from "./inbox";
 import {
   type DocumentCaps,
@@ -23,7 +24,9 @@ import {
   REQUEST_MAX_FETCHES,
   requestBudget,
 } from "./loader";
+import { fetchActor } from "./remote-actor";
 import { fetchRemoteStatus, idOf } from "./remote-status";
+import { confirmedInput } from "./resolve";
 
 // The Worker's part of a sync of a remote account's collections (domain/remote-collections.ts): what Mastodon's
 // FetchFeaturedCollectionService, FetchFeaturedTagsCollectionService and ProcessAccountService#collection_info fetch
@@ -52,9 +55,15 @@ export const MAX_FEATURED_TAG_PAGES = 3;
 // fetch answered 400 or 401 (loader.ts RETRY_STATUSES), on each of its documents, checked as the module loads: a part
 // read first in its round always completes, so every round with a healthy part left makes progress. Both on one
 // document are not covered: a server that refuses draft-cavage and redirects every document may leave a part unread
-// until its attempts run out (RES-6).
-export const PART_DOCUMENTS = { featured: 2, network: 3, tags: 1 + MAX_FEATURED_TAG_PAGES } as const;
-if (Math.max(...Object.values(PART_DOCUMENTS)) * 2 > REQUEST_MAX_FETCHES) {
+// until its attempts run out (RES-6). The document part of a refresh (D9) runs alone in its round: the account's
+// document and at most two WebFinger answers confirming its claim (resolve.ts confirmHandle).
+export const PART_DOCUMENTS = { featured: 2, network: 3, tags: 1 + MAX_FEATURED_TAG_PAGES, document: 3 } as const;
+
+// Whether each part of `parts` fits one round of `maxFetches`, a redirect or an RFC 9421 retry on each document.
+export function partsFitRound(parts: Readonly<Record<string, number>>, maxFetches: number): boolean {
+  return Math.max(...Object.values(parts)) * 2 <= maxFetches;
+}
+if (!partsFitRound(PART_DOCUMENTS, REQUEST_MAX_FETCHES)) {
   throw new Error(
     "each part of a collection read must fit one round of REQUEST_MAX_FETCHES, a redirect or an RFC 9421 retry each included",
   );
@@ -334,6 +343,25 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
   return out;
 }
 
+// The document part (D9): the account's document, fetched as the sync's other documents are, and its claim confirmed
+// against the handle read at the claim (an invalidated one, which equals no claim). A failure of the fetch or of the
+// confirmation that may pass is 'transient', for a later round.
+async function refetchDocument(
+  sync: CollectionSync,
+  loaders: RemoteLoaders,
+  instanceDomain: string,
+): Promise<DocumentRefreshInput["document"]> {
+  const fetched = await fetchActor(sync.accountUri, loaders.document, loaders.context);
+  if (fetched.kind !== "ok") {
+    return fetched.kind === "unusable" ? null : fetched.kind;
+  }
+  if (fetched.input === null) {
+    return null;
+  }
+  const checked = await confirmedInput(loaders, fetched.input, sync.state.handle, instanceDomain);
+  return checked.outcome === "transient" ? "transient" : checked.input;
+}
+
 // One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. Returns whether another waits.
 // A Store refusal (maintenance) surfaces as StoreUnavailableError for the caller; a claimed sync whose round died is
 // claimed again after its lease.
@@ -376,7 +404,15 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       requestBudget(Date.now()),
     );
     const round = { origin, accountUri: sync.accountUri, generation: sync.generation, token: sync.token };
-    if (sync.phase === "read") {
+    if (sync.phase === "document") {
+      const document = await refetchDocument(sync, loaders, domain);
+      if (state.storeError !== null) {
+        throw state.storeError;
+      }
+      pending = await callStore(() =>
+        store().completeDocumentRefresh(build, { ...round, now: deps.now(), revision: sync.state.revision, document }),
+      );
+    } else if (sync.phase === "read") {
       const read = await readCollections(sync, {
         document: loaders.document,
         network: loaders.capped(NETWORK_CAPS),

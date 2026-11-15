@@ -424,14 +424,16 @@ export function upsertRemoteActor(
 }
 
 // Whether the remote account `id` is fetched again before a status Kopje fetched by it is stored (ACCOUNT_STALE_MS,
-// Mastodon's possibly_stale?): a remote row that is available (R38, VIS-30: never refetched) and whose fetched_at is
-// ACCOUNT_STALE_MS old or older, or not a stored time (NULL, or an imported value isoTimeSql does not read).
+// Mastodon's possibly_stale?): a remote row that is available (R38, VIS-30: never refetched) and whose handle is
+// invalidated (D9: whatever its fetched_at, as possibly_stale? is true for an invalidated username), or whose
+// fetched_at is ACCOUNT_STALE_MS old or older, or not a stored time (NULL, or an imported value isoTimeSql does not
+// read). The prefix test is accounts.ts shownHandle's on the stored username.
 export function staleAccount(db: Db, id: string, now: number): boolean {
   return (
     db.first(
       `SELECT 1 AS x FROM accounts a
 			WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("a.id")}
-				AND COALESCE(${isoTimeSql("a.fetched_at")} <= ?2, 1)`,
+				AND (substr(a.username, 1, 2) = '! ' OR COALESCE(${isoTimeSql("a.fetched_at")} <= ?2, 1))`,
       id,
       new Date(now - ACCOUNT_STALE_MS).toISOString(),
     ) !== undefined

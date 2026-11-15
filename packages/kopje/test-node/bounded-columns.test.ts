@@ -721,6 +721,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 3,
     reason: "a remote account's stored handle, compared with a claim or derived from, never presented or written back",
   },
+  "src/domain/remote-collections.ts accounts.username": {
+    count: 1,
+    reason: "the invalidated prefix tested in SQL (accounts.ts shownHandle's), a boolean, never the username",
+  },
   "src/domain/snapshot.ts accounts.username": { count: 1, reason: LOCAL },
   "src/domain/statuses.ts accounts.username": { count: 1, reason: LOCAL },
   "src/domain/streaming.ts status_tags.name": {

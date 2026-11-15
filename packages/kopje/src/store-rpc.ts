@@ -167,6 +167,7 @@ export const STORE_RPC = {
   claimCollectionSync: remoteCollections.claimCollectionSync,
   completeCollectionRead: remoteCollections.completeCollectionRead,
   completePinFetches: remoteCollections.completePinFetches,
+  completeDocumentRefresh: remoteCollections.completeDocumentRefresh,
 
   // Verification of received quotes (domain/quotes.ts): the work read, applied and claimed by the Worker's job rounds
   // (federation/quotes.ts).

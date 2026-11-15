@@ -5,12 +5,13 @@ import { Db } from "../src/db/sql";
 import { ACCOUNT_STALE_MS, upsertRemoteActor } from "../src/domain/remote-actors";
 import { webfingerUrl } from "../src/domain/remote-statuses";
 import { accountSearchText } from "../src/domain/search-text";
+import { syncCollections } from "../src/federation/collections";
 import { REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { claimedHandle } from "../src/federation/remote-actor";
 import { DOMAIN_BYTES, REMOTE_USERNAME_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
-import { harness, NOW } from "./app-helpers";
+import { harness, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import {
   actorDefaults,
@@ -483,6 +484,68 @@ describe("a confirmed handle another account holds (C6, C7)", () => {
     });
     expect(rows.taking - rows.free).toBe(2);
     expect(rows.inside - rows.free).toBe(1);
+  });
+});
+
+describe("two actors whose WebFinger answers take one handle from each other (C10, D9 (c))", () => {
+  it("refreshes each once and then stops, the last invalidated left so", async () => {
+    const t = await setup();
+    const a = await mastodonActor(t.web, "a", { origin: "https://alt.example" });
+    const b = await mastodonActor(t.web, "shared", {
+      origin: "https://alt.example",
+      uri: "https://alt.example/users/b",
+      key: 1,
+    });
+    const shared = webfingerUrl("shared", "alt.example");
+    await t.post(b, follow(b));
+    await t.post(a, follow(a));
+    // a's Update claims the shared handle, which WebFinger confirms for a: b is invalidated, its refresh asked for.
+    reserve(t, a, { preferredUsername: "shared" });
+    serveWebFinger(t.web, "acct:shared@alt.example", "acct:shared@alt.example", a.uri);
+    expect(await t.post(a, updatePerson(a))).toBe(202);
+    const bId = (await accountId(t.store, b.uri))!;
+    expect(await stored(t, b.uri)).toMatchObject([{ username: `! ${bId}` }]);
+    // The rounds: the shared handle's WebFinger answers b, then a, then b, and so on.
+    const order = [b, a];
+    let turn = 0;
+    const counted: string[] = [];
+    const loader = {
+      checkHost: () => Promise.resolve(),
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : String(input)).href;
+        if (url === shared) {
+          const self = order[turn++ % 2]!.uri;
+          serveWebFinger(t.web, "acct:shared@alt.example", "acct:shared@alt.example", self);
+        }
+        if (url === shared || url === a.uri || url === b.uri) {
+          counted.push(url);
+        }
+        return t.web.fetch(input, init);
+      }) as typeof fetch,
+    };
+    let rounds = 0;
+    for (
+      ;
+      rounds < 10 &&
+      (await syncCollections(
+        t.env,
+        inboxDeps(() => t.store, loader),
+      ));
+      rounds++
+    ) {
+      // Another sync is due.
+    }
+    // None is due after at most ten rounds (fails if the invalidation ignores handle_refreshed_at).
+    expect(rounds).toBeLessThan(10);
+    const aId = (await accountId(t.store, a.uri))!;
+    expect(await stored(t, a.uri)).toMatchObject([{ username: "shared" }]);
+    expect(await stored(t, b.uri)).toMatchObject([{ username: `! ${bId}` }]);
+    expect(await refreshes(t, b.uri)).toEqual([]);
+    expect(aId).not.toBe(bId);
+    // b's document part ran once (taking the handle back), a's once (taking it again).
+    expect(counted.filter((url) => url === b.uri)).toHaveLength(1);
+    expect(counted.filter((url) => url === a.uri)).toHaveLength(1);
+    expect(counted.length).toBeLessThanOrEqual(2 * 3);
   });
 });
 
