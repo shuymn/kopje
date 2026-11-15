@@ -100,7 +100,7 @@ const REMOTE_VERIFIED_SQL = `CASE WHEN a.domain IS NOT NULL THEN (SELECT CASE WH
 // RES-2: stored profile bounds: platform/stored-bounds.ts; username and actor id read projections: profile-bounds.ts;
 // fields: REMOTE_ATTACHMENT_SQL and remoteFields. The display name is read by its stored bytes (displayNameReadSql),
 // and it and the note are bounded again after decoding (presentedDisplayName, presentedNote). The image descriptions
-// and display settings are read as stored (0096's triggers bound them), and the descriptions cut again after decoding
+// and display settings are read as stored (0097's triggers bound them), and the descriptions cut again after decoding
 // (presentedProfileDescription). Maxima: the account occurrence in docs/threat-model.md, "Maxima of presented units".
 export const ACCOUNT_COLUMN_MAP = {
   id: "a.id",

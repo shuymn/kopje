@@ -174,7 +174,7 @@ export function build(sql: SqlStorage, f: Fixture, item: Item): string {
       remote = nextId();
       sql.exec(
         `INSERT INTO accounts (id, uri, username, domain, display_name, raw, emojis)
-				VALUES (?, ?, 'author', 'remote.example', ?, ?, ?)`,
+				VALUES (?1, ?2, 'author' || ?1, 'remote.example', ?3, ?4, ?5)`,
         remote,
         `https://remote.example/users/${remote}`,
         (item.wide ? "名" : "n").repeat(item.text % 300),
@@ -308,7 +308,7 @@ function movedTarget(sql: SqlStorage, f: Fixture, item: Item): string {
       const id = nextId();
       sql.exec(
         `INSERT INTO accounts (id, uri, username, domain, display_name, url, emojis)
-				VALUES (?, ?, 'target', 'new.example', ?, ?, ?)`,
+				VALUES (?1, ?2, 'target' || ?1, 'new.example', ?3, ?4, ?5)`,
         id,
         `https://new.example/users/${id}`,
         (item.wide ? "名" : "n").repeat(item.text % 150),

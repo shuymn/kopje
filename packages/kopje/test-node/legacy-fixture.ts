@@ -71,6 +71,9 @@ export type FixtureOptions = {
   directMessages?: boolean;
   // A public status of alice's that mentions this many more remote accounts, each its own actor.
   addressed?: number;
+  // Two more remote actors on remote.example whose addresses r0 and r2 hold (in another case): Kopje keeps one remote
+  // account per address (migration 0096_remote_handles), so the conversion invalidates these two.
+  sharedHandles?: boolean;
 };
 
 export type LegacyFixture = {
@@ -194,6 +197,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     domainBlockSpellings = false,
     directMessages = false,
     addressed = 0,
+    sharedHandles = false,
   } = options;
   const images = imagesAccount === undefined ? IMAGES : `https://imagedelivery.net/${imagesAccount}`;
   if (before0016 !== undefined && level < 16) {
@@ -329,6 +333,26 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     return { uri, host, followers: `${uri}/followers` };
   });
   const r = (i: number) => remote[i] ?? { uri: "", host: "", followers: "" };
+  for (const [i, name] of (sharedHandles ? ["R0", "remote2"] : []).entries()) {
+    const uri = `https://remote.example/people/${name}`;
+    insert("actors", {
+      id: uri,
+      type: "Person",
+      cdate: cdate(17 + i),
+      properties: JSON.stringify({
+        "@context": ["https://www.w3.org/ns/activitystreams"],
+        id: uri,
+        type: "Person",
+        preferredUsername: name,
+        name: `Shared ${i}`,
+        inbox: `${uri}/inbox`,
+        followers: `${uri}/followers`,
+      }),
+      mastodon_id: snowflake(17 + i, 170 + i),
+      username: name.toLowerCase(),
+      domain: "remote.example",
+    });
+  }
   const many = Array.from({ length: addressed }, (_, i) => {
     const uri = `https://many.example/users/m${i}`;
     insert("actors", {

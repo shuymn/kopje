@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { MOVE_BATCH } from "../src/domain/inbox";
+import { webfingerUrl } from "../src/domain/remote-statuses";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { verifyQuotes } from "../src/federation/quotes";
 import type { StoreStub } from "../src/platform/store-client";
@@ -343,9 +344,10 @@ describe("the quote author stage", () => {
     const fetched = t.web.fetched.length;
     author.release();
     expect(await running).toBeLessThan(5);
-    // Her arrival moves the work back to the quoted status (its author is known now), which the next stage fetches
-    // once more and, its author being unavailable, does not store (storeRemoteStatus): the work ends there.
-    expect(t.web.fetched.slice(fetched)).toEqual([erin.uri, target.id]);
+    // The stage read her as unknown, so it confirms her handle (federation/quotes.ts loadActor). Her arrival moves the
+    // work back to the quoted status (its author is known now), which the next stage fetches once more and, its author
+    // being unavailable, does not store (storeRemoteStatus): the work ends there.
+    expect(t.web.fetched.slice(fetched)).toEqual([erin.uri, webfingerUrl("erin", "other.example"), target.id]);
     expect(await sql(t.store, "SELECT state, verify_after FROM quotes")).toEqual([
       { state: "pending", verify_after: null },
     ]);

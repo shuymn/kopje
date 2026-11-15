@@ -19,6 +19,7 @@ import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { PROFILE_DESCRIPTION_LIMIT, withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { grantsAny } from "../security/scopes";
 import {
   type ApiContext,
@@ -62,8 +63,6 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
 
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
-// Ruby's String#strip as Mastodon 4.7.5's Ruby (4.0) has it: NUL, tab, LF, VT, FF, CR and space at either end.
-const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 
 // The changes both update_credentials and the profile update ask for (Mastodon's account_params), and the validation
 // problems with them, with Mastodon's messages in its order (Account::Avatar's and Account::Header's description
@@ -86,15 +85,17 @@ function accountChanges(p: Params): { changes: CredentialChanges; problems: stri
   changes.headerDescription = headerDescription;
   // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
   // dropped when stored (storedText).
-  const displayName = p.get("display_name")?.replace(RUBY_STRIP, "");
-  if (displayName !== undefined) {
+  const rawName = p.get("display_name");
+  if (rawName !== undefined) {
+    const displayName = rubyStrip(rawName);
     if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
       problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
     }
     changes.displayName = displayName;
   }
-  const note = p.get("note")?.replace(RUBY_STRIP, "");
-  if (note !== undefined) {
+  const rawNote = p.get("note");
+  if (rawNote !== undefined) {
+    const note = rubyStrip(rawNote);
     if (yieldsMoreThan(note, MAX_NOTE)) {
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
     }
@@ -173,8 +174,7 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
 function normalizeAttributionDomains(values: readonly string[]): string[] {
   const domains = values
     .map((value) =>
-      value
-        .replace(/^[\t\n\v\f\r \0]+|[\t\n\v\f\r \0]+$/g, "")
+      rubyStrip(value)
         .replace(/^http:\/\//, "")
         .replace(/^https:\/\//, "")
         .replace(/^\*\./, ""),

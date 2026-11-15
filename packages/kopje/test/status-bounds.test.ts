@@ -2527,7 +2527,7 @@ describe("an account of malformed imported text (RES-3)", () => {
     const t = await setup();
     // A conversation of MAX_PRESENTED_PARTICIPANTS accounts of the raw fill, each display name 0xFF and 1,048,575
     // continuation bytes (one character to 0048's cut), each note 65,534 continuation bytes (within noteSql's bound,
-    // as json_quote copies them) and each image description 0xFF and 599 continuation bytes (one character to 0096's
+    // as json_quote copies them) and each image description 0xFF and 599 continuation bytes (one character to 0097's
     // trigger); its last status is by an account of the raw fill as it is, the reference.
     const participants: string[] = [];
     for (let i = 0; i < MAX_PRESENTED_PARTICIPANTS; i++) {
@@ -2925,7 +2925,9 @@ describe("the table of maxima (RES-3)", () => {
 });
 
 describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
-  // A converted local status with every part at its bound,
+  // A converted local status with every part at its bound, an attached card on it (an imported row beside its media)
+  // whose url (CARD_URL_LIMIT bytes of ASCII, which JSON does not escape) and title (CARD_TEXTS.title less its quotes,
+  // in ASCII: the most bytes its projection reads) are at their bounds,
   // built as statusFacts and noteOf build the object endpoint's Note, the outbox's Create and the featured
   // collection's Notes. docs/threat-model.md "Maxima of presented units" states the Note and the Create.
   it("measures the Note and the Create, within OUTBOX_BYTES, and five Notes of the featured collection", async () => {
@@ -2954,6 +2956,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
     const ids: string[] = [];
     for (let i = 0; i < PIN_LIMIT; i++) {
       const id = await storedStatus(t, ALICE, parts);
+      await maximalCard(t, id, "raw");
       await sql(t.store, "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", ALICE, id);
       ids.push(id);
     }
@@ -2982,6 +2985,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         media: facts.media.length,
         emojis: facts.emojis.length,
         emojiTags: jsonBytes(facts.emojis),
+        link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
       };
     });
     expect(measuredNote).toMatchObject({ tags: MAX_PRESENTED_TAGS, mentions: MAX_STATUS_MENTION_ROWS, media: 4 });
@@ -3025,7 +3029,9 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       media: 4,
       emojis: 61,
       emojiTags: 14_850,
-      featured: 4_454_568,
+      // The Link and its comma: `,{"type":"Link","href":""}` and the url.
+      link: 26 + CARD_URL_LIMIT,
+      featured: 4_456_650,
       whole: 1,
     });
   }, 300_000);

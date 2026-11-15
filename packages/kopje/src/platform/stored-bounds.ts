@@ -966,7 +966,7 @@ export function indexablePastBoundSql(column: string): string {
 	ELSE 0 END`;
 }
 
-// ---- Profile descriptions and display settings: migration 0096_profile_descriptions
+// ---- Profile descriptions and display settings: migration 0097_profile_descriptions
 
 // The image descriptions and display settings of accounts (Mastodon's avatar_description, header_description,
 // show_featured, show_media, show_media_replies): every description text of at most PROFILE_DESCRIPTION_BYTES bytes,

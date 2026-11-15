@@ -11,7 +11,7 @@ import { bytes, multipartForm, TestCodec } from "./media-helpers";
 import { aliceWithFollower } from "./profile-fixtures";
 import { community, getJson, outbound } from "./status-helpers";
 
-// Account#avatar_description and #header_description (migration 0096_profile_descriptions; Mastodon 4.6,
+// Account#avatar_description and #header_description (migration 0097_profile_descriptions; Mastodon 4.6,
 // REST::AccountSerializer): presented on every Account and CredentialAccount, '' while the account is unavailable and
 // again after, cut at PROFILE_DESCRIPTION_LIMIT code points after decoding; PartialAccount carries the avatar's.
 // Written through update_credentials (Mastodon 4.6.1), at most PROFILE_DESCRIPTION_LIMIT code points as sent.
@@ -111,7 +111,7 @@ describe("profile image descriptions", () => {
 
   it("are cut at PROFILE_DESCRIPTION_LIMIT code points after decoding, 902 JSON bytes at most", async () => {
     const { remote, describe, shown, partial } = await fixture();
-    // 0xFF and 599 continuation bytes: within 0096's trigger (one character), 600 U+FFFD once decoded.
+    // 0xFF and 599 continuation bytes: within 0097's trigger (one character), 600 U+FFFD once decoded.
     const malformed = new Uint8Array(PROFILE_DESCRIPTION_BYTES).fill(0x80);
     malformed[0] = 0xff;
     const escaped = "\u0001".repeat(PROFILE_DESCRIPTION_LIMIT);

@@ -1,6 +1,7 @@
 import { type BodyPrefix, readBodyPrefix } from "../platform/body";
 import { hostDomain } from "../platform/domain-name";
-import { type CharsetSource, chooseCharset } from "../platform/html-charset";
+import { decodedEncoding, readHtmlBody } from "../platform/html-body";
+import type { CharsetSource } from "../platform/html-charset";
 import { type PageScan, type ScanLimits, type Scanner, scanHtml } from "../platform/html-scan";
 import { type PublicShapeViolation, WEB_URL_LIMIT, webUrl } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
@@ -45,9 +46,6 @@ const ACCEPT_LANGUAGE =
 const ACCEPT_LANGUAGE_LIMIT = 128;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
-// The Content-Encoding values workerd decodes (exactly "gzip" or "br"; any other value it passes through undecoded,
-// test/web-page-encoding.test.ts), and identity.
-const ACCEPTED_ENCODINGS = new Set(["identity", "gzip", "br"]);
 
 export type WebPageDeps = {
   // Production: the Worker's global fetch, never a service binding (see above).
@@ -474,20 +472,22 @@ async function follow(
   }
 }
 
-// Refuses a Content-Encoding the runtime would not decode, before the body is read.
+// Refuses a Content-Encoding the runtime would not decode (platform/html-body.ts), before the body is read.
 function acceptEncoding(call: Call, response: Response): void {
-  const encoding = response.headers.get("content-encoding");
-  if (encoding !== null && !ACCEPTED_ENCODINGS.has(encoding)) {
+  if (!decodedEncoding(response)) {
     cancel(response);
     call.stop("encoding", { reason: "unsupported-encoding" });
   }
 }
 
-// The body's first `maxBytes` bytes, read under the call's deadline and abort.
-async function readPrefix(call: Call, response: Response, maxBytes: number, copy = true): Promise<BodyPrefix> {
-  let prefix: BodyPrefix;
+// A read of the body under the call's deadline and abort (`guard`), its observed bytes charged to the call.
+async function guardedRead<T extends BodyPrefix | "encoding">(
+  call: Call,
+  read: (guard: <R>(work: Promise<R>) => Promise<R>) => Promise<T>,
+): Promise<T> {
+  let body: T;
   try {
-    prefix = await readBodyPrefix(response.body, maxBytes, (read) => call.guarded(read), { copy });
+    body = await read((work) => call.guarded(work));
   } catch (error) {
     if (error instanceof Stop) {
       throw error;
@@ -496,8 +496,15 @@ async function readPrefix(call: Call, response: Response, maxBytes: number, copy
     call.gate();
     call.stop("network");
   }
-  call.cost.bytes += prefix.observed;
-  return prefix;
+  if (body !== "encoding") {
+    call.cost.bytes += body.observed;
+  }
+  return body;
+}
+
+// The body's first `maxBytes` bytes, read under the call's deadline and abort.
+function readPrefix(call: Call, response: Response, maxBytes: number, copy = true): Promise<BodyPrefix> {
+  return guardedRead(call, (guard) => readBodyPrefix(response.body, maxBytes, guard, { copy }));
 }
 
 async function getPage(
@@ -526,10 +533,12 @@ async function getPage(
       cancel(response);
       call.stop("not-html");
     }
-    acceptEncoding(call, response);
-    const prefix = await readPrefix(call, response, maxBytes);
-    const charset = chooseCharset(prefix.bytes, media.parameters.get("charset") ?? null);
-    const scan = await call.guarded(scanner(prefix.bytes, charset, options.scan, call.controller.signal));
+    const html = await guardedRead(call, (guard) => readHtmlBody(response, media, maxBytes, guard));
+    if (html === "encoding") {
+      cancel(response);
+      call.stop("encoding", { reason: "unsupported-encoding" });
+    }
+    const scan = await call.guarded(scanner(html.bytes, html.charset, options.scan, call.controller.signal));
     if ("failed" in scan) {
       call.stop("unparsable", { reason: scan.failed });
     }
@@ -539,8 +548,8 @@ async function getPage(
       redirects,
       status: 200 as const,
       contentType: media.essence as WebPage["contentType"],
-      charset: { label: charset.label, source: charset.source },
-      limitReached: prefix.limitReached,
+      charset: { label: html.charset.label, source: html.charset.source },
+      limitReached: html.limitReached,
       scan,
       cost: call.cost,
     };

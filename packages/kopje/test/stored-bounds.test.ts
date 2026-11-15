@@ -405,7 +405,8 @@ describe("stored bounds (RES-2)", () => {
     const stored = await runInDurableObject(store, (_instance, state) =>
       state.storage.transactionSync(() => {
         const db = new Db(state.storage.sql);
-        upsertRemoteActor(db, input!, "https://kopje.test", NOW);
+        // Its claim confirmed, as WebFinger would confirm it (federation/resolve.ts confirmedInput).
+        upsertRemoteActor(db, { ...input!, confirmed: input!.claim }, "https://kopje.test", NOW);
         return db.first<{ name: string; bytes: number }>(
           "SELECT display_name AS name, length(CAST(display_name AS BLOB)) AS bytes FROM accounts WHERE uri = ?",
           "https://remote.example/users/s",
@@ -1005,7 +1006,7 @@ describe("media blurhash (0065_media_blurhash)", () => {
   }, 60_000);
 });
 
-describe("profile descriptions and settings (0096_profile_descriptions)", () => {
+describe("profile descriptions and settings (0097_profile_descriptions)", () => {
   // The trigger's verdict on a row whose avatar description is `description` and whose settings are within the bound.
   const pastBound = (sql: Sql, description: SqlStorageValue) =>
     sql

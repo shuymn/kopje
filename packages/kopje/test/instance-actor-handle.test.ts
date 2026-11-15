@@ -61,13 +61,12 @@ describe("the instance actor's handle", () => {
     );
     expect(status).toBe(200);
     expect(body.accounts).toEqual([]);
-    // The resolution fetched the instance actor's document and its handle's WebFinger: the store refused it.
-    expect(t.web.fetched).toEqual(
-      expect.arrayContaining([
-        ACTOR,
-        `${LOCAL}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${HANDLE}`)}`,
-      ]),
-    );
+    // The resolution fetched the instance actor's document; the handle it claims is on the instance's own domain, which
+    // the confirmation refuses without a fetch (ID-3), so no account is stored.
+    expect(t.web.fetched).toEqual([
+      `https://evil.example/.well-known/webfinger?resource=${encodeURIComponent("acct:mallory@evil.example")}`,
+      ACTOR,
+    ]);
     expect(await instanceRows(t)).toEqual([{ n: 0 }]);
     // Nor does a search without resolution find it afterwards.
     for (const search of ACCOUNT_SEARCHES) {

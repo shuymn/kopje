@@ -251,6 +251,44 @@ describe("dump", () => {
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
   }, 120_000);
 
+  // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
+  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at the latest file; a
+  // dump holding two remote rows of one address is refused by the UNIQUE index (D6).
+  it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
+    const remote = (n: number, username: string) =>
+      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
+				'${username}', 'd.example')`;
+    const restored = await restoredBefore(
+      "0096_remote_handles",
+      (sql) => {
+        sql.exec(remote(1, "alice"));
+        sql.exec(remote(2, "Alice"));
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_remote_handles"] });
+        expect(sql.exec("SELECT username FROM accounts ORDER BY rowid").toArray()).toEqual([
+          { username: "alice" },
+          { username: "! 100000000000000002" },
+        ]);
+      },
+    );
+    await runInDurableObject(restored, async (_instance, state) => {
+      expect(await testKernel(state).upgrade()).toMatchObject({ ok: true });
+    });
+    const { text } = await dumpViaRpc(restored, 64 * 1024);
+    const target = await migratedStore();
+    await copyConfig(restored, target);
+    expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    // The same dump with the invalidated row given the address back.
+    const literal = "'! 100000000000000002'";
+    expect(text).toContain(literal);
+    const duplicate = await migratedStore();
+    await copyConfig(restored, duplicate);
+    expect(String(await rejectionOf(importViaRpc(duplicate, text.replace(literal, "'ALICE'"))))).toMatch(
+      /UNIQUE constraint failed: index 'accounts_domain_username'/,
+    );
+  }, 120_000);
+
   // RES-2: a dump taken before 0048_stored_bounds, of rows past their stored bounds, restores into a Store at the
   // same migrations, which then upgrades through 0048 to P(x) of every value.
   it("restores a dump taken before 0048_stored_bounds, which then upgrades through it", async () => {
@@ -585,7 +623,7 @@ describe("dump", () => {
     );
   }, 120_000);
 
-  it("round-trips descriptions and settings (0096), and refuses one past its bound on import", async () => {
+  it("round-trips descriptions and settings (0097), and refuses one past its bound on import", async () => {
     const source = await seeded(0);
     // At the bound: 150 four-byte characters (600 bytes), and 150 ASCII characters; the settings off, on, off.
     const avatar = "𠀀".repeat(150);
@@ -639,9 +677,9 @@ describe("dump", () => {
     }
   }, 120_000);
 
-  it("restores a dump taken before 0096_profile_descriptions, which then upgrades through it", async () => {
+  it("restores a dump taken before 0097_profile_descriptions, which then upgrades through it", async () => {
     await restoredBefore(
-      "0096_profile_descriptions",
+      "0097_profile_descriptions",
       (sql) => {
         sql.exec(
           "INSERT INTO accounts (id, uri, username) VALUES ('100000000000000001', 'https://kopje.test/ap/users/a', 'a')",
@@ -652,7 +690,7 @@ describe("dump", () => {
         );
       },
       async (sql, upgrade) => {
-        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_profile_descriptions"] });
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0097_profile_descriptions"] });
         expect(
           sql
             .exec(

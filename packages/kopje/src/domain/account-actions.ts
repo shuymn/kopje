@@ -53,7 +53,7 @@ export type CredentialChanges = {
   fields?: FieldSource[] | undefined;
   // Replaces every attribution domain; normalized and validated by the caller.
   attributionDomains?: string[];
-  // The image descriptions as sent ('' clears one), validated by the caller (migration 0096_profile_descriptions).
+  // The image descriptions as sent ('' clears one), validated by the caller (migration 0097_profile_descriptions).
   avatarDescription?: string | undefined;
   headerDescription?: string | undefined;
   // The display settings, which only the profile update sets.

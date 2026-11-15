@@ -40,7 +40,7 @@ export async function remoteAccountsOn(w: Pick<World, "h">, n: number, domain: s
     w.h.store,
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
 		INSERT INTO accounts (id, uri, username, domain)
-		SELECT printf('%018d', ?2 + i), 'https://' || ?3 || '/users/u' || (?2 + i), 'u' || i, ?3 FROM n`,
+		SELECT printf('%018d', ?2 + i), 'https://' || ?3 || '/users/u' || (?2 + i), 'u' || (?2 + i), ?3 FROM n`,
     n,
     base,
     domain,

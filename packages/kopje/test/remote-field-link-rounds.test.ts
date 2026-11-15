@@ -24,7 +24,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, deferred } from "./helpers";
-import { actorDefaults } from "./inbox-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 
 // The verification half of remote field links (domain/remote-field-links.ts) in the shared field-links round
@@ -49,8 +49,7 @@ function actor(hrefs: string[], uri = URI): RemoteActorInput {
   return {
     ...actorDefaults(),
     uri,
-    username: "a",
-    domain: "remote.example",
+    ...confirmedAs(uri.split("/").at(-1)!, new URL(uri).host),
     displayName: "a",
     inboxUrl: `${uri}/inbox`,
     url: uri === URI ? PROFILE : null,

@@ -338,7 +338,7 @@ END;`,
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
   ),
-  // 0096_profile_descriptions
+  // 0097_profile_descriptions
   ...boundTriggers(
     "accounts_profile_settings",
     "accounts",

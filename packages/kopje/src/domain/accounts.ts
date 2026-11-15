@@ -205,7 +205,7 @@ export type AccountRow = {
   // The still of an animated uploaded image (migration 0061_account_static_images), or null: the image itself.
   avatar_static_url: string | null;
   header_static_url: string | null;
-  // The image descriptions and display settings (migration 0096_profile_descriptions), bounded by its triggers.
+  // The image descriptions and display settings (migration 0097_profile_descriptions), bounded by its triggers.
   avatar_description: string;
   header_description: string;
   locked: number;
@@ -906,11 +906,10 @@ export const getAccounts = readOperation<
 // Account.find_remote: by accounts_local_username or accounts_domain_username, named so the seek does not rest on the
 // Store's statistics (RES-7), as is the account's local row. stored_username is the username as stored, not
 // usernameSql's projection: a matching row's username has the bytes of `username` (SQLite's lower changes ASCII
-// letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
-// (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
-// Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
-// invalidated handle ('! <id>', shownHandle) is never matched by an address. found: whether the account reads find it
-// (foundSql).
+// letters only), so it is bounded by the caller's. At most one remote row holds an address (the UNIQUE
+// accounts_domain_username, 0096_remote_handles), so at most one row matches. Only a username of Mastodon's format
+// (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an invalidated handle ('! <id>',
+// shownHandle) is never matched by an address. found: whether the account reads find it (foundSql).
 function addressRow(
   db: Db,
   username: string,

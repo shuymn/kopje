@@ -47,7 +47,7 @@ import {
 import { batch, batches, remoteAccountsAt, retractionInboxes } from "./delete-job-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
-import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import { LOCAL, MASTODON, mastodonActor, serveOwnHandle, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -315,6 +315,7 @@ async function fepActor(
     ed,
   );
   w.t.web.serve(uri, document);
+  serveOwnHandle(w.t.web, document);
   const erin: TestActor = {
     uri,
     keyId: `${uri}#main-key`,

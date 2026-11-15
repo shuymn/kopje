@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { Db, type Savepoint } from "../src/db/sql";
 import { updateCredentials } from "../src/domain/account-actions";
-import { API_VISIBILITIES, type ApiVisibility } from "../src/domain/audience";
+import { API_VISIBILITIES, type ApiVisibility, keptSql } from "../src/domain/audience";
 import type { UserCredential } from "../src/domain/auth";
 import { backfillConversations } from "../src/domain/conversation-rows";
 import {
@@ -157,6 +157,7 @@ const SCENARIOS = [
   "conversation goes with its last status",
   "conversation moves back to an earlier status",
   "conversation of a recipient",
+  "conversation of a recipient an edit notifies again",
   "endorsement leaves with the follow",
   "filtered mention",
   "list member leaves with the follow",
@@ -343,6 +344,18 @@ const WITNESSES: { name: string; scenarios: Scenario[]; case: Case }[] = [
       { kind: "profile" },
       { kind: "post" },
     ]),
+  },
+  {
+    // L1 follows L0, so the private mention is not filtered. The world's status holds L1's mention and no notification
+    // of it, as one R15 refused at the post would: the edit, which keeps the mention, notifies L1 and adds the status
+    // to L1's conversation (the update fan-out, notifyEdited).
+    name: "an edit of a direct status whose mention has no notification",
+    scenarios: ["conversation of a recipient an edit notifies again", "notification"],
+    case: witness(
+      0,
+      { followers: [1], statuses: [{ ...original(0, 0, "direct"), mentions: [{ account: 1, silent: false }] }] },
+      [{ kind: "edit", target: 0, mentions: [1] }],
+    ),
   },
   {
     name: "an edit that turns a mention silent, with notifications and pushes",
@@ -970,6 +983,8 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
     // What the action must record: a retraction of what it withdraws, an Update of the actor.
     let withdrawn: string | null = null;
     let profiled = false;
+    // The status an accepted edit changed, whose update fan-out notifies every active mention (notifyEdited).
+    let edited: string | null = null;
     switch (action.kind) {
       case "post": {
         const parent = action.reply ? pick(originals, action.target) : undefined;
@@ -991,7 +1006,7 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
           action.target,
         );
         if (status !== undefined) {
-          run(editStatus, {
+          const result = run<{ status: string }>(editStatus, {
             ...credential(author),
             id: status.id,
             text: `${text} edited ${objects++}`,
@@ -1000,6 +1015,8 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
             mediaAttributes: [],
             present: PRESENT,
           });
+          // Each edit's text is new, so an edit answered ok changed the status.
+          edited = result.status === "ok" ? status.id : null;
         }
         break;
       }
@@ -1481,7 +1498,9 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
     }
 
     // Conversations: AccountConversation.remove_status for each status gone, add_status for each direct status
-    // written, for its author and each local account it mentions that the notification rule (R15) lets it notify.
+    // written, for its author and each local account it mentions that the notification rule (R15) lets it notify, and
+    // for each direct status an edit changed, for each local account it mentions that held no kept mention
+    // notification of it before the edit (the update fan-out, notifyEdited) and that R15 lets it notify.
     // A status written takes its thread once: its parent's, when the parent is stored, else the uri its
     // in_reply_to_uri names, else its own; no status's thread changes after. The Store's are the model's.
     const stored = sql
@@ -1523,7 +1542,7 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
       const key = JSON.stringify([owner, thread, participants]);
       const c = conversations.get(key) ?? { owner, thread, participants, statuses: new Set<string>(), unread: false };
       if (c.statuses.has(id)) {
-        return;
+        return false;
       }
       c.statuses.add(id);
       c.unread = after.world.statuses[s]!.author !== owner;
@@ -1531,7 +1550,19 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
       if (owner !== after.world.statuses[s]!.author) {
         saw.add("conversation of a recipient");
       }
+      return true;
     };
+    // Whether x held a mention notification of the status before the action, not hidden by a clear or a dismissal.
+    const keptMention = (x: number, id: string) =>
+      sql
+        .exec(
+          `SELECT 1 FROM notifications n WHERE n.account_id = ? AND n.type = 'mention' AND n.status_id = ? AND n.id <= ?
+						AND ${keptSql("n")}`,
+          accountId(x),
+          id,
+          marks.notifications,
+        )
+        .toArray().length > 0;
     for (const [id, s] of after.byId) {
       const status = after.world.statuses[s]!;
       if (status.visibility !== "direct" || status.reblogOf !== null) {
@@ -1543,7 +1574,7 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
       const recipients = world.accounts.flatMap((account, x) =>
         account.local &&
         mentioned(after, x) &&
-        !(before.byId.has(id) && before.world.statuses[before.byId.get(id)!]!.mentions.some((m) => m.account === x)) &&
+        (!before.byId.has(id) || (edited === id && !keptMention(x, id))) &&
         model.notified(x, "mention", status.author, s) &&
         !model.filtered(x, "mention", status.author, s)
           ? [x]
@@ -1553,7 +1584,9 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
         addStatus(status.author, id);
       }
       for (const r of recipients) {
-        addStatus(r, id);
+        if (addStatus(r, id) && before.byId.has(id)) {
+          saw.add("conversation of a recipient an edit notifies again");
+        }
       }
     }
     const expectedConversations = [...conversations.values()]

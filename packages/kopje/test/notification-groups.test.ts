@@ -135,7 +135,7 @@ describe("grouped notifications (API v2)", () => {
   it("answers partial accounts with expand_accounts=partial_avatars, and refuses another value", async () => {
     const { h, alice, bob, carol, dave } = await scene();
     // Carol's avatar with its still (migration 0061_account_static_images), as an animated upload leaves them, and
-    // its description (0096_profile_descriptions).
+    // its description (0097_profile_descriptions).
     const [avatar, still] = ["https://kopje.test/media/AAAA/full.webp", "https://kopje.test/media/AAAA/small.webp"];
     await sql(
       h.store,

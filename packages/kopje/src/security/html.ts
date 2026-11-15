@@ -3,19 +3,21 @@ import sanitizeHtml from "sanitize-html";
 
 // Remote HTML (bios, status content and profile field values) as Kopje stores and serves it (HTML-1): allowlisted by sanitize-html
 // with Mastodon's Sanitize::Config::MASTODON_STRICT as the reference. Kept: p br span a del s pre blockquote code b
-// strong u i em ul ol li ruby rt rp, with a@href (http and https only, HTML-3; Mastodon also allows dat, ipfs, gemini
-// and the like), a@class, span@class, p@class (Mastodon's class allowlist), a@translate and span@translate (only
-// "no"), ol@start, ol@reversed and li@value. Styles are never allowed. Every link gets rel="nofollow noopener" and
-// target="_blank", as Mastodon adds them. h1-h6 become <p><strong>, as Mastodon's transformer does. Other tags are
-// unwrapped (their text is kept), except the ones in DROPPED_WITH_CONTENT, which go with everything inside them;
-// comments are removed. A link whose href is not http(s) keeps its text without the href (Mastodon replaces it with
-// its text).
+// strong u i em ul ol li ruby rt rp, with lang on each (any value, empty included, as `:all => %w(lang)` keeps it),
+// a@href (http and https only, HTML-3; Mastodon also allows dat, ipfs, gemini and the like), a@class, span@class,
+// p@class (Mastodon's class allowlist), a@translate and span@translate (only "no"), ol@start, ol@reversed and
+// li@value. Styles are never allowed. Every link gets rel="nofollow noopener" and target="_blank", as Mastodon adds
+// them. h1-h6 become <p><strong>, the strong keeping the heading's lang, as Mastodon's transformer renames and wraps
+// the element. Other tags are unwrapped (their text is kept), except the ones in DROPPED_WITH_CONTENT, which go with
+// everything inside them; comments are removed. A link whose href is not http(s) keeps its text without the href
+// (Mastodon replaces it with its text).
 //
 // sanitize-html reads with htmlparser2, a tokenizer rather than an HTML5 tree builder. Its output is safe however a
 // browser parses it because it only ever emits allowlisted tags with double-quoted, escaped attribute values and
 // escapes all other text; the vector suites (test/html.test.ts) check that with parse5, the spec parser.
 
-// Raw cap before sanitizing (RES-1). A longer input is cut first; the sanitizer copes with the cut markup.
+// Raw cap before sanitizing (RES-1). A longer input is cut first; the sanitizer copes with the cut markup. Stored HTML
+// sanitized again is cut at STORED_HTML_LIMIT instead.
 export const REMOTE_HTML_RAW_LIMIT = 50_000;
 
 const DROPPED_WITH_CONTENT = [
@@ -46,7 +48,9 @@ const ALLOWED_CLASS = /^(?:(?:h|p|u|dt|e)-.|(?:mention|hashtag|ellipsis|invisibl
 
 // A heading is renamed to this placeholder, which becomes <p><strong> once the output is complete: a transform can
 // rename a tag but not wrap it. Text cannot produce it, since sanitize-html escapes every '<' it does not emit itself.
+// It carries only the heading's lang, which sanitize-html writes as ` lang="…"` with `"` escaped (HEADING_OPEN).
 const HEADING = "kopje-heading";
+const HEADING_OPEN = new RegExp(`<${HEADING}( lang="[^"]*")?>`, "g");
 
 type Attributes = Record<string, string>;
 
@@ -72,7 +76,12 @@ function filtered(attribs: Attributes, extra: Attributes = {}): Attributes {
   if (attribs.translate === "no") {
     kept.translate = "no";
   }
-  return { ...kept, ...extra };
+  return { ...kept, ...langOf(attribs), ...extra };
+}
+
+// The element's lang, as MASTODON_STRICT keeps it on every element.
+function langOf(attribs: Attributes): Attributes {
+  return attribs.lang === undefined ? {} : { lang: attribs.lang };
 }
 
 // An anchor's attributes as the sanitizer reads them (entity references decoded), before they are filtered: what a
@@ -114,13 +123,14 @@ const OPTIONS: Options = {
     HEADING,
   ],
   allowedAttributes: {
+    "*": ["lang"],
     a: ["href", "class", "translate", "rel", "target"],
     li: ["value"],
     ol: ["start", "reversed"],
     p: ["class"],
     span: ["class", "translate"],
   },
-  allowedEmptyAttributes: ["reversed"],
+  allowedEmptyAttributes: ["lang", "reversed"],
   allowedStyles: {},
   allowedSchemes: ["http", "https"],
   allowedSchemesByTag: {},
@@ -134,7 +144,10 @@ const OPTIONS: Options = {
     p: (_, attribs: Attributes) => ({ tagName: "p", attribs: filtered(attribs) }),
     span: (_, attribs: Attributes) => ({ tagName: "span", attribs: filtered(attribs) }),
     ...Object.fromEntries(
-      ["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => [tag, () => ({ tagName: HEADING, attribs: {} })]),
+      ["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => [
+        tag,
+        (_: string, attribs: Attributes) => ({ tagName: HEADING, attribs: langOf(attribs) }),
+      ]),
     ),
   },
 };
@@ -158,7 +171,7 @@ const DOCUMENT_OPTIONS: Options = {
 };
 
 export function sanitizeDocumentHtml(html: string): string {
-  return sanitizedWith(html, DOCUMENT_OPTIONS);
+  return sanitizedWith(html, DOCUMENT_OPTIONS, REMOTE_HTML_RAW_LIMIT);
 }
 
 // The first `limit` code units of `text`, one fewer where the cut would split a surrogate pair, so well-formed text
@@ -188,25 +201,31 @@ function capturing(onAnchor: (anchor: RawAnchor) => void): Options {
 }
 
 export function sanitizeRemoteHtml(html: string, onAnchor?: (anchor: RawAnchor) => void): string {
-  return sanitizedWith(html, onAnchor === undefined ? OPTIONS : capturing(onAnchor));
+  return sanitizedWith(html, onAnchor === undefined ? OPTIONS : capturing(onAnchor), REMOTE_HTML_RAW_LIMIT);
 }
 
-// sanitizeRemoteHtml with `filter` applied to each run of text the sanitizer keeps. sanitize-html (2.18) passes a run
+// Stored HTML sanitized again at a sink (web/safe-html.ts): sanitizeRemoteHtml, cut at STORED_HTML_LIMIT.
+export function sanitizeStoredHtml(html: string): string {
+  return sanitizedWith(html, OPTIONS, STORED_HTML_LIMIT);
+}
+
+// sanitizeStoredHtml with `filter` applied to each run of text the sanitizer keeps. sanitize-html (2.18) passes a run
 // already escaped (`&`, `<` and `>`) and writes what the filter returns as it is, unescaped (`textFilter`; pinned by
 // test/web-emoji.test.ts), so the filter returns markup: it keeps the escaped text it is given and escapes whatever
 // it adds. A text node comes in runs split at its character references and tags; text inside the elements dropped
 // with their content and attribute values never reach the filter.
-export function sanitizeRemoteHtmlFiltered(html: string, filter: (escaped: string) => string): string {
-  return sanitizedWith(html, { ...OPTIONS, textFilter: (text) => filter(text) });
+export function sanitizeStoredHtmlFiltered(html: string, filter: (escaped: string) => string): string {
+  return sanitizedWith(html, { ...OPTIONS, textFilter: (text) => filter(text) }, STORED_HTML_LIMIT);
 }
 
-function sanitizedWith(html: string, options: Options): string {
+function sanitizedWith(html: string, options: Options, limit: number): string {
   return (
-    sanitizeHtml(cutCodeUnits(html, REMOTE_HTML_RAW_LIMIT), options)
-      .replaceAll(`<${HEADING}>`, "<p><strong>")
+    sanitizeHtml(cutCodeUnits(html, limit), options)
+      .replace(HEADING_OPEN, "<p><strong$1>")
       .replaceAll(`</${HEADING}>`, "</strong></p>")
       // sanitize-html writes void tags XHTML-style and empty attributes with ="" ; Mastodon writes <br> and reversed.
-      .replaceAll("<br />", "<br>")
+      // A br keeps only lang, written as ` lang="…"` with `"` escaped, so the pattern matches every br it writes.
+      .replace(/<br( lang="[^"]*")? \/>/g, "<br$1>")
       .replace(/<ol\b([^>]*) reversed=""/g, "<ol$1 reversed")
   );
 }
@@ -232,6 +251,14 @@ export function jsonStringBytes(text: string): number {
 // (test/status-bounds.test.ts).
 export const STATUS_CONTENT_BYTES = 128 * 1024;
 export const SPOILER_BYTES = 16 * 1024;
+
+// HTML-1, RES-2: the code units at which stored HTML is cut when sanitized again (sanitizeStoredHtml), at least every
+// stored value, so none is cut. Sanitizing lengthens its input past REMOTE_HTML_RAW_LIMIT (`"` in an attribute value
+// written `&quot;`, `&` in text `&amp;`), and a cut inside an attribute drops its element and all after it. A value
+// within B UTF-8 bytes as a JSON string is at most B - 2 code units, so the largest stored bound admits each: status
+// content and its edits, bios, and presented field values (domain/account-columns.ts REMOTE_FIELDS_BYTES; checked by
+// test/html.test.ts).
+export const STORED_HTML_LIMIT = Math.max(STATUS_CONTENT_BYTES, REMOTE_BIO_BYTES);
 
 // Sanitized remote HTML (HTML-1) within `bytes` as a JSON string: sanitizeRemoteHtml's output when it fits, else the
 // sanitized form of a raw prefix whose output fits, found by halving (sanitizing can shrink as well as grow, so it
@@ -295,7 +322,8 @@ export function cutJsonString(text: string, bytes: number): string {
 }
 
 // The text of sanitized remote HTML, for search_text: tags dropped, line and paragraph breaks kept as spaces, the
-// entities sanitize-html writes decoded. Its input is sanitizeRemoteHtml's output, so the breaks have one spelling.
+// entities sanitize-html writes decoded. Its input is sanitizeRemoteHtml's output, so a br is `<br>` or carries
+// attributes whose values escape `>`.
 const TEXT_OPTIONS: sanitizeHtml.IOptions = {
   allowedTags: [],
   allowedAttributes: {},
@@ -311,14 +339,16 @@ function htmlText(html: string): string {
 }
 
 export function remoteHtmlText(html: string): string {
-  return htmlText(html.replace(/<br>|<\/p>/g, " $&"));
+  return htmlText(html.replace(/<br\b[^>]*>|<\/p>/g, " $&"));
 }
 
 // The text of sanitized remote HTML as Mastodon's PlainTextFormatter extracts it for a remote status (what filters
-// match): a newline after each run of <br> and </p>, tags dropped (with the content of those Mastodon drops whole),
-// the entities sanitize-html writes decoded, and one trailing newline removed (Ruby's chomp).
+// match): a newline after each run of br elements and </p>, tags dropped (with the content of those Mastodon drops
+// whole), the entities sanitize-html writes decoded, and one trailing newline removed (Ruby's chomp). Every br ends a
+// line, whatever its spelling or attributes; Mastodon breaks only at `<br>` and `<br />` as the raw HTML writes them
+// (docs/mastodon-deviations.md, Filters).
 export function remotePlainText(html: string): string {
-  return htmlText(html.replace(/(?:<br \/>|<br>|<\/p>)+/g, "$&\n")).replace(/(?:\r\n|\r|\n)$/, "");
+  return htmlText(html.replace(/(?:<br\b[^>]*>|<\/p>)+/g, "$&\n")).replace(/(?:\r\n|\r|\n)$/, "");
 }
 
 // ---- An oEmbed video's iframe (federation/card-oembed.ts)

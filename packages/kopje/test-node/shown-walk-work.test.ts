@@ -41,7 +41,7 @@ const columnsOf = (db: DatabaseSync, text: string) =>
 
 // The rows main's statement `main` gives the code in place of `query`, main's run counted: its own; or the rewrite's,
 // read uncounted, for a reshaped statement, and for a read with a column added since main's base (an account's
-// profile descriptions and settings, migration 0096_profile_descriptions), which main's code never read. The latter
+// profile descriptions and settings, migration 0097_profile_descriptions), which main's code never read. The latter
 // holds only when main's columns are some of the rewrite's and both read the same rows (the same ids, where they read
 // one); any other difference in columns throws.
 function mainRows(

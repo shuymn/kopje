@@ -6,7 +6,7 @@ import { type Account, presentAccountsWithin } from "../src/domain/accounts";
 import { bearer, json, seedAccount, sql } from "./api-helpers";
 import { community, getJson } from "./status-helpers";
 
-// Account#show_featured, #show_media and #show_media_replies (migration 0096_profile_descriptions; Mastodon 4.6,
+// Account#show_featured, #show_media and #show_media_replies (migration 0097_profile_descriptions; Mastodon 4.6,
 // REST::AccountSerializer): presented as stored on every Account and CredentialAccount, true by default, and also
 // while the account is unavailable, as Mastodon does. update_credentials does not set them (Mastodon's account_params
 // has none of them); the profile API does.

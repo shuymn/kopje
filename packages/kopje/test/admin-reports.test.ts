@@ -1148,9 +1148,10 @@ describe("every report reads two ranges of its filter's index, however many repo
       }
       for (const id of [T0, T, T2]) {
         sql.exec(
-          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 't', 'far.example')",
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'far.example')",
           id,
           `https://far.example/users/${id}`,
+          `t${id}`,
         );
       }
       for (const [count, prefix] of [

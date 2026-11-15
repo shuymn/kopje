@@ -1,4 +1,4 @@
--- Kopje Store schema 0096: profile image descriptions and display settings. Never edit after release (checksummed).
+-- Kopje Store schema 0097: profile image descriptions and display settings. Never edit after release (checksummed).
 --
 --   accounts.avatar_description   the account's image descriptions (Mastodon's avatar_description and
 --   accounts.header_description   header_description, app/models/concerns/account/avatar.rb and header.rb): text of

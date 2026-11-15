@@ -2,7 +2,7 @@ import { jsx } from "hono/jsx";
 import sanitizeHtml from "sanitize-html";
 import { describe, expect, it } from "vitest";
 
-import { sanitizeRemoteHtmlFiltered } from "../src/security/html";
+import { sanitizeStoredHtmlFiltered } from "../src/security/html";
 import { Emoji } from "../src/web/components/post";
 import { FeaturedPage } from "../src/web/pages/featured";
 import { FollowsPage } from "../src/web/pages/follows";
@@ -42,7 +42,7 @@ describe("the sanitizer text filter", () => {
 
     // Kopje's allowlist: attribute values and text dropped with its element never reach the filter.
     const seen: string[] = [];
-    const out = sanitizeRemoteHtmlFiltered(
+    const out = sanitizeStoredHtmlFiltered(
       '<p>a &lt;b&gt; <a href="https://x.example/:a:">:a:</a></p><script>:a:</script><style>:a:</style>',
       (text) => {
         seen.push(text);
