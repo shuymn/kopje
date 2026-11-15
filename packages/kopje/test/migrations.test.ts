@@ -377,9 +377,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(70);
+      expect(STORED_TRIGGERS.size).toBe(72);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        70 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        72 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -12775,6 +12775,96 @@ describe("0096_remote_handles", () => {
         /UNIQUE constraint failed/,
       );
       expect(state.storage.transactionSync(() => state.storage.sql.exec(sql).toArray())).toEqual([]);
+    });
+  });
+});
+
+describe("0104_scheduled_params", () => {
+  const NAME = "0104_scheduled_params";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /scheduled_statuses: a value past its stored bound/;
+  const OWNER = "100000000000000001";
+  const TRIGGERS = ["scheduled_statuses_params_insert", "scheduled_statuses_params_update"];
+  // The file's statements, comments left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim();
+  const insert = (sql: SqlStorage, id: string, params: SqlStorageValue) =>
+    sql.exec(
+      "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, '2026-12-01T00:00:00.000Z', ?)",
+      id,
+      OWNER,
+      params,
+    );
+  // A JSON object of exactly `bytes` bytes.
+  const sized = (bytes: number) => `{"a":"${"x".repeat(bytes - 8)}"}`;
+
+  it("follows 0096, declared foreignKeys: 'unchanged', and writes the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0096_remote_handles");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(emitTriggers(TRIGGERS)));
+  });
+
+  it("keeps the rows a Store before it holds, then refuses params that are not text or hold a NUL", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+        OWNER,
+      );
+      // Before it, the CHECK of 0011 passes a NUL past the object and a BLOB of one: the witness reaches the trigger.
+      const [nul, binary, plain] = ["300000000000000001", "300000000000000002", "300000000000000003"];
+      insert(sql, nul, "{}\0x");
+      insert(sql, binary, blob("{}"));
+      insert(sql, plain, "{}");
+      const stored = () =>
+        sql
+          .exec<{ id: string; hex: string; type: string }>(
+            "SELECT id, hex(params) AS hex, typeof(params) AS type FROM scheduled_statuses ORDER BY id",
+          )
+          .toArray();
+      const before = stored();
+      expect(before).toEqual([
+        { id: nul, hex: "7B7D0078", type: "text" },
+        { id: binary, hex: "7B7D", type: "blob" },
+        { id: plain, hex: "7B7D", type: "text" },
+      ]);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // No row is rewritten: the read judges them (paramsReadSql).
+      expect(stored()).toEqual(before);
+      for (const [label, value] of [
+        ["a NUL past the object", "{}\0x"],
+        ["a NUL inside a string", '{"a":"\0"}'],
+        ["a BLOB", blob("{}")],
+      ] as const) {
+        expect(() => insert(sql, "300000000000000009", value), label).toThrow(REFUSED);
+        expect(() => sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", value, plain), label).toThrow(
+          REFUSED,
+        );
+      }
+      // An object passes, at the CHECK's 128 KiB too, inserted or written over a stored one; another column's update
+      // passes on a row the trigger would refuse.
+      insert(sql, "300000000000000004", sized(131_072));
+      sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", sized(131_072), nul);
+      sql.exec(
+        "UPDATE scheduled_statuses SET attempts = 1, next_attempt_at = '2026-12-01T00:00:00.000Z' WHERE id = ?",
+        binary,
+      );
+      expect(() => insert(sql, "300000000000000005", sized(131_073))).toThrow(/CHECK constraint failed/);
+      expect(stored().map((row) => [row.id, row.hex.length / 2, row.type])).toEqual([
+        [nul, 131_072, "text"],
+        [binary, 2, "blob"],
+        [plain, 2, "text"],
+        ["300000000000000004", 131_072, "text"],
+      ]);
     });
   });
 });

@@ -28,6 +28,7 @@ import {
   verifiedLinksPastBoundSql,
   warningStatusIdsPastBoundSql,
 } from "../platform/stored-bounds";
+import { paramsPastBoundSql } from "./scheduled-statuses";
 import { pinsFullSql } from "./status-actions";
 
 // The triggers in force that hold a stored bound or a cap of stored-bounds.ts (RES-2, RES-4), each as the last
@@ -334,6 +335,14 @@ END;`,
     "name, value",
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
+  ),
+  // 0104_scheduled_params: params that are not text or hold a NUL, besides the CHECK of 0011_scheduled_statuses.
+  ...boundTriggers(
+    "scheduled_statuses_params",
+    "scheduled_statuses",
+    "params",
+    paramsPastBoundSql("NEW.params"),
+    "scheduled_statuses: a value past its stored bound",
   ),
 ];
 

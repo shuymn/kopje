@@ -304,6 +304,12 @@ its stored bound`. No foreign key holds it: an id that names no `oauth_clients` 
 only when it passes the same rule. A dump taken before 0064 has no such column: it restores into a Store at its own
 migrations, which then upgrades. A file built from legacy data writes NULL.
 
+Scheduled statuses' params (migration `0104_scheduled_params`): besides the CHECK of `0011_scheduled_statuses` (a JSON
+object within 128 KiB), text with no NUL anywhere; a chunk that holds a BLOB or a NUL in one fails with
+`scheduled_statuses: a value past its stored bound`, refused as `chunk-failed`. A dump taken before 0104 restores into
+a Store at its own migrations, whose upgrade keeps such a row: it reads as unreadable (left out of the list, not found
+when shown or updated, and dropped when due).
+
 Media BlurHash (migration `0065_media_blurhash`): `media_attachments.blurhash` is NULL, or text of 6 to 54 ASCII bytes
 of base83 characters (`0-9`, `A-Z`, `a-z` and `#$%*+,-.:;=?@[]^_{|}~`) whose first character gives x and y components
 of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) + 1) and whose length is 4 + 2xy;

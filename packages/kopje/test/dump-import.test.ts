@@ -717,6 +717,52 @@ describe("dump", () => {
     });
   }, 120_000);
 
+  // RES-2: a scheduled status's params are text with no NUL (0104_scheduled_params), so a dump holding others fails to
+  // import, as a value past any stored bound does; readable ones round-trip.
+  it("round-trips scheduled statuses' params, and refuses a NUL in them on import (0104)", async () => {
+    const source = await seeded(0);
+    const scheduled = "740000000000000001";
+    const params = JSON.stringify({ text: "later", spoiler_text: "", media_ids: null });
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const account = sql
+        .exec<{ account_id: string }>("SELECT account_id FROM local_accounts ORDER BY account_id LIMIT 1")
+        .one().account_id;
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+        scheduled,
+        account,
+        "2026-12-01T00:00:00.000Z",
+        params,
+      );
+    });
+    const stored = (store: StoreStub) =>
+      runInDurableObject(
+        store,
+        (_instance, state) =>
+          state.storage.sql.exec("SELECT hex(params) AS hex FROM scheduled_statuses WHERE id = ?", scheduled).one().hex,
+      );
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await stored(restored)).toBe(await stored(source));
+    // The same row with a NUL past the object, as a Store before 0104 could hold it.
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+      sql.exec("DROP TRIGGER scheduled_statuses_params_update");
+      sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", `${params}\0x`, scheduled);
+    });
+    expect(await stored(source)).toMatch(/0078$/);
+    const past = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
+      /scheduled_statuses: a value past its stored bound/,
+    );
+  }, 120_000);
+
   // statuses.published_at and edited_at have no stored bound (RES-2): reads project them, a dump keeps them as stored.
   it("round-trips status times past the stored form unchanged", async () => {
     const source = await seeded(0);

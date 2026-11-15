@@ -2831,6 +2831,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `scheduled_at` is read only up to 64 characters, and a scheduled status's params are a JSON object of a fixed shape
   built from checked fields (the status text's raw bound, at most four media ids), refused over 128 KiB in the Store and
   by the schema (migration `0011_scheduled_statuses`); `test/migrations.test.ts`, `test/scheduled-statuses.test.ts`.
+  Params that are not text or hold a NUL anywhere, which that CHECK passes (a BLOB, and `json_valid` stops at the NUL)
+  and `JSON.parse` refuses, are refused by the triggers of migration `0104_scheduled_params`, imports included
+  (`paramsPastBoundSql` in `src/domain/scheduled-statuses.ts`); a row restored before it reads as unreadable
+  (`paramsReadSql`, then `storedParams`, which decides as `JSON.parse` does): left out of the list, not found when shown
+  or updated, deleted, dropped as `params` when due with no failure recorded, and passed over by a repeat of its
+  Idempotency-Key, which schedules anew; `test/scheduled-statuses.test.ts` ("a scheduled status whose params cannot be
+  read"), `test/migrations.test.ts` ("0104_scheduled_params"), `test/dump-import.test.ts` ("round-trips scheduled
+  statuses' params").
   `scheduled_at` must name a date and time the calendar has (Ruby's `DateTime.parse`: no February 29 outside leap years,
   no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. Other query strings: _Gap._
   _Enforced (main)_ for a search resolution's non-ActivityPub answer (NET-4): its `Link` header is read only within

@@ -194,9 +194,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- An import refuses scheduled-status parameters that hold a NUL or are not text. Migration `0104_scheduled_params`: two
+  triggers on `scheduled_statuses`, no row read or rewritten; the upgrade checks no reference (66 ms for this file in
+  one local run of the migration bench, at a load average of 17 to 41).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 
 ### Fixed
 
+- A scheduled status whose stored parameters cannot be read (only a restored row) no longer breaks the list; it is left
+  out, and dropped when due.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
   and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
   an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.

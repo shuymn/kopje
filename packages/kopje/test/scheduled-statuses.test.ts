@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
+import { MIGRATIONS } from "../src/db/migrations";
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
 import { expiredMedia } from "../src/domain/media";
 import {
@@ -1064,20 +1065,28 @@ describe("nothing leaks before publication", () => {
   }, 60_000);
 });
 
-// ---- RES-2: params that cannot be read.
+// ---- RES-2: params that cannot be read (0104_scheduled_params).
+
+const PARAMS_FILE = MIGRATIONS.find((m) => m.name === "0104_scheduled_params")?.sql ?? "";
+const PAST_BOUND = /scheduled_statuses: a value past its stored bound/;
 
 // `text` as a BLOB of its UTF-8 bytes.
 const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
 
-// Runs `write` in the Store, as a restore writes rows the API does not.
+// Runs `write` as a Store before 0104 could (its triggers dropped), then the file's statements, as its upgrade runs
+// them.
 async function beforeParamsBound(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
   await runInDurableObject(h.store, (_instance, state) => {
-    write(state.storage.sql);
+    const sql = state.storage.sql;
+    sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+    sql.exec("DROP TRIGGER scheduled_statuses_params_update");
+    write(sql);
+    state.storage.transactionSync(() => sql.exec(PARAMS_FILE).toArray());
   });
 }
 
 describe("a scheduled status whose params cannot be read (RES-2)", () => {
-  // Restored: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
+  // Restored before 0104: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
   // a readable scheduled status, each due at NOW + HOUR but the BLOB's, a day later.
   it("is left out of the list, not found when shown or updated, deleted, and dropped as params when due", async () => {
     const h = await community(["alice"]);
@@ -1159,7 +1168,8 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
 
   // The decision moves from JSON.parse alone to the read's SQL prefilter and storedParams. Over the values on which
   // json_valid and JSON.parse disagree, and the forms near them: storedParams after paramsReadSql is null exactly where
-  // JSON.parse throws on what workerd returns (or reads no object), for every value the CHECK lets a restore store.
+  // JSON.parse throws on what workerd returns (or reads no object), for every value the CHECK lets a restore store,
+  // and the trigger refuses only values JSON.parse would not read.
   it("reads params as JSON.parse reads them, over the values json_valid and JSON.parse disagree on", async () => {
     const h = await community(["alice"]);
     const nested = (depth: number) => `${'{"a":'.repeat(depth - 1)}{}${"}".repeat(depth - 1)}`;
@@ -1184,9 +1194,12 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
       ["whitespace JSON allows", `char(9, 10, 13, 32) || '{}' || char(32)`, true, true],
       ["an array", `'[]'`, false, false],
     ];
-    // Each value as a restore stores it (the CHECK alone), read back as the Store reads params.
+    // Each value as a restore before 0104 stores it (the CHECK alone), read back as the Store reads params; then, with
+    // the triggers made again, whether they refuse it.
     const decided = await runInDurableObject(h.store, (_instance, state) => {
       const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+      sql.exec("DROP TRIGGER scheduled_statuses_params_update");
       const insert = (id: string, value: string) =>
         sql.exec(
           `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params)
@@ -1194,7 +1207,7 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
           id,
           h.users.alice.id,
         );
-      return cases.map(([label, value], i) => {
+      const stored = cases.map(([label, value], i) => {
         const id = String(760000000000000000n + BigInt(i));
         const { raw } = sql.exec<{ raw: SqlStorageValue }>(`SELECT ${value} AS raw`).one();
         let checked = true;
@@ -1218,18 +1231,39 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
         } catch {
           parsed = false;
         }
-        return { label, checked, parsed, read: storedParams(read) !== null };
+        return { label, value, checked, parsed, read: storedParams(read) !== null };
+      });
+      state.storage.transactionSync(() => sql.exec(PARAMS_FILE).toArray());
+      return stored.map((entry, i) => {
+        let refused = false;
+        try {
+          insert(String(770000000000000000n + BigInt(i)), entry.value);
+        } catch (error) {
+          refused = PAST_BOUND.test(String(error));
+        }
+        return { ...entry, refused };
       });
     });
     expect(decided.map(({ label, checked, parsed }) => [label, checked, parsed])).toEqual(
       cases.map(([label, , checked, parsed]) => [label, checked, parsed]),
     );
-    for (const { label, checked, parsed, read } of decided) {
+    for (const { label, checked, parsed, read, refused } of decided) {
       // Where a restore can store it, the read reads it exactly where JSON.parse does.
       if (checked) {
         expect(read, label).toBe(parsed);
       }
+      // The trigger refuses only what JSON.parse would not read.
+      if (refused) {
+        expect(parsed, label).toBe(false);
+      }
     }
+    // The trigger refuses exactly what the read's prefilter leaves out.
+    expect(decided.filter((d) => d.refused).map((d) => d.label)).toEqual([
+      "NUL after the object",
+      "NUL inside a string",
+      "NUL alone after it",
+      "a BLOB object",
+    ]);
   });
 });
 
