@@ -495,6 +495,62 @@ describe("POST /api/v1/statuses", () => {
     expect(explicit).toMatchObject({ visibility: "private", language: "en", sensitive: false });
   });
 
+  // Status#prepare_contents strips a local status's text and warning (Ruby's String#strip: NUL, tab, LF, VT, FF, CR
+  // and space) before it is validated and stored.
+  it("strips a post's text and warning as Ruby", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: " \t\nhi\n\v ", spoiler_text: " cw\f" });
+    expect(status).toMatchObject({ content: "<p>hi</p>", spoiler_text: "cw", sensitive: true });
+    const source = async (id: string) => (await getJson(h, `/api/v1/statuses/${id}/source`, alice.token)).body;
+    expect(await source(status.id)).toMatchObject({ text: "hi", spoiler_text: "cw" });
+    // Other whitespace at the ends stays.
+    const wide = await post(h, alice, { status: "\u3000hi\u00a0", spoiler_text: "\u00a0cw\u2028" });
+    expect(await source(wide.id)).toMatchObject({ text: "\u3000hi\u00a0", spoiler_text: "\u00a0cw\u2028" });
+  });
+
+  // PostStatusService#preprocess_attributes!: the warning as sent marks the post sensitive when present? (Rails' blank?
+  // over Unicode White_Space); Status#prepare_contents then strips it.
+  it("a blank warning neither marks the post sensitive nor stays", async () => {
+    const h = await community(["alice"]);
+    const cases: [string, string, boolean][] = [
+      ["  ", "", false],
+      ["\u0085", "\u0085", false],
+      ["\ufeff", "\ufeff", true],
+      ["\u0000", "", true],
+    ];
+    for (const [sent, spoiler_text, sensitive] of cases) {
+      const status = await post(h, h.users.alice, { status: "x", spoiler_text: sent });
+      expect([sent, status.spoiler_text, status.sensitive]).toEqual([sent, spoiler_text, sensitive]);
+    }
+  });
+
+  // StatusLengthValidator counts the stripped pair, on every path that counts: the Worker's check of a post or an
+  // edit, a blank text's warning taken as its text (convertedPost), and an edit's (editStatus).
+  it("counts the length after stripping", async () => {
+    const h = await community(["alice"]);
+    const { token } = h.users.alice;
+    const padded = (text: string) => ` \t${text}\n  `;
+    const accepted = async (body: Record<string, unknown>, init?: { method: string; path: string }) => {
+      const answer = await posting(h, token, body, init);
+      expect([body, answer.status]).toEqual([body, 200]);
+      return answer.body as Status;
+    };
+    await accepted({ status: padded("x".repeat(500)) });
+    await accepted({ status: "x".repeat(400), spoiler_text: padded("y".repeat(100)) });
+    const converted = await accepted({ status: " ", spoiler_text: padded("y".repeat(500)) });
+    expect(converted).toMatchObject({ content: `<p>${"y".repeat(500)}</p>`, spoiler_text: "", sensitive: true });
+    const path = `/api/v1/statuses/${converted.id}`;
+    await accepted({ status: padded("z".repeat(500)) }, { method: "PUT", path });
+    const edited = await accepted({ status: "", spoiler_text: padded("w".repeat(500)) }, { method: "PUT", path });
+    expect(edited).toMatchObject({ content: `<p>${"w".repeat(500)}</p>`, spoiler_text: "" });
+    // One more character is too long.
+    expect(await posting(h, token, { status: padded("x".repeat(501)) })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text character limit of 500 exceeded" },
+    });
+  });
+
   it("replies, counting public replies on the parent", async () => {
     const h = await community(["alice", "bob"]);
     const parent = await post(h, h.users.alice, { status: "parent" });
@@ -816,6 +872,44 @@ describe("editing", () => {
     );
     expect(await response.json()).toMatchObject({ edited_at: null });
     expect(await sql(h.store, "SELECT id FROM status_edits")).toEqual([]);
+  });
+
+  // UpdateStatusService and Status#prepare_contents: an edit's text and warning are stripped, and the warning as sent
+  // marks the status sensitive when present?, as a post's.
+  it("an edit strips and judges the warning the same", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: "first" });
+    const path = `/api/v1/statuses/${status.id}`;
+    const edit = async (body: Record<string, unknown>) => {
+      const answer = await posting(h, alice.token, body, { method: "PUT", path });
+      expect(answer.status).toBe(200);
+      return answer.body as Status;
+    };
+    h.now.mockReturnValue(NOW + 60_000);
+    expect(await edit({ status: "\n second \n", spoiler_text: " cw " })).toMatchObject({
+      content: "<p>second</p>",
+      spoiler_text: "cw",
+      sensitive: true,
+    });
+    h.now.mockReturnValue(NOW + 120_000);
+    expect(await edit({ status: "third", spoiler_text: "\u0085" })).toMatchObject({
+      spoiler_text: "\u0085",
+      sensitive: false,
+    });
+    h.now.mockReturnValue(NOW + 180_000);
+    expect(await edit({ status: "fourth", spoiler_text: " \t" })).toMatchObject({ spoiler_text: "", sensitive: false });
+    const history = await getJson<{ content: string; spoiler_text: string; sensitive: boolean }[]>(
+      h,
+      `${path}/history`,
+    );
+    expect(history.body.map(({ content, spoiler_text, sensitive }) => [content, spoiler_text, sensitive])).toEqual([
+      ["<p>first</p>", "", false],
+      ["<p>second</p>", "cw", true],
+      ["<p>third</p>", "\u0085", false],
+      ["<p>fourth</p>", "", false],
+    ]);
+    expect((await getJson(h, `${path}/source`, alice.token)).body).toMatchObject({ text: "fourth", spoiler_text: "" });
   });
 
   it("keeps a removed mention as a silent one, and cannot edit someone else's status", async () => {

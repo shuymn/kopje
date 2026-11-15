@@ -3,6 +3,7 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, STATUSES_ID
 import type { Db } from "../db/sql";
 import { ACTOR_URI_LIMIT, STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
+import { railsBlank } from "../platform/rails-blank";
 import {
   isoTimeSql,
   STATUS_EMOJIS_BYTES,
@@ -11,6 +12,7 @@ import {
   storedMediaDescription,
   storedText,
 } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { jsonStringBytes, SPOILER_BYTES, STATUS_CONTENT_BYTES } from "../security/html";
 import {
   type Account,
@@ -483,6 +485,12 @@ export type Prepared =
 // Mastodon's statuses.errors.quoted_user_not_mentioned, as ActiveRecord::RecordInvalid words it.
 const QUOTED_USER_NOT_MENTIONED = "Validation failed: Cannot quote a non-mentioned user in a Private Mention post.";
 
+// Status#prepare_contents: a local status's text or warning as it is stored (storedText), stripped as Ruby's
+// String#strip strips it.
+function preparedText(value: string): string {
+  return rubyStrip(storedText(value));
+}
+
 // PostStatusService#preprocess_attributes! on a post as sent, once the pair as sent is within MAX_RAW_LENGTH (RES-1,
 // checked before blankText reads it or anything moves: preparePost checks only the pair it is given, whose sum drops a
 // blank text): a blank text with a warning that is not blank, quoting nothing, takes the warning as its text, with no
@@ -503,7 +511,7 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
     !blankText(spoilerText) && input.quotedStatusId === undefined
       ? { ...input, text: spoilerText, spoilerText: "", sensitive: true }
       : { ...input, text, spoilerText };
-  return statusLength(post.text, post.spoilerText) > MAX_STATUS_CHARACTERS ? null : post;
+  return statusLength(rubyStrip(post.text), rubyStrip(post.spoilerText)) > MAX_STATUS_CHARACTERS ? null : post;
 }
 
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
@@ -511,11 +519,11 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
 export function preparePost(db: Db, accountId: string, input: PostInput, scheduledId: string | null): Prepared {
   // Checked as writePost stores them, so text of only U+0000 is blank, as an edit's is.
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
-  if (exceedsRawLength(text, spoilerText)) {
+  if (exceedsRawLength(storedText(input.text), storedText(input.spoilerText))) {
     return { status: "invalid", error: TOO_LONG };
   }
+  const text = preparedText(input.text);
+  const spoilerText = preparedText(input.spoilerText);
   const author = localAuthor(db, accountId);
   let parent: ReplyParent | null = null;
   if (input.inReplyToId !== undefined) {
@@ -651,10 +659,11 @@ export function writePost(
   { author, parent, media, visibility, quoted }: PreparedPost,
 ): string {
   const origin = new URL(author.uri).origin;
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
+  const text = preparedText(input.text);
+  const spoilerText = preparedText(input.spoilerText);
   const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
-  const sensitive = (input.sensitive ?? author.default_sensitive === 1) || spoilerText !== "";
+  // PostStatusService#preprocess_attributes!: a warning present as sent (Rails' present?) marks the post sensitive.
+  const sensitive = (input.sensitive ?? author.default_sensitive === 1) || !railsBlank(input.spoilerText);
   const language = input.language ?? author.default_language;
   const quotePolicy = storedQuotePolicy(input.quotePolicy ?? author.default_quote_policy, visibility);
   // Status#carried_over_reply_to_account_id: continuing one's own reply keeps the conversation partner.
@@ -1031,8 +1040,9 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
   const blankSent = blankText(sentText);
   const keepsWarning = blankSent && quote === undefined;
-  const text = keepsWarning ? sentSpoiler : sentText;
-  const spoilerText = keepsWarning ? current.spoiler_text : sentSpoiler;
+  // Status#prepare_contents: the pair written is stripped.
+  const text = rubyStrip(keepsWarning ? sentSpoiler : sentText);
+  const spoilerText = rubyStrip(keepsWarning ? current.spoiler_text : sentSpoiler);
   // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
   // written: a kept warning is the stored one.
   if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
@@ -1041,7 +1051,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
-  const sensitive = (input.sensitive ?? false) || (!keepsWarning && spoilerText !== "");
+  // UpdateStatusService#update_immediate_attributes!: the warning as sent, by Rails' present?.
+  const sensitive = (input.sensitive ?? false) || (!keepsWarning && !railsBlank(input.spoilerText));
   const language = input.language ?? current.language;
   const currentMedia = db.all<{ id: string; description: string; focus_x: number; focus_y: number }>(
     "SELECT id, description, focus_x, focus_y FROM media_attachments WHERE status_id = ? AND shown = 1 ORDER BY position, id",

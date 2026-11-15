@@ -9,6 +9,7 @@ import {
   UNEXPECTED_MENTIONS,
   type Viewed,
 } from "../domain/statuses";
+import { rubyStrip } from "../platform/strip";
 import { sha256Hex } from "../security/tokens";
 import {
   type ApiContext,
@@ -114,12 +115,13 @@ function composition(p: Params): Composition | string {
   if (mediaIds.length > MAX_MEDIA_ATTACHMENTS) {
     return TOO_MANY_FILES;
   }
-  // The raw bound comes first, so over-long input is refused before it is parsed. The counted length of a blank text is
-  // the Store's (statuses.ts convertedPost, editStatus): its warning may become the text, whose URLs and mentions count
-  // as text, and only the Store knows whether an edited status quotes.
+  // The raw bound comes first, on the values as sent, so over-long input is refused before it is parsed. The counted
+  // length is of the pair as stored (Status#prepare_contents strips both before StatusLengthValidator); that of a blank
+  // text is the Store's (statuses.ts convertedPost, editStatus): its warning may become the text, whose URLs and
+  // mentions count as text, and only the Store knows whether an edited status quotes.
   if (
     exceedsRawLength(text, spoilerText) ||
-    (!blankText(text) && statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)
+    (!blankText(text) && statusLength(rubyStrip(text), rubyStrip(spoilerText)) > MAX_STATUS_CHARACTERS)
   ) {
     return TOO_LONG;
   }
