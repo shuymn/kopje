@@ -359,8 +359,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
 - A failure attaches nothing, where Mastodon may attach an older card of a redirect's or canonical URL.
 - Each status keeps its own copy: a status that links a URL another status fetched within 14 days copies that card
   without a request, but a later fetch does not update earlier copies, and an edit that keeps the URL fetches it again
-  unless another status holds a fresh copy. A local edit resets the card only when the text changes, a remote update
-  only when it is significant; a change of the quote alone resets nothing.
+  unless another status holds a fresh copy. The edits that reset a card are Mastodon's: a local edit that changes the
+  text, and a remote update that is significant, which a change of the quote alone is not
+  (`process_status_update_service.rb` judges significance before it reads the quote).
 
 Accounts (the `Account` and credential account entities):
 
