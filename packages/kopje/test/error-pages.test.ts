@@ -25,6 +25,8 @@ const INTERNAL = '{"error":"Internal Server Error"}';
 const NOSNIFF = { "x-content-type-options": "nosniff" };
 const DOCUMENT_CORS = { "access-control-allow-origin": "*" };
 const API_CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Link" };
+// WEB-7: every API answer is private but a 2xx its route declares public; /api/v1/instance declares no Vary.
+const API_PRIVATE = { "cache-control": "private, no-store" };
 
 type Bytes = { status: number; headers: Record<string, string>; body: string };
 
@@ -251,7 +253,7 @@ describe("404", () => {
       BROWSER,
       {
         status: 404,
-        headers: { "content-type": "application/json", ...API_CORS, ...NOSNIFF },
+        headers: { "content-type": "application/json", ...API_CORS, ...API_PRIVATE, ...NOSNIFF },
         body: '{"error":"Record not found"}',
       },
     ],
@@ -310,7 +312,7 @@ describe.for(FAILURES)("%s", ([status, error, document, title]) => {
     ["an actor outbox", "/ap/users/alice/outbox", BROWSER, document()],
     ["the instance actor outbox", "/actor/outbox", BROWSER, document()],
     ["an emoji", "/emojis/1", BROWSER, document()],
-    ["the API", "/api/v1/instance", BROWSER, document(API_CORS)],
+    ["the API", "/api/v1/instance", BROWSER, document({ ...API_CORS, ...API_PRIVATE })],
   ])("keeps the API answer for %s", async (_name, path, accept, expected) => {
     const failing = failingStore(error);
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -420,7 +422,7 @@ describe("the env’s maintenance", () => {
   it.each<[string, string, string | undefined, Bytes | "page"]>([
     ["a browser on a page route", "/about", BROWSER, "page"],
     ["no Accept on a page route", "/about", undefined, json503(VARY)],
-    ["the API", "/api/v1/instance", BROWSER, json503(API_CORS)],
+    ["the API", "/api/v1/instance", BROWSER, json503({ ...API_CORS, ...API_PRIVATE })],
     ["an actor outbox", "/ap/users/alice/outbox", BROWSER, json503()],
   ])("answers %s", async (_name, path, accept, expected) => {
     const failing = failingStore(() => new Error("unreached"));

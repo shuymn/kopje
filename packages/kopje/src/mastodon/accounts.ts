@@ -519,8 +519,7 @@ export const endorsements: ApiHandler = withParams(async (c, deps, p) => {
 // GET /api/v1/directory (Api::V1::DirectoriesController#show, domain/directory.ts). Parameters as Mastodon reads them:
 // `order` new or active (the default; Kopje reads any other value as active, where Mastodon fails), `local` as a
 // Rails boolean, `offset` (a negative or unreadable one is 0), and `limit` as limit_param (the absolute value, at
-// most 80; 0 or an unreadable one answers no accounts). Without a token, the answer may be cached by anyone for 15
-// seconds (cache_if_unauthenticated!), varying by Authorization as every Mastodon API answer does.
+// most 80; 0 or an unreadable one answers no accounts).
 export const directory: ApiHandler = withParams(async (c, deps, p) => {
   const credential = optionalTokenCredential(c, deps);
   const input = {
@@ -533,12 +532,7 @@ export const directory: ApiHandler = withParams(async (c, deps, p) => {
     present: present(c),
   };
   const accounts = authorized(await storeCall(c, deps, (s, b) => s.directory(b, input)));
-  return credential === null
-    ? c.json(accounts, 200, {
-        "cache-control": "public, max-age=15, stale-while-revalidate=30, stale-if-error=86400",
-        vary: "Authorization",
-      })
-    : c.json(accounts);
+  return c.json(accounts);
 });
 
 // GET /api/v1/accounts/:id/endorsements (Accounts::EndorsementsController#index): public.

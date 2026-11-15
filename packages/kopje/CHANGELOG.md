@@ -269,6 +269,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Store migration and no `wrangler.jsonc` change.
 - Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
+- Mastodon API answers carry `Cache-Control: private, no-store` and `Vary: Authorization`, as Mastodon's do, errors and
+  the app registration (which holds the client secret) included; the public reads Mastodon lets caches keep (public
+  and hashtag timelines, accounts, statuses, polls, hashtags, instance information, custom emoji) carry its public
+  `Cache-Control`, now written in Rails' order. Every such read that looks at the token (custom emoji, the instance's
+  languages, policies, activity, domain blocks and peer search among them) is public only to a request without one
+  and varies by `Authorization`, so no cache serves a stored answer to a signed-in or suspended account. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

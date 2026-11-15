@@ -1528,10 +1528,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   translation languages, privacy policy and terms of service; fourteen routes) needs no token, and a token sent is read
   only for its owner's suspension, as Mastodon's `Api::BaseController#require_not_suspended!` reads it: every answer to
   a request whose token's owner is suspended (AUTH-1's order) is 403 `Your login is currently disabled`, an early 4xx
-  and an error's answer included, with none of the answer's headers (no `Cache-Control`), so the token holder learns of
-  the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner, an app token)
-  changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a request can make:
-  app registration judges it in the transaction that inserts the app (`registerApp`), and
+  and an error's answer included, with none of the answer's headers; it carries the API's `private, no-store`, and
+  since every route that judges the owner varies by `Authorization` and answers a token only privately, no cache
+  serves the suspended owner's token a stored answer (WEB-7; `test/suspended-tokens.test.ts` ("drops the replaced
+  answer's headers"), `test/api-caching.test.ts` ("a token-reading instance route varies by Authorization")). The token
+  holder learns of the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner,
+  an app token) changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a
+  request can make: app registration judges it in the transaction that inserts the app (`registerApp`), and
   `GET /api/v1/instance/activity` in the read that runs before either path that keeps the day's answer
   (`instanceActivity`). The hot reads (custom emoji and the public account reads) judge it in their one operation
   (`refuseSuspended` in `src/domain/auth.ts`); every other answer is judged after the handler by the access middleware
@@ -1917,6 +1920,27 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
   read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
   only on the domain it records, or a legacy one on the stored domain").
+- **WEB-7: no cache hands one caller's API answer to a caller whose answer differs.** Every answer under `/api/*` (the
+  streaming endpoints excepted, which keep Mastodon's streaming server's headers, MD-8) and of `/oauth/userinfo`
+  carries `Cache-Control: private, no-store`, errors, maintenance and gate answers included, but a 2xx answer the
+  route table declares public; a CORS preflight is answered before it and carries none. The answer of every route that
+  reads the bearer token (any access but `public`, AUTH-2), which can depend on the token through sign-in, a setting
+  (the domain-block list under `show_domain_blocks` and `show_domain_blocks_rationale`) or the owner's suspension
+  (AUTH-2's 403), is public only to a request without an `Authorization` header and carries `Vary: Authorization`
+  (with `Accept-Language` where the content reads it); a request with any `Authorization` header, whatever it holds,
+  is answered `private, no-store`, as Mastodon's `enforce_cache_control!` answers it. Only a route that never reads a
+  token may be public to every request, without `Vary`, and the route table refuses any other at registration. The
+  API reads no cookie. A cache that honours `Vary` and `private` or `no-store` (RFC 9111; Cloudflare's Workers cache,
+  were it enabled) therefore never serves a stored answer to a caller it does not fit. _Enforced (main):_
+  `src/mastodon/caching.ts`, `src/mastodon/routes.ts`, `src/app/app.ts`; `test/api-caching.test.ts` ("an
+  authenticated read is private", "the app registration is private", "an error answer is private", "a refused token
+  is private and varies by Authorization", "a thrown error is private", "an unavailable Store's answer is private", "a
+  maintenance answer is private", "an unknown API path is private", "an off-domain answer stays private", "userinfo
+  is private", "an anonymous public read", "any Authorization header makes it private", "trending statuses vary by
+  language", "an everyone read", "a token-reading instance route varies by Authorization", "the block list varies by
+  Authorization under every setting", "a preflight carries no Cache-Control", "streaming keeps its own headers", "only
+  routes that never read a token declare EVERYONE", "decides every declaration, status class and Authorization"),
+  `test/suspended-tokens.test.ts` ("drops the replaced answer's headers").
 
 ### Setup (SETUP)
 
@@ -5150,8 +5174,10 @@ The negative cases each area requires, in tests named with the invariant IDs; a 
 
 ## IDs to check by change type
 
-- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6. Test a wrong
-  scope, a revoked token, another account's resource, and a status the viewer may not see.
+- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6, WEB-7 (its
+  caching declaration). Test a wrong scope, a revoked token, another account's resource, and a status the viewer may
+  not see.
+- **API middleware or gate:** WEB-5, WEB-6, WEB-7.
 - **Inbound activity handler:** ID-1, ID-3, ID-6, ID-7, ID-8, VIS-2, HTML-1, RES-1, RES-2, RES-6, OPS-1; the inbox
   precheck and the spool also OPS-6 (the cutover's maintenance worker shares them).
 - **Outbound activity or delivery:** VIS-3, VIS-30, NET-2, NET-3, DATA-1, DATA-7, RES-5, RES-6.
