@@ -990,7 +990,7 @@ const REMOTE_CHOICES = Array.from({ length: 100 }, (_, i) => `${String(i).padSta
 const CEILING_MS = 1_000;
 
 describe("W: the measure at each writer’s reachable maxima", () => {
-  it("local posts and edits, with media and with a poll", async () => {
+  it("local posts and edits, with media, with a poll and with both", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     expect(LOCAL_SPOILER.length + LOCAL_TEXT.length).toBe(10_000);
@@ -1028,8 +1028,15 @@ describe("W: the measure at each writer’s reachable maxima", () => {
       spoiler_text: LOCAL_SPOILER,
       poll: { options: LOCAL_CHOICES, expires_in: 3600 },
     });
+    const withBoth = await postAt("post, media and poll", {
+      status: LOCAL_TEXT,
+      spoiler_text: LOCAL_SPOILER,
+      media_ids: await media(),
+      poll: { options: LOCAL_CHOICES, expires_in: 3600 },
+    });
     const minimalMedia = (await post(h, alice, { status: "m" })).id;
     const minimalPoll = (await post(h, alice, { status: "p" })).id;
+    const minimalBoth = (await post(h, alice, { status: "b" })).id;
     await editAt("edit, media", minimalMedia, {
       status: LOCAL_TEXT,
       spoiler_text: LOCAL_SPOILER,
@@ -1038,6 +1045,12 @@ describe("W: the measure at each writer’s reachable maxima", () => {
     await editAt("edit, poll", minimalPoll, {
       status: LOCAL_TEXT,
       spoiler_text: LOCAL_SPOILER,
+      poll: { options: LOCAL_CHOICES, expires_in: 3600 },
+    });
+    await editAt("edit, media and poll", minimalBoth, {
+      status: LOCAL_TEXT,
+      spoiler_text: LOCAL_SPOILER,
+      media_ids: await media(),
       poll: { options: LOCAL_CHOICES, expires_in: 3600 },
     });
     await inStore(h.store, (db, sql) => {
@@ -1053,10 +1066,18 @@ describe("W: the measure at each writer’s reachable maxima", () => {
       for (const id of [withMedia, minimalMedia]) {
         expect(expectWitness(db, sql, id, mediaSizes, written.get(id))).toBe(2_000 + 2 + 8_000 + 2 + 80_000 + 6);
       }
-      for (const id of [withPoll, minimalPoll]) {
-        expect(expectWitness(db, sql, id, pollSizes, written.get(id))).toBe(2_000 + 2 + 8_000 + 2 + 4_000 + 6 + 2);
+      for (const id of [withPoll, minimalPoll, withBoth, minimalBoth]) {
         expect(sql.exec("SELECT length(CAST(options AS BLOB)) AS n FROM polls WHERE status_id = ?", id).one().n).toBe(
           4 * (162_950 + 2) + 5,
+        );
+      }
+      for (const id of [withPoll, minimalPoll]) {
+        expect(expectWitness(db, sql, id, pollSizes, written.get(id))).toBe(2_000 + 2 + 8_000 + 2 + 4_000 + 6 + 2);
+      }
+      const bothSizes = { ...mediaSizes, choices: 4, choiceUnits: 4_000 };
+      for (const id of [withBoth, minimalBoth]) {
+        expect(expectWitness(db, sql, id, bothSizes, written.get(id))).toBe(
+          2_000 + 2 + 8_000 + 2 + 4_000 + 6 + 2 + 80_000 + 6,
         );
       }
     });

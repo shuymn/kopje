@@ -28,6 +28,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- Notification reads take `supported_types[]` (`GET /api/v1/notifications`, `/api/v1/notifications/:id`,
+  `/api/v2/notifications`, `/api/v2/notifications/:group_key`), as in Mastodon 4.6: an `admin.report` or
+  `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
+  instance's front page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
+  `wrangler.jsonc` change.
+- Web Push subscriptions keep the `added_to_collection` and `collection_update` alerts of Mastodon 4.6. Kopje sends no
+  such notification yet. No Store migration and no `wrangler.jsonc` change.
 - An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
   `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
 - A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to
@@ -77,8 +84,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- An attribution domain (`attribution_domains[]`) longer than 1,020 UTF-8 bytes is refused as not a valid domain
+  name. CredentialAccount's `source.attribution_domains` and the actor show at most 100 domains of at most 1,020 bytes,
+  and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
+  included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
+  migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
+  (`mastodon#39203`); Kopje answered 422 `Cannot attach more than 4 files`. Its `Question` carries the attachments. No
+  Store migration and no `wrangler.jsonc` change.
+- A post with a blank text and a content warning, quoting nothing, takes the warning as its text, with no warning and
+  marked sensitive, as Mastodon does; Kopje answered 422 `Text can't be blank` without media and kept the warning over
+  a blank text with media. A scheduled one is converted when it is scheduled. An edit with a blank text, of a status
+  that quotes nothing, takes the warning sent as its text and keeps the status's warning, as Mastodon does; an earlier
+  post with a blank text and a warning is converted so on its next such edit. A post's length counts the warning and
+  the text as one string, as Mastodon does (a combining mark that starts the text no longer counts apart), a blank
+  text's length is counted after the conversion, and blank means what Mastodon's `blank?` means (U+0085 is blank,
+  U+FEFF is not). No Store migration and no `wrangler.jsonc` change.
 - A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
   written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
   their hashtags until edited.
@@ -126,12 +149,25 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
+  Store migration and no `wrangler.jsonc` change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
   spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
   every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
   display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
   paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
+  there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
+  way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"; RES-6 in
+  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. A quote's verification now applies its
+  quoted status's author document at most 6 times however its rounds end, and then ends; its retries are unchanged.
+  Migration `0094_quote_author_fetches`: a column of `quotes` with a CHECK, which the upgrade tests against every
+  stored quote (745 ms for this file in one local run of the migration bench, at a load average of 30 to 40).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - A boost answered on its own (the reblog response, `GET /api/v1/statuses/:id`, `GET /api/v1/statuses`, its deletion
   and its interaction-policy update), a reported boost in the admin API's reports, and a boost named by a notification
   or a notification request shown alone (`GET /api/v1/notifications/:id`, `GET /api/v2/notifications/:group_key`, a
