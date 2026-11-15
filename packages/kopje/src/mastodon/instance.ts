@@ -1,7 +1,7 @@
 import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../domain/accounts";
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
-import { DEFAULT_THUMBNAIL, INSTANCE_ICONS } from "../platform/brand-assets";
+import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
 import { MAX_DISPLAY_NAME, MAX_NOTE } from "./accounts";
 import {
   type ApiContext,
@@ -103,7 +103,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
     source_url: SOURCE_URL,
     description: info.description ?? "",
     usage: { users: { active_month: info.activeMonth } },
-    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}` },
+    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}`, description: DEFAULT_THUMBNAIL_DESCRIPTION },
     languages: UI_LANGUAGES,
     icon: INSTANCE_ICONS.map(({ path, size }) => ({ src: `${origin}${path}`, size })),
     configuration: {

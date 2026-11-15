@@ -107,7 +107,12 @@ describe("instance contract", () => {
       source_url: "https://github.com/shuymn/kopje",
       description: "A test instance",
       usage: { users: { active_month: 0 } },
-      thumbnail: { url: "https://kopje.test/assets/thumbnail.jpg" },
+      thumbnail: {
+        url: "https://kopje.test/assets/thumbnail.jpg",
+        description:
+          "A klipspringer, a small antelope, stands on the top boulder of a granite kopje against a large amber sun, " +
+          "with the dry savanna, a distant acacia and blue hills around it.",
+      },
       icon: [
         { src: "https://kopje.test/assets/favicon-48.png", size: "48x48" },
         { src: "https://kopje.test/assets/favicon-192.png", size: "192x192" },

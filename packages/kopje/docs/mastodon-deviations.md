@@ -503,7 +503,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
   six days after today too, where it has no key. Mastodon's sum also reads the legacy `cweek` keys, which Kopje never
   had.
-- `thumbnail` is always Kopje's default image; there is no upload.
+- `thumbnail` is always Kopje's default image, with its fixed description on `/api/v2/instance`; there is no upload.
 - `icon` lists Kopje's icon at 48, 192 and 512 px; Mastodon lists nine sizes (36 to 512).
 - `languages` is `["en"]`, the web UI's language.
 - The reading preferences, `reading:autoplay:gifs` included, are Mastodon's defaults; no setting stores them.
