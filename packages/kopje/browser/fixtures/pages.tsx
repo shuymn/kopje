@@ -218,9 +218,11 @@ const replyTarget = statusTarget({ uri: reply.uri, url: reply.url ?? "", path: "
 // The site facts every page read loads (domain/web-pages/site.ts): both documents exist, so every footer links them.
 const site: Site = { domain: DOMAIN, documents: { privacyPolicy: true, termsOfService: true } };
 
-// The signed-in account as the settings page reads it: alice with her profile's source.
+// The signed-in account as the settings page reads it: alice with her profile's source, an avatar description and no
+// header description, so the image cards show a filled and an empty form.
 const credential: CredentialAccount = {
   ...alice,
+  avatar_description: "A grey cat asleep on a windowsill in the afternoon sun",
   source: {
     privacy: "public",
     sensitive: false,

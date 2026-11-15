@@ -28,6 +28,15 @@ function settings(h: ApiHarness, browser: Browser) {
   return h.request("/settings", { headers: { cookie: browser.cookie } });
 }
 
+// The text of the settings page's textarea `name`, as the form shows it.
+async function textareaOf(h: ApiHarness, browser: Browser, name: string): Promise<string> {
+  const page = parseHtml(await (await settings(h, browser)).text());
+  const [textarea, ...more] = query(page, "textarea").filter((element) => attr(element, "name") === name);
+  expect(textarea, name).toBeDefined();
+  expect(more, name).toEqual([]);
+  return textarea!.childNodes.map((node) => (node as { value?: string }).value ?? "").join("");
+}
+
 async function sessionRows(h: Awaited<ReturnType<typeof withAlice>>) {
   return sql<{ token_hash: string; expires_at: string | null }>(
     h.store,
@@ -715,9 +724,45 @@ describe("settings page", () => {
     const csrf = await csrfOf(h, browser);
     expect((await postForm(h, browser, "/settings/profile", { csrf, note: " bio\u3000" })).status).toBe(303);
     expect(await sql(h.store, "SELECT note FROM accounts")).toEqual([{ note: "<p>bio\u3000</p>" }]);
-    const textarea = one(parseHtml(await (await settings(h, browser)).text()), "textarea");
-    expect(attr(textarea, "name")).toBe("note");
-    expect(textarea.childNodes.map((node) => (node as { value?: string }).value ?? "").join("")).toBe("bio\u3000");
+    expect(await textareaOf(h, browser, "note")).toBe("bio\u3000");
+  });
+
+  // An image card's form posts its description alone to /settings/profile, so nothing else changes; '' clears it, and
+  // the server refuses one past PROFILE_DESCRIPTION_LIMIT code points (test/profile-descriptions.test.ts) with its
+  // message, saving nothing. The textarea's native limit lets the 151 astral characters through (browser job).
+  it("saves an image description from its card, and shows it back in the form", async () => {
+    const h = await withAlice();
+    const browser = await signIn(h);
+    const csrf = await csrfOf(h, browser);
+    const stored = async () =>
+      (
+        await sql<Record<string, string | number | null>>(
+          h.store,
+          `SELECT display_name, note, locked, discoverable, indexable, avatar_description, header_description
+					FROM accounts`,
+        )
+      )[0];
+    const before = await stored();
+    for (const [name, value] of [
+      ["avatar_description", "A cat 😀"],
+      ["header_description", "A field"],
+    ] as const) {
+      expect((await postForm(h, browser, "/settings/profile", { csrf, [name]: value })).status).toBe(303);
+    }
+    expect(await stored()).toEqual({ ...before, avatar_description: "A cat 😀", header_description: "A field" });
+    expect([
+      await textareaOf(h, browser, "avatar_description"),
+      await textareaOf(h, browser, "header_description"),
+    ]).toEqual(["A cat 😀", "A field"]);
+    const refused = await postForm(h, browser, "/settings/profile", { csrf, avatar_description: "😀".repeat(151) });
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).toContain("Avatar description is too long (maximum is 150 characters)");
+    expect(await stored()).toMatchObject({ avatar_description: "A cat 😀" });
+    expect(
+      (await postForm(h, browser, "/settings/profile", { csrf, avatar_description: "😀".repeat(150) })).status,
+    ).toBe(303);
+    expect((await postForm(h, browser, "/settings/profile", { csrf, header_description: "" })).status).toBe(303);
+    expect(await stored()).toEqual({ ...before, avatar_description: "😀".repeat(150), header_description: "" });
   });
 
   it("shows only notices it knows", async () => {

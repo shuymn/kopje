@@ -2380,12 +2380,18 @@ for (const width of [1280, 375]) {
       null,
       null,
     ]);
-    // The profile form posts exactly its own fields.
-    const posted = await page
-      .locator('form[action="/settings/profile"]')
-      .evaluate((form: Element) => [...new FormData(form as HTMLFormElement).keys()]);
+    // The profile form posts exactly its own fields, and each image card's description form its description alone.
+    const postedBy = (form: string) =>
+      page.locator(form).evaluate((element: Element) => [...new FormData(element as HTMLFormElement).keys()]);
+    const posted = await postedBy('form[action="/settings/profile"]:has([name="display_name"])');
     expect(posted).not.toContain("address");
     expect(posted.slice(0, 3)).toEqual(["csrf", "display_name", "note"]);
+    for (const kind of ["avatar", "header"]) {
+      expect(await postedBy(`form[action="/settings/profile"]:has([name="${kind}_description"])`)).toEqual([
+        "csrf",
+        `${kind}_description`,
+      ]);
+    }
     const [own, editable] = await page.evaluate(() =>
       [document.querySelector(".readonly > input")!, document.querySelector('input[name="display_name"]')!].map((e) => {
         const style = getComputedStyle(e);
@@ -2398,7 +2404,8 @@ for (const width of [1280, 375]) {
 }
 
 // Settings' text controls: the server's limits count code points (display name 40, note 500, a field's name and value
-// 255), the native maxlength UTF-16 code units, so each control takes twice its limit natively and the server decides.
+// 255, an image's description 150), the native maxlength UTF-16 code units, so each control takes twice its limit
+// natively and the server decides.
 // Typed (pressSequentially) and pasted (insertText) as a person enters text; fill() sets the value past maxlength.
 for (const width of [1280, 375]) {
   test(`settings: text controls take every value the server accepts at ${width} px`, async ({ page }) => {
@@ -2419,6 +2426,8 @@ for (const width of [1280, 375]) {
       ['textarea[name="note"]', 500],
       ['input[name="fields_attributes[0][name]"]', 255],
       ['input[name="fields_attributes[0][value]"]', 255],
+      ['textarea[name="avatar_description"]', 150],
+      ['textarea[name="header_description"]', 150],
     ] as const) {
       const control = page.locator(selector);
       // At the limit in astral characters, two code units each: every one is kept.
