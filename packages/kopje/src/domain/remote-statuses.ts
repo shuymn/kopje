@@ -350,10 +350,23 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     return { applied: counted, reason: counted ? "vote" : "vote-refused" };
   }
   // ID-3, ID-6: a status found by atomUri is matched only when it is the author's own (Create, mastodon#39916).
-  const existing = statusByUri(db, input.uri) ?? (atomUri === null ? undefined : statusByUri(db, atomUri));
+  const byId = statusByUri(db, input.uri);
+  const existing = byId ?? (atomUri === null ? undefined : statusByUri(db, atomUri));
   if (existing !== undefined) {
     if (existing.account_id !== author.id) {
       return { applied: false, reason: "not-author" };
+    }
+    // ThreadResolveWorker: replies stored before this object, waiting on its id, are linked to the status found by its
+    // atomUri, as to one created under the id (parentOf: never a boost or a withdrawn status).
+    const found = byId === undefined ? parentOf(db, atomUri) : undefined;
+    if (found !== undefined) {
+      linkReplies(db, {
+        id: found.id,
+        uri: input.uri,
+        accountId: author.id,
+        replyTarget: found.in_reply_to_account_id,
+        isReply: found.in_reply_to_uri !== null,
+      });
     }
     // A known status arriving again as a root verifies its quote as any root does (quotes.ts promoteQuote).
     promoteQuote(db, existing.id, arrivalOf(db, author, ctx), ctx.now);

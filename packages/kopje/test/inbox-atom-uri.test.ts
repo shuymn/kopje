@@ -27,6 +27,7 @@ import {
   retractionsAtCap,
   setup,
   type Setup,
+  statusRow,
   undo,
   update,
 } from "./inbox-status-helpers";
@@ -155,6 +156,28 @@ describe("a Create naming a stored status by atomUri (Create#find_existing_statu
       });
       expect(result, target).toMatchObject({ applied: false, reason: "not-author" });
     }
+  });
+
+  it("links replies waiting on B to A, unless A is being removed (ThreadResolveWorker)", async () => {
+    const { t, bob, erin, bobId } = await world();
+    const a = await stored(t, bob);
+    const withdrawn = await stored(t, bob);
+    await sql(t.store, "UPDATE statuses SET withdrawn = 1 WHERE id = ?", withdrawn.id);
+    const b = naming(bob, a.note.id);
+    const c = naming(bob, withdrawn.note.id);
+    const replies = [mastodonNote(erin, { inReplyTo: b.id }), mastodonNote(erin, { inReplyTo: c.id })];
+    for (const reply of replies) {
+      expect(await t.post(erin, create(erin, reply))).toBe(202);
+    }
+    expect(await t.post(bob, create(bob, b))).toBe(202);
+    expect(await t.post(bob, create(bob, c))).toBe(202);
+    // Without the link, the reply to B stays waiting on B's id, and A counts no reply.
+    expect(await statusRow(t.store, replies[0]!.id)).toMatchObject({
+      in_reply_to_id: a.id,
+      in_reply_to_account_id: bobId,
+    });
+    expect((await statusRow(t.store, a.note.id))?.replies_count).toBe(1);
+    expect(await statusRow(t.store, replies[1]!.id)).toMatchObject({ in_reply_to_uri: c.id, in_reply_to_id: null });
   });
 
   it("does not bring back a deleted status under a third id naming it by atomUri", async () => {
