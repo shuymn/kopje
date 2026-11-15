@@ -4,7 +4,7 @@ import { sameOrigin } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql } from "../platform/stored-bounds";
-import { userWriteOperation } from "./auth";
+import { userReadOperation, userWriteOperation } from "./auth";
 import { fetchedAuthor, type Prefetched } from "./inbox";
 import { writeOperation } from "./operation";
 import { QUOTE_HOPS } from "./quotes";
@@ -16,6 +16,7 @@ import {
   REFRESH_FINISHED_MS,
   REFRESH_RUNNING_MS,
   type Refresh,
+  refreshById,
   refreshesFull,
   REPLIES_COOLDOWN_MS,
   REPLIES_INITIAL_WAIT_MS,
@@ -615,3 +616,13 @@ export const startRepliesRefresh = userWriteOperation.atStoreTime("now")<{ id: s
   db.run("INSERT INTO reply_walk_nodes (status_id, uri, seq, valid) VALUES (?, ?, 0, 1)", statusId, root.uri);
   return runningRefresh(db, statusId, now);
 });
+
+// A refresh's id as startRepliesRefresh draws it.
+const REFRESH_ID = /^[0-9a-f]{32}$/;
+
+// GET /api/v1_alpha/async_refreshes/:id (Api::V1Alpha::AsyncRefreshesController#show, AsyncRefresh.find), to any
+// signed-in user, as Mastodon's: the refresh with the id while it runs, or until REFRESH_FINISHED_MS after it
+// finished, else null. An id that is not 32 lowercase hex characters names none and is looked up nowhere.
+export const getAsyncRefresh = userReadOperation.atStoreTime("now")<{ id: string; now: number }, Refresh | null>(
+  (db, { id, now }) => (REFRESH_ID.test(id) ? refreshById(db, id, now) : null),
+);

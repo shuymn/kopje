@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_RUNNING_REFRESHES, REPLIES_COOLDOWN_MS, REPLIES_INITIAL_WAIT_MS } from "../src/domain/reply-walk-reads";
+import {
+  MAX_RUNNING_REFRESHES,
+  REFRESH_FINISHED_MS,
+  REFRESH_RUNNING_MS,
+  REPLIES_COOLDOWN_MS,
+  REPLIES_INITIAL_WAIT_MS,
+} from "../src/domain/reply-walk-reads";
+import { getAsyncRefresh } from "../src/domain/reply-walks";
 import { sha256Hex } from "../src/security/tokens";
-import { sql } from "./api-helpers";
+import { apiHarness, bearer, seedAccount, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD } from "./helpers";
@@ -21,6 +28,7 @@ import {
   setup,
   statusRow,
 } from "./inbox-status-helpers";
+import { appTokenWith, measuredStatements, scopedToken } from "./read-helpers";
 
 // A context read's refresh of a remote status's replies (Mastodon 4.7.5's ContextsController#show with
 // AsyncRefreshesConcern, FetchRepliesConcern and AsyncRefresh): which reads start one, the Mastodon-Async-Refresh
@@ -390,5 +398,117 @@ describe("a context read's refresh", () => {
     });
     expect(response.headers.get("access-control-expose-headers")).toBe("Link,Mastodon-Async-Refresh");
     expect(REFRESH.test(response.headers.get(HEADER) ?? "")).toBe(true);
+  });
+});
+
+describe("GET /api/v1_alpha/async_refreshes/:id", () => {
+  const poll = async (t: Setup, id: string, token: string = t.tokens.alice) => {
+    const response = await t.request(`/api/v1_alpha/async_refreshes/${encodeURIComponent(id)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return { status: response.status, body: await response.json<unknown>() };
+  };
+  const NOT_FOUND = { status: 404, body: { error: "Not Found" } };
+
+  it("answers a user's token under read and refuses any other, as Mastodon's (AUTH-2)", async () => {
+    const h = await apiHarness();
+    const alice = await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+    const route = `/api/v1_alpha/async_refreshes/${"0".repeat(32)}`;
+    const send = async (token?: string) => {
+      const response = await h.request(route, token === undefined ? {} : bearer(token));
+      return { status: response.status, body: await response.json<unknown>() };
+    };
+    expect(await send(await scopedToken(h, "read"))).toEqual(NOT_FOUND);
+    expect((await send()).status).toBe(401);
+    expect((await send("nope")).status).toBe(401);
+    expect(await send(await scopedToken(h, "write"))).toEqual({
+      status: 403,
+      body: { error: "This action is outside the authorized scopes" },
+    });
+    expect(await send(await appTokenWith(h, "read"))).toEqual({
+      status: 422,
+      body: { error: "This method requires an authenticated user" },
+    });
+    const token = await scopedToken(h, "read");
+    await sql(h.store, "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?", "2026-01-01", alice);
+    expect((await send(token)).status).toBe(403);
+  });
+
+  it("reports a refresh while it runs and until REFRESH_FINISHED_MS after it finished, to any user", async () => {
+    const { t, root } = await world();
+    const statusId = await delivered(t, root, mastodonNote(root));
+    const id = (await context(t, statusId)).match![1]!;
+    expect(await poll(t, id)).toEqual({
+      status: 200,
+      body: { async_refresh: { id, status: "running", result_count: 0 } },
+    });
+    expect(await poll(t, id, t.tokens.dave)).toEqual({
+      status: 200,
+      body: { async_refresh: { id, status: "running", result_count: 0 } },
+    });
+    await sql(
+      t.store,
+      "UPDATE reply_walks SET due_at = NULL, finished_at = ?1, result_count = 3 WHERE status_id = ?2",
+      NOW + 1000,
+      statusId,
+    );
+    at(NOW + 1000 + REFRESH_FINISHED_MS - 1);
+    expect(await poll(t, id)).toEqual({
+      status: 200,
+      body: { async_refresh: { id, status: "finished", result_count: 3 } },
+    });
+    at(NOW + 1000 + REFRESH_FINISHED_MS);
+    expect(await poll(t, id)).toEqual(NOT_FOUND);
+  });
+
+  it("answers 404 for a refresh started REFRESH_RUNNING_MS ago and never finished, and for an unknown id", async () => {
+    const { t, root } = await world();
+    const statusId = await delivered(t, root, mastodonNote(root));
+    const id = (await context(t, statusId)).match![1]!;
+    // An id no refresh holds, while one runs.
+    expect(await poll(t, "0".repeat(32))).toEqual(NOT_FOUND);
+    at(NOW + REFRESH_RUNNING_MS - 1);
+    expect((await poll(t, id)).status).toBe(200);
+    at(NOW + REFRESH_RUNNING_MS);
+    expect(await poll(t, id)).toEqual(NOT_FOUND);
+  });
+
+  it("answers 404 for an id that is not 32 lowercase hex characters, reading no walk", async () => {
+    const { t, root } = await world();
+    const statusId = await delivered(t, root, mastodonNote(root));
+    const id = (await context(t, statusId)).match![1]!;
+    const credential = { tokenHash: await sha256Hex(t.tokens.alice), scope: "read" as const, now: clock.now };
+    const read = (input: string) => measuredStatements(t, getAsyncRefresh, { credential, id: input, now: clock.now });
+    for (const malformed of [`${id}0`, id.slice(1), "A".repeat(32), "g".repeat(32), "abc", statusId]) {
+      expect(await poll(t, malformed), malformed).toEqual(NOT_FOUND);
+      const { output, statements } = await read(malformed);
+      expect(output, malformed).toEqual({ status: "ok", value: null });
+      expect(
+        statements.filter((statement) => statement.query.includes("reply_walks")),
+        malformed,
+      ).toEqual([]);
+    }
+    // A well-formed id is one key read.
+    const { output, statements } = await read(id);
+    expect(output).toEqual({ status: "ok", value: { id, status: "running", resultCount: 0 } });
+    expect(statements.filter((statement) => statement.query.includes("reply_walks"))).toHaveLength(1);
+  });
+
+  it("reads a refresh started again after the cooldown under the earlier id, running", async () => {
+    const { t, root } = await world();
+    const statusId = await delivered(t, root, mastodonNote(root));
+    const id = (await context(t, statusId)).match![1]!;
+    await sql(
+      t.store,
+      "UPDATE reply_walks SET due_at = NULL, finished_at = ?1, result_count = 2 WHERE status_id = ?2",
+      NOW,
+      statusId,
+    );
+    at(NOW + REPLIES_COOLDOWN_MS);
+    expect((await context(t, statusId)).match?.[1]).toBe(id);
+    expect(await poll(t, id)).toEqual({
+      status: 200,
+      body: { async_refresh: { id, status: "running", result_count: 0 } },
+    });
   });
 });

@@ -53,6 +53,20 @@ export function runningRefresh(db: Db, statusId: string, now: number): Refresh |
   return row !== undefined && running(row, now) ? shown(row, now) : null;
 }
 
+// GET /api/v1_alpha/async_refreshes/:id (AsyncRefresh.find): a refresh running, or finished less than
+// REFRESH_FINISHED_MS ago, by its id (one key of reply_walks_refresh); null for any other id.
+export function refreshById(db: Db, id: string, now: number): Refresh | null {
+  const row = db.first<RefreshRow>(
+    `SELECT ${REFRESH_COLUMNS} FROM reply_walks INDEXED BY reply_walks_refresh WHERE refresh_id = ? AND kind = 0`,
+    id,
+  );
+  if (row === undefined) {
+    return null;
+  }
+  const kept = running(row, now) || (row.finished_at !== null && row.finished_at > now - REFRESH_FINISHED_MS);
+  return kept ? shown(row, now) : null;
+}
+
 // A walk's root (FetchRepliesConcern#should_fetch_replies?, less its times): the remote, public or unlisted original
 // of an available author, not being withdrawn, with whether it was published at least REPLIES_INITIAL_WAIT_MS ago (a
 // stored published_at is never in the future; one that is not a stored time reads as not). Two key reads.

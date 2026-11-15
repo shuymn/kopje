@@ -115,8 +115,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
   silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
   relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
   notification's `event` are never sent. Accepted, 2026-11-15.
-- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
+- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation and the admin domain allows
+  list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
@@ -504,8 +504,8 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
-Replies collections (the context's refresh; Mastodon's `ContextsController#show`, `FetchAllRepliesWorker` and
-`AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
+Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshes/:id`; Mastodon's
+`ContextsController#show`, `FetchAllRepliesWorker` and `AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
 
 - A signed-in reader's context read of a remote public or unlisted status starts a refresh of its replies, as Mastodon
   4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
@@ -526,8 +526,9 @@ Replies collections (the context's refresh; Mastodon's `ContextsController#show`
   Accepted, 2026-11-16.
 - A refresh's id belongs to the status, as Mastodon's: a refresh started again while its record is kept (until an hour
   after it finished, or a day after a start it never finished) keeps the id, running again with `result_count` 0. Once
-  the record is gone, the next refresh has a new id, where Mastodon's repeats. `result_count` counts the statuses the
-  latest refresh created, whoever may see them, as Mastodon's. Accepted, 2026-11-16.
+  the record is gone, the next refresh has a new id, where Mastodon's repeats; in between, the id answers 404 in both.
+  `result_count` counts the statuses the latest refresh created, whoever may see them, as Mastodon's. Accepted,
+  2026-11-16.
 - A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
   is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does (#1607). Gap.
 

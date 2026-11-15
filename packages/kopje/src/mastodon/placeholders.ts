@@ -11,10 +11,10 @@ import {
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
 
-// Features Kopje has no data for (translation, e-mail confirmation, async refreshes), answered as Mastodon answers
-// when the feature has nothing to show or is not configured, because clients call them and a missing route can stop a
-// client (MD-3). Each is replaced when its feature arrives with its own tables. The writes act on records that never
-// exist, so they change nothing.
+// Features Kopje has no data for (translation, e-mail confirmation), answered as Mastodon answers when the feature has
+// nothing to show or is not configured, because clients call them and a missing route can stop a client (MD-3). Each is
+// replaced when its feature arrives with its own tables. The writes act on records that never exist, so they change
+// nothing.
 
 // Mastodon's not_found (ApplicationController#not_found, Api::BaseController#respond_with_error), as opposed to the
 // "Record not found" of an ActiveRecord::RecordNotFound.
@@ -42,10 +42,6 @@ const forUser =
 // TranslationService::NotConfiguredError with not_found. Kopje has no translation service; a status the viewer cannot
 // see is answered the same (Api::V1::Statuses::BaseController#set_status), so the status is not looked up.
 export const translateStatus = forUser(NOT_FOUND);
-
-// GET /api/v1_alpha/async_refreshes/:id: Api::V1Alpha::AsyncRefreshesController#show answers not_found when
-// AsyncRefresh.find finds no refresh. Kopje starts none.
-export const asyncRefresh = forUser(NOT_FOUND);
 
 // POST /api/v1/emails/confirmations: Api::V1::Emails::ConfirmationsController#require_user_owned_by_application!
 // refuses a token without a user, or one whose user did not sign up through the token's application. No Kopje user
