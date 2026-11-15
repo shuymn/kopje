@@ -93,7 +93,7 @@ function originOf(uri: string | null): string | null {
 
 // A document on `origin` (Mastodon's non_matching_uri_hosts? refusal): the object, 'transient' when fetching again may
 // succeed, or null (refused, gone, not an object, or on another origin). An embedded object is taken as it is.
-async function documentOn(
+export async function documentOn(
   value: unknown,
   origin: string | null,
   loader: DocumentLoader,
@@ -114,7 +114,7 @@ async function documentOn(
 
 // A collection page's items (Collection and CollectionPage: items; the ordered ones: orderedItems), or null for
 // anything else.
-function itemsOf(collection: Json): unknown[] | null {
+export function itemsOf(collection: Json): unknown[] | null {
   const items =
     collection.type === "Collection" || collection.type === "CollectionPage"
       ? collection.items

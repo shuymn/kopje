@@ -26,6 +26,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
+import { NODE_ATTEMPTS } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
@@ -12745,7 +12746,9 @@ describe("0099_reply_walks", () => {
     });
   });
 
-  it("holds a node's state, stage, validity, parent and fetch together, and its attempts to 0 to 2", async () => {
+  it("holds a node's state, stage, validity, parent and fetch together, and its attempts to 0 to NODE_ATTEMPTS", async () => {
+    // The CHECK's upper end is NODE_ATTEMPTS, the hand-outs of one document a walk charges (reply-walks.ts).
+    expect(NODE_ATTEMPTS).toBe(2);
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
@@ -12757,7 +12760,7 @@ describe("0099_reply_walks", () => {
         "state = 0, parent = NULL, valid = 1, stage = 1, fetch = " + F,
         "stage = 2",
         "state = 1",
-        "attempts = 2",
+        `attempts = ${NODE_ATTEMPTS}`,
         "attempts = 0, stage = 0, fetch = NULL, valid = 0",
       ]) {
         sql.exec(`UPDATE reply_walk_nodes SET ${columns}`);
@@ -12772,7 +12775,7 @@ describe("0099_reply_walks", () => {
         "stage = 1, fetch = " + F,
         "valid = 1, stage = 1",
         "fetch = " + F,
-        "attempts = 3",
+        `attempts = ${NODE_ATTEMPTS + 1}`,
         "attempts = -1",
         "state = 3",
         "seq = -1",

@@ -1,0 +1,269 @@
+import type { DocumentLoader } from "@fedify/fedify";
+
+import {
+  type AuthorNeed,
+  type ClaimedWalk,
+  type RepliesRead,
+  REPLY_WALK_LEASE_MS,
+  type ReplyStep,
+  type ReplyStepAnswer,
+  type ReplyStepInput,
+  type StepFetched,
+  WALK_STATUSES,
+} from "../domain/reply-walks";
+import { readConfig, userKek } from "../platform/config";
+import { errorFields } from "../platform/error-message";
+import { callStore, type StoreStub } from "../platform/store-client";
+import { StoreUnavailableError } from "../platform/store-errors";
+import { documentOn, itemsOf } from "./collections";
+import { afterRevisionRead, createRemoteLoaders, type FederationDeps, type FederationState } from "./federation";
+import type { InboxDeps } from "./inbox";
+import { REQUEST_DEADLINE_MS, requestBudget } from "./loader";
+import { fetchActor } from "./remote-actor";
+import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
+
+// The Worker's part of a walk of a remote replies collection (domain/reply-walks.ts; Mastodon 4.7.5's
+// FetchAllRepliesWorker and FetchReplyWorker), run only by the job rounds (jobs/queue.ts, from the Queue and cron). A
+// round claims up to REPLY_WALKS_PER_ROUND walks one after another and runs up to REPLY_STEPS_PER_WALK steps of each:
+// a step fetches the one document of the node the Store handed out (its status, its replies collection, or a page),
+// and the status's author when the Store asks for it, through the safe loader (NET-1) within a whole fetch budget of
+// its own (RES-6), signed by the instance actor, as Mastodon's representative signs these fetches (DATA-7), and never
+// from the signed-document cache (NET-4); then the Store applies it and hands out the next node, which the step has
+// already been charged for. Embedded replies and first pages are read in the step that holds them. Nothing of this
+// instance's origin is fetched, and a collection or page only on its node's origin.
+
+// Walks one round runs, and the steps of each.
+export const REPLY_WALKS_PER_ROUND = 2;
+export const REPLY_STEPS_PER_WALK = 8;
+// A walk's turn ends by its steps' deadlines (REQUEST_DEADLINE_MS each), so its claim outlasts it twice over.
+if (REPLY_WALK_LEASE_MS < 2 * REPLY_STEPS_PER_WALK * REQUEST_DEADLINE_MS) {
+  throw new Error("REPLY_WALK_LEASE_MS must be at least twice a walk's REPLY_STEPS_PER_WALK steps");
+}
+
+type Json = Record<string, unknown>;
+
+function isObject(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function originOf(uri: string): string | null {
+  try {
+    return new URL(uri).origin;
+  } catch {
+    return null;
+  }
+}
+
+// A page's items as ids (JsonLdHelper#value_or_id: an embedded object gives only its id), at most WALK_STATUSES raw
+// items read across the page and the pages it embeds as next, each an http(s) id within STATUS_URI_LIMIT. An embedded
+// next page is read now; a URI is the next step's, which the Store takes only on the node's origin.
+function readPages(page: Json): RepliesRead {
+  const items: string[] = [];
+  let read = 0;
+  let current: Json | null = page;
+  while (current !== null) {
+    for (const item of itemsOf(current) ?? []) {
+      if (read >= WALK_STATUSES) {
+        break;
+      }
+      read += 1;
+      const id = statusIdentity(idOf(item));
+      if (id !== null) {
+        items.push(id);
+      }
+    }
+    const next: unknown = current.next;
+    if (isObject(next)) {
+      current = next;
+      continue;
+    }
+    const uri = statusIdentity(next);
+    return { items, next: uri === null ? null : { stage: "page", uri } };
+  }
+  return { items, next: null };
+}
+
+// A collection (JsonLdHelper#collection_items): its first page, read now when embedded or fetched in the next step
+// when a URI; a collection without one is read as its own page.
+function readCollection(collection: Json): RepliesRead {
+  const first = collection.first;
+  if (first === undefined || first === null) {
+    return readPages(collection);
+  }
+  if (isObject(first)) {
+    return readPages(first);
+  }
+  const uri = statusIdentity(first);
+  return { items: [], next: uri === null ? null : { stage: "page", uri } };
+}
+
+// A status's replies: an embedded collection read now, a URI fetched in the next step; null for none.
+function repliesOf(value: unknown): RepliesRead | null {
+  if (isObject(value)) {
+    return readCollection(value);
+  }
+  const uri = statusIdentity(value);
+  return uri === null ? null : { items: [], next: { stage: "collection", uri } };
+}
+
+// One step's document: the node's status (parsed as inbound statuses are; its id is checked by the Store) and its
+// replies, or a collection or page document, fetched only on the node's origin (documentOn: Mastodon's
+// non_matching_uri_hosts? refusal). Nothing of this instance's origin is fetched.
+async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader): Promise<StepFetched> {
+  const nodeOrigin = originOf(step.uri);
+  if (nodeOrigin === null || nodeOrigin === origin) {
+    return { kind: "failed" };
+  }
+  if (step.stage === "status") {
+    let document: unknown;
+    const fetched = await fetchRemoteStatus(step.fetch, async (url, options) => {
+      const loaded = await loader(url, options);
+      document = loaded.document;
+      return loaded;
+    });
+    if (fetched.kind !== "ok") {
+      return { kind: fetched.kind === "transient" ? "transient" : "failed" };
+    }
+    const replies = isObject(document) ? repliesOf(document.replies) : null;
+    return { kind: "status", status: fetched.status, replies };
+  }
+  const read = await documentOn(step.fetch, nodeOrigin, loader);
+  if (read === "transient") {
+    return { kind: "transient" };
+  }
+  if (read === null) {
+    return { kind: "failed" };
+  }
+  return {
+    kind: "replies",
+    replies: step.stage === "collection" ? readCollection(read) : readPages(read),
+  };
+}
+
+// The author a step's completion asked for: its document, or 'gone'; a fetch that may pass is 'transient', which
+// fails the step unless the author is a stale stored one (its stored row is used: null).
+async function fetchAuthor(
+  need: AuthorNeed,
+  origin: string,
+  loaders: Parameters<typeof afterRevisionRead>[0],
+): Promise<NonNullable<ReplyStepInput["author"]> | "transient"> {
+  const document = await (async () => {
+    if (originOf(need.uri) === null || originOf(need.uri) === origin) {
+      return null;
+    }
+    const fetched = await fetchActor(need.uri, loaders.document, loaders.context);
+    return fetched.kind === "ok"
+      ? fetched.input
+      : fetched.kind === "gone"
+        ? "gone"
+        : fetched.kind === "transient"
+          ? "transient"
+          : null;
+  })();
+  if (document === "transient" && !need.refresh) {
+    return "transient";
+  }
+  const kept = document === "transient" ? null : document;
+  return { uri: need.uri, document: kept, ...(need.revision === undefined ? {} : { revision: need.revision }) };
+}
+
+// A Store refusal inside a loader (a signing key's RPC in maintenance) made the fetch fail: no outcome of the step's.
+// The round stops before submitting anything.
+function rethrowStoreError(state: FederationState): void {
+  if (state.storeError !== null) {
+    throw state.storeError;
+  }
+}
+
+type Turn = {
+  build: string;
+  origin: string;
+  store: () => StoreStub;
+  federation: FederationDeps;
+  state: FederationState;
+};
+
+// A round's turn of one claimed walk: up to REPLY_STEPS_PER_WALK steps, each with loaders and a fetch budget of its
+// own; a completion is told `more` only while another step of the turn will follow. A step the Store cannot apply (a
+// document it cannot store) ends the turn, its charge kept. The walk is released at the end. Returns whether a walk is
+// due.
+async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
+  const { build, origin, store, federation, state } = turn;
+  const deadline = Date.now() + REPLY_STEPS_PER_WALK * REQUEST_DEADLINE_MS;
+  let step: ReplyStep | null = claim.step;
+  for (let n = 0; step !== null; n++) {
+    const loaders = createRemoteLoaders(federation, state, null, requestBudget(Date.now()));
+    const fetched = await fetchStep(step, origin, loaders.document);
+    rethrowStoreError(state);
+    const input = {
+      origin,
+      statusId: claim.statusId,
+      token: claim.token,
+      step,
+      more: n + 1 < REPLY_STEPS_PER_WALK && Date.now() < deadline,
+      fetched,
+    };
+    let answer: ReplyStepAnswer;
+    try {
+      answer = await callStore(() => store().completeReplyStep(build, input));
+      if (answer.need !== null) {
+        // A revision read after the step's first fetch takes a fresh memo (afterRevisionRead).
+        const need = answer.need;
+        const author = await fetchAuthor(
+          need,
+          origin,
+          need.revision === undefined ? loaders : afterRevisionRead(loaders),
+        );
+        rethrowStoreError(state);
+        const retried =
+          author === "transient" ? { ...input, fetched: { kind: "transient" } as const } : { ...input, author };
+        answer = await callStore(() => store().completeReplyStep(build, retried));
+      }
+    } catch (error) {
+      if (error instanceof StoreUnavailableError) {
+        throw error;
+      }
+      console.error({ event: "kopje.replies.step.failed", ...errorFields(error) });
+      break;
+    }
+    step = answer.need === null ? answer.next : null;
+  }
+  return callStore(() => store().releaseReplyWalk(build, { statusId: claim.statusId, token: claim.token }));
+}
+
+// One job round (jobs/queue.ts): up to REPLY_WALKS_PER_ROUND walks, claimed one after another. Returns whether a walk
+// is due. A Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again
+// after its lease, its charges kept.
+export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
+  const build = deps.build(env);
+  const store = () => deps.store(env);
+  const domain = await callStore(() => store().instanceDomain(build));
+  if (domain === null) {
+    return false;
+  }
+  const config = readConfig(env);
+  const turn: Turn = {
+    build,
+    origin: `https://${domain}`,
+    store,
+    federation: {
+      domain,
+      build,
+      store,
+      kek: config.ok ? userKek(config.config) : "",
+      now: deps.now,
+      keygen: deps.keygen,
+      loader: deps.loader,
+    },
+    state: { resolvedUsername: null, source: null, storeError: null, ticket: null },
+  };
+  let pending = false;
+  for (let w = 0; w < REPLY_WALKS_PER_ROUND; w++) {
+    const claim = await callStore<ClaimedWalk | "more" | null>(() => store().claimReplyWalk(build));
+    if (claim === null) {
+      return false;
+    }
+    pending = claim === "more" ? true : await walkTurn(turn, claim);
+  }
+  return pending;
+}

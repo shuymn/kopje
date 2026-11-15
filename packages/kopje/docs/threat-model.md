@@ -286,7 +286,12 @@ against their own instance. TLS is assumed between all parties.
   json['id'] != response.uri`), so the rule above holds for it as for any fetch. _Enforced (main):_ `fetchAlternate`
   in `src/federation/resolve.ts`; `test/resolve-alternate.test.ts` ("takes an alternate on another origin whose id is
   the href, and none whose id is not", "makes no second hop: an alternate answering HTML that names its own alternate
-  resolves nothing").
+  resolves nothing"). A replies walk takes a collection's items as ids only, an embedded object never as a status, and
+  fetches a collection or page only on its status's origin (Mastodon's `non_matching_uri_hosts?`); it stores only
+  replies its stored rows link to its root, judging a stored status by its stored parent, never by a fetched one.
+  _Enforced (main):_ `src/domain/reply-walks.ts`, `src/federation/replies.ts`; `test/reply-walk-rounds.test.ts`
+  ("takes only the ids of embedded items", "fetches no collection or page of another origin", "stores no self-parent,
+  no two-node cycle", "judges a stored status by its stored row", "leaves a stored cycle invalid").
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
@@ -3330,6 +3335,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never dumped). `pruneActivity` in `src/domain/instance-activity.ts`; `test/instance-activity.test.ts` ("keeps today,
   the 184 days before it and tomorrow, and the cutoff moves with the day", "prunes by key at most 500 rows a table a run
   at the worst case, with stale statistics").
+  _Enforced (main)_ for replies walks (migration `0099_reply_walks`): `reply_walks` holds one row per root status, kept
+  while its walk runs (at most a day after its latest start) and an hour after it finishes, a claim deleting at most
+  `WALK_PRUNE_BATCH` (100) expired rows; `reply_walk_nodes` holds at most `WALK_STATUSES` (200) rows a walk, deleted
+  when it ends; neither is dumped. A completion stores at most two statuses (the reply and the self-quote it embeds)
+  and one author, each status with its notifications only within the real-time window and within the per-status
+  figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
+  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
+  WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -3352,20 +3365,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has eight error boundaries: six Store calls (the
+  next round (a live inbox request still sends its own). A round has nine error boundaries: six Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
-  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs and
-  quote verifications, each its own round of Store calls and fetches. The deliveries the Store calls recorded are rung
-  once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`), counts as having no
-  work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance, a retryable or
-  reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates (a CPU or
-  memory limit) fails
+  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs,
+  quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries the Store
+  calls recorded are rung once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`),
+  counts as having no work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance,
+  a retryable or reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates
+  (a CPU or memory limit) fails
   its own family only, or ends the round when it surfaces as a retryable or reset error; either way that family's
   first item is selected again. `jobsRound` and `handleQueue` in `src/jobs/queue.ts`; `test/job-families.test.ts`
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
   readonly", "runs one round and sends at most one jobs message for 3 jobs messages and 5 such replays", "keeps its own
   nudge, and its job runs in the next round", "runs the quote verifications when every Store family and the collection
-  syncs throw", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
+  syncs throw", "walks when every other family throws: nine boundaries, each logged once", "stops no other family when
+  it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
   stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
   (`runJobBatch` in `src/domain/inbox.ts`, `isolated` in `src/domain/job-attempts.ts`); a batch that throws a
@@ -3631,16 +3645,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Images calls and 3 R2 puts; remote media (`src/federation/remote-media.ts`) at most 120 requests and 240 DNS lookups
   (30 files of at most 4 hops: 24 in lane 0, 6 in lane 1), 240 policy reads and 96 own Store calls (6 a round and 3 a
   file), with 60 R2 puts, 100 heads, one list and three deletes; quote verification (`runScheduledJobs`) at most 400
-  requests (`QUOTE_ROUND` 10 × `QUOTE_STAGES` 5 × `REQUEST_MAX_FETCHES` 8) and collection sync at most 16
-  (`COLLECTION_SYNCS_PER_ROUND` 2 × 8): 616 requests, 400 DNS lookups, 400 policy reads and 125 own Store calls
-  (`test/remote-media-rounds.test.ts` ("makes the derived own Store calls and puts through a full round of files with
-  stills")). Contributors with no stated
-  bound, not counted:
-  the DNS lookups of
-  quote verification and collection sync (the loader reads the policy and checks DNS before it charges a fetch,
-  `src/federation/loader.ts`, so a load its budget refuses still looks up; at least two per request, 832 for their 416,
-  with no counter on the rest), their Store calls (claims, work, completion, signing keys, policy reads), the other
-  tasks' Store calls, the media sweep's R2 operations, Queue sends and the backup (which has no request counter). No
+  requests (`QUOTE_ROUND` 10 × `QUOTE_STAGES` 5 × `REQUEST_MAX_FETCHES` 8), collection sync at most 16
+  (`COLLECTION_SYNCS_PER_ROUND` 2 × 8) and replies walks at most 128 (`REPLY_WALKS_PER_ROUND` 2 ×
+  `REPLY_STEPS_PER_WALK` 8 × 8) with at most 37 own Store calls (the Replies walks paragraph below): 744 requests, 400
+  DNS lookups, 400 policy reads and 162 own Store calls (`test/remote-media-rounds.test.ts` ("makes the derived own
+  Store calls and puts through a full round of files with stills"), `test/reply-walk-rounds.test.ts` ("bounds a round:
+  two walks, eight steps each, within their fetch budgets, with the derived Store calls")). Contributors with no
+  stated bound, not counted: the DNS lookups of quote verification, collection sync and replies walks (the loader
+  reads the policy and checks DNS before it charges a fetch, `src/federation/loader.ts`, so a load its budget refuses
+  still looks up; at least two per request, 1,088 for their 544, with no counter on the rest), the Store calls of
+  quote verification and collection sync (claims, work, completion, signing keys, policy reads) and the walks'
+  loaders' signing key and policy reads, the other tasks' Store calls, the media sweep's R2 operations, Queue sends
+  and the backup (which has no request counter). No
   invocation-wide counter is kept, so nothing here bounds the invocation's total against Workers Paid's 10,000
   subrequests.
   Activity: _Enforced (main):_ after the response of an authenticated request (below 400) or of `GET /settings`, the
@@ -3958,7 +3974,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   at most 100 expired rows a call. A revoke records one signed `Delete` and at most 100 `Reject`s (the quoting author's
   answered requests). A Delete of a quoting status retires its one authorization before its batches (three rows); a
   purge's batch deletes a quote holding one within a third of the rows left. `test/quote-requests.test.ts`,
-  `test/cascade-guard.test.ts`. Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
+  `test/cascade-guard.test.ts`.
+  Replies walks: _Enforced (main):_ only job rounds walk a remote status's replies collection
+  (`src/domain/reply-walks.ts`, `src/federation/replies.ts`), one document a step. A round claims at most
+  `REPLY_WALKS_PER_ROUND` (2) walks one after another and runs at most `REPLY_STEPS_PER_WALK` (8) steps of each, each
+  step with a whole fetch budget of its own (8 fetches), so a round makes at most 16 steps, 128 requests and 37 own
+  Store calls (the domain read, a claim and a release a walk, at most two completions a step), besides the loaders'
+  signing key and policy reads. The Store hands a node to the Worker only by charging it in the same transaction: one of
+  its `NODE_ATTEMPTS` (2) for the document it reads, and at the collection and page stages one of the walk's
+  `WALK_PAGES` (100); the round's last completion hands out and charges nothing, and a charge stays whatever the step's
+  end (a lost lease, a round that died after its fetch). So a walk records at most `WALK_STATUSES` (200) nodes, the root
+  included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, with no counter
+  of claims. A claim drops at most `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a hand-out
+  ends at most 200 spent nodes before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is checked as
+  the module loads against twice a walk's turn. A step holds a status document and an actor of at most 1 MiB each and at
+  most 200 item ids (819,200 bytes at `STATUS_URI_LIMIT`). A reply a walk stores verifies its quote one hop short of a
+  root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk stores,
+  verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a walk
+  leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author documents
+  and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them (`test/reply-walks.test.ts`
+  ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents", "charges a page whose round
+  died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES documents a walk", "stores
+  replies listed before their parent once it is", "carries at most WALK_STATUSES items of a page of 1 MiB", "answers
+  'more' after REPLY_CLAIM_DROPS + 1 walks dropped", "ends every node a spent walk holds", "seeks every walk statement
+  by its key, after ANALYZE and growth"), `test/reply-walk-rounds.test.ts` ("crash after fetch", "hands out nothing at
+  the round's last step", "bounds a round: two walks, eight steps each", "applies nothing of a step whose lease another
+  round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an alternating reply and quote
+  chain", "ends discovery at a new author's synced pin", "repeated stale-author applications under a walk")).
+  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
@@ -4771,7 +4814,10 @@ heap).
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
   preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
   actor); `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
-  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
+  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches
+  (its statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
+  Mastodon's representative signs them (`JsonLdHelper#fetch_resource_without_id_validation`;
+  `src/federation/replies.ts`; `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it

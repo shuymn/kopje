@@ -77,6 +77,7 @@ import * as quotes from "./domain/quotes";
 import * as remoteCollections from "./domain/remote-collections";
 import * as remoteMedia from "./domain/remote-media";
 import { resolveSearch } from "./domain/remote-statuses";
+import * as replyWalks from "./domain/reply-walks";
 import * as reports from "./domain/reports";
 import * as scheduled from "./domain/scheduled-statuses";
 import { search } from "./domain/search";
@@ -174,6 +175,12 @@ export const STORE_RPC = {
   completeQuote: quoteVerification.completeQuote,
   chargeQuote: quotes.chargeQuote,
   claimQuotes: quotes.claimQuotes,
+
+  // Walks of remote replies collections (domain/reply-walks.ts): claimed, stepped and released by the Worker's job
+  // rounds (federation/replies.ts).
+  claimReplyWalk: replyWalks.claimReplyWalk,
+  completeReplyStep: replyWalks.completeReplyStep,
+  releaseReplyWalk: replyWalks.releaseReplyWalk,
 
   // Verification of local profile links (domain/field-links.ts): claimed, recorded and finished by the cron's round
   // (federation/field-links.ts).

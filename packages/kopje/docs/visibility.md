@@ -850,9 +850,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   request, is held and sent once the block is lifted, unless the domain job severed that follow first ("Held
   handshakes", below).
 - **Fetches (advisory).** The Worker asks the Store before each request, a redirect's included (`fetchRefused`), and
-  makes none to a covered host: search resolution, `Announce` originals, keys, owner documents, collection syncs and
-  quote rounds. A block that commits between that read and a request costs that request, whose result the writes
-  refuse.
+  makes none to a covered host: search resolution, `Announce` originals, keys, owner documents, collection syncs,
+  quote rounds and replies walks. A block that commits between that read and a request costs that request, whose
+  result the writes refuse.
 - **Writes.** `upsertRemoteActor` stores no account whose actor host or domain is covered and refreshes no covered
   row (not even its routing), so no account moves into a blocked domain; `storeRemoteStatus` refuses an unavailable
   author, so nothing of a covered account is stored.
