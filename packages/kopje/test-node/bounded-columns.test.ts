@@ -641,6 +641,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: "a number constant (remote_field_links.links bound, REMOTE_VERIFIED_SQL), naming no column",
   },
   "src/domain/activities.ts statuses.uri": { count: 2, reason: ACTIVITYPUB },
+  // A local status's card for its Note's Link (statusFacts): the presenter's projections (status-rows.ts
+  // CARD_COLUMN_MAP, the stored text within its bound, else NULL), judged again by shownCardUrl.
+  "src/domain/activities.ts interpolation CARD_COLUMN_MAP.url": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/activities.ts interpolation CARD_COLUMN_MAP.title": { count: 1, reason: ACTIVITYPUB },
   "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },

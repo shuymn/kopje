@@ -10,6 +10,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- A local post's ActivityPub Note lists its link card as a `Link` attachment once the card is fetched, as Mastodon 4.7
+  does. No Store migration and no `wrangler.jsonc` change.
 - Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the
   year's report with `POST /api/v1/annual_reports/:id/generate`, which makes it within the request and answers `{}`;
   `state`, the list, a year's report and `read` answer as Mastodon's, and `/api/v2/instance` has the campaign's year in

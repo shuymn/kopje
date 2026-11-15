@@ -30,7 +30,7 @@ import {
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { community, post, remoteAccount } from "./status-helpers";
+import { community, outbound, post, remoteAccount, remoteFollows } from "./status-helpers";
 
 // A link of 0 by 0 without an embed, as 0069_card_embeds defaults a row.
 const LINK_ROW = {
@@ -325,6 +325,156 @@ describe("enqueue and reset", () => {
       expect(stored).toBeDefined();
       expect(await card(stored)).toBeUndefined();
     }
+  });
+});
+
+// A local status's Note lists its shown card as a FEP-8967 Link after its media, as Mastodon 4.7's
+// ActivityPub::NoteSerializer#virtual_attachments does (activities.ts statusFacts, status-presenter.ts shownCardUrl).
+describe("a local status's Note", () => {
+  const AP = { headers: { accept: "application/activity+json" } };
+  type Note = { id: string; attachment: Record<string, unknown>[] };
+  const LINK = { type: "Link", href: "https://e.example/x" };
+  const attach = (h: Awaited<ReturnType<typeof community>>, id: string, title = "t") =>
+    sql(
+      h.store,
+      "UPDATE status_cards SET due_at = NULL, fetched_at = 1, title = ?2, attempts = 0 WHERE status_id = ?1",
+      id,
+      title,
+    );
+  const served = async (h: Awaited<ReturnType<typeof community>>, uri: unknown) => {
+    const response = await h.request(new URL(String(uri)).pathname, AP);
+    expect(response.status).toBe(200);
+    return (await response.json<Note>()).attachment;
+  };
+  // A remote follower of alice, so that her activities are recorded for delivery.
+  const followed = async (h: Awaited<ReturnType<typeof community>>) =>
+    remoteFollows(h.store, await remoteAccount(h.store, "far", "far.example"), h.users.alice!.id);
+  // The Note of each recorded activity of `type`, in order.
+  const recorded = async (h: Awaited<ReturnType<typeof community>>, type: string) =>
+    (await outbound(h.store))
+      .filter((o) => o.activity.type === type)
+      .map((o) => (o.activity.object as Note).attachment);
+  const media = async (h: Awaited<ReturnType<typeof community>>, accountId: string, n: number) =>
+    (
+      await sql<{ id: string }>(
+        h.store,
+        `INSERT INTO media_attachments (id, account_id, type, url, created_at)
+				VALUES (?1, ?2, 'image', 'https://kopje.test/files/m' || ?1, '2026-10-12T00:00:00.000Z') RETURNING id`,
+        `10000000000000${String(n).padStart(4, "0")}`,
+        accountId,
+      )
+    )[0]!.id;
+
+  it("lists the attached card as a Link after the media, at the object endpoint, the outbox and the featured collection", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: "see https://e.example/x" });
+    await attach(h, status.id);
+    expect(await served(h, status.uri)).toEqual([LINK]);
+    const outbox = await h.request("/ap/users/alice/outbox?cursor=first", AP);
+    const page = await outbox.json<{ orderedItems: { type: string; object: Note }[] }>();
+    expect(page.orderedItems.map((item) => [item.type, item.object.attachment])).toEqual([["Create", [LINK]]]);
+    expect((await h.request(`/api/v1/statuses/${status.id}/pin`, bearer(alice.token, { method: "POST" }))).status).toBe(
+      200,
+    );
+    const featured = await (
+      await h.request("/ap/users/alice/collections/featured", AP)
+    ).json<{ orderedItems: Note[] }>();
+    expect(featured.orderedItems.map((note) => note.attachment)).toEqual([[LINK]]);
+    // A status with media and an attached card (an imported row): the Documents, then the Link.
+    const withMedia = await post(h, alice, { status: "no link", media_ids: [await media(h, alice.id, 1)] });
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+			VALUES (?, 'https://e.example/x', 0, 0, 't', 1)`,
+      withMedia.id,
+    );
+    const attachments = await served(h, withMedia.uri);
+    expect(attachments.map((attachment) => attachment.type)).toEqual(["Document", "Link"]);
+    expect(attachments.at(-1)).toEqual(LINK);
+  });
+
+  it("lists none while the card is pending: the Create at posting, a text edit's Update and an imported row", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await followed(h);
+    const status = await post(h, alice, { status: "see https://e.example/x" });
+    expect(await recorded(h, "Create")).toEqual([[]]);
+    // A pending row with a title, as an import may hold it (0067's attached-title rule judges attached rows only).
+    await sql(h.store, "UPDATE status_cards SET title = 't' WHERE status_id = ?", status.id);
+    expect(await sql(h.store, "SELECT fetched_at, title FROM status_cards WHERE status_id = ?", status.id)).toEqual([
+      { fetched_at: null, title: "t" },
+    ]);
+    expect(await served(h, status.uri)).toEqual([]);
+    await attach(h, status.id);
+    expect(await served(h, status.uri)).toEqual([LINK]);
+    // A text edit resets the card in its own transaction: its Update lists none.
+    const edit = await h.request(
+      `/api/v1/statuses/${status.id}`,
+      bearer(alice.token, json({ status: "now see https://e.example/x" }, { method: "PUT" })),
+    );
+    expect(edit.status).toBe(200);
+    expect(await recorded(h, "Update")).toEqual([[]]);
+    expect(await served(h, status.uri)).toEqual([]);
+  });
+
+  it("lists none where the API shows none: a private status's imported card, a blank title", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await followed(h);
+    const hidden = await post(h, alice, { status: "see https://e.example/x", visibility: "private" });
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+			VALUES (?, 'https://e.example/x', 0, 0, 't', 1)`,
+      hidden.id,
+    );
+    // An edit that keeps the text records its Note in an Update and leaves the card attached.
+    const edit = await h.request(
+      `/api/v1/statuses/${hidden.id}`,
+      bearer(alice.token, json({ status: "see https://e.example/x", sensitive: true }, { method: "PUT" })),
+    );
+    expect(edit.status).toBe(200);
+    expect(await sql(h.store, "SELECT fetched_at FROM status_cards WHERE status_id = ?", hidden.id)).toEqual([
+      { fetched_at: 1 },
+    ]);
+    expect(await recorded(h, "Update")).toEqual([[]]);
+    const shown = await h.request(`/api/v1/statuses/${hidden.id}`, bearer(alice.token));
+    expect((await shown.json<{ card: unknown }>()).card).toBeNull();
+    // A title of spaces is blank; the same status with a title lists the Link.
+    const blank = await post(h, alice, { status: "see https://e.example/x" });
+    await attach(h, blank.id, "   ");
+    expect(await served(h, blank.uri)).toEqual([]);
+    await attach(h, blank.id);
+    expect(await served(h, blank.uri)).toEqual([LINK]);
+  });
+
+  it("lists it in the Update of an edit that keeps the text and in a quote-policy Update", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await followed(h);
+    const status = await post(h, alice, { status: "see https://e.example/x" });
+    await attach(h, status.id);
+    const edit = await h.request(
+      `/api/v1/statuses/${status.id}`,
+      bearer(
+        alice.token,
+        json({ status: "see https://e.example/x", media_ids: [await media(h, alice.id, 2)] }, { method: "PUT" }),
+      ),
+    );
+    expect(edit.status).toBe(200);
+    const edited = await recorded(h, "Update");
+    expect(edited.map((note) => note.map((attachment) => attachment.type))).toEqual([["Document", "Link"]]);
+    expect(edited[0]!.at(-1)).toEqual(LINK);
+    // The policy's Update supersedes the waiting one.
+    const policy = await h.request(
+      `/api/v1/statuses/${status.id}/interaction_policy`,
+      bearer(alice.token, json({ quote_approval_policy: "nobody" }, { method: "PUT" })),
+    );
+    expect(policy.status).toBe(200);
+    const updates = await recorded(h, "Update");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.at(-1)).toEqual(LINK);
   });
 });
 
