@@ -5,11 +5,14 @@ import { selectSql } from "../src/db/columns";
 import { Db } from "../src/db/sql";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
-import { CARD_CANDIDATES, localCardLink } from "../src/domain/link-cards";
+import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, localCardLink } from "../src/domain/link-cards";
+import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
+import { MAX_STATUS_MEDIA } from "../src/domain/remote-statuses";
 import { CARD_JSON_MAX, cardIframe, type CardRow, presentCard } from "../src/domain/status-presenter";
 import { CARD_COLUMN_MAP } from "../src/domain/status-rows";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { WEB_PAGE_URL_LIMIT } from "../src/federation/web-page";
+import { MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import {
   BLURHASH_BYTES,
@@ -79,6 +82,17 @@ function note(
 async function world() {
   const h = await community(["alice"]);
   const carol = await remoteAccount(h.store, "carol");
+  // An input as the Worker hands it over, received as `type` at `at`.
+  const send = (status: RemoteStatusInput, type: "Create" | "UpdateStatus" = "Create", at = NOW) =>
+    h.store.receiveActivity(BUILD, {
+      now: at,
+      origin: ORIGIN,
+      actorUri: CAROL,
+      actor: null,
+      actorRevision: null,
+      recipient: "alice",
+      activity: { type, id: `${status.uri}/activity/${at}`, object: status },
+    });
   const receive = async (
     object: Record<string, unknown> & { id: string },
     type: "Create" | "UpdateStatus" = "Create",
@@ -86,15 +100,7 @@ async function world() {
   ) => {
     const status = parseRemoteStatus(object);
     expect(status).not.toBeNull();
-    return h.store.receiveActivity(BUILD, {
-      now: at,
-      origin: ORIGIN,
-      actorUri: CAROL,
-      actor: null,
-      actorRevision: null,
-      recipient: "alice",
-      activity: { type, id: `${object.id}/activity/${at}`, object: status! },
-    });
+    return send(status!, type, at);
   };
   const statusOf = async (uri: string) =>
     (await sql<{ id: string }>(h.store, "SELECT id FROM statuses WHERE uri = ?", uri))[0]?.id;
@@ -112,7 +118,7 @@ async function world() {
         statusId ?? "",
       )
     )[0];
-  return { h, carol, receive, statusOf, card };
+  return { h, carol, send, receive, statusOf, card };
 }
 
 describe("link choice", () => {
@@ -209,6 +215,199 @@ Ich will mal unter <br> <a href="http://example.com/not-found" rel="noopener nor
     expect(await sql(h.store, "SELECT url, due_at FROM status_cards WHERE status_id = ?", status.id)).toEqual([
       { url: "https://e.example/x", due_at: NOW },
     ]);
+  });
+});
+
+// FEP-8967 Link attachments as Mastodon 4.7 reads them (Create#process_attachments, PreviewCardParser#url over
+// Addressable 2.9.2): federation/remote-status.ts cardLinkOf in the Worker, remoteCardLink in the Store.
+describe("FEP-8967 Link", () => {
+  const link = (href: unknown) => ({ type: "Link", href });
+  const png = (i: number) => ({ type: "Document", mediaType: "image/png", url: `https://remote.example/m/${i}.png` });
+  const ANCHOR = '<a href="https://a.example/">a</a>';
+
+  it("takes a Link over the content's anchors", async () => {
+    const { receive, statusOf, card } = await world();
+    const object = note(ANCHOR, { attachment: [link("https://b.example/")] });
+    await receive(object);
+    expect(await card(await statusOf(object.id))).toMatchObject({ url: "https://b.example/", due_at: NOW });
+    // One attachment, not in an array; the scheme in any case, normalized.
+    const upper = note(ANCHOR, { attachment: link("HTTPS://B.example/x") });
+    expect(parseRemoteStatus(upper)!.cardLink).toEqual({ href: "https://b.example/x" });
+    await receive(upper);
+    expect(await card(await statusOf(upper.id))).toMatchObject({ url: "https://b.example/x" });
+    // At CARD_RAW_HREF_LIMIT code units, taken.
+    const longest = `https://b.example/${"a".repeat(CARD_RAW_HREF_LIMIT - "https://b.example/".length)}`;
+    expect(longest).toHaveLength(CARD_RAW_HREF_LIMIT);
+    const atLimit = note(ANCHOR, { attachment: [link(longest)] });
+    await receive(atLimit);
+    expect(await card(await statusOf(atLimit.id))).toMatchObject({ url: longest });
+  });
+
+  it("gives no card for a Link the rules refuse, reading no anchor or later Link", async () => {
+    const { receive, statusOf, card } = await world();
+    const over = `https://b.example/${"a".repeat(CARD_RAW_HREF_LIMIT + 1 - "https://b.example/".length)}`;
+    expect(over).toHaveLength(CARD_RAW_HREF_LIMIT + 1);
+    // Within the raw bound, past CARD_URL_LIMIT once WHATWG percent-encodes it.
+    const expanding = `https://b.example/${"é".repeat(400)}`;
+    expect(new URL(expanding).href.length).toBeGreaterThan(CARD_URL_LIMIT);
+    const refused: [string, string | null][] = [
+      ["http://b.example/", "http://b.example/"],
+      [over, null],
+      ["https:///b", null],
+      [expanding, null],
+    ];
+    for (const [href, read] of refused) {
+      const object = note(ANCHOR, { attachment: [link(href), link("https://c.example/")] });
+      expect(parseRemoteStatus(object)!.cardLink, href).toEqual({ href: read });
+      await receive(object);
+      expect(await card(await statusOf(object.id)), href).toBeUndefined();
+    }
+    // Without one of them, the next Link is the card's.
+    const control = note(ANCHOR, { attachment: [link("https://c.example/")] });
+    await receive(control);
+    expect(await card(await statusOf(control.id))).toMatchObject({ url: "https://c.example/" });
+  });
+
+  it("skips a Link of another scheme, without an authority, with leading whitespace, unparsable or without a host", async () => {
+    const { receive, statusOf, card } = await world();
+    const skipped = [
+      "ftp:x",
+      "ftp://b.example/",
+      "https:b.example",
+      "https:/b.example",
+      "https://",
+      "https://?x",
+      "https://#x",
+      " https://b.example/",
+      "https://[",
+      // Skipped whatever their length: the length is judged after the scheme and the empty authority.
+      `ftp:${"x".repeat(CARD_RAW_HREF_LIMIT + 1 - "ftp:".length)}`,
+      `https://?${"x".repeat(CARD_RAW_HREF_LIMIT + 1 - "https://?".length)}`,
+    ];
+    for (const href of skipped) {
+      const object = note(ANCHOR, { attachment: [link(href), link("https://c.example/2")] });
+      expect(parseRemoteStatus(object)!.cardLink, href).toEqual({ href: "https://c.example/2" });
+      await receive(object);
+      expect(await card(await statusOf(object.id)), href).toMatchObject({ url: "https://c.example/2" });
+    }
+    const only = note(ANCHOR, { attachment: skipped.map(link) });
+    expect(parseRemoteStatus(only)!.cardLink).toBeNull();
+    await receive(only);
+    expect(await card(await statusOf(only.id))).toMatchObject({ url: "https://a.example/" });
+  });
+
+  it("takes a Link naming the instance itself, or a mentioned account's URL", async () => {
+    const { h, receive, statusOf, card } = await world();
+    const own = `${ORIGIN}/@alice/1`;
+    // As an anchor the instance's own URL is skipped; as a Link it is taken.
+    const anchored = note(`<a href="${own}">own</a> ${ANCHOR}`);
+    await receive(anchored);
+    expect(await card(await statusOf(anchored.id))).toMatchObject({ url: "https://a.example/" });
+    const linked = note(ANCHOR, { attachment: [link(own)] });
+    await receive(linked);
+    expect(await card(await statusOf(linked.id))).toMatchObject({ url: own });
+    // As an anchor a mentioned account's URL is skipped; as a Link it is taken.
+    const dan = await remoteAccount(h.store, "dan", "other.example");
+    await sql(h.store, "UPDATE accounts SET url = 'https://other.example/@Dan' WHERE id = ?", dan);
+    const tag = [{ type: "Mention", href: "https://other.example/users/dan", name: "@dan@other.example" }];
+    const mentioned = note(`<a href="https://other.example/@Dan">@Dan</a> ${ANCHOR}`, { tag });
+    await receive(mentioned);
+    expect(await card(await statusOf(mentioned.id))).toMatchObject({ url: "https://a.example/" });
+    const mentionLinked = note(ANCHOR, { tag, attachment: [link("https://other.example/@Dan")] });
+    await receive(mentionLinked);
+    expect(await card(await statusOf(mentionLinked.id))).toMatchObject({ url: "https://other.example/@Dan" });
+  });
+
+  it("finds the Link after the media and the anchors' cap, as many attachments as the JSON bounds admit", async () => {
+    const { receive, statusOf, card } = await world();
+    const tags = Array.from({ length: CARD_CANDIDATES + 1 }, (_, i) => `<a href="mailto:${i}@x.example">${i}</a>`);
+    // Five media, then one-key attachments up to the largest count withinJsonBounds admits, then the Link.
+    const rest = (fill: number) => [...Array.from({ length: fill }, () => ({ a: 1 })), link("https://b.example/last")];
+    const build = (fill: number) => note(tags.join(" "), { attachment: [...[0, 1, 2, 3, 4].map(png), ...rest(fill)] });
+    let fill = Math.floor(MAX_JSON_NODES / 2);
+    while (!withinJsonBounds(build(fill))) {
+      fill -= 1;
+    }
+    expect(withinJsonBounds(build(fill + 1))).toBe(false);
+    expect(fill).toBeGreaterThan(MAX_JSON_NODES / 2 - 100);
+    const object = build(fill);
+    const parsed = parseRemoteStatus(object)!;
+    expect(parsed.media).toHaveLength(MAX_STATUS_MEDIA);
+    expect(parsed.cardCandidates).toHaveLength(CARD_CANDIDATES);
+    expect(parsed.cardLink).toEqual({ href: "https://b.example/last" });
+    // The media make the status ineligible; without them, the Link is its card.
+    const withoutMedia = { ...object, id: `${object.id}/b`, attachment: rest(fill) };
+    expect(withinJsonBounds(withoutMedia)).toBe(true);
+    await receive(withoutMedia);
+    expect(await card(await statusOf(withoutMedia.id))).toMatchObject({ url: "https://b.example/last" });
+  }, 30_000);
+
+  it("resets on a significant Update only, to the Update's Link", async () => {
+    const { h, receive, statusOf, card } = await world();
+    const object = note("<p>one</p>", { attachment: [link("https://b.example/1")] });
+    await receive(object);
+    const id = (await statusOf(object.id))!;
+    expect(await card(id)).toMatchObject({ url: "https://b.example/1", due_at: NOW });
+    await sql(
+      h.store,
+      "UPDATE status_cards SET due_at = NULL, fetched_at = 1, title = 't', attempts = 0 WHERE status_id = ?",
+      id,
+    );
+    const linkOnly = await receive(
+      { ...object, updated: "2026-10-11T13:00:00Z", attachment: [link("https://b.example/2")] },
+      "UpdateStatus",
+      NOW + 1,
+    );
+    expect(linkOnly).toMatchObject({ applied: true, reason: "updated" });
+    expect(await card(id)).toMatchObject({ url: "https://b.example/1", due_at: null, fetched_at: 1 });
+    const edited = await receive(
+      { ...object, updated: "2026-10-11T14:00:00Z", content: "<p>two</p>", attachment: [link("https://c.example/")] },
+      "UpdateStatus",
+      NOW + 2,
+    );
+    expect(edited).toMatchObject({ applied: true, reason: "edited" });
+    expect(await card(id)).toMatchObject({ url: "https://c.example/", due_at: NOW + 2, fetched_at: null });
+  });
+
+  it("decides an input without cardLink by its anchors, and creates an unknown status from its Update with its Link", async () => {
+    const { send, receive, statusOf, card } = await world();
+    for (const cardLink of [undefined, null]) {
+      const object = note(ANCHOR, { attachment: [link("https://b.example/")] });
+      const { cardLink: _, ...earlier } = parseRemoteStatus(object)!;
+      await send(cardLink === undefined ? earlier : { ...earlier, cardLink });
+      expect(await card(await statusOf(object.id)), String(cardLink)).toMatchObject({ url: "https://a.example/" });
+    }
+    const unknown = note(ANCHOR, { updated: "2026-10-11T13:00:00Z", attachment: [link("https://b.example/u")] });
+    expect(await receive(unknown, "UpdateStatus")).toMatchObject({ applied: true });
+    expect(await card(await statusOf(unknown.id))).toMatchObject({ url: "https://b.example/u" });
+  });
+
+  it("takes a converted Article's and an embedded quote's Link, and none for a status with a shown attachment", async () => {
+    const { receive, statusOf, card } = await world();
+    const article = {
+      ...note(""),
+      type: "Article",
+      name: "Title",
+      url: "https://remote.example/articles/1",
+      attachment: [link("https://b.example/article")],
+    };
+    await receive(article);
+    expect(await card(await statusOf(article.id))).toMatchObject({ url: "https://b.example/article" });
+    const quoted = note("<p>quoted</p>", { attachment: [link("https://b.example/quoted")] });
+    const quoting = note("<p>quoting</p>", { quote: quoted });
+    expect(parseRemoteStatus(quoting)!.quote?.embedded?.cardLink).toEqual({ href: "https://b.example/quoted" });
+    await receive(quoting);
+    const quotedId = await statusOf(quoted.id);
+    expect(quotedId).toBeDefined();
+    expect(await card(quotedId)).toMatchObject({ url: "https://b.example/quoted" });
+    expect(await card(await statusOf(quoting.id))).toBeUndefined();
+    const withMedia = note(ANCHOR, { attachment: [png(0), link("https://b.example/media")] });
+    const parsed = parseRemoteStatus(withMedia)!;
+    expect(parsed.media).toHaveLength(1);
+    expect(parsed.cardLink).toEqual({ href: "https://b.example/media" });
+    await receive(withMedia);
+    expect(await statusOf(withMedia.id)).toBeDefined();
+    expect(await card(await statusOf(withMedia.id))).toBeUndefined();
   });
 });
 

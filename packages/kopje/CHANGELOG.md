@@ -61,6 +61,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
   is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   WebFinger). No Store migration and no `wrangler.jsonc` change.
+- A remote post's FEP-8967 `Link` attachment is the link its card is fetched from, as Mastodon 4.7 reads it; the
+  content's links are used only without one. An attachment with an empty `href` is now read as media. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
