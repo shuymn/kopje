@@ -343,8 +343,9 @@ against their own instance. TLS is assumed between all parties.
   author's own (its `attributedTo` the author, its id on the author's origin), with one hop less of work. `revokeStamp`
   and `verifyQuote` in `src/domain/quotes.ts`; `test/quotes.test.ts` ("is not taken from anyone but the quoted author",
   "leaves a quote pending when its stamp is …", "wins over a quote that arrives after it"). For locally authored quotes
-  of remote statuses, `Accept`/`Reject` must come from the quoted author and name our request by id or inline it with
-  our quoting status as instrument and their status as object. An `Accept`'s `result` must share their origin;
+  of remote statuses, `Accept`/`Reject` must come from the quoted author and name our request by its id, as a string
+  or as an inlined `QuoteRequest`'s id (Mastodon 4.7's `quote_request_from_object`); a `QuoteRequest` inlined under
+  another id changes nothing, whatever its instrument and object. An `Accept`'s `result` must share their origin;
   `test/quote-authoring.test.ts` ("7: Accept and Reject are each one compare-and-set"). _Enforced (main)_ for `Flag`
   (a row of the same table): the actor is the reporter, available and not covered by a domain block (the inbox gate),
   and a domain block with `reject_reports` ruling its stored domain (not its actor host) refuses it; the reported
@@ -1455,15 +1456,46 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Authorization (AUTH)
 
 - **AUTH-1: authorization happens inside the operation.** Token validity, expiry, revocation, scope and account
-  suspension are checked in the same Store transaction as the operation they authorize. _Enforced (main):_
-  `userReadOperation` and `userWriteOperation` in `src/domain/auth.ts`; `test/store-auth.test.ts`, `test/oauth.test.ts`
-  ("refuses a token that survived the suspension").
-- **AUTH-2: every API route declares its access.** Each Mastodon API route is `public`, `token` (any valid token, app
-  tokens included) or a required user scope, or any one of several (`GET /api/v1/accounts/verify_credentials`:
-  `profile` or `read:accounts`); one helper decides scope coverage (parents cover children, `follow` expands to its
-  split scopes, nothing else is implied: `read` does not cover `profile`, which covers nothing else). _Enforced (main):_
-  `src/mastodon/routes.ts`, `src/security/scopes.ts`; `test/scopes.test.ts`, `test/vectors.test.ts` ("Mastodon's scope
-  hierarchy"), `test/oauth.test.ts` ("scopes on routes"). A route may also be `optional`: no token reads as anonymous,
+  suspension are checked in the same Store transaction as the operation they authorize, in Mastodon's order
+  (`Api::BaseController#require_not_suspended!` runs before Doorkeeper's checks, and Doorkeeper 5.9.9 finds expired
+  and revoked rows by value): a token row the Store holds whose owner is suspended answers 403 `Your login is currently
+  disabled` on every API route that reads a token (all but the five `public` instance reads of AUTH-2), expired or of an
+  earlier epoch alike, so its holder learns of the suspension, as on
+  Mastodon; then an expired row or one of an earlier epoch is invalid (401); then the scope. A row the Store no longer
+  holds is no credential: a revoked token is deleted at once, an expired one by the cron's sweep (`sweepOAuth`), and a
+  suspension's tokens job deletes the account's tokens, so the 403 lasts until then, where Mastodon answers it for the
+  whole suspension ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need
+  none"). The streaming API answers every refusal 401, as Mastodon's streaming server answers a suspended user's
+  token; OAuth introspection, `token/info`, the setup pages and web sessions treat a suspended owner's token as any
+  invalid one. _Enforced (main):_ `authorize`, `userReadOperation` and `userWriteOperation` in `src/domain/auth.ts`;
+  `test/store-auth.test.ts`, `test/oauth.test.ts` ("refuses a token that survived the suspension"),
+  `test/suspended-tokens.test.ts`.
+- **AUTH-2: every API route declares its access.** Each Mastodon API route is `public`, `anonymous`, `token` (any valid
+  token, app tokens included) or a required user scope, or any one of several
+  (`GET /api/v1/accounts/verify_credentials`: `profile` or `read:accounts`); one helper decides scope coverage (parents
+  cover children, `follow` expands to its split scopes, nothing else is implied: `read` does not cover `profile`, which
+  covers nothing else). _Enforced (main):_ `src/mastodon/routes.ts`, `src/security/scopes.ts`; `test/scopes.test.ts`,
+  `test/vectors.test.ts` ("Mastodon's scope hierarchy"), `test/oauth.test.ts` ("scopes on routes"). An `anonymous` route
+  (app registration, custom emoji, oEmbed, the public account reads, peer search and the instance's activity, languages,
+  translation languages, privacy policy and terms of service; fourteen routes) needs no token, and a token sent is read
+  only for its owner's suspension, as Mastodon's `Api::BaseController#require_not_suspended!` reads it: every answer to
+  a request whose token's owner is suspended (AUTH-1's order) is 403 `Your login is currently disabled`, an early 4xx
+  and an error's answer included, with none of the answer's headers (no `Cache-Control`), so the token holder learns of
+  the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner, an app token)
+  changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a request can make:
+  app registration judges it in the transaction that inserts the app (`registerApp`), and
+  `GET /api/v1/instance/activity` in the read that runs before either path that keeps the day's answer
+  (`instanceActivity`). The hot reads (custom emoji and the public account reads) judge it in their one operation
+  (`refuseSuspended` in `src/domain/auth.ts`); every other answer is judged after the handler by the access middleware
+  with one Store call (`checkNotSuspended`, `src/mastodon/access.ts`), and each of those routes only reads, so a handler
+  that adds a write to one judges in its operation. `public` (no token read) is left to the OAuth endpoints and
+  `/.well-known`, outside Mastodon's API controllers, whose handlers read their own credentials, and to five reads where
+  Mastodon reads no user: `GET /api/v1/instance`, `/api/v2/instance`, `/api/v1/instance/rules`, `/api/v1/instance/peers`
+  and `/api/v1/instance/extended_description`, whose controllers override `current_user` to read one only in limited
+  federation mode, which Kopje does not have, so a suspended owner's token gets there what no token gets, as on
+  Mastodon. _Enforced (main):_ `test/suspended-tokens.test.ts`, `test/mastodon-access.test.ts` ("reads a sent token on
+  every /api route but the five instance reads"). A route
+  may also be `optional`: no token reads as anonymous,
   and a token sent must be valid; such a route may declare no scope (`GET /api/v1/tags/:id`: any valid token, app tokens
   read as anonymous), and a `token` route may still require a user (`GET /api/v1/announcements`: any user token,
   whatever its scopes; app tokens 422: `tokenUserReadOperation` in `src/domain/auth.ts`, which
@@ -1472,11 +1504,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Mastodon with the feature off (MD-3), are optional routes on which a token that is not valid (unknown, revoked, past
   its expiry, or of an earlier epoch with its owner available) reads as anonymous, as an app token does. Mastodon's
   `Api::BaseController` reads the owner of an expired or revoked token there too; Kopje does not
-  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held,
-  unexpired token of an earlier epoch whose owner is suspended answers 403, since suspension is checked before the
-  epoch. Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
-  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held, unexpired
-  token of a suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
+  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held
+  token whose owner is suspended answers 403, expired or of an earlier epoch alike, since suspension is checked first
+  (AUTH-1). Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
+  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held token of a
+  suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
   show nothing of the token's owner (a successful authenticated donation request keeps the ordinary activity
   recording of the access middleware, RES-6). _Enforced (main):_ `donationCampaigns` and `emailSubscription` in
   `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`

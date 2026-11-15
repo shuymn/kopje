@@ -68,6 +68,29 @@ describe("the upgrade", () => {
     }
   });
 
+  // AUTH-1: the REST API answers a suspended owner's held token 403; streaming answers it 401, as Mastodon's
+  // streaming server (streaming/index.js) answers "Invalid access token".
+  it("answers 401 to a suspended owner's held token, expired or not", async () => {
+    const h = await community(["alice"]);
+    const expired = (await login(h, { app: h.app, email: "alice@example.com", scope: "read write follow" })).token;
+    await sql(
+      h.store,
+      "UPDATE oauth_tokens SET expires_at = ? WHERE token_hash = ?",
+      new Date(NOW - 1000).toISOString(),
+      await sha256Hex(expired),
+    );
+    await h.store.suspendAccount(BUILD, { accountId: h.users.alice.id, now: NOW });
+    expect(await sql(h.store, "SELECT count(*) AS held FROM oauth_tokens WHERE kind = 'access'")).toEqual([
+      { held: 2 },
+    ]);
+    const rest = await h.request("/api/v1/timelines/home", { headers: { authorization: `Bearer ${expired}` } });
+    expect(rest.status).toBe(403);
+    for (const token of [h.users.alice.token, expired]) {
+      const refused = await upgrade(h, token);
+      expect([refused.status, refused.headers.get("x-error-message")]).toEqual([401, "Invalid access token"]);
+    }
+  });
+
   it("serves the health check, and answers 404 to a request that is not an upgrade (no SSE)", async () => {
     const h = await community(["alice"]);
     const health = await h.request("/api/v1/streaming/health");

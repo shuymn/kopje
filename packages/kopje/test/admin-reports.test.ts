@@ -27,7 +27,7 @@ import { type Answer, answer, hugeStatus, ORIGIN } from "./budget-helpers";
 import { migratedStore } from "./helpers";
 import { ACCESS, ADMIN_EMAIL } from "./ops-helpers";
 import { observedSql } from "./read-helpers";
-import { community, remoteAccount, remoteFollows, seedStatus, type User } from "./status-helpers";
+import { community, interactWith, remoteAccount, remoteFollows, seedStatus, type User } from "./status-helpers";
 
 // The Mastodon admin API's reports (R37, VIS-29; Api::V1::Admin::ReportsController, ReportFilter,
 // REST::Admin::ReportSerializer and REST::Admin::AccountSerializer of Mastodon 4.5.11), the moderation log, and the
@@ -302,6 +302,25 @@ describe("GET /api/v1/admin/reports/:id", () => {
       email: OWNER,
       role: { id: "3", name: "Owner", permissions: "1080", color: "", highlighted: true },
     });
+  });
+
+  // Api::V1::Admin::ReportsController renders REST::Admin::ReportSerializer without relationships, so a reported boost
+  // answers its original's favourited, reblogged and bookmarked for the admin (Account::Interactions reads proper).
+  it("shows a reported boost with its original's flags for the admin, in the list, the report and an action", async () => {
+    const { h, owner, alice, bob, statuses, admin } = await world();
+    const original = statuses[0]!;
+    await interactWith(h, owner, original);
+    const boosted = await h.request(`/api/v1/statuses/${original}/reblog`, bearer(bob.token, json({})));
+    expect(boosted.status).toBe(200);
+    const boost = (await boosted.json<{ id: string }>()).id;
+    const id = await fileReport(h, alice, { account_id: bob.id, status_ids: [boost] });
+    const shown = { favourited: true, reblogged: true, bookmarked: true };
+    const expected = [{ id: boost, ...shown, reblog: { id: original, ...shown } }];
+    const list = (await call(h, "/api/v1/admin/reports", admin)).body as AdminReportBody[];
+    expect(list.find((report) => report.id === id)?.statuses).toMatchObject(expected);
+    expect((await reportOf(h, id, admin)).statuses).toMatchObject(expected);
+    const resolved = await call(h, `/api/v1/admin/reports/${id}/resolve`, admin, { method: "POST" });
+    expect((resolved.body as AdminReportBody).statuses).toMatchObject(expected);
   });
 
   it("shows a reported status only while its reporter may still see it (R37), with the admin as the viewer", async () => {

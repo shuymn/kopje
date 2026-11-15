@@ -813,7 +813,10 @@ export const getNotificationGroup = userReadOperation<
   // One group, a unit (RES-3, "Maxima of presented units").
   const found = { key: groupOf(first, GROUPABLE_TYPES), first };
   const status = first.status_id === null ? [] : [first.status_id];
-  const statusOf = firstUses(status, statusStream(db, presentation(db, status, { ...present, viewer }), status));
+  // Api::V2::NotificationsController#show renders without relationships (index passes them), so a boost the group
+  // names shows its original's flags (PresentOptions.proper).
+  const shared = presentation(db, status, { ...present, viewer, proper: true });
+  const statusOf = firstUses(status, statusStream(db, shared, status));
   const options = { expandAccounts: "full", present, fallback: fallbackSet(fallbackTypes) } as const;
   const unlimited = { candidates: Infinity, visits: Infinity };
   const admitted = admitGroups(db, viewer, [found], null, statusOf, options, Infinity, noWork(), unlimited);

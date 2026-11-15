@@ -9,6 +9,7 @@ import {
   utcDay,
 } from "../platform/stored-bounds";
 import { isDistributable, type Visibility } from "./audience";
+import { authorize, type Credential, type Judged, refuseSuspended, type Suspended } from "./auth";
 import { readOperation, sessionOperation, writeOperation } from "./operation";
 
 // GET /api/v1/instance/activity (Mastodon's Api::V1::Instances::ActivityController and ActivityTracker), from the
@@ -17,7 +18,7 @@ import { readOperation, sessionOperation, writeOperation } from "./operation";
 //     (Status#update_statistics); a deletion takes nothing back.
 //   - registrations: each local account the setup creates (User#prepare_new_user!); imports and restores count none.
 //   - logins: the local accounts with a login on a UTC day: the setup's account (prepare_new_user! records its login
-//     too) and an account's authenticated request (auth.ts noteActivity, at most one Store call per token and day).
+//     too) and an account's authenticated request (noteActivity, at most one Store call per token and day).
 // Days are UTC dates YYYY-MM-DD. Mastodon 4.5.21's sum reads week_edge_days inclusively (activity_controller.rb:34-36,
 // activity_tracker.rb:41-42), so week i holds the 7 days D-7i to D-7i+6; week 0 holds today only (activityWeeks).
 
@@ -165,16 +166,24 @@ export function forgetActivityAnswer(db: Db): void {
   db.run("DELETE FROM kopje_state WHERE name = ?", ANSWER);
 }
 
-type ActivityLookup = { status: "disabled" } | { status: "kept"; body: string } | { status: "stale" };
+type ActivityLookup = Suspended | { status: "disabled" } | { status: "kept"; body: string } | { status: "stale" };
 
-// The first step of a request (answerInstanceActivity): off answers 404 without reading the answer or the counts.
-export const instanceActivity = readOperation<{ now: number }, ActivityLookup>((db, { now }) => {
-  if (!enabled(db)) {
-    return { status: "disabled" };
-  }
-  const body = keptAnswer(db, answerKey(db, now));
-  return body === null ? { status: "stale" } : { status: "kept", body };
-});
+// The first step of a request (answerInstanceActivity): a suspended owner of the token sent is refused first (AUTH-2's
+// anonymous routes), before the setting is read and before either keep path can write; off answers 404 without reading
+// the answer or the counts.
+export const instanceActivity = readOperation<{ now: number; credential: Credential | null }, ActivityLookup>(
+  (db, { now, credential }) => {
+    const refused = refuseSuspended(db, credential);
+    if (refused !== null) {
+      return refused;
+    }
+    if (!enabled(db)) {
+      return { status: "disabled" };
+    }
+    const body = keptAnswer(db, answerKey(db, now));
+    return body === null ? { status: "stale" } : { status: "kept", body };
+  },
+);
 
 // The answer made and kept for the day: the first request of a UTC day, or after the setting or the publication
 // state changed. A session operation, so it is kept while the Store is readonly; a request that finds an answer kept
@@ -211,29 +220,56 @@ export const madeInstanceActivity = readOperation<{ now: number }, string | null
 // The Store's operations this answer runs (store.ts passes its kernel).
 type ActivityKernel = Pick<StoreKernel, "execute" | "executeProbing">;
 
-// GET /api/v1/instance/activity in the Store: the JSON body, or null when the API is off. The day's kept answer is
-// read first; otherwise the answer is made and kept, or, while the Store refuses keeping it (a dump's freeze, probed
-// with the read or met by the keep when a dump began between them), made without keeping it. Other refusals stand.
+// GET /api/v1/instance/activity in the Store: the JSON body, or null when the API is off; a suspended owner of the
+// token sent is refused by the first read, so nothing is kept for it. The day's kept answer is read first; otherwise
+// the answer is made and kept, or, while the Store refuses keeping it (a dump's freeze, probed with the read or met by
+// the keep when a dump began between them), made without keeping it. Other refusals stand.
 export async function answerInstanceActivity(
   kernel: ActivityKernel,
   callerBuild: string,
-  input: { now: number },
-): Promise<string | null> {
+  input: { now: number; credential: Credential | null },
+): Promise<Judged<string | null>> {
   const { output, refused } = await kernel.executeProbing(callerBuild, instanceActivity, input, "session");
-  if (output.status !== "stale") {
-    return output.status === "kept" ? output.body : null;
+  if (output.status === "suspended") {
+    return output;
   }
+  if (output.status !== "stale") {
+    return { status: "ok", value: output.status === "kept" ? output.body : null };
+  }
+  const day = { now: input.now };
   if (refused === null) {
     try {
-      return await kernel.execute(callerBuild, keepInstanceActivity, input);
+      return { status: "ok", value: await kernel.execute(callerBuild, keepInstanceActivity, day) };
     } catch (error) {
       if (toStoreUnavailable(error)?.reason !== "dump-in-progress") {
         throw error;
       }
     }
   }
-  return kernel.execute(callerBuild, madeInstanceActivity, input);
+  return { status: "ok", value: await kernel.execute(callerBuild, madeInstanceActivity, day) };
 }
+
+// RES-6: records the UTC day of a user's authenticated API or web request (local_accounts.active_on, migration
+// 0059_contact_and_activity), as Mastodon's UserTrackingConcern records a sign-in, for the instance's
+// usage.users.active_month (instance.ts). A session operation, admitted while the Store is readonly. The day only
+// moves forward and an equal or later stamp writes nothing, so an account's row is written at most once per UTC day
+// whichever token or isolate asks, and a delayed request of an earlier day never moves it back. An invalid, expired
+// or stale token, a suspended account and an app token write nothing. Both seeks are by key (the token, then the
+// account). The same request records the day's login for GET /api/v1/instance/activity (recordLogin, one key insert,
+// nothing when the day is recorded), whether or not active_on moved. No stream turn follows it (StreamHub#written
+// skips it).
+export const noteActivity = sessionOperation<{ tokenHash: string; now: number }, void>((db, { tokenHash, now }) => {
+  const auth = authorize(db, { tokenHash, scope: null, now });
+  if (auth.status !== "ok" || auth.viewer.accountId === null) {
+    return;
+  }
+  db.run(
+    "UPDATE local_accounts SET active_on = ?1 WHERE account_id = ?2 AND (active_on IS NULL OR active_on < ?1)",
+    new Date(now).toISOString().slice(0, 10),
+    auth.viewer.accountId,
+  );
+  recordLogin(db, auth.viewer.accountId, now);
+});
 
 // ---- Retention (the 5-minute cron, jobs/scheduled.ts)
 

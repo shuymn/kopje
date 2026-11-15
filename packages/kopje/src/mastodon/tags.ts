@@ -5,6 +5,7 @@ import {
   type ApiHandler,
   authorized,
   credential,
+  judged,
   optionalTokenCredential,
   present,
   storeCall,
@@ -108,6 +109,10 @@ export const deleteFeaturedTag: ApiHandler = async (c, deps) => {
 // GET /api/v1/accounts/:id/featured_tags: public; 404 for an unknown account.
 export const accountFeaturedTags: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
-  const tags = await storeCall(c, deps, (s, b) => s.accountFeaturedTags(b, { id, present: present(c) }));
+  const credential = optionalTokenCredential(c, deps);
+  const tags = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.accountFeaturedTags(b, { id, present: present(c), credential })),
+  ).value;
   return tags === null ? recordNotFound() : c.json(tags);
 };
