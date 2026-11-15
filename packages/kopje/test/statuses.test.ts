@@ -122,6 +122,14 @@ describe("POST /api/v1/statuses", () => {
     expect(status.tags).toEqual([{ name: "kopje", url: "https://kopje.test/tags/kopje" }]);
   });
 
+  it("starts a hashtag at the text's start or after whitespace, written # or ＃ (Mastodon 4.7.5)", async () => {
+    const h = await community(["alice"]);
+    const status = await post(h, h.users.alice, { status: "#start (#paren) text.#dot x\u00A0#spaced ＃wide" });
+    expect(status.tags.map((tag) => tag.name)).toEqual(["spaced", "start", "wide"]);
+    expect(status.content).toContain("(#paren) text.#dot");
+    expect(status.content).toContain('rel="tag">#<span>wide</span></a>');
+  });
+
   it("reads a mention of the instance's own host as a local mention", async () => {
     const h = await community(["alice", "bob"]);
     const status = await post(h, h.users.alice, { status: "@bob@kopje.test @BOB" });

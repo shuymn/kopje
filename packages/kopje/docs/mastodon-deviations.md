@@ -612,6 +612,10 @@ Hashtags (the `Tag` entity):
   follow, a featured hashtag, a timeline, a page and a search, and a received post is filed under it whatever its
   `Hashtag`'s `href` names. Migration 0087 renamed and merged the names stored before it without sending an activity, so
   a Mastodon follower of an account whose two featured hashtags it merged may keep both.
+- A post's hashtags are found as Mastodon 4.7.5's `Tag::HASHTAG_RE` finds them, over the whole text: `#` or `＃` at
+  the text's start or after whitespace (`src/domain/status-text.ts`). Mastodon then drops an `http` or `https` ending
+  from a hashtag followed by `://` (`Extractor#extract_hashtags_with_indices`), which Kopje keeps:
+  `#taghttps://example.com` is the hashtag `taghttps`, where Mastodon's is `tag`.
 - `history` is counted again on every read from the stored statuses: public originals, by the UTC day of their
   publication (Mastodon counts a status on the day it receives it), with `accounts` exact (Mastodon's is a HyperLogLog
   estimate). A deleted status and the statuses of an unavailable author leave the counts (Mastodon never decrements
