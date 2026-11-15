@@ -162,6 +162,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
   `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
   Mastodon's streaming does.
+- A link card's title and description are read from a page's language-tagged JSON-LD values, as Mastodon 4.6 does
+  (`mastodon#39190`). No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
