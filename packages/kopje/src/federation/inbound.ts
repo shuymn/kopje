@@ -22,7 +22,7 @@ import {
   type ReceiveAnswer,
   type StoredRemoteKey,
 } from "../domain/inbox";
-import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
+import type { ActorState, RemoteActorInput } from "../domain/remote-actors";
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -52,6 +52,7 @@ import {
 } from "./loader";
 import { fetchActor, loadActor, ownKeys } from "./remote-actor";
 import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STATUS_TYPES } from "./remote-status";
+import { confirmedInput } from "./resolve";
 
 // Inbound activities: verification, identity, and the shape of each activity, in the Worker; the effects in
 // one Store operation (domain/inbox.ts). The same path serves a live POST and the replay of a spooled one.
@@ -121,15 +122,16 @@ export type Parsed =
 
 // What processInbox read before the request reaches receiveInbound (federation/inbox.ts): the request's headers (read
 // only), the parsed body, whether the Store's instance domain blocks cover its actor, the stored key for the
-// signature's key id, the preparation of the request's first fetch, and the revisions of the actor and of a Move's
-// target, read before their documents are fetched (the expectations their stores compare).
+// signature's key id, the preparation of the request's first fetch, and the states of the actor and of a Move's
+// target, read before their documents are fetched (the revisions their stores compare, and the handles their claims
+// are compared with).
 export type InboundGate = {
   headers: Headers;
   parsed: Parsed;
   domainBlocked: boolean;
   key: InboxGate["key"];
   prefetch: InboxGate["prefetch"];
-  revisions: InboxGate["revisions"];
+  states: InboxGate["states"];
 };
 
 // The URL an activity's own handling fetches first, whatever its key (receiveInbound: an actor's Update fetches the
@@ -624,7 +626,7 @@ export async function receiveInbound(
   };
   const budget = requestBudget(Date.now());
   const loaders = createRemoteLoaders(deps, state, deps.recipient, budget, gate.prefetch?.signer);
-  const { parsed, domainBlocked: blocked, key: storedKey, revisions } = gate;
+  const { parsed, domainBlocked: blocked, key: storedKey, states } = gate;
 
   // The actor of the bounded envelope is judged before anything is verified, whether or not its type is
   // one Kopje reads, so that no activity of a covered actor (an unsupported or malformed one included) is fetched for.
@@ -645,7 +647,7 @@ export async function receiveInbound(
       return { status: 202, reason: "domain-blocked" };
     }
   } else if (blocked) {
-    return domainBlocked(deps, request, headers, parsed, { origin, state, budget, key: storedKey, revisions });
+    return domainBlocked(deps, request, headers, parsed, { origin, state, budget, key: storedKey, states });
   }
   const served = new Map<string, ServedKey>();
   let verified = await verify(deps, request, headers, loaders, served, false, storedKey);
@@ -712,7 +714,7 @@ export async function receiveInbound(
       loaders,
       state,
       budget,
-      revisions,
+      states,
       receivedAt: request.receivedAt,
     });
   }
@@ -726,7 +728,17 @@ export async function receiveInbound(
     if ("status" in owned) {
       return owned;
     }
-    actor = owned.input;
+    // An actor's own Delete stores nothing of its document, so its claim is not confirmed.
+    if (activity.type === "DeleteActor") {
+      actor = owned.input;
+    } else {
+      const checked = await confirmed(deps, loaders, owned.input, states.actor);
+      rethrowStoreError(state);
+      if ("status" in checked) {
+        return checked;
+      }
+      actor = checked.input;
+    }
   }
   return apply(deps, {
     activity,
@@ -738,7 +750,7 @@ export async function receiveInbound(
     state,
     budget,
     body: parsed.body,
-    revisions,
+    states,
     receivedAt: request.receivedAt,
   });
 }
@@ -760,7 +772,7 @@ async function domainBlocked(
     state: FederationState;
     budget: FetchBudget;
     key: InboxGate["key"];
-    revisions: InboxGate["revisions"];
+    states: InboxGate["states"];
   },
 ): Promise<InboxOutcome> {
   const { actor: actorUri, activity } = parsed;
@@ -802,7 +814,7 @@ async function domainBlocked(
     state: context.state,
     budget: context.budget,
     body: parsed.body,
-    revisions: context.revisions,
+    states: context.states,
     receivedAt: request.receivedAt,
   });
 }
@@ -844,7 +856,7 @@ type Relay = {
   loaders: RemoteLoaders;
   state: FederationState;
   budget: FetchBudget;
-  revisions: InboxGate["revisions"];
+  states: InboxGate["states"];
   // When the request reached the inbox (InboundRequest), the instant the author proof is judged at.
   receivedAt: number;
 };
@@ -876,7 +888,7 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     loaders,
     state,
     budget,
-    revisions,
+    states,
     receivedAt,
   } = relay;
   if (originOf(signerUri) === null || originOf(signerUri) === origin) {
@@ -915,7 +927,12 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     if (!verdict) {
       return { status: 202, reason: "proof-invalid", dropped: true };
     }
-    actor = fetched.input;
+    const checked = await confirmed(deps, loaders, fetched.input, states.actor);
+    rethrowStoreError(state);
+    if ("status" in checked) {
+      return checked;
+    }
+    actor = checked.input;
     proven = true;
   }
   return apply(deps, {
@@ -934,9 +951,25 @@ async function relayed(deps: InboundDeps, relay: Relay): Promise<InboxOutcome> {
     state,
     budget,
     body: json,
-    revisions,
+    states,
     receivedAt,
   });
+}
+
+// A document the Store is about to store, with its claim confirmed (confirmedInput) against the handle `stored` read
+// before its fetch (InboxGate's states, D4). An actor with no stored row whose confirmation may pass later is answered
+// 503 `actor-unavailable`, as a document that may load later; one refused is handed on unconfirmed, and the Store stores
+// nothing of it (acceptedHandle: 202, the actor or target unknown). A stored actor keeps its handle either way.
+async function confirmed(
+  deps: InboundDeps,
+  loaders: RemoteLoaders,
+  input: RemoteActorInput,
+  stored: ActorState,
+): Promise<{ input: RemoteActorInput } | InboxOutcome> {
+  const checked = await confirmedInput(loaders, input, stored.handle, deps.domain);
+  return stored.handle === null && checked.outcome === "transient"
+    ? { status: 503, reason: "actor-unavailable" }
+    : { input: checked.input };
 }
 
 type Application = {
@@ -951,16 +984,16 @@ type Application = {
   // The activity as received, for an author proof the Store asks to have verified (need 'proof').
   body: Json;
   // What the inbox gate read before any document was fetched (InboundGate).
-  revisions: InboxGate["revisions"];
+  states: InboxGate["states"];
   // When the request reached the inbox (InboundRequest), the instant an author proof is judged at.
   receivedAt: number;
 };
 
 // Steps 5 and 6: what the type needs, and the Store.
 async function apply(deps: InboundDeps, application: Application): Promise<InboxOutcome> {
-  const { target, actorUri, actor, origin, loaders, state, budget, revisions } = application;
+  const { target, actorUri, actor, origin, loaders, state, budget, states } = application;
   const activity = application.activity;
-  const ready = await prepare(activity, target, actorUri, origin, loaders, revisions.target);
+  const ready = await prepare(activity, target, actorUri, origin, loaders, states.target, deps.domain);
   rethrowStoreError(state);
   if (!("type" in ready)) {
     return ready;
@@ -992,7 +1025,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
         origin,
         actorUri,
         actor,
-        actorRevision: revisions.actor,
+        actorRevision: states.actor.revision,
         activity: prepared,
         recipient: deps.recipient,
         prefetched,
@@ -1022,7 +1055,8 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
     const fetched = await fetchNeeded(
       need,
       origin,
-      need.revision === undefined ? needLoaders : afterRevisionRead(needLoaders),
+      need.state === undefined ? needLoaders : afterRevisionRead(needLoaders),
+      deps.domain,
     );
     rethrowStoreError(state);
     if (fetched === "transient" && !(need.kind === "actor" && need.refresh === true)) {
@@ -1032,8 +1066,8 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       prefetched.statuses[need.uri] = fetched as Prefetched["statuses"][string];
     } else {
       prefetched.actors[need.uri] = fetched === "transient" ? null : (fetched as Prefetched["actors"][string]);
-      if (need.revision !== undefined) {
-        refreshRevisions[need.uri] = need.revision;
+      if (need.state !== undefined) {
+        refreshRevisions[need.uri] = need.state.revision;
       }
     }
     result = undefined;
@@ -1072,11 +1106,14 @@ async function proveDelete(
 }
 
 // A document the Store asked for, fetched through the request's loaders: a status (null if it cannot be one) or an
-// actor (null if it cannot be stored, 'gone' if it answered 404 or 410). A local URI is never fetched.
+// actor (null if it cannot be stored, 'gone' if it answered 404 or 410). A local URI is never fetched. An actor's claim
+// is confirmed (confirmedInput): an unknown author (no state) whose claim WebFinger refuses cannot be stored (null),
+// and one whose confirmation may pass later is 'transient'; a stale stored author's refresh keeps its handle on either.
 async function fetchNeeded(
   need: NonNullable<ReceiveAnswer["need"]>,
   origin: string,
   loaders: RemoteLoaders,
+  instanceDomain: string,
 ): Promise<Prefetched["statuses"][string] | Prefetched["actors"][string] | "transient"> {
   if (originOf(need.uri) === null || originOf(need.uri) === origin) {
     return null;
@@ -1089,7 +1126,15 @@ async function fetchNeeded(
   if (fetched.kind === "transient" || fetched.kind === "gone") {
     return fetched.kind;
   }
-  return fetched.kind === "ok" ? fetched.input : null;
+  if (fetched.kind !== "ok" || fetched.input === null) {
+    return null;
+  }
+  const stored = need.state?.handle ?? null;
+  const checked = await confirmedInput(loaders, fetched.input, stored, instanceDomain);
+  if (stored === null && checked.outcome !== "confirmed") {
+    return checked.outcome === "transient" ? "transient" : null;
+  }
+  return checked.input;
 }
 
 // An actor may list a key by reference (publicKey: "<key URL>") rather than embed it. Fedify has just resolved that
@@ -1116,15 +1161,17 @@ function withVerifiedReference(
   return [...keys, { id, pem }];
 }
 
-// What a type needs beyond the activity itself. targetRevision: a Move target's, read by the inbox gate before this
-// fetch, stored with the document it compares against.
+// What a type needs beyond the activity itself. targetState: a Move target's, read by the inbox gate before this
+// fetch: its revision is stored with the document it compares against, and its handle spares the confirmation of an
+// unchanged claim (a new target whose claim is refused stores nothing: 202 unknown-target).
 async function prepare(
   activity: InboundActivity | Dereference,
   target: string | null,
   actorUri: string,
   origin: string,
   loaders: RemoteLoaders,
-  targetRevision: DocumentRevision,
+  targetState: ActorState,
+  instanceDomain: string,
 ): Promise<InboundActivity | InboxOutcome> {
   if (activity.type === "Dereference") {
     // The object of the actor's own activity: only on the actor's origin (Mastodon's permitted_origin).
@@ -1160,7 +1207,11 @@ async function prepare(
   if (!fetched.actor.aliasIds.some((alias) => alias.href === actorUri)) {
     return { status: 202, reason: "not-alias" };
   }
-  return { ...activity, target: { document: fetched.input, revision: targetRevision } };
+  const checked = await confirmedInput(loaders, fetched.input, targetState.handle, instanceDomain);
+  if (targetState.handle === null && checked.outcome === "transient") {
+    return { status: 503, reason: "target-unavailable" };
+  }
+  return { ...activity, target: { document: checked.input, revision: targetState.revision } };
 }
 
 // The cutover rollback's check of a spooled request (docs/cutover-runbook.md): the same signature verification and

@@ -150,7 +150,7 @@ const DEFAULT = "left at its default by the converter (NOT_CONVERTED)";
 
 // Columns of carried tables the converter leaves at their schema defaults.
 const NOT_CONVERTED: Record<string, string> = {
-  "accounts.confirmed_username": "set when Kopje confirms a WebFinger domain; legacy has none",
+  "accounts.confirmed_username": "unused since 0094_remote_handles (the stored handle is the confirmed one): NULL",
   "accounts.emojis": "legacy has no custom emoji",
   "accounts.indexable": "legacy has no indexable setting: NULL, presented as false",
   "accounts.moved_to_account_id": "legacy keeps no account move: NULL, no pointer",

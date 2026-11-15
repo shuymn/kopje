@@ -44,13 +44,15 @@ import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, deferred } from "./helpers";
 import {
   actorDefaults,
+  confirmedAs,
   LOCAL,
   loggedRefusals,
   MASTODON,
   mastodonActor,
-  misskeyActor,
   MISSKEY_CONTEXT,
+  misskeyActor,
   type RemoteWeb,
+  serveOwnHandle,
   signedInit,
   type TestActor,
 } from "./inbox-helpers";
@@ -1136,6 +1138,7 @@ describe("relayed revocations (ID-1’s exception)", () => {
     });
     const document = await person.toJsonLd({ format: "compact", contextLoader: contexts });
     t.web.serve(uri, document);
+    serveOwnHandle(t.web, document as Record<string, unknown>);
     const erin: TestActor = {
       uri,
       keyId: `${uri}#main-key`,
@@ -2424,8 +2427,7 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     const document = {
       ...actorDefaults(),
       uri: erin.uri,
-      username: "erin",
-      domain: "other.example",
+      ...confirmedAs("erin", "other.example"),
       displayName: "erin 2",
       inboxUrl: `${erin.uri}/inbox`,
       movedTo: null,

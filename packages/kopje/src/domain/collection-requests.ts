@@ -8,18 +8,22 @@ import { requireExactIncrement } from "./ids";
 // Asks for a sync of the account's collections (ProcessAccountService#check_featured_collection! and
 // #check_featured_tags_collection!, and the hide_collections it sets). One request per account waits at a time, as
 // Sidekiq's until_executed lock keeps one job; a request while a round holds it is a new generation, which the round's
-// end leaves due (endRound), so the round reading the older document does not end it. Whether a request is
-// due (no round holds it).
-export function requestCollectionSync(db: Db, accountId: string, now: number): boolean {
+// end leaves due (endRound), so the round reading the older document does not end it. refresh: the sync first
+// refetches the account's document and confirms its handle (remote-collections.ts, the document part), asked for an
+// invalidated account (remote-actors.ts); a request without it leaves one asked for. Whether a request is due (no round
+// holds it).
+export function requestCollectionSync(db: Db, accountId: string, now: number, refresh = false): boolean {
   // A new request has its own MAX_SYNC_ATTEMPTS, and is due at once unless a round holds the sync (whose end leaves it
   // due, endRound): rounds that failed for the older one neither drop nor delay it.
   const row = db.first<{ due: number; exact: number }>(
-    `INSERT INTO collection_syncs (account_id, due_at) VALUES (?1, ?2)
+    `INSERT INTO collection_syncs (account_id, due_at, refresh) VALUES (?1, ?2, ?3)
 		ON CONFLICT (account_id) DO UPDATE SET generation = generation + 1, parts_read = 0, attempts = 0,
+			refresh = max(refresh, excluded.refresh),
 			due_at = CASE WHEN token IS NOT NULL AND due_at > ?2 THEN due_at ELSE min(due_at, ?2) END
 		RETURNING due_at <= ?2 AS due, typeof(generation) = 'integer' AS exact`,
     accountId,
     now,
+    refresh ? 1 : 0,
   );
   requireExactIncrement(row?.exact ?? 1, "a collection sync's generation");
   return row?.due === 1;

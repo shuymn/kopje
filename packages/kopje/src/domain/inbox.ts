@@ -92,7 +92,9 @@ import {
   type RemoteActorInput,
   type DocumentRevision,
   RetryLater,
-  actorRevision,
+  type ActorState,
+  actorState,
+  NO_ACTOR_STATE,
   upsertRemoteActor,
   originOf,
   SWEEP_BATCH,
@@ -286,7 +288,7 @@ type CollectionItem = { status: string } | { hashtag: string };
 // Documents the Worker fetched because the Store asked for them (ReceiveResult.need), by the uri asked for: a parsed
 // status or actor, or null when it could not be fetched or used; 'gone': the actor's document answered 404 or 410.
 // A refresh need's failure that may pass is null too (applyRefresh).
-// revisions: a refresh need's revision, by the uri asked for (Need.revision); a refetched document without one is
+// revisions: a refresh need's revision, by the uri asked for (Need.state); a refetched document without one is
 // compared with null, so it stores nothing over a stored row.
 export type Prefetched = {
   statuses: Record<string, RemoteStatusInput | null>;
@@ -316,14 +318,15 @@ export type ReceiveInput = {
 // kind 'proof': verify the Delete's author proof before forwarding (quotes.ts revokeStamp, inbox.ts recordForwards);
 // uri is the actor's.
 // refresh (kind 'actor' only): the stale stored row is usable without this document, so a fetch that may pass does not
-// fail the request (staleAccount, applyRefresh); revision: that row's revision as this answer read it, before the fetch,
-// which the Worker hands back with the document (Prefetched.revisions).
+// fail the request (staleAccount, applyRefresh); state: that row's state as this answer read it, before the fetch
+// (actorState): its revision, which the Worker hands back with the document (Prefetched.revisions), and its handle,
+// which spares the confirmation of an unchanged claim.
 export type Need = {
   kind: "status" | "actor" | "proof";
   uri: string;
   signer?: FollowerSigner | { local: string } | "instance";
   refresh?: true;
-  revision?: DocumentRevision;
+  state?: ActorState;
 };
 
 // jobsPending: a purge, Move or status deletion has batches left; the Worker asks the Queue to continue (cron
@@ -403,13 +406,14 @@ function outboundSince(db: Db, before: OutboundMark): boolean {
 // Remote actors and their keys
 // ---------------------------------------------------------------------------------------------------------------
 
-// What a search resolution reads before it fetches an actor's document (federation/resolve.ts): the actor's revision
-// (actorRevision), and the domain policy's verdict for that fetch (ticketFor), which the Worker spends on its next
-// request alone, the actor's, so no response is awaited between this read and the request it judges (VIS-30).
-export type ActorRevisionRead = { revision: DocumentRevision; ticket: PolicyTicket | null };
+// What a search resolution reads before it fetches an actor's document (federation/resolve.ts): the actor's state
+// (actorState: its revision and stored handle), and the domain policy's verdict for that fetch (ticketFor), which the
+// Worker spends on its next request alone, the actor's, so no response is awaited between this read and the request it
+// judges (VIS-30).
+export type ActorStateRead = { state: ActorState; ticket: PolicyTicket | null };
 
-export const getActorRevision = readOperation<{ uri: string }, ActorRevisionRead>((db, { uri }) => ({
-  revision: actorRevision(db, uri),
+export const getActorState = readOperation<{ uri: string }, ActorStateRead>((db, { uri }) => ({
+  state: actorState(db, uri),
   ticket: ticketFor(db, uri),
 }));
 
@@ -2893,7 +2897,7 @@ function newOriginal(
     } else if (staleAccount(db, author.id, now)) {
       return {
         ...ignored("need-author-refresh"),
-        need: { kind: "actor", uri: authorUri, refresh: true, revision: actorRevision(db, authorUri) },
+        need: { kind: "actor", uri: authorUri, refresh: true, state: actorState(db, authorUri) },
       };
     }
     followers = followersUri(db, author.id);
@@ -3649,9 +3653,10 @@ export type InboxGate = {
   // The preparation of the request's first fetch, for the inbox's signer (the recipient's, DATA-7): only when a fetch
   // follows, the key's (missing or stale) or the activity's own; null otherwise, so a warm request carries no key.
   prefetch: FetchPreparation | null;
-  // The revisions of the actor and of the Move's target (actorRevision; null for none named), read before any of their
-  // documents is fetched: the expectations their stores compare (DocumentRevision).
-  revisions: { actor: DocumentRevision; target: DocumentRevision };
+  // The states of the actor and of the Move's target (actorState; no row for none named), read before any of their
+  // documents is fetched: the expectations their stores compare (DocumentRevision), and the stored handles their
+  // claims are compared with (D4).
+  states: { actor: ActorState; target: ActorState };
 };
 
 // What an inbound request is judged on before it is verified (federation/inbox.ts processInbox), in one read: the
@@ -3675,9 +3680,9 @@ export const inboxGate = readOperation<InboxGateInput, InboxGate>((db, input) =>
       domain !== null && owner !== false && domainBlocked === false && target !== null
         ? fetchPreparation(db, username, target)
         : null,
-    revisions: {
-      actor: actor === null ? null : actorRevision(db, actor),
-      target: input.target === null ? null : actorRevision(db, input.target),
+    states: {
+      actor: actor === null ? NO_ACTOR_STATE : actorState(db, actor),
+      target: input.target === null ? NO_ACTOR_STATE : actorState(db, input.target),
     },
   };
 });

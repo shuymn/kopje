@@ -2033,7 +2033,10 @@ describe("the inbox gate reads the same rows however many keys and domain blocks
           },
           ticket: { host: "x.example", refused: false },
         },
-        revisions: { actor: 0, target: null },
+        states: {
+          actor: { revision: 0, handle: { username: "u", domain: "x.example" } },
+          target: { revision: null, handle: null },
+        },
       };
       const read: GrownRead = {
         name: "inbox gate",

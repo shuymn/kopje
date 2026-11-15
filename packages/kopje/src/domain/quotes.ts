@@ -34,7 +34,9 @@ import { JOB_BOOKKEEPING_ROWS, nextJob, QUOTE_REVOCATIONS, runJobItem } from "./
 import { notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
 import {
-  actorRevision,
+  type ActorState,
+  actorState,
+  NO_ACTOR_STATE,
   applyRefresh,
   type DocumentRevision,
   isDeletedActor,
@@ -365,9 +367,10 @@ export type QuoteWork = {
   signer: string | null;
   // The work's generation: the stage's outcome applies only while it is unchanged.
   generation: number;
-  // The author stage's: the author's revision read before its fetch (remote-actors.ts DocumentRevision), which a
-  // refetched document is stored under (applyRefresh); null for the other stages.
-  authorRevision: DocumentRevision;
+  // The author stage's: the author's state read before its fetch (remote-actors.ts actorState), whose revision a
+  // refetched document is stored under (applyRefresh) and whose handle spares the confirmation of an unchanged claim;
+  // no row for the other stages.
+  authorState: ActorState;
 };
 
 type Linked = {
@@ -509,7 +512,7 @@ export const quoteWork = readOperation<{ statusId: string; now: number }, QuoteW
     fetch,
     signer: signer?.username ?? null,
     generation: row.generation,
-    authorRevision: stage === "author" && fetch !== null ? actorRevision(db, fetch) : null,
+    authorState: stage === "author" && fetch !== null ? actorState(db, fetch) : NO_ACTOR_STATE,
   };
 });
 

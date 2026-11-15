@@ -15,6 +15,7 @@ import { NOW } from "./app-helpers";
 import { keptReject, net2Answer } from "./follow-exceptions";
 import { type Body, HANDSHAKE_RECHECK_MS, type Inbound, type Intent, Peer, type Policy } from "./follow-model";
 import { BUILD } from "./helpers";
+import { confirmedAs } from "./inbox-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
 import {
   type Block,
@@ -144,8 +145,8 @@ async function setup(seed: Seed) {
     await sql(
       store,
       `INSERT INTO accounts (id, uri, username, domain, display_name, url, search_text, created_at, inbox_url,
-				shared_inbox_url, document_revision, confirmed_username)
-			VALUES (?1, ?2, ?3, ?4, ?5, ?2, ?3, ?6, ?7, ?8, 1, ?9)`,
+				shared_inbox_url, document_revision)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?2, ?3, ?6, ?7, ?8, 1)`,
       spec.id,
       spec.uri,
       username,
@@ -154,7 +155,6 @@ async function setup(seed: Seed) {
       new Date(NOW).toISOString(),
       `${spec.uri}/inbox`,
       spec.shared,
-      new URL(spec.uri).hostname === spec.domain ? null : username,
     );
     await sql(
       store,
@@ -1440,8 +1440,7 @@ function documentOf(w: World, r: Remote, doc: Document): RemoteActorInput {
   const a = w.policy.remotes[r];
   return {
     uri: a.uri,
-    username: r.toLowerCase(),
-    domain: a.domain,
+    ...confirmedAs(r.toLowerCase(), a.domain),
     actorType: "Person",
     displayName: doc.name,
     note: "",
@@ -2957,7 +2956,10 @@ async function sendDocument(
   revision: number | null,
   confirmedDomain?: string,
 ): Promise<string> {
-  const actor = { ...documentOf(w, r, doc), ...(confirmedDomain === undefined ? {} : { confirmedDomain }) };
+  const actor = {
+    ...documentOf(w, r, doc),
+    ...(confirmedDomain === undefined ? {} : confirmedAs(r.toLowerCase(), confirmedDomain)),
+  };
   const uri = w.policy.remotes[r].uri;
   const result = await w.store.receiveActivity(BUILD, {
     now: w.clock,
@@ -3095,8 +3097,9 @@ describe("instance moderation witnesses: calls, retries and revisions", () => {
     expect(await rowOf(w, "R1")).toMatchObject({ name: "R1", shared: "https://d.example/inbox-a" });
   }, 60_000);
 
-  // C17 (visibility.md, "Writes"): no account moves into a covered domain. The domain an address confirms (the search
-  // resolver's confirmedDomain) is taken when no block covers it; into a covered domain the row stays as it was.
+  // C17 (visibility.md, "Writes"): no account moves into a covered domain. A handle WebFinger confirmed on another
+  // domain (federation/resolve.ts confirmedInput) is taken when no block covers it; into a covered domain the row stays
+  // as it was.
   it("a document never moves an account into a covered domain", async () => {
     const w = await p1World();
     await steps(w, [block(D)]);

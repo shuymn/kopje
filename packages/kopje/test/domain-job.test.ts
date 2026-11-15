@@ -19,6 +19,7 @@ import { bearer, form, seedFollows, settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain, setSeverity, unblockDomain } from "./domain-block-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
+import { confirmedAs } from "./inbox-helpers";
 import { QueueSim } from "./queue-sim";
 import { plannedRun, type PlannedStatement, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import {
@@ -46,7 +47,6 @@ const D = "d.example";
 
 // A remote actor's document as the inbox's refresh reads it (remote-actors.ts RemoteActorInput).
 const ACTOR = {
-  domain: "",
   actorType: "Person",
   displayName: "R",
   note: "",
@@ -364,7 +364,7 @@ describe("the domain job (R38: marks and both-way severing)", () => {
     // r's address is confirmed on d, while its actor lives on moved.example.
     const r = await remoteAccount(store, "r", D);
     const uri = "https://moved.example/users/r";
-    await sql(store, "UPDATE accounts SET uri = ?, confirmed_username = 'r' WHERE id = ?", uri, r);
+    await sql(store, "UPDATE accounts SET uri = ? WHERE id = ?", uri, r);
     const block = await blockDomain(store, D);
     await drain(store);
     expect(await marked(store)).toBe(1);
@@ -373,7 +373,7 @@ describe("the domain job (R38: marks and both-way severing)", () => {
     const refreshed = await runInDurableObject(store, (_instance, state) =>
       state.storage.transactionSync(() => {
         const db = new Db(state.storage.sql);
-        upsertRemoteActor(db, { ...ACTOR, uri, username: "r", confirmedDomain: "moved.example" }, ORIGIN, NOW);
+        upsertRemoteActor(db, { ...ACTOR, uri, ...confirmedAs("r", "moved.example") }, ORIGIN, NOW);
         return db.all("SELECT domain, suspended_at, suspension_source FROM accounts WHERE id = ?", r);
       }),
     );

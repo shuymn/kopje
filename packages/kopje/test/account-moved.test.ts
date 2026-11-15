@@ -15,12 +15,12 @@ import { type Account, presentAccountsWithin, USERNAME_LIMIT } from "../src/doma
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS } from "../src/domain/admin-authority";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { purgeBatch, receiveActivity } from "../src/domain/inbox";
-import { actorRevision, type RemoteActorInput } from "../src/domain/remote-actors";
+import { actorState, type RemoteActorInput } from "../src/domain/remote-actors";
 import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
-import { actorDefaults } from "./inbox-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import {
   observedSql,
   type PlannedStatement,
@@ -457,8 +457,7 @@ describe("query plans of moves (RES-7)", () => {
     const actor = (uri: string, movedTo: string | null): RemoteActorInput => ({
       ...actorDefaults(),
       uri,
-      username: uri.split("/").at(-1)!,
-      domain: "remote.example",
+      ...confirmedAs(uri.split("/").at(-1)!, "remote.example"),
       displayName: "mover",
       inboxUrl: `${uri}/inbox`,
       movedTo,
@@ -487,11 +486,11 @@ describe("query plans of moves (RES-7)", () => {
             origin: ORIGIN,
             actorUri: mover,
             actor: actor(mover, targetUri),
-            actorRevision: actorRevision(new Db(real), mover),
+            actorRevision: actorState(new Db(real), mover).revision,
             activity: {
               type: "Move",
               id: `${mover}#moves/1`,
-              target: { document: actor(targetUri, null), revision: actorRevision(new Db(real), targetUri) },
+              target: { document: actor(targetUri, null), revision: actorState(new Db(real), targetUri).revision },
             },
           },
           (fn) => state.storage.transactionSync(fn),

@@ -18,7 +18,7 @@ import {
 } from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
-import { loggedRefusals, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import { loggedRefusals, mastodonActor, serveOwnHandle, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -279,6 +279,7 @@ describe("a relayed status Delete with the author's proof (ID-1)", () => {
     const { t, dan } = await world();
     const document = (await (await author.request("/ap/users/ann", AP)).json()) as Json;
     t.web.serve(ANN_URI, document);
+    serveOwnHandle(t.web, document);
     const ann: TestActor = {
       uri: ANN_URI,
       keyId: `${ANN_URI}#main-key`,

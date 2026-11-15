@@ -7,7 +7,7 @@ import { suspendRemote } from "../src/domain/remote-suspension";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { mastodonActor, type TestActor } from "./inbox-helpers";
+import { mastodonActor, serveWebFinger, type TestActor } from "./inbox-helpers";
 import { announce, AS, create, localStatus, mastodonNote, OTHER, type Setup, statuses } from "./inbox-status-helpers";
 import { quoting } from "./quote-helpers";
 import { ageAccount, staleAuthorWorld } from "./stale-author-helpers";
@@ -226,13 +226,12 @@ describe("a stale author of a fetched original (VIS-6, NET-4; Mastodon possibly_
     expect(rows.find((s) => s.uri === own.id)?.visibility).toBe("private");
   });
 
-  it("a refresh keeps the confirmed domain while the username is unchanged and falls back to the host when it changes", async () => {
+  it("a refresh keeps the address WebFinger confirms on another domain, and takes a new claim once it is confirmed", async () => {
     const { t, bob, erin } = await staleAuthorWorld();
-    await sql(
-      t.store,
-      "UPDATE accounts SET domain = 'erin.example', confirmed_username = 'erin' WHERE uri = ?",
-      erin.uri,
-    );
+    // erin's host answers for her under erin.example, which names her back (federation/resolve.ts confirmHandle).
+    serveWebFinger(t.web, "acct:erin@other.example", "acct:erin@erin.example", erin.uri);
+    serveWebFinger(t.web, "acct:erin@erin.example", "acct:erin@erin.example", erin.uri);
+    await sql(t.store, "UPDATE accounts SET domain = 'erin.example' WHERE uri = ?", erin.uri);
     const note2 = served(t, erin);
     expect(await t.post(bob, announce(bob, note2.id))).toBe(202);
     expect(await author(t, erin.uri)).toMatchObject({ domain: "erin.example", username: "erin", fetched_at: iso(NOW) });

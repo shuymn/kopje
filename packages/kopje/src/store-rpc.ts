@@ -208,7 +208,7 @@ export const STORE_RPC = {
 
   // The revision a search resolution reads before it fetches an actor's document, with that fetch's policy verdict
   // (federation/resolve.ts).
-  actorRevision: inbox.getActorRevision,
+  actorState: inbox.getActorState,
 
   // The instance domain policy the Worker reads before a fetch (R38; inboxGate reads it before an inbound
   // request is verified): advisory, as the writes decide.

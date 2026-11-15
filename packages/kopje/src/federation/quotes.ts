@@ -9,7 +9,7 @@ import {
   type QuoteVerified,
   type StampInput,
 } from "../domain/quotes";
-import type { RemoteActorInput } from "../domain/remote-actors";
+import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -22,6 +22,7 @@ import type { InboxDeps } from "./inbox";
 import { isTransientLoadError, REQUEST_DEADLINE_MS, requestBudget } from "./loader";
 import { fetchActor } from "./remote-actor";
 import { fetchRemoteStatus, idOf } from "./remote-status";
+import { confirmedInput } from "./resolve";
 
 // The Worker's part of verifying a received quote (domain/quotes.ts, Mastodon's ActivityPub::VerifyQuoteService), run
 // only by the job rounds (jobs/queue.ts, after the Store's inbound jobs, from the Queue and cron; an inbox request that
@@ -118,16 +119,31 @@ async function loadStamp(uri: string, origin: string, loader: DocumentLoader): P
   return stamp === null ? { kind: "unusable" } : { kind: "ok", value: stamp };
 }
 
-// The quoted status's author, parsed as any actor (none of this instance's origin is fetched).
-async function loadActor(uri: string, origin: string, loaders: RemoteLoaders): Promise<Fetched<RemoteActorInput>> {
+// The quoted status's author, parsed as any actor (none of this instance's origin is fetched), its claim confirmed
+// (confirmedInput) against the handle `stored` read before the fetch: an author with no stored row whose claim
+// WebFinger refuses is unusable, and one whose confirmation may pass later is transient; a stored author keeps its
+// handle either way.
+async function loadActor(
+  uri: string,
+  origin: string,
+  loaders: RemoteLoaders,
+  stored: Handle | null,
+): Promise<Fetched<RemoteActorInput>> {
   if (originOf(uri) === null || originOf(uri) === origin) {
     return { kind: "unusable" };
   }
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
-  if (fetched.kind === "ok") {
-    return fetched.input === null ? { kind: "unusable" } : { kind: "ok", value: fetched.input };
+  if (fetched.kind !== "ok") {
+    return { kind: fetched.kind };
   }
-  return { kind: fetched.kind };
+  if (fetched.input === null) {
+    return { kind: "unusable" };
+  }
+  const checked = await confirmedInput(loaders, fetched.input, stored, new URL(origin).host);
+  if (stored === null && checked.outcome !== "confirmed") {
+    return { kind: checked.outcome === "transient" ? "transient" : "unusable" };
+  }
+  return { kind: "ok", value: checked.input };
 }
 
 type Rpc = <T>(call: (store: StoreStub) => Promise<T>) => Promise<T>;
@@ -169,8 +185,8 @@ async function verifyQuote(
     if (work.stage === "quoted" && work.fetch !== null) {
       input.quoted = await loadStatus(work.fetch, origin, loaders.document);
     } else if (work.stage === "author" && work.fetch !== null) {
-      input.author = await loadActor(work.fetch, origin, loaders);
-      input.authorRevision = work.authorRevision;
+      input.author = await loadActor(work.fetch, origin, loaders, work.authorState.handle);
+      input.authorRevision = work.authorState.revision;
     } else if (work.stage === "stamp" && work.fetch !== null) {
       input.stamp = await loadStamp(work.fetch, origin, loaders.document);
     }

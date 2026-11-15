@@ -8,6 +8,7 @@ import {
   MAX_STATUS_TAGS,
   storeRemoteStatus,
   updateRemoteStatus,
+  webfingerUrl,
 } from "../src/domain/remote-statuses";
 import { MAX_STATUS_MENTION_ROWS } from "../src/domain/status-bounds";
 import { getTag } from "../src/domain/tags";
@@ -913,8 +914,9 @@ describe("Announce (VIS-6, NET-4)", () => {
     t.web.signers.length = 0;
     const boost = announce(bob, original.id);
     expect(await t.post(bob, boost)).toBe(202);
-    expect(t.web.fetched).toEqual([original.id, erin.uri]);
-    expect(new Set(t.web.signers)).toEqual(new Set([`${LOCAL}/actor#main-key`]));
+    // erin's handle is confirmed by WebFinger, unsigned (federation/resolve.ts confirmHandle).
+    expect(t.web.fetched).toEqual([original.id, erin.uri, webfingerUrl("erin", "other.example")]);
+    expect(t.web.signers).toEqual([`${LOCAL}/actor#main-key`, `${LOCAL}/actor#main-key`, "unsigned"]);
     const originalRow = (await statusRow(t.store, original.id))!;
     expect(await statuses(t.store)).toEqual([
       { uri: original.id, visibility: "public", reblog_of_id: null },
@@ -1025,7 +1027,11 @@ describe("search with resolve=true (NET-4, VIS-1)", () => {
     expect(found.body.statuses).toMatchObject([
       { uri: note.id, content: "<p>found </p>", account: { acct: "bob@mastodon.example" } },
     ]);
-    expect(new Set(t.web.signers)).toEqual(new Set([`${LOCAL}/actor#main-key`]));
+    // Every fetch is the instance actor's but the unsigned WebFinger confirming bob's handle.
+    expect(new Set(t.web.signers)).toEqual(new Set([`${LOCAL}/actor#main-key`, "unsigned"]));
+    expect(t.web.fetched.filter((_, i) => t.web.signers[i] === "unsigned")).toEqual([
+      webfingerUrl("bob", "mastodon.example"),
+    ]);
     // Stored, but not notified, and outside the public timelines' rules as any fetched status.
     expect(await notifications(t.store)).toEqual([]);
     // A second search answers from the Store's row.
