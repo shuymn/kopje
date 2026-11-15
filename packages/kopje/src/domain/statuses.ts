@@ -157,9 +157,6 @@ function exceedsStatusBounds(content: string, spoilerText: string): boolean {
   return jsonStringBytes(content) > STATUS_CONTENT_BYTES || jsonStringBytes(spoilerText) > SPOILER_BYTES;
 }
 
-// Mastodon's media_attachments.validations.too_many, which it also answers for media sent with a poll.
-export const TOO_MANY_FILES = "Cannot attach more than 4 files";
-
 export function resolveStatusId(db: Db, id: string): string | null {
   return resolveApiId(db, "statuses", id);
 }
@@ -476,15 +473,9 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
       return { status: "quote_not_found" };
     }
   }
-  // PostStatusService#validate_media! checks a poll with media before the ids; the Worker does (composition), so this
-  // order only decides for a Store caller that skips it.
   const media = mediaToAttach(db, accountId, input.mediaIds, null, input.now, scheduledId);
   if (!Array.isArray(media)) {
     return media;
-  }
-  // A poll takes the place of media.
-  if (input.poll !== undefined && input.mediaIds.length > 0) {
-    return { status: "invalid", error: TOO_MANY_FILES };
   }
   const requested = input.visibility ?? author.default_visibility;
   // PostStatusService#preprocess_attributes!: a quote of a private status (the poster's own: R36) is private.
@@ -976,9 +967,6 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.now);
   if (!Array.isArray(media)) {
     return media;
-  }
-  if (input.poll !== undefined && input.mediaIds.length > 0) {
-    return { status: "invalid", error: TOO_MANY_FILES };
   }
   // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
   // quoted status is there.

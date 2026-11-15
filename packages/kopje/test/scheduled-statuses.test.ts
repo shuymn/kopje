@@ -571,6 +571,60 @@ describe("publication", () => {
     ).toEqual(["Create"]);
   });
 
+  it("publishes media with a poll, scheduled through the API or restored, as Mastodon 4.6 takes them", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const [sent, restored] = [await upload(h, alice, 1), await upload(h, alice, 2)];
+    const poll = { options: ["a", "b"], expires_in: "600", multiple: false, hide_totals: false };
+    const created = await scheduled(h, alice, {
+      status: "both",
+      media_ids: [sent],
+      poll: { options: ["a", "b"], expires_in: 600 },
+      scheduled_at: at(NOW + HOUR),
+    });
+    expect(created.params).toMatchObject({ media_ids: [sent], poll });
+    expect(created.media_attachments).toEqual([expect.objectContaining({ id: sent })]);
+    expect(await sql(h.store, "SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id = ?", sent)).toEqual([
+      { scheduled_status_id: created.id, gc_at: null },
+    ]);
+    // A row restored with both, its upload held, as the API writes it.
+    const params = { ...created.params, text: "restored", media_ids: [restored] };
+    await sql(
+      h.store,
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES ('600000000000000001', ?, ?, ?)`,
+      alice.id,
+      at(NOW + HOUR),
+      JSON.stringify(params),
+    );
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET scheduled_status_id = '600000000000000001', gc_at = NULL WHERE id = ?",
+      restored,
+    );
+    for (const id of [created.id, "600000000000000001"]) {
+      expect(await publishDirectly(h, id, NOW + HOUR), id).toMatchObject({ status: "published" });
+    }
+    const statuses = (
+      await getJson<(Status & { media_attachments: { id: string }[]; poll: unknown })[]>(
+        h,
+        `/api/v1/accounts/${alice.id}/statuses`,
+        alice.token,
+      )
+    ).body;
+    expect(
+      statuses.map((s) => ({ text: s.content, media: s.media_attachments.map((m) => m.id), poll: s.poll })),
+    ).toEqual(
+      [
+        ["<p>restored</p>", restored],
+        ["<p>both</p>", sent],
+      ].map(([text, media]) => ({
+        text,
+        media: [media],
+        poll: expect.objectContaining({ options: [expect.objectContaining({ title: "a" }), expect.anything()] }),
+      })),
+    );
+  });
+
   it("applies the author's defaults at the time of publication", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

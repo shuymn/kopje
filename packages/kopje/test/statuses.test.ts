@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { postStatus, type ScheduleInput } from "../src/domain/scheduled-statuses";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
-import { getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
+import { editStatus, getStatuses, MAX_STATUS_EDITS } from "../src/domain/statuses";
 import type { StoreStub } from "../src/platform/store-client";
 import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -202,7 +202,6 @@ describe("POST /api/v1/statuses", () => {
       { status: "x".repeat(501) },
       { status: "x", visibility: "everyone" },
       { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
-      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
       { status: "x", poll: { options: ["a"], expires_in: 3600 } },
       { status: "x", quote_approval_policy: "everyone" },
       { status: "x", scheduled_at: "not a time" },
@@ -793,7 +792,6 @@ describe("editing", () => {
     const REFUSED: Record<string, unknown>[] = [
       { status: "x".repeat(501) },
       { status: "x", media_ids: ["1", "2", "3", "4", "5"] },
-      { status: "x", media_ids: ["1"], poll: { options: ["a", "b"], expires_in: 3600 } },
       { status: "x", poll: { options: ["a"], expires_in: 3600 } },
       { status: "x", quote_approval_policy: "everyone" },
       { status: "x", media_attributes: [{ id: "1", description: "x".repeat(1501) }] },
@@ -1584,6 +1582,45 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
     expect(await posting(h, alice.token, { status: "z", media_ids: [`0${"1".repeat(19)}`] })).toEqual(
       mediaNotFound("1".repeat(19)),
     );
+  });
+
+  it("writes media with a poll for a Store caller that skips the Worker, on a post and an edit", async () => {
+    const h: Pair = await community(["alice", "bob"]);
+    const { alice } = h.users;
+    await insertMedia(h, alice.id);
+    await insertMedia(h, alice.id, "100000000000000002");
+    const poll = { options: ["a", "b"], expiresIn: 600, multiple: false, hideTotals: false };
+    const { result } = await postPlans(h, alice.token, { mediaIds: [ID], poll }, /^$/);
+    expect(result).toMatchObject({ value: { status: "ok" } });
+    const posted = (result as { value: { value: { id: string } } }).value.value.id;
+    const edited = await plannedRun(h, /^$/, editStatus, {
+      credential: { tokenHash: await sha256Hex(alice.token), scope: "write:statuses", now: NOW },
+      id: posted,
+      text: "edited",
+      spoilerText: "",
+      mediaIds: ["100000000000000002"],
+      mediaAttributes: [],
+      poll: { ...poll, options: ["c", "d"] },
+      now: NOW,
+      present: { origin: "https://kopje.test" },
+    });
+    expect(edited.result).toMatchObject({ value: { status: "ok" } });
+    // The media the edit removed stays with the status for its history, no longer shown.
+    expect(await sql(h.store, "SELECT id, status_id, shown FROM media_attachments ORDER BY id")).toEqual([
+      { id: ID, status_id: posted, shown: 0 },
+      { id: "100000000000000002", status_id: posted, shown: 1 },
+    ]);
+    expect(await sql(h.store, "SELECT status_id, options FROM polls")).toEqual([
+      { status_id: posted, options: JSON.stringify(["c", "d"]) },
+    ]);
+    // The original version kept its media and its poll.
+    const history = (
+      await getJson<{ media_attachments: { id: string }[]; poll: unknown }[]>(h, `/api/v1/statuses/${posted}/history`)
+    ).body;
+    expect(history.map((entry) => [entry.media_attachments.map((m) => m.id), entry.poll])).toEqual([
+      [[ID], { options: [{ title: "a" }, { title: "b" }] }],
+      [["100000000000000002"], { options: [{ title: "c" }, { title: "d" }] }],
+    ]);
   });
 
   it("answers an id of any length with a message no longer than the request", async () => {
