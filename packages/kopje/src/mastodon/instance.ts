@@ -120,8 +120,9 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
       // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
-      // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
-      // and the pins' in rows. Mastodon's v1 serializer has none of them.
+      // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`; the note as
+      // NoteLengthValidator counts it), the featured hashtags' and the pins' in rows. Mastodon's v1 serializer has none
+      // of them.
       accounts: {
         max_display_name_length: MAX_DISPLAY_NAME,
         max_note_length: MAX_NOTE,

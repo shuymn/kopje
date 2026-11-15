@@ -6,6 +6,7 @@ import { MAX_FIELDS } from "../src/platform/stored-bounds";
 import { csrfToken, returnPath } from "../src/web/session";
 import { type ApiHarness, apiHarness, bearer, login, registerApp, seedAccount, sql, withAlice } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { PLAIN_NOTE } from "./note-fills";
 import { attr, one, parseHtml, query, text } from "./web-dom";
 import {
   type Browser,
@@ -725,6 +726,21 @@ describe("settings page", () => {
     expect((await postForm(h, browser, "/settings/profile", { csrf, note: " bio\u3000" })).status).toBe(303);
     expect(await sql(h.store, "SELECT note FROM accounts")).toEqual([{ note: "<p>bio\u3000</p>" }]);
     expect(await textareaOf(h, browser, "note")).toBe("bio\u3000");
+  });
+
+  // The textarea takes MAX_RAW_LENGTH code units (browser job), and the form is read with update_credentials' limit:
+  // a note of three-byte characters at the raw bound, which NoteLengthValidator counts as 500, encodes to 90,000 bytes.
+  it("saves a note at the raw bound, and refuses one past it with its message", async () => {
+    const h = await withAlice();
+    const browser = await signIn(h);
+    const csrf = await csrfOf(h, browser);
+    expect(new URLSearchParams({ note: PLAIN_NOTE }).toString().length).toBeGreaterThan(64 * 1024);
+    expect((await postForm(h, browser, "/settings/profile", { csrf, note: PLAIN_NOTE })).status).toBe(303);
+    expect(await textareaOf(h, browser, "note")).toBe(PLAIN_NOTE);
+    const refused = await postForm(h, browser, "/settings/profile", { csrf, note: `${PLAIN_NOTE}x` });
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).toContain("Note is too long (maximum is 500 characters)");
+    expect(await textareaOf(h, browser, "note")).toBe(PLAIN_NOTE);
   });
 
   // An image card's form posts its description alone to /settings/profile, so nothing else changes; '' clears it, and

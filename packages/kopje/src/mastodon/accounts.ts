@@ -15,6 +15,7 @@ import { QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
 import type { UserCredential } from "../domain/auth";
 import { DIRECTORY_DEFAULT_LIMIT, DIRECTORY_MAX_LIMIT } from "../domain/directory";
 import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
+import { MAX_RAW_LENGTH, noteLength } from "../domain/status-text";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageAccepted, SIGNATURE_BYTES } from "../platform/images";
 import { railsBlank } from "../platform/rails-blank";
@@ -136,10 +137,12 @@ function accountChanges(p: Params, images: ImageProblems): { changes: Credential
     }
     changes.displayName = displayName;
   }
+  // The note is counted as NoteLengthValidator counts it (noteLength), after the raw bound of a status's text on the
+  // note as sent, before anything is parsed: a link counts 23 characters whatever its length.
   const rawNote = p.get("note");
   if (rawNote !== undefined) {
     const note = rubyStrip(rawNote);
-    if (yieldsMoreThan(note, MAX_NOTE)) {
+    if (rawNote.length > MAX_RAW_LENGTH || noteLength(note) > MAX_NOTE) {
       problems.push(tooLong("note", MAX_NOTE));
     }
     changes.note = note;

@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 
-import { type CredentialAccount, MAX_DISPLAY_NAME, MAX_NOTE, type Visibility } from "../../domain/accounts";
+import { type CredentialAccount, MAX_DISPLAY_NAME, type Visibility } from "../../domain/accounts";
+import { MAX_RAW_LENGTH } from "../../domain/status-text";
 import type { Authorizations } from "../../domain/web-session";
 import { httpUrl } from "../../platform/http-url";
 import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, PROFILE_DESCRIPTION_LIMIT } from "../../platform/stored-bounds";
@@ -182,7 +183,8 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
               </label>
               <label>
                 {m.settings.bio}
-                <TextArea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)} value={account.source.note} />
+                {/* The note's limit counts a link as 23 characters, so only its raw bound is a native limit. */}
+                <TextArea name="note" rows={4} maxlength={MAX_RAW_LENGTH} value={account.source.note} />
               </label>
               <fieldset class="pairs">
                 <legend>{m.settings.fields}</legend>

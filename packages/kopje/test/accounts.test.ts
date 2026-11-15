@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_RAW_LENGTH, noteLength } from "../src/domain/status-text";
 import { credentialChanges, profileFiles } from "../src/mastodon/accounts";
 import { validationBody, type ValidationBody } from "../src/mastodon/errors";
 import { API_BODY_LIMIT, Params } from "../src/mastodon/params";
@@ -585,6 +586,57 @@ describe("update_credentials validation errors", () => {
       { error: "ERR_LESS_THAN", description: "must be less than 8 MB" },
     ]);
   }, 60_000);
+
+  // NoteLengthValidator through update_credentials: each pair is the last count Mastodon 4.7.5 accepts and the first it
+  // refuses (M1; test/status-text.test.ts pins the counts), the refusal with M1's body.
+  it("counts a note as NoteLengthValidator", async () => {
+    const h = await aliceSession();
+    const a = (n: number) => "a".repeat(n);
+    const patch = (note: string) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json({ note }, { method: "PATCH" })));
+    for (const [accepted, refusedNote] of [
+      ["é".repeat(500), "é".repeat(501)],
+      [`x https://example.com/path ${a(475)}`, `x https://example.com/path ${a(476)}`],
+      [`@verifier@example.com ${a(490)}`, `@verifier@example.com ${a(491)}`],
+      [`@verifier@x ${a(490)}`, `@verifier@x ${a(491)}`],
+      [`@verifier@Ⅳ ${a(490)}`, `@verifier@Ⅳ ${a(491)}`],
+      [`Ⅳ@verifier@x ${a(487)}`, `Ⅳ@verifier@x ${a(488)}`],
+      [`@verifier@Ⓐ ${a(490)}`, `@verifier@Ⓐ ${a(491)}`],
+      [`Ⓐ@verifier@x ${a(487)}`, `Ⓐ@verifier@x ${a(488)}`],
+      [`‌@verifier@x ${a(487)}`, `‌@verifier@x ${a(488)}`],
+      [`@verifier@x‌y ${a(490)}`, `@verifier@x‌y ${a(491)}`],
+    ]) {
+      const saved = await patch(accepted!);
+      expect(saved.status, accepted).toBe(200);
+      expect(await saved.json(), accepted).toMatchObject({ source: { note: accepted } });
+      const refusal = await patch(refusedNote!);
+      expect(refusal.status, refusedNote).toBe(422);
+      expect(await refusal.text(), refusedNote).toBe(
+        '{"error":"Validation failed: Note is too long (maximum is 500 characters)","details":{"note":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 500 characters)"}]}}',
+      );
+    }
+  });
+
+  // The note as sent is refused past MAX_RAW_LENGTH UTF-16 code units, the bound of a status's text, before it is
+  // parsed: three links of '&' count 69 characters whatever their length.
+  it("refuses a note past the raw bound before parsing it", async () => {
+    const h = await aliceSession();
+    const link = (length: number) => "https://example.com/".padEnd(length, "&");
+    const patch = (note: string) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json({ note }, { method: "PATCH" })));
+    const at = [link(3332), link(3333), link(3333)].join(" ");
+    const over = [link(3333), link(3333), link(3333)].join(" ");
+    expect([at.length, over.length]).toEqual([MAX_RAW_LENGTH, MAX_RAW_LENGTH + 1]);
+    expect(noteLength(at)).toBe(69);
+    expect((await patch(at)).status).toBe(200);
+    const refusal = await patch(over);
+    expect(refusal.status).toBe(422);
+    expect(await refusal.json()).toMatchObject({
+      error: "Validation failed: Note is too long (maximum is 500 characters)",
+    });
+    const me = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+    expect(await me.json()).toMatchObject({ source: { note: at } });
+  });
 
   // The 422 echoes each invalid attribution domain twice (its message and its details), at most MAX_ATTRIBUTION_DOMAINS
   // of them. Its maximum: every other problem credentialChanges and profileFiles can report, once each, the reported
