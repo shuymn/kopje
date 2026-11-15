@@ -101,7 +101,9 @@ function rWithoutAdded(authorRows: (ids: readonly string[]) => readonly number[]
 // The author account rows R reads for each item of `ids` in the world `sql`: those of the status, its boosted
 // original and the quoted status of the status or of its original (the status rows of statusRowBoundSql's x), each
 // that is stored. Each holds the added columns' defaults and has not moved (its moved-to account's added flags would
-// count too), so that ADDED_ROW_BYTES is the whole of its difference.
+// count too), so that ADDED_ROW_BYTES is the whole of its difference. Each read takes one row by its primary key,
+// which SQLite plans without the statistics: the hook runs under the case's, and under singleton statistics a join of
+// these tables scans them for each item.
 const OTHER_THAN_DEFAULTS = [
   ...Object.entries(ADDED_DEFAULTS).map(
     ([column, value]) => `a.${column} IS NOT ${typeof value === "string" ? `'${value}'` : value}`,
@@ -109,22 +111,35 @@ const OTHER_THAN_DEFAULTS = [
   "a.moved_to_account_id IS NOT NULL",
 ].join(" OR ");
 function authorRowsIn(sql: SqlStorage, ids: readonly string[]): number[] {
+  const status = (id: string | null) =>
+    id === null
+      ? undefined
+      : sql
+          .exec<{ reblog: string | null; account: string }>(
+            "SELECT reblog_of_id AS reblog, account_id AS account FROM statuses WHERE id = ?",
+            id,
+          )
+          .toArray()[0];
+  const quoted = (id: string) =>
+    sql
+      .exec<{ quoted: string | null }>("SELECT quoted_status_id AS quoted FROM quotes WHERE status_id = ?", id)
+      .toArray()[0]?.quoted ?? null;
+  const other = (account: string) =>
+    sql
+      .exec<{ other: number }>(`SELECT (${OTHER_THAN_DEFAULTS}) AS other FROM accounts a WHERE a.id = ?`, account)
+      .toArray()[0]?.other;
   return ids.map((id) => {
-    const { n, other } = sql
-      .exec<{ n: number; other: number }>(
-        `SELECT count(*) AS n, count(CASE WHEN ${OTHER_THAN_DEFAULTS} THEN 1 END) AS other
-					FROM (SELECT ?1 AS id
-						UNION ALL SELECT b.reblog_of_id FROM statuses b WHERE b.id = ?1
-						UNION ALL SELECT q.quoted_status_id FROM statuses b
-							JOIN quotes q ON q.status_id = coalesce(b.reblog_of_id, b.id) WHERE b.id = ?1) x
-					JOIN statuses w ON w.id = x.id JOIN accounts a ON a.id = w.account_id`,
-        id,
-      )
-      .one();
-    if (other > 0) {
+    const item = status(id);
+    if (item === undefined) {
+      return 0;
+    }
+    const accounts = [item, status(item.reblog), status(quoted(item.reblog ?? id))]
+      .map((row) => (row === undefined ? undefined : other(row.account)))
+      .filter((flag) => flag !== undefined);
+    if (accounts.some((flag) => flag !== 0)) {
       throw new Error(`R: an author account of ${id} holds other than the added columns' defaults, or has moved`);
     }
-    return n;
+    return accounts.length;
   });
 }
 
