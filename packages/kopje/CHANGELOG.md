@@ -77,6 +77,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
   run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
   so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
+  `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
+  Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
+  and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -239,8 +243,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 - An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
-  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
-  Store migration and no `wrangler.jsonc` change.
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget, and a
+  local account's actor is published within the same bounds at its endpoint and in its `Update`s. No Store migration
+  and no `wrangler.jsonc` change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
   spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
   every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
