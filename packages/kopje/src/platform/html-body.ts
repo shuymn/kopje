@@ -2,8 +2,9 @@ import { type BodyPrefix, readBodyPrefix } from "./body";
 import { type Charset, chooseCharset } from "./html-charset";
 import type { MediaType } from "./media-type";
 
-// The read of a fetched HTML body (the web-page sink, federation/web-page.ts, NET-3): the Content-Encodings workerd
-// decodes, the bounded read after its decoding, and the page's charset.
+// The read of a fetched HTML body that the web-page sink (federation/web-page.ts, NET-3) and search resolution's page
+// (federation/loader.ts readPage) share: the Content-Encodings workerd decodes, the bounded read after its decoding,
+// and the page's charset.
 
 // The Content-Encoding values workerd decodes (exactly "gzip" or "br"; any other value it passes through undecoded,
 // test/web-page-encoding.test.ts), and identity.

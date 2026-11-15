@@ -5,8 +5,10 @@ import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors
 import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
 import { readConfig, userKek } from "../platform/config";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
+import { scanAlternate } from "../platform/html-scan";
 import { sameOrigin } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
+import { parseLinkHeader } from "../platform/link-header";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { goneSettler } from "./actor-gone";
 import {
@@ -15,11 +17,20 @@ import {
   type FederationDeps,
   type FederationState,
   type RemoteLoaders,
+  type ResolveLoader,
 } from "./federation";
 import { typeIs } from "./json-shapes";
-import { requestBudget } from "./loader";
+import {
+  type FetchBudget,
+  type OtherAnswer,
+  RefusedFetchError,
+  type ResolveAnswer,
+  requestBudget,
+  TransientFetchError,
+  UnusableDocumentError,
+} from "./loader";
 import { type FetchedActor, fetchActor } from "./remote-actor";
-import { ACTOR_TYPES, idOf, parseRemoteStatus } from "./remote-status";
+import { ACTOR_TYPES, CONVERTED_TYPES, idOf, parseRemoteStatus, STATUS_TYPES } from "./remote-status";
 
 // Search resolution (GET /api/v2/search?resolve=true, and GET /api/v1/accounts/search?resolve=true for addresses):
 // a URL or a user@domain address is fetched through the safe loader (NET-1), signed by the instance actor and never
@@ -28,9 +39,11 @@ import { ACTOR_TYPES, idOf, parseRemoteStatus } from "./remote-status";
 // and answers only what the viewer may see (resolveSearch). Only authenticated requests get here (resolveQuery in
 // mastodon/search.ts checks the token first).
 //
-// As Mastodon's ResolveURLService and ResolveAccountService, with these differences: a URL must answer with an
-// ActivityPub document itself (an HTML page's alternate link is not followed), and an address is stored under the host
-// of the actor its WebFinger names (no second WebFinger round trip to confirm a split domain). An actor's revision is
+// As Mastodon's ResolveURLService and ResolveAccountService, with these differences: a URL that answers 200 with
+// another type is followed to its alternate as FetchResourceService follows it (alternateOf: the Link header's, then a
+// text/html page's first <link rel="alternate">, whose differences docs/mastodon-deviations.md lists under Search), and
+// an address is stored under the host of the actor its WebFinger names (no second WebFinger round trip to confirm a
+// split domain). An actor's revision is
 // read from the Store before its document is fetched (a URL naming an actor is fetched again after that read,
 // actorAfterRevision), and the document is stored only while it holds (ID-1, domain/remote-actors.ts DocumentRevision):
 // the probe, and the WebFinger that follows the fetch on a host another server may name, can delay the store past a
@@ -38,7 +51,8 @@ import { ACTOR_TYPES, idOf, parseRemoteStatus } from "./remote-status";
 // 410 at it deletes the actor under the revision read before the fetch (ID-1, actor-gone.ts); a probe's 410 deletes
 // nothing, having no revision read before it.
 
-// requestJobs: asks for a jobs round (a gone actor's purge, actor-gone.ts); absent, cron runs it.
+// requestJobs: asks for a jobs round (a gone actor's purge, actor-gone.ts); absent, cron runs it. budget: the request's
+// fetch budget (RES-6) at its start; absent, requestBudget's (a test passes one with prior use).
 export type ResolverDeps = {
   build: (env: Env) => string;
   store: StoreResolver;
@@ -46,6 +60,7 @@ export type ResolverDeps = {
   keygen: FederationDeps["keygen"];
   loader: FederationDeps["loader"];
   requestJobs?: (env: Env) => Promise<unknown>;
+  budget?: (now: number) => FetchBudget;
 };
 
 // start: what the Store's resolution gate answered before any network work (domain/inbox.ts resolutionGate), its
@@ -70,6 +85,7 @@ export function createResolver(deps: ResolverDeps): Resolver {
       storeError: null,
       ticket: start?.prefetch?.ticket ?? null,
     };
+    const budget = (deps.budget ?? requestBudget)(Date.now());
     const loaders = createRemoteLoaders(
       {
         domain,
@@ -82,7 +98,7 @@ export function createResolver(deps: ResolverDeps): Resolver {
       },
       state,
       null,
-      requestBudget(Date.now()),
+      budget,
       start?.prefetch?.signer,
     );
     // The verdict that comes with the revision serves the actor's fetch, the next request, alone (refusesHost).
@@ -97,7 +113,7 @@ export function createResolver(deps: ResolverDeps): Resolver {
         await deps.requestJobs?.(env);
       }
     };
-    const resolved = await resolveWith({ ...loaders, revisionOf, settleGone }, query.trim(), domain);
+    const resolved = await resolveWith({ ...loaders, revisionOf, settleGone, budget }, query.trim(), domain);
     if (state.storeError !== null) {
       throw state.storeError;
     }
@@ -105,10 +121,13 @@ export function createResolver(deps: ResolverDeps): Resolver {
   };
 }
 
-// The loaders, the Store read of an actor's revision, and what a gone actor's document does (actor-gone.ts).
+// The loaders, the Store read of an actor's revision, what a gone actor's document does (actor-gone.ts), and the
+// request's fetch budget (RES-6), whose deadline bounds a page's scan.
 type Resolving = RemoteLoaders & {
+  resolve: ResolveLoader;
   revisionOf: (uri: string) => Promise<DocumentRevision>;
   settleGone: (fetched: FetchedActor, uri: string, revision: DocumentRevision) => Promise<void>;
+  budget: FetchBudget;
 };
 
 // An actor's document, fetched after its revision was read (`revision`, when the caller read it already) with a memo
@@ -253,7 +272,7 @@ async function resolveAddress(loaders: Resolving, username: string, domain: stri
 
 // A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
 // remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
-// probed.
+// probed, and a 200 answer that is not ActivityPub is followed to the document its alternate names (alternateOf).
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const stored = await loaders.revisionOf(url);
   if (stored !== null) {
@@ -261,7 +280,8 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   }
   let document: unknown;
   try {
-    document = (await loaders.document(url)).document;
+    const answer = await loaders.resolve(url, false);
+    document = answer.kind === "document" ? answer.remote.document : await alternateOf(loaders, answer);
   } catch {
     return NONE;
   }
@@ -284,4 +304,121 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   return author.kind === "ok" && author.input !== null
     ? { kind: "status", status, author: author.input, revision }
     : NONE;
+}
+
+// The types Mastodon's ACTIVITY_STREAM_LINK_TYPES names, in the order process_link_headers tries them.
+const ALTERNATE_TYPES = [
+  "application/activity+json",
+  'application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+];
+
+const ACTIVITYSTREAMS = "https://www.w3.org/ns/activitystreams";
+
+// The types FetchResourceService#process_response takes (FetchRemoteActorService::SUPPORTED_TYPES, and expected_type?:
+// Create's supported and converted types and FeaturedCollection, which Kopje does not resolve).
+const TAKEN_TYPES = [...ACTOR_TYPES, ...STATUS_TYPES, ...CONVERTED_TYPES, "FeaturedCollection"];
+
+// Mastodon's nil answer of an alternate (process_response returns nil, so process_link_headers' nil falls back to the
+// page's alternate), as opposed to the failures it raises, which end the resolution with nothing.
+const NIL = Symbol("nil");
+
+// The document a 200 answer that is not ActivityPub names, as FetchResourceService#process_response follows it
+// (v4.7.5): `process_link_headers(response) || process_html(response)`. The Link header's alternate (headerAlternate)
+// first; when it ends in a nil answer, the page's (a text/html answer's first matching <link>, scanAlternate), whose
+// body is read only then. Each alternate is fetched once, terminal (fetchAlternate). Undefined when neither yields a
+// document; a raised failure (a transport error, the deadline, the budget, NET-1, the domain policy, a body past
+// DOCUMENT_BODY_LIMIT, an href that is not an absolute http(s) URL) throws, ending the resolution with nothing. The
+// body is cancelled when it is not read.
+async function alternateOf(loaders: Resolving, answer: OtherAnswer): Promise<object | undefined> {
+  try {
+    const header = headerAlternate(answer.link);
+    if (header !== null) {
+      const fetched = await fetchAlternate(loaders, header);
+      if (fetched !== NIL) {
+        return fetched;
+      }
+    }
+    if (answer.page === null) {
+      return undefined;
+    }
+    const page = await answer.page();
+    const scan = await scanAlternate(page.bytes, page.charset, ALTERNATE_TYPES, deadlineSignal(loaders.budget));
+    const href = "failed" in scan ? null : (scan.link?.href ?? null);
+    if (href === null) {
+      return undefined;
+    }
+    const fetched = await fetchAlternate(loaders, href);
+    return fetched === NIL ? undefined : fetched;
+  } finally {
+    answer.discard();
+  }
+}
+
+// The two find_link calls of process_link_headers: the first link whose parameters include rel exactly "alternate"
+// and type exactly application/activity+json, else the first with the ld+json profile type; null without one, or when
+// the value is past the parser's bounds (platform/link-header.ts).
+function headerAlternate(value: string | null): string | null {
+  const links = value === null ? null : parseLinkHeader(value);
+  for (const type of ALTERNATE_TYPES) {
+    const found = links?.find(
+      (link) =>
+        link.params.some(([name, v]) => name === "rel" && v === "alternate") &&
+        link.params.some(([name, v]) => name === "type" && v === type),
+    );
+    if (found !== undefined) {
+      return found.href;
+    }
+  }
+  return null;
+}
+
+// A signal that aborts at the request's deadline (RES-6).
+function deadlineSignal(budget: FetchBudget): AbortSignal {
+  return AbortSignal.timeout(Math.max(0, budget.deadline - Date.now()));
+}
+
+// One alternate, fetched as Mastodon's process(href, terminal: true): the loader's rules (NET-1, ID-2, the domain
+// policy, the request's budget), Mastodon's Accept, no redirect, a 200 answer only. Its document when it is
+// ActivityPub, of a context and type Mastodon takes, and its id is the href literally and the URL fetched (Mastodon's
+// `json['id'] != @url || json['id'] != response.uri.to_s`); NIL for Mastodon's nil answers (another status, a redirect,
+// another type, a body that is not a usable document, another context, type or id); a raised failure throws, an href
+// that is not an absolute https URL included (the loader refuses it before any request, NET-1). No second hop, and a
+// 410 is a nil answer: nothing is deleted or started.
+async function fetchAlternate(loaders: Resolving, href: string): Promise<object | typeof NIL> {
+  let answer: ResolveAnswer;
+  try {
+    answer = await loaders.resolve(href, true);
+  } catch (error) {
+    if (isNilAnswer(error)) {
+      return NIL;
+    }
+    throw error;
+  }
+  if (answer.kind === "other") {
+    answer.discard();
+    return NIL;
+  }
+  const { document, documentUrl } = answer.remote;
+  if (typeof document !== "object" || document === null) {
+    return NIL;
+  }
+  const record = document as { "@context"?: unknown; type?: unknown; id?: unknown };
+  const context = record["@context"];
+  const supported = Array.isArray(context) ? context.includes(ACTIVITYSTREAMS) : context === ACTIVITYSTREAMS;
+  return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href ? document : NIL;
+}
+
+// Whether a failed alternate fetch is one of Mastodon's nil answers rather than a raised failure: a status other than
+// 200, a redirect's included (FetchError with the response), or a body that is no usable document
+// (UnusableDocumentError).
+function isNilAnswer(error: unknown): boolean {
+  if (error instanceof UnusableDocumentError) {
+    return true;
+  }
+  return (
+    error instanceof FetchError &&
+    !(error instanceof RefusedFetchError) &&
+    !(error instanceof TransientFetchError) &&
+    error.response !== undefined
+  );
 }
