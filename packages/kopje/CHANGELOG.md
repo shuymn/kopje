@@ -242,6 +242,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   language-tagged value, or from `name` when `summary` is blank, and stripped as Mastodon strips it, as Mastodon 4.7
   does (`mastodon#39590`). A post whose attachments now read differently counts its next update as an edit once. No
   Store migration and no `wrangler.jsonc` change.
+- Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
+  linear time on long input. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

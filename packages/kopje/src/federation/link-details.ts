@@ -6,6 +6,7 @@ import { outputMaxUnits, type PageMeta, type PageScan, SCAN_LIMITS, type ScanLim
 import { httpUrl } from "../platform/http-url";
 import { railsBlank } from "../platform/rails-blank";
 import { CARD_URL_LIMIT, cardDimension, iframeDimension, presentedEmbedSrc } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 
 // A link card's fields from a scanned page (platform/html-scan.ts), as Mastodon's LinkDetailsExtractor reads them from
 // OpenGraph, JSON-LD and the title (app/lib/link_details_extractor.rb, v4.5.11). Pure: the round (link-cards.ts) bounds
@@ -45,10 +46,86 @@ type Json = Record<string, unknown>;
 
 const SUPPORTED_TYPES = new Set(["NewsArticle", "WebPage"]);
 // CDATA_JUNK_PATTERN (:10-18): a line holding only a CDATA opening or closing in comment style. Ruby's ^ and $ match at
-// line boundaries, and its \s* may span blank lines before it, as JavaScript's does with the m flag.
-const CDATA_JUNK = /^\s*(?:\/\*\s*<!\[CDATA\[\s*\*\/|\/\/\s*<!\[CDATA\[|\/\*\s*\]\]>\s*\*\/|\/\/\s*\]\]>)\s*$/gm;
-// Ruby's String#strip: NUL, tab, LF, VT, FF, CR and space at either end.
-const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
+// line boundaries, and its \s* may span blank lines before it, as JavaScript's does with the m flag. removeCdataJunk
+// removes what that pattern with the m flag replaces (JavaScript's \s and line terminators; test/link-details.test.ts
+// holds it to CDATA_JUNK_PATTERN), in time linear in the text's length.
+const SPACE = /\s/;
+
+const isLineEnd = (text: string, at: number): boolean => {
+  const code = text.charCodeAt(at);
+  return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+};
+
+function skipSpace(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && SPACE.test(text.charAt(end))) {
+    end++;
+  }
+  return end;
+}
+
+// The start of the line after the one `at` is on (past the text's end when it is the last).
+function nextLine(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && !isLineEnd(text, end)) {
+    end++;
+  }
+  return end + 1;
+}
+
+// The end of the comment-style CDATA opening or closing at `at` (/*<![CDATA[*/, //<![CDATA[, /*]]>*/ or //]]>, with
+// whitespace inside as the pattern allows), or -1.
+function cdataMarkEnd(text: string, at: number): number {
+  const block = text.startsWith("/*", at);
+  if (!block && !text.startsWith("//", at)) {
+    return -1;
+  }
+  const inner = skipSpace(text, at + 2);
+  const literal = ["<![CDATA[", "]]>"].find((candidate) => text.startsWith(candidate, inner));
+  if (literal === undefined) {
+    return -1;
+  }
+  if (!block) {
+    return inner + literal.length;
+  }
+  const close = skipSpace(text, inner + literal.length);
+  return text.startsWith("*/", close) ? close + 2 : -1;
+}
+
+// Where the line a mark ends at `end` is removed to: past the whitespace after it when that reaches the text's end,
+// else up to the last line terminator in that whitespace (the pattern's greedy \s*$); -1 when there is none.
+function junkEnd(text: string, end: number): number {
+  const after = skipSpace(text, end);
+  if (after === text.length) {
+    return after;
+  }
+  for (let at = after - 1; at >= end; at--) {
+    if (isLineEnd(text, at)) {
+      return at;
+    }
+  }
+  return -1;
+}
+
+export function removeCdataJunk(text: string): string {
+  let out = "";
+  let kept = 0;
+  let line = 0;
+  while (line < text.length) {
+    const mark = skipSpace(text, line);
+    const end = cdataMarkEnd(text, mark);
+    const removed = end === -1 ? -1 : junkEnd(text, end);
+    if (removed === -1) {
+      // Every later line start before `mark` reaches the same mark through whitespace, so it does not match either.
+      line = nextLine(text, mark);
+    } else {
+      out += text.slice(kept, line);
+      kept = removed;
+      line = isLineEnd(text, removed - 1) ? removed : nextLine(text, removed);
+    }
+  }
+  return out + text.slice(kept);
+}
 
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -110,7 +187,7 @@ function firstObject(value: unknown): Json | null {
 
 // The supported object of one script's text, or null (StructuredData#json and #valid?).
 function structuredObject(raw: string): Json | null {
-  const source = raw.replace(CDATA_JUNK, "");
+  const source = removeCdataJunk(raw);
   if (railsBlank(source)) {
     return null;
   }
@@ -273,7 +350,7 @@ export function linkDetails(scan: PageScan, finalUrl: string): LinkDetails {
   const src = player === null ? null : presentedEmbedSrc(player);
   const [width, height] = [og("twitter:player:width"), og("twitter:player:height")];
   return {
-    title: title === null ? "" : title.replace(RUBY_STRIP, ""),
+    title: title === null ? "" : rubyStrip(title),
     description: decode(sd?.description ?? og("og:description") ?? metaContent(metas, "description", true)) ?? "",
     authorName: decode(sd?.authorName ?? og("og:author") ?? og("og:author:username")) ?? "",
     authorUrl: httpUrl(sd?.authorUrl ?? null)?.href ?? "",

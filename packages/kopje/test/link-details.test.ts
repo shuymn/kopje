@@ -1,11 +1,14 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { CARD_ROUND_CLAIMS } from "../src/domain/link-cards";
 import {
   CARD_OUTPUT_MAX_UNITS,
   CARD_SCAN,
   decodeEntities,
   linkDetails,
   publishedTime,
+  removeCdataJunk,
   validUrl,
 } from "../src/federation/link-details";
 import { type PageScan, SCAN_LIMITS, scanHtml } from "../src/platform/html-scan";
@@ -14,6 +17,10 @@ import { type PageScan, SCAN_LIMITS, scanHtml } from "../src/platform/html-scan"
 // spec/lib/link_details_extractor_spec.rb (v4.5.11) ported, then Kopje's rules for what Mastodon leaves open.
 
 const ORIGINAL = "https://example.com/dog.html?tracking=123";
+
+// Mastodon's CDATA_JUNK_PATTERN read with JavaScript's m flag: the baseline removeCdataJunk is held to.
+const CDATA_JUNK_PATTERN =
+  /^\s*(?:\/\*\s*<!\[CDATA\[\s*\*\/|\/\/\s*<!\[CDATA\[|\/\*\s*\]\]>\s*\*\/|\/\/\s*\]\]>)\s*$/gm;
 
 async function details(html: string, url = ORIGINAL) {
   const scan = await scanHtml(new TextEncoder().encode(html), { label: "utf-8", bomLength: 0 }, CARD_SCAN);
@@ -78,6 +85,72 @@ describe("link details: the Mastodon spec", () => {
   </head>
 </html>`),
     ).toMatchObject(STRUCTURED);
+  });
+
+  it.each([
+    ["openings and closings on lines of their own", "//<![CDATA[\n{}\n//]]>", "\n{}\n"],
+    ["CRLF and block comments", "  /* <![CDATA[ */\r\n{}\r\n  /* ]]> */\r\n", "\n{}\r"],
+    ["whitespace spanning blank lines on both sides", "\n\n  //<![CDATA[\n\n\n{}\n\n//]]>\n\n", "\n{}\n"],
+    ["text after a mark on its line", "//<![CDATA[ x\n{}", "//<![CDATA[ x\n{}"],
+    ["text before a mark on its line", "{} //<![CDATA[\n", "{} //<![CDATA[\n"],
+    ["JavaScript's other line terminators", "\u2028//]]>\u2029{}", "\u2029{}"],
+    ["JavaScript's other whitespace", "\u00a0\ufeff//<![CDATA[\v\n{}", "\n{}"],
+    ["a mark that is the whole text", "/*<![CDATA[*/", ""],
+    ["whitespace spanning lines inside a mark", "/*<![CDATA[\n*/\n{}", "\n{}"],
+    ["two marks in a row", "//<![CDATA[\n//<![CDATA[\n{}", "\n\n{}"],
+    ["CR alone", "\r//]]>\r", ""],
+    ["an unclosed block comment", "/*]]>", "/*]]>"],
+  ])("removes CDATA lines as the pattern does: %s", (_name, text, expected) => {
+    expect(removeCdataJunk(text)).toBe(expected);
+    expect(removeCdataJunk(text)).toBe(text.replace(CDATA_JUNK_PATTERN, ""));
+  });
+
+  it("removes CDATA lines as the pattern does on generated text", () => {
+    const marks = [
+      "/*<![CDATA[*/",
+      "//<![CDATA[",
+      "/*]]>*/",
+      "//]]>",
+      "/*",
+      "*/",
+      "//",
+      "<![CDATA[",
+      "]]>",
+      "/",
+      "*",
+      "<",
+    ];
+    const spaces = [" ", "\t", "\v", "\f", "\n", "\r", "\r\n", "\u2028", "\u2029", "\u00a0", "\ufeff", "\u0085"];
+    const pieces = [...marks, ...spaces, "x", "{}"];
+    fc.assert(
+      fc.property(fc.array(fc.constantFrom(...pieces), { maxLength: 32 }), (parts) => {
+        const text = parts.join("");
+        expect(removeCdataJunk(text)).toBe(text.replace(CDATA_JUNK_PATTERN, ""));
+      }),
+      { numRuns: 20_000 },
+    );
+  });
+
+  // The removal is linear: a round's pages (CARD_ROUND_CLAIMS), each with the scan's most JSON-LD scripts (jsonLd), each
+  // at its cap (jsonLdChars) of line terminators before the text, are read within a generous time; the last script's
+  // headline shows every script was read.
+  it("removes CDATA lines from a round of scripts at the JSON-LD cap within a generous time", async () => {
+    const ld = JSON.stringify({ "@type": "WebPage", headline: "h" });
+    const scripts = [
+      ...Array.from({ length: SCAN_LIMITS.jsonLd - 1 }, () => `${"\n".repeat(SCAN_LIMITS.jsonLdChars - 1)}x`),
+      `${"\n".repeat(SCAN_LIMITS.jsonLdChars - ld.length)}${ld}`,
+    ];
+    const html = scripts.map((script) => `<script type="application/ld+json">${script}</script>`).join("");
+    const scan = await scanHtml(new TextEncoder().encode(html), { label: "utf-8", bomLength: 0 }, CARD_SCAN);
+    if ("failed" in scan) {
+      throw new Error(`scan failed: ${scan.failed}`);
+    }
+    expect(scan.jsonLd.map((raw) => raw.length)).toEqual(scripts.map(() => SCAN_LIMITS.jsonLdChars));
+    const started = performance.now();
+    for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
+      expect(linkDetails(scan, ORIGINAL).title).toBe("h");
+    }
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it.each([
@@ -255,6 +328,24 @@ describe("link details: the rules Kopje follows", () => {
     expect((await details(`<script type="application/ld+json">${ld}</script>`)).title).toBe("t");
     // U+00A0 is not Ruby's whitespace.
     expect((await details("<title> t</title>")).title).toBe(" t");
+  });
+
+  // The strip is linear (platform/strip.ts): a round's pages (CARD_ROUND_CLAIMS), each a JSON-LD script at the scan's
+  // cap (jsonLdChars) whose headline holds a run of spaces inside, are read within a generous time.
+  it("reads a round of headlines at the JSON-LD cap within a generous time", async () => {
+    const script = (headline: string) => JSON.stringify({ "@type": "WebPage", headline });
+    const headline = `x${" ".repeat(SCAN_LIMITS.jsonLdChars - script("xx").length)}x`;
+    const html = new TextEncoder().encode(`<script type="application/ld+json">${script(headline)}</script>`);
+    const scan = await scanHtml(html, { label: "utf-8", bomLength: 0 }, CARD_SCAN);
+    if ("failed" in scan) {
+      throw new Error(`scan failed: ${scan.failed}`);
+    }
+    expect(scan.jsonLd.map((raw) => raw.length)).toEqual([SCAN_LIMITS.jsonLdChars]);
+    const started = performance.now();
+    for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
+      expect(linkDetails(scan, ORIGINAL).title === headline).toBe(true);
+    }
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it("takes the first HTML <title> anywhere", async () => {
