@@ -2295,7 +2295,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   an href that is not an absolute URL) or the domain policy ends the resolution with nothing (`alternateOf` in
   `src/federation/resolve.ts`, which `/authorize_interaction` resolves through too; `test/resolve-alternate.test.ts`).
   The actor an alternate names, or its status's author, is fetched again after its state read and its handle confirmed
-  as on a direct URL. Nothing is resolved, and
+  as on a direct URL; `test/resolve-alternate.test.ts` ("stores an actor an alternate names under its handle only as a
+  direct URL would"). Nothing is resolved, and
   the search answers as without `resolve=true`, while the env's `MAINTENANCE` is not `off` (decided in the Worker) or
   the Store refuses writes (OPS-8). The Store decides the latter before any DNS check or fetch in one read after the
   host check's (WEB-6), `resolutionGate` in `src/domain/inbox.ts`: a failing token is answered first, and a refusal
@@ -3463,12 +3464,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
   each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
   transient failure: a cut probe, alternate or actor fetch resolves nothing (the search answers as without
-  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle. A collection sync's
-  document part, the refresh of an invalidated account, reads at most three documents with the other parts' room for a
-  redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every actor state read (revision and
-  stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7): the inbox gate's actor and
-  `Move` target, a refresh need's and a quote's author stage's author, a search resolution's actor, a sync's document
-  part, and the comparison in the writing transaction
+  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle;
+  `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
+  more"). A collection sync's document part, the refresh of an invalidated account, reads at most three documents with
+  the other parts' room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
+  actor state read (revision and stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7):
+  the inbox gate's actor and `Move` target, a refresh need's and a quote's author stage's author, a search
+  resolution's actor, a sync's document part, and the comparison in the writing transaction
   (`test/inbox-actor-revision.test.ts`, "the actor state reads’ plans"). Delivery backlog and concurrency are bounded.
   Anonymous app registration, inbox spooling and media transformations have rate or storage budgets with a visible
   refusal. Inbox spooling: _Enforced (main):_ the spool's budget (RES-4), refused with 503 (`createAdmission` in
