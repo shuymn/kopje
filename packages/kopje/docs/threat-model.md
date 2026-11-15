@@ -2111,15 +2111,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (NET-4) is a document fetch (NET-1), not this sink's, but its body is decoded as this sink decodes a page
   (`readHtmlBody` in `src/platform/html-body.ts`: the same Content-Encodings and charset), read whole within 1 MiB, and
   scanned by `scanAlternate` in `src/platform/html-scan.ts`, which returns one href of at most 2,048 decoded units
-  (and 8,192 as written): the
-  first alternate `<link>` as Mastodon's `FetchResourceService#process_html` selects it, and none at or after a
-  `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>` start tag or a rel past 2,048 decoded units
-  or 8,192 as written, or on a page with `<frameset>` bytes, where lol-html cannot place a `<link>` as an HTML5 tree does. Its time witness
-  is this sink's, through the resolve path: a 1 MiB page of `<link>` elements none of which matches, with and without
-  a refused context first, is read and scanned within the request's deadline (`test/resolve-alternate.test.ts` ("reads
-  and scans a 1 MiB page of <link> elements, %s, within the request's deadline"); `test/resolve-extractor.test.ts`
-  ("never takes an alternate other than the HTML5 tree's first", "takes no alternate %s")).
-  The DNS check does not pin the address
+  (and 8,192 as written): the first alternate `<link>` as Mastodon's `FetchResourceService#process_html` selects it,
+  and none at or after a `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>` start tag or a rel past
+  2,048 decoded units or 8,192 as written, or on a page with `<frameset>` bytes, where lol-html cannot place a `<link>`
+  as an HTML5 tree does. Its time witness is this sink's, through the resolve path: a 1 MiB page of `<link>` elements
+  none of which matches, with and without a refused context first, is read and scanned within the request's deadline
+  (`test/resolve-alternate.test.ts` ("reads and scans a 1 MiB page of <link> elements, %s, within the request's
+  deadline"); `test/resolve-extractor.test.ts` ("never takes an alternate other than the HTML5 tree's first", "takes
+  no alternate %s")). The DNS check does not pin the address
   the request connects to: protection against DNS rebinding rests on production `deps.fetch` being the Worker's global
   fetch, never a service binding, which NET-1 makes strictly public. Each caller's differences from Mastodon's parser
   are listed in docs/mastodon-deviations.md. Local profile link verification (`src/federation/field-links.ts`) runs only
