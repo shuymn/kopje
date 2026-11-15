@@ -2,6 +2,10 @@
 // built without ICU, folds ASCII A-Z only, with no trim. A Unicode case variant (U+212A, U+1E9E, U+0130) is another
 // email. Every stage that matches an email uses it: in SQL loginEmailMatchSql, in code sameLoginEmail.
 
+import { sqliteLower } from "./identity-bounds";
+
+export { sqliteLower };
+
 export function loginEmailMatchSql(column: string): string {
   return `lower(${column}) = lower(?)`;
 }
@@ -10,9 +14,4 @@ export function loginEmailMatchSql(column: string): string {
 // equates but never equates two that SQL tells apart.
 export function sameLoginEmail(a: string, b: string): boolean {
   return sqliteLower(a) === sqliteLower(b);
-}
-
-// SQLite's lower() without ICU: ASCII A-Z to a-z, every other code unit unchanged.
-export function sqliteLower(text: string): string {
-  return text.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
 }

@@ -75,6 +75,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
+  subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
+  before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
+  The instance actor is still no account to lookup, search, mentions or the public pages, and never takes the handle
+  of a local account whose username is the domain. No Store migration and no `wrangler.jsonc` change.
+- A local account whose username is the instance domain, in any case, is refused: the cutover's conversion stops on
+  it (`accounts:local-username-is-domain`) and verification fails on it, a Store import fails its verification, and
+  the configuration refuses such a domain. It would hold the instance actor's WebFinger handle.
 - `source.follow_requests_count` (`verify_credentials`, `update_credentials`) counts only requests from available
   accounts, at most 40, as Mastodon 4.5.21 does. It counted every pending request, those of suspended accounts
   included, without a limit, and read all of them. It counts among the newest 120 requests, as the first page of

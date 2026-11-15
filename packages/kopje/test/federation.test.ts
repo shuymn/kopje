@@ -261,6 +261,76 @@ describe("instance actor", () => {
       expect((await request(`/.well-known/webfinger?${query.toString()}`)).status, resource).toBe(404);
     }
   });
+
+  // Mastodon 4.7.5 answers acct:<local domain>@<local domain> with its instance actor (WebfingerResource#account_from_acct)
+  // and confirms a new actor's handle by WebFinger before it stores it (ProcessAccountService#check_webfinger!): the
+  // subject loops back to acct:<preferredUsername>@<host> and the self link to the actor id. WebfingerSerializer gives
+  // the instance actor the aliases [instance_actor_url].
+  it("is discoverable through WebFinger by its handle, the domain at the domain", async () => {
+    const { json } = await instance();
+    const actor = (await json("/actor")).body as { id: string; preferredUsername: string };
+    const { status, type, body } = await json("/.well-known/webfinger?resource=acct:social.example@social.example");
+    expect(status).toBe(200);
+    expect(type).toBe("application/jrd+json");
+    expect(body).toEqual({
+      subject: `acct:${actor.preferredUsername}@social.example`,
+      aliases: [actor.id],
+      links: [
+        { rel: "self", type: "application/activity+json", href: actor.id },
+        { rel: "http://webfinger.net/rel/profile-page", href: "https://social.example/about" },
+        {
+          rel: "http://ostatus.org/schema/1.0/subscribe",
+          template: "https://social.example/authorize_interaction?uri={uri}",
+        },
+      ],
+    });
+    expect(actor).toMatchObject({ id: "https://social.example/actor", preferredUsername: "social.example" });
+    // The host is matched without case, as Mastodon's TagManager#local_domain? matches it, and the subject names it in
+    // lower case.
+    const upper = await json("/.well-known/webfinger?resource=acct:social.example@SOCIAL.EXAMPLE");
+    expect(upper.body).toMatchObject({ subject: "acct:social.example@social.example" });
+  });
+
+  // ID-5: a local account keeps its WebFinger identity. Imports, conversion and configuration refuse a local username
+  // that is the domain; a Store that holds one anyway (written before those refusals) answers the account for it, and
+  // the instance actor then has no handle answer, only its URI one.
+  it("never answers its handle for a local account whose username is the domain", async () => {
+    const { json, store } = await instance();
+    await seedLocalAccount(store, DOMAIN, { id: "333333333333333333", username: "social.example" });
+    const self = {
+      rel: "self",
+      type: "application/activity+json",
+      href: "https://social.example/ap/users/social.example",
+    };
+    for (const handle of ["social.example", "SOCIAL.EXAMPLE"]) {
+      const { status, body } = await json(`/.well-known/webfinger?resource=acct:${handle}@social.example`);
+      expect([handle, status]).toEqual([handle, 200]);
+      expect(body).toMatchObject({ subject: `acct:${handle}@social.example`, links: expect.arrayContaining([self]) });
+    }
+    const byUri = await json("/.well-known/webfinger?resource=https://social.example/actor");
+    expect(byUri.body).toMatchObject({
+      links: expect.arrayContaining([
+        { rel: "self", type: "application/activity+json", href: "https://social.example/actor" },
+      ]),
+    });
+  });
+
+  it("answers no other handle at the domain, nor the domain's handle elsewhere", async () => {
+    const { request } = await instance();
+    for (const resource of [
+      // Mastodon compares the username with the local domain exactly (account_from_acct), then as a local username.
+      "acct:SOCIAL.EXAMPLE@social.example",
+      "acct:social.example.@social.example",
+      "acct:example@social.example",
+      "acct:kopje:instance@social.example",
+      "acct:social.example@other.example",
+      "acct:other.example@social.example",
+      "acct:kopje.test@kopje.test",
+    ]) {
+      const query = new URLSearchParams({ resource });
+      expect((await request(`/.well-known/webfinger?${query.toString()}`)).status, resource).toBe(404);
+    }
+  });
 });
 
 // Mastodon's instance actor outbox (ActivityPub::OutboxesController for Account.representative, v4.5.11) is an
