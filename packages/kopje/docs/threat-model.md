@@ -417,9 +417,11 @@ against their own instance. TLS is assumed between all parties.
   `Undo` that arrives first is recorded and keeps the object, favourite or boost from appearing, and a replay after it
   changes nothing; an `Update` replaces the content only if its `updated` is newer than the last accepted version
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
-  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version is equal or
-  missing still refreshes the status's poll (counts, end, voters), its quote policy and the stamp of the same quote
-  (Mastodon's `handle_implicit_update!`), and an older one changes nothing; an `Update` dated more than 5 minutes ahead
+  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
+  stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
+  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
+  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
@@ -480,14 +482,15 @@ against their own instance. TLS is assumed between all parties.
   recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
   (`test/remote-delete-cleanup.test.ts`). `test/inbox-statuses.test.ts` ("ID-7: duplicate and reordered Create and
   Delete", "ignores an Update that is not newer"), `test/inbox-statuses-edge.test.ts` ("ID-7: the Update watermark",
-  "leaves nothing for every order of Create, Update and Delete", "ID-7: retractions at the per-actor cap", "removes only
+  "leaves nothing for every order of Create, Update and Delete", "ID-7: an Update that names no version, of an edited
+  status", "ID-7: retractions at the per-actor cap", "removes only
   its own id", "withdraws a local boost once", "ID-7: a retryable refusal commits nothing", "ID-6, ID-7: a deleted
   status is not created again by anyone", "after its deliveries are done"), `test/inbox-reactions.test.ts` (every
   arrival order of three reactions and their Undos, a burst retried after its 503s, "is retired by the Store’s clock",
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
-  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, local
-  favourites and boosts, job rounds and deliveries, checked after every step against the rules in
+  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, its polls'
+  vote `Update`s, local favourites and boosts, job rounds and deliveries, checked after every step against the rules in
   `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.5.11 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the

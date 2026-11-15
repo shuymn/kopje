@@ -3,13 +3,15 @@
 //
 // - Policy: Kopje's documented rules, written from the docs and never from src/: docs/threat-model.md ID-7 (its status
 //   paragraph: the Update watermark, the 5-minute skew, the retractions of a Delete, the cap, local boosts withdrawn
-//   once and the 404s while a removal runs), ID-6 (the authorization table: Create, Update and Delete of statuses),
+//   once and the 404s while a removal runs, and which Update refreshes a poll's counts), ID-6 (the authorization
+//   table: Create, Update and Delete of statuses),
 //   RES-6 (a remote status's removal in bounded batches after its hide), VIS-3 (a proven Delete forwarded through the
 //   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
 //   jobs, and Kopje's outbound intents with their deliveries in each lane.
 // - Peer: the author R's server, Mastodon v4.7.5, as a sender only (each rule cites the file and line it models): the
-//   statuses it posted, edited and deleted, and every message it sent, each an independent delivery job.
+//   statuses it posted, edited and deleted, the votes in their polls, and every message it sent, each an independent
+//   delivery job.
 //
 // A change to a status Create, Update or Delete rule in docs/threat-model.md changes this file with it.
 
@@ -38,11 +40,13 @@ export type Snapshot = { content: "A" | "B" | "C" | ""; sensitive: boolean; medi
 export const sameSnapshot = (a: Snapshot, b: Snapshot) =>
   a.content === b.content && a.sensitive === b.sensitive && a.media === b.media;
 
-// A status object as a sender writes it (the parts the rules read).
+// A status object as a sender writes it (the parts the rules read). Every status is a poll; tally: its first
+// choice's count, what an Update that names no newer version changes.
 export type Obj = {
   uri: string;
   attributedTo: string | null;
   snapshot: Snapshot;
+  tally: number;
   published: number | null;
   updated: number | null;
   inReplyTo: string | null;
@@ -68,6 +72,8 @@ export type Version = { snapshot: Snapshot; at: string };
 export type Stored = {
   author: string;
   snapshot: Snapshot;
+  // Its poll's count (Obj.tally).
+  tally: number;
   // statuses.published_at, as stored (never in the future).
   published: string;
   // statuses.remote_version (ID-7: "the last accepted version ... kept as the remote wrote it"), as an ISO time.
@@ -224,6 +230,7 @@ export class Policy {
     this.statuses.set(o.uri, {
       author: actor,
       snapshot: o.snapshot,
+      tally: o.tally,
       published: iso(published),
       version: iso(version),
       editedAt: updated !== null && updated !== published ? iso(updated) : null,
@@ -269,10 +276,18 @@ export class Policy {
       return { applied: false, reason: "not-author" };
     }
     const watermark = Date.parse(stored.version);
-    // An older version changes nothing; one that names no newer version (none, or the same) is the implicit Update,
-    // which here (no poll, no policy) changes nothing either.
-    if (o.updated === null || o.updated <= watermark) {
+    // An older version changes nothing, nor one that names none for an edited status (ID-7: "an older one, or one that
+    // names none for an edited status, changes nothing"). One that names the stored version, or none for a status
+    // never edited, is the implicit Update: it refreshes the poll's counts and nothing else.
+    if (o.updated === null ? stored.editedAt !== null : o.updated < watermark) {
       return { applied: false, reason: "stale" };
+    }
+    if (o.updated === null || o.updated === watermark) {
+      if (o.tally === stored.tally) {
+        return { applied: false, reason: "stale" };
+      }
+      stored.tally = o.tally;
+      return { applied: true, reason: "poll-updated" };
     }
     // A content or media change is significant (an edit row, the original first, and an `update` notification to each
     // local booster); a sensitive flip alone is not. Either way the watermark moves (ID-7).
@@ -281,6 +296,7 @@ export class Policy {
       stored.history.push({ snapshot: stored.snapshot, at: stored.published });
     }
     stored.snapshot = o.snapshot;
+    stored.tally = o.tally;
     stored.version = iso(o.updated);
     if (significant) {
       stored.editedAt = iso(Math.min(o.updated, now));
@@ -619,7 +635,7 @@ export const RETRY_WINDOW_MS =
 
 export type PeerStatus =
   | { state: "unposted" }
-  | { state: "posted"; published: number; versions: { snapshot: Snapshot; at: number }[] }
+  | { state: "posted"; published: number; versions: { snapshot: Snapshot; at: number }[]; tally: number }
   | { state: "deleted"; published: number | null };
 
 export type Sent = { msg: Msg; at: number };
@@ -655,8 +671,16 @@ export class Peer {
     this.sent.push(sent);
   }
 
-  private object(uri: string, snapshot: Snapshot, published: number, updated: number | null): Obj {
-    return { uri, attributedTo: this.actor, snapshot, published, updated, inReplyTo: this.parents.get(uri) ?? null };
+  private object(uri: string, snapshot: Snapshot, tally: number, published: number, updated: number | null): Obj {
+    return {
+      uri,
+      attributedTo: this.actor,
+      snapshot,
+      tally,
+      published,
+      updated,
+      inReplyTo: this.parents.get(uri) ?? null,
+    };
   }
 
   // PostStatusService: a reply only to a status that exists on its server (a deleted one cannot be replied to).
@@ -669,8 +693,8 @@ export class Peer {
       return false;
     }
     const at = this.tick(now);
-    this.statuses.set(uri, { state: "posted", published: at, versions: [{ snapshot, at }] });
-    this.send({ type: "Create", id: `${uri}/activity`, object: this.object(uri, snapshot, at, null) }, at);
+    this.statuses.set(uri, { state: "posted", published: at, versions: [{ snapshot, at }], tally: 0 });
+    this.send({ type: "Create", id: `${uri}/activity`, object: this.object(uri, snapshot, 0, at, null) }, at);
     return true;
   }
 
@@ -685,7 +709,35 @@ export class Peer {
     const at = this.tick(now);
     status.versions.push({ snapshot, at });
     this.send(
-      { type: "Update", id: `${uri}#updates/${at}`, object: this.object(uri, snapshot, status.published, at) },
+      {
+        type: "Update",
+        id: `${uri}#updates/${at}`,
+        object: this.object(uri, snapshot, status.tally, status.published, at),
+      },
+      at,
+    );
+    return true;
+  }
+
+  // VoteService: a vote counts in the poll (vote_service.rb:21-31), and DistributePollUpdateWorker sends an Update of
+  // the status 3 minutes later (:48), as NoteSerializer writes it: `updated` only once the status was edited
+  // (note_serializer.rb:17), with its current version and counts. Sent here at the vote; the generated delivery orders
+  // cover the delay.
+  vote(uri: string, now: number): boolean {
+    const status = this.statuses.get(uri)!;
+    if (status.state !== "posted") {
+      return false;
+    }
+    const at = this.tick(now);
+    status.tally++;
+    const last = status.versions.at(-1)!;
+    const updated = status.versions.length > 1 ? last.at : null;
+    this.send(
+      {
+        type: "Update",
+        id: `${uri}#votes/${at}`,
+        object: this.object(uri, last.snapshot, status.tally, status.published, updated),
+      },
       at,
     );
     return true;

@@ -1119,11 +1119,12 @@ ID-7 in `docs/threat-model.md`):
   object's host is the sender's (`delete.rb`), another actor's `Delete` leaves a `Tombstone` that also blocks the
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
-  `updated`, else `edited_at`, else `published`); one whose version is equal or missing still refreshes the poll, the
-  quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!` does. Mastodon moves `edited_at`
-  only on a significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an
-  older content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
-  Mastodon's behaviour is an ordering bug.
+  `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
+  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
+  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
+  metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
+  arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.

@@ -611,8 +611,10 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 
 // Mastodon's ActivityPub::Activity::Update#update_status and ProcessStatusUpdateService, for `author`'s status.
 //   - ID-6: only the status's author updates it; a local status is never one (ID-3).
-//   - An Update whose `updated` is not newer than the stored version is ignored, so a reordered or repeated Update
-//     changes nothing (ID-7).
+//   - An Update whose `updated` is older than the stored version, or that names none for an edited status (edited_at
+//     set), changes nothing; one naming the stored version, or none for a status never edited, is the implicit update
+//     (its poll's counts, its quote policy, its quote's stamp); so a reordered or repeated Update changes no content
+//     (ID-7).
 //   - The visibility never changes, and the audience of a private, direct or limited status never widens: a mention
 //     the edit adds is linked in the content but adds no recipient (as an outbound edit does). Public and unlisted
 //     statuses take new mentions, as Mastodon does. A mention the edit removes stays as a silent mention.
@@ -669,16 +671,18 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
   const stored = Date.parse(existing.watermark ?? "");
-  // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included.
-  if (version < stored) {
+  // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included;
+  // and so does one that names no version for an edited status (process_status_update_service.rb:32-34 in v4.7.5,
+  // "an older update"), such as a peer's cached copy from before the edit (ID-7).
+  if (version < stored || (Number.isNaN(version) && existing.edited_at !== null)) {
     return { applied: false, reason: "stale" };
   }
   const arrival = arrivalOf(db, author, ctx);
   if (Number.isNaN(version) || version === stored) {
-    // ProcessStatusUpdateService#handle_implicit_update!: an Update that names no newer version (such as the Update of
-    // a poll's counts, which names none, or the same one) still refreshes the counts, the end and the voters of its
-    // poll, and verifies a changed stamp of the same quote again; the quoted status itself changes only with a newer
-    // version.
+    // ProcessStatusUpdateService#handle_implicit_update!: an Update that names the stored version, or none for a status
+    // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
+    // refreshes the counts, the end and the voters of its poll, and verifies a changed stamp of the same quote again;
+    // the quoted status itself changes only with a newer version.
     const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
     const policyChanged =
       db.run(

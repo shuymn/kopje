@@ -183,6 +183,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
+  approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
   and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
   an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
