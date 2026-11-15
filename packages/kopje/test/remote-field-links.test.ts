@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { MAX_REMOTE_FIELDS } from "../src/domain/account-columns";
 import { purgeBatch, receiveActivity } from "../src/domain/inbox";
-import { actorRevision, type RemoteActorInput, upsertRemoteActor } from "../src/domain/remote-actors";
+import { actorState, type RemoteActorInput, upsertRemoteActor } from "../src/domain/remote-actors";
 import { REMOTE_LINK_RECHECK_MS } from "../src/domain/remote-field-links";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { REMOTE_FIELD_INDEXES, REMOTE_VERIFIED_SHOWN, SAFE_INTEGER_MAX } from "../src/platform/stored-bounds";
@@ -13,7 +13,7 @@ import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import remote from "./fixtures/mastodon-4.7.5-remote-links.json";
 import { migratedStore } from "./helpers";
-import { actorDefaults } from "./inbox-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import { observedSql } from "./read-helpers";
 
 // The ingestion half of remote field verification (domain/remote-field-links.ts armRemoteFieldLinks, from inbox.ts
@@ -45,8 +45,7 @@ function actor(attachment: unknown, extra: Partial<RemoteActorInput> = {}, uri =
   return {
     ...actorDefaults(),
     uri,
-    username: "a",
-    domain: "remote.example",
+    ...confirmedAs(uri.split("/").at(-1)!, new URL(uri).host),
     displayName: "a",
     inboxUrl: `${uri}/inbox`,
     movedTo: null,
@@ -223,7 +222,7 @@ describe("arming remote field links at a store", () => {
     // A document whose host a domain block covers stores nothing either.
     const other = "https://blocked.example/users/b";
     await blockDomain(w.store, "blocked.example");
-    expect((await w.put(actor([property(link(A))], { domain: "blocked.example" }, other))).statements).toBe(0);
+    expect((await w.put(actor([property(link(A))], {}, other))).statements).toBe(0);
     expect(await w.row(other)).toBeUndefined();
   });
 
@@ -245,13 +244,13 @@ describe("arming remote field links at a store", () => {
           origin: ORIGIN,
           actorUri: URI,
           actor: actor([property(link(A))], { movedTo: target }),
-          actorRevision: actorRevision(new Db(state.storage.sql), URI),
+          actorRevision: actorState(new Db(state.storage.sql), URI).revision,
           activity: {
             type: "Move",
             id: `${URI}#moves/1`,
             target: {
               document: actor([property(link(B))], {}, target),
-              revision: actorRevision(new Db(state.storage.sql), target),
+              revision: actorState(new Db(state.storage.sql), target).revision,
             },
           },
         },

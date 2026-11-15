@@ -495,8 +495,8 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
 // stored row (storeResolved's superseded document) and the search tests only the status.
 const R_ACTOR: RemoteActorInput = {
   uri: R,
-  username: "r",
-  domain: new URL(R_ORIGIN).host,
+  claim: { username: "r", domain: new URL(R_ORIGIN).host },
+  confirmed: null,
   actorType: "Person",
   displayName: "",
   note: "",

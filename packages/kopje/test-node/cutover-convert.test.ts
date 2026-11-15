@@ -687,6 +687,58 @@ describe("text with a lone surrogate", () => {
   });
 });
 
+describe("remote actors that share an address", () => {
+  it("invalidate every handle but the first actor’s, counted, each with its refresh request, and verify", async () => {
+    const exportPath = await exportOf({ level: 39, sharedHandles: true });
+    const { ok, manifest, dumpPath } = await convert(exportPath);
+    expect(manifest.stop).toBeUndefined();
+    expect(ok).toBe(true);
+    expect((manifest.conversion as { normalized: Record<string, number> }).normalized).toMatchObject({
+      "remote-actor-handle-shared": 2,
+    });
+    const db = await opened(dumpPath);
+    const accounts = db
+      .prepare(
+        `SELECT uri, username, username = '! ' || id AS invalidated, handle_refreshed_at,
+					search_text = lower(display_name) || ' ' || username || '@remote.example' AS searched
+				FROM accounts WHERE domain = 'remote.example' ORDER BY rowid`,
+      )
+      .all();
+    // r0 and Remote2 keep their addresses; the later actors of the same addresses (another case each) are invalidated.
+    expect(accounts.map(({ uri, invalidated }) => [uri, invalidated])).toEqual([
+      ["https://remote.example/users/r0", 0],
+      ["https://remote.example/users/r1", 0],
+      ["https://remote.example/users/r2", 0],
+      ["https://remote.example/users/r3", 0],
+      ["https://remote.example/people/R0", 1],
+      ["https://remote.example/people/remote2", 1],
+    ]);
+    expect(accounts.slice(0, 4).map((a) => a.username)).toEqual(["r0", "r1", "Remote2", "r3"]);
+    // Found by the invalidated handle, as accountSearchText writes it.
+    expect(accounts.slice(4).map((a) => a.searched)).toEqual([1, 1]);
+    expect(accounts.map((a) => a.handle_refreshed_at)).toEqual(Array.from({ length: 6 }, () => null));
+    expect(
+      db
+        .prepare(
+          `SELECT a.uri, c.refresh, c.due_at FROM collection_syncs c JOIN accounts a ON a.id = c.account_id ORDER BY a.rowid`,
+        )
+        .all(),
+    ).toEqual([
+      { uri: "https://remote.example/people/R0", refresh: 1, due_at: 0 },
+      { uri: "https://remote.example/people/remote2", refresh: 1, due_at: 0 },
+    ]);
+    db.close();
+    const { ok: verified, categories } = await verifyWith(exportPath, dumpPath);
+    expect(failing(categories)).toEqual([]);
+    expect(categories.handle_refreshes?.expected).toBe(2);
+    expect(verified).toBe(true);
+    // A conversion that writes no refresh request (requestHandleRefreshes not called) fails the check.
+    const unrequested = await verifyWith(exportPath, await tampered(dumpPath, "DELETE FROM collection_syncs"));
+    expect(failing(unrequested.categories)).toEqual(["handle_refreshes"]);
+    expect(unrequested.ok).toBe(false);
+  });
+});
+
 describe("the expected threads", () => {
   it("walk each status once, so a 50,000-status chain is quick, and give a cycle each status’s own", () => {
     const uri = (i: number) => `https://remote.example/objects/${i}`;

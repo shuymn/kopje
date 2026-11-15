@@ -11,7 +11,7 @@ import { Temporal } from "temporal-polyfill";
 
 import { bytesToBase64, RSA_ALGORITHM } from "../src/security/key-wrap";
 import { NOW } from "./app-helpers";
-import { AP, LOCAL, MASTODON, type RemoteWeb, type TestActor } from "./inbox-helpers";
+import { AP, LOCAL, MASTODON, type RemoteWeb, serveOwnHandle, type TestActor } from "./inbox-helpers";
 import { contexts } from "./quote-helpers";
 
 // The key and signature forms an actor of Mastodon 4.7's reading may use (docs/threat-model.md ID-1), each built from
@@ -110,6 +110,7 @@ export async function multikeyActor(web: RemoteWeb, username: string, options: {
   });
   const document = (await person.toJsonLd({ format: "compact", contextLoader: contexts })) as Json;
   web.serve(uri, document);
+  serveOwnHandle(web, document);
   const actor: TestActor = {
     uri,
     keyId: `${uri}#main-key`,

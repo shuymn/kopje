@@ -73,6 +73,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Breaking: a remote account's handle is taken only once WebFinger confirms it, as Mastodon 4.7 does: the handle an
+  actor claims is its `webfinger` (FEP-2c59), else its `preferredUsername` at its host, and WebFinger at that address
+  must name the actor, following one other subject at most. A new actor whose handle cannot be confirmed is not stored
+  (an inbox activity from it answers 503 while the confirmation may still pass); a stored account whose new handle
+  cannot be confirmed keeps its old one, and the rest of its document is stored. One remote account holds an address:
+  when another confirms it, the old holder shows an invalid handle until it is refreshed, which Kopje asks for at most
+  once a day per account ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A new actor costs one
+  or two WebFinger requests. Migration `0096_remote_handles`: accounts that shared an address keep their rows, all but
+  the oldest of each address show an invalid handle until refreshed, and a refresh is asked for each of them (the
+  cutover's conversion does the same, and `verify-conversion` checks the requests); the address index becomes UNIQUE,
+  and as it recreates an index, the upgrade checks every reference of the Store (for this file in local runs of the
+  migration bench, each started at a load average below 5: 8,891 ms as seeded, and 11,846 to 12,436 ms in three runs
+  with one remote account in ten sharing the address of another). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,

@@ -282,6 +282,19 @@ describe("each path that fetches a stored actor's document", () => {
     expect(roundAsked(t)).toBe(status === 410);
   });
 
+  // Revision 0 is a stored actor's too (resolve.ts resolveUrl compares it with null): an account the cutover carried,
+  // whose handle 0096_remote_handles invalidated, is fetched as that actor, without a probe, and its 410 deletes it.
+  it("a search for the URL of an invalidated account of revision 0 answering 410", async () => {
+    const { t, bob } = await bobWorld();
+    await sql(t.store, "UPDATE accounts SET document_revision = 0, username = '! ' || id WHERE uri = ?", bob.uri);
+    t.web.fail(bob.uri, 410);
+    const found = await t.api(`/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent(bob.uri)}`);
+    expect(found.status).toBe(200);
+    expect(t.web.fetched).toEqual([bob.uri]);
+    expect(await deletion(t.store, bob.uri)).toEqual(started);
+    expect(roundAsked(t)).toBe(true);
+  });
+
   // The control: a status URL's 410 is not its author's.
   it("a search for a status URL answering 410 deletes nothing", async () => {
     const { t, bob } = await bobWorld();

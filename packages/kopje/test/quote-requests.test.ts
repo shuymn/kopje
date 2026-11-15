@@ -477,7 +477,8 @@ describe("federation of quotes: edits reach holders, grouped notifications, the 
       (await h.request("/inbox", await signedInit(bob, "/inbox", quoteRequest(bob, mine.uri, note.id)))).status,
     ).toBe(202);
     expect(hooked).toBe(true);
-    expect(calls).toEqual(["inboxGate", "receiveActivity"]);
+    // bob is new: his handle's WebFinger asks for its own verdict (fetchRefused).
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity"]);
     expect(t.web.fetched).not.toContain(note.id);
     expect(await recorded(t, "Accept")).toEqual([]);
   });
@@ -511,8 +512,8 @@ describe("federation of quotes: edits reach holders, grouped notifications, the 
       (await h.request("/inbox", await signedInit(bob, "/inbox", quoteRequest(bob, mine.uri, note.id)))).status,
     ).toBe(202);
     expect(hooked).toBe(true);
-    // No signer read: the round's answer carried it.
-    expect(calls).toEqual(["inboxGate", "receiveActivity", "receiveActivity"]);
+    // No signer read: the round's answer carried it. bob is new: his handle's WebFinger asks for its own verdict.
+    expect(calls).toEqual(["inboxGate", "fetchRefused", "receiveActivity", "receiveActivity"]);
     expect(t.web.signers[t.web.fetched.lastIndexOf(note.id)]).toBe(`${ALICE_URI}#main-key`);
     expect(await quoteOf(t, note.id)).toBeUndefined();
     expect(await recorded(t, "Accept")).toEqual([]);

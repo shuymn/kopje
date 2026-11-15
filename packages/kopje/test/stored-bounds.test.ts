@@ -401,7 +401,8 @@ describe("stored bounds (RES-2)", () => {
     const stored = await runInDurableObject(store, (_instance, state) =>
       state.storage.transactionSync(() => {
         const db = new Db(state.storage.sql);
-        upsertRemoteActor(db, input!, "https://kopje.test", NOW);
+        // Its claim confirmed, as WebFinger would confirm it (federation/resolve.ts confirmedInput).
+        upsertRemoteActor(db, { ...input!, confirmed: input!.claim }, "https://kopje.test", NOW);
         return db.first<{ name: string; bytes: number }>(
           "SELECT display_name AS name, length(CAST(display_name AS BLOB)) AS bytes FROM accounts WHERE uri = ?",
           "https://remote.example/users/s",

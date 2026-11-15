@@ -86,18 +86,21 @@ describe("Store calls of a resolving search", () => {
     const key = cold ? "a missing instance key" : "a warm instance key";
     const ensure = cold ? ["ensureInstanceActorKey"] : [];
 
-    it(`resolves a status URL in ${5 + ensure.length} calls, with ${key}`, async () => {
+    it(`resolves a status URL in ${6 + ensure.length} calls, with ${key}`, async () => {
       const { t, bob, note } = await world(cold);
       const c = counted(t);
       const response = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
       expect(response.status).toBe(200);
       expect((await response.json<{ statuses: unknown[] }>()).statuses).toHaveLength(1);
+      // The URL is read as a stored actor's id first, then the author's state; the author's handle is confirmed by
+      // WebFinger, whose policy read follows the spent verdict (NET-1).
       expect(c.calls()).toEqual([
         "instanceDomain",
         "resolutionGate",
-        "actorRevision",
+        "actorState",
         ...ensure,
-        "actorRevision",
+        "actorState",
+        "fetchRefused",
         "resolveSearch",
       ]);
       expect(gateOf(c.records)).toMatchObject({
@@ -107,8 +110,8 @@ describe("Store calls of a resolving search", () => {
           prefetch: { signer: { username: null }, ticket: { host: "mastodon.example", refused: false } },
         },
       });
-      expect(t.web.fetched).toEqual([note.id, bob.uri]);
-      expect(t.web.signers).toEqual([INSTANCE_KEY, INSTANCE_KEY]);
+      expect(t.web.fetched).toEqual([note.id, bob.uri, WEBFINGER]);
+      expect(t.web.signers).toEqual([INSTANCE_KEY, INSTANCE_KEY, "unsigned"]);
     });
 
     for (const [endpoint, path, search] of [
@@ -119,11 +122,11 @@ describe("Store calls of a resolving search", () => {
         const { t, bob } = await world(cold);
         const c = counted(t);
         expect((await c.request(path)).status).toBe(200);
-        // The policy read before the declared-domain WebFinger follows an awaited response, so it stays separate.
+        // The policy read before the confirming WebFinger follows an awaited response, so it stays separate.
         expect(c.calls()).toEqual([
           "instanceDomain",
           "resolutionGate",
-          "actorRevision",
+          "actorState",
           ...ensure,
           "fetchRefused",
           "resolveSearch",
@@ -146,11 +149,11 @@ describe("Store calls of a resolving search", () => {
     held.release();
     expect((await response).status).toBe(200);
     // The guarded branch ran: the revision read after the response carried the block's verdict for the actor's host.
-    expect(c.records.find((record) => record.name === "actorRevision")?.answer).toEqual({
-      revision: null,
+    expect(c.records.find((record) => record.name === "actorState")?.answer).toEqual({
+      state: { revision: null, handle: null },
       ticket: { host: "mastodon.example", refused: true },
     });
-    expect(c.calls()).toEqual(["instanceDomain", "resolutionGate", "actorRevision", "resolveSearch", "searchAccounts"]);
+    expect(c.calls()).toEqual(["instanceDomain", "resolutionGate", "actorState", "resolveSearch", "searchAccounts"]);
     expect(t.web.fetched).toEqual([WEBFINGER]);
     expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", bob.uri)).toEqual([{ n: 0 }]);
   });
@@ -253,12 +256,13 @@ describe("a resolving search refused before any network work", () => {
       expect(c.calls()).toEqual([
         "instanceDomain",
         "resolutionGate",
-        "actorRevision",
-        "actorRevision",
+        "actorState",
+        "actorState",
+        "fetchRefused",
         "resolveSearch",
         "search",
       ]);
-      expect(t.web.fetched).toEqual([note.id, bob.uri]);
+      expect(t.web.fetched).toEqual([note.id, bob.uri, WEBFINGER]);
     });
 
     for (const [endpoint, path] of [
@@ -282,7 +286,7 @@ describe("a resolving search refused before any network work", () => {
       const c = countingStore(t.store);
       const failing = new Proxy(c.stub, {
         get: (target, name) =>
-          name === "actorRevision"
+          name === "actorState"
             ? () => Promise.reject(Object.assign(new Error("Durable Object is overloaded"), { overloaded: true }))
             : (Reflect.get(target, name) as unknown),
       });
@@ -321,8 +325,9 @@ describe("a resolving search refused before any network work", () => {
       expect(c.calls.filter((name) => name !== "noteActivity")).toEqual([
         "instanceDomain",
         "resolutionGate",
-        "actorRevision",
-        "actorRevision",
+        "actorState",
+        "actorState",
+        "fetchRefused",
         "resolveSearch",
         "search",
       ]);

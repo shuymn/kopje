@@ -281,7 +281,7 @@ export function hostMediaRejected(db: Db, host: string): boolean {
 export const fetchRefused = readOperation<{ host: string }, boolean>((db, { host }) => hostCovered(db, host));
 
 // fetchRefused's verdict for the host of `target`, normalized as the loader normalizes it (hostDomain), read in the
-// Store answer that decided the fetch (inbox.ts fetchPreparation, and getActorRevision for a search resolution's actor
+// Store answer that decided the fetch (inbox.ts fetchPreparation, and getActorState for a search resolution's actor
 // fetch). The Worker spends it on the next request alone,
 // when that request is to this host (federation.ts refusesHost, VIS-30). Null when the loader would refuse the
 // target before asking (fetchableHref).
