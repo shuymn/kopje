@@ -200,6 +200,9 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
+  `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
+  once, as the HTML it presents and federates.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
