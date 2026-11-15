@@ -18,6 +18,7 @@ import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { yieldsMoreThan } from "../platform/stored-bounds";
 import { grantsAny } from "../security/scopes";
 import {
   type ApiContext,
@@ -61,10 +62,6 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
 
-function characters(text: string): number {
-  return [...text].length;
-}
-
 // The changes update_credentials asks for, and the validation problems with them (Mastodon's messages). Shared by the
 // API and the settings page (app/web.tsx), which posts the same names. Avatar and header come through the media
 // pipeline on the settings page only.
@@ -73,14 +70,14 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
   const problems: string[] = [];
   const displayName = p.get("display_name");
   if (displayName !== undefined) {
-    if (characters(displayName) > MAX_DISPLAY_NAME) {
+    if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
       problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
     }
     changes.displayName = displayName;
   }
   const note = p.get("note");
   if (note !== undefined) {
-    if (characters(note) > MAX_NOTE) {
+    if (yieldsMoreThan(note, MAX_NOTE)) {
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
     }
     changes.note = note;
@@ -118,7 +115,7 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
     if (fields.length > MAX_FIELDS) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELDS} fields)`);
     }
-    if (fields.some((field) => characters(field.name) > MAX_FIELD_NAME || characters(field.value) > MAX_FIELD_VALUE)) {
+    if (fields.some((f) => yieldsMoreThan(f.name, MAX_FIELD_NAME) || yieldsMoreThan(f.value, MAX_FIELD_VALUE))) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELD_NAME} characters each)`);
     }
     changes.fields = fields;
