@@ -59,8 +59,10 @@ export const CREDENTIAL_EPOCH_SQL =
   "coalesce((SELECT credential_epoch FROM main.local_accounts WHERE account_id = ?), 0)";
 
 // One indexed lookup by the token's sha256, then its client and account by key, the join order pinned so stale
-// statistics cannot pick a scan of either (RES-7; test/activity.test.ts). A suspended account's tokens are refused even
-// if one survived the suspension, and a token of an earlier epoch is refused as invalid (currentCredentialSql).
+// statistics cannot pick a scan of either (RES-7; test/activity.test.ts). AUTH-1's order, as Mastodon's
+// Api::BaseController#require_not_suspended! runs before Doorkeeper's checks of the row it finds: a row the Store
+// holds whose owner is suspended is refused as suspended, expired or of an earlier epoch alike; then an expired row and
+// one of an earlier epoch (currentCredentialSql) are refused as invalid. A deleted row is no credential.
 export function authorize(db: Db, credential: Credential): AuthFailure | { status: "ok"; viewer: Viewer } {
   const row = db.first<{
     scopes: string;
@@ -80,11 +82,14 @@ export function authorize(db: Db, credential: Credential): AuthFailure | { statu
 		WHERE t.token_hash = ? AND t.kind = 'access'`,
     credential.tokenHash,
   );
-  if (row === undefined || (row.expires_at !== null && row.expires_at <= new Date(credential.now).toISOString())) {
+  if (row === undefined) {
     return { status: "unauthenticated" };
   }
   if (row.suspended_at !== null) {
     return { status: "suspended" };
+  }
+  if (row.expires_at !== null && row.expires_at <= new Date(credential.now).toISOString()) {
+    return { status: "unauthenticated" };
   }
   if (row.stale === 1) {
     return { status: "unauthenticated" };

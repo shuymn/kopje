@@ -867,8 +867,8 @@ export function storedAddress(db: Db, username: string, domain: string | null): 
 
 // POST /api/v1/accounts/:account_id/email_subscriptions with e-mail subscriptions off (MD-3): Mastodon's
 // require_not_suspended! reads a sent token first, then set_account finds the id among local accounts
-// (Account.local.find), suspended ones included. Only a held, unexpired token of a suspended user counts; any other
-// token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
+// (Account.local.find), suspended ones included. Only a held token of a suspended user counts, expired or not (AUTH-1's
+// order); any other token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
 // local row.
 export const emailSubscriptionTarget = readOperation<
   { credential: Credential | null; id: string },

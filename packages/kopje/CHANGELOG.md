@@ -74,6 +74,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A suspended user's token is refused with 403 "Your login is currently disabled" on every API route before its expiry
+  is judged, as Mastodon does: also when it has expired, where 401 was answered, until the suspension's cleanup deletes
+  the token. Streaming still answers 401. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

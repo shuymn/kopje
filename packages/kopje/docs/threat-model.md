@@ -1455,9 +1455,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Authorization (AUTH)
 
 - **AUTH-1: authorization happens inside the operation.** Token validity, expiry, revocation, scope and account
-  suspension are checked in the same Store transaction as the operation they authorize. _Enforced (main):_
-  `userReadOperation` and `userWriteOperation` in `src/domain/auth.ts`; `test/store-auth.test.ts`, `test/oauth.test.ts`
-  ("refuses a token that survived the suspension").
+  suspension are checked in the same Store transaction as the operation they authorize, in Mastodon's order
+  (`Api::BaseController#require_not_suspended!` runs before Doorkeeper's checks, and Doorkeeper 5.9.9 finds expired
+  and revoked rows by value): a token row the Store holds whose owner is suspended answers 403 `Your login is currently
+  disabled` on every API route, expired or of an earlier epoch alike, so its holder learns of the suspension, as on
+  Mastodon; then an expired row or one of an earlier epoch is invalid (401); then the scope. A row the Store no longer
+  holds is no credential: a revoked token is deleted at once, an expired one by the cron's sweep (`sweepOAuth`), and a
+  suspension's tokens job deletes the account's tokens, so the 403 lasts until then, where Mastodon answers it for the
+  whole suspension ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need
+  none"). The streaming API answers every refusal 401, as Mastodon's streaming server answers a suspended user's
+  token; OAuth introspection, `token/info`, the setup pages and web sessions treat a suspended owner's token as any
+  invalid one. _Enforced (main):_ `authorize`, `userReadOperation` and `userWriteOperation` in `src/domain/auth.ts`;
+  `test/store-auth.test.ts`, `test/oauth.test.ts` ("refuses a token that survived the suspension"),
+  `test/suspended-tokens.test.ts`.
 - **AUTH-2: every API route declares its access.** Each Mastodon API route is `public`, `token` (any valid token, app
   tokens included) or a required user scope, or any one of several (`GET /api/v1/accounts/verify_credentials`:
   `profile` or `read:accounts`); one helper decides scope coverage (parents cover children, `follow` expands to its
@@ -1472,11 +1482,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Mastodon with the feature off (MD-3), are optional routes on which a token that is not valid (unknown, revoked, past
   its expiry, or of an earlier epoch with its owner available) reads as anonymous, as an app token does. Mastodon's
   `Api::BaseController` reads the owner of an expired or revoked token there too; Kopje does not
-  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held,
-  unexpired token of an earlier epoch whose owner is suspended answers 403, since suspension is checked before the
-  epoch. Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
-  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held, unexpired
-  token of a suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
+  ([mastodon-deviations.md](mastodon-deviations.md), "Expired and revoked tokens on routes that need none"). A held
+  token whose owner is suspended answers 403, expired or of an earlier epoch alike, since suspension is checked first
+  (AUTH-1). Its limits: the Store still validates a sent token inside the operation that answers (AUTH-1); the only
+  tokens that change an answer are a user's valid token on donation campaigns (204) and, on both, a held token of a
+  suspended account (403 `Your login is currently disabled`); the handlers write nothing of their own and
   show nothing of the token's owner (a successful authenticated donation request keeps the ordinary activity
   recording of the access middleware, RES-6). _Enforced (main):_ `donationCampaigns` and `emailSubscription` in
   `src/mastodon/placeholders.ts`, `checkCredential` (`src/domain/auth.ts`) and `emailSubscriptionTarget`

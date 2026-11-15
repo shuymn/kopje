@@ -546,14 +546,20 @@ Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campa
 `POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
 [threat-model.md](threat-model.md)):
 
-- A token past its expiry or revoked is answered as no token, whatever its owner's state: donation campaigns answers
-  422 and e-mail subscriptions its 404. A token of an earlier credential epoch is answered the same way while its owner
-  is available, and 403 while its owner is suspended, as on every route. Mastodon reads these two routes' token only
-  through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its value,
-  expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token of an
-  available owner gets donation campaigns' 204, and one of a suspended owner gets 403 on both. In Kopje a token past
-  its expiry or revoked is no credential on any route: the Store refuses an expired one inside the operation and
-  deletes a revoked one. The visible difference is only the status code of a feature-off answer. Accepted,
+- A token past its expiry, revoked or of an earlier credential epoch is answered as no token while its owner is
+  available: donation campaigns answers 422 and e-mail subscriptions its 404. Mastodon reads these two routes' token
+  only through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its
+  value, expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token
+  of an available owner gets donation campaigns' 204. In Kopje such a token is no credential on any route: the Store
+  refuses an expired one inside the operation and deletes a revoked one. The visible difference is only the status
+  code of a feature-off answer. Accepted, 2026-11-15.
+- A suspended owner's token answers 403 `Your login is currently disabled` on every API route while the Store holds
+  its row, expired or of an earlier epoch alike, as Mastodon's `require_not_suspended!` answers before Doorkeeper's
+  checks. A row the Store no longer holds is no credential: it reads as no token where a route needs none, and as an
+  invalid token (401) where one is needed. A revoked token is deleted at once, an expired one by the cron's sweep, and
+  a suspension's tokens job deletes the account's tokens shortly after the suspension, so the 403 lasts until then and
+  the tokens stay no credential after an unsuspension. Mastodon revokes nothing on a suspension and finds revoked and
+  expired rows until its daily `Vacuum::AccessTokensVacuum`, so it answers 403 for the whole suspension. Accepted,
   2026-11-15.
 
 Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
