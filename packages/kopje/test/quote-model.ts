@@ -106,17 +106,11 @@ export function parsedStored(author: string, policy: { automatic: string[]; manu
   return { automatic: half(policy.automatic), manual: half(policy.manual) };
 }
 
-// NoteSerializer#interaction_policy (note_serializer.rb:234-248; the flags, interaction_policy.rb:4-38): the author
-// always, then the collections its automatic choice names; Mastodon 4.7 sends no manual half.
+// NoteSerializer#interaction_policy (note_serializer.rb:234-248; the flags, interaction_policy.rb:4-38): the
+// collections its automatic choice names, or the author alone when it names none; Mastodon 4.7 sends no manual half.
 export function mastodonCanQuote(author: string, name: LocalPolicy): { automatic: string[]; manual: string[] } {
-  return {
-    automatic: [
-      author,
-      ...(name === "public" ? [PUBLIC] : []),
-      ...(name === "followers" ? [`${author}/followers`] : []),
-    ],
-    manual: [],
-  };
+  const named = [...(name === "public" ? [PUBLIC] : []), ...(name === "followers" ? [`${author}/followers`] : [])];
+  return { automatic: named.length > 0 ? named : [author], manual: [] };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
