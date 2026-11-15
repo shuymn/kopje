@@ -10,11 +10,13 @@ import {
   listScheduled,
   MAX_ATTEMPTS,
   MAX_PARAMS_BYTES,
+  paramsReadSql,
   PUBLISH_ROUND,
   publishScheduled as publishOne,
   RETRY_DELAYS_MS,
   SCHEDULED_PAGE,
   type ScheduledStatus,
+  storedParams,
   TOTAL_LIMIT,
 } from "../src/domain/scheduled-statuses";
 import {
@@ -1060,6 +1062,175 @@ describe("nothing leaks before publication", () => {
       { numRuns: 12, seed: 20261015 },
     );
   }, 60_000);
+});
+
+// ---- RES-2: params that cannot be read.
+
+// `text` as a BLOB of its UTF-8 bytes.
+const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
+
+// Runs `write` in the Store, as a restore writes rows the API does not.
+async function beforeParamsBound(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
+  await runInDurableObject(h.store, (_instance, state) => {
+    write(state.storage.sql);
+  });
+}
+
+describe("a scheduled status whose params cannot be read (RES-2)", () => {
+  // Restored: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
+  // a readable scheduled status, each due at NOW + HOUR but the BLOB's, a day later.
+  it("is left out of the list, not found when shown or updated, deleted, and dropped as params when due", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const media = await upload(h, alice, 1);
+    const held = await upload(h, alice, 2);
+    const readable = await scheduled(h, alice, {
+      status: "readable",
+      media_ids: [media],
+      scheduled_at: at(NOW + HOUR),
+    });
+    const [nul, binary] = ["740000000000000001", "740000000000000002"];
+    const params = JSON.stringify({ text: "unreadable", spoiler_text: "", media_ids: [held] });
+    await beforeParamsBound(h, (sql) => {
+      const insert = "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)";
+      sql.exec(insert, nul, alice.id, at(NOW + HOUR - MINUTE), `${params}\0tail`);
+      sql.exec(insert, binary, alice.id, at(NOW + DAY), blob(params));
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", nul, held);
+    });
+    // Both are stored as written, past the CHECK of 0011_scheduled_statuses.
+    expect(
+      await sql(
+        h.store,
+        "SELECT id, typeof(params) AS type, length(CAST(params AS BLOB)) AS bytes FROM scheduled_statuses ORDER BY id",
+      ),
+    ).toEqual([
+      { id: readable.id, type: "text", bytes: expect.any(Number) },
+      { id: nul, type: "text", bytes: utf8Length(params) + 5 },
+      { id: binary, type: "blob", bytes: utf8Length(params) },
+    ]);
+    // The list answers the readable one whole, and nothing of the others.
+    const listed = await getJson<Scheduled[]>(h, "/api/v1/scheduled_statuses", alice.token);
+    expect(listed).toEqual({ status: 200, body: [readable] });
+    for (const id of [nul, binary]) {
+      expect((await getJson(h, `/api/v1/scheduled_statuses/${id}`, alice.token)).status, id).toBe(404);
+      const moved = await send(h, alice, "PUT", `/api/v1/scheduled_statuses/${id}`, {
+        scheduled_at: at(NOW + 2 * DAY),
+      });
+      expect(moved.status, id).toBe(404);
+    }
+    expect((await getJson(h, `/api/v1/scheduled_statuses/${readable.id}`, alice.token)).body).toEqual(readable);
+    // The due one is dropped as params in its first run, its upload detached, and no failure is recorded; the readable
+    // one is published.
+    expect(await publishDirectly(h, nul, NOW + HOUR)).toEqual({ status: "dropped", reason: "params" });
+    await round(h, NOW + HOUR);
+    expect(await sql(h.store, "SELECT id, attempts FROM scheduled_statuses")).toEqual([{ id: binary, attempts: 0 }]);
+    expect(await count(h, "statuses")).toBe(1);
+    expect(await sql(h.store, "SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id = ?", held)).toEqual([
+      { scheduled_status_id: null, gc_at: at(NOW + HOUR + DAY) },
+    ]);
+    // The BLOB one is deleted as any other.
+    const deleted = await send(h, alice, "DELETE", `/api/v1/scheduled_statuses/${binary}`);
+    expect([deleted.status, await deleted.json()]).toEqual([200, {}]);
+    expect(await count(h, "scheduled_statuses")).toBe(0);
+  });
+
+  // A repeat of the Idempotency-Key that scheduled it answers as when nothing holds the key: the key is taken from the
+  // unreadable row and the post is scheduled anew.
+  it("answers a repeated Idempotency-Key as if it had made nothing", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const body = { status: "once", scheduled_at: at(NOW + HOUR) };
+    const first = await (await schedule(h, alice, body, { "Idempotency-Key": "k1" })).json<Scheduled>();
+    expect((await (await schedule(h, alice, body, { "Idempotency-Key": "k1" })).json<Scheduled>()).id).toBe(first.id);
+    await beforeParamsBound(h, (sql) => {
+      sql.exec("UPDATE scheduled_statuses SET params = params || char(0) WHERE id = ?", first.id);
+    });
+    const again = await schedule(h, alice, body, { "Idempotency-Key": "k1" });
+    expect(again.status).toBe(200);
+    const made = await again.json<Scheduled>();
+    expect(made.id).not.toBe(first.id);
+    expect(
+      await sql(h.store, "SELECT id, client_key IS NOT NULL AS keyed FROM scheduled_statuses ORDER BY id"),
+    ).toEqual([
+      { id: first.id, keyed: 0 },
+      { id: made.id, keyed: 1 },
+    ]);
+  });
+
+  // The decision moves from JSON.parse alone to the read's SQL prefilter and storedParams. Over the values on which
+  // json_valid and JSON.parse disagree, and the forms near them: storedParams after paramsReadSql is null exactly where
+  // JSON.parse throws on what workerd returns (or reads no object), for every value the CHECK lets a restore store.
+  it("reads params as JSON.parse reads them, over the values json_valid and JSON.parse disagree on", async () => {
+    const h = await community(["alice"]);
+    const nested = (depth: number) => `${'{"a":'.repeat(depth - 1)}{}${"}".repeat(depth - 1)}`;
+    // [label, the value as SQL, whether the CHECK of 0011 passes it, whether JSON.parse reads an object from it]
+    const cases: [string, string, boolean, boolean][] = [
+      ["an object", `'{"a":1}'`, true, true],
+      ["NUL after the object", `CAST(X'7B7D0078' AS TEXT)`, true, false],
+      ["NUL inside a string", `CAST(X'7B2261223A2200227D' AS TEXT)`, false, false],
+      ["NUL alone after it", `CAST(X'7B7D00' AS TEXT)`, true, false],
+      ["a BLOB object", `X'7B7D'`, true, false],
+      ["depth 1,000", `'${nested(1000)}'`, true, true],
+      ["depth 1,001", `'${nested(1001)}'`, false, true],
+      ["raw U+0001 in a string", `CAST(X'7B2261223A2201227D' AS TEXT)`, false, false],
+      ["malformed UTF-8 in a string", `CAST(X'7B2261223A22FF227D' AS TEXT)`, true, true],
+      ["malformed UTF-8 in a key", `CAST(X'7B22FF223A317D' AS TEXT)`, true, true],
+      ["JSON5: a bare key", `'{a:1}'`, false, false],
+      ["JSON5: a trailing comma", `'{"a":1,}'`, false, false],
+      ["JSON5: a single-quoted string", `'{"a":''x''}'`, false, false],
+      ["JSON5: a hexadecimal number", `'{"a":0x1}'`, false, false],
+      ["form feed before it", `char(12) || '{}'`, false, false],
+      ["NBSP before it", `char(160) || '{}'`, false, false],
+      ["whitespace JSON allows", `char(9, 10, 13, 32) || '{}' || char(32)`, true, true],
+      ["an array", `'[]'`, false, false],
+    ];
+    // Each value as a restore stores it (the CHECK alone), read back as the Store reads params.
+    const decided = await runInDurableObject(h.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      const insert = (id: string, value: string) =>
+        sql.exec(
+          `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params)
+					VALUES (?, ?, '2026-12-01T00:00:00.000Z', ${value})`,
+          id,
+          h.users.alice.id,
+        );
+      return cases.map(([label, value], i) => {
+        const id = String(760000000000000000n + BigInt(i));
+        const { raw } = sql.exec<{ raw: SqlStorageValue }>(`SELECT ${value} AS raw`).one();
+        let checked = true;
+        try {
+          insert(id, value);
+        } catch {
+          checked = false;
+        }
+        const read = checked
+          ? sql
+              .exec<{ read: string | null }>(
+                `SELECT ${paramsReadSql("ss.params")} AS read FROM scheduled_statuses ss WHERE ss.id = ?`,
+                id,
+              )
+              .one().read
+          : null;
+        let parsed = false;
+        try {
+          const value: unknown = JSON.parse(raw as string);
+          parsed = typeof value === "object" && value !== null && !Array.isArray(value);
+        } catch {
+          parsed = false;
+        }
+        return { label, checked, parsed, read: storedParams(read) !== null };
+      });
+    });
+    expect(decided.map(({ label, checked, parsed }) => [label, checked, parsed])).toEqual(
+      cases.map(([label, , checked, parsed]) => [label, checked, parsed]),
+    );
+    for (const { label, checked, parsed, read } of decided) {
+      // Where a restore can store it, the read reads it exactly where JSON.parse does.
+      if (checked) {
+        expect(read, label).toBe(parsed);
+      }
+    }
+  });
 });
 
 // ---- RES-3: a scheduled status's maximum, and the list within ANSWER_BYTES.
