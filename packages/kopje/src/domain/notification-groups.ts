@@ -15,6 +15,7 @@ import { admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, firstUses, jsonBytes } 
 import { statusReads } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
 import { isIntegerKey } from "./ids";
+import { fallbackSet, type NotificationFallback, notificationFallback } from "./notification-fallback";
 import {
   GROUPABLE_TYPES,
   NOTIFICATION_COLUMNS,
@@ -108,6 +109,8 @@ type NotificationGroup = {
   page_min_id?: string;
   page_max_id?: string;
   latest_page_notification_at?: string;
+  // NotificationFallbackConcern#fallback, for a type the read's supported_types leaves out (notification-fallback.ts).
+  fallback?: NotificationFallback;
   sample_account_ids: string[];
   status_id?: string | null;
   // An admin.report's report (REST::NotificationGroupSerializer#report_type?).
@@ -392,16 +395,17 @@ function emptyAnswer(expandAccounts: ExpandAccounts): GroupedNotifications {
 // entity, its status unless an admitted group shows it, and its sample accounts unless shown; with partial_avatars,
 // its first sample as an account (a partial account shown so far moves to the accounts), the others as partial
 // accounts unless shown either way. Admission stops at the first group that does not fit `budget`, after the first.
-// A group whose status or accounts the presenter cannot show is left out, as v1 leaves out such a notification. Each
-// visit and read counts in `work`; admission stops, exhausted, at a group whose visit or one of whose reads would pass
-// `limits`, that group left out.
+// A group whose status or accounts the presenter cannot show is left out, as v1 leaves out such a notification. A
+// group of a type in `fallback` carries its fallback, of its first sample account and its report, counted with its
+// entity. Each visit and read counts in `work`; admission stops, exhausted, at a group whose visit or one of whose
+// reads would pass `limits`, that group left out.
 function admitGroups(
   db: Db,
   viewer: UserContext,
   groups: readonly Found[],
   range: Range | null,
   statusOf: (id: string) => Status | undefined,
-  options: { expandAccounts: ExpandAccounts; present: Present },
+  options: { expandAccounts: ExpandAccounts; present: Present; fallback: ReadonlySet<string> },
   budget: number,
   work: GroupWork,
   limits: Limits,
@@ -477,6 +481,14 @@ function admitGroups(
       admitted.exhausted = true;
       return admitted;
     }
+    // fallback_title's sample_accounts.first: the group's first sample, whole in either mode for an ungrouped one.
+    const fallback = options.fallback.has(first.type)
+      ? notificationFallback(db, first.type, {
+          accountId: samples[0]!,
+          targetId: report?.target_account.id ?? null,
+          origin: options.present.origin,
+        })
+      : undefined;
     const group: NotificationGroup = {
       group_key: key,
       notifications_count: rows.length,
@@ -489,6 +501,7 @@ function admitGroups(
             page_max_id: newest.id,
             latest_page_notification_at: newest.created_at,
           }),
+      ...(fallback === undefined ? {} : { fallback }),
       sample_account_ids: samples,
       ...(STATUS_TYPES.has(first.type) ? { status_id: status?.id ?? null } : {}),
       ...(report === undefined ? {} : { report }),
@@ -568,6 +581,8 @@ export type ListGroupedInput = {
   groupedTypes: string[] | null;
   includeFiltered: boolean;
   expandAccounts: ExpandAccounts;
+  // The types that carry a fallback (notification-fallback.ts fallbackTypes); none when left out.
+  fallbackTypes?: string[];
   present: Present;
 };
 
@@ -680,6 +695,7 @@ export const listGroupedNotifications = userReadOperation<ListGroupedInput, Grou
     ];
     const shared = presentation(db, statusesOf(walk.groups), { ...input.present, viewer });
     const budget = ANSWER_BYTES - jsonBytes(emptyAnswer(input.expandAccounts));
+    const options = { ...input, fallback: fallbackSet(input.fallbackTypes) };
     // A pass over the range of `read`'s groups that visits `visited` of them.
     const admit = (read: Walk, visited: readonly Found[], limits: typeof PASS_LIMITS) => {
       const statusIds = statusesOf(visited);
@@ -690,7 +706,7 @@ export const listGroupedNotifications = userReadOperation<ListGroupedInput, Grou
         pageRange(read, ascending ? read.groups.toReversed() : read.groups, ascending, page),
         // The statuses' rows in chunks of LARGE_ITEM_CHUNKS ("Heap at 8 MiB per answer" in docs/threat-model.md).
         firstUses(statusIds, statusStream(db, shared, statusIds, LARGE_ITEM_CHUNKS)),
-        input,
+        options,
         budget,
         work,
         limits,
@@ -787,9 +803,9 @@ function firstOfGroup(db: Db, viewer: UserContext, groupKey: string): Shown | un
 // GET /api/v2/notifications/:group_key: the group with its shown notifications among its newest GROUP_COUNT and the
 // one firstOfGroup found (membersOf), newest first, without page fields; null when firstOfGroup finds none.
 export const getNotificationGroup = userReadOperation<
-  { groupKey: string; present: Present },
+  { groupKey: string; present: Present; fallbackTypes?: string[] },
   GroupedNotifications | null
->((db, { groupKey, present }, _viewer, viewer) => {
+>((db, { groupKey, present, fallbackTypes }, _viewer, viewer) => {
   const first = firstOfGroup(db, viewer, groupKey);
   if (first === undefined) {
     return null;
@@ -798,7 +814,7 @@ export const getNotificationGroup = userReadOperation<
   const found = { key: groupOf(first, GROUPABLE_TYPES), first };
   const status = first.status_id === null ? [] : [first.status_id];
   const statusOf = firstUses(status, statusStream(db, presentation(db, status, { ...present, viewer }), status));
-  const options = { expandAccounts: "full", present } as const;
+  const options = { expandAccounts: "full", present, fallback: fallbackSet(fallbackTypes) } as const;
   const unlimited = { candidates: Infinity, visits: Infinity };
   const admitted = admitGroups(db, viewer, [found], null, statusOf, options, Infinity, noWork(), unlimited);
   return answerOf(admitted, admitted.groups, "full");

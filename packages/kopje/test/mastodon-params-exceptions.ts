@@ -18,9 +18,6 @@ const PUSH_COLLECTION_ALERTS = open(
   "data[alerts][collection_update]",
 );
 
-// supported_types and fallback, on each notification read.
-const SUPPORTED_TYPES = open(1582, "supported_types and fallback", "supported_types[]");
-
 // Mastodon 4.6's bot condition of the notification policy, v1 and v2.
 const POLICY_V1_BOTS = open(1582, "Mastodon 4.6's bot condition", "filter_bots");
 const POLICY_V2_BOTS = open(1582, "Mastodon 4.6's bot condition", "for_bots");
@@ -49,10 +46,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
 
   // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
-  "GET /api/v1/notifications": SUPPORTED_TYPES,
-  "GET /api/v1/notifications/:id": SUPPORTED_TYPES,
-  "GET /api/v2/notifications": SUPPORTED_TYPES,
-  "GET /api/v2/notifications/:group_key": SUPPORTED_TYPES,
   "PATCH /api/v1/notifications/policy": POLICY_V1_BOTS,
   "PUT /api/v1/notifications/policy": POLICY_V1_BOTS,
   "PATCH /api/v2/notifications/policy": POLICY_V2_BOTS,

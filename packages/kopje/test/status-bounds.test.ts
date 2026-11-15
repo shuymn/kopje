@@ -30,6 +30,7 @@ import { OWNER_ROLE } from "../src/domain/auth";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
 import { MAX_FILTER_KEYWORD, MAX_FILTER_KEYWORDS, MAX_FILTER_TITLE, MAX_FILTERS } from "../src/domain/filters";
 import { getFeatured, OUTBOX_BYTES } from "../src/domain/local-notes";
+import { FALLBACK_JSON_MAX, FALLBACK_TYPES } from "../src/domain/notification-fallback";
 import { listGroupedNotifications } from "../src/domain/notification-groups";
 import { listNotifications } from "../src/domain/notifications";
 import { ACTOR_URI_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT } from "../src/domain/profile-bounds";
@@ -1454,9 +1455,13 @@ type FillMeasure = {
   localFields: Record<string, { count: number; deficit: number }>;
   // The remote accounts each shape shows: how many, and what their fields' JSON lacks of REMOTE_FIELDS_JSON_MAX.
   remoteFields: Record<string, { count: number; deficit: number }>;
+  // The fallbacks each shape shows (its notifications read with every fallback type): how many, and what their JSON
+  // lacks of FALLBACK_JSON_MAX.
+  fallbacks: Record<string, { count: number; deficit: number }>;
   // The JSON of the fields of the account occurrence (a remote account's, at REMOTE_FIELDS_BYTES).
   accountFields: number;
-  // The moderation_warning notification as a stream payload: its JSON encoded again as a string (stream-hub.ts).
+  // The moderation_warning notification as a stream payload: its JSON, which carries no fallback, encoded again as a
+  // string (stream-hub.ts).
   warningPayload: number;
 };
 const fills = new Map<Fill, Promise<FillMeasure>>();
@@ -1638,6 +1643,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       excludeTypes: [],
       accountId: null,
       includeFiltered: false,
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1719,6 +1725,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       excludeTypes: [],
       accountId: null,
       includeFiltered: false,
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1740,6 +1747,7 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       groupedTypes: null,
       includeFiltered: false,
       expandAccounts: "full",
+      fallbackTypes: [...FALLBACK_TYPES],
       present: { origin: ORIGIN },
     } as never,
   );
@@ -1794,8 +1802,9 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
     [one, grouped, notified, warned, warnedGroup, filteredList].map((m) => filteredReads(m)),
     fill,
   ).toEqual([0, 10, 1, 1, 1, 9]);
+  const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
   return {
-    warningPayload: utf8Length(JSON.stringify(JSON.stringify(warningNotification))),
+    warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
     accountFields: jsonBytes((account as { fields: unknown }).fields),
     moved: Object.fromEntries(
       Object.entries(answers).map(([name, answer]) => {
@@ -1850,6 +1859,16 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
           expect(jsonBytes(account.fields)).toBeLessThanOrEqual(REMOTE_FIELDS_JSON_MAX);
         }
         const deficit = shown.reduce((sum, account) => sum + REMOTE_FIELDS_JSON_MAX - jsonBytes(account.fields), 0);
+        return [name, { count: shown.length, deficit }];
+      }),
+    ),
+    fallbacks: Object.fromEntries(
+      Object.entries(answers).map(([name, answer]) => {
+        const shown = presentedFallbacks(answer);
+        for (const fallback of shown) {
+          expect(jsonBytes(fallback)).toBeLessThanOrEqual(FALLBACK_JSON_MAX);
+        }
+        const deficit = shown.reduce((sum: number, fallback) => sum + FALLBACK_JSON_MAX - jsonBytes(fallback), 0);
         return [name, { count: shown.length, deficit }];
       }),
     ),
@@ -2000,6 +2019,19 @@ function verifiedFields(value: unknown): { value: string; verified_at: string }[
   return [...own, ...Object.values(value).flatMap(verifiedFields)];
 }
 
+// The fallbacks a shape presents (notification-fallback.ts).
+function presentedFallbacks(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(presentedFallbacks);
+  }
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, item]: [string, unknown]) =>
+    key === "fallback" && typeof item === "object" && item !== null ? [item] : presentedFallbacks(item),
+  );
+}
+
 function presentedStatuses(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) {
     return value.flatMap(presentedStatuses);
@@ -2080,9 +2112,9 @@ const LOCAL_ACCOUNT_KEYS_JSON =
 // MEDIA_URL_JSON_BYTES and its blurhash at BLURHASH_JSON_MAX, and each verified local field's value at
 // LOCAL_FIELD_VALUE_JSON_MAX. Every remote account shown but the account occurrence counts its fields at
 // REMOTE_FIELDS_JSON_MAX (verified remote fields); the account occurrence keeps the larger of the local and remote
-// fields' maxima.
+// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX.
 async function conservativeJson(): Promise<Record<string, number>> {
-  const { shapes, moved, applications, cards, media, localFields, remoteFields, accountFields } =
+  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, accountFields } =
     await measureFill("escaped");
   return Object.fromEntries(
     Object.entries(shapes).map(([name, shape]) => [
@@ -2097,7 +2129,8 @@ async function conservativeJson(): Promise<Record<string, number>> {
         applications[name]!.deficit +
         cards[name]!.deficit +
         media[name]!.deficit +
-        localFields[name]!.deficit,
+        localFields[name]!.deficit +
+        fallbacks[name]!.deficit,
     ]),
   );
 }
@@ -2488,7 +2521,7 @@ describe("the table of maxima (RES-3)", () => {
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
     expect({ measured: Math.max(...payloads), conservative: payload }).toEqual({
       measured: 332_952,
-      conservative: 415_032,
+      conservative: 471_650,
     });
     expect(payload).toBeLessThan(STREAM_LIMITS.payloadBytes);
     // The derived bounds of a local field value and of a local account's fields, and the fill's linked value.

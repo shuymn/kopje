@@ -17,6 +17,7 @@ import { currentCredentialSql, type UserContext, userReadOperation, userWriteOpe
 import { addToConversation } from "./conversations";
 import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_CLEARS, NOTIFICATION_DISMISSALS, runJobItem } from "./job-attempts";
+import { fallbackSet, type NotificationFallback, notificationFallback } from "./notification-fallback";
 import { presentReport, type Report } from "./report-presenter";
 import { presentation, type Status, statusStream } from "./status-presenter";
 import { readWindow, windowJson, windowOf, windowPage } from "./windows";
@@ -66,6 +67,8 @@ export type Notification = {
   group_key: string;
   // REST::NotificationSerializer#filtered?: true on a notification the recipient's policy filtered, else absent.
   filtered?: true;
+  // NotificationFallbackConcern#fallback, for a type the read's supported_types leaves out (notification-fallback.ts).
+  fallback?: NotificationFallback;
   account: Account;
   status?: Status;
   // An admin.report's report (REST::NotificationSerializer#report_type?).
@@ -320,14 +323,16 @@ export const NOTIFICATION_COLUMNS = {
 export const NOTIFICATION_CHUNK = 2;
 
 // The notifications of `rows` in order, for an admission (admit): each one atomic, with its account, its status, its
-// report and its warning, presented when the admission reaches it; undefined for one whose account, status, report or
-// warning the presenter cannot show (left out, as Mastodon leaves out a notification it cannot render). An account or
-// status that several notifications share is presented once (firstUses), under one presentation of the rows' statuses.
+// report, its warning and, for a type in `fallback`, its fallback, presented when the admission reaches it; undefined
+// for one whose account, status, report or warning the presenter cannot show (left out, as Mastodon leaves out a
+// notification it cannot render). An account or status that several notifications share is presented once
+// (firstUses), under one presentation of the rows' statuses.
 function* notificationStream(
   db: Db,
   rows: readonly WithVisibleStatus<NotificationRow, "status_id">[],
   viewer: UserContext,
   present: Present,
+  fallback: ReadonlySet<string>,
 ): Generator<Notification | undefined, undefined> {
   const statusIds = [...new Set(rows.flatMap((row) => (row.status_id === null ? [] : [row.status_id])))];
   const shared = presentation(db, statusIds, { ...present, viewer });
@@ -348,12 +353,20 @@ function* notificationStream(
       yield undefined;
       continue;
     }
+    const presented = fallback.has(row.type)
+      ? notificationFallback(db, row.type, {
+          accountId: row.from_account_id,
+          targetId: report?.target_account.id ?? null,
+          origin: present.origin,
+        })
+      : undefined;
     yield {
       id: row.id,
       type: row.type,
       created_at: row.created_at,
       group_key: row.group_key ?? `ungrouped-${row.id}`,
       ...(row.filtered === 1 ? { filtered: true as const } : {}),
+      ...(presented === undefined ? {} : { fallback: presented }),
       account,
       ...(status === undefined ? {} : { status }),
       ...(report === undefined ? {} : { report }),
@@ -387,6 +400,8 @@ export type ListNotificationsInput = {
   accountId: string | null;
   // include_filtered; a sender (account_id) shows filtered ones too (Notification.browserable).
   includeFiltered: boolean;
+  // The types that carry a fallback (notification-fallback.ts fallbackTypes); none when left out.
+  fallbackTypes?: string[];
   present: Present;
 };
 
@@ -459,21 +474,31 @@ export const listNotifications = userReadOperation<ListNotificationsInput, Page<
       shown,
       ascending,
       (row) => row.id,
-      (traversal) => admit(notificationStream(db, traversal, viewer, input.present), ARRAY_ANSWER_BYTES, true),
+      (traversal) =>
+        admit(
+          notificationStream(db, traversal, viewer, input.present, fallbackSet(input.fallbackTypes)),
+          ARRAY_ANSWER_BYTES,
+          true,
+        ),
     );
   },
 );
 
-export const getNotification = userReadOperation<{ id: string; present: Present }, Notification | null>(
+export const getNotification = userReadOperation<
+  { id: string; present: Present; fallbackTypes?: string[] },
+  Notification | null
+>(
   // Api::V1::NotificationsController#show finds any of the viewer's notifications, filtered or not.
-  (db, { id, present }, _viewer, viewer) => notificationById(db, viewer, id, present, true),
+  (db, { id, present, fallbackTypes }, _viewer, viewer) =>
+    notificationById(db, viewer, id, present, true, fallbackSet(fallbackTypes)),
 );
 
 // R33 for a `notification` event (domain/streaming.ts): the viewer's notification list positioned at notification
 // `id`, which is the list read (R15, unfiltered and kept, any type) restricted to that id, since ids are unique; and
-// its presentation. Null when the list would not show it now.
+// its presentation, without a fallback (NotifyService renders the event without supported types). Null when the list
+// would not show it now.
 export function streamedNotification(db: Db, viewer: UserContext, id: string, present: Present): Notification | null {
-  return notificationById(db, viewer, id, present, false);
+  return notificationById(db, viewer, id, present, false, new Set());
 }
 
 // The mention reference of R33 (domain/streaming.ts), for `status.update` on `user` (with a notification scope) and on
@@ -503,13 +528,14 @@ export function mentionedStatus(db: Db, viewer: UserContext, statusId: string) {
 }
 
 // The viewer's notification `id` as the notification read shows it (R15, kept; filtered ones only with
-// `includeFiltered`), presented; null for anything else.
+// `includeFiltered`), presented with a fallback for a type in `fallback`; null for anything else.
 function notificationById(
   db: Db,
   viewer: UserContext,
   id: string,
   present: Present,
   includeFiltered: boolean,
+  fallback: ReadonlySet<string>,
 ): Notification | null {
   if (!isIntegerKey(id)) {
     return null;
@@ -527,7 +553,7 @@ function notificationById(
     id,
     viewer.now,
   );
-  return notificationStream(db, rows, viewer, present).next().value ?? null;
+  return notificationStream(db, rows, viewer, present, fallback).next().value ?? null;
 }
 
 export const dismissNotification = userWriteOperation<{ id: string }, boolean>((db, { id }, { accountId }) => {

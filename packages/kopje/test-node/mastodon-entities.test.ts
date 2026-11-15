@@ -99,7 +99,6 @@ const NOTIFICATION: Record<string, Exception> = {
   // Moderation that severs relationships writes no severed_relationships notification.
   ...accepted("MD-2", "event"),
   ...open(1589, "collection notifications", "collection"),
-  ...open(1582, "supported_types and fallback", "fallback"),
 };
 
 const ENTITY_EXCEPTIONS: Exceptions = {

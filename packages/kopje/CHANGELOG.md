@@ -28,6 +28,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Kopje reads an actor's FEP-521a `assertionMethod` keys (Ed25519 and RSA) and verifies RFC 9421 signatures by Ed25519
   keys, as Mastodon 4.7 does, a key replaced under the same id included. No Store migration and no `wrangler.jsonc`
   change.
+- Notification reads take `supported_types[]` (`GET /api/v1/notifications`, `/api/v1/notifications/:id`,
+  `/api/v2/notifications`, `/api/v2/notifications/:group_key`), as in Mastodon 4.6: an `admin.report` or
+  `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
+  instance's front page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Changed
 
