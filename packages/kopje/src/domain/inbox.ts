@@ -2841,26 +2841,26 @@ const like: Handler<"Like"> = (db, actor, activity, { now, storeNow }) => {
 
 type Original = { id: string; account_id: string; visibility: Visibility; local: number };
 
-function originalByUri(db: Db, uri: string): Original | undefined {
-  return db.first<Original>(
-    `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
-		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+// The original (never a boost) whose `column` is the parameter, and whether its author is local, through that column's
+// index.
+function originalSql(column: "uri" | "id"): string {
+  return `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
+		FROM statuses s INDEXED BY ${column === "uri" ? STATUSES_URI_INDEX : STATUSES_ID_INDEX}
 		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
-		WHERE s.uri = ? AND s.reblog_of_id IS NULL`,
-    uri,
-  );
+		WHERE s.${column} = ? AND s.reblog_of_id IS NULL`;
+}
+
+const ORIGINAL_BY_URI = originalSql("uri");
+const ORIGINAL_BY_ID = originalSql("id");
+
+function originalByUri(db: Db, uri: string): Original | undefined {
+  return db.first<Original>(ORIGINAL_BY_URI, uri);
 }
 
 // The original of a stored status's id (StatusOutcome.statusId), which names the status a store matched, by its id or
 // by the object's atomUri, where the stored document's own id may name no row.
 function originalById(db: Db, id: string): Original | undefined {
-  return db.first<Original>(
-    `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
-		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
-		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
-		WHERE s.id = ? AND s.reblog_of_id IS NULL`,
-    id,
-  );
+  return db.first<Original>(ORIGINAL_BY_ID, id);
 }
 
 function followersOf(raw: string | null): string | null {
