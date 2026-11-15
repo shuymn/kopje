@@ -872,6 +872,9 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
   (an upgrade, a cutover, an import) or whose text an import holds as another type counts at an upper bound of its
   text (its bytes, markup and entities included, or 10,000), so an answer of such statuses may be cut, and a keyword
   missed, though its text would fit.
+- A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
+  (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
+  and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 

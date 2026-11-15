@@ -1457,6 +1457,103 @@ describe("profile fields of remote accounts (HTML-1, HTML-3)", () => {
   });
 });
 
+// HTML-1: MASTODON_STRICT keeps lang on every element (`mastodon#39114`); a heading's goes on its strong.
+describe("lang in remote HTML (HTML-1)", () => {
+  const WITH_LANG =
+    '<p lang="ja">a<span lang="en">b</span><b lang="fr">c</b> <a href="https://cards.example/page" lang="es">e</a>' +
+    '<ruby lang="zh">f<rt lang="">g</rt></ruby><br lang="en">h</p><h1 lang="ja">t</h1>';
+  const STORED =
+    '<p lang="ja">a<span lang="en">b</span><b lang="fr">c</b> ' +
+    '<a href="https://cards.example/page" lang="es" rel="nofollow noopener" target="_blank">e</a>' +
+    '<ruby lang="zh">f<rt lang="">g</rt></ruby><br lang="en">h</p><p><strong lang="ja">t</strong></p>';
+  const withoutLang = (html: string) => html.replace(/ lang="[^"]*"/g, "");
+
+  it("keeps it in a status’s content, a bio and a field value, as the API shows them", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob", {
+      extra: {
+        summary: '<p lang="ja">bio <span lang="en">x</span></p><h2 lang="fr">y</h2>',
+        attachment: [{ type: "PropertyValue", name: "Site", value: '<span lang="de">wert</span>' }],
+      },
+    });
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob, { content: WITH_LANG, contentMap: { en: WITH_LANG } });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(row.content).toBe(STORED);
+    expect((await t.api<{ content: string }>(`/api/v1/statuses/${row.id}`)).body.content).toBe(STORED);
+    // A converted Article's HTML keeps it too.
+    const article = mastodonNote(bob, {
+      type: "Article",
+      name: "T",
+      summary: '<p lang="ja">summary</p>',
+      url: `${MASTODON}/articles/2`,
+    });
+    expect(await t.post(bob, create(bob, article))).toBe(202);
+    expect((await statusRow(t.store, article.id))!.content).toContain('<p lang="ja">summary</p>');
+    const shown = await t.api<{ note: string; fields: unknown[] }>(`/api/v1/accounts/${bobId}`);
+    expect(shown.body.note).toBe('<p lang="ja">bio <span lang="en">x</span></p><p><strong lang="fr">y</strong></p>');
+    expect(shown.body.fields).toEqual([{ name: "Site", value: '<span lang="de">wert</span>', verified_at: null }]);
+  });
+
+  // D13 of the design: a status stored before lang was kept holds the earlier sanitizer's output, which is today's
+  // output of its source without lang. Its next explicit Update counts as significant once, and never again for the
+  // same source. Mastodon compares two renderings under one config and has no such step.
+  it("counts one edit for a status stored before lang was kept, and no more", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const earlier = withoutLang(WITH_LANG);
+    const note = mastodonNote(bob, { content: earlier, contentMap: { en: earlier } });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(row.content).toBe(withoutLang(STORED));
+    const card = async () => await sql(t.store, "SELECT url, fetched_at FROM status_cards WHERE status_id = ?", row.id);
+    const attach = () =>
+      sql(
+        t.store,
+        "UPDATE status_cards SET due_at = NULL, fetched_at = 7, title = 't', attempts = 0 WHERE status_id = ?",
+        row.id,
+      );
+    await attach();
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: 7 }]);
+    // alice boosts it, so she hears of an edit.
+    await t.request(`/api/v1/statuses/${row.id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    const versions = () => sql(t.store, "SELECT content FROM status_edits WHERE status_id = ? ORDER BY id", row.id);
+    const updates = () =>
+      sql<{ id: string }>(
+        t.store,
+        "SELECT CAST(id AS TEXT) AS id FROM notifications WHERE type = 'update' AND account_id = ?",
+        ALICE,
+      );
+    const withLang = { ...note, content: WITH_LANG, contentMap: { en: WITH_LANG } };
+
+    expect(await t.post(bob, update(bob, withLang, "2026-10-11T13:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({
+      content: STORED,
+      edited_at: "2026-10-11T13:00:00.000Z",
+    });
+    expect(await versions()).toEqual([{ content: withoutLang(STORED) }, { content: STORED }]);
+    const notified = await updates();
+    expect(notified).toHaveLength(1);
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: null }]);
+
+    await attach();
+    expect(await t.post(bob, update(bob, withLang, "2026-10-11T14:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({
+      content: STORED,
+      edited_at: "2026-10-11T13:00:00.000Z",
+    });
+    expect(await versions()).toEqual([{ content: withoutLang(STORED) }, { content: STORED }]);
+    // notify replaces an update notification by a newer id, so the same id shows that the booster was not notified.
+    expect(await updates()).toEqual(notified);
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: 7 }]);
+  });
+});
+
 describe("WEB-5: responses declare their type", () => {
   it("sends nosniff on API, federation, inbox and error responses", async () => {
     const t = await setup();
