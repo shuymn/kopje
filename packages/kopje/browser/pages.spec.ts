@@ -2435,8 +2435,8 @@ test("settings: a description that starts with a newline survives a save through
 });
 
 // Settings' text controls: the server's limits count code points (display name 40, note 500, a field's name and value
-// 255, an image's description 150), the native maxlength UTF-16 code units, so each control takes twice its limit
-// natively and the server decides.
+// 255, which the server keeps of a longer one, an image's description 150), the native maxlength UTF-16 code units,
+// so each control takes twice its limit natively and the server decides.
 // Typed (pressSequentially) and pasted (insertText) as a person enters text; fill() sets the value past maxlength.
 for (const width of [1280, 375]) {
   test(`settings: text controls take every value the server accepts at ${width} px`, async ({ page }) => {
@@ -2465,7 +2465,7 @@ for (const width of [1280, 375]) {
       expect(await enter(control, "😀".repeat(points), "type"), selector).toBe("😀".repeat(points));
       // One more, pasted: cut at twice the limit in code units, between two characters.
       expect(await enter(control, "😀".repeat(points + 1), "paste"), selector).toBe("😀".repeat(points));
-      // One more in the BMP: kept, for the server to refuse with its message (test/web-session.test.ts).
+      // One more in the BMP: kept, for the server to refuse with its message or cut (test/web-session.test.ts).
       expect(await enter(control, "x".repeat(points + 1), "type"), selector).toBe("x".repeat(points + 1));
     }
   });

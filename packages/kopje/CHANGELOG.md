@@ -280,8 +280,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   line break. No Store migration and no `wrangler.jsonc` change.
 - `PATCH /api/v1/accounts/update_credentials` answers validation errors with Mastodon's `details` and messages, in
   the order Mastodon validates: an avatar or header that is too large or not an image is reported as Paperclip reports
-  it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. No Store
-  migration and no `wrangler.jsonc` change.
+  it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. A profile
+  field's name or value longer than 255 characters is cut to 255 instead of refused (a change from earlier versions),
+  surrounding whitespace is stripped as Ruby strips it, a field sent without its `name` or `value` parameter is
+  dropped, and a value without a label is refused, as Mastodon reads fields. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

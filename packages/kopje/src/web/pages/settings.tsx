@@ -66,8 +66,8 @@ const FIELD_NAME = "field-name";
 const FIELD_VALUE = "field-value";
 
 // A text control's native limit for a server limit of `points` code points. `maxlength` counts UTF-16 code units, of
-// which a code point takes at most two, so this lets through every value the server accepts; the server's check
-// (accountChanges in mastodon/accounts.ts) decides, and answers a longer value with its message.
+// which a code point takes at most two, so this lets through every value the server accepts or keeps; the server
+// (accountChanges in mastodon/accounts.ts) decides, answering a longer value with its message, or cutting a field.
 function codeUnitsFor(points: number): number {
   return 2 * points;
 }

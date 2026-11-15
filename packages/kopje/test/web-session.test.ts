@@ -687,13 +687,13 @@ describe("settings page", () => {
     const response = await postForm(h, browser, "/settings/profile", {
       csrf,
       display_name: "x".repeat(41),
-      "fields_attributes[0][name]": "n".repeat(256),
+      "fields_attributes[0][name]": " ",
       "fields_attributes[0][value]": "v",
     });
     expect(response.status).toBe(422);
     const page = await response.text();
     expect(page).toContain("Display name is too long (maximum is 40 characters)");
-    expect(page).toContain("Fields is too long");
+    expect(page).toContain("Fields contains values with missing labels");
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: "Alice" }]);
   });
 

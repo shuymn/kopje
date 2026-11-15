@@ -451,6 +451,11 @@ describe("update_credentials validation errors", () => {
       '{"error":"Validation failed: Attribution domains exa mple.com is not a valid domain name","details":{"attribution_domains":[{"error":"ERR_INVALID_DOMAIN_ON_LINE","description":"exa mple.com is not a valid domain name"}]}}',
     avatar:
       '{"error":"Validation failed: Avatar content type is invalid, Avatar is invalid","details":{"avatar_content_type":[{"error":"ERR_INVALID","description":"is invalid"}],"avatar":[{"error":"ERR_IS INVALID","description":"is invalid"}]}}',
+    fields:
+      '{"error":"Validation failed: Fields is too long (maximum is 4 characters)","details":{"fields":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 4 characters)"}]}}',
+    label:
+      '{"error":"Validation failed: Fields contains values with missing labels","details":{"fields":[{"error":"ERR_FIELDS_WITH_VALUES_MISSING_LABELS","description":"contains values with missing labels"}]}}',
+    text: '{"error":"Validation failed: Avatar description is too long (maximum is 150 characters), Note is too long (maximum is 500 characters), Fields is too long (maximum is 4 characters), Fields contains values with missing labels","details":{"avatar_description":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 150 characters)"}],"note":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 500 characters)"}],"fields":[{"error":"ERR_TOO_LONG","description":"is too long (maximum is 4 characters)"},{"error":"ERR_FIELDS_WITH_VALUES_MISSING_LABELS","description":"contains values with missing labels"}]}}',
   };
 
   async function refused(h: ApiHarness & { token: string }, init: RequestInit): Promise<string> {
@@ -467,6 +472,16 @@ describe("update_credentials validation errors", () => {
     const patch = (body: Record<string, unknown>) => json(body, { method: "PATCH" });
     const thirtyOne = "a".repeat(31);
     expect(await refused(h, patch({ note: "b".repeat(501) }))).toBe(M1.note);
+    const five = ["a", "b", "c", "d", "e"].map((name, i) => ({ name, value: String(i + 1) }));
+    expect(await refused(h, patch({ fields_attributes: five }))).toBe(M1.fields);
+    expect(await refused(h, patch({ fields_attributes: [{ name: " ", value: "x" }] }))).toBe(M1.label);
+    const text = {
+      note: "b".repeat(501),
+      display_name: thirtyOne,
+      fields_attributes: [{ name: "", value: "x" }, ...five.slice(1)],
+      avatar_description: "d".repeat(1600),
+    };
+    expect(await refused(h, patch(text))).toBe(M1.text);
     expect(
       await refused(h, patch({ display_name: thirtyOne, attribution_domains: ["exa mple.com", "ok.example"] })),
     ).toBe(M1.domain);
@@ -486,7 +501,7 @@ describe("update_credentials validation errors", () => {
     body.set("source[quote_policy]", "everyone");
     body.set("source[privacy]", "secret");
     for (let i = 0; i < 5; i++) {
-      body.set(`fields_attributes[${i}][name]`, `n${i}`);
+      body.set(`fields_attributes[${i}][name]`, i === 0 ? "" : `n${i}`);
       body.set(`fields_attributes[${i}][value]`, "v");
     }
     body.set("note", "b".repeat(501));
@@ -509,7 +524,8 @@ describe("update_credentials validation errors", () => {
       "Attribution domains a b is not a valid domain name",
       "Display name is too long (maximum is 40 characters)",
       "Note is too long (maximum is 500 characters)",
-      "Fields is too long (maximum is 4 fields)",
+      "Fields is too long (maximum is 4 characters)",
+      "Fields contains values with missing labels",
       "Privacy is not included in the list",
       "Quote policy is not included in the list",
       "Language is not a valid language code",
@@ -552,7 +568,7 @@ describe("update_credentials validation errors", () => {
       ["display_name", "a".repeat(41)],
       ["note", "b".repeat(501)],
       ...Array.from({ length: 5 }, (_, i): [string, string][] => [
-        [`fields_attributes[${i}][name]`, i === 0 ? "n".repeat(256) : `n${i}`],
+        [`fields_attributes[${i}][name]`, i === 0 ? "" : `n${i}`],
         [`fields_attributes[${i}][value]`, "v"],
       ]).flat(),
       ["source[privacy]", "secret"],
@@ -590,6 +606,7 @@ describe("update_credentials validation errors", () => {
       "display_name too_long",
       "note too_long",
       "fields too_long",
+      "fields fields_with_values_missing_labels",
       "privacy inclusion",
       "quote_policy inclusion",
       "language invalid",
