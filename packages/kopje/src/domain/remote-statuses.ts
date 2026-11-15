@@ -464,7 +464,7 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   }
   linkQuotes(db, { id, uri: input.uri }, ctx.now);
   // Create#process_status's LinkCrawlWorker, for every status stored (a fetched one included).
-  enqueueCard(db, id, remoteCardLink(db, id, input.cardCandidates, new URL(ctx.origin).host), ctx.now);
+  enqueueCard(db, id, remoteCardLink(db, id, input.cardCandidates, new URL(ctx.origin).host, input.cardLink), ctx.now);
   if (!ctx.fetched) {
     notifyCreated(db, {
       id,
@@ -739,12 +739,13 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   noteStatusEmoji(db, existing.id, ctx.now);
   recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
   if (significant) {
-    // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again (a quote's change alone is not
-    // significant here, so it resets nothing).
+    // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
+    // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither
+    // resets anything.
     enqueueCard(
       db,
       existing.id,
-      remoteCardLink(db, existing.id, input.cardCandidates, new URL(ctx.origin).host),
+      remoteCardLink(db, existing.id, input.cardCandidates, new URL(ctx.origin).host, input.cardLink),
       ctx.now,
     );
     if (versions + (versions === 0 ? 2 : 1) > MAX_STATUS_EDITS) {

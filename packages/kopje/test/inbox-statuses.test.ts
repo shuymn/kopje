@@ -222,6 +222,47 @@ describe("Create (Mastodon and Misskey)", () => {
     expect(shown.body.url).toBe(note.id);
   });
 
+  it("reads an attachment with a blank href as media, as Mastodon's present? does", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    for (const [i, href] of (["", "  ", null, [], {}, false] as unknown[]).entries()) {
+      const url = `${MASTODON}/m/blank-${i}.png`;
+      const note = mastodonNote(bob, { attachment: [{ type: "Document", mediaType: "image/png", url, href }] });
+      expect(parseRemoteStatus(note)!.cardLink, JSON.stringify(href)).toBeNull();
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+      const row = (await statusRow(t.store, note.id))!;
+      expect(await sql(t.store, "SELECT url FROM media_attachments WHERE status_id = ?", row.id)).toEqual([{ url }]);
+    }
+  });
+
+  it("skips an attachment whose href is present but not a string, and stores the status", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    // Mastodon's Addressable raises a TypeError on each, failing the activity (docs/mastodon-deviations.md).
+    const hrefs = [{ a: 1 }, 5, true, ["https://b.example/"]];
+    const note = mastodonNote(bob, {
+      content: '<p><a href="https://a.example/">a</a></p>',
+      attachment: hrefs.map((href, i) => ({
+        type: "Document",
+        mediaType: "image/png",
+        url: `${MASTODON}/m/${i}.png`,
+        href,
+      })),
+    });
+    expect(parseRemoteStatus(note)).toMatchObject({ media: [], cardLink: null });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(await sql(t.store, "SELECT count(*) AS n FROM media_attachments WHERE status_id = ?", row.id)).toEqual([
+      { n: 0 },
+    ]);
+    // Neither media nor a link: the content's anchor is the card's.
+    expect(await sql(t.store, "SELECT url FROM status_cards WHERE status_id = ?", row.id)).toEqual([
+      { url: "https://a.example/" },
+    ]);
+  });
+
   it("converts an Article as Mastodon does: the name as a heading, the summary, and a link", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

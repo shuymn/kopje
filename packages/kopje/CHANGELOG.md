@@ -35,6 +35,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
   handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
   migration and no `wrangler.jsonc` change.
+- A remote post's FEP-8967 `Link` attachment is the link its card is fetched from, as Mastodon 4.7 reads it; the
+  content's links are used only without one. An attachment with an empty `href` is now read as media. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
