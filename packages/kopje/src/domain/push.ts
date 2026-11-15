@@ -26,7 +26,9 @@ import { writeOperation } from "./operation";
 //   - The payload is Mastodon's (Web::NotificationSerializer): the Store composes the title, body and icon; the Worker
 //     adds the access token, which the Store holds only sealed (AUTH-7, security/web-push.ts).
 
-// Mastodon's Notification::TYPES as of 4.5, the alerts a subscription may set. Kopje emits only some of them.
+// Mastodon's Notification::TYPES as of 4.7.5, the alerts a subscription may set (data_params,
+// app/controllers/api/v1/push/subscriptions_controller.rb:65-69). Kopje emits only some of them: the collection types
+// are stored and echoed back, and match no notification Kopje writes (pushWantedSql matches by type).
 export const ALERT_TYPES = [
   "mention",
   "status",
@@ -43,6 +45,8 @@ export const ALERT_TYPES = [
   "annual_report",
   "quote",
   "quoted_update",
+  "added_to_collection",
+  "collection_update",
 ] as const;
 
 export const POLICIES = ["all", "followed", "follower", "none"] as const;

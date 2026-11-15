@@ -342,6 +342,23 @@ describe("posting a quote (PostStatusService, R36)", () => {
       body: { error: "Validation failed: Text can't be blank" },
     });
   });
+
+  it("keeps a blank text and its CW as sent on a quote, where a post that quotes nothing takes the CW as its text", async () => {
+    const t = await setup();
+    const daves = await localStatus(t, { status: "dave", visibility: "public" }, "dave");
+    const quote = await quotePost(t, daves.id, { status: "", spoiler_text: "cw" });
+    expect(quote).toMatchObject({ spoiler_text: "cw", sensitive: true });
+    expect((await api(t, "GET", `/api/v1/statuses/${quote.id}/source`)).body).toMatchObject({
+      text: "",
+      spoiler_text: "cw",
+    });
+    // The guarded branch: without the quote, the CW becomes the text.
+    const plain = await postRaw(t, { status: "", spoiler_text: "cw" });
+    expect((await api(t, "GET", `/api/v1/statuses/${String(plain.body.id)}/source`)).body).toMatchObject({
+      text: "cw",
+      spoiler_text: "",
+    });
+  });
 });
 
 async function statusAuthor(t: Setup, id: string): Promise<string> {
@@ -372,8 +389,8 @@ describe("the content fallback (TextFormatter#add_quote_fallback)", () => {
   it("an edit of a quote to empty text with a CW keeps the text empty and the CW as the warning", async () => {
     const { t, theirs } = await world();
     const quote = await quotePost(t, theirs.id, { status: "hello" });
-    // Mastodon 4.5.21's UpdateStatusService moves a CW into a blank text only when the status has no quote
-    // (update_status_service.rb:114-117).
+    // UpdateStatusService moves a CW into a blank text only when the status has no quote (v4.7.5
+    // update_status_service.rb:115-116); the guarded branch: test/statuses.test.ts, "an edit to a blank text".
     const edited = await api(t, "PUT", `/api/v1/statuses/${quote.id}`, { status: "", spoiler_text: "careful" });
     expect(edited.status).toBe(200);
     expect(edited.body).toMatchObject({ spoiler_text: "careful", sensitive: true });

@@ -106,7 +106,7 @@ export function profilePageWithin(db: Db, input: ProfileInput, site: Site, answe
     answerBytes,
   );
   admitMandatory(budget, account);
-  const base = { account: row.id, present: pagePresent(site), ...tabFilters(tab) };
+  const base = { account: row.id, present: pagePresent(site), excludeDirect: false, ...tabFilters(tab) };
   // Pins, admitted strictly before the list: at most PIN_LIMIT, a local account's own (status-actions.ts).
   const pins =
     tab.kind === "posts" && cursor === null

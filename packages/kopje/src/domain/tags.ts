@@ -6,6 +6,7 @@ import type { Page, PageQuery, Present } from "./accounts";
 import { visibleSql } from "./audience";
 import { optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import { featureTag, unfeatureTag } from "./featured-tags";
+import { EARLIEST_MS } from "./ids";
 import { tagNameSql } from "./status-bounds";
 import { isHashtagName } from "./status-text";
 import { listedTagName, listedTagNameSql, TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
@@ -301,19 +302,45 @@ export const followedTags = userReadOperation<{ page: PageQuery; present: Presen
 const RECENT_STATUSES = 1000;
 const SUGGESTIONS = 10;
 
-// GET /api/v1/featured_tags/suggestions (Tag.suggestions_for_account): the hashtags of the viewer's newest 1,000
-// statuses that they do not feature yet, the most used first (ties by name), at most 10. A window of the viewer's own
-// statuses through statuses_account, whatever their history.
+// ActiveSupport's `1.year.ago` in UTC (Time#advance(years: -1)): the same time of day on the same date a calendar year
+// earlier, Feb 29 becoming Feb 28.
+export function yearBefore(ms: number): number {
+  const at = new Date(ms);
+  const year = at.getUTCFullYear() - 1;
+  const month = at.getUTCMonth();
+  const last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return (
+    Date.UTC(year, month, Math.min(at.getUTCDate(), last)) +
+    (ms - Date.UTC(at.getUTCFullYear(), month, at.getUTCDate()))
+  );
+}
+
+// The least status id of the last calendar year: Mastodon::Snowflake.id_at(1.year.ago) without its random sub-second
+// bits, raised to the earliest 18-digit id so it compares as stored ids do.
+export function suggestionsSince(now: number): string {
+  return (BigInt(Math.max(yearBefore(now), EARLIEST_MS)) << 16n).toString();
+}
+
+// GET /api/v1/featured_tags/suggestions (Tag.suggestions_for_account, mastodon#39567): of the viewer's newest
+// RECENT_STATUSES statuses of the last calendar year, the hashtags more than one of the kept originals carries that
+// the viewer does not feature yet, the most used first (ties by name), at most SUGGESTIONS. The window is pinned to
+// statuses_account, which the id bound cannot draw the planner off, and the filters stay outside its LIMIT: a deleted
+// status whose job has not run (withdrawn) and a legacy boost row take a place and count no hashtag
+// (docs/mastodon-deviations.md, "Hashtags"). Every hashtag row of a status in the window is read (RES-7's gap).
 export const featuredTagSuggestions = userReadOperation<{ present: Present }, Tag[]>(
   (db, { present }, { accountId, now }) => {
     const rows = db.all<{ key: string }>(
-      `SELECT ${listedTagNameSql("t.name")} AS key FROM (SELECT id FROM statuses WHERE account_id = ?1 ORDER BY id DESC LIMIT ?2) r
+      `SELECT ${listedTagNameSql("t.name")} AS key FROM (
+				SELECT id, withdrawn, reblog_of_id FROM statuses INDEXED BY statuses_account
+				WHERE account_id = ?1 AND id >= ?4 ORDER BY id DESC LIMIT ?2) r
 			CROSS JOIN status_tags t ON t.status_id = r.id
-			WHERE ${tagNameSql("t.name")} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM featured_tags f WHERE f.account_id = ?1 AND f.name = t.name)
-			GROUP BY t.name ORDER BY count(*) DESC, t.name LIMIT ?3`,
+			WHERE r.withdrawn = 0 AND r.reblog_of_id IS NULL AND ${tagNameSql("t.name")} IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM featured_tags f WHERE f.account_id = ?1 AND f.name = t.name)
+			GROUP BY t.name HAVING count(*) > 1 ORDER BY count(*) DESC, t.name LIMIT ?3`,
       accountId,
       RECENT_STATUSES,
       SUGGESTIONS,
+      suggestionsSince(now),
     );
     return presentTags(
       db,

@@ -375,7 +375,8 @@ describe("a relayed status Delete that does not meet every condition changes not
     expect(await stored(t.store, status.uri)).toEqual({ visibility: "public", withdrawn: 0 });
     const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
     const before = await sql(t.store, author, bob.uri);
-    t.web.fail(bob.uri, 410);
+    // A 404 (a 410 at bob's URI would delete him: test/inbox-gone.test.ts).
+    t.web.fail(bob.uri, 404);
     expect(await loggedRefusals(() => t.post(dan, signed))).toEqual({
       status: 202,
       refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "author-unusable" }]],

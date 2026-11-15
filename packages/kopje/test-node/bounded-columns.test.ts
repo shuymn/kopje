@@ -339,6 +339,8 @@ type Finding = { path: string; line: number; read: string; key?: string };
 const SAFE_INTERPOLATIONS = new Set([
   // The inbox an activity without `to` goes to: an inbox column, none bounded here (domain/audience.ts).
   "addressedInboxSql",
+  // Attribution domains within their read bound, or '[]' (platform/stored-bounds.ts): no bounded column.
+  "attributionDomainsSql",
   "availableJoinedSql",
   "availableLocalSql",
   "availableSql",
@@ -378,6 +380,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "filterTextBoundSql",
   "followableBySql",
   "followListsShownSql",
+  // R1's account reads, whether the account is found: a predicate (domain/audience.ts).
+  "foundSql",
   "hidesCollectionsSql",
   "hostCoveredSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).

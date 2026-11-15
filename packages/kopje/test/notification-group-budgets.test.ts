@@ -19,6 +19,7 @@ import {
   answer,
   bigStatus,
   expectByteCutWalk,
+  fallbackReports,
   maximalAccounts,
   ORIGIN,
   walkPages,
@@ -146,6 +147,56 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     expect(unread.body.count).toBe(10);
     expect(await markers(h, alice)).toEqual(marked);
   }, 600_000);
+
+  it("admits each group with its fallback: a page that fits without them is cut with them", async () => {
+    const h = await community(["owner", "alice"]);
+    const { owner, alice } = h.users;
+    const reports = 56;
+    const [report] = await fallbackReports(h, { id: owner.id, email: "owner@example.com" }, alice.id, reports);
+    const fan = await remoteAccount(h.store, "fan");
+    let added = 0;
+    const more = async () => {
+      added += 1;
+      await favourite(h, owner.id, fan, await bigStatus(h, owner.id, NOW - 60_000 * (100 - added), {}, 2));
+    };
+    const pageOf = (query: string) =>
+      answer<
+        Omit<Grouped, "notification_groups"> & { notification_groups: (Group & { type: string; fallback?: unknown })[] }
+      >(h, `/api/v2/notifications?limit=80${query}`, owner.token);
+    // What a group of a big status adds, and what a report group's fallback adds.
+    await more();
+    const one = (await pageOf("")).bytes;
+    await more();
+    const big = (await pageOf("")).bytes - one;
+    const groupOf = async (query: string) =>
+      (await answer<Grouped>(h, `/api/v2/notifications/ungrouped-${report!}${query}`, owner.token)).body
+        .notification_groups[0]!;
+    const shown = await groupOf("?supported_types[]=mention");
+    const fallbacks = reports * (jsonBytes(shown) - jsonBytes(await groupOf("")));
+    const k = Array.from({ length: 80 - reports - 1 }, (_, i) => i + 2).find(
+      (n) => one + (n - 1) * big <= ANSWER_BYTES && one + (n - 1) * big + fallbacks > ANSWER_BYTES,
+    );
+    expect(k).toBeDefined();
+    while (added < k!) {
+      await more();
+    }
+    const whole = await pageOf("");
+    expect(whole.body.notification_groups).toHaveLength(k! + reports);
+    expect(whole.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    for (const expandAccounts of ["full", "partial_avatars"]) {
+      const cut = await pageOf(`&expand_accounts=${expandAccounts}&supported_types[]=mention`);
+      const groups = cut.body.notification_groups;
+      expect(cut.bytes, expandAccounts).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(groups.length, expandAccounts).toBeLessThan(k! + reports);
+      // The groups the passes kept within the shared work budget (RES-7): the newest of the whole page's.
+      expect(groups.map((group) => group.group_key)).toEqual(
+        whole.body.notification_groups.slice(0, groups.length).map((group) => group.group_key),
+      );
+      expect(
+        groups.filter((group) => group.type === "admin.report").every((group) => group.fallback !== undefined),
+      ).toBe(true);
+    }
+  }, 300_000);
 
   it("continue from discovery positions with interleaved groups, the range fixed by the groups kept", async () => {
     const h = await community(["alice"]);
