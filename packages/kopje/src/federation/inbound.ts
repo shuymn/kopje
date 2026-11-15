@@ -64,11 +64,11 @@ import { ACTOR_TYPES, CONVERTED_TYPES, fetchRemoteStatus, parseRemoteStatus, STA
 //      is refused, ID-8).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
 //      fresh) lists the key id, and the key names no other owner. The activity id has the actor's origin. One
-//      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by the
-//      quoting server) is signed by its relayer, who must own that key in the same way; it is applied as the actor's
-//      only with the actor's own proof (author-proof.ts), and without one it only has the stamp verified again. A proof
-//      that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other relay (another type, or an
-//      actor's Delete) whose signer owns its key is dropped the same way.
+//      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by a
+//      server that holds the quoting status) is signed by its relayer, who must own that key in the same way; it is
+//      applied as the actor's only with the actor's own proof (author-proof.ts), and without one it only has the stamp
+//      verified again. A proof that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other
+//      relay (another type, or an actor's Delete) whose signer owns its key is dropped the same way.
 //   5. Per type, what the Store cannot fetch itself: a fresh actor document for Update, the Move target (ID-4), the
 //      object of a Create or Update given by id only.
 //   6. The Store applies it. It may answer that it needs a document first (the original of a boost it does not have,
