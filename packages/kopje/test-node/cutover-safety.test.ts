@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readdir, readFile, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -22,7 +22,7 @@ import {
 } from "../cli/lib/cutover/kopje-runtime.js";
 import { loadLegacyExport } from "../cli/lib/cutover/legacy-load.js";
 import { ExportError, parseStatement, tableExpressions } from "../cli/lib/cutover/sql-script.js";
-import { convert, exportOf, opened, rewriteExport, verify, workspace } from "./cutover-helpers.js";
+import { convert, exportOf, failing, opened, rewriteExport, tampered, verify, workspace } from "./cutover-helpers.js";
 
 // The converter's own safety: a strict export grammar (DATA-11), reports without content even on failure (DATA-13),
 // exclusive outputs, HTML that is never cut silently, and a size preflight.
@@ -439,6 +439,67 @@ describe("HTML is never cut silently", () => {
       '<p>hi <a rel="nofollow noopener" target="_blank">x</a> <a href="https://a.example/" class="mention" rel="nofollow noopener" target="_blank">y</a><br>z</p><p><strong>T</strong></p>',
     );
   });
+});
+
+// ID-5: a local account whose username is the instance domain, in any case (local usernames are looked up without
+// case), would hold the instance actor's handle, so the conversion stops on it and verification fails on it, each on
+// its own reading of the export. The report names it by its code alone (DATA-13: no URI or domain).
+describe("a local username that is the instance domain", () => {
+  // alice's username, and her actor id in every text column, renamed in a converted dump.
+  const renamedRows = async (dumpPath: string, spelling: string) => {
+    const db = await opened(dumpPath);
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
+    const statements = [
+      "UPDATE accounts SET username = '" + spelling + "' WHERE domain IS NULL AND username = 'alice';",
+    ];
+    for (const { name } of tables) {
+      const columns = db.prepare(`SELECT name, type FROM pragma_table_info('${name}')`).all() as {
+        name: string;
+        type: string;
+      }[];
+      for (const column of columns.filter((c) => c.type.toUpperCase() === "TEXT")) {
+        statements.push(
+          `UPDATE "${name}" SET "${column.name}" = replace("${column.name}", '/ap/users/alice', '/ap/users/${spelling}') WHERE instr("${column.name}", '/ap/users/alice') > 0;`,
+        );
+      }
+    }
+    db.close();
+    return statements.join("\n");
+  };
+  // An export, and a copy of it (the same keys) with alice renamed `spelling`.
+  const renamed = async (spelling: string) => {
+    const before = await exportOf(space.dir, { level: 39 }, `before-${spelling}`);
+    const exportPath = join(space.dir, `export-${spelling}`);
+    await cp(before, exportPath, { recursive: true });
+    const swap = (from: string, to: string) =>
+      rewriteExport(exportPath, (text) => (text.includes(from) ? text.replaceAll(from, to) : undefined));
+    expect(await swap("/ap/users/alice", `/ap/users/${spelling}`)).toBeGreaterThan(0);
+    expect(await swap('"preferredUsername":"alice"', `"preferredUsername":"${spelling}"`)).toBeGreaterThan(0);
+    return { before, exportPath };
+  };
+
+  for (const spelling of ["kopje.test", "Kopje.TEST"]) {
+    it(`stops the conversion and fails verification for ${spelling}`, async () => {
+      const { before, exportPath } = await renamed(spelling);
+      const stopped = await convert(space.dir, exportPath, { out: `out-${spelling}` });
+      expect(stopped.ok).toBe(false);
+      expect((stopped.manifest.conversion as { problems: Record<string, number> }).problems).toEqual({
+        "accounts:local-username-is-domain": 1,
+      });
+      // Verification reads the export itself: a dump that matches the renamed export row for row (the converted
+      // export before the rename, renamed in place) fails on the collision alone.
+      const converted = await convert(space.dir, before, { out: `before-out-${spelling}` });
+      expect(converted.ok).toBe(true);
+      expect((await verify(before, converted.dumpPath)).report).toMatchObject({
+        result: "PASS",
+        identities: { overBound: 0, localUsernameIsDomain: 0 },
+      });
+      const matching = await tampered(space.dir, converted.dumpPath, await renamedRows(converted.dumpPath, spelling));
+      const checked = await verify(exportPath, matching);
+      expect(failing(checked.categories)).toEqual([]);
+      expect(checked.report).toMatchObject({ result: "FAIL", identities: { overBound: 0, localUsernameIsDomain: 1 } });
+    });
+  }
 });
 
 describe("size preflight", () => {
