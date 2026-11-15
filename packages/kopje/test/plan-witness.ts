@@ -22,13 +22,15 @@ export type Statistics = (typeof STATISTICS)[number];
 // text, whitespace collapsed, back to main's) or `text` (the rewrite exactly, whitespace collapsed). `writes`: a query
 // listing the rows the statement writes, read before and after it on both sides. `result`: where the rewrite returns
 // rows of another shape that its caller turns into the same answer (mergedWindow's rows and their bound), each side's
-// rows as its caller reads them, compared in their place.
+// rows as its caller reads them, compared in their place. `params`: main's parameters, taken from the rewrite's where
+// the rewrite binds more than main's statement takes (a bound it adds), since a statement refuses a binding it lacks.
 export type Baseline = {
   sql: string;
   pins?: (text: string) => string;
   text?: string;
   writes?: string;
   result?: { main: (rows: SqlRow[]) => unknown; mine: (rows: SqlRow[]) => unknown };
+  params?: (mine: readonly SqlStorageValue[]) => SqlStorageValue[];
 };
 
 type Measure = { rows: number; written: number; result: unknown; removed: string[]; added: string[] };
@@ -152,7 +154,7 @@ export class PlanWitness {
         };
         try {
           transact(() => {
-            const cursor = real.exec<SqlRow>(baseline.sql, ...params);
+            const cursor = real.exec<SqlRow>(baseline.sql, ...(baseline.params?.(params) ?? params));
             const rows = cursor.toArray();
             side.main.result = baseline.result === undefined ? rows : baseline.result.main(rows);
             side.main.rows = cursor.rowsRead;

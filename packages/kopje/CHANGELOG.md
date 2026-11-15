@@ -67,6 +67,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
+  leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

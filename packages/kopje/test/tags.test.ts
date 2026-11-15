@@ -37,10 +37,13 @@ describe("tag ids", () => {
       expect(response.status, path).toBe(200);
       return await response.json<Tag | Tag[] | { hashtags: Tag[] }>();
     };
-    await h.request(
-      "/api/v1/statuses",
-      bearer(alice.token, { method: "POST", body: new URLSearchParams({ status: "#Cats" }) }),
-    );
+    // Twice, so that suggestions list it.
+    for (const status of ["#Cats", "#cats again"]) {
+      await h.request(
+        "/api/v1/statuses",
+        bearer(alice.token, { method: "POST", body: new URLSearchParams({ status }) }),
+      );
+    }
     ids.push(((await tag("/api/v1/tags/Cats")) as Tag).id);
     ids.push(((await tag("/api/v1/tags/cats/follow", "POST")) as Tag).id);
     ids.push(((await tag("/api/v1/followed_tags")) as Tag[])[0]?.id ?? "");
