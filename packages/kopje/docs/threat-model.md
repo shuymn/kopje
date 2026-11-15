@@ -2689,8 +2689,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   nesting; `update_credentials` checks the token before reading a multipart
   body; `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two
   files and refuses one byte more", "answers an invalid or under-scoped token without reading a multipart body").
-  _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"). _Enforced (main)_ for search terms
-  (500 characters) and media (16 MB and 16,777,216 pixels, read with the body bound before parsing):
+  _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"); the Store checks the raw bound of
+  the text and warning as sent before it judges a blank text or moves its warning into the text (`convertedPost`, which
+  `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`); `test/statuses.test.ts` ("is held to the raw
+  bound as sent, in the Store, before the warning moves, posted now or scheduled"). _Enforced (main)_ for
+  search terms (500 characters) and media (16 MB and 16,777,216 pixels, read with the body bound before parsing):
   `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts` ("bounds the query"), `test/media.test.ts`
   ("refuses a file over 16 MB"). _Enforced (main)_ for remote profiles: bios are cut at 50,000 code units before
   sanitizing and display names at 2,048 (`src/security/html.ts`, `src/federation/remote-actor.ts`). _Enforced (main):_ a

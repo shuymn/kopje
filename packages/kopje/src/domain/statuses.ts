@@ -134,6 +134,7 @@ import {
   parseStatusText,
   quoteFallbackHtml,
   renderStatusHtml,
+  statusLength,
 } from "./status-text";
 import { streamDelete } from "./streaming";
 import { forgetStatusTrend } from "./trends";
@@ -149,7 +150,8 @@ export type Viewed<T> = { status: "ok"; value: T } | { status: "not_found" };
 
 export type Acted<T> = Viewed<T> | { status: "forbidden" } | { status: "invalid"; error: string };
 
-// StatusLengthValidator's error. The Worker checks the counted length; the Store re-checks the raw bound so no caller
+// StatusLengthValidator's error. The Worker checks the counted length of a text that is not blank; the Store counts a
+// blank one's, whose warning may become the text (convertedPost, editStatus), and re-checks the raw bound so no caller
 // can make it parse more.
 export const TOO_LONG = `Validation failed: Text character limit of ${MAX_STATUS_CHARACTERS} exceeded`;
 
@@ -450,6 +452,29 @@ export type Prepared =
 
 // Mastodon's statuses.errors.quoted_user_not_mentioned, as ActiveRecord::RecordInvalid words it.
 const QUOTED_USER_NOT_MENTIONED = "Validation failed: Cannot quote a non-mentioned user in a Private Mention post.";
+
+// PostStatusService#preprocess_attributes! on a post as sent, once the pair as sent is within MAX_RAW_LENGTH (RES-1,
+// checked before blankText reads it or anything moves: preparePost checks only the pair it is given, whose sum drops a
+// blank text): a blank text with a warning that is not blank, quoting nothing, takes the warning as its text, with no
+// warning, and is sensitive (Mastodon computes @sensitive before the move). It applies when a post is made or
+// scheduled, never at publication, so a post an earlier release scheduled publishes as it was stored. Then the counted
+// length of a blank text, which the Worker leaves to the Store, on the pair to be written, as StatusLengthValidator
+// validates the status. null: too long.
+export function convertedPost<T extends PostInput>(input: T): T | null {
+  const text = storedText(input.text);
+  const spoilerText = storedText(input.spoilerText);
+  if (exceedsRawLength(text, spoilerText)) {
+    return null;
+  }
+  if (!blankText(text)) {
+    return input;
+  }
+  const post =
+    !blankText(spoilerText) && input.quotedStatusId === undefined
+      ? { ...input, text: spoilerText, spoilerText: "", sensitive: true }
+      : { ...input, text, spoilerText };
+  return statusLength(post.text, post.spoilerText) > MAX_STATUS_CHARACTERS ? null : post;
+}
 
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
 // the scheduled status being published, whose media it attaches (null: none). R36 is checked in the writing
@@ -974,6 +999,10 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
   // quoted status is there.
   const quote = localQuoteOf(db, current.id);
+  // The counted length of a blank text, which the Worker leaves to the Store.
+  if (blankText(text) && statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS) {
+    return { status: "invalid", error: TOO_LONG };
+  }
   if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }

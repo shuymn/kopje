@@ -340,6 +340,23 @@ describe("posting a quote (PostStatusService, R36)", () => {
       body: { error: "Validation failed: Text can't be blank" },
     });
   });
+
+  it("keeps a blank text and its CW as sent on a quote, where a post that quotes nothing takes the CW as its text", async () => {
+    const t = await setup();
+    const daves = await localStatus(t, { status: "dave", visibility: "public" }, "dave");
+    const quote = await quotePost(t, daves.id, { status: "", spoiler_text: "cw" });
+    expect(quote).toMatchObject({ spoiler_text: "cw", sensitive: true });
+    expect((await api(t, "GET", `/api/v1/statuses/${quote.id}/source`)).body).toMatchObject({
+      text: "",
+      spoiler_text: "cw",
+    });
+    // The guarded branch: without the quote, the CW becomes the text.
+    const plain = await postRaw(t, { status: "", spoiler_text: "cw" });
+    expect((await api(t, "GET", `/api/v1/statuses/${String(plain.body.id)}/source`)).body).toMatchObject({
+      text: "cw",
+      spoiler_text: "",
+    });
+  });
 });
 
 async function statusAuthor(t: Setup, id: string): Promise<string> {

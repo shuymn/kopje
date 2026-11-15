@@ -77,9 +77,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
   (`mastodon#39203`); Kopje answered 422 `Cannot attach more than 4 files`. Its `Question` carries the attachments. No
   Store migration and no `wrangler.jsonc` change.
-- A post's length counts the warning and the text as one string, as Mastodon does (a combining mark that starts the
-  text no longer counts apart), a blank text counting nothing, and blank means what Mastodon's `blank?` means (U+0085
-  is blank, U+FEFF is not). No Store migration and no `wrangler.jsonc` change.
+- A post with a blank text and a content warning, quoting nothing, takes the warning as its text, with no warning and
+  marked sensitive, as Mastodon does; Kopje answered 422 `Text can't be blank` without media and kept the warning over
+  a blank text with media. A scheduled one is converted when it is scheduled. A post's length counts the warning and
+  the text as one string, as Mastodon does (a combining mark that starts the text no longer counts apart), a blank
+  text's length is counted after the conversion, and blank means what Mastodon's `blank?` means (U+0085 is blank,
+  U+FEFF is not). No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

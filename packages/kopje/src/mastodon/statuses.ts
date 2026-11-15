@@ -1,6 +1,6 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
-import { exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
+import { blankText, exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
 import {
   type Acted,
   MAX_STATUSES_BY_ID,
@@ -114,8 +114,13 @@ function composition(p: Params): Composition | string {
   if (mediaIds.length > MAX_MEDIA_ATTACHMENTS) {
     return TOO_MANY_FILES;
   }
-  // The raw bound comes first, so over-long input is refused before it is parsed.
-  if (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS) {
+  // The raw bound comes first, so over-long input is refused before it is parsed. The counted length of a blank text is
+  // the Store's (statuses.ts convertedPost, editStatus): its warning may become the text, whose URLs and mentions count
+  // as text, and only the Store knows whether an edited status quotes.
+  if (
+    exceedsRawLength(text, spoilerText) ||
+    (!blankText(text) && statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)
+  ) {
     return TOO_LONG;
   }
   const poll = pollOf(p);

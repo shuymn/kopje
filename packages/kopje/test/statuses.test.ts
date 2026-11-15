@@ -371,6 +371,14 @@ describe("POST /api/v1/statuses", () => {
     expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, json({ status: longUrls })))).status).toBe(
       200,
     );
+    // The same as a blank text's warning, which the Store counts as the text it becomes.
+    for (const [warning, status] of [
+      [worst, 422],
+      [longUrls, 200],
+    ] as const) {
+      const body = json({ status: "", spoiler_text: warning });
+      expect((await h.request("/api/v1/statuses", bearer(h.users.alice.token, body))).status).toBe(status);
+    }
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
@@ -1469,6 +1477,84 @@ describe("reblogged_by pages after filtering", () => {
     await act(h, h.users.carol, `/api/v1/statuses/${status.id}/reblog`, { visibility: "unlisted" });
     await act(h, h.users.bob, `/api/v1/statuses/${status.id}/reblog`, { visibility: "private" });
     expect(await ids(h, `/api/v1/statuses/${status.id}/reblogged_by?limit=1`)).toEqual([h.users.carol.id]);
+  });
+});
+
+// PostStatusService#preprocess_attributes!: a blank text with a content warning, quoting nothing, takes the warning
+// as its text (the quote case: test/quote-authoring.test.ts; scheduling: test/scheduled-statuses.test.ts).
+describe("a blank text with a content warning", () => {
+  type Source = { text: string; spoiler_text: string };
+  const source = async (h: ApiHarness, token: string, id: string) =>
+    (await getJson<Source>(h, `/api/v1/statuses/${id}/source`, token)).body;
+
+  it("is posted with the warning as its text, no warning and sensitive, with or without media", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await sql(
+      h.store,
+      `INSERT INTO media_attachments (id, account_id, type, url, processed, gc_at)
+			VALUES ('100000000000000001', ?1, 'image', 'https://kopje.test/media/1.png', 1, ?2)`,
+      alice.id,
+      new Date(NOW + HOUR).toISOString(),
+    );
+    const cases: [string, Record<string, unknown>][] = [
+      ["no media", {}],
+      ["media", { media_ids: ["100000000000000001"] }],
+      ["sensitive: false", { sensitive: false }],
+    ];
+    for (const [name, extra] of cases) {
+      const posted = await posting(h, alice.token, { status: "", spoiler_text: "cw", ...extra });
+      expect(posted.status, name).toBe(200);
+      const status = posted.body as Status & { spoiler_text: string; sensitive: boolean };
+      expect({ content: status.content, spoiler_text: status.spoiler_text, sensitive: status.sensitive }, name).toEqual(
+        {
+          content: "<p>cw</p>",
+          spoiler_text: "",
+          sensitive: true,
+        },
+      );
+      expect(await source(h, alice.token, status.id), name).toMatchObject({ text: "cw", spoiler_text: "" });
+    }
+  });
+
+  it("counts the length of the text it becomes, its URLs as 23 characters, and writes nothing past it", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // 20 URLs of 490 characters: 9,819 code units, 479 counted as text (9,819 as a warning).
+    const urls = Array.from({ length: 20 }, () => `https://example.com/${"r".repeat(470)}`).join(" ");
+    expect(urls.length).toBe(9_819);
+    const accepted = await posting(h, alice.token, { status: "", spoiler_text: urls });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(await source(h, alice.token, (accepted.body as Status).id)).toEqual({
+      id: (accepted.body as Status).id,
+      text: urls,
+      spoiler_text: "",
+    });
+    // 500 characters as a warning, 504 as text (a URL counts 23).
+    const long = `${"x".repeat(480)} https://example.com`;
+    expect(long.length).toBe(500);
+    expect(await posting(h, alice.token, { status: "", spoiler_text: long })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text character limit of 500 exceeded" },
+    });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 1 }]);
+  });
+
+  it("is held to the raw bound as sent, in the Store, before the warning moves, posted now or scheduled", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const blank = { text: " ".repeat(MAX_RAW_LENGTH + 1), spoilerText: "w" };
+    for (const scheduledAt of [undefined, new Date(NOW + HOUR).toISOString()]) {
+      const { result } = await postPlans(h, alice.token, { ...blank, scheduledAt }, /^$/);
+      expect(result, String(scheduledAt)).toMatchObject({
+        value: { status: "invalid", error: "Validation failed: Text character limit of 500 exceeded" },
+      });
+    }
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM scheduled_statuses")).toEqual([{ n: 0 }]);
+    // Within the bound, the same pair converts and posts.
+    const { result } = await postPlans(h, alice.token, { ...blank, text: " ".repeat(MAX_RAW_LENGTH - 1) }, /^$/);
+    expect(result).toMatchObject({ value: { status: "ok", value: { content: "<p>w</p>", spoiler_text: "" } } });
   });
 });
 
