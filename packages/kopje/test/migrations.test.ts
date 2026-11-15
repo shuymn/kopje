@@ -26,7 +26,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
-import { NODE_ATTEMPTS } from "../src/domain/reply-walks";
+import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
@@ -12747,8 +12747,10 @@ describe("0099_reply_walks", () => {
   });
 
   it("holds a node's state, stage, validity, parent and fetch together, and its attempts to 0 to NODE_ATTEMPTS", async () => {
-    // The CHECK's upper end is NODE_ATTEMPTS, the hand-outs of one document a walk charges (reply-walks.ts).
+    // The CHECK's upper end is NODE_ATTEMPTS, the hand-outs of one document a walk charges (reply-walks.ts); a node's
+    // skip grows by at most REPLY_READ_ENTRIES a collection document, of which a walk reads at most WALK_PAGES.
     expect(NODE_ATTEMPTS).toBe(2);
+    expect(WALK_PAGES * REPLY_READ_ENTRIES).toBeLessThanOrEqual(100_000);
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
@@ -12759,6 +12761,8 @@ describe("0099_reply_walks", () => {
         "state = 2, parent = " + P,
         "state = 0, parent = NULL, valid = 1, stage = 1, fetch = " + F,
         "stage = 2",
+        "stage = 3, fetch = 'https://r.example/s/1', skip = 100000",
+        "skip = 0",
         "state = 1",
         `attempts = ${NODE_ATTEMPTS}`,
         "attempts = 0, stage = 0, fetch = NULL, valid = 0",
@@ -12777,6 +12781,10 @@ describe("0099_reply_walks", () => {
         "fetch = " + F,
         `attempts = ${NODE_ATTEMPTS + 1}`,
         "attempts = -1",
+        "stage = 4",
+        "skip = 100001",
+        "skip = -1",
+        "skip = 1.5",
         "state = 3",
         "seq = -1",
         "seq = 2147483648",

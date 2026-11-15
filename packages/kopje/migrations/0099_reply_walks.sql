@@ -14,14 +14,17 @@
 --   reply_walks_finished  the prune's seek of finished walks.
 --   reply_walk_nodes      the statuses a walk found, by URI (1 to 4096 bytes, no NUL): seq (its place), state (0
 --                         pending, 1 done, 2 deferred on parent), stage (0 its status, 1 its replies collection, 2 a
---                         page of it, at fetch), valid (1 once linked to the root through valid nodes; only a valid
---                         node's collection is read) and attempts (hand-outs of its current document, at most 2).
+--                         page of it, at fetch, 3 its status again for the replies it embeds, at fetch, its own URI),
+--                         valid (1 once linked to the root through valid nodes; only a valid node's collection is
+--                         read), skip (the raw entries of the document's chain its next reading passes over, 0 to
+--                         100,000: at most 200 more a collection document a walk reads) and attempts (hand-outs of its
+--                         current document, at most 2).
 --   reply_walk_nodes_pending, _parent   the hand-out's seek of the next pending node, and the deferred nodes waiting on
 --                         a node.
 --
 -- Job state: neither table is dumped (src/platform/dump-catalog.ts), and the cutover writes neither. The bounds are the
--- writers' constants (src/domain/reply-walks.ts WALK_STATUSES, WALK_PAGES, NODE_ATTEMPTS); the CHECKs hold the
--- columns to their domains, a counter's well past its cap.
+-- writers' constants (src/domain/reply-walks.ts WALK_STATUSES, WALK_PAGES, NODE_ATTEMPTS, REPLY_READ_ENTRIES); the
+-- CHECKs hold the columns to their domains, a counter's well past its cap.
 --
 -- Cost: two new empty tables and five indexes; no row is read or written. A file that creates a table cannot declare
 -- foreignKeys: 'unchanged' (test/migration-sql.ts), so its upgrade checks every reference of the Store. Measured on the
@@ -57,12 +60,13 @@ CREATE TABLE reply_walk_nodes (
     AND instr(CAST(uri AS BLOB), x'00') = 0),
   seq INTEGER NOT NULL CHECK (typeof(seq) = 'integer' AND seq BETWEEN 0 AND 2147483647),
   state INTEGER NOT NULL DEFAULT 0 CHECK (typeof(state) = 'integer' AND state IN (0, 1, 2)),
-  stage INTEGER NOT NULL DEFAULT 0 CHECK (typeof(stage) = 'integer' AND stage IN (0, 1, 2)),
+  stage INTEGER NOT NULL DEFAULT 0 CHECK (typeof(stage) = 'integer' AND stage IN (0, 1, 2, 3)),
   valid INTEGER NOT NULL DEFAULT 0 CHECK (typeof(valid) = 'integer' AND valid IN (0, 1)),
   parent TEXT CHECK (parent IS NULL OR (typeof(parent) = 'text' AND length(CAST(parent AS BLOB)) BETWEEN 1 AND 4096
     AND instr(CAST(parent AS BLOB), x'00') = 0)),
   fetch TEXT CHECK (fetch IS NULL OR (typeof(fetch) = 'text' AND length(CAST(fetch AS BLOB)) BETWEEN 1 AND 4096
     AND instr(CAST(fetch AS BLOB), x'00') = 0)),
+  skip INTEGER NOT NULL DEFAULT 0 CHECK (typeof(skip) = 'integer' AND skip BETWEEN 0 AND 100000),
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempts) = 'integer' AND attempts BETWEEN 0 AND 2),
   CHECK ((state = 2) = (parent IS NOT NULL)),
   CHECK (state <> 2 OR (valid = 0 AND stage = 0)),

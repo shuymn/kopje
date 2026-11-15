@@ -10,8 +10,11 @@ import {
   completeReplyStep,
   NODE_ATTEMPTS,
   REPLY_CLAIM_DROPS,
+  REPLY_READ_ENTRIES,
   REPLY_WALK_LEASE_MS,
+  type ReplyStep,
   type ReplyStepInput,
+  type StepFetched,
   WALK_PAGES,
   WALK_PRUNE_BATCH,
   WALK_STATUSES,
@@ -285,6 +288,39 @@ function droppingStore(store: StoreStub, drop: (input: ReplyStepInput) => boolea
   });
 }
 
+describe("completions", () => {
+  it("applies a reading once: a completion repeated after its node reads the same page again changes nothing", async () => {
+    const { t, root } = await world();
+    const note = mastodonNote(root);
+    const id = await walking(t, root, withReplies(t.web, note, []));
+    const page = `${note.id}/replies?page=true`;
+    const claim = (await t.store.claimReplyWalk(BUILD)) as ClaimedWalk;
+    const complete = (step: ReplyStep, fetched: StepFetched) =>
+      t.store.completeReplyStep(BUILD, {
+        origin: LOCAL,
+        statusId: id,
+        token: claim.token,
+        step,
+        more: true,
+        fetched,
+      });
+    const status = parseRemoteStatus({ "@context": AS, ...note })!;
+    const atPage = await complete(claim.step, {
+      kind: "status",
+      status,
+      replies: { entries: [], from: null, next: { stage: "page", uri: page } },
+    });
+    expect(atPage.next).toEqual({ uri: note.id, stage: "page", fetch: page, skip: 0 });
+    const read: StepFetched = { kind: "replies", replies: { entries: [missing("m0"), null], from: 0, next: "more" } };
+    const again = await complete(atPage.next!, read);
+    expect(again.next).toEqual({ uri: note.id, stage: "page", fetch: page, skip: 2 });
+    const before = { walk: await walkRow(t.store, id), nodes: await walkNodes(t.store, id) };
+    // The first reading's completion, repeated (a retried call): the node reads that page past it now.
+    expect(await complete(atPage.next!, read)).toEqual({ next: null, need: null, done: true });
+    expect({ walk: await walkRow(t.store, id), nodes: await walkNodes(t.store, id) }).toEqual(before);
+  });
+});
+
 describe("the bounds of a walk at their caps", () => {
   it(
     "records at most WALK_STATUSES nodes, the root included: the next item is never fetched",
@@ -297,10 +333,11 @@ describe("the bounds of a walk at their caps", () => {
       const page = pageChain(t, note, 3, (p) => Array.from({ length: PAGE }, (_, i) => item((p - 1) * PAGE + i)));
       const id = await walking(t, root, note);
       await walkRounds(t);
-      expect(await walkRow(t.store, id)).toMatchObject({ nodes: WALK_STATUSES, pages: 3, finished_at: NOW });
+      expect(await walkRow(t.store, id)).toMatchObject({ nodes: WALK_STATUSES, pages: 1, finished_at: NOW });
       expect(fetches(t, item(WALK_STATUSES - 2))).toBe(1);
       expect(fetches(t, item(WALK_STATUSES - 1))).toBe(0);
-      expect([fetches(t, page(2)), fetches(t, page(3))]).toEqual([1, 1]);
+      // The full walk's reading of the collection ends there: the next pages are never requested.
+      expect([fetches(t, page(2)), fetches(t, page(3))]).toEqual([0, 0]);
     },
   );
 
@@ -386,15 +423,14 @@ describe("the bounds of a walk at their caps", () => {
     "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES documents a walk, each within its fetch budget",
     { timeout: 180_000 },
     async () => {
-      const { t, root, bob } = await world();
-      const { note, p, xs } = listedBeforeParent(t, root, bob);
-      // Every node at its attempts: the root and P each fail once (5xx) before they are read, every X is fetched
-      // deferred then again, and every X's collection fails, twice while pages are left.
-      for (const x of xs) {
-        serveNote(t.web, { ...x, replies: `${x.id}/replies` });
-        t.web.fail(`${x.id}/replies`, 503);
-      }
-      const flaky = new Set([note.id, p.id]);
+      const { t, root } = await world();
+      const note = mastodonNote(root);
+      // Every node at its attempts and every page charged: the root's collection is a chain of WALK_PAGES + 1 pages by
+      // URI, the first WALK_PAGES listing the WALK_STATUSES - 1 items that fill the walk, two a page; the root and every
+      // item fail once (5xx) before they are read, the items then answering 404.
+      const items = Array.from({ length: WALK_STATUSES - 1 }, (_, i) => missing(`c${i}`));
+      const page = pageChain(t, note, WALK_PAGES + 1, (i) => items.slice((i - 1) * 2, i * 2));
+      const flaky = new Set([note.id, ...items]);
       const loader = {
         fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
           const url = new Request(input, init).url;
@@ -409,10 +445,11 @@ describe("the bounds of a walk at their caps", () => {
       const id = await walking(t, root, note);
       const before = t.web.fetched.length;
       await walkRounds(t, 100, loader);
-      const statusFetches = [note.id, p.id, ...xs.map((x) => x.id)].map((uri) => fetches(t, uri));
+      const statusFetches = [note.id, ...items].map((uri) => fetches(t, uri));
       expect(statusFetches).toEqual(statusFetches.map(() => NODE_ATTEMPTS));
-      const pageFetches = t.web.fetched.filter((url) => url.endsWith("/replies")).length;
+      const pageFetches = t.web.fetched.filter((url) => url.startsWith(`${note.id}/replies?page=`)).length;
       expect(pageFetches).toBe(WALK_PAGES);
+      expect(fetches(t, page(WALK_PAGES + 1))).toBe(0);
       const handOuts = statusFetches.reduce((a, b) => a + b, 0) + pageFetches;
       expect(handOuts).toBe(NODE_ATTEMPTS * WALK_STATUSES + WALK_PAGES);
       // No author to fetch (bob is known): each hand-out made one request, within REQUEST_MAX_FETCHES.
@@ -422,7 +459,7 @@ describe("the bounds of a walk at their caps", () => {
     },
   );
 
-  it("carries at most WALK_STATUSES items of a page of 1 MiB to the Store", { timeout: 60_000 }, async () => {
+  it("carries at most REPLY_READ_ENTRIES entries of a page of 1 MiB to the Store", { timeout: 60_000 }, async () => {
     const { t, root } = await world();
     const note = mastodonNote(root);
     const LISTED = 250;
@@ -443,10 +480,15 @@ describe("the bounds of a walk at their caps", () => {
       .filter((record) => record.name === "completeReplyStep")
       .map((record) => (record.args[1] as ReplyStepInput).fetched)
       .find((fetched) => fetched.kind === "replies");
-    const items = carried?.kind === "replies" ? carried.replies.items : [];
-    expect(items).toEqual(ids.slice(0, Math.min(LISTED, WALK_STATUSES)));
-    expect(JSON.stringify(items).length).toBeLessThanOrEqual(WALK_STATUSES * (STATUS_URI_LIMIT + 3));
+    const entries = carried?.kind === "replies" ? carried.replies.entries : [];
+    expect(entries).toEqual(ids.slice(0, REPLY_READ_ENTRIES));
+    expect(JSON.stringify(entries).length).toBeLessThanOrEqual(REPLY_READ_ENTRIES * (STATUS_URI_LIMIT + 3));
+    // The walk is full (its root and 199 of them), so the page's reading ends there, its tail not read again.
     expect((await walkRow(t.store, id))?.nodes).toBe(WALK_STATUSES);
+    const skips = counting.records
+      .filter((record) => record.name === "completeReplyStep")
+      .map((record) => (record.args[1] as ReplyStepInput).step.skip);
+    expect(skips.filter((skip) => skip !== 0)).toEqual([]);
   });
 });
 

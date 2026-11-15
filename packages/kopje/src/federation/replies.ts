@@ -4,12 +4,12 @@ import {
   type AuthorNeed,
   type ClaimedWalk,
   type RepliesRead,
+  REPLY_READ_ENTRIES,
   REPLY_WALK_LEASE_MS,
   type ReplyStep,
   type ReplyStepAnswer,
   type ReplyStepInput,
   type StepFetched,
-  WALK_STATUSES,
 } from "../domain/reply-walks";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -29,8 +29,10 @@ import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
 // and the status's author when the Store asks for it, through the safe loader (NET-1) within a whole fetch budget of
 // its own (RES-6), signed by the instance actor, as Mastodon's representative signs these fetches (DATA-7), and never
 // from the signed-document cache (NET-4); then the Store applies it and hands out the next node, which the step has
-// already been charged for. Embedded replies and first pages are read in the step that holds them. Nothing of this
-// instance's origin is fetched, and a collection or page only on its node's origin.
+// already been charged for. Embedded replies and pages are read in the step that holds them, at most
+// REPLY_READ_ENTRIES entries past the step's skip; the Store has the rest read by a step that reads the same document
+// again (RepliesRead). Nothing of this instance's origin is fetched, and a collection or page only on its node's
+// origin.
 
 // Walks one round runs, and the steps of each.
 export const REPLY_WALKS_PER_ROUND = 2;
@@ -54,61 +56,62 @@ function originOf(uri: string): string | null {
   }
 }
 
-// A page's items as ids (JsonLdHelper#value_or_id: an embedded object gives only its id), at most WALK_STATUSES raw
-// items read across the page and the pages it embeds as next, each an http(s) id within STATUS_URI_LIMIT. An embedded
-// next page is read now; a URI is the next step's, which the Store takes only on the node's origin.
-function readPages(page: Json): RepliesRead {
-  const items: string[] = [];
-  let read = 0;
-  let current: Json | null = page;
-  while (current !== null) {
+// The chain of `page`: its entries and those of the pages it embeds as next, by raw position across them. The first
+// `skip` are passed over, then at most REPLY_READ_ENTRIES taken as ids (JsonLdHelper#value_or_id: an embedded object
+// gives only its id), each an http(s) id within STATUS_URI_LIMIT or null. 'more' when an entry is left past the cap;
+// otherwise the URI next the chain ends naming, the next step's, which the Store takes only on the node's origin.
+function readPages(page: Json, skip: number): RepliesRead {
+  const entries: (string | null)[] = [];
+  let position = 0;
+  let current: Json = page;
+  for (;;) {
     for (const item of itemsOf(current) ?? []) {
-      if (read >= WALK_STATUSES) {
-        break;
+      if (position < skip) {
+        position += 1;
+        continue;
       }
-      read += 1;
-      const id = statusIdentity(idOf(item));
-      if (id !== null) {
-        items.push(id);
+      if (entries.length >= REPLY_READ_ENTRIES) {
+        return { entries, from: skip, next: "more" };
       }
+      entries.push(statusIdentity(idOf(item)));
+      position += 1;
     }
     const next: unknown = current.next;
-    if (isObject(next)) {
-      current = next;
-      continue;
+    if (!isObject(next)) {
+      const uri = statusIdentity(next);
+      return { entries, from: skip, next: uri === null ? null : { stage: "page", uri } };
     }
-    const uri = statusIdentity(next);
-    return { items, next: uri === null ? null : { stage: "page", uri } };
+    current = next;
   }
-  return { items, next: null };
 }
 
-// A collection (JsonLdHelper#collection_items): its first page, read now when embedded or fetched in the next step
-// when a URI; a collection without one is read as its own page.
-function readCollection(collection: Json): RepliesRead {
+// A collection (JsonLdHelper#collection_items): its first page's chain, read now when embedded or fetched in the next
+// step, the skip carried, when a URI; a collection without one is read as its own page.
+function readCollection(collection: Json, skip: number): RepliesRead {
   const first = collection.first;
   if (first === undefined || first === null) {
-    return readPages(collection);
+    return readPages(collection, skip);
   }
   if (isObject(first)) {
-    return readPages(first);
+    return readPages(first, skip);
   }
   const uri = statusIdentity(first);
-  return { items: [], next: uri === null ? null : { stage: "page", uri } };
+  return { entries: [], from: null, next: uri === null ? null : { stage: "page", uri } };
 }
 
-// A status's replies: an embedded collection read now, a URI fetched in the next step; null for none.
-function repliesOf(value: unknown): RepliesRead | null {
+// A status's replies: an embedded collection read now, a URI fetched in the next step (the skip carried); null for
+// none.
+function repliesOf(value: unknown, skip: number): RepliesRead | null {
   if (isObject(value)) {
-    return readCollection(value);
+    return readCollection(value, skip);
   }
   const uri = statusIdentity(value);
-  return uri === null ? null : { items: [], next: { stage: "collection", uri } };
+  return uri === null ? null : { entries: [], from: null, next: { stage: "collection", uri } };
 }
 
 // One step's document: the node's status (parsed as inbound statuses are; its id is checked by the Store) and its
-// replies, or a collection or page document, fetched only on the node's origin (documentOn: Mastodon's
-// non_matching_uri_hosts? refusal). Nothing of this instance's origin is fetched.
+// replies, or a collection or page document, or the status again for its replies only, fetched only on the node's
+// origin (documentOn: Mastodon's non_matching_uri_hosts? refusal). Nothing of this instance's origin is fetched.
 async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader): Promise<StepFetched> {
   const nodeOrigin = originOf(step.uri);
   if (nodeOrigin === null || nodeOrigin === origin) {
@@ -124,7 +127,7 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
     if (fetched.kind !== "ok") {
       return { kind: fetched.kind === "transient" ? "transient" : "failed" };
     }
-    const replies = isObject(document) ? repliesOf(document.replies) : null;
+    const replies = isObject(document) ? repliesOf(document.replies, step.skip) : null;
     return { kind: "status", status: fetched.status, replies };
   }
   const read = await documentOn(step.fetch, nodeOrigin, loader);
@@ -134,10 +137,13 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
   if (read === null) {
     return { kind: "failed" };
   }
-  return {
-    kind: "replies",
-    replies: step.stage === "collection" ? readCollection(read) : readPages(read),
-  };
+  const replies =
+    step.stage === "collection"
+      ? readCollection(read, step.skip)
+      : step.stage === "page"
+        ? readPages(read, step.skip)
+        : (repliesOf(read.replies, step.skip) ?? { entries: [], from: null, next: null });
+  return { kind: "replies", replies };
 }
 
 // The author a step's completion asked for: its document, or 'gone'; a fetch that may pass is 'transient', which

@@ -3984,26 +3984,32 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   step with a whole fetch budget of its own (8 fetches), so a round makes at most 16 steps, 128 requests and 37 own
   Store calls (the domain read, a claim and a release a walk, at most two completions a step), besides the loaders'
   signing key and policy reads. The Store hands a node to the Worker only by charging it in the same transaction: one of
-  its `NODE_ATTEMPTS` (2) for the document it reads, and at the collection and page stages one of the walk's
-  `WALK_PAGES` (100); the round's last completion hands out and charges nothing, and a charge stays whatever the step's
-  end (a lost lease, a round that died after its fetch). So a walk records at most `WALK_STATUSES` (200) nodes, the root
-  included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, with no counter
-  of claims. A claim drops at most `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a hand-out
-  ends at most 200 spent nodes before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is checked as
-  the module loads against twice a walk's turn. A step holds a status document and an actor of at most 1 MiB each and at
-  most 200 item ids (819,200 bytes at `STATUS_URI_LIMIT`). A reply a walk stores verifies its quote one hop short of a
-  root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk stores,
-  verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a walk
-  leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author documents
-  and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them (`test/reply-walks.test.ts`
-  ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents", "charges a page whose round
-  died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES documents a walk", "stores
-  replies listed before their parent once it is", "carries at most WALK_STATUSES items of a page of 1 MiB", "answers
-  'more' after REPLY_CLAIM_DROPS + 1 walks dropped", "ends every node a spent walk holds", "seeks every walk statement
-  by its key, after ANALYZE and growth"), `test/reply-walk-rounds.test.ts` ("crash after fetch", "hands out nothing at
-  the round's last step", "bounds a round: two walks, eight steps each", "applies nothing of a step whose lease another
-  round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an alternating reply and quote
-  chain", "ends discovery at a new author's synced pin", "repeated stale-author applications under a walk")).
+  its `NODE_ATTEMPTS` (2) for the document it reads, and at every stage but the status one of the walk's `WALK_PAGES`
+  (100), a document read again past the entries an earlier step took included; the round's last completion hands out and
+  charges nothing, and a charge stays whatever the step's end (a lost lease, a round that died after its fetch). So a
+  walk records at most `WALK_STATUSES` (200) nodes, the root included, and hands out at most 2 × 200 + 100 = 500
+  documents (4,000 requests) however its rounds end, with no counter of claims. A claim drops at most
+  `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a hand-out ends at most 200 spent nodes
+  before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is checked as the module loads against
+  twice a walk's turn. A step holds a status document and an actor of at most 1 MiB each and carries at most
+  `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at `STATUS_URI_LIMIT`); a
+  later step reads the rest by reading the same document again, while the walk has room
+  (`test/reply-walk-rounds.test.ts` ("reads a page of 400 entries with no next past its first 200 in the same walk",
+  "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
+  embeds by fetching it for its replies only, storing nothing")). A reply a walk stores verifies its quote one hop short
+  of a root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk
+  stores, verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a
+  walk leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author
+  documents and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them
+  (`test/reply-walks.test.ts` ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents",
+  "charges a page whose round died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES
+  documents a walk", "stores replies listed before their parent once it is", "carries at most REPLY_READ_ENTRIES entries
+  of a page of 1 MiB", "answers 'more' after REPLY_CLAIM_DROPS + 1 walks dropped", "ends every node a spent walk holds",
+  "seeks every walk statement by its key, after ANALYZE and growth"), `test/reply-walk-rounds.test.ts` ("crash after
+  fetch", "hands out nothing at the round's last step", "bounds a round: two walks, eight steps each", "applies nothing
+  of a step whose lease another round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an
+  alternating reply and quote chain", "ends discovery at a new author's synced pin", "repeated stale-author applications
+  under a walk")).
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs

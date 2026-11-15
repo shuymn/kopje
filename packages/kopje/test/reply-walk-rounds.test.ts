@@ -7,12 +7,19 @@ import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import { REPLIES_COOLDOWN_MS, REPLIES_INITIAL_WAIT_MS } from "../src/domain/reply-walk-reads";
-import { NODE_ATTEMPTS, REPLY_WALK_LEASE_MS, WALK_STATUSES } from "../src/domain/reply-walks";
+import {
+  NODE_ATTEMPTS,
+  REPLY_READ_ENTRIES,
+  REPLY_WALK_LEASE_MS,
+  type ReplyStepInput,
+  WALK_STATUSES,
+} from "../src/domain/reply-walks";
 import { syncCollections } from "../src/federation/collections";
 import { REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";
 import { REPLY_STEPS_PER_WALK, REPLY_WALKS_PER_ROUND, walkReplies } from "../src/federation/replies";
 import { jobsRound } from "../src/jobs/queue";
+import { STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import { StoreUnavailableError } from "../src/platform/store-errors";
 import { sql } from "./api-helpers";
@@ -837,5 +844,222 @@ describe("the jobs round", () => {
     expect(order[0]).toBe("claimCollectionSync");
     expect(order.at(-1)).toBe("claimReplyWalk");
     expect(await storedOf(t.store, [g.id])).toEqual([g.id]);
+  });
+});
+
+describe("reading a collection: raw entries, skips and reading again (RepliesRead)", () => {
+  // Entries that are no status id: a number, an object without id, a data: URI, and an http(s) URI one past
+  // STATUS_URI_LIMIT, in turn.
+  const NOT_IDS: unknown[] = [
+    5,
+    { type: "Note" },
+    "data:text/plain,x",
+    `https://x.example/${"a".repeat(STATUS_URI_LIMIT - 17)}`,
+  ];
+  const notIds = (count: number) => Array.from({ length: count }, (_, i) => NOT_IDS[i % NOT_IDS.length]);
+
+  // A chain of pages, the first with `id`, each embedding the next as `next`; the last names `next` by URI, if given.
+  function chain(id: string, pages: unknown[][], next?: string): Record<string, unknown> {
+    const page = (index: number): Record<string, unknown> => ({
+      type: "CollectionPage",
+      ...(index === 0 ? { id } : {}),
+      items: pages[index],
+      ...(index + 1 < pages.length ? { next: page(index + 1) } : next === undefined ? {} : { next }),
+    });
+    return page(0);
+  }
+
+  // The root `note` of root, its replies collection naming by URI a first page that holds the chain `pages`; returns
+  // the first page's URI. The root is stored and its walk started.
+  async function pagedWalk(t: Setup, root: TestActor, note: Note, pages: unknown[][], next?: string) {
+    const collection = `${note.id}/replies`;
+    const first = `${collection}?page=true`;
+    t.web.serve(first, { "@context": AS, partOf: collection, ...chain(first, pages, next) });
+    note.replies = { id: collection, type: "Collection", first };
+    serveNote(t.web, note);
+    const id = await storedRoot(t, root, note);
+    await startWalk(t.store, id, Date.now());
+    return { id, first };
+  }
+
+  // The replies family's rounds over a counting Store until none reports a walk due: each step's first completion (the
+  // one without an author), in order.
+  async function countedRounds(t: Setup, loader = t.web.loader): Promise<ReplyStepInput[]> {
+    const counting = countingStore(t.store);
+    const deps = inboxDeps(() => counting.stub, loader);
+    for (let round = 0; await walkReplies(t.env, deps); round++) {
+      expect(round).toBeLessThan(100);
+    }
+    return counting.records
+      .filter((record) => record.name === "completeReplyStep")
+      .map((record) => record.args[1] as ReplyStepInput)
+      .filter((input) => input.author === undefined);
+  }
+
+  const readsOf = (inputs: readonly ReplyStepInput[], uri: string) =>
+    inputs.filter((input) => input.step.uri === uri).map(({ step }) => ({ stage: step.stage, skip: step.skip }));
+
+  it("reads a page of 400 entries with no next past its first 200 in the same walk", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const u = reply(t.web, bob, note.id);
+    const last = reply(t.web, bob, note.id);
+    const entries = notIds(400);
+    entries[250] = u.id;
+    entries[399] = last.id;
+    const { first } = await pagedWalk(t, root, note, [entries]);
+    const inputs = await countedRounds(t);
+    expect(readsOf(inputs, note.id)).toEqual([
+      { stage: "status", skip: 0 },
+      { stage: "page", skip: 0 },
+      { stage: "page", skip: REPLY_READ_ENTRIES },
+    ]);
+    expect(fetches(t, first)).toBe(2);
+    expect(await storedOf(t.store, [u.id, last.id])).toEqual([u.id, last.id]);
+  });
+
+  it("goes on reading a page past entries that record nothing: not ids or nodes of the walk", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const a = reply(t.web, bob, note.id);
+    const u = reply(t.web, bob, note.id);
+    const entries = [...notIds(110), ...Array.from({ length: 110 }, () => a.id), u.id, ...notIds(79)];
+    expect(entries).toHaveLength(300);
+    await pagedWalk(t, root, note, [entries]);
+    const inputs = await countedRounds(t);
+    expect(readsOf(inputs, note.id).filter(({ stage }) => stage === "page")).toEqual([
+      { stage: "page", skip: 0 },
+      { stage: "page", skip: REPLY_READ_ENTRIES },
+    ]);
+    expect(await storedOf(t.store, [a.id, u.id])).toEqual([a.id, u.id]);
+  });
+
+  it("counts raw positions across a chain of embedded pages, reading it again at 200 and 400", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const at = [140, 260, 430].map(() => reply(t.web, bob, note.id));
+    const pages = [notIds(150), notIds(150), notIds(150)];
+    pages[0]![140] = at[0]!.id;
+    pages[1]![110] = at[1]!.id;
+    pages[2]![130] = at[2]!.id;
+    const { first } = await pagedWalk(t, root, note, pages);
+    const inputs = await countedRounds(t);
+    expect(readsOf(inputs, note.id).filter(({ stage }) => stage === "page")).toEqual([
+      { stage: "page", skip: 0 },
+      { stage: "page", skip: 200 },
+      { stage: "page", skip: 400 },
+    ]);
+    expect(fetches(t, first)).toBe(3);
+    const ids = at.map((status) => status.id);
+    expect(await storedOf(t.store, ids)).toEqual(ids);
+  });
+
+  it("keeps an entry that is not an id in its raw position, and records ids in those positions", async () => {
+    for (const valid of [false, true]) {
+      const { t, root, bob } = await world();
+      const note = mastodonNote(root);
+      const head = Array.from({ length: 10 }, () => reply(t.web, bob, note.id));
+      const a = reply(t.web, bob, note.id);
+      const b = reply(t.web, bob, note.id);
+      const entries = [
+        ...(valid ? head.map((status) => status.id) : notIds(10)),
+        ...Array.from({ length: 190 }, () => a.id),
+        b.id,
+      ];
+      await pagedWalk(t, root, note, [entries]);
+      const inputs = await countedRounds(t);
+      const reads = inputs.filter((input) => input.step.uri === note.id && input.step.stage === "page");
+      const read = (index: number) => {
+        const fetched = reads[index]!.fetched;
+        return fetched.kind === "replies" ? fetched.replies : null;
+      };
+      // The first read takes raw entries 0 to 199, those that are no id as null; the second starts at raw entry 200.
+      expect(read(0)).toMatchObject({ from: 0, next: "more" });
+      expect(read(0)?.entries).toHaveLength(REPLY_READ_ENTRIES);
+      expect(read(0)?.entries.slice(0, 10)).toEqual(
+        valid ? head.map((status) => status.id) : notIds(10).map(() => null),
+      );
+      expect(read(1)).toEqual({ entries: [b.id], from: REPLY_READ_ENTRIES, next: null });
+      const expected = [...(valid ? head.map((status) => status.id) : []), a.id, b.id];
+      expect(await storedOf(t.store, expected)).toEqual(expected);
+    }
+  });
+
+  it("reads a page's entries past the cap before the next page its URI names", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const u = reply(t.web, bob, note.id);
+    const v = reply(t.web, bob, note.id);
+    const entries = notIds(250);
+    entries[230] = u.id;
+    const next = `${note.id}/replies?page=2`;
+    t.web.serve(next, { "@context": AS, id: next, type: "CollectionPage", items: [v.id] });
+    const { first } = await pagedWalk(t, root, note, [entries], next);
+    const inputs = await countedRounds(t);
+    expect(
+      inputs.filter((input) => input.step.uri === note.id && input.step.stage === "page").map(({ step }) => step),
+    ).toEqual([
+      { uri: note.id, stage: "page", fetch: first, skip: 0 },
+      { uri: note.id, stage: "page", fetch: first, skip: REPLY_READ_ENTRIES },
+      { uri: note.id, stage: "page", fetch: next, skip: 0 },
+    ]);
+    expect(await storedOf(t.store, [u.id, v.id])).toEqual([u.id, v.id]);
+  });
+
+  it("reads the rest of the replies a status embeds by fetching it for its replies only, storing nothing", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const x = mastodonNote(bob, { inReplyTo: note.id });
+    const u = reply(t.web, bob, x.id);
+    const entries = notIds(250);
+    entries[220] = u.id;
+    serveNote(t.web, withReplies(t.web, x, entries as string[]));
+    const { id } = await walkOf(t, root, note, [x.id]);
+    const inputs = await countedRounds(t);
+    expect(inputs.filter((input) => input.step.uri === x.id).map(({ step }) => step)).toEqual([
+      { uri: x.id, stage: "status", fetch: x.id, skip: 0 },
+      { uri: x.id, stage: "replies", fetch: x.id, skip: REPLY_READ_ENTRIES },
+    ]);
+    expect(fetches(t, x.id)).toBe(2);
+    expect(await storedOf(t.store, [x.id, u.id])).toEqual([x.id, u.id]);
+    expect((await statusRow(t.store, u.id))?.in_reply_to_id).toBe((await statusRow(t.store, x.id))?.id);
+    // X and U are the walk's only statuses created: the replies step stored nothing.
+    expect((await walkRow(t.store, id))?.result_count).toBe(2);
+  });
+
+  it("carries a reading's skip to the document a status names by URI once it embeds no chain", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const x = mastodonNote(bob, { inReplyTo: note.id });
+    const u = reply(t.web, bob, x.id);
+    const entries = notIds(250);
+    entries[220] = u.id;
+    serveNote(t.web, withReplies(t.web, x, entries as string[]));
+    const collection = `${x.id}/replies`;
+    t.web.serve(collection, {
+      "@context": AS,
+      id: collection,
+      type: "Collection",
+      first: { type: "CollectionPage", partOf: collection, items: entries },
+    });
+    await walkOf(t, root, note, [x.id]);
+    // X's second fetch (its replies step) names its replies by URI.
+    let fetched = 0;
+    const loader = {
+      ...t.web.loader,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (new Request(input, init).url === x.id && ++fetched === 2) {
+          serveNote(t.web, { ...x, replies: collection });
+        }
+        return t.web.loader.fetch(input, init);
+      }) as typeof fetch,
+    };
+    const inputs = await countedRounds(t, loader);
+    expect(inputs.filter((input) => input.step.uri === x.id).map(({ step }) => step)).toEqual([
+      { uri: x.id, stage: "status", fetch: x.id, skip: 0 },
+      { uri: x.id, stage: "replies", fetch: x.id, skip: REPLY_READ_ENTRIES },
+      { uri: x.id, stage: "collection", fetch: collection, skip: REPLY_READ_ENTRIES },
+    ]);
+    expect(await storedOf(t.store, [x.id, u.id])).toEqual([x.id, u.id]);
   });
 });

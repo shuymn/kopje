@@ -31,13 +31,14 @@ import { viewable } from "./statuses";
 // actor within a whole fetch budget of its own (DATA-7, RES-6); every decision is here, in the step's transaction.
 //
 // A node is pending at a stage: its status (fetched by its URI), its replies collection (the collection document, to
-// take its first page), or a page of it (its items and next). Nodes run breadth first in seq order; a node keeps its
-// place while its collection is read, one that fails transiently goes to the end. The Store hands a node to the Worker
-// (at the claim, or as a completion's next) only by charging it in the same transaction: one of its NODE_ATTEMPTS for
-// the document it reads, and at the collection and page stages one of the walk's WALK_PAGES. A charge stays whatever
-// the step's outcome, a lost lease or a round that died included, so a walk takes at most
-// NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES steps however its rounds end, with no counter of claims. A completion
-// hands out a next node only when the Worker says it will fetch it (`more`); the round's last hands out nothing.
+// take its first page), a page of it (its items and next), or its status again for the replies it embeds (read past
+// what an earlier step took: RepliesRead). Nodes run breadth first in seq order; a node keeps its place while its
+// collection is read, one that fails transiently goes to the end. The Store hands a node to the Worker (at the claim,
+// or as a completion's next) only by charging it in the same transaction: one of its NODE_ATTEMPTS for the document it
+// reads, and at every stage but the status one of the walk's WALK_PAGES. A charge stays whatever the step's outcome, a
+// lost lease or a round that died included, so a walk takes at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES steps
+// however its rounds end, with no counter of claims. A completion hands out a next node only when the Worker says it
+// will fetch it (`more`); the round's last hands out nothing.
 //
 // Only statuses linked to the root are stored (ID-2): a node is valid once its parent is a valid node of the same walk
 // and its stored row links to that node's status (in_reply_to_id, the link the context follows). The root is valid
@@ -54,11 +55,11 @@ import { viewable } from "./statuses";
 // Nodes a walk records at most, the root included; an item past it is not recorded (docs/mastodon-deviations.md:
 // Mastodon's FetchAllRepliesWorker takes 1,000).
 export const WALK_STATUSES = 200;
-// Collection documents a walk hands out at most, fetched or not (Mastodon: 500 pages); past it, nodes still pending
-// at those stages end.
+// Collection documents a walk hands out at most, fetched or not, a document read again past its first entries and a
+// status read again for its replies included (Mastodon: 500 pages); past it, nodes still pending at those stages end.
 export const WALK_PAGES = 100;
-// Hand-outs of one document of a node at most (its status, its collection, each page), a fetch after a deferral
-// included: the first and one retry (FetchReplyWorker's retry).
+// Hand-outs of one document of a node at most (its status, its collection, each page, each reading again), a fetch
+// after a deferral included: the first and one retry (FetchReplyWorker's retry).
 export const NODE_ATTEMPTS = 2;
 // How long a claim holds a walk from other rounds: at least twice a round's steps of it (federation/replies.ts checks
 // it as it loads).
@@ -69,21 +70,35 @@ export const WALK_PRUNE_BATCH = 100;
 // REFRESH_RUNNING_MS, one with nothing left to hand out), as claimCollectionSync drops syncs.
 export const REPLY_CLAIM_DROPS = 3;
 
-const STAGES = ["status", "collection", "page"] as const;
+const STAGES = ["status", "collection", "page", "replies"] as const;
 type WalkStage = (typeof STAGES)[number];
 const [PENDING, DONE, DEFERRED] = [0, 1, 2];
 
-// A node handed out: its URI, its stage and the document the step fetches (the URI itself at the status stage).
-export type ReplyStep = { uri: string; stage: WalkStage; fetch: string };
+// A node handed out: its URI, its stage, the document the step fetches (the URI itself at the status stage) and the
+// raw entries of that document's chain the step passes over (`skip`, RepliesRead).
+export type ReplyStep = { uri: string; stage: WalkStage; fetch: string; skip: number };
 
 // A walk a round claimed: the claim's token, which every completion hands back, and its first node, charged. pending:
 // another walk is due.
 export type ClaimedWalk = { statusId: string; token: string; step: ReplyStep; pending: boolean };
 
-// What one document of a replies collection gave, read by the Worker from a status's replies, a collection or a page
-// (embedded pages read through without a step): the ids of its items, at most WALK_STATUSES, and the next document to
-// fetch, if any.
-export type RepliesRead = { items: string[]; next: { stage: "collection" | "page"; uri: string } | null };
+// Entries of a chain one step reads at most, after the ones it passes over (JsonLdHelper#collection_items reads whole
+// pages; past it, the step's next reads the same document again).
+export const REPLY_READ_ENTRIES = 200;
+
+// What one document of a replies collection gave, read by the Worker from a status's replies, a collection or a page.
+// Its chain is the page it holds and the pages that page embeds as next, read in the one step; an entry is an element
+// of a page's items, whatever it holds, and its raw position is its index across the chain. The step passes over its
+// `skip` raw entries and takes at most REPLY_READ_ENTRIES: `entries`, in raw order, each an id or null when it is not
+// an http(s) id within STATUS_URI_LIMIT (so a null keeps its position); `from`, the raw position of the first (the
+// skip), or null when the document holds no chain (its replies or its first page are a URI), the skip then carried to
+// the next document; `next`, 'more' when the cap stopped the read with entries left, the URI the chain ended naming,
+// or null when it named none. A skip past the chain's end takes nothing and answers the chain's end.
+export type RepliesRead = {
+  entries: (string | null)[];
+  from: number | null;
+  next: { stage: "collection" | "page"; uri: string } | "more" | null;
+};
 
 // A step's fetch: the node's status with its replies (null when it names none Kopje reads), a collection document's
 // or a page's reading, a failure that may pass, or any other failure (gone, refused, unusable, another origin).
@@ -120,6 +135,7 @@ type Node = {
   stage: number;
   valid: number;
   fetch: string | null;
+  skip: number;
   attempts: number;
 };
 
@@ -148,7 +164,7 @@ function saveWalk(db: Db, walk: Walk): void {
 
 function nodeOf(db: Db, walkId: string, uri: string): Node | undefined {
   return db.first<Node>(
-    "SELECT uri, state, stage, valid, fetch, attempts FROM reply_walk_nodes WHERE status_id = ? AND uri = ?",
+    "SELECT uri, state, stage, valid, fetch, skip, attempts FROM reply_walk_nodes WHERE status_id = ? AND uri = ?",
     walkId,
     uri,
   );
@@ -175,13 +191,13 @@ function finish(db: Db, walkId: string, now: number): void {
   db.run("UPDATE reply_walks SET due_at = NULL, finished_at = ?2, token = NULL WHERE status_id = ?1", walkId, now);
 }
 
-// The next pending node, charged: an attempt, and a page at the collection and page stages. A node with no attempt
+// The next pending node, charged: an attempt, and a page at every stage but the status. A node with no attempt
 // left, or at those stages once WALK_PAGES are spent, is ended without a fetch, and the next is taken: each turn of the
 // loop ends a pending node, so it reads at most WALK_STATUSES of them. null: none is pending.
 function handOut(db: Db, walk: Walk): ReplyStep | null {
   for (;;) {
-    const node = db.first<{ uri: string; stage: number; fetch: string | null; attempts: number }>(
-      `SELECT uri, stage, fetch, attempts FROM reply_walk_nodes INDEXED BY reply_walk_nodes_pending
+    const node = db.first<{ uri: string; stage: number; fetch: string | null; skip: number; attempts: number }>(
+      `SELECT uri, stage, fetch, skip, attempts FROM reply_walk_nodes INDEXED BY reply_walk_nodes_pending
 				WHERE status_id = ? AND state = ${PENDING} ORDER BY seq LIMIT 1`,
       walk.id,
     );
@@ -197,7 +213,7 @@ function handOut(db: Db, walk: Walk): ReplyStep | null {
     if (page) {
       walk.pages += 1;
     }
-    return { uri: node.uri, stage: STAGES[node.stage]!, fetch: node.fetch ?? node.uri };
+    return { uri: node.uri, stage: STAGES[node.stage]!, fetch: node.fetch ?? node.uri, skip: node.skip };
   }
 }
 
@@ -233,15 +249,16 @@ function skipped(db: Db, uri: string, now: number): boolean {
   );
 }
 
-// A page's items recorded as pending nodes, in order, while the walk holds fewer than WALK_STATUSES: each a URI a walk
-// may fetch, not of this instance's origin, not a node of the walk already, and not a stored status skipped.
-// Items of any other origin are taken (FetchAllRepliesService does not filter them by host).
-function recordItems(db: Db, walk: Walk, items: readonly string[], input: ReplyStepInput): void {
-  for (const uri of items) {
+// A chain's entries recorded as pending nodes, by raw position, while the walk holds fewer than WALK_STATUSES: each an
+// id a walk may fetch, not of this instance's origin, not a node of the walk already, and not a stored status skipped;
+// any other entry is passed. Items of any other origin are taken (FetchAllRepliesService does not filter them by
+// host).
+function recordItems(db: Db, walk: Walk, entries: readonly (string | null)[], input: ReplyStepInput): void {
+  for (const uri of entries) {
     if (walk.nodes >= WALK_STATUSES) {
       return;
     }
-    if (!walkUri(uri) || sameOrigin(uri, input.origin) || skipped(db, uri, input.now)) {
+    if (uri === null || !walkUri(uri) || sameOrigin(uri, input.origin) || skipped(db, uri, input.now)) {
       continue;
     }
     const inserted = db.run(
@@ -257,24 +274,39 @@ function recordItems(db: Db, walk: Walk, items: readonly string[], input: ReplyS
   }
 }
 
-// A valid node's replies: its items recorded, and its next document (on the node's own origin, Mastodon's
-// non_matching_uri_hosts? refusal) read in a later step at the same place; with none, the node is done.
+// A valid node's replies: its entries recorded, then its reading goes on in a later step at the same place, while the
+// walk has room. On 'more', the same document is read again past the entries taken (a chain the status holds at the
+// replies stage, which fetches the status for its replies only); a URI next (on the node's own origin, Mastodon's
+// non_matching_uri_hosts? refusal) is read from its start, or past the carried skip when this document held no chain.
+// With neither, or once the walk is full, the node is done.
 function readReplies(db: Db, walk: Walk, node: Node, replies: RepliesRead | null, input: ReplyStepInput): void {
   if (replies !== null) {
-    recordItems(db, walk, replies.items, input);
+    recordItems(db, walk, replies.entries, input);
   }
   const next = replies?.next ?? null;
-  if (next === null || !walkUri(next.uri) || !sameOrigin(next.uri, node.uri)) {
+  if (replies === null || next === null || walk.nodes >= WALK_STATUSES) {
     endNode(db, walk.id, node.uri);
     return;
   }
-  db.run(
-    "UPDATE reply_walk_nodes SET stage = ?3, fetch = ?4, attempts = 0 WHERE status_id = ?1 AND uri = ?2",
-    walk.id,
-    node.uri,
-    STAGES.indexOf(next.stage),
-    next.uri,
-  );
+  const move = (stage: number, fetch: string, skip: number) =>
+    db.run(
+      "UPDATE reply_walk_nodes SET stage = ?3, fetch = ?4, skip = ?5, attempts = 0 WHERE status_id = ?1 AND uri = ?2",
+      walk.id,
+      node.uri,
+      stage,
+      fetch,
+      skip,
+    );
+  if (next === "more") {
+    const skip = (replies.from ?? node.skip) + replies.entries.length;
+    move(node.stage === 0 ? STAGES.indexOf("replies") : node.stage, node.fetch ?? node.uri, skip);
+    return;
+  }
+  if (!walkUri(next.uri) || !sameOrigin(next.uri, node.uri)) {
+    endNode(db, walk.id, node.uri);
+    return;
+  }
+  move(STAGES.indexOf(next.stage), next.uri, replies.from === null ? node.skip : 0);
 }
 
 // A node becomes valid: the nodes deferred on it go back to the end of the walk, in their order (each fetched again
@@ -498,7 +530,7 @@ export const claimReplyWalk = writeOperation.atStoreTime("now")<{ now: number },
 
 // Applies what the Worker fetched for a node handed out under the claim `token`, in one transaction, and hands out the
 // next node when `more` says the Worker will fetch it. A completion of a claim that is no longer the walk's, or of a
-// node not at that stage and document, changes nothing (done). When no node is left pending, the walk finishes.
+// node not at that stage, document and skip, changes nothing (done). When no node is left pending, the walk finishes.
 export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInput, ReplyStepAnswer>((db, input) => {
   const walk = walkOf(db, input.statusId, input.token);
   const node = walk === undefined ? undefined : nodeOf(db, walk.id, input.step.uri);
@@ -507,7 +539,8 @@ export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInpu
     node === undefined ||
     node.state !== PENDING ||
     STAGES[node.stage] !== input.step.stage ||
-    (node.fetch ?? node.uri) !== input.step.fetch
+    (node.fetch ?? node.uri) !== input.step.fetch ||
+    node.skip !== input.step.skip
   ) {
     return { next: null, need: null, done: true };
   }
