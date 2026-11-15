@@ -302,15 +302,30 @@ describe("links and the admin lists", () => {
     });
   });
 
-  it("answers the OAuth admin’s trends lists with the public ones, and refuses its reviews", async () => {
+  it("answers the OAuth admin alone the public trends lists, uncached, and refuses its reviews", async () => {
     const h: ApiHarness = await apiHarness();
     await seedAccount(h.store, { username: "owner", email: "owner@example.com" });
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
     await setSetting(h.store, "admin_email", "owner@example.com");
     const scope = "read admin:read admin:write";
-    const token = (await login(h, { app: await registerApp(h, { scopes: scope }), scope, email: "owner@example.com" }))
-      .token;
+    const app = await registerApp(h, { scopes: scope });
+    const token = (await login(h, { app, scope, email: "owner@example.com" })).token;
+    const alice = (await login(h, { app, scope, email: "alice@example.com" })).token;
     await listedTags(h.store, 2);
     await setTrendSetting(h.store, "trendable_by_default", true);
+    const lists = ["tags", "statuses", "links"].map((kind) => `/api/v1/admin/trends/${kind}`);
+    // Anyone but the OAuth admin is refused by the gate (VIS-29): no token, an unknown or app token, another account's.
+    const refused = [undefined, "nope", await appToken(h), alice];
+    for (const path of lists) {
+      for (const caller of refused) {
+        expect(await getJson(h, path, caller), path).toEqual({ status: 403, body: { error: "Forbidden" } });
+      }
+      // The OAuth admin is answered as a signed-in caller: never cached publicly (cache_if_unauthenticated!).
+      const answered = await h.request(path, bearer(token));
+      expect(answered.status, path).toBe(200);
+      expect(answered.headers.get("cache-control"), path).toBeNull();
+    }
+    expect((await h.request("/api/v1/trends/tags")).headers.get("cache-control")).toMatch(/^public/);
     expect(await getJson(h, "/api/v1/admin/trends/tags", token)).toEqual(
       await getJson(h, "/api/v1/trends/tags", token),
     );

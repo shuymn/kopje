@@ -54,29 +54,32 @@ async function world() {
   return { h, tokens, suspend };
 }
 
-// One route per way a token reaches authorize() (docs: the design's paths of D10), each with a request it answers
-// after the token check.
-const BY_CALLER: [string, string, string, () => RequestInit][] = [
-  ["a user read (userReadOperation)", "GET", "/api/v1/timelines/home", () => ({})],
-  ["a user write (userWriteOperation)", "POST", "/api/v1/lists", () => json({ title: "l" })],
-  ["optionalUserReadOperation", "GET", "/api/v1/directory", () => ({})],
-  ["tokenUserReadOperation", "GET", "/api/v1/announcements", () => ({})],
-  ["checkCredential (search)", "GET", "/api/v2/search?q=a&type=none", () => ({})],
-  ["checkCredential (placeholders)", "POST", "/api/v1/statuses/1/translate", () => ({})],
-  ["checkCredential (accounts)", "POST", "/api/v1/accounts", () => ({})],
-  ["checkCredential (tags)", "POST", "/api/v1/featured_tags", () => json({})],
-  ["checkCredential (refuseAfterAuth)", "GET", "/api/v1/accounts/search", () => ({})],
-  ["checkCredential (checkOptionalToken)", "GET", "/api/v1/admin/ip_blocks", () => ({})],
-  ["appOfCredential", "GET", "/api/v1/apps/verify_credentials", () => ({})],
-  ["adminGuarded", "GET", "/api/v1/admin/reports", () => ({})],
+const FORBIDDEN = { status: 403, body: { error: "Forbidden" } };
+
+// One route per way a token reaches authorize() or the admin gate (docs: the design's paths of D10), each with a
+// request it answers after the token check, and its answer to an available owner's expired token: invalid, or, on an
+// admin route, Forbidden, as the gate judges the owner before the expiry (adminGate, VIS-29).
+const BY_CALLER: [string, string, string, () => RequestInit, typeof INVALID | typeof FORBIDDEN][] = [
+  ["a user read (userReadOperation)", "GET", "/api/v1/timelines/home", () => ({}), INVALID],
+  ["a user write (userWriteOperation)", "POST", "/api/v1/lists", () => json({ title: "l" }), INVALID],
+  ["optionalUserReadOperation", "GET", "/api/v1/directory", () => ({}), INVALID],
+  ["tokenUserReadOperation", "GET", "/api/v1/announcements", () => ({}), INVALID],
+  ["checkCredential (search)", "GET", "/api/v2/search?q=a&type=none", () => ({}), INVALID],
+  ["checkCredential (placeholders)", "POST", "/api/v1/statuses/1/translate", () => ({}), INVALID],
+  ["checkCredential (accounts)", "POST", "/api/v1/accounts", () => ({}), INVALID],
+  ["checkCredential (tags)", "POST", "/api/v1/featured_tags", () => json({}), INVALID],
+  ["checkCredential (refuseAfterAuth)", "GET", "/api/v1/accounts/search", () => ({}), INVALID],
+  ["appOfCredential", "GET", "/api/v1/apps/verify_credentials", () => ({}), INVALID],
+  ["checkAdminCredential (afterGate)", "GET", "/api/v1/admin/ip_blocks", () => ({}), FORBIDDEN],
+  ["adminGate (adminGuarded)", "GET", "/api/v1/admin/reports", () => ({}), FORBIDDEN],
 ];
 
 describe("a suspended owner's held token", () => {
   it("answers 403 on every kind of token check, expired or not, where its expiry answered 401", async () => {
     const { h, tokens, suspend } = await world();
-    // Before the suspension the expired token reaches each check and is refused as invalid.
-    for (const [caller, method, path, init] of BY_CALLER) {
-      expect(await answer(h, method, path, tokens.expired, init()), caller).toEqual(INVALID);
+    // Before the suspension the expired token reaches each check and is refused as invalid, or as not the admin.
+    for (const [caller, method, path, init, before] of BY_CALLER) {
+      expect(await answer(h, method, path, tokens.expired, init()), caller).toEqual(before);
     }
     await suspend();
     for (const [caller, method, path, init] of BY_CALLER) {
