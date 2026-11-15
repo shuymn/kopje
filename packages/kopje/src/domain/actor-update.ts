@@ -43,6 +43,9 @@ const CONTEXT = [
     alsoKnownAs: { "@id": "as:alsoKnownAs", "@type": "@id" },
     attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
     Emoji: "toot:Emoji",
+    showFeatured: "toot:showFeatured",
+    showMedia: "toot:showMedia",
+    showRepliesInMedia: "toot:showRepliesInMedia",
   },
 ];
 
@@ -72,7 +75,8 @@ function actorRow(db: Db, accountId: string): ActorRow | undefined {
 
 // The document of an actor row. A suspended actor is presented as the actor endpoint presents it (federation.ts, as
 // Mastodon's ActivityPub::ActorSerializer): no name, summary, icon, image, aliases or fields, not locked or
-// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections and `webfinger` handle stay. Every
+// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections, `webfinger` handle and display
+// settings stay. Every
 // link, the handle's host included, is on the actor id's origin (ID-5), as the endpoint's are on the id it serves,
 // whatever domain /admin/config stores later.
 function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
@@ -112,6 +116,10 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
           })),
           ...(emojis.length === 0 ? {} : { tag: emojis }),
         }),
+    // The display settings as stored, on every actor, a suspended one's too (ActivityPub::ActorSerializer).
+    showFeatured: row.show_featured !== 0,
+    showMedia: row.show_media !== 0,
+    showRepliesInMedia: row.show_media_replies !== 0,
     ...attributionDomainsOf(row.attribution_domains),
   };
 }

@@ -5,7 +5,8 @@ import { attributionDomainsSql, displayNameReadSql, presentedLocalFieldsSql } fr
 // ATTRIBUTION_DOMAINS_BYTES (attributionDomainsSql) and presented by presentedAttributionDomains. The display name is
 // read by its stored bytes (displayNameReadSql), and both renderers bound it and the note again after decoding
 // (presentedDisplayName, presentedNote), as an Account does (RES-3). The image descriptions are read as stored (0097's
-// triggers bound them) and presented by presentedProfileDescription.
+// triggers bound them) and presented by presentedProfileDescription, and the display settings as stored (the integer 0
+// or 1, by the same triggers).
 export type ActorRow = {
   uri: string;
   username: string;
@@ -16,6 +17,9 @@ export type ActorRow = {
   header_url: string | null;
   avatar_description: string;
   header_description: string;
+  show_featured: number;
+  show_media: number;
+  show_media_replies: number;
   locked: number;
   discoverable: number | null;
   indexable: number | null;
@@ -38,6 +42,9 @@ export const ACTOR_ROW_COLUMN_MAP = {
   header_url: "a.header_url",
   avatar_description: "a.avatar_description",
   header_description: "a.header_description",
+  show_featured: "a.show_featured",
+  show_media: "a.show_media",
+  show_media_replies: "a.show_media_replies",
   locked: "a.locked",
   discoverable: "a.discoverable",
   indexable: "a.indexable",

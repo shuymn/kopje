@@ -34,6 +34,10 @@ export type LocalActor = {
   // (federation.ts).
   avatarDescription: string;
   headerDescription: string;
+  // The display settings as stored, published on every actor, a suspended one's too (federation.ts withMastodonTerms).
+  showFeatured: boolean;
+  showMedia: boolean;
+  showRepliesInMedia: boolean;
   locked: boolean;
   discoverable: boolean | null;
   indexable: boolean;
@@ -80,6 +84,9 @@ export function localActorOf(db: Db, username: string): LocalActor | null {
     headerUrl: row.header_url,
     avatarDescription: presentedProfileDescription(row.avatar_description),
     headerDescription: presentedProfileDescription(row.header_description),
+    showFeatured: row.show_featured !== 0,
+    showMedia: row.show_media !== 0,
+    showRepliesInMedia: row.show_media_replies !== 0,
     locked: row.locked === 1,
     discoverable: row.discoverable === null ? null : row.discoverable === 1,
     indexable: row.indexable === 1,

@@ -1,4 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
+import jsonld from "jsonld/dist/jsonld.esm.js";
 import { describe, expect, it } from "vitest";
 
 import { rowHeapSql, selectSql } from "../src/db/columns";
@@ -19,6 +20,7 @@ import { LEGACY } from "./federation-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { bytes, mediaForm, TestCodec } from "./media-helpers";
 import { rawBytes } from "./profile-fixtures";
+import { contexts } from "./quote-helpers";
 import { byText } from "./sort";
 import { community, outbound, remoteAccount, remoteFollows } from "./status-helpers";
 import { csrfOf, ORIGIN, signIn } from "./web-helpers";
@@ -108,7 +110,7 @@ describe("the parity comparison", () => {
 describe("Update(Person)", () => {
   it("sends the changed profile to the followers, the latest edit only", async () => {
     const h = await setup();
-    // Image descriptions and display settings are stored, and published by neither document.
+    // Image descriptions (published only with an image, which alice has none of) and display settings are stored.
     await sql(
       h.store,
       `UPDATE accounts SET avatar_description = 'A cat', header_description = 'A field', show_featured = 0,
@@ -139,6 +141,9 @@ describe("Update(Person)", () => {
         name: "Second",
         summary: "<p>bio</p>",
         attachment: [{ type: "PropertyValue", name: "Site" }],
+        showFeatured: false,
+        showMedia: false,
+        showRepliesInMedia: false,
         publicKey: { id: `${ORIGIN}/ap/users/alice#main-key`, publicKeyPem: LEGACY.pubkey },
       },
     });
@@ -225,6 +230,31 @@ describe("Update(Person)", () => {
     const oversized = await imported("json_array(hex(zeroblob(524288)))", "Second");
     expect(oversized).not.toHaveProperty("attributionDomains");
     expect(await actor()).not.toHaveProperty("attributionDomains");
+  });
+
+  // ActivityPub::ActorSerializer's show_featured, show_media and show_media_replies with their profile_settings terms,
+  // a suspended actor's too; a JSON-LD processor reads each under its toot: IRI in both contexts.
+  it("carries the display settings with their terms, in a suspension's Update too", async () => {
+    const h = await setup();
+    await sql(h.store, "UPDATE accounts SET show_featured = 0, show_media = 1, show_media_replies = 0");
+    expect((await patch(h, { display_name: "Alice A" })).status).toBe(200);
+    const suspension = await runInDurableObject(h.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      db.run("UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z'");
+      return moderationUpdate(db, h.users.alice.id, NOW);
+    });
+    for (const activity of [(await updates(h)).at(-1)?.activity, suspension?.activity as Record<string, unknown>]) {
+      const [expanded] = await jsonld.expand(activity, { documentLoader: contexts });
+      const object = (
+        expanded?.["https://www.w3.org/ns/activitystreams#object"] as Record<string, unknown>[] | undefined
+      )?.[0];
+      const read = (term: string) =>
+        (object?.[`http://joinmastodon.org/ns#${term}`] as { "@value": unknown }[] | undefined)?.map(
+          (v) => v["@value"],
+        );
+      expect([read("showFeatured"), read("showMedia"), read("showRepliesInMedia")]).toEqual([[false], [true], [false]]);
+    }
+    expect(suspension?.activity).toMatchObject({ object: { suspended: true, showFeatured: false } });
   });
 
   it("declares the handle in webfinger with its named context, in a suspension's Update too (FEP-2c59)", async () => {

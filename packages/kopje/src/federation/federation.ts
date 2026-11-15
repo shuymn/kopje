@@ -619,7 +619,8 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
   const cls = ACTOR_CLASSES[actor.actorType as keyof typeof ACTOR_CLASSES] ?? Person;
   // A suspended actor, as Mastodon's ActivityPub::ActorSerializer presents one: no name, summary, icon, image, aliases
   // or fields, not locked, discoverable or indexable, and `suspended: true`; its keys, inboxes and collections stay, so
-  // other servers can still verify what it signed and learn of the suspension.
+  // other servers can still verify what it signed and learn of the suspension, and so do its display settings
+  // (withMastodonTerms).
   const profile = actor.suspended
     ? { manuallyApprovesFollowers: false, discoverable: false, indexable: false, suspended: true }
     : {
@@ -659,25 +660,38 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
     published: Temporal.Instant.from(actor.createdAt),
     ...profile,
   });
-  return withMastodonTerms(object, `${actor.username}@${id.host}`, actor.attributionDomains);
+  return withMastodonTerms(object, {
+    webfinger: `${actor.username}@${id.host}`,
+    attributionDomains: actor.attributionDomains,
+    showFeatured: actor.showFeatured,
+    showMedia: actor.showMedia,
+    showRepliesInMedia: actor.showRepliesInMedia,
+  });
 }
 
 // Mastodon's actor terms that Fedify's vocabulary does not have, added to the compacted document with their contexts as
 // ActivityPub::ActorSerializer adds them, a suspended account's too: `webfinger` (FEP-2c59, Mastodon 4.6: the stored
 // username's spelling at the host of the actor id, the domain fixed at setup that WebFinger answers on, ID-5, as the
-// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads, and
-// `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance actor
-// declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
+// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads; the display settings
+// `showFeatured`, `showMedia` and `showRepliesInMedia` (Mastodon 4.6, context_helper.rb's profile_settings terms) as
+// stored; and `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance
+// actor declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
 const WEBFINGER_CONTEXT = "https://purl.archive.org/socialweb/webfinger";
-const ATTRIBUTION_DOMAINS_CONTEXT = {
+const MASTODON_TERMS_CONTEXT = {
   toot: "http://joinmastodon.org/ns#",
-  attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
+  showFeatured: "toot:showFeatured",
+  showMedia: "toot:showMedia",
+  showRepliesInMedia: "toot:showRepliesInMedia",
+};
+const ATTRIBUTION_DOMAINS_TERM = { "@id": "toot:attributionDomains", "@container": "@set" };
+
+type MastodonTerms = Pick<LocalActor, "attributionDomains" | "showFeatured" | "showMedia" | "showRepliesInMedia"> & {
+  webfinger: string;
 };
 
 function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unknown> }>(
   object: T,
-  webfinger: string,
-  domains: string[],
+  { webfinger, attributionDomains, showFeatured, showMedia, showRepliesInMedia }: MastodonTerms,
 ): T {
   const toJsonLd = object.toJsonLd.bind(object);
   object.toJsonLd = async (options?: object) => {
@@ -686,12 +700,19 @@ function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unkno
       return json;
     }
     const context = json["@context"];
-    const attribution = domains.length === 0 ? [] : [ATTRIBUTION_DOMAINS_CONTEXT];
+    const attribution = attributionDomains.length === 0 ? {} : { attributionDomains: ATTRIBUTION_DOMAINS_TERM };
     return {
       ...json,
-      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), WEBFINGER_CONTEXT, ...attribution],
+      "@context": [
+        ...(Array.isArray(context) ? (context as unknown[]) : [context]),
+        WEBFINGER_CONTEXT,
+        { ...MASTODON_TERMS_CONTEXT, ...attribution },
+      ],
       webfinger,
-      ...(domains.length === 0 ? {} : { attributionDomains: domains }),
+      showFeatured,
+      showMedia,
+      showRepliesInMedia,
+      ...(attributionDomains.length === 0 ? {} : { attributionDomains }),
     };
   };
   return object;
