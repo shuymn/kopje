@@ -1,10 +1,11 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
-import { exceedsRawLength, statusLength } from "../domain/status-text";
+import { exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
 import {
   type Acted,
   MAX_STATUSES_BY_ID,
   type MediaAttributes,
+  TOO_LONG,
   UNEXPECTED_MENTIONS,
   type Viewed,
 } from "../domain/statuses";
@@ -35,9 +36,7 @@ const REPLY_NOT_FOUND = () => mastodonError(404, "The post you are trying to rep
 // StatusesController#set_quoted_status: any failure, a status R36 refuses included.
 const QUOTE_NOT_FOUND = () => mastodonError(404, "The post you are trying to quote does not appear to exist.");
 
-const MAX_CHARACTERS = 500;
 const MAX_MEDIA_ATTACHMENTS = 4;
-const TOO_LONG = `Validation failed: Text character limit of ${MAX_CHARACTERS} exceeded`;
 // Mastodon's media_attachments.validations.too_many.
 const TOO_MANY_FILES = "Cannot attach more than 4 files";
 
@@ -116,7 +115,7 @@ function composition(p: Params): Composition | string {
     return TOO_MANY_FILES;
   }
   // The raw bound comes first, so over-long input is refused before it is parsed.
-  if (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_CHARACTERS) {
+  if (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS) {
     return TOO_LONG;
   }
   const poll = pollOf(p);

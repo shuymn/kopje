@@ -192,6 +192,25 @@ describe("POST /api/v1/statuses", () => {
     }
   });
 
+  it("judges a blank text as Mastodon's blank? does: U+0085 is blank, U+FEFF is not", async () => {
+    const h = await community(["alice"]);
+    const { token } = h.users.alice;
+    expect(await posting(h, token, { status: "\u0085" })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
+    const accepted = await posting(h, token, { status: "\ufeff" });
+    expect(accepted.status).toBe(200);
+    expect(await sql(h.store, "SELECT source_text FROM statuses")).toEqual([{ source_text: "\ufeff" }]);
+    // An edit to U+0085 alone is blank too.
+    const id = (accepted.body as { id: string }).id;
+    expect(await posting(h, token, { status: "\u0085" }, { method: "PUT", path: `/api/v1/statuses/${id}` })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Text can't be blank" },
+    });
+  });
+
   // StatusesController#set_thread and #set_quoted_status run before the create action: a status replied to or quoted
   // that is missing, or hidden from the poster, answers 404 before any 422 and before the Idempotency-Key is looked up.
   describe("the status replied to or quoted comes first (StatusesController before_actions)", () => {

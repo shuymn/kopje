@@ -1,5 +1,6 @@
 import { LinkifyIt } from "linkify-it";
 
+import { storedText } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { escapeHtml } from "./plain-text";
 import { normalizeTag } from "./tag-name";
@@ -39,6 +40,17 @@ export const MAX_URL_LENGTH = 4096;
 
 export function exceedsRawLength(text: string, spoilerText: string): boolean {
   return text.length + spoilerText.length > MAX_RAW_LENGTH;
+}
+
+// StatusLengthValidator::MAX_CHARS: the most a local status's counted length (statusLength) may be.
+export const MAX_STATUS_CHARACTERS = 500;
+
+// ActiveSupport's String#blank? (/\A[[:space:]]*\z/; [[:space:]] under Unicode, as Ruby has it), over the text as
+// it is stored (storedText): U+0085 is blank and U+FEFF is not, where JavaScript's trim() has it the other way.
+const BLANK = /^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
+
+export function blankText(text: string): boolean {
+  return BLANK.test(storedText(text));
 }
 
 export type MentionRef = { username: string; domain: string | null };

@@ -125,8 +125,10 @@ import {
 } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 import {
+  blankText,
   exceedsRawLength,
   linksAny,
+  MAX_STATUS_CHARACTERS,
   mentionKey,
   type MentionRef,
   parseStatusText,
@@ -147,8 +149,9 @@ export type Viewed<T> = { status: "ok"; value: T } | { status: "not_found" };
 
 export type Acted<T> = Viewed<T> | { status: "forbidden" } | { status: "invalid"; error: string };
 
-// The Worker checks the counted length; the Store re-checks the raw bound so no caller can make it parse more.
-const TOO_LONG = "Validation failed: Text character limit of 500 exceeded";
+// StatusLengthValidator's error. The Worker checks the counted length; the Store re-checks the raw bound so no caller
+// can make it parse more.
+export const TOO_LONG = `Validation failed: Text character limit of ${MAX_STATUS_CHARACTERS} exceeded`;
 
 // RES-2: a local status's content and content warning stay within the bounds a presented status has (status-bounds.ts),
 // as a remote one's do. Text within MAX_RAW_LENGTH renders past STATUS_CONTENT_BYTES only through hundreds of
@@ -501,7 +504,7 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
   ) {
     return { status: "invalid", error: QUOTED_USER_NOT_MENTIONED };
   }
-  if (text.trim() === "" && media.length === 0 && quoted === null) {
+  if (blankText(text) && media.length === 0 && quoted === null) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
   const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
@@ -971,7 +974,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
   // quoted status is there.
   const quote = localQuoteOf(db, current.id);
-  if (text.trim() === "" && media.length === 0 && quote === undefined) {
+  if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
   const sensitive = (input.sensitive ?? false) || spoilerText !== "";
