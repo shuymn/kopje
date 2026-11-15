@@ -97,8 +97,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
   way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"; RES-6 in
-  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. No Store migration and no
-  `wrangler.jsonc` change.
+  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. A quote's verification now applies its
+  quoted status's author document at most 6 times however its rounds end, and then ends; its retries are unchanged.
+  Migration `0094_quote_author_fetches`: a column of `quotes` with a CHECK, which the upgrade tests against every
+  stored quote (745 ms for this file in one local run of the migration bench, at a load average of 30 to 40).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 
 ## [0.5.2] - 2026-11-14
 
