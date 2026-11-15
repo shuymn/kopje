@@ -553,7 +553,8 @@ reason `actor-suspended`, for an actor an instance domain block covers too. Mast
 does not. Through the API, following an unavailable account (R1, a suspended one included) answers 404, and so do
 authorizing and rejecting a request from one (`answerFollowRequest`). `upsertRemoteActor` never refreshes an
 unavailable account's profile, keys or domain, on any path (search resolution, quotes, Announce originals, Move
-targets), and `storeRemoteStatus` stores nothing of an unavailable author.
+targets), and `storeRemoteStatus` stores nothing of an unavailable author, nor `storeFetchedStatus` updates a status
+of one.
 
 ### Local custom emoji
 

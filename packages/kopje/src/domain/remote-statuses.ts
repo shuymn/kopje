@@ -50,9 +50,10 @@ import { measureFilterText, presentStatus, type Status } from "./status-presente
 import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
-// ActivityPub::Activity::Create and ProcessStatusUpdateService store them. The Worker has parsed the object as
-// Mastodon reads it (compacted JSON), sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to
-// the bounds below (RES-2, RES-4); here it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
+// ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result Kopje already stores is
+// its author's Update (storeFetchedStatus). The Worker has parsed the object as Mastodon reads it (compacted JSON),
+// sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to the bounds below (RES-2, RES-4); here
+// it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
 //
 // Addressing goes through interpretAddressing (audience.ts): known accounts in to/cc that are not mentioned, and the
 // owner of the personal inbox it came to, are silent mentions; a direct status with any is limited (VIS-2). Unknown
@@ -776,6 +777,30 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   return { applied: true, reason: significant ? "edited" : "updated", statusId: existing.id };
 }
 
+// A status Kopje fetched, which it may already store, as ActivityPub::FetchRemoteStatusService#call takes it
+// (fetch_remote_status_service.rb:44-48 in v4.7.5): nothing for an unavailable author (R38, VIS-30), an update included;
+// a status stored under the document's id (never its atomUri), by `author`, an original, is updated as by its author's
+// Update (updateRemoteStatus: its version rules, fan-out and quote); anything else is a Create (storeRemoteStatus,
+// whose lookup by atomUri keeps what it finds). An update that stops before its quote step (an older version, one
+// past the skew, or none for an edited status) still has the status arrive again as a root, as storeRemoteStatus's
+// known branch does (promoteQuote), and its outcome names the stored status unless that is retracted.
+function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+  if (db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, author.id) === undefined) {
+    return { applied: false, reason: "author-unavailable" };
+  }
+  const stored = statusByUri(db, input.uri);
+  if (stored === undefined || stored.account_id !== author.id || stored.reblog_of_id !== null) {
+    return storeRemoteStatus(db, author, input, ctx);
+  }
+  const outcome = updateRemoteStatus(db, author, input, ctx);
+  // updateRemoteStatus answers these without a status id only from its checks before the quote step.
+  if (outcome.statusId === undefined && (outcome.reason === "stale" || outcome.reason === "future")) {
+    promoteQuote(db, stored.id, arrivalOf(db, author, ctx), ctx.now);
+    return { ...outcome, statusId: stored.id };
+  }
+  return outcome;
+}
+
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
 // in place of a remote recipient no longer mentioned (silent ones first); a non-public audience stays frozen.
@@ -886,9 +911,12 @@ export type StoredResolution =
   | { kind: "none" };
 
 // Stores what was resolved with the validation of inbound activities (ID-3, ID-7, HTML-1, HTML-3, RES-4): the one
-// ingestion of search resolution and of /authorize_interaction (domain/interaction.ts). A document superseded since its
-// revision was read is not stored; the stored row is answered instead. With nothing fetched, the query is looked up by
-// uri in stored data; a stored status found so arrives as a root, and its quote is verified as any root's.
+// ingestion of search resolution and of /authorize_interaction (domain/interaction.ts). An actor document superseded
+// since its revision was read is not stored; the stored row is answered instead. A fetched status goes through
+// storeFetchedStatus, so one Kopje stores is applied as its author's Update (Mastodon's ResolveURLService hands the
+// fetched body to FetchRemoteStatusService, resolve_url_service.rb:28). With nothing fetched (a 404 included), the
+// query is looked up by uri in stored data and nothing is removed (process_url_from_db, :38-61); a stored status found
+// so arrives as a root, and its quote is verified as any root's.
 export function storeResolved(
   db: Db,
   { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
@@ -905,7 +933,7 @@ export function storeResolved(
       if (author === undefined) {
         return { kind: "none" };
       }
-      const stored = storeRemoteStatus(db, author, resolved.status, {
+      const stored = storeFetchedStatus(db, author, resolved.status, {
         now,
         origin,
         deliveredTo: null,

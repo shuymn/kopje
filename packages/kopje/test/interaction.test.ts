@@ -960,6 +960,20 @@ describe("POST /authorize_interaction (look-up)", () => {
     // Asked during the request, with no cron run.
     expect(t.jobs).toHaveBeenCalledTimes(1);
   });
+
+  // ID-7: the look-up's fetch of a status Kopje stores is applied as its author's Update, as search resolution's
+  // (storeResolved; test/search-refetch.test.ts), Mastodon's ResolveURLService serving both.
+  it("applies a newer version of a stored status it finds again", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    t.web.serve(note.id, { "@context": AS, ...note, content: "<p>the edit</p>", updated: "2026-10-11T13:00:00Z" });
+    expect((await lookUp(t, browser, note.id)).html).toContain("the edit");
+    expect(await sql(t.store, "SELECT content, edited_at FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the edit</p>", edited_at: "2026-10-11T13:00:00.000Z" },
+    ]);
+  });
 });
 
 describe("POST /authorize_interaction/follow", () => {

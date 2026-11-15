@@ -3,8 +3,11 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
+import type { RemoteActorInput } from "../src/domain/remote-actors";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
+import type { Resolved } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, drainDeliveries } from "./helpers";
@@ -33,8 +36,9 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // delivery steps run through the Store and the API; after every step the Store's projection and each answer must equal
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
 // state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
-// votes the author's server sends as Updates. A second property sends what Mastodon would not: forgeries, stale,
-// version-less and future Updates, the retraction cap and replays across the retraction TTL.
+// votes the author's server sends as Updates, and L searches R's statuses, which R's server serves from its render
+// cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
+// retraction cap and replays across the retraction TTL.
 
 const AS = "https://www.w3.org/ns/activitystreams";
 const PUBLIC = `${AS}#Public`;
@@ -487,6 +491,83 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
   return predicted;
 }
 
+// R's actor as a search fetches it. Its revision never holds (null: no stored row expected), so the Store keeps R's
+// stored row (storeResolved's superseded document) and the search tests only the status.
+const R_ACTOR: RemoteActorInput = {
+  uri: R,
+  username: "r",
+  domain: new URL(R_ORIGIN).host,
+  actorType: "Person",
+  displayName: "",
+  note: "",
+  url: null,
+  avatarUrl: null,
+  headerUrl: null,
+  locked: false,
+  discoverable: null,
+  indexable: false,
+  inboxUrl: null,
+  sharedInboxUrl: null,
+  published: null,
+  keys: [],
+  emojiTags: [],
+  raw: "{}",
+  movedTo: null,
+};
+
+// L's search of `uri` with resolve=true, through the Store's resolution (the Worker's fetch replaced by what R's
+// server serves now, parsed as `input` stands for): a 404 fetches nothing (`none`). Its answer and the Store must
+// agree with the policy's refetch.
+async function search(w: World, uri: string): Promise<void> {
+  const served = w.peer.serve(uri, w.clock);
+  const cached =
+    served !== "gone" &&
+    JSON.stringify(served) !== JSON.stringify(w.peer.statuses.get(uri)!.state === "posted" ? current(w, uri) : null);
+  log(
+    w,
+    `L searches ${uri} at +${w.clock - NOW}: ${served === "gone" ? "404" : `${cached ? "cached " : ""}${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  tally(
+    w.stats,
+    served === "gone" ? "search 404" : cached ? "search served a cached copy" : "search served the current",
+  );
+  const resolved: Resolved =
+    served === "gone" ? { kind: "none" } : { kind: "status", status: input(served), author: R_ACTOR, revision: null };
+  const result = await w.store.resolveSearch(BUILD, {
+    credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:search", now: w.clock },
+    query: uri,
+    resolved,
+    now: w.clock,
+    origin: LOCAL,
+    present: { origin: LOCAL },
+  });
+  if (result.status !== "ok") {
+    throw new Error(`search refused: ${result.status}`);
+  }
+  w.policy.refetch(R, served, w.clock);
+  const actual = result.value.statuses.map((s) => s.uri);
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  await check(w, { actual, predicted: w.policy.shown(uri) ? [uri] : [] });
+}
+
+// What R's server renders for `uri` now (its cache aside).
+function current(w: World, uri: string): Obj {
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    throw new Error(`${uri} is not posted`);
+  }
+  const last = status.versions.at(-1)!;
+  return {
+    uri,
+    attributedTo: R,
+    snapshot: last.snapshot,
+    tally: status.tally,
+    published: status.published,
+    updated: status.versions.length > 1 ? last.at : null,
+    inReplyTo: PARENTS.get(uri) ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // L's API actions on s1
 // ---------------------------------------------------------------------------------------------------------------
@@ -748,7 +829,7 @@ type Action =
   | { k: "post"; s: number; snapshot: Snapshot }
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
-  | { k: "vote"; s: number }
+  | { k: "vote" | "search"; s: number }
   | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
   | { k: LocalKind }
   | { k: "jobs" | "claim" | "send" }
@@ -777,6 +858,7 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("edit" as const), s: statusArb, snapshot: snapshotArb }), weight: 4 },
   { arbitrary: fc.record({ k: fc.constant("delete" as const), s: statusArb, proven: fc.boolean() }), weight: 3 },
   { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -819,6 +901,9 @@ async function act(w: World, a: Action): Promise<void> {
       if (peer.vote(POOL[a.s]!, w.clock)) {
         log(w, `a vote in ${POOL[a.s]}`);
       }
+      return;
+    case "search":
+      await search(w, POOL[a.s]!);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -1313,6 +1398,55 @@ describe("status deletes: the author's orders", () => {
     expect(answersOf(w, "Update", S1)).toEqual(["poll-updated", "stale", "edited", "poll-updated"]);
     expect(w.stats["Update without a version of an edited status"]).toBe(1);
     expect((await project(w)).statuses.find((s) => s.uri === S1)?.tally).toBe(3);
+  });
+
+  // ID-7: L searches s1 (R's server renders it, unedited, and caches it), a vote and R's edit follow and the edit's
+  // Update is delivered; a search within the cache window reads the cached copy (no `updated`, no votes), which changes
+  // nothing; one after the window reads the current version, the same Kopje holds.
+  it("a search of a cached copy from before the delivered edit and a vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "search", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      deliver(1),
+      { k: "tick", ms: MINUTE },
+      { k: "search", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "search", s: 0 },
+    ]);
+    expect(w.stats["search served a cached copy"]).toBe(1);
+    expect(w.stats["search served the current"]).toBe(2);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)).toMatchObject({ snapshot: shown(B), tally: 1 });
+  });
+
+  // ID-7: a search reads R's edit before its Update arrives, and applies it with its history; the Update then names
+  // the version Kopje holds.
+  it("a search applies an edit its Update has not brought", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "edit", s: 0, snapshot: B },
+      { k: "search", s: 0 },
+      deliver(),
+    ]);
+    expect(answersOf(w, "Update", S1)).toEqual(["stale"]);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.history).toHaveLength(2);
+  });
+
+  // A search finds a status before its Create and stores it; R's deleted status answers 404 and stays as Kopje holds it.
+  it("a search stores a status before its Create, and a 404 changes nothing", async () => {
+    const w = await run([
+      { k: "post", s: 2, snapshot: A },
+      { k: "search", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "search", s: 2 },
+      deliver(0),
+      deliver(0),
+    ]);
+    expect(w.stats["search 404"]).toBe(1);
+    expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
   });
 
   it("a metadata Update, then an older content Update", async () => {

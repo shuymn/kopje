@@ -3,15 +3,15 @@
 //
 // - Policy: Kopje's documented rules, written from the docs and never from src/: docs/threat-model.md ID-7 (its status
 //   paragraph: the Update watermark, the 5-minute skew, the retractions of a Delete, the cap, local boosts withdrawn
-//   once and the 404s while a removal runs, and which Update refreshes a poll's counts), ID-6 (the authorization
-//   table: Create, Update and Delete of statuses),
+//   once and the 404s while a removal runs, which Update refreshes a poll's counts, and a status fetched again by a
+//   search applied as its author's Update), ID-6 (the authorization table: Create, Update and Delete of statuses),
 //   RES-6 (a remote status's removal in bounded batches after its hide), VIS-3 (a proven Delete forwarded through the
 //   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
 //   jobs, and Kopje's outbound intents with their deliveries in each lane.
-// - Peer: the author R's server, Mastodon v4.7.5, as a sender only (each rule cites the file and line it models): the
-//   statuses it posted, edited and deleted, the votes in their polls, and every message it sent, each an independent
-//   delivery job.
+// - Peer: the author R's server, Mastodon v4.7.5, as a sender and a server of its statuses (each rule cites the file
+//   and line it models): the statuses it posted, edited and deleted, the votes in their polls, every message it sent,
+//   each an independent delivery job, and the documents it serves from its render cache.
 //
 // A change to a status Create, Update or Delete rule in docs/threat-model.md changes this file with it.
 
@@ -30,6 +30,11 @@ export const VERSION_SKEW_MS = 5 * MINUTE;
 // Mastodon's Update#object_too_old? (OBJECT_AGE_THRESHOLD = 1.day, update.rb:5,52-56), which Kopje follows for an
 // Update of a status it does not hold (updateRemoteStatus's doc comment: "creates it if it is recent").
 export const UPDATE_CREATES_WITHIN_MS = DAY;
+// docs/visibility.md R15: a status Kopje fetches notifies only when published within the real-time window (6 hours)
+// before it arrived (Mastodon's Status::REAL_TIME_WINDOW).
+export const REAL_TIME_WINDOW_MS = 6 * HOUR;
+// Mastodon's render_with_cache keeps a rendered status 3 minutes (cache_concern.rb:31-32 in v4.7.5).
+export const RENDER_CACHE_MS = 3 * MINUTE;
 
 // The ANY_ACTOR row of ID-7: "the Delete of a stored status or boost is also recorded for every actor".
 export const ANY = "*";
@@ -204,8 +209,9 @@ export class Policy {
   }
 
   // ID-6: "Create needs the actor's origin and no other attributedTo"; ID-7: a recorded Delete keeps it from
-  // appearing; a status exists once per uri, a repeat adds nothing.
-  private create(actor: string, o: Obj, now: number): Answer {
+  // appearing; a status exists once per uri, a repeat adds nothing. A fetched one notifies only within the real-time
+  // window (R15).
+  private create(actor: string, o: Obj, now: number, fetched = false): Answer {
     if (originOf(o.uri) !== originOf(actor)) {
       return { applied: false, reason: "foreign-object" };
     }
@@ -246,7 +252,9 @@ export class Policy {
       }
     }
     // Every object of the pool mentions and addresses L: L is notified of it.
-    this.notifications.push({ sym: this.sym("n"), type: "mention", status: o.uri, from: actor });
+    if (!fetched || published >= now - REAL_TIME_WINDOW_MS) {
+      this.notifications.push({ sym: this.sym("n"), type: "mention", status: o.uri, from: actor });
+    }
     return { applied: true, reason: "created" };
   }
 
@@ -309,6 +317,26 @@ export class Policy {
       }
     }
     return { applied: true, reason: significant ? "edited" : "updated" };
+  }
+
+  // ID-7: "a status Kopje fetches again ... is applied as its author's Update, under the same rules", one it does not
+  // hold being its Create (fetched); a search whose fetch answers 404 changes nothing.
+  refetch(actor: string, served: Obj | "gone", now: number): void {
+    if (served === "gone") {
+      return;
+    }
+    const stored = this.statuses.get(served.uri);
+    if (stored !== undefined && stored.author === actor) {
+      this.update(actor, served, now);
+    } else {
+      this.create(actor, served, now, true);
+    }
+  }
+
+  // Whether L's search of `uri` shows it: L may see any of R's statuses that is stored and not hidden (VIS-1).
+  shown(uri: string): boolean {
+    const stored = this.statuses.get(uri);
+    return stored !== undefined && !stored.withdrawn;
   }
 
   // ID-6: "Delete [requires] the stored status's author (a refused Delete records no retraction)"; ID-7: an unknown
@@ -648,6 +676,8 @@ export class Peer {
   readonly delivered: Sent[] = [];
   // The time of its last write: Mastodon's times increase strictly (one second apart here).
   private last = 0;
+  // Its render cache, by status uri.
+  private readonly cache = new Map<string, { object: Obj; filledAt: number }>();
 
   constructor(
     readonly actor: string,
@@ -754,6 +784,31 @@ export class Peer {
     this.statuses.set(uri, { state: "deleted", published: status.state === "posted" ? status.published : null });
     this.send({ type: "Delete", id: `${uri}#delete`, object: uri, proven }, at);
     return true;
+  }
+
+  // StatusesController#show behind render_with_cache (statuses_controller.rb:35, cache_concern.rb:31-32): a status
+  // deleted or never posted answers 404 before the cache is read (Status.find in its before_action); else the body the
+  // render that filled the cache wrote, until RENDER_CACHE_MS after that render (nothing refreshes or extends it); else
+  // the current version, rendered and cached at `now`, with `updated` only once edited (note_serializer.rb:17).
+  serve(uri: string, now: number): Obj | "gone" {
+    const status = this.statuses.get(uri)!;
+    if (status.state !== "posted") {
+      return "gone";
+    }
+    const cached = this.cache.get(uri);
+    if (cached !== undefined && now < cached.filledAt + RENDER_CACHE_MS) {
+      return cached.object;
+    }
+    const last = status.versions.at(-1)!;
+    const object = this.object(
+      uri,
+      last.snapshot,
+      status.tally,
+      status.published,
+      status.versions.length > 1 ? last.at : null,
+    );
+    this.cache.set(uri, { object, filledAt: now });
+    return object;
   }
 
   // The undelivered message at `index` (each delivery is its own job, in any order).

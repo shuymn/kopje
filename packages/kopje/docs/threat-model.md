@@ -423,7 +423,12 @@ against their own instance. TLS is assumed between all parties.
   one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
-  `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
+  `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
+  author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
+  that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
+  not store is its `Create`; a 404 to such a fetch removes nothing (`test/search-refetch.test.ts`,
+  `test/interaction.test.ts` ("applies a newer version of a stored status it finds again")).
+  A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
   edits the stored status under these version rules and its own uri, and a `Delete` or `Undo` that found its status
@@ -490,7 +495,8 @@ against their own instance. TLS is assumed between all parties.
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
   `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, its polls'
-  vote `Update`s, local favourites and boosts, job rounds and deliveries, checked after every step against the rules in
+  vote `Update`s, L's searches of them served from the author's render cache, local favourites and boosts, job rounds
+  and deliveries, checked after every step against the rules in
   `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.5.11 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
@@ -1380,7 +1386,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
   activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
   `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
+  ID-1); no path refreshes its profile, keys or domain, or stores or updates a status of it (a search's included,
+  `test/search-refetch.test.ts`). Its accepted follows of local
   accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
   current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
   sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
