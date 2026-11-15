@@ -88,6 +88,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A request signed with draft-cavage by a key that is not RSA (an Ed25519 key, which only RFC 9421 signatures use) is
   answered 401, as one whose signature does not verify. It failed with an error (500), a queued one was retried until
   dropped, and the cutover rollback's drain stopped at it.
+- A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
+  author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
+  `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
