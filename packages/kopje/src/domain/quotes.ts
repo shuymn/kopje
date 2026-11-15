@@ -83,13 +83,20 @@ export type StoreRemoteStatus = typeof storeRemoteStatus;
 // quoted target during verification gets one hop less of work, so one traversal stops two levels below the status
 // that arrived; a status that arrives again as a root promotes its quote back to the full budget (promoteQuote).
 
-// The work budget of a quote whose status arrived as a root (delivered, boosted, searched, fetched as a pin).
+// The work budget of a quote whose status arrived as a root: delivered, boosted, added to its author's featured
+// collection or resolved by a user. A collection sync's pin gets none (remote-collections.ts completePinFetches).
 export const QUOTE_HOPS = 2;
 // Quotes one job round verifies at most, oldest due first, within one request's fetch budget.
 export const QUOTE_ROUND = 10;
 // The delays before each retry of a verification that failed in a way that may pass (Mastodon retries five times).
 // After the last one the work is given up, and the quote stays pending until its status arrives again.
 export const QUOTE_BACKOFF_MS = [1, 5, 30, 120, 720].map((minutes) => minutes * 60 * 1000);
+// The author documents one work applies at most (quotes.author_fetches, whose CHECK holds the same bound), the
+// figure of its attempts: every author stage that stores, refreshes or stamps the quoted status's author counts, apart
+// from the retries, so a work whose rounds die after that stage, reclaimed once the author is stale again, still brings
+// at most this many author documents (and the collection syncs they request, RES-6). An author stage with none left
+// fetches nothing and ends the work.
+export const QUOTE_AUTHOR_FETCHES = 1 + QUOTE_BACKOFF_MS.length;
 // The stages one quote's verification runs at most in a round: the quoted status, its author, the status again, the
 // stamp, and the decision (federation/quotes.ts verifyQuote).
 export const QUOTE_STAGES = 5;
@@ -138,6 +145,7 @@ type QuoteRow = {
   state: QuoteState;
   approval_uri: string | null;
   attempts: number;
+  author_fetches: number;
   hops: number;
   fetch_as: string | null;
   need_author: string | null;
@@ -148,7 +156,8 @@ type QuoteRow = {
 function quoteRow(db: Db, statusId: string): QuoteRow | undefined {
   return db.first<QuoteRow>(
     `SELECT q.status_id, s.uri AS status_uri, s.account_id, a.uri AS author_uri, q.quoted_uri, q.quoted_status_id,
-			q.state, q.approval_uri, q.attempts, q.hops, q.fetch_as, q.need_author, q.generation, q.recheck
+			q.state, q.approval_uri, q.attempts, q.author_fetches, q.hops, q.fetch_as, q.need_author, q.generation,
+			q.recheck
 		FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
 			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
@@ -244,9 +253,9 @@ export function recordQuote(
 		WHERE true
 		ON CONFLICT (status_id) DO UPDATE SET quoted_uri = excluded.quoted_uri, quoted_status_id = excluded.quoted_status_id,
 			quoted_account_id = excluded.quoted_account_id, state = excluded.state, legacy = excluded.legacy, approval_uri = excluded.approval_uri,
-			verify_after = excluded.verify_after, attempts = 0, hops = excluded.hops, fetch_as = excluded.fetch_as,
-			need_author = NULL, generation = excluded.generation, recheck = 0, lease_until = NULL,
-			authorization_id = NULL, activity_uri = NULL, updated_at = excluded.updated_at`,
+			verify_after = excluded.verify_after, attempts = 0, author_fetches = 0, hops = excluded.hops,
+			fetch_as = excluded.fetch_as, need_author = NULL, generation = excluded.generation, recheck = 0,
+			lease_until = NULL, authorization_id = NULL, activity_uri = NULL, updated_at = excluded.updated_at`,
     status.id,
     named.uri,
     named.tombstone ? 1 : 0,
@@ -281,7 +290,8 @@ export function refreshQuote(
   }
 }
 
-// A root re-arrival renews a pending quote's full budget and due time, using its fetch identity when present.
+// A root re-arrival renews a pending quote's full budget and due time (a new work: its attempts and author fetches
+// start again), using its fetch identity when present.
 // Verification arrivals (fewer hops) promote nothing, nor do quotes of local statuses (no work: recordQuote) or local
 // quoting statuses (no round decides them: test/quote-authoring.test.ts concurrency row 17).
 export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, now: number): void {
@@ -289,8 +299,8 @@ export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, no
     return;
   }
   db.run(
-    `UPDATE quotes SET hops = ?2, attempts = 0, verify_after = ?3, fetch_as = COALESCE(?4, fetch_as), updated_at = ?5,
-			generation = ${NEW_GENERATION}
+    `UPDATE quotes SET hops = ?2, attempts = 0, author_fetches = 0, verify_after = ?3,
+			fetch_as = COALESCE(?4, fetch_as), updated_at = ?5, generation = ${NEW_GENERATION}
 		WHERE status_id = ?1 AND state = 'pending' AND quoted_uri IS NOT NULL AND local = 0
 			AND NOT EXISTS (SELECT 1 FROM local_accounts l WHERE l.account_id = quotes.quoted_account_id)`,
     statusId,
@@ -352,7 +362,8 @@ export type StampInput = {
 
 // The stage a quote's verification is at, each one fetch of the Worker's within a fetch budget of its own (redirects
 // included): the quoted status (not stored yet), its author (the address a fetch of the status recorded in need_author,
-// the author unknown or stale: staleAccount), the stamp; decide: nothing left to fetch.
+// the author unknown or stale: staleAccount; nothing to fetch once QUOTE_AUTHOR_FETCHES are spent), the stamp; decide:
+// nothing left to fetch.
 export type QuoteStage = "quoted" | "author" | "stamp" | "decide";
 
 export type QuoteWork = {
@@ -451,9 +462,10 @@ function stageOf(
   if (quoted !== undefined) {
     return stampStage(db, row, quoted) ? { stage: "stamp", fetch: row.approval_uri } : { stage: "decide", fetch: null };
   }
-  return row.need_author !== null && authorDue(db, row.need_author, now)
-    ? { stage: "author", fetch: row.need_author }
-    : { stage: "quoted", fetch: row.quoted_uri };
+  if (row.need_author !== null && authorDue(db, row.need_author, now)) {
+    return { stage: "author", fetch: row.author_fetches < QUOTE_AUTHOR_FETCHES ? row.need_author : null };
+  }
+  return { stage: "quoted", fetch: row.quoted_uri };
 }
 
 // Whether an outcome computed for `expected` still belongs to the work: the same generation, and the same stage and
@@ -532,7 +544,8 @@ export type QuoteVerification = {
   // What the stage fetched: the quoted status, its author's document or the stamp.
   quoted?: Fetched<RemoteStatusInput>;
   author?: Fetched<RemoteActorInput>;
-  // The work's authorRevision, with author: absent, a refetched document stores nothing over the stored row.
+  // The revision of the work's authorState, with author: absent, a refetched document stores nothing over the stored
+  // row.
   authorRevision?: DocumentRevision;
   stamp?: Fetched<StampInput>;
 };
@@ -607,9 +620,10 @@ function stampValid(stamp: StampInput, row: QuoteRow, quoted: Linked): boolean {
 }
 
 // The author stage of a stale stored author (applyRefresh): a document stored, or any failure other than 404 or 410
-// stamped, moves on to the quoted stage, which stores the status under that row; no attempt is charged for the
-// fallback. Gone ends the work as for an unknown author (no stamp: the next fetch of a status by them tries again). A
-// row refreshed or stamped meanwhile is a stage the work left (current() sees it first).
+// stamped, moves on to the quoted stage, which stores the status under that row; it counts an author fetch
+// (QUOTE_AUTHOR_FETCHES) but charges no attempt for the fallback. Gone ends the work as for an unknown author (no
+// stamp: the next fetch of a status by them tries again). A row refreshed or stamped meanwhile is a stage the work
+// left (current() sees it first).
 function refreshQuoted(
   db: Db,
   row: QuoteRow,
@@ -630,14 +644,24 @@ function refreshQuoted(
   if (refreshed.kind === "refused" || refreshed.frozen) {
     return finish(db, row, keep, "done", now);
   }
-  db.run(`UPDATE quotes SET generation = ${NEW_GENERATION} WHERE status_id = ?`, row.status_id);
+  return authorFetched(db, row, keep);
+}
+
+// An author stage that stored, refreshed or stamped the author: counted (QUOTE_AUTHOR_FETCHES), and the quoted stage
+// is next.
+function authorFetched(db: Db, row: QuoteRow, keep: QuoteState): QuoteVerified {
+  db.run(
+    `UPDATE quotes SET generation = ${NEW_GENERATION}, author_fetches = author_fetches + 1 WHERE status_id = ?`,
+    row.status_id,
+  );
   return { done: false, due: true, state: keep, next: true };
 }
 
 // The quoted-status stages: a stage fetching the author it named stores that account (or refetches a stale stored one:
 // refreshQuoted) and ends; one fetching the quoted status stores it, from that fresh fetch, once its author is known
-// and not stale (staleAccount), and otherwise records only the author's address (need_author) for the next stage.
-// Nothing fetched is kept between stages. Returns the linked status, or a stage's end.
+// and not stale (staleAccount), and otherwise records only the author's address (need_author) for the next stage. An
+// author stage with no author fetch left (it fetched nothing) ends the work. Nothing fetched is kept between stages.
+// Returns the linked status, or a stage's end.
 function storeQuoted(
   db: Db,
   row: QuoteRow,
@@ -646,6 +670,9 @@ function storeQuoted(
   store: StoreRemoteStatus,
 ): Linked | QuoteVerified {
   const { now, origin } = input;
+  if (input.stage === "author" && row.author_fetches >= QUOTE_AUTHOR_FETCHES) {
+    return finish(db, row, keep, "done", now);
+  }
   const stored = row.need_author === null ? undefined : remoteAccount(db, row.need_author);
   if (input.author !== undefined && stored !== undefined) {
     return refreshQuoted(db, row, input, keep, stored);
@@ -664,8 +691,7 @@ function storeQuoted(
     if (stored === undefined || stored.frozen) {
       return finish(db, row, keep, "done", now);
     }
-    db.run(`UPDATE quotes SET generation = ${NEW_GENERATION} WHERE status_id = ?`, row.status_id);
-    return { done: false, due: true, state: keep, next: true };
+    return authorFetched(db, row, keep);
   }
   const fetched = input.quoted;
   if (fetched === undefined) {
@@ -726,7 +752,8 @@ function storeQuoted(
 // or a valid stamp; an accepted one being checked again is revoked only when its stamp is gone or no longer valid. A
 // pending quote whose stamp is gone is rejected (Mastodon's VerifyQuoteService); one that fails a check stays pending,
 // its work done. Every failure that may pass charges an attempt, a fetch budget or deadline that ran out included,
-// except a stale stored author's refetch, which falls back to the stored account uncharged (refreshQuoted).
+// except a stale stored author's refetch, which falls back to the stored account with no attempt charged, counted as an
+// author fetch (refreshQuoted).
 export function verifyQuote(db: Db, input: QuoteVerification, store: StoreRemoteStatus): QuoteVerified {
   const { now } = input;
   const row = quoteRow(db, input.statusId);
@@ -1165,8 +1192,8 @@ export function answerQuoteRequest(
     recordOutbound(db, quoted.account_id, quoteAnswerActivity("Reject", quoted.author_uri, ref), now);
     return { kind: "answered", reason: "quote-rejected" };
   }
-  let quoting = statusByUri(db, request.instrument);
-  if (quoting === undefined) {
+  let quotingId = statusByUri(db, request.instrument)?.id;
+  if (quotingId === undefined) {
     const embedded = request.embedded;
     const document =
       embedded !== null &&
@@ -1187,8 +1214,10 @@ export function answerQuoteRequest(
       deliveredTo: ctx.deliveredTo,
       fetched: true,
     });
-    quoting = statusByUri(db, request.instrument);
-    if (quoting === undefined) {
+    // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
+    // than the instrument's is not it.
+    quotingId = document.uri === request.instrument ? stored.statusId : undefined;
+    if (quotingId === undefined) {
       return { kind: "ignored", reason: stored.reason };
     }
   }
@@ -1197,7 +1226,7 @@ export function answerQuoteRequest(
 		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
 		WHERE q.status_id = ?1 AND q.quoted_status_id = ?2 AND s.account_id = ?3 AND s.reblog_of_id IS NULL
 			AND NOT EXISTS (SELECT 1 FROM inbound_jobs j WHERE j.kind = 'delete' AND j.key = ?1 AND j.done_at IS NULL)`,
-    quoting.id,
+    quotingId,
     quoted.id,
     actor.id,
   );
@@ -1215,20 +1244,20 @@ export function answerQuoteRequest(
     `UPDATE quotes SET state = 'accepted', authorization_id = ?3, activity_uri = ?4, verify_after = NULL,
 			lease_until = NULL, recheck = 0, need_author = NULL, generation = ${NEW_GENERATION}, updated_at = ?5
 		WHERE status_id = ?1 AND quoted_status_id = ?2`,
-    quoting.id,
+    quotingId,
     quoted.id,
     authorization,
     request.id,
     iso(now),
   );
-  ensureQuotedAccess(db, quoting.id, quoted.account_id);
+  ensureQuotedAccess(db, quotingId, quoted.account_id);
   recordOutbound(
     db,
     quoted.account_id,
     quoteAnswerActivity("Accept", quoted.author_uri, ref, stampUri(quoted.author_uri, authorization)),
     now,
   );
-  notify(db, { recipientId: quoted.account_id, type: "quote", fromId: actor.id, statusId: quoting.id, now });
+  notify(db, { recipientId: quoted.account_id, type: "quote", fromId: actor.id, statusId: quotingId, now });
   return { kind: "answered", reason: "quote-accepted" };
 }
 
@@ -1496,43 +1525,24 @@ export function localQuoteOf(db: Db, statusId: string): { quotedStatusId: string
   return row === undefined ? undefined : { quotedStatusId: row.quoted_status_id };
 }
 
-// The answer an Accept or Reject names: our request by its id (the quoting status's uri with #quote-request), or an
-// inlined QuoteRequest whose instrument is our quoting status and whose object is the actor's status (Mastodon's
-// quote_from_request_json). Only a local quoting row of a quote of the actor's status matches, of a quoting status not
-// withdrawn: once its Delete is recorded, no answer applies (statuses.ts deleteStatus ends its quote as well).
-export type QuoteAnswerRef = {
-  id: string | null;
-  type: string | null;
-  object: string | null;
-  instrument: string | null;
-};
-
+// The answer an Accept or Reject names: our request by its id (the quoting status's uri with #quote-request,
+// activities.ts quoteRequestUri), given as a string or as an inlined QuoteRequest's id. Mastodon 4.7 matches by id only
+// (quote_request_from_object, activity.rb:152-154): an inlined QuoteRequest under another id names nothing. Only a
+// local quoting row of a quote of the actor's status matches, of a quoting status not withdrawn: once its Delete is
+// recorded, no answer applies (statuses.ts deleteStatus ends its quote as well).
 type AnsweredQuote = { status_id: string; author_id: string };
 
-function answeredQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef): AnsweredQuote | undefined {
-  const byId =
-    ref.id === null || !ref.id.endsWith("#quote-request")
-      ? undefined
-      : db.first<AnsweredQuote>(
-          `SELECT q.status_id, s.account_id AS author_id
-					FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
-						ON q.status_id = s.id
-					WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND q.activity_uri = ?2 AND q.quoted_account_id = ?3`,
-          ref.id.slice(0, -"#quote-request".length),
-          ref.id,
-          actor.id,
-        );
-  if (byId !== undefined || ref.type !== "QuoteRequest" || ref.instrument === null || ref.object === null) {
-    return byId;
+function answeredQuote(db: Db, actor: { id: string }, requestId: string | null): AnsweredQuote | undefined {
+  if (requestId === null || !requestId.endsWith("#quote-request")) {
+    return undefined;
   }
   return db.first<AnsweredQuote>(
     `SELECT q.status_id, s.account_id AS author_id
 		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX} CROSS JOIN quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
 			ON q.status_id = s.id
-			CROSS JOIN statuses t INDEXED BY ${STATUSES_ID_INDEX} ON t.id = q.quoted_status_id
-		WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND t.uri = ?2 AND t.account_id = ?3`,
-    ref.instrument,
-    ref.object,
+		WHERE s.uri = ?1 AND s.withdrawn = 0 AND q.local = 1 AND q.activity_uri = ?2 AND q.quoted_account_id = ?3`,
+    requestId.slice(0, -"#quote-request".length),
+    requestId,
     actor.id,
   );
 }
@@ -1555,11 +1565,11 @@ function recordStampUpdate(db: Db, statusId: string, authorId: string, now: numb
 export function acceptOurQuote(
   db: Db,
   actor: { id: string; uri: string },
-  ref: QuoteAnswerRef,
+  requestId: string | null,
   result: string | null,
   now: number,
 ): boolean {
-  const quote = answeredQuote(db, actor, ref);
+  const quote = answeredQuote(db, actor, requestId);
   if (
     quote === undefined ||
     result === null ||
@@ -1590,8 +1600,8 @@ export function acceptOurQuote(
 // quote_revocations, so it still runs revocation batches for received quotes. Keep the stamp until that Delete is
 // forwarded: uniqueness prevents reuse before forwarding (row 9), and the Delete's record afterwards (row 8).
 // Returns whether it applied.
-export function rejectOurQuote(db: Db, actor: { id: string }, ref: QuoteAnswerRef, now: number): boolean {
-  const quote = answeredQuote(db, actor, ref);
+export function rejectOurQuote(db: Db, actor: { id: string }, requestId: string | null, now: number): boolean {
+  const quote = answeredQuote(db, actor, requestId);
   if (quote === undefined) {
     return false;
   }

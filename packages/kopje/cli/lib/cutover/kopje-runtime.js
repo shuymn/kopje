@@ -61,6 +61,7 @@ export const {
   isRemoteUsername,
   MAX_LOCAL_ADDRESSED,
   isStorableActorId,
+  localUsernameIsDomain,
   STATUS_URI_LIMIT,
   withinIdentityBound,
   mediaUrl,

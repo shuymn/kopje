@@ -418,8 +418,8 @@ describe("a Follow keeps the Reject of a generation Kopje no longer holds", () =
   // Mastodon's Undo#handle_reference undoes a Follow named by its id alone, or embedded without a type (each as the
   // inbound parser hands it to the Store, inbound.ts refOf). g is still recorded as retracted, or its record expired.
   const untyped: [string, (t: T, g: string) => Record<string, unknown>][] = [
-    ["embedded without a type", (t, g) => ({ id: g, type: null, actor: t.rUri, object: t.aliceUri, instrument: null })],
-    ["named by its id alone", (_, g) => ({ id: g, type: null, actor: null, object: null, instrument: null })],
+    ["embedded without a type", (t, g) => ({ id: g, type: null, actor: t.rUri, object: t.aliceUri })],
+    ["named by its id alone", (_, g) => ({ id: g, type: null, actor: null, object: null })],
   ];
   it.each(
     untyped.flatMap(([shape, undo]) => [
@@ -1008,7 +1008,7 @@ describe("bounds and refusals (RES-6)", () => {
   // it, wherever the undone answer sits, and within the bound the answer is found wherever it sits.
   const idOnly = (id: string) => ({
     type: "Undo",
-    object: { id, type: null, actor: null, object: null, instrument: null },
+    object: { id, type: null, actor: null, object: null },
   });
   it.each([
     ["recorded as retracted", true],

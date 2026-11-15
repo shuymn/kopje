@@ -24,6 +24,7 @@ import {
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
+import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
@@ -12510,8 +12511,136 @@ describe("0093_annual_reports", () => {
   });
 });
 
-describe("0094_remote_handles", () => {
-  const NAME = "0094_remote_handles";
+describe("0094_quote_author_fetches", () => {
+  const NAME = "0094_quote_author_fetches";
+  const at = NAMES.indexOf(NAME);
+  const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
+
+  it("follows 0093, declared foreignKeys: 'unchanged', with the writers' constant", () => {
+    expect(NAMES[at - 1]).toBe("0093_annual_reports");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The CHECK's upper end is QUOTE_AUTHOR_FETCHES, which quotes.ts derives from its attempts.
+    expect(QUOTE_AUTHOR_FETCHES).toBe(6);
+    expect(MIGRATIONS[at]?.sql).toContain(
+      "CHECK (typeof(author_fetches) = 'integer' AND author_fetches BETWEEN 0 AND 6)",
+    );
+  });
+
+  it("gives every stored quote 0, and holds the column to 0 through QUOTE_AUTHOR_FETCHES", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/1', 'u', 'x.test')", R);
+      for (const id of [Q, O]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'public', '2026-11-01T00:00:00.000Z')`,
+          id,
+          R,
+        );
+      }
+      // Before 0094: a quote with its work under way.
+      sql.exec(
+        `INSERT INTO quotes (status_id, quoted_uri, state, attempts, hops, verify_after, updated_at)
+					VALUES (?1, 'https://x.test/s/' || ?2, 'pending', 3, 2, 0, '2026-11-01T00:00:00.000Z')`,
+        Q,
+        O,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const fetches = () =>
+        sql.exec<{ n: number }>("SELECT author_fetches AS n FROM quotes WHERE status_id = ?", Q).one().n;
+      expect(fetches()).toBe(0);
+      const set = (value: SqlStorageValue) =>
+        state.storage.transactionSync(() =>
+          sql.exec("UPDATE quotes SET author_fetches = ? WHERE status_id = ?", value, Q),
+        );
+      // Each end of the domain is kept, and text that reads as an integer is stored as one; a value past either end, or
+      // not an integer, is refused.
+      for (const value of [0, QUOTE_AUTHOR_FETCHES, "3"]) {
+        set(value);
+        expect(fetches()).toBe(Number(value));
+      }
+      set(QUOTE_AUTHOR_FETCHES);
+      for (const value of [-1, QUOTE_AUTHOR_FETCHES + 1, null, "x", 2.5]) {
+        expect(() => set(value), String(value)).toThrow(/constraint failed/);
+      }
+      expect(fetches()).toBe(QUOTE_AUTHOR_FETCHES);
+    });
+  });
+});
+
+describe("0095_notification_policy_bots", () => {
+  const NAME = "0095_notification_policy_bots";
+  const at = NAMES.indexOf(NAME);
+  const [SAVED, UNSAVED] = ["100000000000000001", "100000000000000002"];
+
+  it("follows 0094, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0094_quote_author_fetches");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("gives every stored policy for_bots accept, and holds the column to its three choices", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [id, name] of [
+        [SAVED, "saved"],
+        [UNSAVED, "unsaved"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          id,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          id,
+          `${name}@x.test`,
+        );
+      }
+      // A policy saved by the previous release, every condition chosen; the other account has none.
+      sql.exec(
+        `INSERT INTO notification_policies (account_id, for_not_following, for_not_followers, for_new_accounts,
+					for_private_mentions, for_limited_accounts) VALUES (?, 'drop', 'filter', 'drop', 'accept', 'drop')`,
+        SAVED,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(sql.exec("SELECT * FROM notification_policies").toArray()).toEqual([
+        expect.objectContaining({
+          account_id: SAVED,
+          for_not_following: "drop",
+          for_not_followers: "filter",
+          for_new_accounts: "drop",
+          for_private_mentions: "accept",
+          for_limited_accounts: "drop",
+          for_bots: "accept",
+        }),
+      ]);
+      // A new row takes the default; each choice is stored; anything else is refused by the CHECK.
+      sql.exec("INSERT INTO notification_policies (account_id) VALUES (?)", UNSAVED);
+      expect(sql.exec("SELECT for_bots FROM notification_policies WHERE account_id = ?", UNSAVED).one()).toEqual({
+        for_bots: "accept",
+      });
+      for (const choice of ["filter", "drop", "accept"]) {
+        sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", choice, SAVED);
+      }
+      const refused = /CHECK constraint failed: for_bots IN \('accept', 'filter', 'drop'\)/;
+      for (const value of ["block", "Filter", "", null, 1]) {
+        expect(
+          () => sql.exec("UPDATE notification_policies SET for_bots = ? WHERE account_id = ?", value, SAVED),
+          String(value),
+        ).toThrow(value === null ? /NOT NULL constraint failed/ : refused);
+      }
+      sql.exec("DELETE FROM notification_policies WHERE account_id = ?", UNSAVED);
+      expect(() =>
+        sql.exec("INSERT INTO notification_policies (account_id, for_bots) VALUES (?, 'block')", UNSAVED),
+      ).toThrow(refused);
+    });
+  });
+});
+
+describe("0096_remote_handles", () => {
+  const NAME = "0096_remote_handles";
   const at = NAMES.indexOf(NAME);
   const id = (n: number) => String(100000000000000000n + BigInt(n));
   // Rows in rowid order: [n, username, domain, search_text (undefined: as accountSearchText writes it)].
@@ -12553,8 +12682,8 @@ describe("0094_remote_handles", () => {
     sql.exec("INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 7000)", id(4));
   };
 
-  it("follows 0093, runs the refresh requests the cutover runs, and checks every reference", () => {
-    expect(NAMES[at - 1]).toBe("0093_annual_reports");
+  it("follows 0095, runs the refresh requests the cutover runs, and checks every reference", () => {
+    expect(NAMES[at - 1]).toBe("0095_notification_policy_bots");
     expect(MIGRATIONS[at]?.sql).toContain(HANDLE_REFRESH_REQUESTS);
     // The index is recreated UNIQUE, which a file declared foreignKeys: 'unchanged' may not do.
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();

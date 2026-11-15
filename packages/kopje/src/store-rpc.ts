@@ -30,7 +30,7 @@ import * as adminDomainBlocks from "./domain/admin-domain-blocks";
 import { adminMeasure } from "./domain/admin-measures";
 import * as announcements from "./domain/announcements";
 import * as annualReports from "./domain/annual-reports";
-import { checkCredential, noteActivity } from "./domain/auth";
+import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
 import * as conversations from "./domain/conversations";
@@ -211,6 +211,10 @@ export const STORE_RPC = {
   // (federation/resolve.ts).
   actorState: inbox.getActorState,
 
+  // A stored actor whose own URI answered 410 is deleted under the revision read before that fetch
+  // (federation/actor-gone.ts).
+  actorGone: inbox.actorGone,
+
   // The instance domain policy the Worker reads before a fetch (R38; inboxGate reads it before an inbound
   // request is verified): advisory, as the writes decide.
   fetchRefused: instanceDomainBlocks.fetchRefused,
@@ -256,11 +260,14 @@ export const STORE_RPC = {
   registerApp: oauth.registerApp,
 
   // Protected operations take the request's credential and validate it in their own transaction (domain/auth.ts).
-  // checkCredential() only validates.
+  // checkCredential() only validates; checkNotSuspended() judges an anonymous route's token (mastodon/access.ts);
+  // checkAdminCredential() is the admin API's gate alone (mastodon/context.ts).
   checkCredential,
+  checkNotSuspended,
+  checkAdminCredential,
 
   // After an authenticated request's response (mastodon/activity.ts): its account's active day.
-  noteActivity,
+  noteActivity: instanceActivity.noteActivity,
   appOfCredential: oauth.appOfCredential,
   inspectToken: oauth.inspectToken,
   introspectToken: oauth.introspectToken,

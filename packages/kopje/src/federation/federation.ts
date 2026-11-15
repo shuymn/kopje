@@ -41,6 +41,7 @@ import type { PolicyTicket } from "../domain/instance-domain-blocks";
 import type { FeaturedItem } from "../domain/local-notes";
 import type { SnapshotSource } from "../domain/snapshot";
 import { renderFieldValue } from "../domain/status-text";
+import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
@@ -339,8 +340,9 @@ export function createKopjeFederation(
     .setActorDispatcher("/ap/users/{identifier}", async (ctx, identifier) => {
       if (identifier === INSTANCE_ACTOR) {
         // The HTTP alias rule: the document is served at /actor, never under the /ap/users template. WebFinger
-        // resolves it only by its canonical URI; Fedify also maps the template spelling of the identifier to it.
-        if (!isInstanceActorRequest(ctx.url, origin)) {
+        // resolves it only by its canonical URI and its handle; Fedify also maps the template spelling of the
+        // identifier to it.
+        if (!isInstanceActorRequest(ctx.url, domain)) {
           return null;
         }
         const key = await loadInstanceKey();
@@ -356,7 +358,11 @@ export function createKopjeFederation(
       state.source = { kind: "actor", username: actor.username, rendered: JSON.stringify(actor) };
       return localActorObject(ctx, actor);
     })
-    .mapHandle(async (_ctx, username) => (await localActor(username))?.username ?? null)
+    // A local account first: the instance actor never takes a local account's handle (ID-5).
+    .mapHandle(
+      async (_ctx, username) =>
+        (await localActor(username))?.username ?? (isInstanceHandle(username, domain) ? INSTANCE_ACTOR : null),
+    )
     .mapActorAlias("/actor", INSTANCE_ACTOR)
     .setKeyPairsDispatcher(async (_ctx, identifier) => {
       if (identifier === INSTANCE_ACTOR) {
@@ -524,10 +530,12 @@ export function createKopjeFederation(
     .setCounter((_ctx, values) => (isInstanceOutbox(values) ? 0 : null))
     .setFirstCursor((_ctx, values) => (isInstanceOutbox(values) ? FIRST_OUTBOX_CURSOR : null));
 
-  // The remote-interaction template, as Mastodon's WebfingerSerializer adds it to every account (v4.5.11): another
-  // server sends a person with an account here to follow from it (app/interaction.tsx).
+  // The remote-interaction templates, as Mastodon's WebfingerSerializer#links gives every account and its instance actor
+  // (v4.7.5): another server sends a person with an account here to open a post or an account, or to follow from it
+  // (app/interaction.tsx). Its FEP-3b86 Create intent is left out (docs/mastodon-deviations.md, WebFinger).
   federation.setWebFingerLinksDispatcher(() => [
-    { rel: "http://ostatus.org/schema/1.0/subscribe", template: `${origin}/authorize_interaction?uri={uri}` },
+    { rel: "http://ostatus.org/schema/1.0/subscribe", template: `${origin}${INTERACTION_PATH}?uri={uri}` },
+    { rel: "https://w3id.org/fep/3b86/Object", template: `${origin}${INTERACTION_PATH}?uri={object}` },
   ]);
 
   federation.setNodeInfoDispatcher("/nodeinfo/2.1", async () => {
@@ -548,10 +556,22 @@ export function createKopjeFederation(
 const OBJECT_ID = /^[0-9A-Za-z-]{1,64}$/;
 const FIRST_OUTBOX_CURSOR = "first";
 
-function isInstanceActorRequest(url: URL, origin: string): boolean {
+// The instance actor's handle is acct:<domain>@<domain>, its preferredUsername at the domain: Mastodon's
+// WebfingerResource#account_from_acct answers Account.representative for a username that is the local domain exactly
+// (v4.7.5). Mastodon asks this before any local account; Kopje asks it after (mapHandle), since a Store may hold a
+// local account of that username from before its writers refused one (localUsernameIsDomain, ID-5).
+function isInstanceHandle(username: string, domain: string): boolean {
+  return username === domain;
+}
+
+// WebFinger reaches the instance actor by its URI, or by its handle (mapHandle), whose host Fedify has already matched
+// to the domain.
+function isInstanceActorRequest(url: URL, domain: string): boolean {
   if (url.pathname === "/.well-known/webfinger") {
     const resources = url.searchParams.getAll("resource");
-    return resources.length === 1 && resources[0] === `${origin}/actor`;
+    const resource = resources.length === 1 ? resources[0]! : "";
+    const handle = /^acct:([^@]+)@[^@]+$/.exec(resource)?.[1];
+    return resource === `https://${domain}/actor` || (handle !== undefined && isInstanceHandle(handle, domain));
   }
   return url.pathname === "/actor";
 }
@@ -628,24 +648,26 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
     published: Temporal.Instant.from(actor.createdAt),
     ...profile,
   });
-  return withAttributionDomains(object, actor.attributionDomains);
+  return withMastodonTerms(object, `${actor.username}@${id.host}`, actor.attributionDomains);
 }
 
-// Mastodon's `attributionDomains` (toot:attributionDomains), which Fedify's vocabulary does not have: added to the
-// compacted document with its context term, only when the account has one, as ActivityPub::ActorSerializer adds it
-// (a suspended account's too).
+// Mastodon's actor terms that Fedify's vocabulary does not have, added to the compacted document with their contexts as
+// ActivityPub::ActorSerializer adds them, a suspended account's too: `webfinger` (FEP-2c59, Mastodon 4.6: the stored
+// username's spelling at the host of the actor id, the domain fixed at setup that WebFinger answers on, ID-5, as the
+// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads, and
+// `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance actor
+// declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
+const WEBFINGER_CONTEXT = "https://purl.archive.org/socialweb/webfinger";
 const ATTRIBUTION_DOMAINS_CONTEXT = {
   toot: "http://joinmastodon.org/ns#",
   attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
 };
 
-function withAttributionDomains<T extends { toJsonLd(options?: object): Promise<unknown> }>(
+function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unknown> }>(
   object: T,
+  webfinger: string,
   domains: string[],
 ): T {
-  if (domains.length === 0) {
-    return object;
-  }
   const toJsonLd = object.toJsonLd.bind(object);
   object.toJsonLd = async (options?: object) => {
     const json = await toJsonLd(options);
@@ -653,10 +675,12 @@ function withAttributionDomains<T extends { toJsonLd(options?: object): Promise<
       return json;
     }
     const context = json["@context"];
+    const attribution = domains.length === 0 ? [] : [ATTRIBUTION_DOMAINS_CONTEXT];
     return {
       ...json,
-      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), ATTRIBUTION_DOMAINS_CONTEXT],
-      attributionDomains: domains,
+      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), WEBFINGER_CONTEXT, ...attribution],
+      webfinger,
+      ...(domains.length === 0 ? {} : { attributionDomains: domains }),
     };
   };
   return object;

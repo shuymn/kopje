@@ -303,8 +303,20 @@ function searchText(input: RemoteStatusInput): string {
   return normalizeSearchText(`${input.spoilerText} ${input.text}`);
 }
 
+// The object's atomUri when it names another status than its id, else null (RemoteStatusInput.atomUri).
+function otherAtomUri(input: RemoteStatusInput): string | null {
+  return input.atomUri === undefined || input.atomUri === input.uri ? null : input.atomUri;
+}
+
+// ID-7: whether `uri`, or the atomUri naming the status it may be, was retracted by the author or deleted.
+function isDeletedUnder(db: Db, authorUri: string, uri: string, atomUri: string | null, now: number): boolean {
+  return isDeleted(db, authorUri, uri, now) || (atomUri !== null && isDeleted(db, authorUri, atomUri, now));
+}
+
 // Mastodon's ActivityPub::Activity::Create#create_status for an object whose author is `author` (already stored and
-// verified: the actor of the activity, or the fetched author of a fetched object).
+// verified: the actor of the activity, or the fetched author of a fetched object). A stored status is found as
+// Create#find_existing_status finds it: by the object's id, else by its atomUri; the outcome's statusId names the row
+// found or created, which the stored document's own id may not (a match by atomUri).
 export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   // ID-6: the object is the author's, on the author's origin; ID-3: so it is never a local object.
   if (!sameOrigin(input.uri, author.uri)) {
@@ -313,9 +325,10 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
     return { applied: false, reason: "not-author" };
   }
+  const atomUri = otherAtomUri(input);
   // ID-7: a Delete that arrived first keeps the object from appearing, and a deleted stored object is not created
-  // again by anyone (ID-6).
-  if (isDeleted(db, author.uri, input.uri, ctx.now)) {
+  // again by anyone (ID-6), under its id or under another id naming it by atomUri.
+  if (isDeletedUnder(db, author.uri, input.uri, atomUri, ctx.now)) {
     return { applied: false, reason: "retracted" };
   }
   // R38, VIS-30: nothing is stored for an unavailable author (an account the instance suspended), whichever path
@@ -336,10 +349,15 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     });
     return { applied: counted, reason: counted ? "vote" : "vote-refused" };
   }
-  const existing = statusByUri(db, input.uri);
+  // ID-3, ID-6: a status found by atomUri is matched only when it is the author's own (Create, mastodon#39916).
+  const byId = statusByUri(db, input.uri);
+  const existing = byId ?? (atomUri === null ? undefined : statusByUri(db, atomUri));
   if (existing !== undefined) {
     if (existing.account_id !== author.id) {
       return { applied: false, reason: "not-author" };
+    }
+    if (byId === undefined) {
+      linkMatchedReplies(db, author, input.uri, atomUri);
     }
     // A known status arriving again as a root verifies its quote as any root does (quotes.ts promoteQuote).
     promoteQuote(db, existing.id, arrivalOf(db, author, ctx), ctx.now);
@@ -452,6 +470,7 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       id,
       author,
       rows,
+      local: known.local,
       audience,
       language: input.language,
       replyTarget,
@@ -465,6 +484,22 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
 // How a status came, for its quote's work (quotes.ts).
 function arrivalOf(db: Db, author: Author, ctx: StoreContext) {
   return quoteArrival(db, author.id, ctx.deliveredTo, ctx.quoteHops ?? QUOTE_HOPS);
+}
+
+// ThreadResolveWorker: replies stored before an object, waiting on its id, are linked to the status found by its
+// atomUri (matchedUri; a Create, an Update), as to one created under the id (parentOf: never a boost or a withdrawn
+// status).
+function linkMatchedReplies(db: Db, author: Author, objectId: string, matchedUri: string | null): void {
+  const found = parentOf(db, matchedUri);
+  if (found !== undefined) {
+    linkReplies(db, {
+      id: found.id,
+      uri: objectId,
+      accountId: author.id,
+      replyTarget: found.in_reply_to_account_id,
+      isReply: found.in_reply_to_uri !== null,
+    });
+  }
 }
 
 // Replies that arrived before this status are linked to it now (a bounded number; the rest keep their uri).
@@ -489,14 +524,18 @@ function linkReplies(
   }
 }
 
-// Mastodon's mention notifications (only accounts in the audience: one tagged but not addressed is not notified) and
-// FeedInsertWorker#notify? for followers who asked to hear of the author's posts. notify() applies the audience rule.
+// Mastodon's mention notifications (FanOutOnWriteService#notify_mentioned_accounts!, fan_out_on_write_service.rb:68-75
+// in v4.7.5): each local account the status mentions (not silently), and one it tags without addressing it (not in
+// `audience`, to/cc and the owner of the personal inbox it came to: Create#process_audience's silenced_account_ids,
+// create.rb:155) marked `limited`, so the policy's limited accounts condition applies; and FeedInsertWorker#notify? for
+// followers who asked to hear of the author's posts. notify() applies the audience rule.
 function notifyCreated(
   db: Db,
   created: {
     id: string;
     author: Author;
     rows: readonly StatusMention[];
+    local: ReadonlySet<string>;
     audience: ReadonlySet<string>;
     language: string | null;
     replyTarget: string | null;
@@ -506,8 +545,15 @@ function notifyCreated(
 ): void {
   const { id, author, now } = created;
   for (const mention of created.rows) {
-    if (!mention.silent && created.audience.has(mention.accountId)) {
-      notify(db, { recipientId: mention.accountId, type: "mention", fromId: author.id, statusId: id, now });
+    if (!mention.silent && created.local.has(mention.accountId)) {
+      notify(db, {
+        recipientId: mention.accountId,
+        type: "mention",
+        fromId: author.id,
+        statusId: id,
+        now,
+        limited: !created.audience.has(mention.accountId),
+      });
     }
   }
   // No post notification for a reply other than in the author's own conversation, its partner unknown included
@@ -575,7 +621,10 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     statuses take new mentions, as Mastodon does. A mention the edit removes stays as a silent mention.
 //   - A significant change (content, spoiler, media) is recorded in status_edits, the original first, and local
 //     boosters are notified; history keeps at most MAX_STATUS_EDITS versions, the newest replacing the last one.
-//   - An Update of an unknown status creates it if it is recent (Create and Update out of order).
+//   - An Update of an unknown status creates it if it is recent (Create and Update out of order), unless its atomUri
+//     names a stored status: Update#update_status reaches Create#create_status, which finds that status
+//     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
+//     id, under that status's uri.
 export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
@@ -583,8 +632,10 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (input.attributedTo !== null && input.attributedTo !== author.uri) {
     return { applied: false, reason: "not-author" };
   }
-  // ID-7: a status whose Delete was recorded (possibly still being removed) takes no Update, from anyone.
-  if (isDeleted(db, author.uri, input.uri, ctx.now)) {
+  const atomUri = otherAtomUri(input);
+  // ID-7: a status whose Delete was recorded (possibly still being removed) takes no Update, from anyone, under its id
+  // or under another id naming it by atomUri.
+  if (isDeletedUnder(db, author.uri, input.uri, atomUri, ctx.now)) {
     return { applied: false, reason: "retracted" };
   }
   // A version too far ahead changes nothing, an unknown status included: no row, history or notification.
@@ -592,16 +643,31 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (version === Infinity) {
     return { applied: false, reason: "future" };
   }
-  const existing = statusByUri(db, input.uri);
+  let existing = statusByUri(db, input.uri);
+  // The stored status's own uri, which an atomUri match keeps (its quote is recorded under it).
+  let uri = input.uri;
   if (existing === undefined) {
     const published = input.published === null ? NaN : Date.parse(input.published);
     if (!Number.isNaN(published) && published < ctx.now - UPDATE_CREATES_WITHIN_MS) {
       return { applied: false, reason: "unknown-object" };
     }
-    return storeRemoteStatus(db, author, input, ctx);
+    const matched = atomUri === null ? undefined : statusByUri(db, atomUri);
+    if (atomUri === null || matched === undefined) {
+      return storeRemoteStatus(db, author, input, ctx);
+    }
+    existing = matched;
+    uri = atomUri;
   }
+  // ID-3, ID-6: found by its id or by atomUri, only the author's own original is updated.
   if (existing.account_id !== author.id || existing.reblog_of_id !== null) {
     return { applied: false, reason: "not-author" };
+  }
+  // Update#update_status reaches Create#create_status for an unknown id: the status it finds by atomUri gains the
+  // delivery's recipient (postprocess_audience_and_deliver) and the replies waiting on the id, as for a Create, before
+  // the edit applies or not.
+  if (uri !== input.uri) {
+    extendAudience(db, existing, ctx.deliveredTo);
+    linkMatchedReplies(db, author, input.uri, uri);
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
   const stored = Date.parse(existing.watermark ?? "");
@@ -615,7 +681,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     // a poll's counts, which names none, or the same one) still refreshes the counts, the end and the voters of its
     // poll, and verifies a changed stamp of the same quote again; the quoted status itself changes only with a newer
     // version.
-    refreshQuote(db, { id: existing.id, uri: input.uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -670,20 +736,19 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     statusEmojis(input),
     existing.id,
   );
-  // As for a Create: a newly mentioned local account is notified if the status addresses it.
+  // A newly mentioned local account is notified as an ordinary mention, addressed or not: update_mentions! makes every
+  // tagged account an active mention (process_status_update_service.rb:299 in v4.7.5) and broadcast_updates! fans out
+  // without silenced ids (:453). The addressed accounts only order the cap's eviction (updateMentions).
   const audience = knownAccounts(db, [...input.to, ...input.cc].slice(0, MAX_STATUS_AUDIENCE));
   const addressed = new Set([...audience.local, ...(ctx.deliveredTo === null ? [] : [ctx.deliveredTo])]);
-  const mentioned = updateMentions(db, existing, input, addressed);
-  for (const id of mentioned) {
-    if (addressed.has(id)) {
-      notify(db, { recipientId: id, type: "mention", fromId: author.id, statusId: existing.id, now: ctx.now });
-    }
+  for (const id of updateMentions(db, existing, input, addressed)) {
+    notify(db, { recipientId: id, type: "mention", fromId: author.id, statusId: existing.id, now: ctx.now });
   }
   writeTags(db, existing.id, input.tags.slice(0, MAX_STATUS_TAGS));
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri: input.uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again (a quote's change alone is not
     // significant here, so it resets nothing).
@@ -713,7 +778,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
 }
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
-// Returns the accounts that are mentioned now and were not before (silent recipients included).
+// Returns the local accounts that are mentioned now and were not before (silent recipients included).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
 // in place of a remote recipient no longer mentioned (silent ones first); a non-public audience stays frozen.
 function updateMentions(
@@ -760,7 +825,7 @@ function updateMentions(
     existing.id,
     JSON.stringify(allowed),
   );
-  return allowed.filter((id) => !mentionedBefore.has(id));
+  return allowed.filter((id) => !mentionedBefore.has(id) && known.local.has(id));
 }
 
 // ---------------------------------------------------------------------------------------------------------------

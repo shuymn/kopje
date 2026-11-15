@@ -12,7 +12,8 @@ import { ALICE, AS, mastodonNote, setup, type Setup } from "./inbox-status-helpe
 // The Store calls of a resolving search (GET /api/v2/search and GET /api/v1/accounts/search with resolve=true): after
 // the host check's domain read that every API request makes (instanceDomain, WEB-6), one read before any network work
 // (Store.resolutionGate: the token, the domain and the first request's preparation, or a refusal), then the reads whose
-// timing is the guarantee (docs/engineering.md, "How a request talks to the Store").
+// timing is the guarantee (docs/engineering.md, "How a request talks to the Store"). A URL query reads the URL's
+// revision before its probe (a stored actor's id is resolved as that actor, resolve.ts resolveUrl).
 
 const WEBFINGER = `${MASTODON}/.well-known/webfinger?resource=${encodeURIComponent("acct:bob@mastodon.example")}`;
 const INSTANCE_KEY = `${LOCAL}/actor#main-key`;
@@ -85,16 +86,18 @@ describe("Store calls of a resolving search", () => {
     const key = cold ? "a missing instance key" : "a warm instance key";
     const ensure = cold ? ["ensureInstanceActorKey"] : [];
 
-    it(`resolves a status URL in ${5 + ensure.length} calls, with ${key}`, async () => {
+    it(`resolves a status URL in ${6 + ensure.length} calls, with ${key}`, async () => {
       const { t, bob, note } = await world(cold);
       const c = counted(t);
       const response = await c.request(`/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`);
       expect(response.status).toBe(200);
       expect((await response.json<{ statuses: unknown[] }>()).statuses).toHaveLength(1);
-      // The author's handle is confirmed by WebFinger, whose policy read follows the spent verdict (NET-1).
+      // The URL is read as a stored actor's id first, then the author's state; the author's handle is confirmed by
+      // WebFinger, whose policy read follows the spent verdict (NET-1).
       expect(c.calls()).toEqual([
         "instanceDomain",
         "resolutionGate",
+        "actorState",
         ...ensure,
         "actorState",
         "fetchRefused",
@@ -254,6 +257,7 @@ describe("a resolving search refused before any network work", () => {
         "instanceDomain",
         "resolutionGate",
         "actorState",
+        "actorState",
         "fetchRefused",
         "resolveSearch",
         "search",
@@ -291,9 +295,9 @@ describe("a resolving search refused before any network work", () => {
         headers: { authorization: `Bearer ${t.tokens.alice}` },
       });
       expect(response.status).toBe(503);
-      // The guarded branch ran: the gate passed and the probe was fetched before the failing read.
+      // The guarded branch ran: the gate passed, and the URL's read before its probe failed.
       expect(c.calls.filter((name) => name !== "noteActivity")).toEqual(["instanceDomain", "resolutionGate"]);
-      expect(t.web.fetched).toEqual([note.id]);
+      expect(t.web.fetched).toEqual([]);
     });
 
     it("refuses a token that expired in that window, on a v2 URL query (AUTH-1)", async () => {
@@ -321,6 +325,7 @@ describe("a resolving search refused before any network work", () => {
       expect(c.calls.filter((name) => name !== "noteActivity")).toEqual([
         "instanceDomain",
         "resolutionGate",
+        "actorState",
         "actorState",
         "fetchRefused",
         "resolveSearch",

@@ -195,7 +195,7 @@ function searchedHandle(db: Db, uri: string): Handle {
 }
 
 // D7, Mastodon's rename_conflicting_account!: the remote row other than `uri` that holds the address a confirmed handle
-// takes (at most one, accounts_domain_username being UNIQUE, migration 0094_remote_handles) is invalidated, whatever
+// takes (at most one, accounts_domain_username being UNIQUE, migration 0096_remote_handles) is invalidated, whatever
 // its state: its username becomes '! ' and its id (invalidate_username!; accounts.ts shownHandle presents it), its
 // search_text follows, and a refresh of it is asked for (collection_syncs.refresh, the sync's document part), as
 // Mastodon queues an AccountRefreshWorker. Each account is asked for at most once per ACCOUNT_STALE_MS by an

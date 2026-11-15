@@ -19,7 +19,7 @@ import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_REQUEST_JOBS, runJobItem } from "./job-attempts";
 import { MAX_MEANINGFUL_COUNT, NOTIFICATION_CHUNK, REMOVAL_BATCHES, runRemovals } from "./notifications";
 import { writeOperation } from "./operation";
-import { presentation, type Status, statusStream } from "./status-presenter";
+import { presentation, type PresentOptions, type Status, statusStream } from "./status-presenter";
 import { streamMerged } from "./streaming";
 import { edgeRangeSql, readWindow, singleWindow, windowJson, windowPage } from "./windows";
 
@@ -57,7 +57,8 @@ export type PolicyView = { policy: Policy; summary: PolicySummary };
 
 function policyOf(db: Db, accountId: string): Policy {
   const row = db.first<Policy>(
-    `SELECT for_not_following, for_not_followers, for_new_accounts, for_private_mentions, for_limited_accounts
+    `SELECT for_not_following, for_not_followers, for_new_accounts, for_private_mentions, for_limited_accounts,
+			for_bots
 		FROM notification_policies WHERE account_id = ?`,
     accountId,
   );
@@ -95,12 +96,12 @@ export const updateNotificationPolicy = userWriteOperation<{ changes: Partial<Po
     const at = new Date(now).toISOString();
     db.run(
       `INSERT INTO notification_policies (account_id, for_not_following, for_not_followers, for_new_accounts,
-				for_private_mentions, for_limited_accounts, created_at, updated_at)
-			VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+				for_private_mentions, for_limited_accounts, for_bots, created_at, updated_at)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8, ?7, ?7)
 			ON CONFLICT (account_id) DO UPDATE SET for_not_following = excluded.for_not_following,
 				for_not_followers = excluded.for_not_followers, for_new_accounts = excluded.for_new_accounts,
 				for_private_mentions = excluded.for_private_mentions, for_limited_accounts = excluded.for_limited_accounts,
-				updated_at = excluded.updated_at`,
+				for_bots = excluded.for_bots, updated_at = excluded.updated_at`,
       accountId,
       policy.for_not_following,
       policy.for_not_followers,
@@ -108,6 +109,7 @@ export const updateNotificationPolicy = userWriteOperation<{ changes: Partial<Po
       policy.for_private_mentions,
       policy.for_limited_accounts,
       at,
+      policy.for_bots,
     );
     return { policy, summary: summaryOf(db, accountId) };
   },
@@ -144,7 +146,7 @@ function* requestStream(
   db: Db,
   viewer: { accountId: string; now: string },
   rows: readonly RequestRow[],
-  present: Present,
+  present: Present & Pick<PresentOptions, "proper">,
 ): Generator<NotificationRequest | undefined, undefined> {
   // The last status of each request whose mention the notification rule still shows the viewer (R15 at the time of
   // the read, which includes R2): not after the viewer blocks or mutes its sender, or one it mentions.
@@ -232,7 +234,8 @@ export const listNotificationRequests = userReadOperation<
 });
 
 // GET /api/v1/notifications/requests/:id: one of the viewer's requests, whoever its sender (Mastodon's find has no
-// without_suspended); anyone else's is not found.
+// without_suspended); anyone else's is not found. Rendered without relationships (the list passes them), so a boost as
+// its last status shows its original's flags (PresentOptions.proper).
 export const getNotificationRequest = userReadOperation<{ id: string; present: Present }, NotificationRequest | null>(
   (db, { id, present }, _viewer, viewer) => {
     if (!isIntegerKey(id)) {
@@ -243,7 +246,9 @@ export const getNotificationRequest = userReadOperation<{ id: string; present: P
       viewer.accountId,
       id,
     );
-    return row === undefined ? null : (requestStream(db, viewer, [row], present).next().value ?? null);
+    return row === undefined
+      ? null
+      : (requestStream(db, viewer, [row], { ...present, proper: true }).next().value ?? null);
   },
 );
 

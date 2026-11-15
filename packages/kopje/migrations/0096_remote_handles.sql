@@ -1,4 +1,4 @@
--- Kopje Store schema 0094: one remote account per address. Never edit after release (checksummed).
+-- Kopje Store schema 0096: one remote account per address. Never edit after release (checksummed).
 --
 -- A remote account's handle (username and domain) is taken only once WebFinger confirms it for the actor, and one
 -- remote account holds an address (src/domain/remote-actors.ts acceptedHandle): accounts_domain_username becomes UNIQUE

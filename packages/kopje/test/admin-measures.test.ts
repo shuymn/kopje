@@ -18,12 +18,13 @@ import { round, world, type World } from "./remote-suspension-helpers";
 
 // The admin metrics (Api::V1::Admin::{Measures,Dimensions,Retention}Controller of Mastodon 4.5.11): the measure
 // instance_follows (domain/admin-measures.ts; InstanceFollowsMeasure), its total, series, caps and answer shape
-// (REST::Admin::MeasureSerializer), the request's order of refusals (Mastodon 4.5.21's), and dimensions and retention
+// (REST::Admin::MeasureSerializer), the request's order of refusals (Mastodon 4.7.5's), and dimensions and retention
 // answering `[]`.
 // The other measures: test/admin-measures-keys.test.ts; walks, plans and budgets: test/admin-measures-bounds.test.ts.
 
 const D = "d.example";
-const NOT_ALLOWED = { status: 403, body: { error: "This action is not allowed" } };
+const FORBIDDEN = { status: 403, body: { error: "Forbidden" } };
+const OUTSIDE = { status: 403, body: { error: "This action is outside the authorized scopes" } };
 const missing = (key: string) => ({
   status: 400,
   body: { error: `param is missing or the value is empty or invalid: ${key}` },
@@ -194,7 +195,7 @@ describe("the measure instance_follows", () => {
     });
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
     for (const token of [alice, null]) {
-      expect(await measure(w, sixYears, token)).toEqual(NOT_ALLOWED);
+      expect(await measure(w, sixYears, token)).toEqual(FORBIDDEN);
     }
     const full = await measure(w, follows(D, {}, { start_at: "2025-01-01", end_at: "2026-01-01" }));
     expect(full.status).toBe(200);
@@ -237,7 +238,7 @@ describe("the measure instance_follows", () => {
     expect(atCap).toBeLessThan(4 * (MEASURE_ROWS + 1) + 100);
   }, 60_000);
 
-  it("refuse other callers, then read the OAuth admin's body in Mastodon 4.5.21's order", async () => {
+  it("refuse other callers, then read the OAuth admin's body in Mastodon 4.7.5's order", async () => {
     const w = await world();
     await followed(w, w.alice.id, 2, D);
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
@@ -268,9 +269,11 @@ describe("the measure instance_follows", () => {
       missing("instance_accounts"),
     );
     expect(await measure(w, { keys: ["new_users", "instance_accounts"] })).toEqual(missing("instance_accounts"));
-    // The optional token is checked first (authorize_if_got_token!): an unknown token answers 401 and a token without
-    // admin:read 403, whatever the body.
+    // The admin gate first (permissions_concern.rb, before authorize_if_got_token!): anyone but the OAuth admin is
+    // refused, an unknown token, an app token and another account's token with or without admin:read included,
+    // whatever the body; then the OAuth admin's token without admin:read answers 403 outside its scopes.
     const narrow = await userToken(w.h, "alice@example.com", "read");
+    const adminNarrow = await userToken(w.h, "owner@example.com", "read");
     const bodies = [
       {},
       { keys: ["instance_follows"] },
@@ -281,15 +284,10 @@ describe("the measure instance_follows", () => {
       follows(D),
     ];
     for (const body of bodies) {
-      expect((await measure(w, body, "not-a-token")).status).toBe(401);
-      expect(await measure(w, body, narrow)).toEqual({
-        status: 403,
-        body: { error: "This action is outside the authorized scopes" },
-      });
-      // Then any caller but the OAuth admin is refused before the body is read (permissions_concern.rb:7,14).
-      for (const token of [alice, app, null]) {
-        expect(await measure(w, body, token), JSON.stringify(body)).toEqual(NOT_ALLOWED);
+      for (const token of ["not-a-token", narrow, alice, app, null]) {
+        expect(await measure(w, body, token), JSON.stringify(body)).toEqual(FORBIDDEN);
       }
+      expect(await measure(w, body, adminNarrow)).toEqual(OUTSIDE);
     }
     // Measure.retrieve's filter_map: unknown keys are left out, each known key answers once per mention, in order.
     expect(await measure(w, { keys: ["nothing", "constructor", "__proto__"] })).toEqual({ status: 200, body: [] });
@@ -360,6 +358,7 @@ describe("the metrics' refusal order", () => {
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
     const app = await appTokenWith(w.h, "admin:read");
     const narrow = await userToken(w.h, "alice@example.com", "read");
+    const adminNarrow = await userToken(w.h, "owner@example.com", "read");
     const malformed = async (path: string, token: string | null) => {
       const init = { method: "POST", headers: { "content-type": "application/json" }, body: "{" };
       const response = await w.h.request(path, token === null ? init : bearer(token, init));
@@ -368,13 +367,9 @@ describe("the metrics' refusal order", () => {
     for (const path of [MEASURES, "/api/v1/admin/retention"]) {
       // The body is parsed for the OAuth admin alone, so only the admin learns it is malformed.
       expect(await malformed(path, w.admin)).toEqual({ status: 400, body: { error: "Malformed request body" } });
-      expect((await malformed(path, "not-a-token")).status).toBe(401);
-      expect(await malformed(path, narrow)).toEqual({
-        status: 403,
-        body: { error: "This action is outside the authorized scopes" },
-      });
-      for (const token of [alice, app, null]) {
-        expect(await malformed(path, token), `${path} ${token}`).toEqual(NOT_ALLOWED);
+      expect(await malformed(path, adminNarrow)).toEqual(OUTSIDE);
+      for (const token of ["not-a-token", narrow, alice, app, null]) {
+        expect(await malformed(path, token), `${path} ${token}`).toEqual(FORBIDDEN);
       }
     }
   });
@@ -411,16 +406,16 @@ describe("dimensions and retention", () => {
     ]) {
       expect(await retention(dates)).toEqual({ status: 200, body: [] });
     }
-    // Mastodon 4.5.21's refusal order: the token, then anyone but the OAuth admin, before the body.
+    // Mastodon 4.7.5's refusal order: anyone but the OAuth admin, then the OAuth admin's token, before the body.
     const alice = await userToken(w.h, "alice@example.com", ADMIN_SCOPES);
     const app = await appTokenWith(w.h, "admin:read");
     const narrow = await userToken(w.h, "alice@example.com", "read");
+    const adminNarrow = await userToken(w.h, "owner@example.com", "read");
     for (const body of [{}, { start_at: "October 1, 2026", end_at: day }, { start_at: day, end_at: day }]) {
-      expect((await retention(body, "not-a-token")).status).toBe(401);
-      expect((await retention(body, narrow)).status).toBe(403);
-      for (const token of [alice, app, null]) {
-        expect(await retention(body, token)).toEqual(NOT_ALLOWED);
+      for (const token of ["not-a-token", narrow, alice, app, null]) {
+        expect(await retention(body, token)).toEqual(FORBIDDEN);
       }
+      expect(await retention(body, adminNarrow)).toEqual(OUTSIDE);
     }
   });
 
@@ -433,7 +428,7 @@ describe("dimensions and retention", () => {
     for (const init of [bearer(alice, json(body)), json(body)]) {
       const response = await w.h.request(path, init);
       expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({ error: "This action is not allowed" });
+      expect(await response.json()).toEqual({ error: "Forbidden" });
     }
   });
 });

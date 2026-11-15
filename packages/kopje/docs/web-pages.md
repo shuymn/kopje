@@ -196,7 +196,9 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   pages, the code page) shows the value alone, with no button, status element or kept space, since nothing would run
   them (browser job).
 - Settings shows one profile-field row for each field an account may store (`MAX_FIELDS`), so a save from settings
-  never drops a stored field.
+  never drops a stored field. Its text controls take twice the server's limit in code points as their `maxlength`,
+  which counts UTF-16 code units (`codeUnitsFor`), so every value the server accepts can be typed or pasted; the server
+  refuses a longer one with its message (browser job).
 - An app's consent page names its website by host (the whole URL in hidden text), the account in full and the
   permissions in plain language by group, the scopes' own names behind a "Technical scopes" disclosure, and admin
   ones in a fail (danger) alert: amber reads as "go" on this site. Settings' authorized apps name the same groups

@@ -251,21 +251,21 @@ describe("dump", () => {
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
   }, 120_000);
 
-  // A dump taken before 0094_remote_handles, of remote rows sharing an address, restores and upgrades through 0094,
-  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at 0094; a dump holding
+  // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
+  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at 0096; a dump holding
   // two remote rows of one address is refused by the UNIQUE index (D6).
-  it("restores a dump taken before 0094_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
+  it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
     const remote = (n: number, username: string) =>
       `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
 				'${username}', 'd.example')`;
     const restored = await restoredBefore(
-      "0094_remote_handles",
+      "0096_remote_handles",
       (sql) => {
         sql.exec(remote(1, "alice"));
         sql.exec(remote(2, "Alice"));
       },
       async (sql, upgrade) => {
-        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0094_remote_handles"] });
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_remote_handles"] });
         expect(sql.exec("SELECT username FROM accounts ORDER BY rowid").toArray()).toEqual([
           { username: "alice" },
           { username: "! 100000000000000002" },
@@ -1028,8 +1028,12 @@ describe("dump", () => {
         present: { origin: "https://kopje.test" },
       });
       expect(followed.status === "ok" && followed.value.items.map((tag) => tag.name)).toEqual(["kept"]);
-      const featured = accountFeaturedTags.run(sql, { id: local, present: { origin: "https://kopje.test" } });
-      expect(featured?.map((tag) => tag.name)).toEqual(["Kept"]);
+      const featured = accountFeaturedTags.run(sql, {
+        id: local,
+        present: { origin: "https://kopje.test" },
+        credential: null,
+      });
+      expect(featured.status === "ok" && featured.value?.map((tag) => tag.name)).toEqual(["Kept"]);
     });
   }, 60_000);
 
@@ -1833,6 +1837,62 @@ describe("read-only SQL", () => {
     }
     expect(await store.query(BUILD, "SELECT * FROM nope")).toMatchObject({ ok: false, code: "query-failed" });
     expect(await tableSnapshot(store)).toEqual(before);
+  });
+});
+
+// ID-5: a local account whose username is the Store's domain, in any case, would hold the instance actor's
+// WebFinger handle. The import is verified against the domain the Store keeps (configuration is never imported).
+describe("a local username that is the instance domain", () => {
+  async function restoreInto(domain: string, username: string) {
+    const source = await seeded(0);
+    await runInDurableObject(source, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE accounts SET username = ? WHERE uri = 'https://kopje.test/ap/users/alice'",
+        username,
+      );
+    });
+    const { text } = await dumpViaRpc(source, 4096);
+    const into = await migratedStore();
+    await copyConfig(source, into);
+    await runInDurableObject(into, (_instance, state) => {
+      state.storage.sql.exec("INSERT OR REPLACE INTO instance_settings (name, value) VALUES ('domain', ?)", domain);
+    });
+    return { into, ...(await importViaRpc(into, text)) };
+  }
+
+  it.each(["kopje.test", "Kopje.TEST"])(
+    "refuses at verification a dump whose local account is named %s",
+    async (name) => {
+      const { into, id, report } = await restoreInto("kopje.test", name);
+      expect(report).toMatchObject({
+        ok: false,
+        problems: [expect.stringContaining("local account 110000000000000001 is the instance domain")],
+      });
+      expect(await into.importVerify(BUILD, ACCESS, id)).toMatchObject({ ok: true, done: true, report: { ok: false } });
+    },
+  );
+
+  it("accepts the same dump into a Store of another domain (the guarded branch)", async () => {
+    expect((await restoreInto("other.test", "kopje.test")).report).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it("refuses to configure a domain that a local account's username is, in any case", async () => {
+    const store = await seeded(0);
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE accounts SET username = 'Kopje.TEST' WHERE uri = 'https://kopje.test/ap/users/alice'",
+      );
+    });
+    const token = { kind: "import-token" } as const;
+    const before = (await store.config(BUILD)).values.domain;
+    expect(await store.setConfig(BUILD, token, { domain: "kopje.test" })).toMatchObject({
+      ok: false,
+      code: "local-username-is-domain",
+      message: expect.stringContaining("local account 110000000000000001"),
+    });
+    expect((await store.config(BUILD)).values.domain).toBe(before);
+    // Another domain is configured: the check ran and found no local account of that name.
+    expect(await store.setConfig(BUILD, token, { domain: "other.test" })).toMatchObject({ ok: true });
   });
 });
 

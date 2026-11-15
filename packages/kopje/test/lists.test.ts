@@ -234,10 +234,17 @@ describe("list members", () => {
     expect((await all.json<{ id: string }[]>()).map((a) => a.id)).toEqual(newest);
     expect(all.headers.get("link")).toBeNull();
 
-    // An unavailable member is not shown (Account.without_suspended), nor are the lists that hold it.
+    // An unavailable member is not shown (Account.without_suspended), nor are the lists that hold it; one whose
+    // deletion has started is not found by the account reads at all (Mastodon 4.7's without_requested_deletion).
+    await sql(
+      h.store,
+      "UPDATE accounts SET suspended_at = '2026-01-01T00:00:00.000Z', suspension_source = 'account' WHERE id = ?",
+      newest[1]!,
+    );
     await sql(h.store, "UPDATE accounts SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = ?", newest[0]!);
-    expect(await members(h, alice, list.id)).toEqual(newest.slice(1));
-    expect(await ids(h, `/api/v1/accounts/${newest[0]}/lists`, alice.token)).toEqual([]);
+    expect(await members(h, alice, list.id)).toEqual(newest.slice(2));
+    expect(await ids(h, `/api/v1/accounts/${newest[1]}/lists`, alice.token)).toEqual([]);
+    expect((await getJson(h, `/api/v1/accounts/${newest[0]}/lists`, alice.token)).status).toBe(404);
   });
 
   it("answers at most 1,000 members with limit=0, the newest", async () => {

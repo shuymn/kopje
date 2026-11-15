@@ -76,6 +76,18 @@ export async function sql<T extends Record<string, SqlStorageValue>>(
   return runInDurableObject(store, (_instance, state) => state.storage.sql.exec<T>(query, ...params).toArray());
 }
 
+// Stored actor_type values against Account#bot?, which holds for Application or Service exactly (isBotActorType,
+// src/domain/audience.ts): each as an SQL expression, a label, and whether it is a bot.
+export const STORED_ACTOR_TYPES: readonly (readonly [value: string, label: string, bot: boolean])[] = [
+  ["'Application'", "Application", true],
+  ["'Service'", "Service", true],
+  ["'Group'", "Group", false],
+  ["'Person'", "Person", false],
+  ["'service'", "service", false],
+  ["'Service '", "Service with a trailing space", false],
+  ["CAST('Service' AS BLOB)", "Service as a BLOB", false],
+];
+
 // `count` new remote accounts of `domain` (ids from `base`), each with an accepted follow of `accountId`
 // (`followers`) or followed by it (`following`), in one statement; then the account's counts are recomputed from its
 // edges (recountFollows).

@@ -467,11 +467,15 @@ describe("the Move target and search resolution (ID-1, ID-4)", () => {
     const t = await setup();
     const bob = await bobAt(t, 1);
     await followed(t, bob);
-    // The search's first fetch of bob's URL (the probe) answers the document before the rotation, and is held.
-    const probe = hold(t, bob.uri, { snapshot: true });
+    // bob's profile URL serves his document too. The search probes it (it is no stored actor's id, which would be
+    // resolved without a probe, resolve.ts resolveUrl); the probe answers the document before the rotation, and is
+    // held.
+    const profile = `${MASTODON}/@bob`;
+    t.web.serve(profile, bob.document);
+    const probe = hold(t, profile, { snapshot: true });
     const search = track(
       t.api<{ accounts: { id: string }[] }>(
-        `/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent(bob.uri)}`,
+        `/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent(profile)}`,
       ),
     );
     await probe.reached;
@@ -483,8 +487,8 @@ describe("the Move target and search resolution (ID-1, ID-4)", () => {
     const found = await search;
     expect(found.status).toBe(200);
     expect(found.body.accounts.map((a) => a.id)).toEqual([await accountId(t.store, bob.uri)]);
-    // The actor document was fetched again after the revision was read.
-    expect(t.web.fetched.filter((url) => url === bob.uri)).toHaveLength(2);
+    // The actor document was fetched at its id after the revision was read (then the declared domain's WebFinger).
+    expect(t.web.fetched.filter((url) => !url.includes("/.well-known/"))).toEqual([profile, bob.uri]);
     expect(updated.avatar_url).toBe(avatar(2));
     expect((await row(t, bob.uri)).avatar_url).toBe(avatar(2));
     expect((await keys(t, bob.uri)).map((k) => k.pem)).toEqual([rotated.pem]);

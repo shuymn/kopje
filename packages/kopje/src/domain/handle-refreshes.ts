@@ -3,7 +3,7 @@
 // (cli/lib/cutover/kopje-runtime.js).
 
 // A refresh request for every invalidated remote account (its username in the reserved form, accounts.ts
-// shownHandle), due at once; a sync already waiting only gains the refresh. Run by migration 0094_remote_handles
+// shownHandle), due at once; a sync already waiting only gains the refresh. Run by migration 0096_remote_handles
 // (test/migrations.test.ts checks its text) and by the cutover conversion after it writes the accounts
 // (requestHandleRefreshes), since cutover creates the Store before it converts anything. Neither writes
 // accounts.handle_refreshed_at: these requests are one-off, not a chain of invalidations (remote-actors.ts).

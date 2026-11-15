@@ -250,10 +250,10 @@ describe("featured hashtags", () => {
     expect(await counts()).toEqual({ statuses_count: 1, last_status_at: at });
   });
 
-  it("suggests the hashtags of the viewer’s recent statuses that they do not feature, the most used first", async () => {
+  it("suggests the hashtags more than one of the viewer’s statuses carries, unfeatured, the most used first", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
-    await post(h, alice, { status: "#b #c", visibility: "public" });
+    await post(h, alice, { status: "#b #c #featured", visibility: "public" });
     await post(h, alice, { status: "#c #a", visibility: "direct" });
     await post(h, alice, { status: "#c #featured", visibility: "private" });
     await post(h, bob, { status: "#bob #bob2 #bob3", visibility: "public" });
@@ -261,7 +261,11 @@ describe("featured hashtags", () => {
     await act(h, alice, "/api/v1/tags/a/follow");
     const { status, body } = await getJson<Tag[]>(h, "/api/v1/featured_tags/suggestions", alice.token);
     expect(status).toBe(200);
-    expect(body.map((tag) => [tag.name, tag.following, tag.featuring])).toEqual([
+    // a and b are on one status each; featured is on two but featured; bob's are not the viewer's.
+    expect(body.map((tag) => [tag.name, tag.following, tag.featuring])).toEqual([["c", false, false]]);
+    await post(h, alice, { status: "#a #b", visibility: "public" });
+    const again = await getJson<Tag[]>(h, "/api/v1/featured_tags/suggestions", alice.token);
+    expect(again.body.map((tag) => [tag.name, tag.following, tag.featuring])).toEqual([
       ["c", false, false],
       ["a", true, false],
       ["b", false, false],
@@ -321,7 +325,11 @@ describe("featured hashtags", () => {
         statuses,
       );
       await sql(h.store, "INSERT INTO status_tags (status_id, name, public) SELECT id, 't0', 1 FROM statuses");
-      return rowsRead(h, accountFeaturedTags, { id: alice.id, present: { origin: "https://kopje.test" } });
+      return rowsRead(h, accountFeaturedTags, {
+        id: alice.id,
+        present: { origin: "https://kopje.test" },
+        credential: null,
+      });
     };
     const few = await measure(20);
     const many = await measure(2000);
@@ -362,6 +370,7 @@ describe("a remote account's featured hashtags with stale statistics (RES-7)", (
       plannedRun(h, /featured_tags f\b/, accountFeaturedTags, {
         id: carol,
         present: { origin: "https://kopje.test" },
+        credential: null,
       });
     const { before, after } = await staleStatistics(h, {
       capture: () => run(),
@@ -377,7 +386,10 @@ describe("a remote account's featured hashtags with stale statistics (RES-7)", (
       },
     });
     expect(after.result).toEqual(before.result);
-    expect(after.result).toMatchObject([{ name: "Cats", statuses_count: "3", last_status_at: "2026-01-01" }]);
+    expect(after.result).toMatchObject({
+      status: "ok",
+      value: [{ name: "Cats", statuses_count: "3", last_status_at: "2026-01-01" }],
+    });
     expect(after.plans).toHaveLength(1);
     const { plan, rows } = after.plans[0]!;
     // The count and the newest: each window through statuses_account, each status of it by id.

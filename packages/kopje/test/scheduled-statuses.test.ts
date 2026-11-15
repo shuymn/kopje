@@ -2,21 +2,37 @@ import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
+import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
 import { expiredMedia } from "../src/domain/media";
 import {
   DAILY_LIMIT,
+  getScheduled,
+  listScheduled,
   MAX_ATTEMPTS,
+  MAX_PARAMS_BYTES,
   PUBLISH_ROUND,
   publishScheduled as publishOne,
   RETRY_DELAYS_MS,
+  SCHEDULED_PAGE,
+  type ScheduledStatus,
   TOTAL_LIMIT,
 } from "../src/domain/scheduled-statuses";
+import {
+  MAX_MEDIA_DESCRIPTION_LENGTH,
+  MAX_STATUS_MEDIA,
+  MEDIA_URL_JSON_BYTES,
+  MEDIA_URL_LIMIT,
+} from "../src/domain/status-bounds";
 import { publishScheduled } from "../src/jobs/scheduled";
 import { parseScheduledAt } from "../src/mastodon/statuses";
+import { utf8Length } from "../src/platform/dump-format";
+import type { StoreOperation } from "../src/platform/store-kernel";
+import { BLURHASH_BYTES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { measuredStatements, observedSql } from "./read-helpers";
 import {
   community,
   follow,
@@ -28,6 +44,7 @@ import {
   type Status,
   type User,
 } from "./status-helpers";
+import { blurhashOf } from "./stored-bounds-fixtures";
 
 // Scheduled statuses (domain/scheduled-statuses.ts, mastodon/scheduled-statuses.ts), as Mastodon 4.5 has them:
 // POST /api/v1/statuses with scheduled_at, the scheduled_statuses endpoints, ScheduledStatus's validations and limits,
@@ -571,6 +588,107 @@ describe("publication", () => {
     ).toEqual(["Create"]);
   });
 
+  it("publishes media with a poll, scheduled through the API or restored, as Mastodon 4.6 takes them", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const [sent, restored] = [await upload(h, alice, 1), await upload(h, alice, 2)];
+    const poll = { options: ["a", "b"], expires_in: "600", multiple: false, hide_totals: false };
+    const created = await scheduled(h, alice, {
+      status: "both",
+      media_ids: [sent],
+      poll: { options: ["a", "b"], expires_in: 600 },
+      scheduled_at: at(NOW + HOUR),
+    });
+    expect(created.params).toMatchObject({ media_ids: [sent], poll });
+    expect(created.media_attachments).toEqual([expect.objectContaining({ id: sent })]);
+    expect(await sql(h.store, "SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id = ?", sent)).toEqual([
+      { scheduled_status_id: created.id, gc_at: null },
+    ]);
+    // A row restored with both, its upload held, as the API writes it.
+    const params = { ...created.params, text: "restored", media_ids: [restored] };
+    await sql(
+      h.store,
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES ('600000000000000001', ?, ?, ?)`,
+      alice.id,
+      at(NOW + HOUR),
+      JSON.stringify(params),
+    );
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET scheduled_status_id = '600000000000000001', gc_at = NULL WHERE id = ?",
+      restored,
+    );
+    for (const id of [created.id, "600000000000000001"]) {
+      expect(await publishDirectly(h, id, NOW + HOUR), id).toMatchObject({ status: "published" });
+    }
+    const statuses = (
+      await getJson<(Status & { media_attachments: { id: string }[]; poll: unknown })[]>(
+        h,
+        `/api/v1/accounts/${alice.id}/statuses`,
+        alice.token,
+      )
+    ).body;
+    expect(
+      statuses.map((s) => ({ text: s.content, media: s.media_attachments.map((m) => m.id), poll: s.poll })),
+    ).toEqual(
+      [
+        ["<p>restored</p>", restored],
+        ["<p>both</p>", sent],
+      ].map(([text, media]) => ({
+        text,
+        media: [media],
+        poll: expect.objectContaining({ options: [expect.objectContaining({ title: "a" }), expect.anything()] }),
+      })),
+    );
+  });
+
+  it("schedules a blank text with its CW as its text, and publishes a row an earlier release scheduled as stored", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const created = await scheduled(h, alice, { status: "", spoiler_text: "cw", scheduled_at: at(NOW + HOUR) });
+    expect(created.params).toMatchObject({ text: "cw", spoiler_text: "", sensitive: true });
+    expect(
+      (await getJson<Scheduled>(h, `/api/v1/scheduled_statuses/${created.id}`, alice.token)).body.params,
+    ).toMatchObject({ text: "cw", spoiler_text: "", sensitive: true });
+    // Its length is that of the text it becomes: 500 characters as a warning, 504 as text.
+    expect(
+      await refusal(
+        await schedule(h, alice, {
+          status: "",
+          spoiler_text: `${"x".repeat(480)} https://example.com`,
+          scheduled_at: at(NOW + HOUR),
+        }),
+      ),
+    ).toEqual({ status: 422, body: { error: "Validation failed: Text character limit of 500 exceeded" } });
+    expect(await count(h, "scheduled_statuses")).toBe(1);
+    // A row an earlier release scheduled with a blank text, a CW and media, its upload held.
+    const media = await upload(h, alice, 1);
+    const earlier = "600000000000000001";
+    await sql(
+      h.store,
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)`,
+      earlier,
+      alice.id,
+      at(NOW + HOUR),
+      JSON.stringify({ ...created.params, text: "", spoiler_text: "cw", sensitive: null, media_ids: [media] }),
+    );
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?",
+      earlier,
+      media,
+    );
+    for (const id of [created.id, earlier]) {
+      expect(await publishDirectly(h, id, NOW + HOUR), id).toMatchObject({ status: "published" });
+    }
+    expect(
+      await sql(h.store, "SELECT content, source_text, spoiler_text, sensitive FROM statuses ORDER BY id"),
+    ).toEqual([
+      { content: "<p>cw</p>", source_text: "cw", spoiler_text: "", sensitive: 1 },
+      { content: "", source_text: "", spoiler_text: "cw", sensitive: 1 },
+    ]);
+  });
+
   it("applies the author's defaults at the time of publication", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -942,6 +1060,334 @@ describe("nothing leaks before publication", () => {
       { numRuns: 12, seed: 20261015 },
     );
   }, 60_000);
+});
+
+// ---- RES-3: a scheduled status's maximum, and the list within ANSWER_BYTES.
+
+const C = "\u0001";
+// The positive double JavaScript prints in the most characters, 24 (0.00000 and 17 digits; 25 with a sign): a double
+// at or past 1e21 or below 1e-6 prints in exponent form, at most 23 characters, and one between at most 21 digits.
+const LONGEST_DOUBLE = 1.2345678901234567e-6;
+// Stored params of MAX_PARAMS_BYTES that grow the most when presented (JSON.parse, then the answer's JSON): numbers
+// that print as 21 characters from 4 ("1e20"), the most any number grows with its separator (22/5 a stored byte,
+// "derives a scheduled status's maximum"). Escapes, whitespace and duplicate keys print as long or shorter, and a
+// malformed byte decodes to U+FFFD (3 bytes).
+const GROWING_PARAMS = (() => {
+  const count = Math.floor((MAX_PARAMS_BYTES - '{"":[]}'.length + 1) / "1e20,".length);
+  return `{"":[${Array.from({ length: count }, () => "1e20").join(",")}]}`;
+})();
+const PARAMS_JSON_MAX = Math.floor((22 * MAX_PARAMS_BYTES) / 5);
+
+// What each column of a scheduled status presents at most: its id (18 digits, the CHECK of 0011_scheduled_statuses),
+// its time (24 characters), params as above, and MAX_STATUS_MEDIA held attachments (the media read's LIMIT), each with
+// an 18-digit id, the longest type, its four URLs at MEDIA_URL_JSON_BYTES (presentedMediaUrl), every number of its
+// meta and focus at the longest a double prints, a description of MAX_MEDIA_DESCRIPTION_LENGTH code points escaped to
+// six bytes each and a blurhash of BLURHASH_BYTES.
+const SIZE_BOUND = {
+  width: LONGEST_DOUBLE,
+  height: LONGEST_DOUBLE,
+  size: `${LONGEST_DOUBLE}x${LONGEST_DOUBLE}`,
+  aspect: LONGEST_DOUBLE,
+};
+const MEDIA_BOUND = {
+  id: "9".repeat(18),
+  type: "unknown",
+  url: "\\".repeat(MEDIA_URL_LIMIT),
+  preview_url: "\\".repeat(MEDIA_URL_LIMIT),
+  remote_url: "\\".repeat(MEDIA_URL_LIMIT),
+  preview_remote_url: "\\".repeat(MEDIA_URL_LIMIT),
+  text_url: null,
+  meta: { original: SIZE_BOUND, small: SIZE_BOUND, focus: { x: -LONGEST_DOUBLE, y: -LONGEST_DOUBLE } },
+  description: C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+  blurhash: "x".repeat(BLURHASH_BYTES),
+};
+const SCHEDULED_JSON_MAX =
+  jsonBytes({
+    id: "9".repeat(18),
+    scheduled_at: "x".repeat(24),
+    params: {},
+    media_attachments: Array.from({ length: MAX_STATUS_MEDIA }, () => MEDIA_BOUND),
+  }) -
+  jsonBytes({}) +
+  PARAMS_JSON_MAX;
+
+// A scheduled status of `owner` at its caps, as a restored row may hold it: GROWING_PARAMS, and `held` media of
+// `remote` (a remote account's attachment shows remote_url and preview_remote_url), the first held the last by
+// position, each with URLs of MEDIA_URL_LIMIT bytes of backslashes (two JSON bytes each), a description of
+// MAX_MEDIA_DESCRIPTION_LENGTH control characters, a meta and focus of the longest doubles and a 5x5 blurhash; at
+// `scheduledAt`, a time a day ahead by default.
+async function maximalScheduled(
+  h: ApiHarness,
+  owner: string,
+  remote: string,
+  n: number,
+  held: number = MAX_STATUS_MEDIA,
+  scheduledAt: string = at(NOW + DAY + n * MINUTE),
+): Promise<string> {
+  const id = String(750000000000000000n + BigInt(n));
+  const size = { width: LONGEST_DOUBLE, height: LONGEST_DOUBLE };
+  await runInDurableObject(h.store, (_instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+      id,
+      owner,
+      scheduledAt,
+      GROWING_PARAMS,
+    );
+    for (let i = 0; i < held; i++) {
+      state.storage.sql.exec(
+        `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, preview_url,
+					description, meta, focus_x, focus_y, blurhash)
+				VALUES (?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?)`,
+        String(760000000000000000n + BigInt(n * 100 + i)),
+        remote,
+        id,
+        held - 1 - i,
+        `https://m.example/${i}/?`.padEnd(MEDIA_URL_LIMIT, "\\"),
+        `https://p.example/${i}/?`.padEnd(MEDIA_URL_LIMIT, "\\"),
+        C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+        JSON.stringify({ original: size, small: size }),
+        -LONGEST_DOUBLE,
+        -LONGEST_DOUBLE,
+        blurhashOf(5, 5, "~"),
+      );
+    }
+  });
+  return id;
+}
+
+const readCredential = async (user: User) =>
+  ({ tokenHash: await sha256Hex(user.token), scope: "read", now: NOW }) as const;
+
+// Runs `operation` and counts what leaves SQLite from the statements over scheduled statuses and their media: the rows
+// and the UTF-8 bytes of their values (eight per number).
+async function scheduledReads<I>(h: ApiHarness, operation: StoreOperation<I, unknown>, input: I) {
+  return runInDurableObject(h.store, (_instance, state) => {
+    let rows = 0;
+    let bytes = 0;
+    const observed = observedSql(state.storage.sql, (read, query) => {
+      if (/scheduled_status/.test(query)) {
+        for (const row of read) {
+          rows++;
+          for (const value of Object.values(row)) {
+            bytes += typeof value === "string" ? utf8Length(value) : 8;
+          }
+        }
+      }
+    });
+    return { output: operation.run(observed, input), rows, bytes };
+  });
+}
+
+describe("a scheduled status at its caps (RES-3)", () => {
+  // docs/threat-model.md "Maxima of presented units", "Scheduled status, derived from its caps".
+  it("derives a scheduled status's maximum from its caps, above a witness at them", async () => {
+    // Every JSON number of at most 5 characters prints in at most 22/5 of its length with a separator, 1e20 at it; a
+    // longer one prints in at most 25 (LONGEST_DOUBLE), under 22/5 of 7.
+    const characters = "0123456789-.eE+";
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+    let tokens = [""];
+    let most = 0;
+    for (let length = 1; length <= 5; length++) {
+      tokens = tokens.flatMap((token) => [...characters].map((c) => token + c));
+      for (const token of tokens.filter((t) => number.test(t))) {
+        const printed = String(Number(token)).length;
+        expect(5 * (printed + 1), token).toBeLessThanOrEqual(22 * (length + 1));
+        most = Math.max(most, (printed + 1) / (length + 1));
+      }
+    }
+    expect([most, String(1e20).length]).toEqual([22 / 5, 21]);
+    fc.assert(fc.property(fc.double({ noNaN: true, noDefaultInfinity: true }), (d) => String(d).length <= 25));
+    expect([String(LONGEST_DOUBLE).length, String(-LONGEST_DOUBLE).length]).toEqual([24, 25]);
+    expect([jsonBytes(MEDIA_BOUND.url), jsonBytes(MEDIA_BOUND.description)]).toEqual([MEDIA_URL_JSON_BYTES, 60_002]);
+
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const id = await maximalScheduled(h, alice.id, await remoteAccount(h.store, "far"), 0);
+    const { output, rows } = await scheduledReads(h, getScheduled, { credential: await readCredential(alice), id });
+    const shown = (output as { status: string; value: ScheduledStatus }).value;
+    // The bound has the presenter's keys, and the witness's columns are at the bound's, its URLs within their scheme,
+    // host and path ("https://m.example/0/?", 21 bytes).
+    const [media] = shown.media_attachments;
+    expect(Object.keys(media ?? {})).toEqual(Object.keys(MEDIA_BOUND));
+    expect(Object.keys(media?.meta ?? {})).toEqual(Object.keys(MEDIA_BOUND.meta));
+    expect(Object.keys(media?.meta?.original ?? {})).toEqual(Object.keys(SIZE_BOUND));
+    expect(
+      shown.media_attachments.map((m) => [
+        ...[m.url, m.preview_url, m.remote_url, m.preview_remote_url].map(jsonBytes),
+        jsonBytes(m.description),
+        jsonBytes(m.blurhash),
+      ]),
+    ).toEqual(
+      Array.from({ length: MAX_STATUS_MEDIA }, () => [
+        ...Array.from({ length: 4 }, () => MEDIA_URL_JSON_BYTES - 21),
+        60_002,
+        BLURHASH_BYTES + 2,
+      ]),
+    );
+    expect(utf8Length(GROWING_PARAMS)).toBeLessThanOrEqual(MAX_PARAMS_BYTES);
+    // Within the bound but for the 7 stored bytes that are no number (the object, its key, the array and one spare
+    // byte), which the bound counts at 22/5 too: 24 bytes.
+    expect(PARAMS_JSON_MAX - jsonBytes(shown.params)).toBe(24);
+    expect({ params: jsonBytes(shown.params), witness: jsonBytes(shown), rows, derived: SCHEDULED_JSON_MAX }).toEqual({
+      params: 576_692,
+      witness: 884_345,
+      rows: 1 + MAX_STATUS_MEDIA,
+      derived: 884_889,
+    });
+    expect(SCHEDULED_JSON_MAX).toBeLessThanOrEqual(0.85 * ANSWER_BYTES);
+  });
+
+  // An imported scheduled_at that is no time passes the CHECK of 0011_scheduled_statuses: strftime cannot read it (the
+  // CHECK is then NULL), and length() stops at its NUL, so it may hold any bytes. It is judged by its bytes in SQL and
+  // shown as null, so the scheduled status stays within the derived maximum, listed or shown; an update must then send
+  // a time, as one whose time is unreadable.
+  it("shows no time for an imported scheduled_at that is no time, within the derived maximum", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const remote = await remoteAccount(h.store, "far");
+    const notTime = "x".repeat(24) + "\0" + C.repeat(1_500_000);
+    const id = await maximalScheduled(h, alice.id, remote, 0, MAX_STATUS_MEDIA, notTime);
+    const timed = await maximalScheduled(h, alice.id, remote, 1);
+    expect(
+      await sql(
+        h.store,
+        "SELECT length(scheduled_at) AS n, octet_length(scheduled_at) AS bytes FROM scheduled_statuses ORDER BY id",
+      ),
+    ).toEqual([
+      { n: 24, bytes: 1_500_025 },
+      { n: 24, bytes: 24 },
+    ]);
+    const credential = await readCredential(alice);
+    const one = await scheduledReads(h, getScheduled, { credential, id });
+    const shown = (one.output as { status: string; value: ScheduledStatus }).value;
+    expect(shown.scheduled_at).toBeNull();
+    expect(jsonBytes(shown)).toBeLessThanOrEqual(SCHEDULED_JSON_MAX);
+    // None of its bytes leaves SQLite: the row reads as one at a time does, its 24 bytes a NULL (counted 8).
+    const other = await scheduledReads(h, getScheduled, { credential, id: timed });
+    expect(one.bytes).toBe(other.bytes - 24 + 8);
+    const listed = await h.request("/api/v1/scheduled_statuses", bearer(alice.token));
+    const body = await listed.text();
+    expect(listed.status).toBe(200);
+    expect(utf8Length(body)).toBeLessThanOrEqual(2 * SCHEDULED_JSON_MAX + 3);
+    expect((JSON.parse(body) as Scheduled[]).map((s) => [s.id, s.scheduled_at])).toEqual([
+      [timed, at(NOW + DAY + MINUTE)],
+      [id, null],
+    ]);
+    const path = `/api/v1/scheduled_statuses/${id}`;
+    expect((await getJson<Scheduled>(h, path, alice.token)).body.scheduled_at).toBeNull();
+    expect(await refusal(await send(h, alice, "PUT", path))).toEqual({
+      status: 422,
+      body: { error: "Record invalid" },
+    });
+    const moved = await send(h, alice, "PUT", path, { scheduled_at: at(NOW + 2 * HOUR) });
+    expect([moved.status, (await moved.json<Scheduled>()).scheduled_at]).toEqual([200, at(NOW + 2 * HOUR)]);
+  }, 120_000);
+
+  // The media read takes the first MAX_STATUS_MEDIA by position through media_attachments_scheduled, so a restored row
+  // holding more reads no more.
+  it("shows the first 4 held media by position, reading as many entries however many it holds", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const remote = await remoteAccount(h.store, "far");
+    const credential = await readCredential(alice);
+    const media = /FROM media_attachments m WHERE m\.scheduled_status_id/;
+    const reads: number[] = [];
+    for (const [n, held] of [MAX_STATUS_MEDIA, 10, 40].entries()) {
+      const id = await maximalScheduled(h, alice.id, remote, n, held);
+      const { output, statements } = await measuredStatements(h, getScheduled, { credential, id });
+      const shown = (output as { status: string; value: ScheduledStatus }).value;
+      // Inserted with positions held - 1 down to 0: the last inserted come first.
+      expect(shown.media_attachments.map((m) => m.id)).toEqual(
+        Array.from({ length: MAX_STATUS_MEDIA }, (_, i) =>
+          String(760000000000000000n + BigInt(n * 100 + held - 1 - i)),
+        ),
+      );
+      reads.push(statements.filter((s) => media.test(s.query)).reduce((sum, s) => sum + s.rows, 0));
+    }
+    expect(reads[0]).toBeGreaterThan(0);
+    expect(reads).toEqual([reads[0], reads[0], reads[0]]);
+  });
+});
+
+describe("the scheduled statuses list within ANSWER_BYTES (RES-3)", () => {
+  async function walk(h: ApiHarness, user: User, first: string, rel: "next" | "prev") {
+    const pages: string[][] = [];
+    let path: string | undefined = first;
+    while (path !== undefined) {
+      const response = await h.request(path, bearer(user.token));
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(utf8Length(body)).toBeLessThanOrEqual(ANSWER_BYTES);
+      const items = (JSON.parse(body) as Scheduled[]).map((s) => s.id);
+      if (items.length === 0) {
+        break;
+      }
+      pages.push(items);
+      const link = new RegExp(`<https://kopje\\.test([^>]+)>; rel="${rel}"`).exec(response.headers.get("link") ?? "");
+      path = link?.[1];
+    }
+    return pages;
+  }
+
+  it("admits whole scheduled statuses at their caps, the first always, a cut page linking on from its last", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const remote = await remoteAccount(h.store, "far");
+    const made: string[] = [];
+    for (let n = 0; n < SCHEDULED_PAGE.max; n++) {
+      made.push(await maximalScheduled(h, alice.id, remote, n));
+    }
+    const newest = made.toReversed();
+    const older = await walk(h, alice, `/api/v1/scheduled_statuses?limit=${SCHEDULED_PAGE.max}`, "next");
+    expect(older.flat()).toEqual(newest);
+    expect(older.length).toBeGreaterThan(1);
+    // Each cut page links next from its last scheduled status (the walk follows those links).
+    const response = await h.request(`/api/v1/scheduled_statuses?limit=${SCHEDULED_PAGE.max}`, bearer(alice.token));
+    const first = (await response.json<Scheduled[]>()).map((s) => s.id);
+    expect(first).toEqual(older[0]);
+    expect(response.headers.get("link")).toContain(`max_id=${first.at(-1)}>; rel="next"`);
+    // min_id pages from the oldest: each cut page links prev from its newest, and the walk reaches every one once.
+    const newer = await walk(h, alice, `/api/v1/scheduled_statuses?limit=${SCHEDULED_PAGE.max}&min_id=0`, "prev");
+    expect(newer.length).toBeGreaterThan(1);
+    expect(newer.toReversed().flat()).toEqual(newest);
+    // A page of small scheduled statuses is not cut.
+    for (let i = 0; i < SCHEDULED_PAGE.max; i++) {
+      await sql(
+        h.store,
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+        String(770000000000000000n + BigInt(i)),
+        bob.id,
+        at(NOW + DAY + i * MINUTE),
+        JSON.stringify({ text: `s${i}`, spoiler_text: "", media_ids: null }),
+      );
+    }
+    expect(await ids(h, `/api/v1/scheduled_statuses?limit=${SCHEDULED_PAGE.max}`, bob.token)).toHaveLength(
+      SCHEDULED_PAGE.max,
+    );
+  }, 120_000);
+
+  // The page reads ids only; past the budget it reads and presents the one scheduled status left out.
+  it("reads one scheduled status past the budget", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const remote = await remoteAccount(h.store, "far");
+    const made: string[] = [];
+    for (let n = 0; n < SCHEDULED_PAGE.max; n++) {
+      made.push(await maximalScheduled(h, alice.id, remote, n));
+    }
+    const credential = await readCredential(alice);
+    const one = await scheduledReads(h, getScheduled, { credential, id: made[0] ?? "" });
+    const page = { limit: SCHEDULED_PAGE.max };
+    const listed = await scheduledReads(h, listScheduled, { credential, page });
+    const shown = (listed.output as { status: string; value: { items: ScheduledStatus[]; cut?: boolean } }).value;
+    expect(shown.cut).toBe(true);
+    const admitted = shown.items.length;
+    expect({ rows: listed.rows, bytes: listed.bytes }).toEqual({
+      rows: SCHEDULED_PAGE.max + (admitted + 1) * one.rows,
+      bytes: SCHEDULED_PAGE.max * 18 + (admitted + 1) * one.bytes,
+    });
+  }, 120_000);
 });
 
 describe("parseScheduledAt", () => {

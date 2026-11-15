@@ -16,11 +16,12 @@ import { errorFields } from "../platform/error-message";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { goneSettler, type SettleGone } from "./actor-gone";
 import { createRemoteLoaders, type FederationDeps, type FederationState, type RemoteLoaders } from "./federation";
 import { hasActivityStreamsContext } from "./inbound";
 import type { InboxDeps } from "./inbox";
 import { isTransientLoadError, REQUEST_DEADLINE_MS, requestBudget } from "./loader";
-import { fetchActor } from "./remote-actor";
+import { type FetchedActor, fetchActor } from "./remote-actor";
 import { fetchRemoteStatus, idOf } from "./remote-status";
 import { confirmedInput } from "./resolve";
 
@@ -34,9 +35,10 @@ import { confirmedInput } from "./resolve";
 // recipient of the quoting status, or a local follower of its author) or else the instance actor's (DATA-7). The Store
 // keeps what each stage completed and decides in one transaction; every failure of a stage is charged (a budget or
 // deadline that ran out included), so a stage that never fits a budget is given up after the last attempt, except a
-// stale stored author's refetch, whose fallback to the stored account is uncharged (domain/remote-actors.ts
-// applyRefresh). The stamp's embedded objects are never trusted: only their ids are read. Nothing of this instance's
-// origin is fetched.
+// stale stored author's refetch, whose fallback to the stored account charges no attempt (domain/remote-actors.ts
+// applyRefresh). Every author document a work applies is counted apart, and an author stage with none left
+// (domain/quotes.ts QUOTE_AUTHOR_FETCHES) fetches nothing and ends the work. The stamp's embedded objects are never
+// trusted: only their ids are read. Nothing of this instance's origin is fetched.
 
 // A round's claim must outlast the round (domain/quotes.ts QUOTE_LEASE_MS): twice its worst case of fetching.
 const QUOTE_ROUND_WORST_MS = QUOTE_ROUND * QUOTE_STAGES * REQUEST_DEADLINE_MS;
@@ -122,28 +124,29 @@ async function loadStamp(uri: string, origin: string, loader: DocumentLoader): P
 // The quoted status's author, parsed as any actor (none of this instance's origin is fetched), its claim confirmed
 // (confirmedInput) against the handle `stored` read before the fetch: an author with no stored row whose claim
 // WebFinger refuses is unusable, and one whose confirmation may pass later is transient; a stored author keeps its
-// handle either way.
+// handle either way. With it, the fetch's own outcome when the author is gone (a 410 at its URI deletes a stored
+// author, actor-gone.ts).
 async function loadActor(
   uri: string,
   origin: string,
   loaders: RemoteLoaders,
   stored: Handle | null,
-): Promise<Fetched<RemoteActorInput>> {
+): Promise<{ author: Fetched<RemoteActorInput>; gone?: FetchedActor }> {
   if (originOf(uri) === null || originOf(uri) === origin) {
-    return { kind: "unusable" };
+    return { author: { kind: "unusable" } };
   }
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
   if (fetched.kind !== "ok") {
-    return { kind: fetched.kind };
+    return fetched.kind === "gone" ? { author: { kind: "gone" }, gone: fetched } : { author: { kind: fetched.kind } };
   }
   if (fetched.input === null) {
-    return { kind: "unusable" };
+    return { author: { kind: "unusable" } };
   }
   const checked = await confirmedInput(loaders, fetched.input, stored, new URL(origin).host);
   if (stored === null && checked.outcome !== "confirmed") {
-    return { kind: checked.outcome === "transient" ? "transient" : "unusable" };
+    return { author: { kind: checked.outcome === "transient" ? "transient" : "unusable" } };
   }
-  return { kind: "ok", value: checked.input };
+  return { author: { kind: "ok", value: checked.input } };
 }
 
 type Rpc = <T>(call: (store: StoreStub) => Promise<T>) => Promise<T>;
@@ -152,8 +155,8 @@ type Rpc = <T>(call: (store: StoreStub) => Promise<T>) => Promise<T>;
 // stored, the stamp): each stage fetches one document through loaders of its own (`loadersFor(signer)`, signer the
 // work's rechecked fetch_as, a username, or null), so nothing one stage fetched answers another's fetch, and hands it
 // to the Store, which applies it only to the generation, stage and fetch address of the work it read. Returns whether
-// work is left due now: this quote's (unfinished), or another's (a quoted status it stored has a quote of its own), for
-// a later round.
+// work is left due now: this quote's (unfinished), or another's (a quoted status it stored has a quote of its own, a
+// gone author's purge), for a later round.
 async function verifyQuote(
   rpc: Rpc,
   build: string,
@@ -161,8 +164,9 @@ async function verifyQuote(
   statusId: string,
   loadersFor: (signer: string | null) => RemoteLoaders,
   now: () => number,
-  run: { generation: number; state: FederationState },
+  run: { generation: number; state: FederationState; settle: SettleGone },
 ): Promise<boolean> {
+  let goneJobs = false;
   // The quoted status, its author, the status again (now storable), the stamp, and the decision.
   for (let stage = 0; stage < QUOTE_STAGES; stage++) {
     const work = await rpc((s) => s.quoteWork(build, { statusId, now: now() }));
@@ -182,11 +186,14 @@ async function verifyQuote(
       stage: work.stage,
       fetch: work.fetch,
     };
+    let gone: FetchedActor | undefined;
     if (work.stage === "quoted" && work.fetch !== null) {
       input.quoted = await loadStatus(work.fetch, origin, loaders.document);
     } else if (work.stage === "author" && work.fetch !== null) {
-      input.author = await loadActor(work.fetch, origin, loaders, work.authorState.handle);
+      const loaded = await loadActor(work.fetch, origin, loaders, work.authorState.handle);
+      input.author = loaded.author;
       input.authorRevision = work.authorState.revision;
+      gone = loaded.gone;
     } else if (work.stage === "stamp" && work.fetch !== null) {
       input.stamp = await loadStamp(work.fetch, origin, loaders.document);
     }
@@ -194,6 +201,10 @@ async function verifyQuote(
     // the quote's. The round stops before submitting anything, and nothing is charged.
     if (run.state.storeError !== null) {
       throw run.state.storeError;
+    }
+    // A stored author whose URI answered 410, under the revision read with the stage's work, before its fetch.
+    if (gone !== undefined && work.fetch !== null) {
+      goneJobs ||= (await run.settle(gone, work.fetch, work.authorState.revision)).jobsPending;
     }
     let result: QuoteVerified;
     try {
@@ -208,10 +219,10 @@ async function verifyQuote(
       await rpc((s) =>
         s.chargeQuote(build, { statusId, generation, stage: work.stage, fetch: work.fetch, now: now() }),
       );
-      return false;
+      return goneJobs;
     }
     if (!result.next) {
-      return !result.done || result.due;
+      return goneJobs || !result.done || result.due;
     }
   }
   return true;
@@ -247,11 +258,13 @@ export async function verifyQuotes(env: Env, deps: InboxDeps): Promise<boolean> 
   const loadersFor = (signer: string | null) =>
     createRemoteLoaders(federation, state, signer, requestBudget(Date.now()));
   const rpc: Rpc = (call) => callStore(() => call(store()));
+  const settle = goneSettler(store, build, deps.now);
   let more = claimed.more;
   for (const [i, id] of claimed.ids.entries()) {
     const left = await verifyQuote(rpc, build, origin, id, loadersFor, deps.now, {
       generation: claimed.generations[i]!,
       state,
+      settle,
     });
     if (state.storeError !== null) {
       throw state.storeError;

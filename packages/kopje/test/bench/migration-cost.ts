@@ -28,7 +28,7 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   KOPJE_BENCH_SCALE=0.01 pnpm --filter kopje bench:migration     a quick check of the script itself (not a measure)
 //   KOPJE_BENCH_SHARED_HANDLES=0.1 pnpm --filter kopje bench:migration
 //                                                                  one remote account in ten sharing an address (the
-//                                                                  rows 0094_remote_handles rewrites)
+//                                                                  rows 0096_remote_handles rewrites)
 //   KOPJE_BENCH_FROM=0040_report_notifications pnpm --filter kopje bench:migration
 //                                                                  a release: every file from 0040 to the newest (or
 //                                                                  to KOPJE_BENCH_MIGRATION) in one upgrade. Run it
@@ -71,6 +71,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   - 100,000 featured hashtags (from migration 0025_remote_collections on), MAX_FEATURED_TAGS of each of the first
 //     10,000 accounts;
 //   - 10,000 inbound jobs, status deletions of the first statuses, every other one finished;
+//   - a notification policy of each local account (from migration 0020_notification_policies on), every condition at
+//     its default;
 //   - the other job families' rows: 10,000 stamp revocations (from 0033_quotes on), every other one done, by the
 //     remote accounts in turn; 1,000 domain blocks of the local accounts in turn, each with its cleanup; 1,000
 //     notification request jobs of the local accounts in turn, each from another remote account; a clear of each
@@ -110,14 +112,15 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // them); 0083_kept_boosts reindexes the kept public and unlisted boosts (statuses, its 200,000 boosts among them);
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
-// instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_remote_handles reads
-// every remote account twice (its reserved-form pass, and its shared-address pass with a seek of
-// accounts_domain_username each), rebuilds that index UNIQUE and reads the pending collection syncs (10,000 seeded
-// while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also seeds the shared addresses and reserved-form usernames it
-// rewrites, 100,000 and 1,000 of the remote accounts). A migration that reads another table must add it here before it
-// is measured. The measured time is the whole upgrade, from before the
-// bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
-// an await on each side.
+// instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_quote_author_fetches
+// adds a checked column to quotes, which SQLite tests against every quote; 0095_notification_policy_bots tests its
+// column's CHECK on every notification_policies row; 0096_remote_handles reads every remote account twice (its
+// reserved-form pass, and its shared-address pass with a seek of accounts_domain_username each), rebuilds that index
+// UNIQUE and reads the pending collection syncs (10,000 seeded while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also
+// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts). A
+// migration that reads another table must add it here before it is measured. The measured time is the whole upgrade,
+// from before the bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock
+// is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -749,6 +752,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.domains,
       Date.parse(now),
     );
+    // A policy of each local account, the rows 0095_notification_policy_bots tests its CHECK on.
+    const hasPolicies = has("notification_policies");
+    if (hasPolicies) {
+      run("INSERT INTO notification_policies (account_id) SELECT account_id FROM local_accounts");
+    }
     // The other job families (0084_family_job_attempts): stamp revocations, every other one done; local accounts'
     // domain blocks with their cleanups, notification request jobs from remote accounts, clears and dismissals.
     if (has("quote_revocations")) {
@@ -896,12 +904,12 @@ it("applies the migration to the benchmark store within the budget", async () =>
         statuses,
       );
     }
-    // While 0094_remote_handles is pending: SHAPE.collectionSyncs syncs waiting, of the first remote accounts; and with
+    // While 0096_remote_handles is pending: SHAPE.collectionSyncs syncs waiting, of the first remote accounts; and with
     // KOPJE_BENCH_SHARED_HANDLES = 0.1 one remote account in ten sharing the handle of the one before it (the address
     // the migration invalidates on it), each with a raw document of 2,000 bytes and the search_text accountSearchText
     // writes, and one in a thousand stored as '! <id>' naming the second row after it, which shares an address (the
     // collision its reserved-form pass fixes).
-    const handlesPending = pending("0094_remote_handles");
+    const handlesPending = pending("0096_remote_handles");
     const collectionSyncs = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local);
     if (handlesPending && has("collection_syncs")) {
       run(
@@ -974,6 +982,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       cards: hasCards ? count("status_cards WHERE fetched_at IS NOT NULL") : 0,
       pendingCards: hasCards ? count("status_cards WHERE fetched_at IS NULL") : 0,
       featuredTags: hasFeatured ? count("featured_tags") : 0,
+      policies: hasPolicies ? count("notification_policies") : 0,
       inboundJobs: count("inbound_jobs"),
       revocations: has("quote_revocations") ? count("quote_revocations") : 0,
       familyJobs: [
@@ -1032,6 +1041,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => row.detail),
         }
       : undefined;
+    // 0094_quote_author_fetches: the column, and the quotes holding its default.
+    const authorFetches = has("quotes", "author_fetches")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
+      : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1044,7 +1057,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .map((row) => `${row.type} ${row.name}`),
         }
       : undefined;
-    // 0094_remote_handles: the remote rows invalidated (each naming its own id), the refresh requests, and whether
+    // 0095_notification_policy_bots: the policies holding the new column's default.
+    const botPolicies = has("notification_policies", "for_bots")
+      ? count("notification_policies WHERE for_bots = 'accept'")
+      : undefined;
+    // 0096_remote_handles: the remote rows invalidated (each naming its own id), the refresh requests, and whether
     // accounts_domain_username is UNIQUE.
     const remoteHandles = has("accounts", "handle_refreshed_at")
       ? {
@@ -1069,6 +1086,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
           pinsLeft,
           liveQuotes,
           rejectReplays,
+          authorFetches,
+          botPolicies,
           remoteHandles,
         },
       };
@@ -1100,6 +1119,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
         pinsLeft,
         liveQuotes,
         rejectReplays,
+        authorFetches,
+        botPolicies,
         remoteHandles,
       },
     };
@@ -1166,9 +1187,18 @@ it("applies the migration to the benchmark store within the budget", async () =>
     });
     expect(measured.foreignKeyCheck).toBe("store");
   }
-  // 0094 rewrote every seeded shared or reserved-form remote row to its own id, asked for each one's refresh, made
+  // 0094 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0094_quote_author_fetches")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.authorFetches).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
+  }
+  // 0095 tested its CHECK on a policy of each local account, which kept the default.
+  if (applied.includes("0095_notification_policy_bots")) {
+    expect([seeded.policies, measured.botPolicies]).toEqual([SHAPE.local, SHAPE.local]);
+  }
+  // 0096 rewrote every seeded shared or reserved-form remote row to its own id, asked for each one's refresh, made
   // the address index UNIQUE, and its upgrade checked every reference.
-  if (applied.includes("0094_remote_handles")) {
+  if (applied.includes("0096_remote_handles")) {
     expect(seeded.collectionSyncs).toBe(Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local));
     if (sharedHandles > 0) {
       expect([seeded.sharedHandles > 0, seeded.reservedHandles > 0]).toEqual([true, true]);

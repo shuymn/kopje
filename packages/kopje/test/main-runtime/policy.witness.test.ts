@@ -7,6 +7,7 @@ import { statementId } from "../plan-audit";
 import { type Baseline, type Count, expectBeside, PlanWitness, STATISTICS } from "../plan-witness";
 import type { SqlRow } from "../read-helpers";
 import { normalized } from "../sql-text";
+import { MAIN_PARAMETERS, ROW_ALLOWANCES } from "./main-allowances";
 import RECORDED from "./recorded.json";
 import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-world";
 
@@ -70,9 +71,11 @@ async function planOf(key: string, writes: string | undefined): Promise<Plan> {
     if (baselines[id] !== undefined && baselines[id].text !== mine) {
       throw new Error(`${key}: main's ${id} has two rewrites`);
     }
+    const leading = MAIN_PARAMETERS[id]?.count;
     baselines[id] = {
       sql: main,
       text: mine,
+      ...(leading === undefined ? {} : { params: (params: readonly SqlStorageValue[]) => params.slice(0, leading) }),
       ...(writes === undefined ? {} : { writes }),
       ...(main.includes("f(bound) AS") ? { result: windowResult(main, mine) } : {}),
     };
@@ -92,6 +95,13 @@ beforeAll(async () => {
 
 describe("the rewritten statements beside main's", () => {
   it("are main's audited statements, each paired with one rewrite", async () => {
+    // Each allowance is a baseline's, so none outlives the statement it was given for.
+    const baselineIds = new Set([...plans.values()].flatMap(({ expected }) => expected));
+    const allowed = [...Object.keys(ROW_ALLOWANCES), ...Object.keys(MAIN_PARAMETERS)];
+    expect(
+      allowed.filter((id) => !baselineIds.has(id)),
+      [...baselineIds].join(" "),
+    ).toEqual([]);
     for (const { witness, expected } of plans.values()) {
       expect(expected.length).toBeGreaterThan(0);
       await witness.expectAudited();
@@ -123,7 +133,7 @@ describe("the rewritten statements beside main's", () => {
                 run: (wrapped, inner) => run(wrapped, inner, context),
               });
               populations = measured.populations;
-              expectBeside(statistics, measured, { singletonRows: true });
+              expectBeside(statistics, measured, { singletonRows: true, rowAllowances: ROW_ALLOWANCES });
               for (const side of measured.sides) {
                 lines.push(`FIG\t${name}\t${statistics}\t${flow}\t${side.id}\t${side.main.rows}\t${side.mine.rows}`);
               }

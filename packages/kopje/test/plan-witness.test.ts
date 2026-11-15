@@ -166,6 +166,24 @@ describe("the sequence", () => {
     expect(() => expectBeside("analyzed", run)).toThrow(/main's statements, every one in order/);
   });
 
+  it("runs main's statement with the parameters its baseline takes from a rewrite that binds one more", async () => {
+    const id = await statementId(SELECT);
+    const bounded = "SELECT id FROM t INDEXED BY t_k WHERE k = ?1 AND id >= ?2 ORDER BY id";
+    const entry = (params?: Baseline["params"]) => ({
+      [id]: { sql: SELECT, text: bounded, ...(params === undefined ? {} : { params }) },
+    });
+    const mapped = await witnessed(
+      entry((mine) => mine.slice(0, 1)),
+      () => [id],
+      [[bounded, 3, 0]],
+    );
+    expectBeside("analyzed", mapped);
+    expect(mapped.sides.map((side) => side.main.result)).toEqual([[{ id: 7 }, { id: 8 }]]);
+    const unmapped = await witnessed(entry(), () => [id], [[bounded, 3, 0]], { catching: true });
+    expect(unmapped.result).toEqual([expect.stringContaining("Wrong number of parameter bindings")]);
+    expect(unmapped.sides.map((side) => side.fault)).toEqual(["incomplete"]);
+  });
+
   it("fails a statement of the family that is no baseline's rewrite", async () => {
     const run = await witnessed(await baselines(), () => [], [["SELECT id FROM t WHERE k > ? ORDER BY id", 3]], {
       family: /^SELECT id FROM t /,
@@ -280,6 +298,26 @@ describe("each pair", () => {
     expect(() => expectBeside("singleton", singleton, { singletonRows: true })).toThrow(
       /expected \d+ to be less than or equal to/,
     );
+  });
+
+  it("passes a rewrite that reads more within its stated row allowance, and fails one past it or without one", async () => {
+    const id = await statementId(SELECT);
+    const scan = "SELECT id FROM t NOT INDEXED WHERE k = ? ORDER BY id";
+    const entries = { [id]: { sql: SELECT, pins: (text: string) => text.replace(" NOT INDEXED", "") } };
+    const run = await witnessed(entries, () => [id], [[scan, 3]], { statistics: "analyzed" });
+    const extra = run.sides[0]!.mine.rows - run.sides[0]!.main.rows;
+    expect(extra).toBeGreaterThan(1);
+    const reason = "a test of the allowance";
+    expectBeside("analyzed", run, { rowAllowances: { [id]: { rows: extra, reason } } });
+    // One row short of what it reads more, or an allowance of another statement, fails as none does.
+    for (const rowAllowances of [
+      { [id]: { rows: extra - 1, reason } },
+      { [`${id.slice(1)}0`]: { rows: extra, reason } },
+    ]) {
+      expect(() => expectBeside("analyzed", run, { rowAllowances })).toThrow(
+        /expected \d+ to be less than or equal to/,
+      );
+    }
   });
 
   it("compares each side as its caller reads it, and fails a rewrite whose caller answers other candidates", async () => {

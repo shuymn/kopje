@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
+import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
+import {
+  type ApiHarness,
+  apiHarness,
+  bearer,
+  form,
+  json,
+  login,
+  seedAccount,
+  sql,
+  STORED_ACTOR_TYPES,
+} from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { appToken, scopedToken } from "./read-helpers";
@@ -259,13 +270,119 @@ describe("credentials", () => {
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
   });
 
+  it("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, unknown>) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
+    // Compliant hosts padded with U+00AD (two UTF-8 bytes), which IDNA drops: a.example and ab.example.
+    const over = `a${"\u00ad".repeat(506)}.example`;
+    const at = `ab${"\u00ad".repeat(505)}.example`;
+    expect([over, at].map((domain) => new TextEncoder().encode(domain).length)).toEqual([
+      ATTRIBUTION_DOMAIN_BYTES + 1,
+      ATTRIBUTION_DOMAIN_BYTES,
+    ]);
+    const refused = await patch({ attribution_domains: ["ok.example", over] });
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toEqual({
+      error: `Validation failed: Attribution domains ${over} is not a valid domain name`,
+    });
+    const accepted = await patch({ attribution_domains: ["ok.example", at] });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
+    const verified = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+    expect(await verified.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
+  });
+
+  // Account::DISPLAY_NAME_LENGTH_LIMIT (Mastodon 4.6, `mastodon#39458`): 40 code points, whatever plane they are in.
+  it("accepts a display name of 40 code points and refuses 41", async () => {
+    const h = await aliceSession();
+    const patch = (display_name: string) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json({ display_name }, { method: "PATCH" })));
+    const forty = "😀".repeat(40);
+    const accepted = await patch(forty);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ display_name: forty });
+    const stored = () => sql(h.store, "SELECT display_name FROM accounts WHERE id = ?", h.aliceId);
+    expect(await stored()).toEqual([{ display_name: forty }]);
+    for (const value of ["😀".repeat(41), "x".repeat(41), `${"😀".repeat(20)}${"x".repeat(21)}`]) {
+      const refused = await patch(value);
+      expect(refused.status, value).toBe(422);
+      expect(await refused.json()).toEqual({
+        error: "Validation failed: Display name is too long (maximum is 40 characters)",
+      });
+    }
+    expect(await stored()).toEqual([{ display_name: forty }]);
+  });
+
+  // Account#prepare_contents strips the display name and the note before validating and storing them, as Ruby's
+  // String#strip strips: NUL, tab, LF, VT, FF, CR and space at either end, and no other whitespace. A NUL inside is
+  // one of the code points counted and is dropped when stored.
+  it("strips the display name and the note as Mastodon does before counting and storing them", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, string>) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
+    const stored = () => sql(h.store, "SELECT display_name, note FROM accounts WHERE id = ?", h.aliceId);
+    const ends = "\u0000\t\n\v\f\r ";
+    for (const [i, [before, after]] of [
+      ["", "\u0000"],
+      ["", " "],
+      [ends, ends],
+    ].entries()) {
+      const name = `${"😀".repeat(39)}${i}`;
+      const note = `${"x".repeat(499)}${i}`;
+      const response = await patch({ display_name: `${before}${name}${after}`, note: `${before}${note}${after}` });
+      expect(response.status, JSON.stringify([before, after])).toBe(200);
+      expect(await response.json()).toMatchObject({ display_name: name, source: { note } });
+      expect(await stored()).toEqual([{ display_name: name, note: `<p>${note}</p>` }]);
+    }
+    const kept = await stored();
+    // Other whitespace is kept and counted (it is not Ruby's to strip), and so is a NUL inside.
+    for (const value of [
+      `${"😀".repeat(40)}\u3000`,
+      `\u00a0${"😀".repeat(40)}`,
+      `${"😀".repeat(20)}\u0000${"😀".repeat(20)}`,
+    ]) {
+      const refused = await patch({ display_name: value });
+      expect(refused.status, JSON.stringify(value)).toBe(422);
+      expect(await refused.json()).toEqual({
+        error: "Validation failed: Display name is too long (maximum is 40 characters)",
+      });
+    }
+    const note = await patch({ note: `${"x".repeat(500)}\u3000` });
+    expect(note.status).toBe(422);
+    expect(await note.json()).toEqual({ error: "Validation failed: Note is too long (maximum is 500 characters)" });
+    expect(await stored()).toEqual(kept);
+    expect((await patch({ display_name: `${"😀".repeat(20)}\u0000${"😀".repeat(19)}` })).status).toBe(200);
+    expect(await stored()).toMatchObject([{ display_name: "😀".repeat(39) }]);
+  });
+
+  // Mastodon's TextFormatter for a local note (app/lib/text_formatter.rb:34, :48): '' for a blank note, else Rails'
+  // simple_format (split_paragraphs), which trims no paragraph or line: what Ruby's strip leaves is kept, Unicode spaces
+  // included, and source.note gives it back. A blank note is stored empty (docs/mastodon-deviations.md).
+  it("keeps a note's whitespace as Mastodon formats it, and stores a blank one empty", async () => {
+    const h = await aliceSession();
+    for (const [sent, source, html] of [
+      [" bio\u3000", "bio\u3000", "<p>bio\u3000</p>"],
+      ["a\n\n\u3000\n\nb", "a\n\n\u3000\n\nb", "<p>a</p><p>\u3000</p><p>b</p>"],
+      ["a \n b \n\n\u00a0c", "a \n b \n\n\u00a0c", "<p>a <br> b </p><p>\u00a0c</p>"],
+      ["x", "x", "<p>x</p>"],
+      ["\u3000\u0085\n\n\u00a0", "", ""],
+    ]) {
+      const response = await h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(h.token, json({ note: sent }, { method: "PATCH" })),
+      );
+      expect(response.status, JSON.stringify(sent)).toBe(200);
+      expect(await response.json(), JSON.stringify(sent)).toMatchObject({ note: html, source: { note: source } });
+      expect(await sql(h.store, "SELECT note FROM accounts WHERE id = ?", h.aliceId)).toEqual([{ note: html }]);
+      const me = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+      expect(await me.json()).toMatchObject({ note: html, source: { note: source } });
+    }
+  });
+
   it("refuses invalid values without changing anything", async () => {
     const h = await aliceSession();
-    for (const body of [
-      { display_name: "x".repeat(31) },
-      { note: "x".repeat(501) },
-      { source: { privacy: "secret" } },
-    ]) {
+    for (const body of [{ note: "x".repeat(501) }, { source: { privacy: "secret" } }]) {
       const response = await h.request(
         "/api/v1/accounts/update_credentials",
         bearer(h.token, json(body, { method: "PATCH" })),
@@ -338,6 +455,18 @@ describe("account lookup", () => {
       fields: [],
       suspended: true,
     });
+  });
+
+  // Account#bot?, by the list the notification policy's bot condition reads (audience.ts).
+  it("presents bot by the exact stored actor type", async () => {
+    const h = await apiHarness();
+    const id = await seedAccount(h.store, { username: "maybe" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, id);
+      expect(await (await h.request(`/api/v1/accounts/${id}`)).json<{ bot: boolean }>(), label).toMatchObject({
+        bot,
+      });
+    }
   });
 
   // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.
@@ -700,12 +829,15 @@ describe("relationships of unavailable accounts (R1, with_suspended)", () => {
     expect(await relationshipsOf(h, h.unavailable)).toEqual([]);
   });
 
-  it("includes them, in request order and once each, with a true with_suspended", async () => {
+  // But one whose deletion has started, which the account reads do not find (foundSql; Mastodon 4.7's
+  // without_requested_deletion, whatever with_suspended).
+  it("includes them, in request order and once each, with a true with_suspended, but a deleting one", async () => {
     const h = await unavailableWorld();
-    const requested = [h.unavailable[2]!, h.available, ...h.unavailable, h.unavailable[0]!];
+    const deleting = h.unavailable[2]!;
+    const requested = [h.unavailable[3]!, h.available, ...h.unavailable, h.unavailable[0]!];
     for (const suffix of ["&with_suspended=true", "&with_suspended=1"]) {
       const entries = await relationshipsOf(h, requested, suffix);
-      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)]);
+      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)].filter((id) => id !== deleting));
       for (const entry of entries) {
         expect(entry).toMatchObject({ following: true, note: "n" });
       }

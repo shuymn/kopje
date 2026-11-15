@@ -20,6 +20,7 @@ import {
   isRemoteUsername,
   isStorableActorId,
   languageOf,
+  localUsernameIsDomain,
   mediaUrl,
   normalizeTag,
   normalizeSearchText,
@@ -552,7 +553,7 @@ export function convertLegacy(
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const pendingAccounts = [];
-  // The remote handles written so far, as `<host> <lowercased username>` (migration 0094_remote_handles: one remote
+  // The remote handles written so far, as `<host> <lowercased username>` (migration 0096_remote_handles: one remote
   // account per address).
   /** @type {Set<string>} */
   const handles = new Set();
@@ -600,6 +601,10 @@ export function convertLegacy(
         count(problems, "local-actor-uri-differs-from-username");
       }
       username = segment;
+      // ID-5: the instance actor's handle is the domain at the domain; no local account may hold it.
+      if (localUsernameIsDomain(username, domain)) {
+        count(problems, "accounts:local-username-is-domain");
+      }
     } else {
       try {
         host = new URL(uri).host.toLowerCase();
@@ -620,7 +625,7 @@ export function convertLegacy(
         count(problems, "remote-actor-username-invalid");
         continue;
       }
-      // An address an earlier row holds is invalidated on this one, as migration 0094_remote_handles invalidates every
+      // An address an earlier row holds is invalidated on this one, as migration 0096_remote_handles invalidates every
       // row but the oldest of an address (the reserved form of src/domain/accounts.ts shownHandle); its refresh is
       // requested below.
       const handle = `${host} ${username.toLowerCase()}`;

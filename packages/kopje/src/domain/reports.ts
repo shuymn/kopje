@@ -424,7 +424,7 @@ function* adminReportStream(
   const shared = presentation(
     db,
     shown.flatMap((statuses) => statuses.map((status) => status.id)),
-    { ...present, viewer: admin.context },
+    { ...present, viewer: admin.context, proper: true },
   );
   for (const [i, row] of rows.entries()) {
     const ids = [
@@ -470,18 +470,23 @@ function* adminReportStream(
   }
 }
 
-// ReportFilter (app/models/report_filter.rb:18-25) over the parameters the controller permits (reports_controller.rb:
-// 17-21, 88-90): unresolved reports by default, and resolved ones when `resolved` is sent with any value, even
-// "false" (scope_for adds Report.resolved for the key, whatever its value); account_id (the reporter) and
+// ReportFilter (app/models/report_filter.rb) over the parameters the controller permits (reports_controller.rb:18-25):
+// the state ReportFilter#status_scope takes from the casts of `resolved` and `unresolved` (mastodon#38323: every report
+// when both are true, the resolved ones when `resolved` is, else the unresolved ones); account_id (the reporter) and
 // target_account_id. by_target_domain and target_origin are not permitted, so they are ignored.
-export type AdminReportFilter = { resolved: boolean; accountId: string | null; targetAccountId: string | null };
+export type AdminReportFilter = {
+  state: "unresolved" | "resolved" | "all";
+  accountId: string | null;
+  targetAccountId: string | null;
+};
 
 export type AdminReportPage = Page<AdminReport> & { more: boolean };
 
 // GET /api/v1/admin/reports: newest first by id, paged by max_id, since_id and min_id (Paginable#to_a_paginated_by_id).
-// Each filter reads one index whose range is already in id order for the state: reports_state alone,
+// Each filter reads one index whose range is already in id order for a state: reports_state alone,
 // reports_account_state for a reporter, reports_target_state for a reported account, and reports_pair_state when both
-// are given (RES-7: no residual, however many others report the account). A
+// are given (RES-7: no residual, however many others report the account). Every report is the two states' ranges of
+// that index, each cut at the page's limit, merged by id: at most twice the limit of index entries. A
 // page holds `limit` reports, or fewer when the status budget or ANSWER_BYTES stops it after at least one report;
 // `more` offers the next page then too, so a short page with `more` false is the end (Mastodon offers it when the
 // page is full).
@@ -505,10 +510,18 @@ export const listAdminReports = adminReadOperation<
       : filter.accountId !== null
         ? (["reports_account_state", "account_id = ?4", filter.accountId] as const)
         : (["reports_state", "1"] as const);
+  const direction = ascending ? "ASC" : "DESC";
+  // A state's range of the index, in id order, cut at the limit.
+  const range = (unresolved: 0 | 1) =>
+    `WHERE ${keys} AND (action_taken_at IS NULL) = ${unresolved} AND ${edgeRangeSql("reports.id", "?1", "?2")}
+		ORDER BY reports.id ${direction} LIMIT ?3`;
   const rows = db.all<ReportRow>(
-    `SELECT ${REPORT_COLUMNS} FROM reports INDEXED BY ${index}
-		WHERE ${keys} AND (action_taken_at IS NULL) = ${filter.resolved ? 0 : 1} AND ${edgeRangeSql("reports.id", "?1", "?2")}
-		ORDER BY reports.id ${ascending ? "ASC" : "DESC"} LIMIT ?3`,
+    filter.state === "all"
+      ? `SELECT * FROM (SELECT reports.id AS k, ${REPORT_COLUMNS} FROM reports INDEXED BY ${index}
+		${range(0)}) UNION ALL SELECT * FROM (SELECT reports.id AS k, ${REPORT_COLUMNS} FROM reports INDEXED BY ${index}
+		${range(1)}) ORDER BY k ${direction} LIMIT ?3`
+      : `SELECT ${REPORT_COLUMNS} FROM reports INDEXED BY ${index}
+		${range(filter.state === "resolved" ? 0 : 1)}`,
     page.maxId ?? null,
     page.minId ?? page.sinceId ?? null,
     page.limit,

@@ -98,7 +98,8 @@ describe("a stale author of a fetched original (VIS-6, NET-4; Mastodon possibly_
     expect(await author(t, erin.uri)).toMatchObject({ avatar_url: avatar(erin, 2), fetched_at: iso(NOW) });
   });
 
-  it.each([404, 410])(
+  // A 410 at the author's URI deletes the author (test/inbox-gone.test.ts).
+  it.each([404])(
     "a refresh answering %i stores neither the original nor the boost, and leaves fetched_at unchanged",
     async (status) => {
       const { t, bob, erin } = await staleAuthorWorld();

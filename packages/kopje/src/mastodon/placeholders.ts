@@ -66,8 +66,9 @@ export const checkConfirmation = forUser((c) => c.json(true));
 
 // GET /api/v1/donation_campaigns: Api::V1::DonationCampaignsController with no campaign source configured (its
 // default) answers 204 to any user; its require_user! answers 422 without one, and Api::BaseController's
-// require_not_suspended! 403 to a suspended user's token. It checks no doorkeeper scope, so any user token passes. A
-// token past its expiry, revoked or of an earlier epoch reads as none (MD-3, AUTH-2's exception).
+// require_not_suspended! 403 to a suspended user's token, expired or not (AUTH-1's order). It checks no doorkeeper
+// scope, so any user token passes. Any other token past its expiry, revoked or of an earlier epoch reads as none (MD-3,
+// AUTH-2's exception).
 export const donationCampaigns: ApiHandler = async (c, deps) => {
   const value = optionalTokenCredential(c, deps);
   const check = value === null ? null : await storeCall(c, deps, (s, b) => s.checkCredential(b, value));
@@ -97,7 +98,9 @@ export const emailSubscription: ApiHandler = async (c, deps) => {
 // An empty list, for an account that exists.
 const emptyAccountList: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
-  const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
+  const account = authorized(
+    await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c), credential: null })),
+  );
   return account === null ? recordNotFound() : c.json([]);
 };
 

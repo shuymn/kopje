@@ -5,6 +5,10 @@
 export const DEFAULT_AVATAR = "/assets/avatar.jpg";
 export const DEFAULT_HEADER = "/assets/header.jpg";
 export const DEFAULT_THUMBNAIL = "/assets/thumbnail.jpg";
+// The thumbnail's alt text, /api/v2/instance's thumbnail.description.
+export const DEFAULT_THUMBNAIL_DESCRIPTION =
+  "A klipspringer, a small antelope, stands on the top boulder of a granite kopje against a large amber sun, with the " +
+  "dry savanna, a distant acacia and blue hills around it.";
 
 // The icons every page head links (the .ico holds 16, 32 and 48 px).
 export const FAVICON = "/assets/favicon.ico";

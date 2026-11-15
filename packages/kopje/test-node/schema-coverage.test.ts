@@ -141,7 +141,7 @@ const DERIVED: Record<string, { by: string; why: string }> = {
   },
   collection_syncs: {
     by: "requestHandleRefreshes",
-    why: "the refresh requests of the remote accounts the conversion invalidated, as migration 0094_remote_handles backfills them",
+    why: "the refresh requests of the remote accounts the conversion invalidated, as migration 0096_remote_handles backfills them",
   },
 };
 
@@ -150,7 +150,7 @@ const DEFAULT = "left at its default by the converter (NOT_CONVERTED)";
 
 // Columns of carried tables the converter leaves at their schema defaults.
 const NOT_CONVERTED: Record<string, string> = {
-  "accounts.confirmed_username": "unused since 0094_remote_handles (the stored handle is the confirmed one): NULL",
+  "accounts.confirmed_username": "unused since 0096_remote_handles (the stored handle is the confirmed one): NULL",
   "accounts.emojis": "legacy has no custom emoji",
   "accounts.indexable": "legacy has no indexable setting: NULL, presented as false",
   "accounts.moved_to_account_id": "legacy keeps no account move: NULL, no pointer",
@@ -162,7 +162,7 @@ const NOT_CONVERTED: Record<string, string> = {
   "accounts.suspension_source": "set with accounts.suspended_at; legacy has no such suspension",
   "accounts.hide_collections": "learned when Kopje reads a remote account's collections; legacy learned none",
   "accounts.handle_refreshed_at":
-    "set when Kopje invalidates a remote handle a confirmed one takes; NULL, as 0094 leaves it",
+    "set when Kopje invalidates a remote handle a confirmed one takes; NULL, as 0096 leaves it",
   "accounts.last_status_id": "written by the triggers of 0021_directory as the carried statuses are inserted",
   "blocks.id": ASSIGNED,
   "bookmarks.id": ASSIGNED,

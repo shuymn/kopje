@@ -1,8 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { noteActivity } from "../src/domain/auth";
 import { INSTANCE_COUNTS_SQL, instanceInfo } from "../src/domain/instance";
+import { noteActivity } from "../src/domain/instance-activity";
 import { ACTIVITY_MEMO_LIMIT, ActivityMemo } from "../src/mastodon/activity";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
@@ -14,9 +14,9 @@ import { storeWith } from "./setup-helpers";
 import { community } from "./status-helpers";
 import { signIn } from "./web-helpers";
 
-// RES-6: activity recording (domain/auth.ts noteActivity, mastodon/activity.ts). At most one Store call per isolate,
-// token and UTC day after the response, at most one row write per account and UTC day, by key only; what it may not
-// write, and how a failure leaves the day to a later request.
+// RES-6: activity recording (domain/instance-activity.ts noteActivity, mastodon/activity.ts). At most one Store call
+// per isolate, token and UTC day after the response, at most one row write per account and UTC day, by key only; what
+// it may not write, and how a failure leaves the day to a later request.
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 

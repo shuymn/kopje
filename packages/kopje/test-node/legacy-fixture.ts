@@ -72,7 +72,7 @@ export type FixtureOptions = {
   // A public status of alice's that mentions this many more remote accounts, each its own actor.
   addressed?: number;
   // Two more remote actors on remote.example whose addresses r0 and r2 hold (in another case): Kopje keeps one remote
-  // account per address (migration 0094_remote_handles), so the conversion invalidates these two.
+  // account per address (migration 0096_remote_handles), so the conversion invalidates these two.
   sharedHandles?: boolean;
 };
 

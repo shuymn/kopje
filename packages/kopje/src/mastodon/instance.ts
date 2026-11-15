@@ -1,9 +1,12 @@
+import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../domain/accounts";
 import { PIN_LIMIT } from "../domain/activities";
-import { DEFAULT_THUMBNAIL, INSTANCE_ICONS } from "../platform/brand-assets";
+import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
+import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
 import {
   type ApiContext,
   type ApiHandler,
   authorized,
+  judged,
   optionalTokenCredential,
   present,
   storeCall,
@@ -39,7 +42,7 @@ const SOURCE_URL = "https://github.com/shuymn/kopje";
 const UI_LANGUAGES = ["en"];
 
 const CONFIGURATION = {
-  accounts: { max_featured_tags: 10 },
+  accounts: { max_featured_tags: MAX_FEATURED_TAGS },
   statuses: { max_characters: 500, max_media_attachments: 4, characters_reserved_per_url: 23 },
   media_attachments: {
     supported_mime_types: ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"],
@@ -100,7 +103,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
     source_url: SOURCE_URL,
     description: info.description ?? "",
     usage: { users: { active_month: info.activeMonth } },
-    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}` },
+    thumbnail: { url: `${origin}${DEFAULT_THUMBNAIL}`, description: DEFAULT_THUMBNAIL_DESCRIPTION },
     languages: UI_LANGUAGES,
     icon: INSTANCE_ICONS.map(({ path, size }) => ({ src: `${origin}${path}`, size })),
     configuration: {
@@ -116,7 +119,18 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       },
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
-      accounts: { ...CONFIGURATION.accounts, max_pinned_statuses: PIN_LIMIT },
+      // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
+      // in code points (credentialChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
+      // and the pins' in rows.
+      accounts: {
+        max_display_name_length: MAX_DISPLAY_NAME,
+        max_note_length: MAX_NOTE,
+        max_featured_tags: MAX_FEATURED_TAGS,
+        max_pinned_statuses: PIN_LIMIT,
+        max_profile_fields: MAX_FIELDS,
+        profile_field_name_limit: MAX_FIELD_NAME,
+        profile_field_value_limit: MAX_FIELD_VALUE,
+      },
       media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_DESCRIPTION },
       translation: { enabled: false },
       // Who may read the public, hashtag and link timelines: anyone, as Kopje serves them without a token.
@@ -145,8 +159,10 @@ export const instanceV2: ApiHandler = async (c, deps) => {
 
 // GET /api/v1/custom_emojis: the enabled local emoji shown in the picker (domain/local-emojis.ts customEmojis), to
 // anyone, as Mastodon's CustomEmojisController#index.
-export const customEmojis: ApiHandler = async (c, deps) =>
-  c.json(await storeCall(c, deps, (s, b) => s.customEmojis(b)));
+export const customEmojis: ApiHandler = async (c, deps) => {
+  const credential = optionalTokenCredential(c, deps);
+  return c.json(judged(c, await storeCall(c, deps, (s, b) => s.customEmojis(b, { credential }))).value);
+};
 
 // The rest of /api/v1/instance/*, the endpoints clients read at startup and on an instance's about page.
 
@@ -235,7 +251,11 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
 const ACTIVITY_CACHE = "public, max-age=300, stale-while-revalidate=30, stale-if-error=86400";
 
 export const activity: ApiHandler = async (c, deps) => {
-  const body = await storeCall(c, deps, (s, b) => s.instanceActivity(b, { now: deps.now() }));
+  const credential = optionalTokenCredential(c, deps);
+  const body = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.instanceActivity(b, { now: deps.now(), credential })),
+  ).value;
   return body === null
     ? new Response(null, { status: 404 })
     : c.body(body, 200, { "content-type": "application/json", "cache-control": ACTIVITY_CACHE });

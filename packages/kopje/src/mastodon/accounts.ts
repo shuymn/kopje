@@ -3,9 +3,11 @@ import {
   type FieldSource,
   MAX_ACCOUNTS_BY_ID,
   MAX_ATTRIBUTION_DOMAINS,
+  MAX_DISPLAY_NAME,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  MAX_NOTE,
   type RelationshipResult,
   type Visibility,
 } from "../domain/accounts";
@@ -16,6 +18,7 @@ import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
 import { grantsAny } from "../security/scopes";
 import {
   type ApiContext,
@@ -24,6 +27,7 @@ import {
   authorized,
   credential,
   credential as tokenCredential,
+  judged,
   optionalCredential,
   optionalTokenCredential,
   present,
@@ -56,14 +60,10 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
   return account === null ? recordNotFound() : c.json(account);
 };
 
-const MAX_DISPLAY_NAME = 30;
-const MAX_NOTE = 500;
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
-
-function characters(text: string): number {
-  return [...text].length;
-}
+// Ruby's String#strip as Mastodon 4.7.5's Ruby (4.0) has it: NUL, tab, LF, VT, FF, CR and space at either end.
+const RUBY_STRIP = /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g;
 
 // The changes update_credentials asks for, and the validation problems with them (Mastodon's messages). Shared by the
 // API and the settings page (app/web.tsx), which posts the same names. Avatar and header come through the media
@@ -71,16 +71,18 @@ function characters(text: string): number {
 export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
   const changes: CredentialChanges = {};
   const problems: string[] = [];
-  const displayName = p.get("display_name");
+  // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
+  // dropped when stored (storedText).
+  const displayName = p.get("display_name")?.replace(RUBY_STRIP, "");
   if (displayName !== undefined) {
-    if (characters(displayName) > MAX_DISPLAY_NAME) {
+    if (yieldsMoreThan(displayName, MAX_DISPLAY_NAME)) {
       problems.push(`Display name is too long (maximum is ${MAX_DISPLAY_NAME} characters)`);
     }
     changes.displayName = displayName;
   }
-  const note = p.get("note");
+  const note = p.get("note")?.replace(RUBY_STRIP, "");
   if (note !== undefined) {
-    if (characters(note) > MAX_NOTE) {
+    if (yieldsMoreThan(note, MAX_NOTE)) {
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
     }
     changes.note = note;
@@ -118,7 +120,7 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
     if (fields.length > MAX_FIELDS) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELDS} fields)`);
     }
-    if (fields.some((field) => characters(field.name) > MAX_FIELD_NAME || characters(field.value) > MAX_FIELD_VALUE)) {
+    if (fields.some((f) => yieldsMoreThan(f.name, MAX_FIELD_NAME) || yieldsMoreThan(f.value, MAX_FIELD_VALUE))) {
       problems.push(`Fields is too long (maximum is ${MAX_FIELD_NAME} characters each)`);
     }
     changes.fields = fields;
@@ -126,7 +128,9 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
   const attribution = p.list("attribution_domains");
   if (attribution !== undefined) {
     const domains = normalizeAttributionDomains(attribution);
-    for (const domain of domains.filter((d) => !compliantDomain(d))) {
+    // A domain past ATTRIBUTION_DOMAIN_BYTES (a host padded with characters IDNA ignores) is refused as not valid,
+    // so every stored domain is presented (presentedAttributionDomains; docs/mastodon-deviations.md).
+    for (const domain of domains.filter((d) => !compliantDomain(d) || !withinAttributionDomainBound(d))) {
       problems.push(`Attribution domains ${domain} is not a valid domain name`);
     }
     if (domains.length > MAX_ATTRIBUTION_DOMAINS) {
@@ -331,7 +335,11 @@ export const removeHeader = removeProfileImage("header");
 
 export const getAccount: ApiHandler = async (c, deps) => {
   const id = c.req.param("id") ?? "";
-  const account = await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c) }));
+  const credential = optionalTokenCredential(c, deps);
+  const account = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.getAccount(b, { id, present: present(c), credential })),
+  ).value;
   return account === null ? recordNotFound() : c.json(account);
 };
 
@@ -342,7 +350,10 @@ export const getAccounts: ApiHandler = withParams(async (c, deps, p) => {
   if (ids.length > MAX_ACCOUNTS_BY_ID) {
     return mastodonError(422, "Mastodon::ValidationError");
   }
-  return c.json(await storeCall(c, deps, (s, b) => s.getAccounts(b, { ids, present: present(c) })));
+  const credential = optionalTokenCredential(c, deps);
+  return c.json(
+    judged(c, await storeCall(c, deps, (s, b) => s.getAccounts(b, { ids, present: present(c), credential }))).value,
+  );
 });
 
 // POST /api/v1/accounts (AccountsController#create): Kopje has no open registration, so it answers as Mastodon does
@@ -370,7 +381,11 @@ export const lookupAccount: ApiHandler = async (c, deps) => {
     return recordNotFound();
   }
   const domain = host === null || host === new URL(c.req.url).host ? null : host;
-  const account = await storeCall(c, deps, (s, b) => s.lookupAccount(b, { username, domain, present: present(c) }));
+  const credential = optionalTokenCredential(c, deps);
+  const account = judged(
+    c,
+    await storeCall(c, deps, (s, b) => s.lookupAccount(b, { username, domain, present: present(c), credential })),
+  ).value;
   return account === null ? recordNotFound() : c.json(account);
 };
 

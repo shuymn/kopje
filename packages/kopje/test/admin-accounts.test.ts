@@ -138,7 +138,7 @@ const ROUTES: { method: string; path: (id: string) => string; scope: "read" | "w
 ];
 
 describe("admin account routes: who is answered", () => {
-  it("serve the admin once manage_users is granted, and refuse a non-admin, an app token and an anonymous caller", async () => {
+  it("serve the admin once manage_users is granted, and refuse anyone else first", async () => {
     const { h, ids, admin, alice } = await world();
     const app = await appToken(h);
     for (const route of ROUTES) {
@@ -151,7 +151,7 @@ describe("admin account routes: who is answered", () => {
       for (const token of [alice, app, null]) {
         expect(await call(h, path, token, route.method), `${route.method} ${path}`).toMatchObject({
           status: 403,
-          body: { error: "This action is not allowed" },
+          body: { error: "Forbidden" },
         });
       }
     }
@@ -367,15 +367,20 @@ describe("the admin account list: filters (AccountFilter)", () => {
     });
   });
 
-  it("answers 400 as Mastodon does, before the policy, but after the token", async () => {
-    const { h, alice } = await world();
-    for (const token of [alice, null]) {
+  it("answers 400 as Mastodon does, before the policy, but after the admin gate and the token", async () => {
+    const { h, admin, alice } = await world();
+    expect(await call(h, "/api/v2/admin/accounts?origin=elsewhere", admin)).toMatchObject({
+      status: 400,
+      body: { error: "Unknown origin: elsewhere" },
+    });
+    for (const token of [alice, null, "not-a-token"]) {
       expect(await call(h, "/api/v2/admin/accounts?origin=elsewhere", token)).toMatchObject({
-        status: 400,
-        body: { error: "Unknown origin: elsewhere" },
+        status: 403,
+        body: { error: "Forbidden" },
       });
     }
-    expect((await call(h, "/api/v2/admin/accounts?origin=elsewhere", "not-a-token")).status).toBe(401);
+    const outside = await userToken(h, OWNER, "read");
+    expect((await call(h, "/api/v2/admin/accounts?origin=elsewhere", outside)).status).toBe(403);
   });
 
   // Fedilab sends v1's names to /api/v2/admin/accounts (MastodonAdminService#getAccounts, AdminActionActivity's
@@ -567,7 +572,7 @@ describe("the admin account list: converted text of any length (RES-2)", () => {
   it("matches the prefix of a huge username without reading it, and shows it cut", async () => {
     const { h, ids, admin } = await world();
     const huge = `ali${"u".repeat(1_500_000)}`;
-    // One remote account holds an address (0094_remote_handles): erin's ends in one more letter, past the prefixes.
+    // One remote account holds an address (0096_remote_handles): erin's ends in one more letter, past the prefixes.
     await sql(h.store, "UPDATE accounts SET username = ? WHERE id = ?", huge, ids.carol);
     await sql(h.store, "UPDATE accounts SET username = ? WHERE id = ?", `${huge}e`, ids.erin);
     const list = async (query: string) =>

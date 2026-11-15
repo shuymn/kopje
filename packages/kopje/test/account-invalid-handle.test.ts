@@ -188,6 +188,9 @@ describe("an invalidated handle, addressed", () => {
     expect(await lookup(`@${dave}@HANDLE.INVALID`)).toMatchObject({ status: 200, body: { id: dave } });
     expect((await lookup(`${carol}@handle.invalid`)).status).toBe(404);
     expect((await lookup(`${dave}0@handle.invalid`)).status).toBe(404);
+    // Nor once its deletion has started, as lookup finds no deleting account (R1, foundSql).
+    await sql(h.store, "UPDATE accounts SET deleted_at = '2026-11-01T00:00:00.000Z' WHERE id = ?", dave);
+    expect((await lookup(`${dave}@handle.invalid`)).status).toBe(404);
   });
 
   it("matches no address naming the stored '! <id>': lookup, the web's tagged page and a new post's mention", async () => {
