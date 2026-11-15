@@ -163,7 +163,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
   Mastodon's streaming does.
 - A link card's title and description are read from a page's language-tagged JSON-LD values, as Mastodon 4.6 does
-  (`mastodon#39190`). No Store migration and no `wrangler.jsonc` change.
+  (`mastodon#39190`), and a remote attachment's description from a `summary` or `name` given as an array or a
+  language-tagged value, or from `name` when `summary` is blank, and stripped as Mastodon strips it, as Mastodon 4.7
+  does (`mastodon#39590`). A post whose attachments now read differently counts its next update as an edit once. No
+  Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
