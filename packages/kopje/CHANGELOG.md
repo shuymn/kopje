@@ -10,6 +10,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
+  `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
 - A local post's ActivityPub Note lists its link card as a `Link` attachment once the card is fetched, as Mastodon 4.7
   does. No Store migration and no `wrangler.jsonc` change.
 - Annual reports (Wrapstodon), following Mastodon 4.7.5's. From December 10 to 31 (UTC), a user can generate the

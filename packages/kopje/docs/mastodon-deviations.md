@@ -677,6 +677,24 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   readonly maintenance, an unpublished import): nothing is fetched, and the search answers from local data as without
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
+- A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
+  `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
+  (`src/federation/resolve.ts`):
+  - Several `Link` header fields reach Kopje joined into one value, so an alternate in a later field can be taken
+    where Mastodon reads the first field only; a value past 8,192 characters or 64 links is not read (the page's
+    alternate is then tried).
+  - No page alternate is taken at or after a `<noscript>`, `<select>`, `<template>`, `<table>`, `<svg>` or `<math>`
+    start tag or a `<link>` whose `rel` is past 2,048 characters decoded or 8,192 as written, nor on a page holding
+    `<frameset>` bytes or one the scanner fails on: there workerd's HTMLRewriter cannot place a `<link>` as Mastodon's
+    Nokogiri HTML5 tree does (in presence or in order), so Kopje resolves nothing where Mastodon may resolve, never
+    another document. An href past 2,048 characters decoded or 8,192 as written resolves nothing too, however short its
+    character references decode (Mastodon decodes any length).
+  - The page and both alternates are charged to the request's 2 MiB of fetched bytes, so a page alternate after a
+    large header alternate can be refused for that budget; Mastodon has no request-wide byte budget.
+  - A failure Kopje adds to Mastodon's on a header alternate (the domain policy, which Mastodon applies only after
+    fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
+  - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
+    to any origin; the alternates follow none, as Mastodon's.
 
 Hashtags (the `Tag` entity):
 
