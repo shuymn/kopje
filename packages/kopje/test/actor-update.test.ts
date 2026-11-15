@@ -1,7 +1,10 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { Db } from "../src/db/sql";
+import { moderationUpdate } from "../src/domain/actor-update";
 import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
-import { bearer, json, sql } from "./api-helpers";
+import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY } from "./federation-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
@@ -205,6 +208,44 @@ describe("Update(Person)", () => {
     const oversized = await imported("json_array(hex(zeroblob(524288)))", "Second");
     expect(oversized).not.toHaveProperty("attributionDomains");
     expect(await actor()).not.toHaveProperty("attributionDomains");
+  });
+
+  it("declares the handle in webfinger with its named context, in a suspension's Update too (FEP-2c59)", async () => {
+    const h = await setup();
+    expect((await patch(h, { display_name: "Alice A" })).status).toBe(200);
+    const [sent] = await updates(h);
+    expect(sent?.activity.object.webfinger).toBe("alice@kopje.test");
+    expect(sent?.activity["@context"]).toContain("https://purl.archive.org/socialweb/webfinger");
+    const suspension = await runInDurableObject(h.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      db.run(
+        "UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z' WHERE account_id = ?",
+        h.users.alice.id,
+      );
+      return moderationUpdate(db, h.users.alice.id, NOW);
+    });
+    const activity = suspension?.activity as { "@context": unknown[]; object: Record<string, unknown> };
+    expect(activity.object).toMatchObject({ webfinger: "alice@kopje.test", suspended: true });
+    expect(activity["@context"]).toContain("https://purl.archive.org/socialweb/webfinger");
+  });
+
+  it("names the handle at its actor id's host in both documents, whatever domain is stored (ID-5)", async () => {
+    const h = await setup();
+    // An operator moved the domain (/admin/config) after alice's actor id was fixed on kopje.test; the API and the
+    // actor endpoint answer only on the stored domain (WEB-6).
+    await setSetting(h.store, "domain", "other.workers.dev");
+    const other = (path: string, init: RequestInit) => h.send(new Request(`https://other.workers.dev${path}`, init));
+    const edit = { ...json({ display_name: "Alice A" }), method: "PATCH" };
+    expect((await other("/api/v1/accounts/update_credentials", bearer(h.users.alice.token, edit))).status).toBe(200);
+    const [sent] = await updates(h);
+    const served = await (
+      await other("/ap/users/alice", { headers: { accept: "application/activity+json" } })
+    ).json<Record<string, unknown>>();
+    // Without it, the Update names its kopje.test actor alice@other.workers.dev, a handle off the actor id's origin.
+    expect([sent?.activity.object ?? {}, served].map((document) => [document.id, document.webfinger])).toEqual([
+      [`${ORIGIN}/ap/users/alice`, "alice@kopje.test"],
+      ["https://other.workers.dev/ap/users/alice", "alice@other.workers.dev"],
+    ]);
   });
 
   it("sends the new avatar from the settings page", async () => {

@@ -20,6 +20,7 @@ export {
   isRemoteUsername,
   MAX_LOCAL_ADDRESSED,
   isStorableActorId,
+  localUsernameIsDomain,
   STATUS_URI_LIMIT,
   withinIdentityBound,
 } from "./platform/identity-bounds";

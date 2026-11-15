@@ -21,6 +21,7 @@ import { renderFieldValue } from "./status-text";
 const CONTEXT = [
   "https://www.w3.org/ns/activitystreams",
   "https://w3id.org/security/v1",
+  "https://purl.archive.org/socialweb/webfinger",
   {
     manuallyApprovesFollowers: "as:manuallyApprovesFollowers",
     toot: "http://joinmastodon.org/ns#",
@@ -38,7 +39,7 @@ const CONTEXT = [
 ];
 
 // The context of a suspended actor's Update, which names `suspended` (toot:suspended) as Mastodon's context does.
-const SUSPENDED_CONTEXT = [CONTEXT[0], CONTEXT[1], { ...(CONTEXT[2] as object), suspended: "toot:suspended" }];
+const SUSPENDED_CONTEXT = [...CONTEXT.slice(0, 3), { ...(CONTEXT[3] as object), suspended: "toot:suspended" }];
 
 function image(stored: string | null): { type: "Image"; url: string } | undefined {
   const url = httpUrl(stored);
@@ -56,13 +57,17 @@ function actorRow(db: Db, accountId: string): ActorRow | undefined {
 
 // The document of an actor row. A suspended actor is presented as the actor endpoint presents it (federation.ts, as
 // Mastodon's ActivityPub::ActorSerializer): no name, summary, icon, image, aliases or fields, not locked or
-// discoverable or indexable, and `suspended: true`; its keys, inboxes and collections stay.
+// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections and `webfinger` handle stay. Every
+// link, the handle's host included, is on the actor id's origin (ID-5), as the endpoint's are on the id it serves,
+// whatever domain /admin/config stores later.
 function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
-  const origin = new URL(row.uri).origin;
+  const actorId = new URL(row.uri);
+  const origin = actorId.origin;
   const suspended = row.suspended_at !== null;
   const emojis = suspended ? [] : localEmojiTags(db, row.emojis, origin, ACCOUNT_EMOJIS_BYTES);
   return {
     id: row.uri,
+    webfinger: `${row.username}@${actorId.host}`,
     type: row.actor_type,
     preferredUsername: row.username,
     ...(suspended ? {} : { name: row.display_name, summary: row.note }),
