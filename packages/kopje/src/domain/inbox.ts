@@ -2169,11 +2169,12 @@ const NAMED_STATUS = "SELECT id, account_id, reblog_of_id, visibility, withdrawn
 const OWN_STATUS = `${NAMED_STATUS} AND account_id = ?2`;
 const OWN_BOOST = `${OWN_STATUS} AND reblog_of_id IS NOT NULL`;
 
-// The status a Delete or an Undo of a boost names (Mastodon's Delete#delete_status and Undo#undo_announce): by the
-// object's id (any author's for a Delete, which answers not-author for another's; the actor's own boost for an Undo),
-// else, when the object carries another atomUri of the actor's origin, the actor's own status (boost) by it. matched:
-// that atomUri when the status was found by it, else null; the removal then retracts both (retractMatched, ID-7). An
-// atomUri of another origin matches nothing: it could not be recorded as the actor's retraction (retractions.ts).
+// The status a Delete or an Undo of a boost names (Mastodon's Delete#delete_status and Undo#undo_announce, both
+// lookups scoped to the actor): the actor's own status (boost, for an Undo) by the object's id, else, when the object
+// carries another atomUri of the actor's origin, the actor's own by it; only then a status of another author under the
+// object's id, which a Delete refuses as not-author. matched: that atomUri when the status was found by it, else null;
+// the removal then retracts both (retractMatched, ID-7). An atomUri of another origin matches nothing: it could not be
+// recorded as the actor's retraction (retractions.ts).
 function namedStatus(
   db: Db,
   actor: { id: string; uri: string },
@@ -2182,14 +2183,16 @@ function namedStatus(
   boost: boolean,
 ): { status: NamedStatus; matched: string | null } | undefined {
   const byId = boost ? db.first<NamedStatus>(OWN_BOOST, object, actor.id) : db.first<NamedStatus>(NAMED_STATUS, object);
-  if (byId !== undefined) {
+  if (byId?.account_id === actor.id) {
     return { status: byId, matched: null };
   }
-  if (atomUri === null || atomUri === undefined || atomUri === object || !sameOrigin(atomUri, actor.uri)) {
-    return undefined;
+  if (atomUri !== null && atomUri !== undefined && atomUri !== object && sameOrigin(atomUri, actor.uri)) {
+    const byAtomUri = db.first<NamedStatus>(boost ? OWN_BOOST : OWN_STATUS, atomUri, actor.id);
+    if (byAtomUri !== undefined) {
+      return { status: byAtomUri, matched: atomUri };
+    }
   }
-  const byAtomUri = db.first<NamedStatus>(boost ? OWN_BOOST : OWN_STATUS, atomUri, actor.id);
-  return byAtomUri === undefined ? undefined : { status: byAtomUri, matched: atomUri };
+  return byId === undefined ? undefined : { status: byId, matched: null };
 }
 
 // A Delete of something other than the actor (Mastodon's Delete#delete_object). The retraction is recorded so that

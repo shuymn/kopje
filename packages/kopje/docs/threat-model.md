@@ -249,8 +249,8 @@ against their own instance. TLS is assumed between all parties.
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
   `atomUri` (Mastodon's `Create#find_existing_status`, `Delete#delete_status` and `Undo#undo_announce`) keeps the rule:
   a `Create` whose `atomUri` names another author's status, a local one included, is refused, and a `Delete` or an
-  `Undo` falls back to `atomUri` only among the actor's own statuses or boosts (`namedStatus` in
-  `src/domain/inbox.ts`); `test/inbox-atom-uri.test.ts`.
+  `Undo` takes the actor's own status or boost by the object's id, else by its `atomUri`, and only then finds another
+  author's status under the id, which it refuses (`namedStatus` in `src/domain/inbox.ts`); `test/inbox-atom-uri.test.ts`.
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored

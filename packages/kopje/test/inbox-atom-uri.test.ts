@@ -363,6 +363,19 @@ describe("a Delete or an Undo naming a status by atomUri (Delete#delete_status, 
     expect(await idOf(t, future.id)).toBeDefined();
   });
 
+  it("takes the actor's own status by atomUri before refusing another author's status under the object id", async () => {
+    const { t, bob, erin } = await world();
+    const a = await stored(t, bob);
+    const e = await stored(t, erin);
+    // The object id is erin's stored status (one origin); the atomUri names bob's own A, as delete.rb scopes both
+    // lookups to the deleting account.
+    expect(await t.post(bob, deletion(bob, e.note.id, a.note.id))).toBe(202);
+    await settle(t.store);
+    expect(await idOf(t, a.note.id)).toBeUndefined();
+    expect(await idOf(t, e.note.id)).toBe(e.id);
+    expect(await retracted(t, "*")).toEqual([a.note.id]);
+  });
+
   it("does not delete another author's status by atomUri: the Delete is of an unknown object", async () => {
     const { t, bob, erin } = await world();
     const e = await stored(t, erin);
