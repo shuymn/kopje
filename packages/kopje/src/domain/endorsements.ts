@@ -7,7 +7,7 @@ import {
   type Present,
   relationshipResult,
   type RelationshipResult,
-  resolveAccountId,
+  routeAccountId,
 } from "./accounts";
 import { endorsementListedSql, endorsementsShownSql } from "./audience";
 import { optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
@@ -32,7 +32,7 @@ export type EndorseResult = RelationshipResult | { status: "invalid"; errors: st
 // one needs the viewer's accepted follow of the account, else it is refused with AccountPin's message.
 export const endorse = userWriteOperation<{ target: string; now: number }, EndorseResult>(
   (db, { target, now }, { accountId: viewerId }) => {
-    const id = resolveAccountId(db, target);
+    const id = routeAccountId(db, target);
     if (id === null) {
       return { status: "not_found" };
     }
@@ -61,7 +61,7 @@ export const endorse = userWriteOperation<{ target: string; now: number }, Endor
 // POST /api/v1/accounts/:id/unendorse (and /unpin): the endorsement goes, if there is one.
 export const unendorse = userWriteOperation<{ target: string; now: number }, RelationshipResult>(
   (db, { target, now }, { accountId: viewerId }) => {
-    const id = resolveAccountId(db, target);
+    const id = routeAccountId(db, target);
     if (id === null) {
       return { status: "not_found" };
     }
@@ -128,6 +128,6 @@ export const accountEndorsements = optionalUserReadOperation<
   { account: string; page: PageQuery; present: Present },
   Page<Account> | null
 >((db, { account, page, present }) => {
-  const id = resolveAccountId(db, account);
+  const id = routeAccountId(db, account);
   return id === null ? null : accountEndorsementsWithin(db, id, { page, present }).page;
 });

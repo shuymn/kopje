@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { moderationUpdate } from "../src/domain/actor-update";
+import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
 import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY } from "./federation-helpers";
@@ -179,6 +180,34 @@ describe("Update(Person)", () => {
     // The same list again changes nothing published.
     expect((await patch(h, { attribution_domains: [] })).status).toBe(200);
     expect(await updates(h)).toHaveLength(sent.length);
+  });
+
+  // An import may hold any JSON array (0024's CHECK): the endpoint and the Update read it through attributionDomainsSql
+  // and present it through presentedAttributionDomains alike.
+  it("sends the same document as the endpoint for imported attribution domains past their bounds", async () => {
+    const h = await setup();
+    const actor = async () =>
+      (await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })).json<
+        Record<string, unknown>
+      >();
+    const imported = async (sqlValue: string, name: string) => {
+      await sql(h.store, `UPDATE local_accounts SET attribution_domains = ${sqlValue}`);
+      expect((await patch(h, { display_name: name })).status).toBe(200);
+      const object = (await updates(h)).at(-1)?.activity.object;
+      expect(object).toMatchObject({ name });
+      expect(comparable(object)).toEqual(comparable(await actor()));
+      return object;
+    };
+    // An entry past ATTRIBUTION_DOMAIN_BYTES among compliant ones: dropped by both.
+    const entries = await imported(
+      `json_array('a.example', '${"y".repeat(ATTRIBUTION_DOMAIN_BYTES + 1)}', 'b.example')`,
+      "First",
+    );
+    expect(entries?.attributionDomains).toEqual(["a.example", "b.example"]);
+    // One element of 1 MiB: read as '[]', so neither publishes the key.
+    const oversized = await imported("json_array(hex(zeroblob(524288)))", "Second");
+    expect(oversized).not.toHaveProperty("attributionDomains");
+    expect(await actor()).not.toHaveProperty("attributionDomains");
   });
 
   it("declares the handle in webfinger with its named context, in a suspension's Update too (FEP-2c59)", async () => {

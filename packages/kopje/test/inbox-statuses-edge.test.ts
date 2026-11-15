@@ -436,7 +436,7 @@ describe("VIS-2: edits never add recipients to a direct or limited status", () =
     expect((await notifications(t.store)).filter((n) => n.account_id === DAVE)).toEqual([]);
   });
 
-  it("notifies a local account newly mentioned and addressed by an edit of a public status, as a Create would", async () => {
+  it("notifies a local account newly mentioned by an edit of a public status, addressed or not, as an ordinary mention", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     await followed(t, bob);
@@ -457,8 +457,12 @@ describe("VIS-2: edits never add recipients to a direct or limited status", () =
         at(60),
       ),
     );
-    // alice is addressed and mentioned; dave is only tagged, so he is not notified.
-    expect(await notifications(t.store)).toEqual([{ account_id: ALICE, type: "mention" }]);
+    // alice is addressed and mentioned; dave, only tagged and not following bob, is notified all the same, never
+    // limited (ProcessStatusUpdateService#update_mentions! and broadcast_updates!, #1582 D6).
+    expect(await sql(t.store, "SELECT account_id, type, filtered FROM notifications ORDER BY account_id")).toEqual([
+      { account_id: ALICE, type: "mention", filtered: 0 },
+      { account_id: DAVE, type: "mention", filtered: 0 },
+    ]);
   });
 });
 

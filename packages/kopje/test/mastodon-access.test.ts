@@ -10,7 +10,8 @@ import { UNROUTED } from "./mastodon-routes-exceptions";
 // Every route of the API table (src/mastodon/routes.ts) asks of its caller what Mastodon's same route asks, read from
 // Mastodon's source by scripts/mastodon-scopes.mjs (the fixture's header says how to regenerate it). Compared:
 //   token   none (no token required: Kopje's public routes read none, its anonymous routes read one sent only for its
-//           owner's suspension, as Mastodon's do), optional (a token sent is checked), required
+//           owner's suspension, as Mastodon's do), optional (a token sent is checked; Kopje's admin routes, behind the
+//           admin gate, which "admin routes are gated" compares), required
 //   scopes  the token scopes accepted (null: any valid token): Kopje's required scope with the scopes that cover it
 //           (src/security/scopes.ts), Mastodon's doorkeeper list
 //   user    whether a token without a user (an app token) is refused
@@ -237,7 +238,7 @@ function kopjeAccess(access: RouteAccess, covers = grants): Access {
     return { token: "required", scopes: null, user: false };
   }
   const scopes = access.scope === undefined ? null : acceptedScopes(access.scope, covers);
-  if (access.optional === true) {
+  if (access.optional === true || access.admin === true) {
     return { token: "optional", scopes, user: false };
   }
   return { token: "required", scopes, user: access.app !== true };
@@ -332,6 +333,20 @@ describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
       "GET /api/v1/instance/extended_description",
     ]);
     expect(ROUTES.filter((route) => route.access === "anonymous")).toHaveLength(14);
+  });
+
+  // VIS-29's gate: the routes Mastodon guards with Admin::PermissionsConcern (the fixture's
+  // require_moderator_or_admin_permissions) are those whose access is the admin kind (mastodon/access.ts), which
+  // answers anyone but the OAuth admin 403 Forbidden first.
+  it("gates exactly the routes Mastodon's Admin::PermissionsConcern guards", () => {
+    const guarded = mastodon.routes
+      .filter((route) => (route.guards ?? []).includes("require_moderator_or_admin_permissions"))
+      .map((route) => `${route.method} ${route.path}`);
+    expect(guarded).toHaveLength(63);
+    const gated = ROUTES.filter((route) => typeof route.access === "object" && route.access.admin === true).map(
+      (route) => `${route.method} ${mastodonRoute(route.method, route.path)?.path ?? route.path}`,
+    );
+    expect(gated.toSorted()).toEqual(guarded.toSorted());
   });
 
   it("lists exceptions only for routes of the table", () => {

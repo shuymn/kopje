@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { type ApiHarness, apiHarness, bearer, form, json, login, seedAccount, sql } from "./api-helpers";
+import { ATTRIBUTION_DOMAIN_BYTES } from "../src/platform/stored-bounds";
+import {
+  type ApiHarness,
+  apiHarness,
+  bearer,
+  form,
+  json,
+  login,
+  seedAccount,
+  sql,
+  STORED_ACTOR_TYPES,
+} from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { appToken, scopedToken } from "./read-helpers";
@@ -259,6 +270,29 @@ describe("credentials", () => {
     expect(JSON.parse(row?.attribution_domains ?? "")).toEqual(["dot.example."]);
   });
 
+  it("refuses an attribution domain past ATTRIBUTION_DOMAIN_BYTES", async () => {
+    const h = await aliceSession();
+    const patch = (body: Record<string, unknown>) =>
+      h.request("/api/v1/accounts/update_credentials", bearer(h.token, json(body, { method: "PATCH" })));
+    // Compliant hosts padded with U+00AD (two UTF-8 bytes), which IDNA drops: a.example and ab.example.
+    const over = `a${"\u00ad".repeat(506)}.example`;
+    const at = `ab${"\u00ad".repeat(505)}.example`;
+    expect([over, at].map((domain) => new TextEncoder().encode(domain).length)).toEqual([
+      ATTRIBUTION_DOMAIN_BYTES + 1,
+      ATTRIBUTION_DOMAIN_BYTES,
+    ]);
+    const refused = await patch({ attribution_domains: ["ok.example", over] });
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toEqual({
+      error: `Validation failed: Attribution domains ${over} is not a valid domain name`,
+    });
+    const accepted = await patch({ attribution_domains: ["ok.example", at] });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
+    const verified = await h.request("/api/v1/accounts/verify_credentials", bearer(h.token));
+    expect(await verified.json()).toMatchObject({ source: { attribution_domains: ["ok.example", at] } });
+  });
+
   // Account::DISPLAY_NAME_LENGTH_LIMIT (Mastodon 4.6, `mastodon#39458`): 40 code points, whatever plane they are in.
   it("accepts a display name of 40 code points and refuses 41", async () => {
     const h = await aliceSession();
@@ -421,6 +455,18 @@ describe("account lookup", () => {
       fields: [],
       suspended: true,
     });
+  });
+
+  // Account#bot?, by the list the notification policy's bot condition reads (audience.ts).
+  it("presents bot by the exact stored actor type", async () => {
+    const h = await apiHarness();
+    const id = await seedAccount(h.store, { username: "maybe" });
+    for (const [value, label, bot] of STORED_ACTOR_TYPES) {
+      await sql(h.store, `UPDATE accounts SET actor_type = ${value} WHERE id = ?`, id);
+      expect(await (await h.request(`/api/v1/accounts/${id}`)).json<{ bot: boolean }>(), label).toMatchObject({
+        bot,
+      });
+    }
   });
 
   // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.
@@ -783,12 +829,15 @@ describe("relationships of unavailable accounts (R1, with_suspended)", () => {
     expect(await relationshipsOf(h, h.unavailable)).toEqual([]);
   });
 
-  it("includes them, in request order and once each, with a true with_suspended", async () => {
+  // But one whose deletion has started, which the account reads do not find (foundSql; Mastodon 4.7's
+  // without_requested_deletion, whatever with_suspended).
+  it("includes them, in request order and once each, with a true with_suspended, but a deleting one", async () => {
     const h = await unavailableWorld();
-    const requested = [h.unavailable[2]!, h.available, ...h.unavailable, h.unavailable[0]!];
+    const deleting = h.unavailable[2]!;
+    const requested = [h.unavailable[3]!, h.available, ...h.unavailable, h.unavailable[0]!];
     for (const suffix of ["&with_suspended=true", "&with_suspended=1"]) {
       const entries = await relationshipsOf(h, requested, suffix);
-      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)]);
+      expect(entries.map((entry) => entry.id)).toEqual([...new Set(requested)].filter((id) => id !== deleting));
       for (const entry of entries) {
         expect(entry).toMatchObject({ following: true, note: "n" });
       }

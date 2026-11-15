@@ -14,7 +14,6 @@ import {
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { isIntegerText } from "./ids";
 import { writeOperation } from "./operation";
-import { promoteQuote, type QuoteArrival, quoteArrival } from "./quotes";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
 import { storeRemoteStatus } from "./remote-statuses";
 import { isHashtagName } from "./status-text";
@@ -428,6 +427,11 @@ export type PinFetchesInput = RoundInput & { fetched: Record<string, RemoteStatu
 // Phase 2's end: each pending status fetched is stored as a fetched status (Mastodon's FetchRemoteStatusService with
 // expected_actor_uri) and pinned when it is the account's own and pinnable, with the time phase 1 gave it; one that
 // cannot be used is dropped. The round progressed when the pending statuses shrank. Returns whether a sync is due.
+//
+// A pin is stored with no quote budget (quoteHops 0: its quote is recorded with no work, and no quoted status it embeds
+// is stored), and one Kopje already holds is not promoted (replacePins), so a sync stores only the account's own
+// statuses and leads to no other author, sync or status (RES-6). A pin's quote is verified when its status arrives
+// another way (a delivery, a boost, an Add, a search).
 export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, input) => {
   const account = roundAccount(db, input);
   if (account === null) {
@@ -449,6 +453,7 @@ export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, 
         origin: input.origin,
         deliveredTo: null,
         fetched: true,
+        quoteHops: 0,
       });
       // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's slot
       // is the one it takes.
@@ -471,7 +476,8 @@ export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, 
 // MAX_REMOTE_PINS of them on its origin: those Kopje stores at once, those it does not left pending for phase 2; the
 // others are unpinned, and what was pending before is replaced. Every pin listed, kept or new, stored or pending, takes
 // the time of its position in the collection (the first listed is the newest), so the profile shows the collection's
-// order however its pins were learned and whichever of them phase 2 pins later.
+// order however its pins were learned and whichever of them phase 2 pins later. A stored pin's quote is not promoted
+// (completePinFetches says why).
 function replacePins(db: Db, account: { id: string; uri: string }, uris: readonly string[], now: number): void {
   const pinned: { id: string; at: string }[] = [];
   const pending: { uri: string; at: string }[] = [];
@@ -492,8 +498,6 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
     account.id,
     JSON.stringify(pinned.map((pin) => pin.id)),
   );
-  // The account's arrival, the same for every pin: read once, and only when there is one.
-  let arrival: QuoteArrival | undefined;
   for (const pin of pinned) {
     db.run(
       `INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?)
@@ -502,9 +506,6 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
       pin.id,
       pin.at,
     );
-    // A pinned status arrives as a root, cached or not: a cached one's quote is promoted (quotes.ts).
-    arrival ??= quoteArrival(db, account.id, null);
-    promoteQuote(db, pin.id, arrival, now);
   }
   db.run("DELETE FROM collection_pins_pending WHERE account_id = ?", account.id);
   for (const pin of pending) {

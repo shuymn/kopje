@@ -7,12 +7,27 @@ import {
   type ImageInfo,
   imagesCodec,
 } from "../src/platform/images";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { bearer, type ApiHarness } from "./api-helpers";
 import { ANIMATED_WEBP } from "./fixtures/images";
 import { localRgba, type OutputCall, type RgbaControl } from "./images-binding";
 import type { User } from "./status-helpers";
 
 // Media fixtures: base64 fixtures as bytes, multipart uploads, R2 listings, and a codec to stand in for Images.
+
+// Mastodon's answer to a local description past MediaAttachment::MAX_DESCRIPTION_LENGTH, on upload, media update and
+// status edit alike.
+export const DESCRIPTION_TOO_LONG = {
+  error: "Validation failed: Description is too long (maximum is 10000 characters)",
+};
+
+// Descriptions past it: one code point past the limit, of the Basic Multilingual Plane and past it (20,002 UTF-16
+// code units, more than the upload form's field bound), and one longer than any valid one by its length alone.
+export const OVERLONG_DESCRIPTIONS = [
+  "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1),
+  "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1),
+  "x".repeat(2 * MAX_MEDIA_DESCRIPTION_LENGTH + 1),
+];
 
 export function bytes(base64: string): Uint8Array {
   return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));

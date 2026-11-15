@@ -7,12 +7,16 @@ import { boundedHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
+  attributionDomainsSql,
   cutCodePoints,
   isIsoTime,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  presentedAttributionDomains,
   presentedCountSql,
+  presentedDisplayName,
+  presentedNote,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteHtml } from "../security/html";
@@ -42,7 +46,9 @@ import {
   findableBySql,
   followListedSql,
   followListsShownSql,
+  foundSql,
   hidesCollectionsSql,
+  isBotActorType,
   type QuotePolicyName,
   type ViewerContext,
 } from "./audience";
@@ -131,10 +137,7 @@ export type Field = { name: string; value: string; verified_at: string | null };
 // A local field as the owner wrote it (plain text), stored in local_accounts.fields.
 export type FieldSource = { name: string; value: string };
 
-export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
-
-// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
-export const MAX_ATTRIBUTION_DOMAINS = 100;
+export { MAX_ATTRIBUTION_DOMAINS, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
 
 // Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
 // name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
@@ -385,7 +388,7 @@ export function* partialAccountsOf(
         id: row.id,
         acct: acctOf(row),
         locked: !suspended && row.locked === 1,
-        bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
+        bot: !suspended && isBotActorType(row.actor_type),
         url: accountUrl(row, present.origin),
         avatar: avatar.image,
         avatar_static: avatar.still,
@@ -515,8 +518,8 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
     ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
-      display_name: row.display_name,
-      note: row.note,
+      display_name: presentedDisplayName(row.display_name),
+      note: presentedNote(row.note),
       emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
@@ -586,7 +589,7 @@ function presentIdentity(
     acct: handle.acct,
     display_name: shown.display_name,
     locked: !suspended && row.locked === 1,
-    bot: !suspended && (row.actor_type === "Service" || row.actor_type === "Application"),
+    bot: !suspended && isBotActorType(row.actor_type),
     discoverable: suspended ? false : row.discoverable === null ? null : row.discoverable === 1,
     indexable: !suspended && row.indexable === 1,
     group: row.actor_type === "Group",
@@ -784,10 +787,22 @@ export function resolveAccountId(db: Db, id: string): string | null {
   return resolveApiId(db, "accounts", id);
 }
 
-// Presented accounts by id, read in one query: for getAccounts' MAX_ACCOUNTS_BY_ID only.
+// The account GET /api/v1/accounts/:id and every /api/v1/accounts/:id/... route names (R1's account reads, foundSql):
+// resolveAccountId's, unless its deletion has started, as Mastodon 4.7's AccountsController and
+// Accounts::BaseController find it (Account.without_requested_deletion). One more read of the account's row by key.
+export function routeAccountId(db: Db, id: string): string | null {
+  const resolved = resolveAccountId(db, id);
+  return resolved !== null &&
+    db.first(`SELECT 1 AS found FROM accounts a WHERE a.id = ? AND ${foundSql("a")}`, resolved) !== undefined
+    ? resolved
+    : null;
+}
+
+// Presented accounts by id, read in one query, those found (foundSql): for getAccounts' MAX_ACCOUNTS_BY_ID only.
 function presentAccountsById(db: Db, ids: readonly string[], present: Present): Map<string, Account> {
   const rows = db.all<AccountRow>(
-    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id IN (SELECT value FROM json_each(?1))`,
+    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
+		WHERE a.id IN (SELECT value FROM json_each(?1)) AND ${foundSql("a")}`,
     JSON.stringify([...new Set(ids)]),
   );
   const related = relatedOf(db, rows);
@@ -811,16 +826,15 @@ export const getAccount = readOperation<
   Judged<Account | null>
 >((db, { id, present, credential }) =>
   unlessSuspended(db, credential, () => {
-    const resolved = resolveAccountId(db, id);
-    const row = resolved === null ? undefined : accountRow(db, resolved);
-    return row === undefined ? null : presentOne(db, row, present);
+    const resolved = routeAccountId(db, id);
+    return resolved === null ? null : (presentAccountById(db, resolved, present) ?? null);
   }),
 );
 
 // GET /api/v1/accounts?id[]= (AccountsController#index): the accounts getAccount shows one by one, read in one query,
-// in the order asked, each once; an id that names no account is left out. Kopje has no unapproved accounts
-// (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID). A suspended owner of the token sent is
-// refused first (AUTH-2's anonymous routes).
+// in the order asked, each once; an id that names no account, or one getAccount does not find, is left out. Kopje has
+// no unapproved accounts (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID). A suspended owner of
+// the token sent is refused first (AUTH-2's anonymous routes).
 export const MAX_ACCOUNTS_BY_ID = 40;
 
 export const getAccounts = readOperation<
@@ -841,25 +855,26 @@ export const getAccounts = readOperation<
 // letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
 // (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
 // Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
-// invalidated handle ('! <id>', shownHandle) is never matched by an address.
+// invalidated handle ('! <id>', shownHandle) is never matched by an address. found: whether the account reads find it
+// (foundSql).
 function addressRow(
   db: Db,
   username: string,
   domain: string | null,
-): (AccountRow & { stored_username: string }) | undefined {
+): (AccountRow & { stored_username: string; found: number }) | undefined {
   if (!isRemoteUsername(username)) {
     return undefined;
   }
   return domain === null
     ? db.first(
-        `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
+        `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username, ${foundSql("a")} AS found
 				FROM accounts a INDEXED BY accounts_local_username
 				${LOCAL_ROW_JOIN}
 				WHERE a.domain IS NULL AND lower(a.username) = lower(?) LIMIT 1`,
         username,
       )
     : db.first(
-        `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
+        `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username, ${foundSql("a")} AS found
 				FROM accounts a INDEXED BY accounts_domain_username
 				${LOCAL_ROW_JOIN}
 				WHERE a.domain = ? AND lower(a.username) = lower(?) LIMIT 1`,
@@ -899,23 +914,25 @@ export const emailSubscriptionTarget = readOperation<
 });
 
 // The presented account an address names as lookup finds it (an unavailable one redacted, VIS-30), or null: by
-// accountByAddress, but `<id>@handle.invalid` names the remote account of that id while its handle is invalidated
-// (shownHandle; Mastodon's ResolveAccountService special case), one primary-key seek. `domain` is normalized.
+// address, but `<id>@handle.invalid` names the remote account of that id while its handle is invalidated (shownHandle;
+// Mastodon's ResolveAccountService special case), one primary-key seek; none when the account reads do not find it
+// (foundSql: Mastodon 4.7's LookupController answers 404 for a deleted account). `domain` is normalized.
 export function accountByLookup(db: Db, username: string, domain: string | null, present: Present): Account | null {
   if (domain !== INVALID_HANDLE_DOMAIN) {
-    return accountByAddress(db, username, domain, present);
+    const row = addressRow(db, username, domain);
+    return row === undefined || row.found !== 1 ? null : presentOne(db, row, present);
   }
   // The prefix is a prefilter; shownHandle decides on the row as presented.
   const row = db.first<AccountRow>(
     `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
-			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! '`,
+			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! ' AND ${foundSql("a")}`,
     username,
   );
   return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
 }
 
-// domain null means a local account. credential: the token an anonymous route was sent (AUTH-2), whose suspended
-// owner is refused first; null for a public page.
+// GET /api/v1/accounts/lookup: domain null means a local account. credential: the token an anonymous route was sent
+// (AUTH-2), whose suspended owner is refused first; null for a public page.
 export const lookupAccount = readOperation<
   { username: string; domain: string | null; present: Present; credential: Credential | null },
   Judged<Account | null>
@@ -943,7 +960,8 @@ type CredentialRow = {
 export function credentialAccount(db: Db, accountId: string, present: Present): CredentialAccount | null {
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
-    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
+    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy,
+			${attributionDomainsSql("attribution_domains")} AS attribution_domains,
 			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
 					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
@@ -961,13 +979,13 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       privacy: local.default_visibility,
       sensitive: local.default_sensitive === 1,
       language: local.default_language,
-      note: htmlToPlainText(row.note),
+      note: htmlToPlainText(presentedNote(row.note)),
       fields: localFields(row),
       follow_requests_count: Math.min(local.follow_requests_count, FOLLOW_REQUESTS_COUNT),
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,
-      attribution_domains: JSON.parse(local.attribution_domains) as string[],
+      attribution_domains: presentedAttributionDomains(local.attribution_domains),
       quote_policy: local.default_quote_policy,
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.
@@ -1055,20 +1073,23 @@ type RelationshipRow = {
 
 // The viewer's relationships with each account, as they stand at `now` (an expired mute no longer counts), with the
 // viewer's endorsement of it and the viewer's own private note on it (Account.endorsed_map and account_note_map), each
-// read through its pair key, each account sought by id from the requested ids (RES-7). With `availableOnly`, an
-// unavailable account (R1) has no entry, read from the account's row and its local_accounts row by key
-// (availableJoinedSql).
+// read through its pair key, each account sought by id from the requested ids (RES-7). `accounts` 'found' leaves out an
+// account the account reads do not find (foundSql), 'available' an unavailable one (R1), read from the account's row
+// and its local_accounts row by key (availableJoinedSql); 'every' leaves none out.
 function relationshipsOf(
   db: Db,
   viewerId: string,
   accountIds: string[],
   now: number,
-  availableOnly = false,
+  accounts: "every" | "found" | "available" = "every",
 ): Relationship[] {
-  const available = availableOnly
-    ? `${LOCAL_ROW_JOIN}
+  const available =
+    accounts === "available"
+      ? `${LOCAL_ROW_JOIN}
 		WHERE ${availableJoinedSql("a", "l")}`
-    : "";
+      : accounts === "found"
+        ? `WHERE ${foundSql("a")}`
+        : "";
   const rows = db.all<RelationshipRow>(
     `SELECT a.id,
 			fo.state AS following, fo.show_reblogs, fo.notify, fo.languages,
@@ -1114,14 +1135,15 @@ function relationshipsOf(
 export const MAX_RELATIONSHIP_IDS = 100;
 
 // `withSuspended` (Mastodon's with_suspended): absent or false leaves unavailable accounts out (R1; Mastodon's
-// Account.without_suspended), true includes them with the same entry.
+// Account.without_suspended), true includes them with the same entry. Either way an account the account reads do not
+// find has none (foundSql; Mastodon 4.7's without_requested_deletion).
 export const relationships = userReadOperation<{ ids: string[]; withSuspended?: boolean }, Relationship[]>(
   (db, { ids, withSuspended }, { accountId: viewerId, now }) => {
     const resolved = ids
       .slice(0, MAX_RELATIONSHIP_IDS)
       .map((id) => resolveAccountId(db, id))
       .filter((id) => id !== null);
-    return relationshipsOf(db, viewerId, [...new Set(resolved)], now, withSuspended !== true);
+    return relationshipsOf(db, viewerId, [...new Set(resolved)], now, withSuspended === true ? "found" : "available");
   },
 );
 
@@ -1368,7 +1390,7 @@ export type NoteResult = RelationshipResult | { status: "invalid"; errors: strin
 
 export const setNote = userWriteOperation<{ target: string; comment: string | undefined; now: number }, NoteResult>(
   (db, { target, comment, now }, { accountId: viewerId }) => {
-    const id = resolveAccountId(db, target);
+    const id = routeAccountId(db, target);
     if (id === null) {
       return { status: "not_found" };
     }
@@ -1515,7 +1537,7 @@ export function listFollowsWithin(
   admission: AccountAdmission,
   members: "every" | "available",
 ): FollowList | null {
-  const id = resolveAccountId(db, account);
+  const id = routeAccountId(db, account);
   if (id === null) {
     return null;
   }

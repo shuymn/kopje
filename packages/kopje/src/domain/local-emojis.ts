@@ -360,19 +360,19 @@ export const adminEmojis = readOperation<
   return { emojis: rows.map(adminEmoji), next: rows.length === size ? (rows.at(-1)?.id ?? null) : null };
 });
 
-// REST::CustomEmojiSerializer (app/serializers/rest/custom_emoji_serializer.rb:8-26) of a local emoji: static_url is
-// url (Kopje makes no still rendition, an accepted risk), and category only when it passes presentedCategory.
+// REST::CustomEmojiSerializer (app/serializers/rest/custom_emoji_serializer.rb:8-31) of a local emoji: static_url is
+// url (Kopje makes no still rendition, an accepted risk), and category only when it passes presentedCategory, with
+// featured after it as Mastodon pairs them; featured is false, as no category has a featured emoji.
 export type ListedEmoji = {
   shortcode: string;
   url: string;
   static_url: string;
   visible_in_picker: true;
-  category?: string;
-};
+} & ({ category?: never; featured?: never } | { category: string; featured: false });
 
 // GET /api/v1/custom_emojis (Mastodon's CustomEmojisController#index: CustomEmoji.listed, local, enabled and visible in
 // the picker). In shortcode order, through custom_emojis_enabled (Mastodon's order is unspecified). RES-3: at most
-// MAX_ENABLED_EMOJIS rows, each within 1,489 JSON bytes with its separator (docs/threat-model.md), admitted whole
+// MAX_ENABLED_EMOJIS rows, each within 1,506 JSON bytes with its separator (docs/threat-model.md), admitted whole
 // within ARRAY_ANSWER_BYTES with no continuation; an entry whose url fails emojiHref is left out (HTML-3).
 export const customEmojis = readOperation<{ credential: Credential | null }, Judged<ListedEmoji[]>>(
   (db, { credential }) =>
@@ -395,7 +395,7 @@ export const customEmojis = readOperation<{ credential: Credential | null }, Jud
           url,
           static_url: url,
           visible_in_picker: true,
-          ...(category === null ? {} : { category }),
+          ...(category === null ? {} : { category, featured: false as const }),
         };
       });
       return admit(entries, ARRAY_ANSWER_BYTES, true).items;
