@@ -98,7 +98,6 @@ const NOTIFICATION: Record<string, Exception> = {
   // Moderation that severs relationships writes no severed_relationships notification.
   ...accepted("MD-2", "event"),
   ...open(1589, "collection notifications", "collection"),
-  ...open(1582, "supported_types and fallback", "fallback"),
 };
 
 const ENTITY_EXCEPTIONS: Exceptions = {
@@ -117,7 +116,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
   "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
   "REST::SearchSerializer": open(1589, "collections", "collections"),
-  "REST::CustomEmojiSerializer": open(1585, "no category has a featured emoji", "featured"),
   // No share page.
   "REST::AnnualReportSerializer": accepted("MD-9", "share_url"),
 };
@@ -145,8 +143,9 @@ function declaration(program: Node, name: string): Node | undefined {
   return found;
 }
 
-// The properties of a type node, following intersections and aliases defined in the same file. Anything else throws
-// with the reason: the guard never passes over a type it cannot read.
+// The properties of a type node, following intersections, unions and aliases defined in the same file: a union's are
+// those of every member, as a field one member carries is one the type can present (as Mastodon's conditional
+// attributes). Anything else throws with the reason: the guard never passes over a type it cannot read.
 function properties(program: Node, node: Node, seen: readonly string[] = []): Property[] {
   switch (node.type) {
     case "TSTypeLiteral":
@@ -165,6 +164,7 @@ function properties(program: Node, node: Node, seen: readonly string[] = []): Pr
       });
     }
     case "TSIntersectionType":
+    case "TSUnionType":
       return node.types.flatMap((type) => properties(program, type, seen));
     case "TSTypeReference": {
       const name = node.typeName.type === "Identifier" ? node.typeName.name : null;
@@ -369,6 +369,18 @@ describe(`entity fields match Mastodon v${mastodon.mastodon}`, () => {
           "type No = never\nexport type Probe = { a: No[]; nested: { x: string } }",
           "Probe: a typed as the constant never[]",
         ],
+        "a field in no member of a union": [
+          "export type Probe = { nested: { x: string } } & ({ b?: never } | { b: string })",
+          "Probe: a missing from src/domain/probe.ts Probe",
+        ],
+        "a null field in one member of a union": [
+          "export type Probe = { nested: { x: string } } & ({ a?: never } | { a: null })",
+          "Probe: a typed as the constant null",
+        ],
+        "a union with a member it cannot read": [
+          "export type Probe = { a: string; nested: { x: string } } | null",
+          "Probe: cannot read a TSNullKeyword",
+        ],
         "a type it cannot follow": [
           "import type { Other } from './other'\nexport type Probe = Other & { nested: { x: string } }",
           "Probe: cannot follow Other (not an alias of this file)",
@@ -377,6 +389,8 @@ describe(`entity fields match Mastodon v${mastodon.mastodon}`, () => {
       passed: {
         "real fields": "type Base = { a: string | null }\nexport type Probe = Base & { nested: { x: string[] } }",
         "a cycle of aliases": "type A = B\ntype B = A\nexport type Probe = { a: A; nested: { x: string } }",
+        "a field in one member of a union":
+          "export type Probe = { nested: { x: string } } & ({ a?: never } | { a: string; b: false })",
       },
     });
 

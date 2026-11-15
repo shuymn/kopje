@@ -110,8 +110,9 @@ const READS: Read[] = [
     items: pageItems,
     item: scheduledCursor,
     cursor: scheduledCursor,
-    statement: /FROM scheduled_statuses ss/,
-    access: "SEARCH ss USING INDEX scheduled_statuses_account (account_id=? AND id>? AND id<?)",
+    // The page of ids; each admitted scheduled status is then read by key.
+    statement: /SELECT ss\.id FROM scheduled_statuses ss/,
+    access: "SEARCH ss USING COVERING INDEX scheduled_statuses_account (account_id=? AND id>? AND id<?)",
   },
   {
     name: "given-up deliveries",

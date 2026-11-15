@@ -2,7 +2,8 @@ import { expect } from "vitest";
 
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import { utf8Length } from "../src/platform/dump-format";
-import { type ApiHarness, sql } from "./api-helpers";
+import { PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
+import { type ApiHarness, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { accountAtCap, statusAtCap } from "./emoji-fixtures";
 import { MAX_BIO, maxFields } from "./profile-fixtures";
@@ -70,6 +71,49 @@ export function pageStatus(
   extra: Partial<Pick<SeedStatus, "tags" | "inReplyToId" | "visibility" | "mentions">> = {},
 ): Promise<string> {
   return bigStatus(h, author, published, extra, 8);
+}
+
+// `count` admin.report notifications of `admin`, made the OAuth admin, oldest first: each of a report by the local
+// `reporter` of one remote target whose stored url fills PROFILE_URL_LIMIT with quotes in its host, which a fallback
+// writes as `&quot;` (notification-fallback.ts), so each fallback is about 12 KB.
+export async function fallbackReports(
+  h: ApiHarness,
+  admin: { id: string; email: string },
+  reporter: string,
+  count: number,
+): Promise<string[]> {
+  await setSetting(h.store, "admin_email", admin.email);
+  const target = await remoteAccount(h.store, "reported");
+  await sql(
+    h.store,
+    "UPDATE accounts SET url = ? WHERE id = ?",
+    `https://${'"'.repeat(PROFILE_URL_LIMIT - 9)}/`,
+    target,
+  );
+  const rows = await sql<{ id: string }>(
+    h.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+		INSERT INTO reports (account_id, target_account_id, uri, created_at)
+		SELECT ?2, ?3, 'https://kopje.test/flags/' || i, ?4 FROM n ORDER BY i RETURNING CAST(id AS TEXT) AS id`,
+    count,
+    reporter,
+    target,
+    new Date(NOW).toISOString(),
+  );
+  const ids: string[] = [];
+  for (const { id } of rows.toSorted((a, b) => Number(a.id) - Number(b.id))) {
+    const [row] = await sql<{ id: string }>(
+      h.store,
+      `INSERT INTO notifications (account_id, type, from_account_id, report_id, created_at)
+			VALUES (?, 'admin.report', ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+      admin.id,
+      reporter,
+      id,
+      new Date(NOW).toISOString(),
+    );
+    ids.push(row!.id);
+  }
+  return ids;
 }
 
 // An accepted quote of `target` by `status`.

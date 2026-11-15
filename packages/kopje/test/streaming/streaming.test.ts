@@ -5,7 +5,7 @@ import { type StreamPosition, streamAdvance, streamUnit, streamUnitAdvance } fro
 import { StoreKernel, type StoreOperation } from "../../src/platform/store-kernel";
 import { sha256Hex } from "../../src/security/tokens";
 import { STREAM_LIMITS } from "../../src/stream-hub";
-import { type ApiHarness, form, login, sql } from "../api-helpers";
+import { type ApiHarness, bearer, form, json, login, setSetting, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
 import { BUILD } from "../helpers";
 import { appToken, scopedToken } from "../read-helpers";
@@ -147,6 +147,26 @@ describe("the subscribe protocol", () => {
     await post(h, h.users.bob, { status: "@alice hello", visibility: "public" });
     await drained(h, inbox);
     expect(inbox.rest().map((m) => [m.stream, m.event])).toEqual([[["user:notification"], "notification"]]);
+  });
+
+  it("sends no fallback: the event carries the notification as REST shows it without supported_types", async () => {
+    const h = await community(["owner", "alice", "carol"]);
+    await setSetting(h.store, "admin_email", "owner@example.com");
+    const inbox = await subscribed(h, h.users.owner.token, "user:notification");
+    await settled(h, inbox);
+    const reported = await h.request(
+      "/api/v1/reports",
+      bearer(h.users.alice.token, json({ account_id: h.users.carol.id })),
+    );
+    expect(reported.status).toBe(200);
+    await drained(h, inbox);
+    const [event] = notifications(inbox.rest(), "user:notification");
+    expect(event).toMatchObject({ type: "admin.report" });
+    expect(event).not.toHaveProperty("fallback");
+    // Control: the same notification listed with supported_types carries one.
+    const listed = await h.request("/api/v1/notifications?supported_types[]=mention", bearer(h.users.owner.token));
+    const [rest] = await listed.json<{ id: string; fallback?: unknown }[]>();
+    expect(rest).toMatchObject({ id: event!.id, fallback: { description: null } });
   });
 
   it("refuses a subscription the registry cannot record (a dump freezes it), so the client subscribes again", async () => {

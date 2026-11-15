@@ -108,7 +108,7 @@ const SHAPE_ROWS: [string, ShapeName][] = [
   ["A filtered favourite of the quote, as include_filtered lists it", "filteredNotification"],
 ];
 // Rows other suites hold, derived from their caps (test/announcement-bounds.test.ts, test/trends-maxima.test.ts,
-// test/instance-activity.test.ts); this module does not.
+// test/instance-activity.test.ts, test/scheduled-statuses.test.ts); this module does not.
 const OTHER_ROWS = [
   "Announcement: each part derived from its caps",
   "Trending hashtag (Tag with history), derived from its caps",
@@ -118,6 +118,7 @@ const OTHER_ROWS = [
   "Trending link (TrendsLink), derived from its caps",
   "Access admin's trending link, derived from its caps",
   "Instance activity (12 weeks), derived from its caps",
+  "Scheduled status, derived from its caps",
 ];
 
 // Most SQLite bytes, most JSON bytes, conservative JSON, rows read, nodes, share of 8 MiB (of the conservative JSON

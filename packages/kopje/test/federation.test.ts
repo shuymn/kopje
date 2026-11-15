@@ -28,6 +28,25 @@ const AP = { headers: { accept: "application/activity+json" } };
 
 const pemBody = (pem: string) => pem.replace(/-----(BEGIN|END) PUBLIC KEY-----|\s/g, "");
 
+// Where another server sends a person to follow, or to open a post or an account, from this one (app/interaction.tsx):
+// the subscribe template and FEP-3b86's Object intent, as Mastodon 4.7.5's WebfingerSerializer#links gives every
+// account and its instance actor; its Create intent is left out (docs/mastodon-deviations.md, WebFinger).
+const INTERACTION_LINKS = [
+  {
+    rel: "http://ostatus.org/schema/1.0/subscribe",
+    template: "https://social.example/authorize_interaction?uri={uri}",
+  },
+  { rel: "https://w3id.org/fep/3b86/Object", template: "https://social.example/authorize_interaction?uri={object}" },
+];
+
+// The answer carries both templates, and no FEP-3b86 intent but Object.
+function expectInteractionLinks(body: { links?: { rel: string }[] }) {
+  expect(body.links).toEqual(expect.arrayContaining(INTERACTION_LINKS));
+  expect(body.links?.map((link) => link.rel).filter((rel) => rel.startsWith("https://w3id.org/fep/3b86/"))).toEqual([
+    "https://w3id.org/fep/3b86/Object",
+  ]);
+}
+
 async function instance(options: { kek?: string } = {}) {
   const store = await migratedStore();
   await setDomain(store, DOMAIN);
@@ -239,7 +258,7 @@ describe("instance actor", () => {
     expect((await request("/ap/users/kopje%3Ainstance", AP)).status).toBe(404);
   });
 
-  it("is discoverable through WebFinger by its canonical URI", async () => {
+  it("is discoverable through WebFinger by its canonical URI, with the interaction templates", async () => {
     const { json, request } = await instance();
     const { status, body } = await json("/.well-known/webfinger?resource=https://social.example/actor");
     expect(status).toBe(200);
@@ -249,6 +268,7 @@ describe("instance actor", () => {
         { rel: "self", type: "application/activity+json", href: "https://social.example/actor" },
       ]),
     });
+    expectInteractionLinks(body);
     // Only the canonical URI: the template spelling of the instance identifier, as the resource value
     // "https://social.example/ap/users/kopje%3Ainstance", and other spellings are not the instance actor.
     for (const resource of [
@@ -278,10 +298,7 @@ describe("instance actor", () => {
       links: [
         { rel: "self", type: "application/activity+json", href: actor.id },
         { rel: "http://webfinger.net/rel/profile-page", href: "https://social.example/about" },
-        {
-          rel: "http://ostatus.org/schema/1.0/subscribe",
-          template: "https://social.example/authorize_interaction?uri={uri}",
-        },
+        ...INTERACTION_LINKS,
       ],
     });
     expect(actor).toMatchObject({ id: "https://social.example/actor", preferredUsername: "social.example" });
@@ -329,6 +346,27 @@ describe("instance actor", () => {
     ]) {
       const query = new URLSearchParams({ resource });
       expect((await request(`/.well-known/webfinger?${query.toString()}`)).status, resource).toBe(404);
+    }
+  });
+
+  // Mastodon 4.7.5 also answers its instance actor for a resource that is the domain itself (WebfingerResource,
+  // `\A(https?://)?<domain>/?\Z`), which its web client asks when a person names only a server, and on a 404 opens
+  // https://<domain>/authorize_interaction?uri={uri}. Kopje answers none (docs/mastodon-deviations.md, WebFinger).
+  it("answers no resource that is the domain itself", async () => {
+    const { request } = await instance();
+    for (const [resource, status] of [
+      ["https://social.example", 404],
+      ["https://social.example/", 404],
+      ["http://social.example", 404],
+      ["http://social.example/", 404],
+      ["social.example", 400],
+      ["social.example/", 400],
+    ] as const) {
+      const query = new URLSearchParams({ resource });
+      expect([resource, (await request(`/.well-known/webfinger?${query.toString()}`)).status]).toEqual([
+        resource,
+        status,
+      ]);
     }
   });
 });
@@ -430,7 +468,7 @@ async function storedInstanceKey(store: StoreStub) {
 }
 
 describe("WebFinger", () => {
-  it("resolves acct:user@domain to the actor, with the profile link and the subscribe template", async () => {
+  it("resolves acct:user@domain to the actor, with the profile link, the subscribe template and the Object intent", async () => {
     const { json } = await instance();
     const { status, type, body } = await json("/.well-known/webfinger?resource=acct:Alice@social.example");
 
@@ -442,11 +480,7 @@ describe("WebFinger", () => {
       links: [
         { rel: "self", type: "application/activity+json", href: "https://social.example/ap/users/Alice" },
         { rel: "http://webfinger.net/rel/profile-page", href: "https://social.example/@Alice" },
-        // Where another server sends a person to follow from this one (app/interaction.tsx).
-        {
-          rel: "http://ostatus.org/schema/1.0/subscribe",
-          template: "https://social.example/authorize_interaction?uri={uri}",
-        },
+        ...INTERACTION_LINKS,
       ],
     });
   });
@@ -466,6 +500,7 @@ describe("WebFinger", () => {
         { rel: "self", type: "application/activity+json", href: "https://social.example/ap/users/Alice" },
       ]),
     });
+    expectInteractionLinks(byUri.body);
   });
 
   it("answers 404 for another host, an unknown user, and the request host", async () => {
