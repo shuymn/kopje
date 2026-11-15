@@ -228,6 +228,8 @@ export function oembedCard(value: unknown, endpoint: string): OembedOutcome {
       imageUrl: imageOf(type === "photo" ? embed.url : embed.thumbnail_url, endpoint),
       imageDescription: "",
       linkType: "unknown",
+      // attempt_oembed sets no author (fetch_link_card_service.rb:42): an endpoint's card names no creator.
+      creator: null,
     },
   };
 }

@@ -5,11 +5,20 @@ import { selectSql } from "../src/db/columns";
 import { Db } from "../src/db/sql";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
-import { CARD_CANDIDATES, localCardLink } from "../src/domain/link-cards";
+import {
+  CARD_CANDIDATES,
+  CARD_CREATOR_CHARS,
+  type CardFields,
+  creatorUsername,
+  domainVariants,
+  localCardLink,
+} from "../src/domain/link-cards";
 import { CARD_JSON_MAX, cardIframe, type CardRow, presentCard } from "../src/domain/status-presenter";
 import { CARD_COLUMN_MAP } from "../src/domain/status-rows";
+import { storedFields } from "../src/federation/link-cards";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { WEB_PAGE_URL_LIMIT } from "../src/federation/web-page";
+import { SCAN_LIMITS } from "../src/platform/html-scan";
 import type { StoreStub } from "../src/platform/store-client";
 import {
   BLURHASH_BYTES,
@@ -457,6 +466,79 @@ async function attach(store: StoreStub, statusId: string, card: Record<string, s
     card.published_at ?? null,
   );
 }
+
+describe("the unverified author's creator and host (creatorUsername, domainVariants)", () => {
+  it("reads a creator as ResolveAccountService does up to its direct-local resolution, and fetches nothing", () => {
+    for (const [creator, username] of [
+      ["alice", "alice"],
+      ["@alice", "alice"],
+      ["alice@kopje.test", "alice"],
+      ["@alice@KOPJE.TEST", "alice"],
+      ["alice@kopje.test/", "alice"],
+      [" alice@kopje.test\n", "alice"],
+      ["\u0000\talice\v\f\r", "alice"],
+      ["alice@", "alice"],
+      ["alice@kopje.test@x", "alice"],
+      ["alice@other.example", null],
+      ["a@@kopje.test", null],
+      // One leading @ removed: the next is an empty username.
+      ["@@alice", null],
+      // One trailing / removed.
+      ["alice@kopje.test//", null],
+      ["", null],
+      ["@", null],
+      ["\u3000", null],
+      // U+3000 is blank (Rails) but not stripped (Ruby).
+      ["\u3000alice", "\u3000alice"],
+      // Names Mastodon may reach through WebFinger: an alias and an explicit port.
+      ["alice@www.kopje.test", null],
+      ["alice@kopje.test:443", null],
+    ] as const) {
+      expect(creatorUsername(creator, "kopje.test"), JSON.stringify(creator)).toBe(username);
+    }
+    // The Unicode spelling of a punycode domain, which only IDNA (Mastodon's WebFinger lookup) would equate.
+    expect(creatorUsername("alice@bücher.example", "xn--bcher-kva.example")).toBeNull();
+    expect(creatorUsername("alice@XN--BCHER-KVA.example", "xn--bcher-kva.example")).toBe("alice");
+  });
+
+  it("gives a host and each suffix after a dot, a trailing dot's empty label dropped", () => {
+    expect(domainVariants("a.b.example")).toEqual(["a.b.example", "b.example", "example"]);
+    expect(domainVariants("example.com.")).toEqual(["example.com", "com"]);
+    expect(domainVariants("example")).toEqual(["example"]);
+    expect(domainVariants("")).toEqual([]);
+  });
+
+  it("keeps a creator within the scan's bound in the round's fields, and none past it", () => {
+    expect(CARD_CREATOR_CHARS).toBe(SCAN_LIMITS.valueChars);
+    const fields: CardFields = {
+      title: "t",
+      description: "",
+      authorName: "",
+      authorUrl: "",
+      providerName: "",
+      providerUrl: "",
+      language: null,
+      publishedAt: null,
+      type: "link",
+      width: 0,
+      height: 0,
+      embedSrc: "",
+      iframeWidth: null,
+      iframeHeight: null,
+      imageUrl: "",
+      imageDescription: "",
+      linkType: "unknown",
+      finalUrl: "",
+      creator: null,
+    };
+    // Astral characters count two code units each.
+    const kept = `alice${"\u{1f600}".repeat(1021)}x`;
+    expect(kept).toHaveLength(CARD_CREATOR_CHARS);
+    expect(storedFields({ ...fields, creator: kept }).creator).toBe(kept);
+    expect(storedFields({ ...fields, creator: `${kept}a` }).creator).toBeNull();
+    expect(storedFields(fields).creator).toBeNull();
+  });
+});
 
 describe("presentation", () => {
   const SHAPE = {

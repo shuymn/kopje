@@ -1668,14 +1668,22 @@ function snowflakePastSql(value: string): string {
 	ELSE 0 END`;
 }
 
+// True when `value` is no card author (status_cards.unverified_author_account_id, migration 0095_card_attribution):
+// NULL is one; else an 18-digit snowflake as TEXT. The triggers and the writer (domain/link-cards.ts recordCard)
+// share it.
+export function cardAuthorPastSql(value: string): string {
+  return `${value} IS NOT NULL AND ${snowflakePastSql(value)}`;
+}
+
 // True when the row `row` holds a value past its stored bound: 0067's rules (statusCardBaseCases), then card_type,
 // width and height, embed_src (cardEmbedSrcPastSql), iframe_width and iframe_height (0069), then image_url ('' or a
 // card URL, cardUrlPastSql), image_id (NULL or a snowflake) and image_description (a card text of
 // CARD_IMAGE_DESCRIPTION_JSON_BYTES) of 0070, then link_type (LINK_TYPES), final_url ('' or a card URL) and public (0
-// or 1) of 0071, then the invariants: a video card and only one holds an embed_src, no iframe dimension is kept without
-// one, no image id without an image URL, and public = 1 only on an attached row with a final URL whose status is
-// public (the membership of status_cards_public_link: one key seek of statuses). The CHECKs of the table hold the
-// row's structure (pending or attached, an attached title).
+// or 1) of 0071, then unverified_author_account_id (cardAuthorPastSql) of 0095, then the invariants: a video card and
+// only one holds an embed_src, no iframe dimension is kept without one, no image id without an image URL, public = 1
+// only on an attached row with a final URL whose status is public (the membership of status_cards_public_link: one key
+// seek of statuses), and no author on a pending row. The CHECKs of the table hold the row's structure (pending or
+// attached, an attached title).
 export function statusCardPastBoundSql(row: string): string {
   const c = (name: string) => `${row}.${name}`;
   return `CASE ${statusCardBaseCases(row)}
@@ -1691,12 +1699,24 @@ export function statusCardPastBoundSql(row: string): string {
 	${cardCountCase(c("link_type"), false, LINK_TYPES.article)}
 	WHEN ${c("final_url")} IS NOT '' AND ${cardUrlPastSql(c("final_url"), false)} THEN 1
 	${cardCountCase(c("public"), false, 1)}
+	WHEN ${cardAuthorPastSql(c("unverified_author_account_id"))} THEN 1
 	WHEN (${c("card_type")} = ${CARD_TYPES.video}) <> (${c("embed_src")} <> '') THEN 1
 	WHEN ${c("embed_src")} = '' AND (${c("iframe_width")} IS NOT NULL OR ${c("iframe_height")} IS NOT NULL) THEN 1
 	WHEN ${c("image_url")} IS '' AND ${c("image_id")} IS NOT NULL THEN 1
 	WHEN ${c("public")} = 1 AND (${c("fetched_at")} IS NULL OR ${c("final_url")} = ''
 		OR (SELECT ps.visibility FROM main.statuses ps WHERE ps.id = ${c("status_id")}) IS NOT 'public') THEN 1
+	WHEN ${c("unverified_author_account_id")} IS NOT NULL AND ${c("fetched_at")} IS NULL THEN 1
 	ELSE 0 END`;
+}
+
+// The statements of 0095_card_attribution before its triggers (domain/stored-triggers.ts): the column, added to the
+// schema only, and status_cards' two triggers dropped; test/migrations.test.ts compares the file with it.
+export function cardAttributionMigrationSql(): string {
+  return `ALTER TABLE status_cards ADD COLUMN unverified_author_account_id TEXT;
+
+DROP TRIGGER status_cards_bounds_insert;
+DROP TRIGGER status_cards_bounds_update;
+`;
 }
 
 // A card's link type (status_cards.link_type, Mastodon's PreviewCard link_type, link_details_extractor.rb:139-145):

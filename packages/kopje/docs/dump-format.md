@@ -405,6 +405,12 @@ a snapshot: the next cron round works the links out again, and since a dump hold
 qualifies and a link trends again only from cards recorded after the restore. A file built from legacy data has no
 row.
 
+Card attribution (migration `0095_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
+NULL or 18 ASCII digits as text (no foreign key: a restored one may name no account, and then no viewer sees the flag),
+NULL on a pending row; anything else fails with `status_cards: a value past its stored bound`. A row of a dump taken
+before 0095 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
+fetch.
+
 Instance activity (migration `0072_activity_tracking`): an `activity_counts` row holds a `kind` (`statuses` or
 `registrations`), a `day` (text of exactly 10 bytes, a calendar date `YYYY-MM-DD` with no NUL) and a `value` (an
 integer from 1 to 1e12), one per kind and day; an `activity_logins` row holds a `day` by the same rule and an

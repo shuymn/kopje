@@ -133,6 +133,7 @@ describe("card images in dumps", () => {
             imageDescription: "Stored alt",
             linkType: "unknown",
             finalUrl: "",
+            creator: null,
           },
         },
       }),

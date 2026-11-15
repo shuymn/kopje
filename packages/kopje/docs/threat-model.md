@@ -2134,7 +2134,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   failure kind and reason, the chain and the hostname only. Its records are writes fenced by the claim token, the row's
   generation (a reset draws a new one), an open claim, a pending row and the status's eligibility now
   (`cardEligibleSql`, R43), so an edit, a delete, a hide or a suspension still in force at the record lets nothing be
-  attached (one lifted within the round is an accepted risk). `test/link-card-rounds.test.ts` ("gives
+  attached (one lifted within the round is an accepted risk). A page's `fediverse:creator` is judged at the record
+  against a local account only, with no request (`unverifiedAuthor` in `src/domain/link-cards.ts`: one seek of the
+  account by name, its attribution domains read within `ATTRIBUTION_DOMAINS_BYTES`, at most 127 variants of a final
+  URL's host within 253 bytes); a name of another server, or of the instance by another spelling, names no account.
+  `test/link-card-rounds.test.ts` ("records the local account a page names and does not credit, judged by the final
+  URL's host", "reads one account row, its domains within ATTRIBUTION_DOMAINS_BYTES, with every input at its cap"),
+  `test/link-cards.test.ts` ("reads a creator as ResolveAccountService does up to its direct-local resolution, and
+  fetches nothing"). `test/link-card-rounds.test.ts` ("gives
   no card for a blank title, a failed fetch or a refused URL, without retrying", "drops the record of a claim whose
   status was edited or deleted during the fetch", "drops the record of a status suspended during the fetch", "starts no
   fetch and follows no redirect once maintenance is entered during a DNS check", "releases a claim unattempted when a
@@ -2868,7 +2875,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   whose status is public, judged against the parent the dump restores first); the card writers set `public` from the
   status and the final URL they write (`cardPublicSql`), never from a donor; `test/migrations.test.ts`
   ("0071_link_trends"), `test/link-card-rounds.test.ts` ("the trend identity of a card"), `test/trend-dump.test.ts`
-  ("link trends in dumps").
+  ("link trends in dumps"). A card's `unverified_author_account_id`, imports included, is NULL or 18 ASCII digits as
+  text, NULL on a pending row, enforced by migration `0095_card_attribution` (`cardAuthorPastSql`); the record writes
+  it through the same rule, only with the final URL it writes, and a reset clears it; `test/migrations.test.ts`
+  ("0095_card_attribution"), `test/dump-import.test.ts` ("round-trips a card's unverified author (0095), and refuses
+  one past its stored bound on import").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or

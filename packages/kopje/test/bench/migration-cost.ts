@@ -108,7 +108,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0084_family_job_attempts adds the job attempts columns to the other job tables and indexes them; 0089_pin_cap sorts
 // the pins of every account holding more than five and deletes the excess; 0093_annual_reports reads one
 // instance_settings row by its key (it adds an empty table, its index and two triggers); 0094_quote_author_fetches
-// adds a checked column to quotes, which SQLite tests against every quote. A migration that
+// adds a checked column to quotes, which SQLite tests against every quote; 0095_card_attribution adds a column to
+// status_cards and recreates its triggers (no row read, the attached and pending cards seeded). A migration that
 // reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
@@ -978,6 +979,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
+    // 0095_card_attribution: the column, and the cards holding NULL.
+    const cardAuthors = has("status_cards", "unverified_author_account_id")
+      ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
+      : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1003,6 +1008,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           liveQuotes,
           rejectReplays,
           authorFetches,
+          cardAuthors,
         },
       };
     }
@@ -1034,6 +1040,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         liveQuotes,
         rejectReplays,
         authorFetches,
+        cardAuthors,
       },
     };
   });
@@ -1103,6 +1110,12 @@ it("applies the migration to the benchmark store within the budget", async () =>
   if (applied.includes("0094_quote_author_fetches")) {
     expect(seeded.quotes).toBeGreaterThan(0);
     expect(measured.authorFetches).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
+  }
+  // 0095 added the column to every seeded card, attached and pending, each holding NULL.
+  if (applied.includes("0095_card_attribution")) {
+    expect(seeded.cards).toBeGreaterThan(0);
+    const cards = seeded.cards + seeded.pendingCards;
+    expect(measured.cardAuthors).toEqual({ cards, none: cards });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(JSON.stringify({ migrations: applied, scale, seeded, ms, budgetMs, foreignKeyCheck, retryEstimateMs }));
