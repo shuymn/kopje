@@ -3225,9 +3225,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once"). _Enforced (main)_ for scheduled
   statuses: a page reads the ids of at most 40 and admits whole scheduled statuses within `ARRAY_ANSWER_BYTES`, each
   read by key when admission reaches it, the first always, a cut page continuing from its last (`listScheduled` in
-  `src/domain/scheduled-statuses.ts`); each shows at most `MAX_STATUS_MEDIA` held media (the media read's `LIMIT`), so
-  it is at most its derived maximum in "Maxima of presented units"; `test/scheduled-statuses.test.ts` ("a scheduled
-  status at its caps", "the scheduled statuses list within ANSWER_BYTES").
+  `src/domain/scheduled-statuses.ts`); each shows at most `MAX_STATUS_MEDIA` held media (the media read's `LIMIT`, and
+  what a scheduled status may hold, RES-6), so it is at most its derived maximum in "Maxima of presented units";
+  `test/scheduled-statuses.test.ts` ("a scheduled status at its caps", "the scheduled statuses list within
+  ANSWER_BYTES").
 - **RES-4: stored derived data is bounded.** Snapshots, the KV cache, the spool and deliveries each have a size cap, a
   count cap or an expiry with a sweeper. _Enforced (main)_ for remote statuses: one
   status stores at most 4 attachments (Mastodon's limit) with 10,000 code points of description each, 100 hashtags
@@ -3682,6 +3683,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   published while the Store is in maintenance or readonly; what is due waits. `publishScheduled` in `src/store.ts`,
   `src/domain/scheduled-statuses.ts`, `src/jobs/scheduled.ts`; `test/scheduled-statuses.test.ts` ("publishes a due
   status once", "publishes at most … a run", "backs off what keeps failing", "waits while the Store is readonly").
+  A scheduled status holds at most `MAX_STATUS_MEDIA` (4) uploads, imports included: the triggers
+  `media_attachments_scheduled_cap_insert` and `media_attachments_scheduled_cap_update` of migration
+  `0103_scheduled_media_cap` refuse a fifth, inserted held or moved to it, each reading at most 5 rows through
+  `media_attachments_scheduled` (`heldFullSql` in `src/domain/scheduled-statuses.ts`), and the migration detached each
+  scheduled status's uploads past its first four by (position, id), attachable again for a day. Kopje's writer holds
+  at most four, so it is never refused. So removing a scheduled status (a delete, a publication, a terminal failure)
+  detaches at most four uploads through that index before it deletes the row, whatever other scheduled statuses hold;
+  `test/scheduled-statuses.test.ts` ("detaches at most four uploads on a delete, a publication and a terminal
+  failure", "holds four through the API, and refuses a fifth"), `test/migrations.test.ts` ("0103_scheduled_media_cap"),
+  `test/dump-import.test.ts` ("round-trips a scheduled status's four held uploads").
   _Enforced (main)_ for media: before the body is read or Images is called, the Store
   counts upload attempts (deleted and failed ones included) to at most 30 per 30 minutes per account (Mastodon's
   limit) and checks the monthly budgets; right before Images is called it revalidates the reservation with fresh time
@@ -4131,9 +4142,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "Suggestions" and "Read bounds"; `test/suggestions-bounds.test.ts`); `test/instance-reads.test.ts`,
   `test/tags.test.ts`, `test/account-reads.test.ts` (rows read stay flat as accounts per domain, accounts known,
   statuses outside the window, and the account's other followers grow). _Enforced (main)_ for scheduled statuses: a page
-  reads ids from the account's own index by id and each scheduled status it admits by key, with at most
-  `MAX_STATUS_MEDIA` of its held media through `media_attachments_scheduled` however many it holds
-  (`test/scheduled-statuses.test.ts` ("shows the first 4 held media by position")), and a publication round reads the
+  reads ids from the account's own index by id and each scheduled status it admits by key, with its held media, at most
+  `MAX_STATUS_MEDIA` (RES-6), through `media_attachments_scheduled` (`test/scheduled-statuses.test.ts` ("shows the
+  first 4 held media by position")), and a publication round reads the
   due ones through the index by time, so neither
   grows with the accounts that schedule or their scheduled statuses (`test/policy-bounds.test.ts` ("however many
   accounts schedule")). _Enforced (main)_ for grouped notifications: a page of groups walks the viewer's notifications
@@ -4479,10 +4490,10 @@ time for an imported scheduled_at"); its params, a JSON object of at most `MAX_P
 CHECK of migration `0011_scheduled_statuses`) parsed and presented again, which grow only through numbers, at most
 22/5 of the stored bytes (a four-character number such as `1e20` prints as 21 characters, each with its separator; a
 longer one prints at most 25), so 576,716 bytes; and at most `MAX_STATUS_MEDIA` held attachments (the media read's
-`LIMIT`), each with an 18-digit id, the longest type, its four URLs at 4,098 JSON bytes, every number of its meta and
-focus at the longest a double prints (24 characters, 25 with a sign), a description of 10,000 control characters and a
-54-byte blurhash. The witness, a restored row at those caps (params of `1e20`s, four attachments of a remote account
-with URLs of backslashes), presents 884,345 bytes from 5 rows.
+`LIMIT`, and the cap of `0103_scheduled_media_cap`), each with an 18-digit id, the longest type, its four URLs at 4,098
+JSON bytes, every number of its meta and focus at the longest a double prints (24 characters, 25 with a sign), a
+description of 10,000 control characters and a 54-byte blurhash. The witness, a restored row at those caps (params of
+`1e20`s, four attachments of a remote account with URLs of backslashes), presents 884,345 bytes from 5 rows.
 
 An announcement's maxima are derived from caps, not from fills: each part's conservative JSON is computed by
 `test/announcement-bounds.test.ts` (`derivedAnnouncementMaxima` in `test/announcement-helpers.ts`) from the stored and

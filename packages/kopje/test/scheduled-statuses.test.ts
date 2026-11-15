@@ -2,16 +2,19 @@ import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
+import { MIGRATIONS } from "../src/db/migrations";
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
 import { expiredMedia } from "../src/domain/media";
 import {
   DAILY_LIMIT,
+  deleteScheduled,
   getScheduled,
   listScheduled,
   MAX_ATTEMPTS,
   MAX_PARAMS_BYTES,
   PUBLISH_ROUND,
   publishScheduled as publishOne,
+  recordPublishFailure,
   RETRY_DELAYS_MS,
   SCHEDULED_PAGE,
   type ScheduledStatus,
@@ -1062,6 +1065,208 @@ describe("nothing leaks before publication", () => {
   }, 60_000);
 });
 
+// ---- RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0103_scheduled_media_cap).
+
+const HELD_REFUSED = /media_attachments: more media than a scheduled status may hold/;
+const CAP_FILE = MIGRATIONS.find((m) => m.name === "0103_scheduled_media_cap")?.sql ?? "";
+
+// Runs `write` as a Store before 0103 could (its triggers dropped), then the file's statements, as its upgrade runs
+// them: the detach of the uploads past each scheduled status's first four, and the triggers made again.
+async function beforeCap(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
+  await runInDurableObject(h.store, (_instance, state) => {
+    const sql = state.storage.sql;
+    sql.exec("DROP TRIGGER media_attachments_scheduled_cap_insert");
+    sql.exec("DROP TRIGGER media_attachments_scheduled_cap_update");
+    write(sql);
+    state.storage.transactionSync(() => sql.exec(CAP_FILE).toArray());
+  });
+}
+
+// The upload `i` of the restored scheduled status `n`.
+const heldUpload = (n: number, i: number) => String(810000000000000000n + BigInt(n * 1_000 + i));
+
+// A scheduled status `n` of `owner`, due a minute before NOW + HOUR, as a restore before 0103 may hold it: `held`
+// uploads of the owner's at positions held - 1 down to 0, so the first by position are the last written, and params
+// naming the first `named` by position; after `attempts` failed publications, the next due at NOW + HOUR.
+async function restoredHolding(
+  h: ApiHarness,
+  owner: string,
+  n: number,
+  held: number,
+  { named = 0, attempts = 0 }: { named?: number; attempts?: number } = {},
+): Promise<string> {
+  const id = String(740000000000000000n + BigInt(n));
+  const byPosition = Array.from({ length: held }, (_, i) => heldUpload(n, held - 1 - i));
+  await beforeCap(h, (sql) => {
+    sql.exec(
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params, attempts, next_attempt_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+      id,
+      owner,
+      at(NOW + HOUR - MINUTE),
+      JSON.stringify({
+        text: `held ${n}`,
+        spoiler_text: "",
+        sensitive: null,
+        language: null,
+        visibility: null,
+        in_reply_to_id: null,
+        media_ids: named === 0 ? null : byPosition.slice(0, named),
+      }),
+      attempts,
+      attempts === 0 ? null : at(NOW + HOUR),
+    );
+    for (let i = 0; i < held; i++) {
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, file_token, processed)
+				VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/h/full', ?, 1)`,
+        heldUpload(n, i),
+        owner,
+        id,
+        held - 1 - i,
+        `h${n}-${i}`,
+      );
+    }
+  });
+  return id;
+}
+
+const heldBy = async (h: ApiHarness, id: string) =>
+  (
+    await sql<{ id: string }>(
+      h.store,
+      "SELECT id FROM media_attachments WHERE scheduled_status_id = ? ORDER BY position, id",
+      id,
+    )
+  ).map((row) => row.id);
+
+describe("a scheduled status holds at most four media (RES-6)", () => {
+  // Each caller of removeScheduled, on a scheduled status holding four after the upgrade, whatever it held before it
+  // (4, 40, 400) and whatever the account's other scheduled statuses hold (2, 10 and 100 holding four each): the rows
+  // each reads, the detach's among them, stay the same.
+  it("detaches at most four uploads on a delete, a publication and a terminal failure, however many it or others held", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const credential = { tokenHash: await sha256Hex(alice.token), scope: "write", now: NOW } as const;
+    const detach = /^UPDATE media_attachments SET scheduled_status_id = NULL/;
+    const recount = /^UPDATE accounts SET statuses_count = /;
+    const callers = {
+      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW }, true),
+      publication: (id: string) =>
+        measuredStatements(h, publishOne, { id, now: NOW + HOUR, objectId: crypto.randomUUID() }, true),
+      failure: (id: string) => measuredStatements(h, recordPublishFailure, { id, now: NOW + HOUR }, true),
+    };
+    const outcomes = {
+      delete: { status: "ok", value: true },
+      publication: { status: "published" },
+      failure: { status: "dropped" },
+    };
+    const reads: Record<string, number[][]> = { delete: [], publication: [], failure: [] };
+    // The subjects' ids lie between the others', which grow on both sides of them.
+    let n = 500;
+    let others = 0;
+    for (const [held, grown] of [
+      [MAX_STATUS_MEDIA, 1],
+      [40, 5],
+      [400, 50],
+    ] as const) {
+      for (; others < grown; others++) {
+        await restoredHolding(h, alice.id, others, MAX_STATUS_MEDIA);
+        await restoredHolding(h, alice.id, 999 - others, MAX_STATUS_MEDIA);
+      }
+      for (const [name, run] of Object.entries(callers)) {
+        const id = await restoredHolding(h, alice.id, ++n, held, {
+          attempts: name === "failure" ? MAX_ATTEMPTS - 1 : 0,
+        });
+        const kept = await heldBy(h, id);
+        expect(kept, name).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(n, held - 1 - i)));
+        const { output, statements } = await run(id);
+        expect(output, name).toMatchObject(outcomes[name as keyof typeof outcomes]);
+        // The author's statuses count is taken again over its statuses, one more for each publication of the run.
+        const rows = (only?: RegExp) =>
+          statements
+            .filter((s) => (only === undefined ? !recount.test(s.query) : only.test(s.query)))
+            .reduce((sum, s) => sum + s.rows, 0);
+        reads[name]?.push([rows(detach), rows()]);
+        // Its four are detached, attachable for a day from the call.
+        const freed = await sql<{ scheduled_status_id: string | null; gc_at: string }>(
+          h.store,
+          `SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id IN (${kept.map(() => "?").join(", ")})`,
+          ...kept,
+        );
+        expect(freed, name).toEqual(
+          kept.map(() => ({ scheduled_status_id: null, gc_at: at((name === "delete" ? NOW : NOW + HOUR) + DAY) })),
+        );
+      }
+    }
+    expect(await count(h, "scheduled_statuses")).toBe(2 * others);
+    for (const [name, measured] of Object.entries(reads)) {
+      expect(measured[0]?.[0], name).toBeGreaterThan(0);
+      expect(measured, name).toEqual([measured[0], measured[0], measured[0]]);
+    }
+  }, 120_000);
+
+  it("holds four through the API, and refuses a fifth, held directly or moved, but not a reorder", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const media = [];
+    for (let i = 1; i <= MAX_STATUS_MEDIA + 1; i++) {
+      media.push(await upload(h, alice, i));
+    }
+    const four = media.slice(0, MAX_STATUS_MEDIA);
+    const fifth = media[MAX_STATUS_MEDIA]!;
+    const created = await scheduled(h, alice, { status: "four", media_ids: four, scheduled_at: at(NOW + HOUR) });
+    expect(created.media_attachments.map((m) => m.id)).toEqual(four);
+    const other = await scheduled(h, alice, { status: "one", media_ids: [fifth], scheduled_at: at(NOW + HOUR) });
+    // Moved from another scheduled status or from none, or held by a new row, a fifth is refused.
+    const move = (to: string, id: string) =>
+      sql(h.store, "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", to, id);
+    await expect(move(created.id, fifth)).rejects.toThrow(HELD_REFUSED);
+    const sixth = await upload(h, alice, 6);
+    await expect(move(created.id, sixth)).rejects.toThrow(HELD_REFUSED);
+    await expect(
+      sql(
+        h.store,
+        `INSERT INTO media_attachments (id, account_id, scheduled_status_id, type, url, processed)
+				VALUES ('819999999999999999', ?, ?, 'image', 'https://kopje.test/files/n/full', 1)`,
+        alice.id,
+        created.id,
+      ),
+    ).rejects.toThrow(HELD_REFUSED);
+    // A write that keeps each upload's scheduled status passes: a reorder that ties two positions shows them by id.
+    await sql(
+      h.store,
+      `UPDATE media_attachments SET scheduled_status_id = scheduled_status_id, position = 3 - position / 2
+				WHERE scheduled_status_id = ?`,
+      created.id,
+    );
+    const shown = await getJson<Scheduled>(h, `/api/v1/scheduled_statuses/${created.id}`, alice.token);
+    expect(shown.body.media_attachments.map((m) => m.id)).toEqual([four[2], four[3], four[0], four[1]]);
+    expect(await heldBy(h, other.id)).toEqual([fifth]);
+  });
+
+  it("drops a restored row whose media_ids name an upload the upgrade detached, as for media gone", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const past = await restoredHolding(h, alice.id, 1, MAX_STATUS_MEDIA + 1, { named: MAX_STATUS_MEDIA + 1 });
+    const within = await restoredHolding(h, alice.id, 2, MAX_STATUS_MEDIA, { named: MAX_STATUS_MEDIA });
+    // The first by position is the last written: the upgrade detached the first written of the five.
+    expect(await heldBy(h, past)).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(1, 4 - i)));
+    expect(
+      await sql(h.store, "SELECT scheduled_status_id FROM media_attachments WHERE id = ?", heldUpload(1, 0)),
+    ).toEqual([{ scheduled_status_id: null }]);
+    expect(await publishDirectly(h, past, NOW + HOUR)).toEqual({ status: "dropped", reason: "invalid" });
+    expect(await heldBy(h, past)).toEqual([]);
+    const published = await publishDirectly(h, within, NOW + HOUR);
+    expect(published).toMatchObject({ status: "published" });
+    const statusId = (published as { statusId: string }).statusId;
+    const shown = await getJson<Status & { media_attachments: { id: string }[] }>(h, `/api/v1/statuses/${statusId}`);
+    expect(shown.body.media_attachments.map((m) => m.id)).toEqual(
+      Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(2, MAX_STATUS_MEDIA - 1 - i)),
+    );
+  });
+});
+
 // ---- RES-3: a scheduled status's maximum, and the list within ANSWER_BYTES.
 
 const C = "\u0001";
@@ -1126,8 +1331,8 @@ async function maximalScheduled(
 ): Promise<string> {
   const id = String(750000000000000000n + BigInt(n));
   const size = { width: LONGEST_DOUBLE, height: LONGEST_DOUBLE };
-  await runInDurableObject(h.store, (_instance, state) => {
-    state.storage.sql.exec(
+  const write = (sql: SqlStorage) => {
+    sql.exec(
       "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
       id,
       owner,
@@ -1135,7 +1340,7 @@ async function maximalScheduled(
       GROWING_PARAMS,
     );
     for (let i = 0; i < held; i++) {
-      state.storage.sql.exec(
+      sql.exec(
         `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, preview_url,
 					description, meta, focus_x, focus_y, blurhash)
 				VALUES (?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?)`,
@@ -1152,7 +1357,13 @@ async function maximalScheduled(
         blurhashOf(5, 5, "~"),
       );
     }
-  });
+  };
+  // Past MAX_STATUS_MEDIA, only a restore from before 0103 holds them, and its upgrade keeps the first four.
+  if (held > MAX_STATUS_MEDIA) {
+    await beforeCap(h, write);
+  } else {
+    await runInDurableObject(h.store, (_instance, state) => write(state.storage.sql));
+  }
   return id;
 }
 
@@ -1284,9 +1495,9 @@ describe("a scheduled status at its caps (RES-3)", () => {
     expect([moved.status, (await moved.json<Scheduled>()).scheduled_at]).toEqual([200, at(NOW + 2 * HOUR)]);
   }, 120_000);
 
-  // The media read takes the first MAX_STATUS_MEDIA by position through media_attachments_scheduled, so a restored row
-  // holding more reads no more.
-  it("shows the first 4 held media by position, reading as many entries however many it holds", async () => {
+  // A restored row that held more keeps its first MAX_STATUS_MEDIA by (position, id) through the upgrade of
+  // 0103_scheduled_media_cap, and the media read takes them through media_attachments_scheduled: it reads no more.
+  it("shows the first 4 held media by position, reading as many entries however many it held", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     const remote = await remoteAccount(h.store, "far");

@@ -28,6 +28,7 @@ import {
   verifiedLinksPastBoundSql,
   warningStatusIdsPastBoundSql,
 } from "../platform/stored-bounds";
+import { heldFullSql } from "./scheduled-statuses";
 import { pinsFullSql } from "./status-actions";
 
 // The triggers in force that hold a stored bound or a cap of stored-bounds.ts (RES-2, RES-4), each as the last
@@ -110,6 +111,7 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 }
 
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
+const HELD_CAP_REFUSED = "media_attachments: more media than a scheduled status may hold";
 
 // Each trigger's statement, by the migration that last defines it.
 const STATEMENTS: readonly string[] = [
@@ -335,6 +337,17 @@ END;`,
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
   ),
+  // 0103_scheduled_media_cap: an upload held past what its scheduled status may hold, inserted or moved to it.
+  `CREATE TRIGGER media_attachments_scheduled_cap_insert BEFORE INSERT ON media_attachments
+WHEN ${heldFullSql("NEW.scheduled_status_id", "NEW.id")}
+BEGIN
+  SELECT RAISE(ABORT, '${HELD_CAP_REFUSED}');
+END;`,
+  `CREATE TRIGGER media_attachments_scheduled_cap_update BEFORE UPDATE OF scheduled_status_id ON media_attachments
+WHEN NEW.scheduled_status_id IS NOT OLD.scheduled_status_id AND ${heldFullSql("NEW.scheduled_status_id", "NEW.id")}
+BEGIN
+  SELECT RAISE(ABORT, '${HELD_CAP_REFUSED}');
+END;`,
 ];
 
 // Each registered trigger's statement by its name.
