@@ -33,6 +33,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
   instance's front page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
   `wrangler.jsonc` change.
+- Web Push subscriptions keep the `added_to_collection` and `collection_update` alerts of Mastodon 4.6. Kopje sends no
+  such notification yet. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 

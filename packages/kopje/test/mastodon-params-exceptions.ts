@@ -10,14 +10,6 @@ const PAGE = ["limit", "max_id", "min_id", "since_id"];
 const NOT_SERVED = (...names: string[]) => accepted("MD-2", ...names);
 const PLACEHOLDER = (...names: string[]) => accepted("MD-3", ...names);
 
-// The collection alerts of Mastodon 4.6: push.ts reads data[alerts][<type>] only for ALERT_TYPES.
-const PUSH_COLLECTION_ALERTS = open(
-  1582,
-  "the collection alerts of Mastodon 4.6",
-  "data[alerts][added_to_collection]",
-  "data[alerts][collection_update]",
-);
-
 // Mastodon 4.6's bot condition of the notification policy, v1 and v2.
 const POLICY_V1_BOTS = open(1582, "Mastodon 4.6's bot condition", "filter_bots");
 const POLICY_V2_BOTS = open(1582, "Mastodon 4.6's bot condition", "for_bots");
@@ -50,9 +42,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   "PUT /api/v1/notifications/policy": POLICY_V1_BOTS,
   "PATCH /api/v2/notifications/policy": POLICY_V2_BOTS,
   "PUT /api/v2/notifications/policy": POLICY_V2_BOTS,
-  "POST /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
-  "PUT /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
-  "PATCH /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
   "PATCH /api/v1/accounts/update_credentials": open(
     1583,
     "the profile image descriptions of Mastodon 4.6",
