@@ -1,7 +1,7 @@
 import type { Db } from "../../db/sql";
 import { normalizeDomain } from "../../platform/domain-name";
 import { LOCAL_ROW_JOIN } from "../account-columns";
-import { type Account, accountByAddress, presentAccountById } from "../accounts";
+import { type Account, accountByLookup, presentAccountById } from "../accounts";
 import { PIN_LIMIT } from "../activities";
 import { availableJoinedSql } from "../audience";
 import type { Status } from "../status-presenter";
@@ -160,14 +160,15 @@ export function localPageAccount(
   return account === undefined ? { status: "not_found" } : { id: row.id, account };
 }
 
-// /@username@domain/tagged/:tag of a remote account (featured-tags.ts taggedUrl): its profile on its own server, while
-// it is available; Kopje shows no remote account's posts by hashtag.
+// /@username@domain/tagged/:tag of a remote account (featured-tags.ts taggedUrl, `<id>@handle.invalid` for an
+// invalidated handle, found as lookup finds it): its profile on its own server, while it is available; Kopje shows no
+// remote account's posts by hashtag.
 function remoteTagged(db: Db, handle: string, site: Site): ProfilePage {
   const [username = "", domain = "", ...rest] = handle.replace(/^@/, "").split("@");
   if (username === "" || domain === "" || rest.length > 0) {
     return { status: "not_found" };
   }
-  const account = accountByAddress(db, username, normalizeDomain(domain) ?? domain.toLowerCase(), pagePresent(site));
+  const account = accountByLookup(db, username, normalizeDomain(domain) ?? domain.toLowerCase(), pagePresent(site));
   if (account === null || account.suspended === true || account.acct === account.username) {
     return { status: "not_found" };
   }

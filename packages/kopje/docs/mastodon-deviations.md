@@ -105,10 +105,11 @@ A pull request that fixes a gap removes the exceptions that cite it.
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
   `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
-- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds
-  the statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most
-  16 mentions (of available accounts, among the first 64 references) and 16 hashtags are listed; `content` links every
-  hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
+- **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds the
+  statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most 16
+  mentions (of available accounts, among the first 64 references, each the account that holds the handle when the
+  announcement is read, as Mastodon's `Announcement#mentions` resolves it) and 16 hashtags are listed; `content` links
+  every hashtag. A text whose rendering passes 64 KiB of JSON is refused when written, and one that passes it later (a
   mentioned account's URL grew) is shown escaped with no link. A scheduled announcement is published by the 5-minute
   cron within 5 minutes after `scheduled_at`, with `published_at` = `scheduled_at`. At most 16 are published or
   scheduled and 1,000 kept. Reactions are grouped by name (Mastodon groups by name and emoji), and a Unicode reaction is
@@ -199,6 +200,16 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
+- An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
+  domain name. A compliant host is shorter than 256 characters, so only one padded with characters IDNA ignores (U+00AD)
+  is that long; Mastodon refuses such padding much sooner, when its IDNA conversion fails (between 60 and 120 U+00AD in
+  a check), and Kopje accepts it up to the 1,020 bytes (#1606). Domains and lists past the presented bounds, whether
+  saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
+  `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
+  (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
+- A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
+  `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
+  once, as the HTML it presents and federates.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
@@ -346,6 +357,16 @@ Accounts (the `Account` and credential account entities):
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is
   available, otherwise `[]`: Kopje has no other role to highlight. A remote account shows none, as in Mastodon.
 - `uri` is `''` for an imported actor id whose JSON passes 2,048 bytes; ingestion stores none.
+- An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
+  `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
+  as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
+  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
+  `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
+  search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
+  where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
+  hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
+  username.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
@@ -424,6 +445,14 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
 
   Mastodon 4.7.5 reads every item of the featured collection's first page, and the featured hashtags until it has 10
   or has read 10 pages, both only on the actor's host. Accepted, 2026-11-15.
+
+- A pinned status a sync stores, or finds already stored, has its quote verified only when the status reaches Kopje
+  another way (a delivery, a boost, an `Add`, a search); until then its quote stays pending. Mastodon 4.7.5 verifies a
+  pinned status's quote as any status's (`fetch_featured_collection_service.rb:34`, `create.rb:417-419`) and bounds
+  the fetches that follow from one only per request (`DISCOVERIES_PER_REQUEST`, 1,000 accounts and 1,000 statuses,
+  each count expiring 5 minutes after its last increment). Kopje gives quote verification work only to statuses that a
+  delivery or a user's request brought, so that reading an account's collections leads to no other account (RES-6).
+  Accepted, 2026-11-15.
 
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
@@ -532,15 +561,28 @@ Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campa
 `POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
 [threat-model.md](threat-model.md)):
 
-- A token past its expiry or revoked is answered as no token, whatever its owner's state: donation campaigns answers
-  422 and e-mail subscriptions its 404. A token of an earlier credential epoch is answered the same way while its owner
-  is available, and 403 while its owner is suspended, as on every route. Mastodon reads these two routes' token only
-  through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its value,
-  expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token of an
-  available owner gets donation campaigns' 204, and one of a suspended owner gets 403 on both. In Kopje a token past
-  its expiry or revoked is no credential on any route: the Store refuses an expired one inside the operation and
-  deletes a revoked one. The visible difference is only the status code of a feature-off answer. Accepted,
-  2026-11-15.
+- A token past its expiry, revoked or of an earlier credential epoch is answered as no token while its owner is
+  available: donation campaigns answers 422 and e-mail subscriptions its 404. Mastodon reads these two routes' token
+  only through `Api::BaseController#current_user`, which takes the owner of the token row Doorkeeper finds by its
+  value, expired or revoked, since neither controller checks the token (`doorkeeper_authorize!`). There, such a token
+  of an available owner gets donation campaigns' 204. In Kopje such a token is no credential on any route: the Store
+  refuses an expired one inside the operation and deletes a revoked one. The visible difference is only the status
+  code of a feature-off answer. Accepted, 2026-11-15.
+- A suspended owner's token answers 403 `Your login is currently disabled` while the Store holds its row, expired or of
+  an earlier epoch alike, as Mastodon's `require_not_suspended!` answers before Doorkeeper's checks, on every API route
+  but `GET /api/v1/instance`, `/api/v2/instance`, `/api/v1/instance/rules`, `/api/v1/instance/peers` and
+  `/api/v1/instance/extended_description`, which read no token, as Mastodon's controllers there read a user only in
+  limited federation mode, which Kopje does not have (AUTH-2). A row the Store no longer holds is no credential: it
+  reads as no token where a route needs none, and as an invalid token (401) where one is needed. A revoked token is
+  deleted at once, an expired one by the cron's sweep, and a suspension's tokens job deletes the account's tokens
+  shortly after the suspension, so the 403 lasts until then and the tokens stay no credential after an unsuspension.
+  Mastodon revokes nothing on a suspension and finds revoked and expired rows until its daily
+  `Vacuum::AccessTokensVacuum`, so it answers 403 for the whole suspension. Accepted, 2026-11-15.
+- `POST /api/v1/apps` with a suspended owner's token, expired or not, answers 403 where the registration limiter would
+  answer 429: Kopje judges the token's owner on every answer of an anonymous route (AUTH-2), the limiter's included,
+  while Mastodon 4.7.5's Rack::Attack throttles before the controller's `require_not_suspended!`. A request there with
+  any other Bearer token, an unknown one included, costs one Store call (`checkNotSuspended`) even when the limiter
+  refuses it. Accepted, 2026-11-15.
 
 Remote interaction (`/authorize_interaction`, the subscribe template of WebFinger):
 
@@ -559,6 +601,21 @@ Remote interaction (`/authorize_interaction`, the subscribe template of WebFinge
   server's search, for a server whose template is another path. The server is accepted only as a bounded DNS name.
 - The status page's embed code is offered in a dialog with a copy button (Mastodon's web client: the post's menu,
   "Embed"); the code is the oEmbed `html`, the same as Mastodon's.
+
+WebFinger (`/.well-known/webfinger`; Mastodon's `WebfingerResource` and `WebfingerSerializer`):
+
+- The instance actor answers for its URI (`/actor`) and for its handle, `acct:<domain>@<domain>`, whose username must
+  be the domain exactly, as Mastodon's `account_from_acct` matches its own instance actor. Its `preferredUsername` is
+  the domain, where Mastodon's is `mastodon.internal`, so its subject is `acct:<domain>@<domain>`. Account lookup,
+  search, mentions and the public pages never find it. Mastodon asks for the instance actor before any local account;
+  Kopje asks after, so a local account whose username is the domain (which conversion, import and configuration now
+  refuse, threat model ID-5) keeps that handle, and the instance actor of such an instance has no handle answer.
+- Every answer, a local account's and the instance actor's, has the `self` link, a `profile-page` link without a media
+  type (the instance actor's to `/about`, where Mastodon links `/about/more?instance_actor=true`, which redirects
+  there) and the subscribe template, and none of FEP-3b86's `Create` and `Object` templates. Asked for a handle, its
+  aliases are the actor id alone (Mastodon adds a local account's profile URL); asked for a URI, its subject is that
+  URI, where Mastodon's is always the handle. It has no `Cache-Control` (Mastodon: public for 3 days, 3 minutes for a
+  400, 404 or 410).
 
 Search (`/api/v2/search`, `/api/v1/accounts/search`):
 
@@ -583,6 +640,10 @@ Hashtags (the `Tag` entity):
   follow, a featured hashtag, a timeline, a page and a search, and a received post is filed under it whatever its
   `Hashtag`'s `href` names. Migration 0087 renamed and merged the names stored before it without sending an activity, so
   a Mastodon follower of an account whose two featured hashtags it merged may keep both.
+- A post's hashtags are found as Mastodon 4.7.5's `Tag::HASHTAG_RE` finds them, over the whole text: `#` or `＃` at
+  the text's start or after whitespace (`src/domain/status-text.ts`). Mastodon then drops an `http` or `https` ending
+  from a hashtag followed by `://` (`Extractor#extract_hashtags_with_indices`), which Kopje keeps:
+  `#taghttps://example.com` is the hashtag `taghttps`, where Mastodon's is `tag`.
 - `history` is counted again on every read from the stored statuses: public originals, by the UTC day of their
   publication (Mastodon counts a status on the day it receives it), with `accounts` exact (Mastodon's is a HyperLogLog
   estimate). A deleted status and the statuses of an unavailable author leave the counts (Mastodon never decrements
@@ -671,6 +732,19 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   clears the suspension directly, and `UnblockDomainService` lifts only suspensions whose timestamp equals the block's
   `created_at`, so there an individual suspension with any other timestamp survives the unblock, as Kopje's
   individual suspension does (`account` wins), and one with that timestamp does not.
+
+Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
+
+- The summary of an `admin.report` and of a `moderation_warning` is `You're on an app that does not support the most
+  recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's link reads `Sign in
+  to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
+  `moderation_warning`'s goes to the strike's dispute page; Kopje has neither a web app nor disputes. Accepted,
+  2026-11-15.
+- Only `admin.report` and `moderation_warning` carry one: Kopje writes no other type outside Mastodon's baseline, and a
+  restored row of another such type has none.
+- A title names an account within the presented bounds (RES-2): its username as `usernameSql` reads it, within 255
+  bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
+  within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.
 
 Request parameters:
 
@@ -934,8 +1008,8 @@ Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NE
   domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
   has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
 
-Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create` and `Update`; ID-7 in
-`docs/threat-model.md`):
+Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create`, `Update` and `Undo`;
+ID-7 in `docs/threat-model.md`):
 
 - A retraction lasts 30 days, so a `Create` replayed after that is accepted again. Mastodon's `Tombstone` has no expiry
   (`delete.rb`, `create.rb`, `update.rb`) and is cleared when the account's key changes (`process_account_service.rb`).
@@ -952,6 +1026,11 @@ Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Del
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.
+- Kopje reads `atomUri` only as an http(s) URI. An OStatus-era `tag:` identity, which Mastodon gave statuses before
+  ActivityPub (`OStatus::TagManager`, `app/lib/ostatus/tag_manager.rb:22`) and which a cutover may keep as a stored
+  status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
+  one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
+  the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):

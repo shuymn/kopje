@@ -2,6 +2,8 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../../src/db/sql";
+import type { VisibleStatusId } from "../../src/domain/audience";
+import { presentStatus } from "../../src/domain/status-presenter";
 import { streamDelete } from "../../src/domain/streaming";
 import { sha256Hex } from "../../src/security/tokens";
 import { type ApiHarness, bearer, json, seedAccount, sql } from "../api-helpers";
@@ -9,7 +11,17 @@ import { NOW } from "../app-helpers";
 import { BUILD } from "../helpers";
 import { token } from "../inbox-status-helpers";
 import { scopedToken } from "../read-helpers";
-import { act, community, follow, getJson, post, remoteAccount, type Status } from "../status-helpers";
+import {
+  act,
+  community,
+  follow,
+  getJson,
+  importedNotification,
+  interactWith,
+  post,
+  remoteAccount,
+  type Status,
+} from "../status-helpers";
 import { connect, drained, echo, type Inbox, type StreamMessage, subscribed } from "./stream-helpers";
 
 // The `user` stream's statuses: `update` when a status enters home (R33: home
@@ -294,6 +306,118 @@ describe("delete on user", () => {
     await drained(h, inbox);
     expect(await sql(h.store, "SELECT count(*) AS n FROM stream_events WHERE kind = 'delete'")).toEqual([{ n: 0 }]);
     expect(inbox.rest()).toEqual([]);
+  });
+});
+
+// StatusCacheHydrator#hydrate_reblog_payload: a streamed boost carries its original's favourited, reblogged and
+// filtered, muted and bookmarked false, and pinned false when it is the viewer's own; its reblog, the original's own.
+describe("a boost on user", () => {
+  it("sends a boost with its original's favourited and reblogged, bookmarked and muted false", async () => {
+    const h = await community(["alice", "bob", "dave"]);
+    const { alice, bob, dave } = h.users;
+    await follow(h, alice, bob.id);
+    const mine = await post(h, dave, { status: "boosted by alice", visibility: "public" });
+    const theirs = await post(h, dave, { status: "boosted by bob", visibility: "public" });
+    for (const original of [mine, theirs]) {
+      await act(h, alice, `/api/v1/statuses/${original.id}/favourite`);
+      await act(h, alice, `/api/v1/statuses/${original.id}/bookmark`);
+    }
+    const inbox = await subscribed(h, alice.token, "user");
+    const own = await (await act(h, alice, `/api/v1/statuses/${mine.id}/reblog`)).json<Status>();
+    const other = await (await act(h, bob, `/api/v1/statuses/${theirs.id}/reblog`)).json<Status>();
+    await drained(h, inbox);
+    expect(events(inbox)).toEqual([
+      ["user", "update", own.id],
+      ["user", "update", other.id],
+    ]);
+    const payload = async () => JSON.parse((await inbox.next()).payload!) as Record<string, unknown>;
+    const first = await payload();
+    expect(first).toMatchObject({
+      id: own.id,
+      favourited: true,
+      reblogged: true,
+      muted: false,
+      bookmarked: false,
+      pinned: false,
+      reblog: { id: mine.id, favourited: true, reblogged: true, bookmarked: true },
+    });
+    const second = await payload();
+    expect(second).toMatchObject({
+      id: other.id,
+      favourited: true,
+      reblogged: false,
+      muted: false,
+      bookmarked: false,
+      reblog: { id: theirs.id, favourited: true, reblogged: false, bookmarked: true },
+    });
+    expect(second).not.toHaveProperty("pinned");
+  });
+
+  // NotifyService#push_to_streaming_api! renders without relationships, so the status's flags read status.proper. The
+  // notification naming a boost is import-shaped.
+  it("sends a notification naming a boost with the original's flags, where REST lists the boost's own", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    const original = await post(h, alice, { status: "boosted", visibility: "public" });
+    await interactWith(h, carol, original.id);
+    const boost = await (await act(h, bob, `/api/v1/statuses/${original.id}/reblog`)).json<Status>();
+    const inbox = await subscribed(h, carol.token, "user:notification");
+    await importedNotification(h.store, carol.id, bob.id, boost.id);
+    await drained(h, inbox);
+    const proper = { favourited: true, reblogged: true, bookmarked: true };
+    const own = { favourited: false, reblogged: false, bookmarked: false };
+    const [streamed, ...rest] = inbox.rest();
+    expect(rest).toEqual([]);
+    expect(streamed?.event).toBe("notification");
+    expect(JSON.parse(streamed!.payload!)).toMatchObject({
+      type: "status",
+      status: { id: boost.id, ...proper, reblog: { id: original.id, ...proper } },
+    });
+    const listed = await getJson<{ status: Status }[]>(h, "/api/v1/notifications?types[]=status", carol.token);
+    expect(listed.body.map((n) => n.status)).toMatchObject([{ id: boost.id, ...own, reblog: { id: original.id } }]);
+  });
+
+  // A filter naming the boost's own id, and an import-shaped mute of the boost's own thread (Kopje's boosts take their
+  // own uri as thread; Mastodon's have no conversation), apply to the boost answered on its own, not streamed.
+  it("filters a streamed boost as its original, and shows it not muted", async () => {
+    const h = await community(["alice", "bob", "dave"]);
+    const { alice, bob, dave } = h.users;
+    const original = await post(h, dave, { status: "boosted", visibility: "public" });
+    const boost = await (await act(h, bob, `/api/v1/statuses/${original.id}/reblog`)).json<Status>();
+    const filters = async (id: string) => {
+      const created = await act(h, alice, "/api/v2/filters", { title: id, context: ["home"], filter_action: "warn" });
+      const { id: filterId } = await created.json<{ id: string }>();
+      expect((await act(h, alice, `/api/v2/filters/${filterId}/statuses`, { status_id: id })).status).toBe(200);
+      return filterId;
+    };
+    const ofBoost = await filters(boost.id);
+    const ofOriginal = await filters(original.id);
+    await sql(
+      h.store,
+      "INSERT INTO conversation_mutes (account_id, thread) SELECT ?, thread FROM statuses WHERE id = ?",
+      alice.id,
+      boost.id,
+    );
+    const streamed = await runInDurableObject(h.store, (_instance, state) =>
+      presentStatus(new Db(state.storage.sql), boost.id as VisibleStatusId, {
+        origin: "https://kopje.test",
+        viewer: { accountId: alice.id, now: new Date(NOW).toISOString() },
+        streamed: true,
+      }),
+    );
+    type Filtered =
+      | { filtered?: { filter: { id: string } }[]; muted?: boolean; reblog?: Filtered | null }
+      | null
+      | undefined;
+    const matched = (status: Filtered) => status?.filtered?.map((result) => result.filter.id);
+    expect(matched(streamed)).toEqual([ofOriginal]);
+    expect(matched(streamed?.reblog)).toEqual([ofOriginal]);
+    expect(streamed?.muted).toBe(false);
+    // Answered on its own (REST), both filters apply, as Mastodon's apply_cached_filters reads the boost's id and its
+    // original's, and the mute shows.
+    const rest = await getJson<Filtered>(h, `/api/v1/statuses/${boost.id}`, alice.token);
+    expect(matched(rest.body)?.toSorted()).toEqual([ofBoost, ofOriginal].toSorted());
+    expect(rest.body?.muted).toBe(true);
   });
 });
 

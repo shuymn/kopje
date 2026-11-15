@@ -30,10 +30,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   change.
 - The notification policy has Mastodon 4.6's bot condition: `for_bots` in `/api/v2/notifications/policy` and
   `filter_bots` in `/api/v1/notifications/policy`, accept by default. It matches a sender whose actor type is
-  `Application` or `Service` that the user does not follow. Migration `0094_notification_policy_bots` adds the column
+  `Application` or `Service` that the user does not follow. Migration `0095_notification_policy_bots` adds the column
   with its default, which decides every stored policy as before; the upgrade checks no reference (34 ms for this file
   in one local run of the migration bench, at a load average of 14 to 24). `wrangler.jsonc`: unchanged. This adds a
   Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Notification reads take `supported_types[]` (`GET /api/v1/notifications`, `/api/v1/notifications/:id`,
+  `/api/v2/notifications`, `/api/v2/notifications/:group_key`), as in Mastodon 4.6: an `admin.report` or
+  `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
+  instance's front page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
+  `wrangler.jsonc` change.
+- Web Push subscriptions keep the `added_to_collection` and `collection_update` alerts of Mastodon 4.6. Kopje sends no
+  such notification yet. No Store migration and no `wrangler.jsonc` change.
+- An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
+  `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
+- A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to
+  it, as Mastodon does: an `Update` edits it, replies waiting on the other id are linked to it, and a boost, pin or
+  quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
+  handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -76,9 +90,40 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - At most ten entries each of an actor's `publicKey` and `assertionMethod` are read, as Mastodon reads them, and an
   entry that wraps others (a nested array, a `@list` or a `@set`) is skipped, as Mastodon reads no key from it. No Store
   migration and no `wrangler.jsonc` change.
+- An attribution domain (`attribution_domains[]`) longer than 1,020 UTF-8 bytes is refused as not a valid domain
+  name. CredentialAccount's `source.attribution_domains` and the actor show at most 100 domains of at most 1,020 bytes,
+  and none for a list past 102,302 bytes: domains or lists past these bounds, those saved before this release
+  included, stay stored and are hidden ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store
+  migration and no `wrangler.jsonc` change.
+- A display name may have 40 characters, as in Mastodon 4.6; it had 30. The settings page's fields accept astral
+  characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
+- A post may carry a poll and media together, on posting, editing and scheduling, as Mastodon 4.6 allows
+  (`mastodon#39203`); Kopje answered 422 `Cannot attach more than 4 files`. Its `Question` carries the attachments. No
+  Store migration and no `wrangler.jsonc` change.
+- A hashtag in a post starts at the beginning of the text or after whitespace (a no-break space included) and may be
+  written `＃`, as Mastodon 4.7.5 reads it: `(#tag)` and `text.#tag` are no longer hashtags. Posts already stored keep
+  their hashtags until edited.
+- An `Accept` or `Reject` of a quote request is matched by the request's id only, as Mastodon 4.7 does; one that
+  embeds a request under another id changes nothing.
+- A suspended user's token is refused with 403 "Your login is currently disabled" before its expiry is judged, as
+  Mastodon does, on every API route but `GET /api/v1/instance`, `/api/v2/instance`, `/api/v1/instance/rules`,
+  `/api/v1/instance/peers` and `/api/v1/instance/extended_description`, which read no token, as Mastodon reads no user
+  there: also when it has expired, where 401 was answered, and on the other routes that need no token, where it was
+  ignored (app registration, custom emoji, oEmbed, the public account routes, peer search and the instance's activity,
+  languages, translation languages, privacy policy and terms of service), until the suspension's cleanup deletes the
+  token. Any other token on those routes is still ignored; streaming still answers with 401. No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Fixed
 
+- WebFinger answers the instance actor for its handle, `acct:<domain>@<domain>`, as Mastodon answers its own: the
+  subject, the `self` link to `/actor` and the alias `/actor`. Mastodon 4.7 confirms a new actor's handle by WebFinger
+  before it stores it, so a server in secure mode that had not seen the instance actor refused the fetches it signs.
+  The instance actor is still no account to lookup, search, mentions or the public pages, and never takes the handle
+  of a local account whose username is the domain. No Store migration and no `wrangler.jsonc` change.
+- A local account whose username is the instance domain, in any case, is refused: the cutover's conversion stops on
+  it (`accounts:local-username-is-domain`) and verification fails on it, a Store import fails its verification, and
+  the configuration refuses such a domain. It would hold the instance actor's WebFinger handle.
 - `source.follow_requests_count` (`verify_credentials`, `update_credentials`) counts only requests from available
   accounts, at most 40, as Mastodon 4.5.21 does. It counted every pending request, those of suspended accounts
   included, without a limit, and read all of them. It counts among the newest 120 requests, as the first page of
@@ -102,6 +147,32 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A quoted author's revocation of a quote (the stamp's `Delete`) that a Mastodon 4.5.10 or later forwards with the
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
+- An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
+  Store migration and no `wrangler.jsonc` change.
+- A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
+  spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
+  every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
+  display name was stored with its spaces, tabs and line breaks, and a bio lost the whitespace at the ends of its
+  paragraphs, Unicode spaces included. A bio of whitespace only is stored empty
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
+- The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified
+  there: a pinned status's quote, newly fetched or already stored, is verified when the status reaches Kopje another
+  way, as a delivery, a boost, an `Add` or a search, so reading an account's collections leads to no other account
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"; RES-6 in
+  [docs/threat-model.md](docs/threat-model.md)). Mastodon 4.7.5 verifies them. A quote's verification now applies its
+  quoted status's author document at most 6 times however its rounds end, and then ends; its retries are unchanged.
+  Migration `0094_quote_author_fetches`: a column of `quotes` with a CHECK, which the upgrade tests against every
+  stored quote (745 ms for this file in one local run of the migration bench, at a load average of 30 to 40).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
+- A boost answered on its own (the reblog response, `GET /api/v1/statuses/:id`, `GET /api/v1/statuses`, its deletion
+  and its interaction-policy update), a reported boost in the admin API's reports, and a boost named by a notification
+  or a notification request shown alone (`GET /api/v1/notifications/:id`, `GET /api/v2/notifications/:group_key`, a
+  streamed notification, `GET /api/v1/notifications/requests/:id`) show its original's `favourited`, `reblogged` and
+  `bookmarked`, as Mastodon does; all three were false. On streaming, a boost shows its original's `favourited`,
+  `reblogged` and `filtered`, with `bookmarked` and `muted` false and `pinned` false on one's own boost, as
+  Mastodon's streaming does.
 
 ## [0.5.2] - 2026-11-14
 

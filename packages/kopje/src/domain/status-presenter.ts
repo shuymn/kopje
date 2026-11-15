@@ -22,7 +22,7 @@ import {
   storedBlurhash,
 } from "../platform/stored-bounds";
 import { remotePlainText } from "../security/html";
-import { type Account, accountsOf, accountUrl, acctOf, type Present } from "./accounts";
+import { type Account, accountsOf, accountUrl, acctOf, type Present, shownHandle } from "./accounts";
 import { admit, type Admitted, jsonBytes } from "./answer-budget";
 import {
   type ApiQuoteState,
@@ -234,7 +234,12 @@ export type StatusRow = {
 };
 
 // viewer: the viewer (accountId null: anonymous) and the request time, which a poll's expiry is judged at.
-export type PresentOptions = Present & { viewer: ViewerContext };
+// A boost's favourited, reblogged and bookmarked are its own (false) by default, as Mastodon's relationship maps are
+// keyed by the boost's id. proper: its original's, as where Mastodon renders without relationships
+// (Account::Interactions#favourited? and its siblings read status.proper). streamed: as streaming's hydration overrides
+// them (StatusCacheHydrator#hydrate_reblog_payload): favourited, reblogged and filtered its original's, muted and
+// bookmarked false, pinned false on the viewer's own boost. A boost whose original the viewer may not see shows false.
+export type PresentOptions = Present & { viewer: ViewerContext; proper?: true; streamed?: true };
 
 export type PresentOwnOptions = PresentOptions & {
   // DELETE answers with the source text (`text`) in place of `content`, for redrafting, and with the quoted status of
@@ -760,7 +765,12 @@ function hydrate(
         const text = texts.get(top ? row.id : quotedKey(row.id)) ?? { text: "", cut: 0 };
         filtered = applyFilters(filters, statusMatches, {
           ...text,
-          ids: row.reblog_of_id === null ? [row.id] : [row.id, row.reblog_of_id],
+          ids:
+            row.reblog_of_id === null
+              ? [row.id]
+              : options.streamed === true
+                ? [row.reblog_of_id]
+                : [row.id, row.reblog_of_id],
         });
       }
       if (kind === "quoted") {
@@ -798,19 +808,25 @@ function hydrate(
     const proper = (row.reblog_of_id === null ? row : byId.get(row.reblog_of_id)) ?? row;
     const policy = proper.quote_policy;
     const visibility = apiVisibility(row.visibility);
+    // A boost's shape (PresentOptions): the original's flags were read with the rest (`all` holds every visible
+    // original of a boost).
+    const streamedBoost = options.streamed === true && row.reblog_of_id !== null;
+    const flagged = row.reblog_of_id !== null && (options.proper === true || streamedBoost) ? row.reblog_of_id : row.id;
     const viewer =
       viewerId === null
         ? {}
         : {
-            favourited: flags.favourited.has(row.id),
-            reblogged: flags.reblogged.has(row.id),
-            muted: flags.muted.has(row.id),
-            bookmarked: flags.bookmarked.has(row.id),
+            favourited: flags.favourited.has(flagged),
+            reblogged: flags.reblogged.has(flagged),
+            muted: !streamedBoost && flags.muted.has(row.id),
+            bookmarked: !streamedBoost && flags.bookmarked.has(flagged),
             // Only on an own status that may be pinned (REST::StatusSerializer#pinnable?: not a boost, and
-            // public, unlisted or private).
+            // public, unlisted or private), and false on an own boost streamed.
             ...(row.account_id === viewerId && row.reblog_of_id === null && !requiresMention(row.visibility)
               ? { pinned: flags.pinned.has(row.id) }
-              : {}),
+              : streamedBoost && row.account_id === viewerId
+                ? { pinned: false }
+                : {}),
             filtered,
           };
     const emojis = presentEmojis(row.emojis, STATUS_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, options.origin));
@@ -841,12 +857,10 @@ function hydrate(
       ...(row.author_domain === null ? { application: presentApplication(row) } : {}),
       account,
       media_attachments: (media.get(row.id) ?? []).map((m) => presentMedia(m, options.origin)),
-      mentions: (mentions.get(row.id) ?? []).map((m) => ({
-        id: m.id,
-        username: m.username,
-        url: accountUrl(m, options.origin),
-        acct: acctOf(m),
-      })),
+      mentions: (mentions.get(row.id) ?? []).map((m) => {
+        const handle = shownHandle(m);
+        return { id: m.id, username: handle.username, url: accountUrl(m, options.origin), acct: handle.acct };
+      }),
       tags: (tags.get(row.id) ?? []).map((t) => ({
         name: t.name,
         url: `${options.origin}/tags/${encodeURIComponent(t.name)}`,
@@ -1018,14 +1032,17 @@ export function statusLinks(db: Db, ids: readonly VisibleStatusId[]): Map<string
   return new Map(
     rows.map((row) => [
       row.id,
-      { url: statusUrl(row), acct: acctOf({ username: row.author_username, domain: row.author_domain }) },
+      {
+        url: statusUrl(row),
+        acct: acctOf({ id: row.account_id, username: row.author_username, domain: row.author_domain }),
+      },
     ]),
   );
 }
 
 type StatusUrlRow = Pick<
   StatusRow,
-  "id" | "uri" | "url" | "reblog_of_id" | "author_uri" | "author_username" | "author_domain"
+  "id" | "uri" | "url" | "reblog_of_id" | "account_id" | "author_uri" | "author_username" | "author_domain"
 >;
 
 const STATUS_LINK_COLUMNS = {
@@ -1033,6 +1050,7 @@ const STATUS_LINK_COLUMNS = {
   uri: STATUS_COLUMN_MAP.uri,
   url: STATUS_COLUMN_MAP.url,
   reblog_of_id: STATUS_COLUMN_MAP.reblog_of_id,
+  account_id: STATUS_COLUMN_MAP.account_id,
   author_uri: STATUS_COLUMN_MAP.author_uri,
   author_username: STATUS_COLUMN_MAP.author_username,
   author_domain: STATUS_COLUMN_MAP.author_domain,

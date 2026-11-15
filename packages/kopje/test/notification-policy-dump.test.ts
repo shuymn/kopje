@@ -6,7 +6,7 @@ import { migratedStore } from "./helpers";
 import { accessAdminStore, copyConfig, dumpViaRpc, importViaRpc } from "./ops-helpers";
 
 // Notification policies in dumps (docs/dump-format.md "Stored bounds"): the bot condition of
-// 0094_notification_policy_bots round-trips with the policy's other choices, and an import is held to its CHECK
+// 0095_notification_policy_bots round-trips with the policy's other choices, and an import is held to its CHECK
 // (refused with the constraint's text).
 
 // Each account's for_bots, and another condition's choice beside it.
@@ -49,7 +49,7 @@ describe("notification policies in dumps", () => {
   it("are refused on import past the CHECK, with the constraint's text", async () => {
     const store = await source();
     const { text } = await dumpViaRpc(store);
-    // for_bots is the table's last column (0094 adds it), so the one policy that drops bots ends its row with it.
+    // for_bots is the table's last column (0095 adds it), so the one policy that drops bots ends its row with it.
     const line = text
       .split("\n")
       .find((l) => l.startsWith('INSERT INTO "notification_policies"') && l.endsWith("'drop');"));

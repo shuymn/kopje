@@ -5,7 +5,6 @@ import {
   type Acted,
   MAX_STATUSES_BY_ID,
   type MediaAttributes,
-  TOO_MANY_FILES,
   UNEXPECTED_MENTIONS,
   type Viewed,
 } from "../domain/statuses";
@@ -39,6 +38,8 @@ const QUOTE_NOT_FOUND = () => mastodonError(404, "The post you are trying to quo
 const MAX_CHARACTERS = 500;
 const MAX_MEDIA_ATTACHMENTS = 4;
 const TOO_LONG = `Validation failed: Text character limit of ${MAX_CHARACTERS} exceeded`;
+// Mastodon's media_attachments.validations.too_many.
+const TOO_MANY_FILES = "Cannot attach more than 4 files";
 
 // ISO 639 codes, optionally with a region or script (zh-TW, zh-Hant). Anything else is ignored, as Mastodon does.
 const LANGUAGE = /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/;
@@ -104,15 +105,14 @@ function pollOf(p: Params): PollInput | string | undefined {
 }
 
 // What POST and PUT share: text, spoiler, sensitive, language, media and a poll, with Mastodon's request validation:
-// the number of media first (PostStatusService#validate_media!'s too_many, which also refuses media with a poll), then
-// the text, then the poll. Which ids are usable is the Store's (statuses.ts mediaToAttach), checked after these. An
-// empty entry is no id, so JSON `media_ids: []` (which the parser reads as one empty entry) removes an edit's media.
+// the number of media first (PostStatusService#validate_media!'s too_many), then the text, then the poll. Which ids
+// are usable is the Store's (statuses.ts mediaToAttach), checked after these. An empty entry is no id, so JSON
+// `media_ids: []` (which the parser reads as one empty entry) removes an edit's media.
 function composition(p: Params): Composition | string {
   const text = p.get("status") ?? "";
   const spoilerText = p.get("spoiler_text") ?? "";
   const mediaIds = p.getAll("media_ids").filter((id) => id !== "");
-  const sendsPoll = p.hasObject("poll");
-  if (mediaIds.length > MAX_MEDIA_ATTACHMENTS || (mediaIds.length > 0 && sendsPoll)) {
+  if (mediaIds.length > MAX_MEDIA_ATTACHMENTS) {
     return TOO_MANY_FILES;
   }
   // The raw bound comes first, so over-long input is refused before it is parsed.

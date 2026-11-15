@@ -168,7 +168,7 @@ names (`warning`) a warning of that recipient (R42); it goes with its warning.
 
 R15 also has a policy part, the recipient's notification policy (`notificationPolicySql`, Mastodon's
 `NotifyService::DropCondition#drop?` and `FilterCondition#filter?`, migrations `0020_notification_policies` and
-`0094_notification_policy_bots`), which `notify` applies as it writes: for each of its conditions the recipient chooses
+`0095_notification_policy_bots`), which `notify` applies as it writes: for each of its conditions the recipient chooses
 accept, filter or drop (`notification_policies`, Mastodon's defaults without a row: private mentions and limited
 accounts filtered, the rest, bots included, accepted). The conditions are a sender the recipient does not follow; a
 sender that has not followed the recipient for three days; an account younger than 30 days the recipient does not
@@ -743,7 +743,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   `src/domain/instance-domain-blocks.ts`; Mastodon's `Api::V1::Instances::DomainBlocksController`). A suspended
   user's token is answered 403 (`Your login is currently disabled`) first, whatever the settings. Then the setting
   `show_domain_blocks` decides: `all` lists to anyone, `users` to a user's valid token, `disabled` (also when unset)
-  to no one, with Mastodon's empty 404. An unknown, expired or stale token and an app token read as anonymous. The
+  to no one, with Mastodon's empty 404. An unknown token, an expired or stale one of an available user and an app
+  token read as anonymous. The
   list holds the suspend blocks only, never a noop, in domain order (SQLite's binary order), each as
   `{domain, digest, severity, comment}`: `domain` obfuscated as Mastodon's `DomainBlock#public_domain` when the block
   has `obfuscate`, `digest` the SHA-256 of the stored domain, and `comment` the public comment when

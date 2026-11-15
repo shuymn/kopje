@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import { type ApiHarness, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { answer, bigStatus, expectByteCutFirstPage, expectByteCutWalk, walk } from "./budget-helpers";
+import { answer, bigStatus, expectByteCutFirstPage, expectByteCutWalk, fallbackReports, walk } from "./budget-helpers";
 import { community, mute, remoteAccount, seedStatus } from "./status-helpers";
 
 // RES-3: the notification lists and the notification requests are id-cursor answers within ANSWER_BYTES: each
@@ -68,6 +68,48 @@ describe("notification lists within ANSWER_BYTES (RES-3)", () => {
     // The unread count and the marker do not change with admission.
     const unread = await answer<{ count: number }>(h, "/api/v1/notifications/unread_count", alice.token);
     expect(unread.body.count).toBe(20);
+  }, 300_000);
+});
+
+describe("notification fallbacks within ANSWER_BYTES (RES-3)", () => {
+  it("admits each notification with its fallback: a page that fits without them is cut with them", async () => {
+    const h = await community(["owner", "alice"]);
+    const { owner, alice } = h.users;
+    const reports = 56;
+    await fallbackReports(h, { id: owner.id, email: "owner@example.com" }, alice.id, reports);
+    const author = await remoteAccount(h.store, "big");
+    const half = (i: number) => bigStatus(h, author, NOW - 60_000 * (100 - i), {}, 2);
+    const first = await notification(h, owner.id, "mention", author, await half(0));
+    const bytes = async (path: string) => (await answer<unknown>(h, path, owner.token)).bytes;
+    const big = await bytes(`/api/v1/notifications/${first}`);
+    const [report] = (
+      await answer<{ id: string }[]>(h, "/api/v1/notifications?types[]=admin.report&limit=1", owner.token)
+    ).body;
+    const plain = await bytes(`/api/v1/notifications/${report!.id}`);
+    const shown = await bytes(`/api/v1/notifications/${report!.id}?supported_types[]=mention`);
+    // A page of `k` mentions above the reports, as an array (the oldest ids are shorter by a digit or more).
+    const page = (k: number, item: number) => 1 + k * (big + 1) + reports * (item + 1);
+    const k = Array.from({ length: 80 - reports }, (_, i) => i + 1).find(
+      (n) => page(n, plain) <= ANSWER_BYTES && page(n, shown) > ANSWER_BYTES,
+    );
+    expect(k).toBeDefined();
+    for (let i = 1; i < k!; i++) {
+      await notification(h, owner.id, "mention", author, await half(i));
+    }
+    const path = `/api/v1/notifications?limit=${k! + reports}`;
+    const whole = await answer<{ id: string }[]>(h, path, owner.token);
+    expect(whole.body.length).toBe(k! + reports);
+    expect(whole.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    const cut = await answer<{ id: string; type: string; fallback?: unknown }[]>(
+      h,
+      `${path}&supported_types[]=mention`,
+      owner.token,
+    );
+    expect(cut.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    expect(cut.body.length).toBeLessThan(k! + reports);
+    expect(cut.bytes + shown + 1).toBeGreaterThan(ANSWER_BYTES);
+    expect(cut.body.filter((n) => n.type === "admin.report").every((n) => n.fallback !== undefined)).toBe(true);
+    expect(new URL(cut.next!, "https://kopje.test").searchParams.get("max_id")).toBe(cut.body.at(-1)!.id);
   }, 300_000);
 });
 

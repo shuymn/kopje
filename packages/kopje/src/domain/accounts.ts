@@ -4,15 +4,19 @@ import type { Db } from "../db/sql";
 import { DEFAULT_AVATAR, DEFAULT_HEADER } from "../platform/brand-assets";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
-import { ACTOR_URI_LIMIT, DOMAIN_BYTES, withinIdentityBound } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import {
   ACCOUNT_EMOJIS_BYTES,
+  attributionDomainsSql,
   cutCodePoints,
   isIsoTime,
   MAX_FIELD_NAME,
   MAX_FIELD_VALUE,
   MAX_FIELDS,
+  presentedAttributionDomains,
   presentedCountSql,
+  presentedDisplayName,
+  presentedNote,
   REMOTE_VERIFIED_SHOWN,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteHtml } from "../security/html";
@@ -48,12 +52,14 @@ import {
   type ViewerContext,
 } from "./audience";
 import {
-  authorize,
   type Credential,
+  type Judged,
   localRole,
   optionalUserReadOperation,
   OWNER_ROLE,
+  refuseSuspended,
   type Role,
+  unlessSuspended,
   userReadOperation,
   userWriteOperation,
 } from "./auth";
@@ -107,6 +113,8 @@ export type Account = {
   // A local account's only: its highlighted role, the OAuth admin's Owner while it is available; [] otherwise.
   roles?: AccountRole[];
   suspended?: true;
+  // Present, true, only while the account's handle is invalidated (shownHandle).
+  invalid_handle?: true;
   // The account it moved to (Account#moved_to_account), one level deep (MOVED_ACCOUNT_COLUMNS), when it has one
   // stored; null while it is unavailable (REST::AccountSerializer#moved_to_account).
   moved?: Account | null;
@@ -128,10 +136,12 @@ export type Field = { name: string; value: string; verified_at: string | null };
 // A local field as the owner wrote it (plain text), stored in local_accounts.fields.
 export type FieldSource = { name: string; value: string };
 
-export { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
+export { MAX_ATTRIBUTION_DOMAINS, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../platform/stored-bounds";
 
-// Account::AttributionDomains::ATTRIBUTION_DOMAINS_LIMIT.
-export const MAX_ATTRIBUTION_DOMAINS = 100;
+// Account::DISPLAY_NAME_LENGTH_LIMIT and NOTE_LENGTH_LIMIT: the local writer's limits, in code points. A stored display
+// name is bounded by DISPLAY_NAME_LIMIT (platform/stored-bounds.ts), which remote ones may reach.
+export const MAX_DISPLAY_NAME = 40;
+export const MAX_NOTE = 500;
 
 export type Visibility = "public" | "unlisted" | "private" | "direct";
 
@@ -400,21 +410,25 @@ export function admitAccounts(
 
 // An account's profile URL. A stored url is used only when it is http(s) (HTML-3); otherwise it is derived from the
 // actor URI, which carries the account's origin (a local account's carries the instance origin), or from this
-// instance's origin when the URI is not http(s) either. Each is used only within PROFILE_URL_LIMIT as serialized
-// (RES-2): a longer one falls back to the next, and to '' when none fits (a converted row of a long host and name).
-// `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
+// instance's origin when the URI is not http(s) either. An invalidated handle (shownHandle) names no page, so such an
+// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Each is used only within
+// PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when none fits (a converted
+// row of a long host and name). `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
 export function accountUrl(
-  row: { url: string | null; uri: string; username: string; domain: string | null },
+  row: { id: string; url: string | null; uri: string; username: string; domain: string | null },
   origin: string,
   href = ACCOUNT_BOUNDS.href,
 ): string {
+  const stored = href(row.url);
+  if (stored !== null) {
+    return stored;
+  }
+  const handle = shownHandle(row);
+  if (handle.invalid) {
+    return href(row.uri) ?? "";
+  }
   const actor = httpUrl(row.uri);
-  return (
-    href(row.url) ??
-    (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ??
-    href(`${origin}/@${acctOf(row)}`) ??
-    ""
-  );
+  return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${handle.acct}`) ?? "";
 }
 
 // How a presenter bounds an account's URLs and actor id (RES-2): `href` serializes an http(s) URL within its bound or
@@ -466,8 +480,32 @@ function shownImage(
   return { image: href, still: bounds.image(still) ?? href };
 }
 
-export function acctOf(row: { username: string; domain: string | null }): string {
-  return row.domain === null ? row.username : `${row.username}@${row.domain}`;
+// The domain of an invalidated handle's address (Account#pretty_acct): reserved (RFC 6761), so it names no server.
+const INVALID_HANDLE_DOMAIN = "handle.invalid";
+
+// How every presenter shows an account's username and acct (Mastodon's pretty_username and pretty_acct). A remote
+// account whose handle another account has taken is invalidated: its stored username starts with '! ' (Mastodon's
+// invalidated_username?), which no username Kopje matches by address can (addressRow), and it shows its id as
+// username and `<id>@handle.invalid` as acct, within the bounds a valid row's fill (accounts.id is 18 digits, the
+// CHECK of 0000_initial). A local account is never invalidated. `row.username` is the read's projection
+// (usernameSql), whose cut keeps the prefix.
+export function shownHandle(row: { id: string; username: string; domain: string | null }): {
+  username: string;
+  acct: string;
+  invalid: boolean;
+} {
+  if (row.domain !== null && row.username.startsWith("! ")) {
+    return { username: row.id, acct: `${row.id}@${INVALID_HANDLE_DOMAIN}`, invalid: true };
+  }
+  return {
+    username: row.username,
+    acct: row.domain === null ? row.username : `${row.username}@${row.domain}`,
+    invalid: false,
+  };
+}
+
+export function acctOf(row: { id: string; username: string; domain: string | null }): string {
+  return shownHandle(row).acct;
 }
 
 // An unavailable account (R1: suspended, or a remote account whose deletion has started, as the row's query read it
@@ -479,8 +517,8 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
     ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
-      display_name: row.display_name,
-      note: row.note,
+      display_name: presentedDisplayName(row.display_name),
+      note: presentedNote(row.note),
       emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
@@ -526,7 +564,6 @@ function presentIdentity(
   profile: () => Profile,
 ): Account {
   const suspended = row.available === 0;
-  // Stored URLs are shown only when they are http(s) (httpUrl); anything else reads as unset.
   const url = accountUrl(row, origin, bounds.href);
   const own = cached.get(row.id);
   const avatar = shownImage(
@@ -544,10 +581,11 @@ function presentIdentity(
     cachedImageUrls(own?.header ?? null, origin),
   );
   const shown: Profile = suspended ? { display_name: "", note: "", emojis: [], fields: [] } : profile();
+  const handle = shownHandle(row);
   return {
     id: row.id,
-    username: row.username,
-    acct: acctOf(row),
+    username: handle.username,
+    acct: handle.acct,
     display_name: shown.display_name,
     locked: !suspended && row.locked === 1,
     bot: !suspended && isBotActorType(row.actor_type),
@@ -575,6 +613,7 @@ function presentIdentity(
       ? { noindex: false, roles: !suspended && adminAccountIdOnce(db) === row.id ? [OWNER_BADGE] : [] }
       : {}),
     ...(suspended ? { suspended: true as const } : {}),
+    ...(handle.invalid ? { invalid_handle: true as const } : {}),
   };
 }
 
@@ -767,22 +806,35 @@ function accountRow(db: Db, id: string): AccountRow | undefined {
   return db.first<AccountRow>(`SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`, id);
 }
 
-export const getAccount = readOperation<{ id: string; present: Present }, Account | null>((db, { id, present }) => {
-  const resolved = resolveAccountId(db, id);
-  const row = resolved === null ? undefined : accountRow(db, resolved);
-  return row === undefined ? null : presentOne(db, row, present);
-});
+// GET /api/v1/accounts/:id, and the API's other reads of one account by id. credential: the token an anonymous route
+// was sent (AUTH-2), whose suspended owner is refused first.
+export const getAccount = readOperation<
+  { id: string; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { id, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = resolveAccountId(db, id);
+    const row = resolved === null ? undefined : accountRow(db, resolved);
+    return row === undefined ? null : presentOne(db, row, present);
+  }),
+);
 
 // GET /api/v1/accounts?id[]= (AccountsController#index): the accounts getAccount shows one by one, read in one query,
 // in the order asked, each once; an id that names no account is left out. Kopje has no unapproved accounts
-// (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID).
+// (`without_unapproved`). The caller limits the ids (MAX_ACCOUNTS_BY_ID). A suspended owner of the token sent is
+// refused first (AUTH-2's anonymous routes).
 export const MAX_ACCOUNTS_BY_ID = 40;
 
-export const getAccounts = readOperation<{ ids: string[]; present: Present }, Account[]>((db, { ids, present }) => {
-  const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
-  const accounts = presentAccountsById(db, resolved, present);
-  return resolved.flatMap((id) => accounts.get(id) ?? []);
-});
+export const getAccounts = readOperation<
+  { ids: string[]; present: Present; credential: Credential | null },
+  Judged<Account[]>
+>((db, { ids, present, credential }) =>
+  unlessSuspended(db, credential, () => {
+    const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
+    const accounts = presentAccountsById(db, resolved, present);
+    return resolved.flatMap((id) => accounts.get(id) ?? []);
+  }),
+);
 
 // The account an address names, domain null for a local one, matched case-insensitively as Mastodon's
 // Account.find_remote: by accounts_local_username or accounts_domain_username, named so the seek does not rest on the
@@ -790,11 +842,16 @@ export const getAccounts = readOperation<{ ids: string[]; present: Present }, Ac
 // usernameSql's projection: a matching row's username has the bytes of `username` (SQLite's lower changes ASCII
 // letters only), so it is bounded by the caller's. Remote actors of distinct ids may share a username and domain
 // (ingestion keys accounts by actor id): one row is read, the first in the index's order (the oldest row of the key).
+// Only a username of Mastodon's format (isRemoteUsername, which every LOCAL_USERNAME is too) names an account, so an
+// invalidated handle ('! <id>', shownHandle) is never matched by an address.
 function addressRow(
   db: Db,
   username: string,
   domain: string | null,
 ): (AccountRow & { stored_username: string }) | undefined {
+  if (!isRemoteUsername(username)) {
+    return undefined;
+  }
   return domain === null
     ? db.first(
         `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)}, a.username AS stored_username
@@ -827,14 +884,14 @@ export function storedAddress(db: Db, username: string, domain: string | null): 
 
 // POST /api/v1/accounts/:account_id/email_subscriptions with e-mail subscriptions off (MD-3): Mastodon's
 // require_not_suspended! reads a sent token first, then set_account finds the id among local accounts
-// (Account.local.find), suspended ones included. Only a held, unexpired token of a suspended user counts; any other
-// token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
+// (Account.local.find), suspended ones included. Only a held token of a suspended user counts, expired or not (AUTH-1's
+// order); any other token reads as none (AUTH-2's exception). At most four unique-key lookups: the token, the id (twice at most) and its
 // local row.
 export const emailSubscriptionTarget = readOperation<
   { credential: Credential | null; id: string },
   "suspended" | "missing" | "local"
 >((db, { credential, id }) => {
-  if (credential !== null && authorize(db, credential).status === "suspended") {
+  if (refuseSuspended(db, credential) !== null) {
     return "suspended";
   }
   const resolved = resolveAccountId(db, id);
@@ -843,12 +900,31 @@ export const emailSubscriptionTarget = readOperation<
   return local === undefined ? "missing" : "local";
 });
 
-// domain null means a local account.
+// The presented account an address names as lookup finds it (an unavailable one redacted, VIS-30), or null: by
+// accountByAddress, but `<id>@handle.invalid` names the remote account of that id while its handle is invalidated
+// (shownHandle; Mastodon's ResolveAccountService special case), one primary-key seek. `domain` is normalized.
+export function accountByLookup(db: Db, username: string, domain: string | null, present: Present): Account | null {
+  if (domain !== INVALID_HANDLE_DOMAIN) {
+    return accountByAddress(db, username, domain, present);
+  }
+  // The prefix is a prefilter; shownHandle decides on the row as presented.
+  const row = db.first<AccountRow>(
+    `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM}
+			WHERE a.id = ? AND a.domain IS NOT NULL AND substr(a.username, 1, 2) = '! '`,
+    username,
+  );
+  return row === undefined || !shownHandle(row).invalid ? null : presentOne(db, row, present);
+}
+
+// domain null means a local account. credential: the token an anonymous route was sent (AUTH-2), whose suspended
+// owner is refused first; null for a public page.
 export const lookupAccount = readOperation<
-  { username: string; domain: string | null; present: Present },
-  Account | null
->((db, { username, domain, present }) =>
-  accountByAddress(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  { username: string; domain: string | null; present: Present; credential: Credential | null },
+  Judged<Account | null>
+>((db, { username, domain, present, credential }) =>
+  unlessSuspended(db, credential, () =>
+    accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  ),
 );
 
 // source.follow_requests_count: Mastodon 4.5.21 counts at most 40 requests of accounts that are not suspended
@@ -869,7 +945,8 @@ type CredentialRow = {
 export function credentialAccount(db: Db, accountId: string, present: Present): CredentialAccount | null {
   const row = accountRow(db, accountId);
   const local = db.first<CredentialRow>(
-    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy, attribution_domains,
+    `SELECT default_visibility, default_sensitive, default_language, default_quote_policy,
+			${attributionDomainsSql("attribution_domains")} AS attribution_domains,
 			(SELECT COUNT(*) FROM (SELECT f.account_id FROM follows f
 					WHERE f.target_account_id = ?1 AND f.state = 'pending' ORDER BY f.id DESC LIMIT ?2) w
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ${LOCAL_ROW_JOIN}
@@ -887,13 +964,13 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
       privacy: local.default_visibility,
       sensitive: local.default_sensitive === 1,
       language: local.default_language,
-      note: htmlToPlainText(row.note),
+      note: htmlToPlainText(presentedNote(row.note)),
       fields: localFields(row),
       follow_requests_count: Math.min(local.follow_requests_count, FOLLOW_REQUESTS_COUNT),
       hide_collections: row.hide_collections === 1,
       discoverable: row.discoverable === null ? null : row.discoverable === 1,
       indexable: row.indexable === 1,
-      attribution_domains: JSON.parse(local.attribution_domains) as string[],
+      attribution_domains: presentedAttributionDomains(local.attribution_domains),
       quote_policy: local.default_quote_policy,
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.
@@ -1215,10 +1292,13 @@ function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] 
     return [];
   }
   const where = terms.map((variants) => `(${variants.map(() => "instr(a.search_text, ?) > 0").join(" OR ")})`);
-  const exactUsername = (query.split("@")[0] ?? "").toLowerCase();
+  const [user = "", exactDomain] = query.toLowerCase().split("@");
+  const exactUsername = user;
   const prefix = (terms[0]?.[0] ?? "").replace(/^@/, "").split("@")[0] ?? "";
-  // The exact address: "user" is any account with that username, "user@domain" that one remote account.
-  const [exactUser = "", exactDomain] = query.toLowerCase().split("@");
+  // The exact address: "user" is any account with that username, "user@domain" that one remote account. Only a
+  // username addressRow would match names one: any other (an invalidated handle's '! <id>') is bound as NULL, which
+  // equals nothing.
+  const exactUser = isRemoteUsername(user) ? user : null;
   const exact =
     exactDomain === undefined
       ? "SELECT id FROM accounts INDEXED BY accounts_username WHERE lower(username) = ?"

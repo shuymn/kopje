@@ -424,7 +424,7 @@ function* adminReportStream(
   const shared = presentation(
     db,
     shown.flatMap((statuses) => statuses.map((status) => status.id)),
-    { ...present, viewer: admin.context },
+    { ...present, viewer: admin.context, proper: true },
   );
   for (const [i, row] of rows.entries()) {
     const ids = [
@@ -773,8 +773,8 @@ export const reportTargetPage = readOperation<
     return { ok: false, code: "wrong-authority", message: refused };
   }
   const row = /^\d{1,18}$/.test(id)
-    ? db.first<{ url: string | null; uri: string; username: string; domain: string | null }>(
-        `SELECT a.url, ${actorUriSql("a.uri")} AS uri, ${usernameSql("a.username")} AS username,
+    ? db.first<{ id: string; url: string | null; uri: string; username: string; domain: string | null }>(
+        `SELECT a.id, a.url, ${actorUriSql("a.uri")} AS uri, ${usernameSql("a.username")} AS username,
 					a.domain
 				FROM (SELECT target_account_id FROM reports WHERE id = CAST(? AS INTEGER) LIMIT 1) r
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.target_account_id`,

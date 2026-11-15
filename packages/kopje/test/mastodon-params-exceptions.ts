@@ -10,17 +10,6 @@ const PAGE = ["limit", "max_id", "min_id", "since_id"];
 const NOT_SERVED = (...names: string[]) => accepted("MD-2", ...names);
 const PLACEHOLDER = (...names: string[]) => accepted("MD-3", ...names);
 
-// The collection alerts of Mastodon 4.6: push.ts reads data[alerts][<type>] only for ALERT_TYPES.
-const PUSH_COLLECTION_ALERTS = open(
-  1582,
-  "the collection alerts of Mastodon 4.6",
-  "data[alerts][added_to_collection]",
-  "data[alerts][collection_update]",
-);
-
-// supported_types and fallback, on each notification read.
-const SUPPORTED_TYPES = open(1582, "supported_types and fallback", "supported_types[]");
-
 export const PARAM_EXCEPTIONS: Exceptions = {
   "POST /api/v1/accounts": accepted(
     "MD-1",
@@ -45,13 +34,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
 
   // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
-  "GET /api/v1/notifications": SUPPORTED_TYPES,
-  "GET /api/v1/notifications/:id": SUPPORTED_TYPES,
-  "GET /api/v2/notifications": SUPPORTED_TYPES,
-  "GET /api/v2/notifications/:group_key": SUPPORTED_TYPES,
-  "POST /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
-  "PUT /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
-  "PATCH /api/v1/push/subscription": PUSH_COLLECTION_ALERTS,
   "PATCH /api/v1/accounts/update_credentials": open(
     1583,
     "the profile image descriptions of Mastodon 4.6",

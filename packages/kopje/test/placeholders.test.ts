@@ -142,10 +142,11 @@ describe("feature-off routes that read a sent token", () => {
   });
 
   // M8: Mastodon reads an expired or revoked token's owner here (Api::BaseController#current_user); Kopje answers
-  // such a token as none, and a held token of an earlier epoch as on every route (suspension before the epoch).
+  // such a token of an available owner as none, a deleted (revoked) one as none whatever its owner, and a held one of
+  // a suspended owner, expired or of an earlier epoch, as on every route (AUTH-1: suspension first).
   const cases: [string, "available" | "suspended", typeof userRequired, typeof userRequired][] = [
     ["expired", "available", userRequired, emptyNotFound],
-    ["expired", "suspended", userRequired, emptyNotFound],
+    ["expired", "suspended", disabled, disabled],
     ["revoked", "available", userRequired, emptyNotFound],
     ["revoked", "suspended", userRequired, emptyNotFound],
     ["held at an earlier epoch", "available", userRequired, emptyNotFound],

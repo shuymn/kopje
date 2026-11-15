@@ -1,4 +1,4 @@
--- Kopje Store schema 0094: the notification policy's bot condition. Never edit after release (checksummed).
+-- Kopje Store schema 0095: the notification policy's bot condition. Never edit after release (checksummed).
 --
 --   notification_policies.for_bots    the recipient's choice for a filterable notification from a sender whose
 --                                     actor type is Application or Service that the recipient does not follow

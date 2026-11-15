@@ -79,7 +79,6 @@ import {
   continueRevocations,
   holdsLocalStamp,
   promoteQuote,
-  type QuoteAnswerRef,
   quotesDue,
   quoteArrival,
   recheckStamp,
@@ -127,6 +126,7 @@ import {
   recordDeletedObject,
   retract,
   retractFollow,
+  retractMatched,
 } from "./retractions";
 import { RowBudget, totalChanges } from "./row-budget";
 import { recountStatus, recountStatuses, UNTAG_WINDOW_SQL, withdrawLocalBoost } from "./statuses";
@@ -223,14 +223,14 @@ export const MAX_TRACKED_LIKES = 4;
 // room.
 export const LIKE_RETIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
-// The object of an Accept, Reject or Undo: an id, or an embedded activity (id optional; instrument: an inlined
-// QuoteRequest's, by id).
+// The object of an Accept, Reject or Undo: an id, or an embedded activity (id optional; atomUri: its atomUri,
+// read as a status's, which an Undo of a boost falls back to).
 export type ActivityRef = {
   id: string | null;
   type: string | null;
   actor: string | null;
   object: string | null;
-  instrument?: string | null;
+  atomUri?: string | null;
 };
 
 export type InboundActivity =
@@ -251,11 +251,26 @@ export type InboundActivity =
   | { type: "DeleteActor"; id: string }
   // signed: the body carries an author proof the Worker has not verified; proven: the body as received, its proof
   // verified (federation/author-proof.ts), which the Store forwards for a local quote's stamp (quotes.ts revokeStamp)
-  // and through the local boosts and quotes of a status (recordForwards).
-  | { type: "Delete"; id: string; object: string; signed?: boolean; proven?: Record<string, unknown> }
+  // and through the local boosts and quotes of a status (recordForwards). atomUri: the embedded object's, read as a
+  // status's (namedStatus).
+  | {
+      type: "Delete";
+      id: string;
+      object: string;
+      atomUri?: string | null;
+      signed?: boolean;
+      proven?: Record<string, unknown>;
+    }
   // A Delete another server relayed (its HTTP signer is not the actor). proven: it carries the actor's own proof,
   // verified by the Worker (federation/author-proof.ts); body: then, the body as received.
-  | { type: "RelayedDelete"; id: string; object: string; proven: boolean; body?: Record<string, unknown> }
+  | {
+      type: "RelayedDelete";
+      id: string;
+      object: string;
+      atomUri?: string | null;
+      proven: boolean;
+      body?: Record<string, unknown>;
+    }
   // A request to quote a local status (FEP-044f): object the quoted status, instrument the quoting status, embedded
   // the instrument as the request inlined it.
   | { type: "QuoteRequest"; id: string; object: string; instrument: string; embedded: RemoteStatusInput | null }
@@ -796,7 +811,7 @@ function ourFollow(
 
 const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
   if (isQuoteAnswer(activity.object)) {
-    return acceptOurQuote(db, actor, quoteAnswerRef(activity.object), activity.result ?? null, now)
+    return acceptOurQuote(db, actor, activity.object.id, activity.result ?? null, now)
       ? applied("quote-accepted")
       : ignored("quote-unchanged");
   }
@@ -815,9 +830,7 @@ const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
 // Mastodon's Reject removes our Follow, including an accepted one; quote handling: quotes.ts rejectOurQuote.
 const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
   if (isQuoteAnswer(activity.object)) {
-    return rejectOurQuote(db, actor, quoteAnswerRef(activity.object), now)
-      ? applied("quote-rejected")
-      : ignored("quote-unchanged");
+    return rejectOurQuote(db, actor, activity.object.id, now) ? applied("quote-rejected") : ignored("quote-unchanged");
   }
   const edge = ourFollow(db, actor, activity.object, true);
   if (edge === null || edge === "not-target") {
@@ -829,13 +842,10 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
 };
 
 // An answer to our QuoteRequest: an inlined QuoteRequest, or its id (the quoting status's uri with #quote-request,
-// activities.ts quoteRequestUri), which no Follow of ours carries.
+// activities.ts quoteRequestUri), which no Follow of ours carries. Either is matched by its id only (quotes.ts
+// answeredQuote), so an inlined QuoteRequest under another id changes nothing (quote-unchanged).
 function isQuoteAnswer(ref: ActivityRef): boolean {
   return ref.type === "QuoteRequest" || (ref.type === null && ref.id !== null && ref.id.endsWith("#quote-request"));
-}
-
-function quoteAnswerRef(ref: ActivityRef): QuoteAnswerRef {
-  return { id: ref.id, type: ref.type, object: ref.object, instrument: ref.instrument ?? null };
 }
 
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,
@@ -2140,10 +2150,49 @@ function accountHasRows(db: Db, id: string, filters = true): boolean {
   );
 }
 
+type NamedStatus = {
+  id: string;
+  account_id: string;
+  reblog_of_id: string | null;
+  visibility: Visibility;
+  withdrawn: number;
+};
+
+const NAMED_STATUS = "SELECT id, account_id, reblog_of_id, visibility, withdrawn FROM statuses WHERE uri = ?1";
+const OWN_STATUS = `${NAMED_STATUS} AND account_id = ?2`;
+const OWN_BOOST = `${OWN_STATUS} AND reblog_of_id IS NOT NULL`;
+
+// The status a Delete or an Undo of a boost names (Mastodon's Delete#delete_status and Undo#undo_announce, both
+// lookups scoped to the actor): the actor's own status (boost, for an Undo) by the object's id, else, when the object
+// carries another atomUri of the actor's origin, the actor's own by it; only then a status of another author under the
+// object's id, which a Delete refuses as not-author. matched: that atomUri when the status was found by it, else null;
+// the removal then retracts both (retractMatched, ID-7). An atomUri of another origin matches nothing: it could not be
+// recorded as the actor's retraction (retractions.ts).
+function namedStatus(
+  db: Db,
+  actor: { id: string; uri: string },
+  object: string,
+  atomUri: string | null | undefined,
+  boost: boolean,
+): { status: NamedStatus; matched: string | null } | undefined {
+  const byId = boost ? db.first<NamedStatus>(OWN_BOOST, object, actor.id) : db.first<NamedStatus>(NAMED_STATUS, object);
+  if (byId?.account_id === actor.id) {
+    return { status: byId, matched: null };
+  }
+  if (atomUri !== null && atomUri !== undefined && atomUri !== object && sameOrigin(atomUri, actor.uri)) {
+    const byAtomUri = db.first<NamedStatus>(boost ? OWN_BOOST : OWN_STATUS, atomUri, actor.id);
+    if (byAtomUri !== undefined) {
+      return { status: byAtomUri, matched: atomUri };
+    }
+  }
+  return byId === undefined ? undefined : { status: byId, matched: null };
+}
+
 // A Delete of something other than the actor (Mastodon's Delete#delete_object). The retraction is recorded so that
 // the object cannot appear afterwards (ID-7), whether or not it was seen before, for any id of the actor's origin.
 // A stored status or boost is removed only by its author (ID-6; a local status never has a remote author, ID-3): a
-// boost at once, a status in bounded batches (deleteStatusBatch).
+// boost at once, a status in bounded batches (deleteStatusBatch). One found by the object's atomUri (namedStatus) is
+// removed as by its id and retracted under both ids (retractMatched); only its own uri is recorded as deleted.
 // The removal needs its retraction: at the per-actor cap nothing changes and the Delete is answered 503, to be
 // delivered again (a Delete of an unknown object at the cap is not recorded, and answered 202).
 //
@@ -2155,17 +2204,11 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
-  const status = db.first<{
-    id: string;
-    account_id: string;
-    reblog_of_id: string | null;
-    visibility: Visibility;
-    withdrawn: number;
-  }>("SELECT id, account_id, reblog_of_id, visibility, withdrawn FROM statuses WHERE uri = ?", activity.object);
-  if (status !== undefined && status.account_id !== actor.id) {
+  const named = namedStatus(db, actor, activity.object, activity.atomUri, false);
+  if (named !== undefined && named.status.account_id !== actor.id) {
     return ignored("not-author");
   }
-  if (status === undefined) {
+  if (named === undefined) {
     // A Delete of a local quote's stamp carrying an author proof is forwarded only once the Worker has verified it:
     // asked for before anything is written.
     if (activity.signed === true && activity.proven === undefined && holdsLocalStamp(db, actor, activity.object)) {
@@ -2173,13 +2216,17 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
     }
     return retractUnknown(db, actor, activity.object, now, activity.proven ?? null);
   }
+  const { status, matched } = named;
   if (activity.signed === true && activity.proven === undefined && forwardable(db, status)) {
     return { ...ignored("need-proof"), need: { kind: "proof", uri: actor.uri } };
   }
-  if (!retract(db, actor.uri, activity.object, now)) {
+  if (!retractMatched(db, actor.uri, activity.object, matched, now)) {
     return retryLater("retraction-cap");
   }
-  recordDeletedObject(db, activity.object, now);
+  // The tombstone for every actor names the stored status's own uri only: an object id it was found under by atomUri
+  // was never stored or shown to be the actor's, so it stays the actor's retraction alone, as an unknown object's
+  // (ID-7); naming it for everyone would let the actor suppress another actor's later status of its origin.
+  recordDeletedObject(db, matched ?? activity.object, now);
   if (status.reblog_of_id !== null) {
     return applied("boost-deleted", removeBoost(db, actor, { id: status.id, original: status.reblog_of_id }, now));
   }
@@ -2452,21 +2499,19 @@ function hideRemoteStatus(db: Db, statusId: string): void {
 }
 
 // A Delete relayed by another server (federation/inbound.ts, ID-1's exception), never applied to an actor. Of a stored
-// status: only with the actor's own proof, of a public or unlisted original (never a boost), applied as the actor's own
-// Delete (deleteObject, which also requires the status's author to be the actor and its uri the actor's origin); all
-// read in this transaction, whatever the Worker saw when it verified the proof (Mastodon's verify_account! and
-// Activity::Delete#delete_status). Of anything else, at most a stamp: with the proof it revokes as the actor's Delete
-// does; without one it changes no state and only has the accepted quote naming the stamp verified again (Mastodon
-// drops such a relay; Kopje lets the stamp's own server answer).
+// status (by id, or the actor's own by atomUri: namedStatus): only with the actor's own proof, of a public or unlisted
+// original (never a boost), applied as the actor's own Delete (deleteObject, which also requires the status's author to
+// be the actor and its uri the actor's origin); all read in this transaction, whatever the Worker saw when it
+// verified the proof (Mastodon's verify_account! and Activity::Delete#delete_status). Of anything else, at most a
+// stamp: with the proof it revokes as the actor's Delete does; without one it changes no state and only has the
+// accepted quote naming the stamp verified again (Mastodon drops such a relay; Kopje lets the stamp's own server
+// answer).
 const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => {
   const { now } = input;
   if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
-  const status = db.first<{ reblog_of_id: string | null; visibility: Visibility }>(
-    "SELECT reblog_of_id, visibility FROM statuses WHERE uri = ?",
-    activity.object,
-  );
+  const status = namedStatus(db, actor, activity.object, activity.atomUri, false)?.status;
   if (status !== undefined) {
     if (!activity.proven || activity.body === undefined) {
       return ignored("unproven-status");
@@ -2477,8 +2522,8 @@ const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => 
     if (!isDistributable(status.visibility)) {
       return ignored("not-distributable");
     }
-    const proven = activity.body;
-    return deleteObject(db, actor, { type: "Delete", id: activity.id, object: activity.object, proven }, input);
+    const { id, object, body: proven } = activity;
+    return deleteObject(db, actor, { type: "Delete", id, object, atomUri: activity.atomUri ?? null, proven }, input);
   }
   if (db.first("SELECT 1 AS x FROM accounts WHERE uri = ?", activity.object) !== undefined) {
     return ignored("not-a-stamp");
@@ -2789,14 +2834,26 @@ const like: Handler<"Like"> = (db, actor, activity, { now, storeNow }) => {
 
 type Original = { id: string; account_id: string; visibility: Visibility; local: number };
 
-function originalByUri(db: Db, uri: string): Original | undefined {
-  return db.first<Original>(
-    `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
-		FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
+// The original (never a boost) whose `column` is the parameter, and whether its author is local, through that column's
+// index.
+function originalSql(column: "uri" | "id"): string {
+  return `SELECT s.id, s.account_id, s.visibility, l.account_id IS NOT NULL AS local
+		FROM statuses s INDEXED BY ${column === "uri" ? STATUSES_URI_INDEX : STATUSES_ID_INDEX}
 		LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = s.account_id
-		WHERE s.uri = ? AND s.reblog_of_id IS NULL`,
-    uri,
-  );
+		WHERE s.${column} = ? AND s.reblog_of_id IS NULL`;
+}
+
+const ORIGINAL_BY_URI = originalSql("uri");
+const ORIGINAL_BY_ID = originalSql("id");
+
+function originalByUri(db: Db, uri: string): Original | undefined {
+  return db.first<Original>(ORIGINAL_BY_URI, uri);
+}
+
+// The original of a stored status's id (StatusOutcome.statusId), which names the status a store matched, by its id or
+// by the object's atomUri, where the stored document's own id may name no row.
+function originalById(db: Db, id: string): Original | undefined {
+  return db.first<Original>(ORIGINAL_BY_ID, id);
 }
 
 function followersOf(raw: string | null): string | null {
@@ -2840,7 +2897,7 @@ function newOriginal(
   const embedded = activity.embedded;
   if (embedded !== null && embedded.uri === activity.object && embedded.attributedTo === actor.uri) {
     const stored = storeRemoteStatus(db, actor, embedded, context);
-    const original = stored.statusId === undefined ? undefined : originalByUri(db, embedded.uri);
+    const original = stored.statusId === undefined ? undefined : originalById(db, stored.statusId);
     return original ?? ignored(stored.reason);
   }
   const fetched = input.prefetched?.statuses[activity.object];
@@ -2908,7 +2965,7 @@ function newOriginal(
     return ignored("unknown-author");
   }
   const stored = storeRemoteStatus(db, author, fetched, context);
-  return (stored.statusId === undefined ? undefined : originalByUri(db, fetched.uri)) ?? ignored(stored.reason);
+  return (stored.statusId === undefined ? undefined : originalById(db, stored.statusId)) ?? ignored(stored.reason);
 }
 
 // Mastodon's ActivityPub::Activity::Announce: a boost row (reblog_of_id) by the actor, once per original (ID-7), only
@@ -3196,8 +3253,8 @@ function removeBoost(
 //     reaction's Undo to the reactor's followers too, and these would spend the actor's retraction cap;
 //   - otherwise the id is recorded as retracted, so a Like that arrives after its Undo does not apply.
 // The stored matches come before that check: a converted favourite may be of a remote status. An Announce is found by
-// its id. Whatever changes, the Undo's id is recorded as retracted; if it cannot be (the per-actor cap), nothing
-// changes and the Undo is answered 503.
+// its id, else by the object's atomUri (namedStatus). Whatever changes, the Undo's id is recorded as retracted; if it
+// cannot be (the per-actor cap), nothing changes and the Undo is answered 503.
 function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: string }, now: number): ReceiveResult {
   const tracked = ref.type === "Announce" ? undefined : trackedLike(db, actor.id, ref.id);
   const retained = tracked !== undefined || ref.type === "Announce" ? undefined : retainedLike(db, actor.id, ref.id);
@@ -3205,15 +3262,8 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
     tracked === undefined && retained === undefined && ref.type === "Like" && ref.object !== null
       ? legacyFavourite(db, actor.id, ref.object)
       : undefined;
-  const boost =
-    ref.type === "Like"
-      ? undefined
-      : db.first<{ id: string; original: string }>(
-          `SELECT id, reblog_of_id AS original FROM statuses
-					WHERE account_id = ? AND uri = ? AND reblog_of_id IS NOT NULL`,
-          actor.id,
-          ref.id,
-        );
+  const named = ref.type === "Like" ? undefined : namedStatus(db, actor, ref.id, ref.atomUri, true);
+  const boost = named === undefined ? undefined : { id: named.status.id, original: named.status.reblog_of_id! };
   if (
     ref.type === "Like" &&
     tracked === undefined &&
@@ -3224,9 +3274,10 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
   ) {
     return ignored("unrelated");
   }
-  // Recorded first (the id has the actor's origin, checked by undo): at the cap nothing is written and the Undo is
-  // answered 503, the transaction rolled back.
-  if (!retract(db, actor.uri, ref.id, now)) {
+  // Recorded first (the id has the actor's origin, checked by undo), with the boost's own id when it was found by the
+  // object's atomUri (retractMatched): at the cap nothing is written and the Undo is answered 503, the transaction
+  // rolled back.
+  if (!retractMatched(db, actor.uri, ref.id, named?.matched ?? null, now)) {
     return retryLater("retraction-cap");
   }
   let reason = "retraction-recorded";
@@ -3271,8 +3322,8 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
   if (!sameOrigin(object.status, actor.uri)) {
     return ignored("foreign-object");
   }
-  let status = statusByUri(db, object.status);
-  if (status === undefined) {
+  let statusId = statusByUri(db, object.status)?.id;
+  if (statusId === undefined) {
     if (!hasLocalFollowers(db, actor.id)) {
       return ignored("unrelated");
     }
@@ -3294,16 +3345,18 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
       deliveredTo: null,
       fetched: true,
     });
-    status = stored.statusId === undefined ? undefined : statusByUri(db, object.status);
+    // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
+    // than the one asked for pins nothing.
+    statusId = fetched.uri === object.status ? stored.statusId : undefined;
   }
-  if (status === undefined) {
+  if (statusId === undefined) {
     return ignored("unknown-object");
   }
-  if (!pinRemote(db, actor.id, status.id, input.now)) {
+  if (!pinRemote(db, actor.id, statusId, input.now)) {
     return ignored("not-pinned");
   }
   // A pinned status arrives as a root, cached or not: a cached one's quote is promoted (quotes.ts).
-  promoteQuote(db, status.id, quoteArrival(db, actor.id, null), input.now);
+  promoteQuote(db, statusId, quoteArrival(db, actor.id, null), input.now);
   return applied("pinned");
 };
 

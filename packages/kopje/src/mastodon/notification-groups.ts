@@ -9,6 +9,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
+import { supportedTypes } from "./notifications";
 import { linkHeader, pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 
@@ -37,8 +38,8 @@ function unreadLimit(p: Params): number {
   return limit === undefined ? DEFAULT_UNREAD_LIMIT : Math.min(Math.abs(rubyInteger(limit)), MAX_UNREAD_LIMIT);
 }
 
-// GET /api/v2/notifications: types[], exclude_types[], grouped_types[], include_filtered, expand_accounts, and the
-// page (40 groups by default, at most 80). Mastodon's v2 reads no account_id.
+// GET /api/v2/notifications: types[], exclude_types[], grouped_types[], include_filtered, expand_accounts,
+// supported_types and the page (40 groups by default, at most 80). Mastodon's v2 reads no account_id.
 export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p) => {
   const expand = p.get("expand_accounts");
   if (expand !== undefined && expand !== "full" && expand !== "partial_avatars") {
@@ -63,6 +64,7 @@ export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p
         groupedTypes: groupedTypes(p),
         includeFiltered: includeFiltered(p),
         expandAccounts: expand ?? "full",
+        fallbackTypes: supportedTypes(p),
         present: present(c),
       }),
     ),
@@ -75,14 +77,13 @@ export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p
   return c.json(grouped);
 });
 
-export const getNotificationGroup: ApiHandler = async (c, deps) => {
+export const getNotificationGroup: ApiHandler = withParams(async (c, deps, p) => {
   const groupKey = c.req.param("group_key") ?? "";
   const credential = userCredential(c, deps);
-  const group = authorized(
-    await storeCall(c, deps, (s, b) => s.getNotificationGroup(b, { credential, groupKey, present: present(c) })),
-  );
+  const input = { credential, groupKey, fallbackTypes: supportedTypes(p), present: present(c) };
+  const group = authorized(await storeCall(c, deps, (s, b) => s.getNotificationGroup(b, input)));
   return group === null ? recordNotFound() : c.json(group);
-};
+});
 
 // GET /api/v2/notifications/:group_key/accounts: 40 by default, at most 80, by max_id and since_id.
 export const notificationGroupAccounts: ApiHandler = withParams(async (c, deps, p) => {

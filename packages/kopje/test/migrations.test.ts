@@ -23,6 +23,7 @@ import {
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
+import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
@@ -12508,13 +12509,71 @@ describe("0093_annual_reports", () => {
   });
 });
 
-describe("0094_notification_policy_bots", () => {
-  const NAME = "0094_notification_policy_bots";
+describe("0094_quote_author_fetches", () => {
+  const NAME = "0094_quote_author_fetches";
+  const at = NAMES.indexOf(NAME);
+  const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
+
+  it("follows 0093, declared foreignKeys: 'unchanged', with the writers' constant", () => {
+    expect(NAMES[at - 1]).toBe("0093_annual_reports");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The CHECK's upper end is QUOTE_AUTHOR_FETCHES, which quotes.ts derives from its attempts.
+    expect(QUOTE_AUTHOR_FETCHES).toBe(6);
+    expect(MIGRATIONS[at]?.sql).toContain(
+      "CHECK (typeof(author_fetches) = 'integer' AND author_fetches BETWEEN 0 AND 6)",
+    );
+  });
+
+  it("gives every stored quote 0, and holds the column to 0 through QUOTE_AUTHOR_FETCHES", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/1', 'u', 'x.test')", R);
+      for (const id of [Q, O]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'public', '2026-11-01T00:00:00.000Z')`,
+          id,
+          R,
+        );
+      }
+      // Before 0094: a quote with its work under way.
+      sql.exec(
+        `INSERT INTO quotes (status_id, quoted_uri, state, attempts, hops, verify_after, updated_at)
+					VALUES (?1, 'https://x.test/s/' || ?2, 'pending', 3, 2, 0, '2026-11-01T00:00:00.000Z')`,
+        Q,
+        O,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const fetches = () =>
+        sql.exec<{ n: number }>("SELECT author_fetches AS n FROM quotes WHERE status_id = ?", Q).one().n;
+      expect(fetches()).toBe(0);
+      const set = (value: SqlStorageValue) =>
+        state.storage.transactionSync(() =>
+          sql.exec("UPDATE quotes SET author_fetches = ? WHERE status_id = ?", value, Q),
+        );
+      // Each end of the domain is kept, and text that reads as an integer is stored as one; a value past either end, or
+      // not an integer, is refused.
+      for (const value of [0, QUOTE_AUTHOR_FETCHES, "3"]) {
+        set(value);
+        expect(fetches()).toBe(Number(value));
+      }
+      set(QUOTE_AUTHOR_FETCHES);
+      for (const value of [-1, QUOTE_AUTHOR_FETCHES + 1, null, "x", 2.5]) {
+        expect(() => set(value), String(value)).toThrow(/constraint failed/);
+      }
+      expect(fetches()).toBe(QUOTE_AUTHOR_FETCHES);
+    });
+  });
+});
+
+describe("0095_notification_policy_bots", () => {
+  const NAME = "0095_notification_policy_bots";
   const at = NAMES.indexOf(NAME);
   const [SAVED, UNSAVED] = ["100000000000000001", "100000000000000002"];
 
-  it("follows 0093, declared foreignKeys: 'unchanged'", () => {
-    expect(NAMES[at - 1]).toBe("0093_annual_reports");
+  it("follows 0094, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0094_quote_author_fetches");
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
   });
 
