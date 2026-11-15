@@ -42,6 +42,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   quote request of it acts on that status; one naming another author's status is refused. Local actors declare their
   handle in `webfinger` (FEP-2c59), as Mastodon 4.6 does, in their actor documents and profile `Update`s. No Store
   migration and no `wrangler.jsonc` change.
+- WebFinger answers, the instance actor's included, carry FEP-3b86's `Object` intent,
+  `https://<domain>/authorize_interaction?uri={object}`, after the subscribe template, as Mastodon 4.6 and later do, so
+  a server whose web client looks for it sends a person here to open a post or an account. Mastodon's `Create` intent
+  is not advertised: Kopje has no web compose page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  WebFinger). No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
