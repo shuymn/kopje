@@ -2,6 +2,7 @@ import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../platform/stored-bounds";
 import {
   type ApiContext,
   type ApiHandler,
@@ -14,7 +15,6 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { LANGUAGES } from "./languages";
-import { MAX_DESCRIPTION } from "./media";
 
 // /api/v1/instance and /api/v2/instance in their Mastodon 4.5 shapes. The payloads are frozen by a contract test.
 //
@@ -131,7 +131,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
         profile_field_name_limit: MAX_FIELD_NAME,
         profile_field_value_limit: MAX_FIELD_VALUE,
       },
-      media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_DESCRIPTION },
+      media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_MEDIA_DESCRIPTION_LENGTH },
       translation: { enabled: false },
       // Who may read the public, hashtag and link timelines: anyone, as Kopje serves them without a token.
       timelines_access: {

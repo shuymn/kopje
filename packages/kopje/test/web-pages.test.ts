@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { PROFILE_PAGE_SIZE, webProfilePage } from "../src/domain/web-pages/profile";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../src/platform/package-version";
+import { REMOTE_HTML_RAW_LIMIT, sanitizeRemoteBio, sanitizeRemoteContent } from "../src/security/html";
 import { L1_SCRIPT, STYLESHEET } from "../src/web/asset-versions";
 import { calendarDate } from "../src/web/format";
 import { bearer, json, setSetting, sql } from "./api-helpers";
@@ -432,6 +433,42 @@ describe("profile page", () => {
     expect([...html.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0])).toEqual([`<script defer="" src="${L1_SCRIPT}">`]);
     expect(html).toContain('<p>hi<a rel="nofollow noopener" target="_blank">j</a></p>');
     expect(html).toContain("https://kopje.test/assets/avatar.jpg");
+  });
+
+  // HTML-1: the sink keeps the lang the stored HTML declares inside it, a heading's on its strong; the bio and the
+  // content are marked lang="" around it (docs/web-pages.md).
+  it("keeps the lang of stored HTML at the sink (HTML-1)", async () => {
+    const h = await community(["alice"]);
+    await sql(h.store, "UPDATE accounts SET note = ?", '<p lang="ja">bio<br lang="en">x</p><h2 lang="fr">y</h2>');
+    const id = await seedStatus(h.store, {
+      accountId: h.users.alice.id,
+      visibility: "public",
+      content: '<p lang="ja">a<span lang="en">b</span></p><h1 lang="de">t</h1>',
+    });
+    const profile = (await page(h, "/@alice")).html;
+    expect(profile).toContain('<p lang="ja">bio<br lang="en">x</p><p><strong lang="fr">y</strong></p>');
+    expect(profile).toContain('<p lang="ja">a<span lang="en">b</span></p><p><strong lang="de">t</strong></p>');
+    const status = (await page(h, `/@alice/${id}`)).html;
+    expect(status).toContain('<p lang="ja">a<span lang="en">b</span></p><p><strong lang="de">t</strong></p>');
+  });
+
+  // HTML-1, RES-2: a stored value that sanitizing lengthened past the raw cap is not cut at the sink
+  // (STORED_HTML_LIMIT), nor in the page's description.
+  it("shows stored HTML that sanitizing lengthened past the raw cap", async () => {
+    const h = await community(["alice"]);
+    const raw = (text: string) => `<p lang='${'"'.repeat(9000)}'>${text}</p>`;
+    const note = sanitizeRemoteBio(raw("BIO"));
+    const content = sanitizeRemoteContent(raw("SENTINEL"));
+    expect([note.length, content.length].every((length) => length > REMOTE_HTML_RAW_LIMIT)).toBe(true);
+    await sql(h.store, "UPDATE accounts SET note = ?", note);
+    const id = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public", content });
+    const profile = (await page(h, "/@alice")).html;
+    expect(profile).toContain(note);
+    expect(profile).toContain(content);
+    expect(profile).toContain('<meta property="og:description" content="BIO"/>');
+    const status = (await page(h, `/@alice/${id}`)).html;
+    expect(status).toContain(content);
+    expect(status).toContain('<meta property="og:description" content="SENTINEL"/>');
   });
 
   it("answers 410 for a suspended account and 404 for none or a remote one", async () => {

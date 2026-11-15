@@ -15,6 +15,7 @@ import { tagTimeline } from "../src/domain/timelines";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH } from "../src/platform/json-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { REMOTE_HTML_RAW_LIMIT } from "../src/security/html";
 import { seedAccount, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
@@ -60,7 +61,7 @@ import {
   undo,
   update,
 } from "./inbox-status-helpers";
-import { plannedRun, remoteAccounts, rowsRead, scansOf, staleStatistics } from "./read-helpers";
+import { observedSql, plannedRun, remoteAccounts, rowsRead, scansOf, staleStatistics } from "./read-helpers";
 import { byText } from "./sort";
 import { block, domainBlock, mute } from "./status-helpers";
 import { blurhashOf } from "./stored-bounds-fixtures";
@@ -333,6 +334,54 @@ describe("Create (Mastodon and Misskey)", () => {
     expect((await statusRow(t.store, note.id))?.visibility).toBe("limited");
   });
 
+  it("a bot's mention and follow follow for_bots", async () => {
+    const t = await setup();
+    const robo = await mastodonActor(t.web, "robo", { extra: { type: "Service" } });
+    // Public, addressing alice in cc: neither a private nor a limited mention.
+    const note = () =>
+      mastodonNote(robo, {
+        cc: [`${robo.uri}/followers`, ALICE_URI],
+        tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+      });
+    const rows = () =>
+      sql<{ type: string; filtered: number }>(
+        t.store,
+        "SELECT type, filtered FROM notifications WHERE account_id = ? ORDER BY id",
+        ALICE,
+      );
+    const setBots = async (choice: string) => {
+      const response = await t.request("/api/v2/notifications/policy", {
+        method: "PUT",
+        headers: { authorization: `Bearer ${t.tokens.alice}`, "content-type": "application/json" },
+        body: JSON.stringify({ for_bots: choice }),
+      });
+      expect(response.status).toBe(200);
+    };
+    await t.post(robo, create(robo, note()));
+    expect(await sql(t.store, "SELECT actor_type FROM accounts WHERE uri = ?", robo.uri)).toEqual([
+      { actor_type: "Service" },
+    ]);
+    // Accepted by default.
+    expect(await rows()).toEqual([{ type: "mention", filtered: 0 }]);
+    await setBots("filter");
+    await t.post(robo, create(robo, note()));
+    await t.post(robo, {
+      "@context": AS,
+      id: `${robo.uri}#follows/${nextId()}`,
+      type: "Follow",
+      actor: robo.uri,
+      object: ALICE_URI,
+    });
+    expect(await rows()).toEqual([
+      { type: "mention", filtered: 0 },
+      { type: "mention", filtered: 1 },
+      { type: "follow", filtered: 1 },
+    ]);
+    await setBots("drop");
+    await t.post(robo, create(robo, note()));
+    expect(await rows()).toHaveLength(3);
+  });
+
   it("a direct note mentions its recipients and notifies them; a direct note to nobody local is not stored", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
@@ -344,11 +393,17 @@ describe("Create (Mastodon and Misskey)", () => {
     await t.post(bob, create(bob, direct));
     expect((await statusRow(t.store, direct.id))?.visibility).toBe("direct");
     expect(await notifications(t.store)).toEqual([{ account_id: ALICE, type: "mention" }]);
-    const stray = mastodonNote(bob, { to: [`${OTHER}/users/x`], cc: [] });
+    // Tagging a local account it does not address relates it no more (Create#related_to_local_activity?).
+    const stray = mastodonNote(bob, {
+      to: [`${OTHER}/users/x`],
+      cc: [],
+      tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+    });
     await t.post(bob, create(bob, stray));
     // A public post of an account nobody here follows, addressed to nobody here, is not stored either.
     await t.post(bob, create(bob, mastodonNote(bob)));
     expect((await statuses(t.store)).map((s) => s.uri)).toEqual([direct.id]);
+    expect(await notifications(t.store)).toEqual([{ account_id: ALICE, type: "mention" }]);
   });
 
   it("links a reply that arrived before its parent once the parent arrives, without fetching it", async () => {
@@ -578,6 +633,179 @@ describe("Update of a status (ID-6, ID-7, VIS-2)", () => {
       edited_at: null,
     });
     expect(await sql(t.store, "SELECT * FROM status_edits")).toEqual([]);
+  });
+});
+
+describe("a mention a remote Create tags but does not address (the limited accounts condition, VIS-23)", () => {
+  // bob tags alice in a public status, leaving her out of to and cc, as a Mastodon 4.6 server does for a recipient of
+  // an account it limits (ActivityPub::TagManager#to and #cc).
+  const tagging = (bob: TestActor, extra: Record<string, unknown> = {}) =>
+    mastodonNote(bob, {
+      content: '<p><a href="https://kopje.test/@alice" class="u-url mention">@alice</a> hi</p>',
+      tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+      ...extra,
+    });
+  const mentions = (t: Setup) =>
+    sql<{ account_id: string; filtered: number }>(
+      t.store,
+      "SELECT account_id, filtered FROM notifications WHERE type = 'mention' ORDER BY id",
+    );
+  const setPolicy = async (t: Setup, as: "alice" | "dave", policy: Record<string, string>) => {
+    const response = await t.request("/api/v2/notifications/policy", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${t.tokens[as]}`, "content-type": "application/json" },
+      body: JSON.stringify(policy),
+    });
+    expect(response.status).toBe(200);
+  };
+  // dave follows bob, which relates bob's public statuses to this instance; alice does not.
+  async function world() {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob, DAVE);
+    return { t, bob, bobId };
+  }
+  // The runs of the policy statement (notify's, notificationPolicySql) among the statements of `fn`.
+  const policyRuns = (t: Setup, fn: (db: Db) => unknown) =>
+    runInDurableObject(t.store, (_instance, state) => {
+      let runs = 0;
+      const counting = observedSql(state.storage.sql, (_rows, query) => {
+        runs += query.includes("main.notification_permissions") ? 1 : 0;
+      });
+      fn(new Db(counting));
+      return runs;
+    });
+
+  it("filters a tagged, unaddressed mention by default and opens a request", async () => {
+    const { t, bob, bobId } = await world();
+    const note = tagging(bob);
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(await mentions(t)).toEqual([{ account_id: ALICE, filtered: 1 }]);
+    expect(await sql(t.store, "SELECT account_id, silent FROM status_mentions WHERE status_id = ?", row.id)).toEqual([
+      { account_id: ALICE, silent: 0 },
+    ]);
+    const requests = await t.api<{ account: { id: string }; notifications_count: string }[]>(
+      "/api/v1/notifications/requests",
+    );
+    expect(requests.body.map((r) => [r.account.id, r.notifications_count])).toEqual([[bobId, "1"]]);
+    // A mention, not a silent one: alice sees the status (R2), and the notification when she asks for filtered ones.
+    expect((await t.api(`/api/v1/statuses/${row.id}`)).status).toBe(200);
+    const listed = await t.api<{ type: string; status: { id: string } }[]>(
+      "/api/v1/notifications?include_filtered=true",
+    );
+    expect(listed.body.map((n) => [n.type, n.status.id])).toEqual([["mention", row.id]]);
+    expect((await t.api<unknown[]>("/api/v1/notifications")).body).toEqual([]);
+  });
+
+  it("shows it under accept for limited accounts, drops it under drop, and shows it once alice follows bob", async () => {
+    const { t, bob, bobId } = await world();
+    await setPolicy(t, "alice", { for_limited_accounts: "drop" });
+    await t.post(bob, create(bob, tagging(bob)));
+    expect(await mentions(t)).toEqual([]);
+    await setPolicy(t, "alice", { for_limited_accounts: "accept" });
+    await t.post(bob, create(bob, tagging(bob)));
+    expect(await mentions(t)).toEqual([{ account_id: ALICE, filtered: 0 }]);
+    // Following the author lets it through whatever the choice, as every condition of that group.
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+      ALICE,
+      bobId,
+    );
+    for (const choice of ["drop", "filter"]) {
+      await setPolicy(t, "alice", { for_limited_accounts: choice });
+      await t.post(bob, create(bob, tagging(bob)));
+      expect((await mentions(t)).at(-1), choice).toEqual({ account_id: ALICE, filtered: 0 });
+    }
+    expect(await mentions(t)).toHaveLength(3);
+  });
+
+  it("is not limited when it arrives at alice's own inbox", async () => {
+    const { t, bob } = await world();
+    expect(await t.post(bob, create(bob, tagging(bob)), { path: "/ap/users/alice/inbox" })).toBe(202);
+    expect(await mentions(t)).toEqual([{ account_id: ALICE, filtered: 0 }]);
+  });
+
+  it("is not limited when it addresses alice in cc", async () => {
+    const { t, bob } = await world();
+    await t.post(bob, create(bob, tagging(bob, { cc: [`${bob.uri}/followers`, ALICE_URI] })));
+    expect(await mentions(t)).toEqual([{ account_id: ALICE, filtered: 0 }]);
+  });
+
+  it("is limited for the tagged account, not for the owner of the inbox it came to", async () => {
+    // No follower here: the delivery to dave's inbox relates the status.
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const note = tagging(bob, {
+      tag: [
+        { type: "Mention", href: ALICE_URI, name: "@alice" },
+        { type: "Mention", href: DAVE_URI, name: "@dave" },
+      ],
+    });
+    expect(await t.post(bob, create(bob, note), { path: "/ap/users/dave/inbox" })).toBe(202);
+    expect(await mentions(t)).toEqual([
+      { account_id: ALICE, filtered: 1 },
+      { account_id: DAVE, filtered: 0 },
+    ]);
+  });
+
+  it("notifies no remote account", async () => {
+    const { t, bob, bobId } = await world();
+    const remote = `${OTHER}/users/x`;
+    await sql(
+      t.store,
+      "INSERT INTO accounts (id, uri, username, domain) VALUES ('900000000000000001', ?, 'x', 'other.example')",
+      remote,
+    );
+    const note = tagging(bob, {
+      tag: [
+        { type: "Mention", href: ALICE_URI, name: "@alice" },
+        { type: "Mention", href: remote, name: "@x@other.example" },
+      ],
+    });
+    const input = parseRemoteStatus(note)!;
+    const author = { id: bobId, uri: bob.uri };
+    const runs = await policyRuns(t, (db) =>
+      storeRemoteStatus(db, author, input, { now: NOW, origin: LOCAL, deliveredTo: null, fetched: false }),
+    );
+    const row = (await statusRow(t.store, note.id))!;
+    expect(
+      await sql(
+        t.store,
+        "SELECT account_id FROM status_mentions WHERE status_id = ? AND silent = 0 ORDER BY account_id",
+        row.id,
+      ),
+    ).toEqual([{ account_id: ALICE }, { account_id: "900000000000000001" }]);
+    // alice's notification alone, its policy read once: no policy read for the remote account.
+    expect([runs, await mentions(t)]).toEqual([1, [{ account_id: ALICE, filtered: 1 }]]);
+  });
+
+  it("an edit notifies a newly tagged account as an ordinary mention, and nobody it notified already", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob);
+    await t.post(bob, create(bob, note));
+    // The edit tags dave, who does not follow bob, and leaves him out of to and cc.
+    const tagged = {
+      ...note,
+      content: '<p>now <a href="https://kopje.test/@dave" class="u-url mention">@dave</a></p>',
+      tag: [{ type: "Mention", href: DAVE_URI, name: "@dave" }],
+    };
+    const author = { id: bobId, uri: bob.uri };
+    const ctx = { now: NOW, origin: LOCAL, deliveredTo: null, fetched: false };
+    const edit = (updated: string) => (db: Db) =>
+      updateRemoteStatus(db, author, parseRemoteStatus({ ...tagged, updated })!, ctx);
+    expect(await policyRuns(t, edit("2026-10-11T13:00:00Z"))).toBe(1);
+    expect(await mentions(t)).toEqual([{ account_id: DAVE, filtered: 0 }]);
+    // A later edit that keeps the tag notifies nobody again: no notify, so no policy read.
+    expect(await policyRuns(t, edit("2026-10-11T14:00:00Z"))).toBe(0);
+    expect(await mentions(t)).toEqual([{ account_id: DAVE, filtered: 0 }]);
+    // The later edit was taken (its version recorded).
+    expect(await sql(t.store, "SELECT remote_version FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { remote_version: "2026-10-11T14:00:00.000Z" },
+    ]);
   });
 });
 
@@ -1495,6 +1723,229 @@ describe("profile fields of remote accounts (HTML-1, HTML-3)", () => {
       },
       { name: "Bad", value: '<a rel="nofollow noopener" target="_blank">x</a>', verified_at: null },
     ]);
+  });
+});
+
+// HTML-1: MASTODON_STRICT keeps lang on every element (`mastodon#39114`); a heading's goes on its strong.
+describe("lang in remote HTML (HTML-1)", () => {
+  const WITH_LANG =
+    '<p lang="ja">a<span lang="en">b</span><b lang="fr">c</b> <a href="https://cards.example/page" lang="es">e</a>' +
+    '<ruby lang="zh">f<rt lang="">g</rt></ruby><br lang="en">h</p><h1 lang="ja">t</h1>';
+  const STORED =
+    '<p lang="ja">a<span lang="en">b</span><b lang="fr">c</b> ' +
+    '<a href="https://cards.example/page" lang="es" rel="nofollow noopener" target="_blank">e</a>' +
+    '<ruby lang="zh">f<rt lang="">g</rt></ruby><br lang="en">h</p><p><strong lang="ja">t</strong></p>';
+  const withoutLang = (html: string) => html.replace(/ lang="[^"]*"/g, "");
+
+  it("keeps it in a status’s content, a bio and a field value, as the API shows them", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob", {
+      extra: {
+        summary: '<p lang="ja">bio <span lang="en">x</span></p><h2 lang="fr">y</h2>',
+        attachment: [{ type: "PropertyValue", name: "Site", value: '<span lang="de">wert</span>' }],
+      },
+    });
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob, { content: WITH_LANG, contentMap: { en: WITH_LANG } });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(row.content).toBe(STORED);
+    expect((await t.api<{ content: string }>(`/api/v1/statuses/${row.id}`)).body.content).toBe(STORED);
+    // A converted Article's HTML keeps it too.
+    const article = mastodonNote(bob, {
+      type: "Article",
+      name: "T",
+      summary: '<p lang="ja">summary</p>',
+      url: `${MASTODON}/articles/2`,
+    });
+    expect(await t.post(bob, create(bob, article))).toBe(202);
+    expect((await statusRow(t.store, article.id))!.content).toContain('<p lang="ja">summary</p>');
+    const shown = await t.api<{ note: string; fields: unknown[] }>(`/api/v1/accounts/${bobId}`);
+    expect(shown.body.note).toBe('<p lang="ja">bio <span lang="en">x</span></p><p><strong lang="fr">y</strong></p>');
+    expect(shown.body.fields).toEqual([{ name: "Site", value: '<span lang="de">wert</span>', verified_at: null }]);
+  });
+
+  // D13 of the design: a status stored before lang was kept holds the earlier sanitizer's output, which is today's
+  // output of its source without lang. Its next explicit Update counts as significant once, and never again for the
+  // same source. Mastodon compares two renderings under one config and has no such step.
+  it("counts one edit for a status stored before lang was kept, and no more", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const earlier = withoutLang(WITH_LANG);
+    const note = mastodonNote(bob, { content: earlier, contentMap: { en: earlier } });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(row.content).toBe(withoutLang(STORED));
+    const card = async () => await sql(t.store, "SELECT url, fetched_at FROM status_cards WHERE status_id = ?", row.id);
+    const attach = () =>
+      sql(
+        t.store,
+        "UPDATE status_cards SET due_at = NULL, fetched_at = 7, title = 't', attempts = 0 WHERE status_id = ?",
+        row.id,
+      );
+    await attach();
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: 7 }]);
+    // alice boosts it, so she hears of an edit.
+    await t.request(`/api/v1/statuses/${row.id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    const versions = () => sql(t.store, "SELECT content FROM status_edits WHERE status_id = ? ORDER BY id", row.id);
+    const updates = () =>
+      sql<{ id: string }>(
+        t.store,
+        "SELECT CAST(id AS TEXT) AS id FROM notifications WHERE type = 'update' AND account_id = ?",
+        ALICE,
+      );
+    const withLang = { ...note, content: WITH_LANG, contentMap: { en: WITH_LANG } };
+
+    expect(await t.post(bob, update(bob, withLang, "2026-10-11T13:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({
+      content: STORED,
+      edited_at: "2026-10-11T13:00:00.000Z",
+    });
+    expect(await versions()).toEqual([{ content: withoutLang(STORED) }, { content: STORED }]);
+    const notified = await updates();
+    expect(notified).toHaveLength(1);
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: null }]);
+
+    await attach();
+    expect(await t.post(bob, update(bob, withLang, "2026-10-11T14:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({
+      content: STORED,
+      edited_at: "2026-10-11T13:00:00.000Z",
+    });
+    expect(await versions()).toEqual([{ content: withoutLang(STORED) }, { content: STORED }]);
+    // notify replaces an update notification by a newer id, so the same id shows that the booster was not notified.
+    expect(await updates()).toEqual(notified);
+    expect(await card()).toEqual([{ url: "https://cards.example/page", fetched_at: 7 }]);
+  });
+});
+
+// MediaAttachmentParser#description (`mastodon#39590`): first_lang_string of the summary, else the name, present,
+// stripped, cut at 10,000 code points (federation/lang-string.ts).
+describe("remote attachment descriptions", () => {
+  const image = (n: number, extra: Record<string, unknown>) => ({
+    type: "Document",
+    mediaType: "image/png",
+    url: `${MASTODON}/system/media/${n}.png`,
+    ...extra,
+  });
+  const described = [
+    image(1, { summary: { "@value": "alt", "@language": "en" } }),
+    image(2, { name: ["n"] }),
+    image(3, { summary: "  ", name: "n" }),
+  ];
+  const descriptions = (t: Setup, statusId: string) =>
+    sql<{ description: string }>(
+      t.store,
+      "SELECT description FROM media_attachments WHERE status_id = ? ORDER BY position",
+      statusId,
+    );
+
+  it("reads them as Mastodon 4.7 does", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const long = "\u{1F600}".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1);
+    const notes = [
+      mastodonNote(bob, { attachment: [...described, image(4, { summary: " a", name: "n" })] }),
+      // Ruby's strip keeps a leading NBSP (U+00A0), which JavaScript's trim() would remove.
+      mastodonNote(bob, { attachment: [image(5, { summary: long }), image(6, { summary: "\u00a0a", name: "n" })] }),
+    ];
+    for (const note of notes) {
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+    }
+    const [first, second] = await Promise.all(notes.map(async (note) => (await statusRow(t.store, note.id))!.id));
+    expect(await descriptions(t, first!)).toEqual([
+      { description: "alt" },
+      { description: "n" },
+      { description: "n" },
+      { description: "a" },
+    ]);
+    const [cut, nbsp] = await descriptions(t, second!);
+    // Cut in code points: an astral character counts once.
+    expect([...cut!.description]).toHaveLength(MAX_MEDIA_DESCRIPTION_LENGTH);
+    expect(nbsp).toEqual({ description: "\u00a0a" });
+  });
+
+  // A status's content, content warning and a converted title keep StatusParser's reading: the property when it is a
+  // non-empty string, else the map's first value.
+  it("leaves the reading of content and the content warning as it was", () => {
+    const input = parseRemoteStatus({
+      id: `${MASTODON}/users/bob/statuses/lang`,
+      type: "Note",
+      attributedTo: `${MASTODON}/users/bob`,
+      content: ["x"],
+      summary: { "@value": "cw", "@language": "en" },
+      to: [PUBLIC],
+    })!;
+    expect([input.content, input.spoilerText]).toEqual(["", ""]);
+  });
+
+  // D13 of the design: a status stored before these readings holds "" for each description above. Its next explicit
+  // Update counts as significant once, and never again for the same attachments.
+  it("counts one edit for media stored before @value was read, and no more", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const undescribed = described.map((m, i) => image(i + 1, { url: m.url }));
+    const note = mastodonNote(bob, { attachment: undescribed });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect(await descriptions(t, row.id)).toEqual([{ description: "" }, { description: "" }, { description: "" }]);
+    // A status with media holds no card (R43); an imported attached row stands for one, which a reset removes.
+    const attach = () =>
+      sql(
+        t.store,
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+				VALUES (?, 'https://cards.example/page', 1, 1, 't', 7)`,
+        row.id,
+      );
+    const card = () => sql(t.store, "SELECT fetched_at FROM status_cards WHERE status_id = ?", row.id);
+    await attach();
+    await t.request(`/api/v1/statuses/${row.id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    const versions = async () =>
+      (
+        await sql<{ media_json: string }>(
+          t.store,
+          "SELECT media_json FROM status_edits WHERE status_id = ? ORDER BY id",
+          row.id,
+        )
+      ).map((v) => (JSON.parse(v.media_json) as { description: string | null }[]).map((m) => m.description));
+    const updates = () =>
+      sql<{ id: string }>(
+        t.store,
+        "SELECT CAST(id AS TEXT) AS id FROM notifications WHERE type = 'update' AND account_id = ?",
+        ALICE,
+      );
+    const withDescriptions = { ...note, attachment: described };
+
+    expect(await t.post(bob, update(bob, withDescriptions, "2026-10-11T13:00:00Z"))).toBe(202);
+    expect(await descriptions(t, row.id)).toEqual([{ description: "alt" }, { description: "n" }, { description: "n" }]);
+    // The earlier version shows its descriptions as Mastodon presents an empty one: null.
+    expect(await versions()).toEqual([
+      [null, null, null],
+      ["alt", "n", "n"],
+    ]);
+    const notified = await updates();
+    expect(notified).toHaveLength(1);
+    expect(await card()).toEqual([]);
+
+    await attach();
+    expect(await t.post(bob, update(bob, withDescriptions, "2026-10-11T14:00:00Z"))).toBe(202);
+    expect(await statusRow(t.store, note.id)).toMatchObject({ edited_at: "2026-10-11T13:00:00.000Z" });
+    expect(await versions()).toEqual([
+      [null, null, null],
+      ["alt", "n", "n"],
+    ]);
+    // notify replaces an update notification by a newer id, so the same id shows that the booster was not notified.
+    expect(await updates()).toEqual(notified);
+    expect(await card()).toEqual([{ fetched_at: 7 }]);
   });
 });
 

@@ -1105,16 +1105,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from a shown one. Their cost is bounded (RES-6, RES-7): the lists and counts read the partial index of unfiltered
   notifications (`notifications_unfiltered`), so a sender's filtered notifications cost them nothing; the requests are
   paged by their index and the summary reads at most 100; a request's count is kept as it is written; the private
-  mention walk reads at most 101 statuses; answering a request, or a bulk form of at most 100 ids, walks at most 2,000
-  of the senders' notifications in the request and the rest in the inbound job rounds; and a remote sender's purge
-  deletes its requests, permissions and jobs within its batches. _Enforced (main):_
-  `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS` and
-  `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
+  mention walk reads at most 101 statuses; the bot condition reads the sender by key; answering a request, or a bulk
+  form of at most 100 ids, walks at most 2,000 of the senders' notifications in the request and the rest in the inbound
+  job rounds; and a remote sender's purge deletes its requests, permissions and jobs within its batches. _Enforced
+  (main):_ `notificationPolicySql` and `UNFILTERED_SQL` in `src/domain/audience.ts`, `notify`, `NOTIFICATION_COLUMNS`
+  and `notificationStream` in `src/domain/notifications.ts`, `src/domain/notification-requests.ts`,
   `src/domain/notification-groups.ts`, `src/domain/push.ts`, `purgeRelationships` and `STATUS_CHILDREN` in
-  `src/domain/inbox.ts`, migration `0020_notification_policies`; `test/notification-policy.test.ts` (among others,
-  "dismisses in bulk a sender with more filtered notifications than the request’s batches; the job rounds delete the
-  rest"), `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`, `test/policy-writes.test.ts`,
-  `test/policy-bounds.test.ts`, `test/migrations.test.ts`, `test/cascade-guard.test.ts`.
+  `src/domain/inbox.ts`, `notifyCreated` in `src/domain/remote-statuses.ts` (which marks a tagged, unaddressed mention
+  limited), migrations `0020_notification_policies` and `0095_notification_policy_bots`;
+  `test/notification-policy.test.ts` (among others, "dismisses in bulk a sender with more filtered notifications than
+  the request’s batches; the job rounds delete the rest"), `test/inbox-statuses.test.ts` ("a mention a remote Create
+  tags but does not address"), `test/streaming/streaming.test.ts`, `test/policy-endpoints.test.ts`,
+  `test/policy-writes.test.ts`, `test/policy-bounds.test.ts`, `test/migrations.test.ts`,
+  `test/notification-policy-dump.test.ts`, `test/cascade-guard.test.ts`.
 
 - **VIS-25: a report reveals to the servers it is forwarded to only what its reporter may see, and never its reporter.**
   A report (`Report`) is its reporter's: it is read only where it is written and answered once to its reporter (R34,
@@ -2305,29 +2308,42 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the stored actor document and sanitized when presented, at most 16 fields): the same `sanitizeRemoteHtml`;
   `test/inbox-statuses.test.ts` ("sanitizes content by allowlist with http(s) links only", "shows PropertyValue fields
   with sanitized values").
+  As `MASTODON_STRICT` does (`mastodon#39114`), every kept element keeps its `lang`, any value, an empty one included,
+  and a heading's goes on the `strong` it becomes. The sanitizer writes it double-quoted and escaped, the `br` and
+  heading rewrites included; it has no bound of its own beyond the output's (RES-1, RES-2). _Enforced (main):_
+  `test/html.test.ts` ("keeps a hostile lang as one attribute of one %s", "keeps lang on every kept element"),
+  `test/inbox-statuses.test.ts` ("keeps it in a status’s content, a bio and a field value"), `test/web-pages.test.ts`
+  ("keeps the lang of stored HTML at the sink").
   The web UI sanitizes again at the sink: bios, status content and field values reach a page only as the sanitizer's
-  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. _Enforced (main):_ `test/web-pages.test.ts`
-  ("sanitizes stored HTML at the sink and drops non-http links"). Only `Rich` (`src/web/components/basics.tsx`) sets
-  `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`, only the doctype
-  (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never a string:
+  output (`SafeHtml` in `src/web/safe-html.ts`), whatever the Store holds. That pass cuts its input at
+  `STORED_HTML_LIMIT` (`src/security/html.ts`: 131,072 UTF-16 code units, the largest stored bound of status content,
+  bios and presented field values), not at the raw cap: sanitizing lengthens its input (`"` in an attribute value
+  becomes `&quot;`), and a cut inside an attribute would drop the element and everything after it.
+  _Enforced (main):_ `test/web-pages.test.ts` ("sanitizes stored HTML at the sink and drops non-http links", "shows
+  stored HTML that sanitizing lengthened past the raw cap"), `test/html.test.ts` ("keeps a stored value whose %s
+  sanitizing lengthened past the raw cap", "cuts at a bound that admits every stored value"). Only `Rich`
+  (`src/web/components/basics.tsx`) sets `dangerouslySetInnerHTML`, only `src/web/safe-html.ts` casts to `SafeHtml`,
+  only the doctype (`src/web/components/html.tsx`) uses `hono/html`, and a route hands Hono's `c.html` only JSX, never
+  a string:
   _Enforced (main):_ `test-node/raw-html.test.ts`.
   Custom emoji in that HTML are added in the same pass (`sanitizedWithEmoji`): sanitize-html hands each run of text it
   keeps, already escaped, to a filter whose output it writes unescaped, and the filter keeps the text as given and adds
   only an image whose attributes it escapes, for a shortcode within `EMOJI_SHORTCODE` and a url that passes the
   stored bounds again at the sink; attribute values and dropped elements never reach it. In names, warnings, field
   names and poll choices, which are text, an emoji is an element hono/jsx escapes. _Enforced (main):_
-  `src/security/html.ts` (`sanitizeRemoteHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
+  `src/security/html.ts` (`sanitizeStoredHtmlFiltered`), `src/web/view/emoji.ts`; `test/web-emoji.test.ts` ("gets
   each run of text escaped and writes what it returns unescaped", "are refused at the sink for a shortcode or url the
   stored bounds would refuse").
   The operator's documents (the extended description, the privacy policy and the terms of service) are stored as the
   admin wrote them or the cutover converted them and sanitized once per sink by `sanitizeDocumentHtml`, the same
-  allowlist with h2 to h4 kept as headings, without attributes ([mastodon-deviations.md](mastodon-deviations.md),
-  Instance and apps): in the Store for the API (`instanceDocument` in `src/domain/instance.ts`), at the page for the
-  web (`webDocument`, then `SafeHtml`). A link that is not absolute http(s) loses its href and stays as text (HTML-3).
-  At most 50,000 UTF-8 bytes each (RES-2, the instance's public settings), so the sanitizer's raw cap never cuts one,
-  however sanitizing lengthens it.
+  allowlist with h2 to h4 kept as headings, without attributes (`lang` included; the other elements keep it)
+  ([mastodon-deviations.md](mastodon-deviations.md), Instance and apps): in the Store for the API (`instanceDocument`
+  in `src/domain/instance.ts`), at the page for the web (`webDocument`, then `SafeHtml`). A link that is not absolute
+  http(s) loses its href and stays as text (HTML-3). At most 50,000 UTF-8 bytes each (RES-2, the instance's public
+  settings), so the sanitizer's raw cap never cuts one, however sanitizing lengthens it.
   _Enforced (main):_ `test/html.test.ts` (the vector suites through it too, "keeps headings as h2 to h4, without
-  attributes, under the page’s own h1"), `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
+  attributes, under the page’s own h1", "keeps lang on its other elements and none on its headings"),
+  `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the
   pages show them", "serves the privacy policy sanitized", "keeps the end of a document that sanitizing lengthens past
   the raw cap"), `test/web-pages.test.ts` ("serve the privacy policy and
   the terms of service as stored, sanitized at the sink", "shows the extended description sanitized at the sink").
@@ -2786,7 +2802,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
   image metadata walk: `test/image-bytes.test.ts` ("walks a worst-case file at the upload bound"). Remote HTML:
-  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"). _Enforced (main)_ for JSON-LD
+  _Enforced (main):_ `test/html.test.ts` ("at the raw cap within a generous time"), and for stored HTML sanitized again
+  at the web sink, at `STORED_HTML_LIMIT` (HTML-1): `test/html.test.ts` ("at the stored cap within a generous time").
+  _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
@@ -3078,11 +3096,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. The
-  raw presenters (`present` and `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in
-  accounts.ts) are not exported, so the compiler refuses direct use outside their module; the exported paths present one
-  unit or admit within a budget. _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS`
-  hold their stored bounds (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
+  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
+  length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
+  bounds do (remote ones, or local content filled by mentions). The skip is an accepted departure
+  (`docs/mastodon-deviations.md`, "Streaming."; `test/streaming/public.test.ts`). The raw presenters (`present` and
+  `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
+  compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
+  _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
+  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. Columns that keep a read-time projection are read through their helper in
@@ -3865,10 +3888,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
-  spends at most 512 checks, 64 presentations, 4 MiB of presented payload and 4,096 sends, runs a unit only while what
-  is left covers a unit's worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds)
-  and the feeds' mention filter; one presentation, 256 sends) and leaves the rest to the next turn; a payload over 512
-  KiB is skipped and logged. The journal records nothing once it spans 4,096 ids, and is pruned behind the position, at
+  spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
+  worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
+  filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
+  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
+  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
+  turn presents at most 18,745,008 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,537,495 being the most JSON a streamed subject presents (`update` and
+  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
+  status, report and warning together, an announcement), derived from the maxima table
+  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
   send, before it stops for its budget. a delete's capture is one journal row and at most one row per account in the

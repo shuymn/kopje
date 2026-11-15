@@ -168,24 +168,28 @@ notification (`admin.report`) is shown only while its recipient is the OAuth adm
 names (`warning`) a warning of that recipient (R42); it goes with its warning.
 
 R15 also has a policy part, the recipient's notification policy (`notificationPolicySql`, Mastodon's
-`NotifyService::DropCondition#drop?` and `FilterCondition#filter?`, migration `0020_notification_policies`), which
-`notify` applies as it writes: for each of its conditions the recipient chooses accept, filter or drop
-(`notification_policies`, Mastodon's defaults without a row: private mentions filtered, the rest accepted). The
-conditions are a sender the recipient does not follow; a sender that has not followed the recipient for three days; an
-account younger than 30 days the recipient does not follow; and a mention in a direct status from an account the
-recipient does not follow that answers none of the recipient's private mentions of the sender (the walk up the thread
-reads the parent and at most 100 statuses above it, as Mastodon's). Only mentions, boosts, favourites, follows and
-follow requests are filterable, and a sender the recipient accepted a request from (`notification_permissions`) is
-always accepted. A condition chosen as drop drops the notification (nothing is written); otherwise one chosen as filter
-filters it: it is written with `notifications.filtered` set and no group, is not pushed, does not join a conversation,
-and a mention opens or updates its sender's request (`notification_requests`). Kopje has no silenced accounts (the
-limited accounts condition never matches) and no staff role. Every read of notifications leaves a filtered one out
-unless the request asks for filtered ones (`include_filtered`, or `account_id` in v1, as Mastodon's
-`Notification.browserable`): `statusReads(...).notifications` takes `includeFiltered` and otherwise adds the term
-`n.filtered = 0`, which reads the partial index `notifications_unfiltered` of the unfiltered rows, so no list or count
-reads a filtered notification; a read by id (v1, and `ungrouped-<id>` in v2, as Mastodon's `show`) shows one. The push
-target leaves them out too (`UNFILTERED_SQL`). Accepting a request records the permission and unfilters the sender's
-filtered notifications, adding its direct mentions to the recipient's conversations, as Mastodon's
+`NotifyService::DropCondition#drop?` and `FilterCondition#filter?`, migrations `0020_notification_policies` and
+`0095_notification_policy_bots`), which `notify` applies as it writes: for each of its conditions the recipient chooses
+accept, filter or drop (`notification_policies`, Mastodon's defaults without a row: private mentions and limited
+accounts filtered, the rest, bots included, accepted). The conditions are a sender the recipient does not follow; a
+sender that has not followed the recipient for three days; an account younger than 30 days the recipient does not
+follow; a mention in a direct status from an account the recipient does not follow that answers none of the recipient's
+private mentions of the sender (the walk up the thread reads the parent and at most 100 statuses above it, as
+Mastodon's); a notification its writer marks limited from an account the recipient does not follow: a mention a remote
+`Create` tags without addressing its recipient (not in `to` or `cc`, and not delivered to the recipient's own inbox;
+Mastodon's `silenced` option, `notifyCreated` in `src/domain/remote-statuses.ts`), never one an edit adds; and a sender
+whose actor type is `Application` or `Service` (`BOT_ACTOR_TYPES`, the list the account entity's `bot` reads) the
+recipient does not follow. Only mentions, boosts, favourites, follows and follow requests are filterable, and a sender
+the recipient accepted a request from (`notification_permissions`) is always accepted. A condition chosen as drop drops
+the notification (nothing is written); otherwise one chosen as filter filters it: it is written with
+`notifications.filtered` set and no group, is not pushed, does not join a conversation, and a mention opens or updates
+its sender's request (`notification_requests`). Kopje has no silenced accounts and no staff role. Every read of
+notifications leaves a filtered one out unless the request asks for filtered ones (`include_filtered`, or `account_id`
+in v1, as Mastodon's `Notification.browserable`): `statusReads(...).notifications` takes `includeFiltered` and otherwise
+adds the term `n.filtered = 0`, which reads the partial index `notifications_unfiltered` of the unfiltered rows, so no
+list or count reads a filtered notification; a read by id (v1, and `ungrouped-<id>` in v2, as Mastodon's `show`) shows
+one. The push target leaves them out too (`UNFILTERED_SQL`). Accepting a request records the permission and unfilters
+the sender's filtered notifications, adding its direct mentions to the recipient's conversations, as Mastodon's
 `UnfilterNotificationsWorker` does; dismissing one, or several at once, deletes them; both walk the sender's
 notifications in bounded batches (`src/domain/notification-requests.ts`), the first in the request and the rest with the
 inbound jobs. Requests, the policy and permissions are their recipient's alone: only their owner reads or answers them.
