@@ -175,6 +175,8 @@ describe("the maintenance snapshot (OPS-7)", () => {
     ["/.well-known/webfinger?resource=acct:alice@KOPJE.test", {}],
     ["/.well-known/webfinger?resource=acct:bob@kopje.test", {}],
     ["/.well-known/webfinger?resource=acct:nobody@kopje.test", {}],
+    // Not the instance actor's handle, which keeps the domain's case (federation.ts isInstanceHandle).
+    ["/.well-known/webfinger?resource=acct:KOPJE.TEST@kopje.test", {}],
     ["/.well-known/webfinger?resource=acct:alice@other.example", {}],
     ["/.well-known/webfinger?resource=https://kopje.test/ap/users/ALICE", {}],
     ["/.well-known/webfinger?resource=https://kopje.test/@alice", {}],
@@ -191,6 +193,7 @@ describe("the maintenance snapshot (OPS-7)", () => {
       ["/ap/users/alice", { headers: { accept: "text/html" } }],
       ["/actor", { headers: { accept: AP } }],
       ["/.well-known/webfinger?resource=https://kopje.test/actor", {}],
+      ["/.well-known/webfinger?resource=acct:kopje.test@kopje.test", {}],
       ["/.well-known/webfinger?resource=https://other.example/users/a", {}],
       ["/.well-known/webfinger", {}],
       ["/.well-known/nodeinfo", {}],

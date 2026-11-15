@@ -1130,7 +1130,7 @@ function adminStatus(row: StatusReviewRow, settings: TrendSettings): AdminTrendS
   return {
     id: row.id,
     url: row.url,
-    account: { id: row.account_id, acct: acctOf(row) },
+    account: { id: row.account_id, acct: acctOf({ id: row.account_id, username: row.username, domain: row.domain }) },
     published_at: row.published_at,
     language: row.language,
     score: row.score,

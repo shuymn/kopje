@@ -2397,6 +2397,40 @@ for (const width of [1280, 375]) {
   });
 }
 
+// Settings' text controls: the server's limits count code points (display name 40, note 500, a field's name and value
+// 255), the native maxlength UTF-16 code units, so each control takes twice its limit natively and the server decides.
+// Typed (pressSequentially) and pasted (insertText) as a person enters text; fill() sets the value past maxlength.
+for (const width of [1280, 375]) {
+  test(`settings: text controls take every value the server accepts at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await open(page, pageNamed("settings"));
+    const enter = async (control: Locator, text: string, how: "type" | "paste") => {
+      await control.clear();
+      if (how === "type") {
+        await control.pressSequentially(text);
+      } else {
+        await control.focus();
+        await page.keyboard.insertText(text);
+      }
+      return control.inputValue();
+    };
+    for (const [selector, points] of [
+      ['input[name="display_name"]', 40],
+      ['textarea[name="note"]', 500],
+      ['input[name="fields_attributes[0][name]"]', 255],
+      ['input[name="fields_attributes[0][value]"]', 255],
+    ] as const) {
+      const control = page.locator(selector);
+      // At the limit in astral characters, two code units each: every one is kept.
+      expect(await enter(control, "😀".repeat(points), "type"), selector).toBe("😀".repeat(points));
+      // One more, pasted: cut at twice the limit in code units, between two characters.
+      expect(await enter(control, "😀".repeat(points + 1), "paste"), selector).toBe("😀".repeat(points));
+      // One more in the BMP: kept, for the server to refuse with its message (test/web-session.test.ts).
+      expect(await enter(control, "x".repeat(points + 1), "type"), selector).toBe("x".repeat(points + 1));
+    }
+  });
+}
+
 // The handoff's post text: two lines at most, the second cut with an ellipsis, at a phone's width and a desktop's.
 for (const width of [1280, 375]) {
   test(`handoff: the post's text shows two lines at most at ${width} px`, async ({ page }) => {

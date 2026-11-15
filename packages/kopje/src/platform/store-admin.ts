@@ -65,6 +65,7 @@ import {
   hasStagedLinks,
   ImportError,
   isEmpty,
+  localUsernameDomainProblem,
   migrationDifference,
   parseHeader,
   parseTrailer,
@@ -920,6 +921,15 @@ export class StoreAdmin {
           report.ok = false;
           report.problems.push(migrations);
         }
+        // Against the domain the Store keeps, which the import restores below (ID-5).
+        const collision = localUsernameDomainProblem(
+          this.#sql,
+          (record.bootstrap ?? []).find((row) => row.name === "domain")?.value ?? null,
+        );
+        if (collision !== null) {
+          report.ok = false;
+          report.problems.push(collision);
+        }
         if (report.ok) {
           // An import never changes configuration (domain, who administers this Store): its own rows come back exactly.
           replaceBootstrapRows(this.#sql, record.bootstrap ?? []);
@@ -1153,6 +1163,14 @@ export class StoreAdmin {
       }
       if (authority.kind === "access") {
         this.#assertAdmin(authority, readAccessSettings(this.#sql));
+      }
+      // ID-5: no domain that a local account's username already is.
+      const collision = localUsernameDomainProblem(
+        this.#sql,
+        typeof changes.domain === "string" ? changes.domain : null,
+      );
+      if (collision !== null) {
+        throw new ImportError("local-username-is-domain", collision);
       }
       for (const [name, value] of Object.entries(changes)) {
         if (value === null) {
