@@ -282,7 +282,12 @@ against their own instance. TLS is assumed between all parties.
   updates or deletes it, so a local status is never created, updated or deleted from outside (`storeRemoteStatus` and
   `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
-  remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)").
+  remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
+  `atomUri` (Mastodon's `Create#find_existing_status`, which `Update#update_status` also reaches, `Delete#delete_status`
+  and `Undo#undo_announce`) keeps the rule: a `Create` or an `Update` whose `atomUri` names another author's status, a
+  local one included, is refused, and a `Delete` or an `Undo` takes the actor's own status or boost by the object's id,
+  else by its `atomUri`, and only then finds another author's status under the id, which it refuses (`namedStatus` in
+  `src/domain/inbox.ts`); `test/inbox-atom-uri.test.ts`.
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored
@@ -295,20 +300,23 @@ against their own instance. TLS is assumed between all parties.
   (`test/inbox-actor-revision.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
-  no key pair. The instance actor is served at `/actor` only, and WebFinger answers it for that URI and for its handle,
-  `acct:<domain>@<domain>` with the domain exactly as the username (`isInstanceHandle`); it has no `accounts` row, so
-  it is no account to lookup, search, mentions or the public pages. A local account keeps its own WebFinger identity:
-  no local username is the domain in any case (`localUsernameIsDomain` in `src/platform/identity-bounds.ts`, compared
-  as local usernames are looked up): the cutover's conversion and verification, the Store's import verification
-  (against the domain the Store keeps) and its configuration of the domain refuse one, and invitations and `/setup`
-  take only `LOCAL_USERNAME`, which has no `.`. A Store that holds one from before these refusals answers WebFinger for
-  that handle with the account (`mapHandle` asks for a local account first), and its instance actor then has no handle
-  answer, only its URI one. _Enforced (main):_ `src/federation/federation.ts`; `test/federation.test.ts` ("differently
-  cased path", "another host, an unknown user, and the request host", "by its handle, the domain at the domain", "no
-  other handle at the domain", "never answers its handle for a local account whose username is the domain"),
-  `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/instance-actor-handle.test.ts` ("names no account
-  in lookup, mentions or the public pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance
-  domain"), `test/dump-import.test.ts` ("a local username that is the instance domain").
+  no key pair. An actor's `webfinger` handle names the host of the actor id its document declares, on the actor endpoint
+  and in a profile `Update`. The instance actor is served at `/actor` only, and WebFinger answers it for that URI and
+  for its handle, `acct:<domain>@<domain>` with the domain exactly as the username (`isInstanceHandle`); it has no
+  `accounts` row, so it is no account to lookup, search, mentions or the public pages. A local account keeps its own
+  WebFinger identity: no local username is the domain in any case (`localUsernameIsDomain` in
+  `src/platform/identity-bounds.ts`, compared as local usernames are looked up): the cutover's conversion and
+  verification, the Store's import verification (against the domain the Store keeps) and its configuration of the
+  domain refuse one, and invitations and `/setup` take only `LOCAL_USERNAME`, which has no `.`. A Store that holds one
+  from before these refusals answers WebFinger for that handle with the account (`mapHandle` asks for a local account
+  first), and its instance actor then has no handle answer, only its URI one. _Enforced (main):_
+  `src/federation/federation.ts`, `documentOf` in `src/domain/actor-update.ts`; `test/federation.test.ts`
+  ("differently cased path", "another host, an unknown user, and the request host", "by its handle, the domain at the
+  domain", "no other handle at the domain", "never answers its handle for a local account whose username is the
+  domain"), `test/signed-fetch.test.ts` ("no key pairs for a spelling"), `test/actor-update.test.ts` ("names the handle
+  at its actor id's host"), `test/instance-actor-handle.test.ts` ("names no account in lookup, mentions or the public
+  pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance domain"),
+  `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
   row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
   the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require
@@ -394,10 +402,18 @@ against their own instance. TLS is assumed between all parties.
   missing still refreshes the status's poll (counts, end, voters), its quote policy and the stamp of the same quote
   (Mastodon's `handle_implicit_update!`), and an older one changes nothing; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
-  `Delete` was recorded takes no `Update`. A `Delete` of an unknown object of the actor's origin is recorded for that
-  actor only, so it cannot suppress another actor's objects never seen here; the `Delete` of a stored status or boost is
-  also recorded for every actor (`ANY_ACTOR`), so nobody, another actor of the same origin included, creates or updates
-  that uri again (bounded by the authors' caps: it is written only with the author's own retraction of the uri, which
+  `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
+  the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
+  `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
+  edits the stored status under these version rules and its own uri, and a `Delete` or `Undo` that found its status
+  by `atomUri` records both ids as the actor's retractions, both or neither within the cap (`retractMatched` in
+  `src/domain/retractions.ts`), so neither id brings it back; such a `Delete` records the stored status's own uri as
+  deleted for every actor, and the object's id, never shown to be the actor's, only as the actor's retraction, as an
+  unknown object's (`test/inbox-atom-uri.test.ts`). A `Delete` of an unknown object of the actor's origin is recorded
+  for that actor only, so it cannot suppress another actor's objects never seen here; the `Delete` of a stored status
+  or boost is also recorded for every actor (`ANY_ACTOR`), so nobody, another actor of the same origin included, creates
+  or updates that uri again (bounded by the authors' caps: it is written only with the author's own retraction of the
+  uri, which
   counts against the author's cap). The wildcard's deadline is the one the last `Delete` that found the author's stored
   row gave it: a `Delete` delivered again after the removal finished finds no row and renews only the author's own
   retraction (`retractUnknown`), so the two can expire apart; renewing the wildcard there would let another actor on the
@@ -506,8 +522,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   only to its addressed recipients, presented as `private` by the API, never widened by an edit. _Enforced (main):_
   `interpretAddressing` in `src/domain/audience.ts`; `test/audience.test.ts` ("reads Misskey specified"). _Enforced
   (main)_ for inbound statuses: addressing goes through `interpretAddressing`, including the owner of the personal inbox
-  a status came to, and an edit never changes the visibility or adds a recipient to a private, direct or limited status;
-  `test/inbox-statuses.test.ts` ("VIS-2: a Misskey specified note is limited", "never widens a private audience").
+  a status came to, by a `Create` or by an `Update` that finds the stored status only by its `atomUri` (Mastodon's
+  `postprocess_audience_and_deliver`, which makes a direct status limited), and an edit itself never changes the
+  visibility or adds a recipient to a private, direct or limited status; `test/inbox-statuses.test.ts` ("VIS-2: a
+  Misskey specified note is limited", "never widens a private audience"), `test/inbox-atom-uri.test.ts`.
   Outbound: each silent recipient gets a copy of its own at its personal inbox naming only itself in `to` (no Mention),
   because Misskey derives `visibleUsers` from `to` and `cc` only; the copy everyone else gets never names a silent
   recipient. So a silent recipient learns that it is addressed, and nothing about other silent recipients. A personal
