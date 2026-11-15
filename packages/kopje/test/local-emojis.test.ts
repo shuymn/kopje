@@ -564,7 +564,7 @@ describe("emoji query plans at saturation, with stale statistics", () => {
             return real.exec(query, ...params);
           },
         }) as unknown as SqlStorage;
-      customEmojis.run(capturing("list", /INDEXED BY custom_emojis_enabled/), undefined);
+      customEmojis.run(capturing("list", /INDEXED BY custom_emojis_enabled/), { credential: null });
       localEmojiSnapshot(new Db(capturing("snapshot", /json_each/)), [":e0001: :e0002:"], 12_288);
       localEmojiTags(
         new Db(capturing("tags", /json_each/)),
@@ -625,9 +625,10 @@ describe("emoji dump and import", () => {
       ["kept", false, null],
       ["off", true, null],
     ]);
-    expect(await target.customEmojis(BUILD)).toEqual([
-      { shortcode: "kept", url: kept.url, static_url: kept.url, visible_in_picker: true },
-    ]);
+    expect(await target.customEmojis(BUILD, { credential: null })).toEqual({
+      status: "ok",
+      value: [{ shortcode: "kept", url: kept.url, static_url: kept.url, visible_in_picker: true }],
+    });
     // The same dump with the image's recorded width past 1,024 fails its chunk with the trigger's message.
     const wide = text.replace(/"original":\{"width":16,/, '"original":{"width":1025,');
     expect(wide).not.toBe(text);
@@ -737,7 +738,8 @@ describe("emoji restore and rebuild", () => {
     expect(step).toMatchObject({ ok: true, done: true, problems: [], counts: { built: 2 } });
     expect(await r2Keys(`files/${tokens[0]}/`)).toHaveLength(2);
     expect(await r2Keys(`files/${tokens[1]}/`)).toHaveLength(2);
-    expect((await target.customEmojis(BUILD)).map((emoji) => emoji.shortcode)).toEqual(["on"]);
+    const listed = await target.customEmojis(BUILD, { credential: null });
+    expect(listed.status === "ok" && listed.value.map((emoji) => emoji.shortcode)).toEqual(["on"]);
     const note = JSON.parse((await target.localNote(BUILD, { uri }))!) as { tag: { type: string; name: string }[] };
     expect(note.tag.filter((tag) => tag.type === "Emoji").map((tag) => tag.name)).toEqual([":on:", ":off:"]);
   });

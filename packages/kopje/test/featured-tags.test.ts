@@ -321,7 +321,11 @@ describe("featured hashtags", () => {
         statuses,
       );
       await sql(h.store, "INSERT INTO status_tags (status_id, name, public) SELECT id, 't0', 1 FROM statuses");
-      return rowsRead(h, accountFeaturedTags, { id: alice.id, present: { origin: "https://kopje.test" } });
+      return rowsRead(h, accountFeaturedTags, {
+        id: alice.id,
+        present: { origin: "https://kopje.test" },
+        credential: null,
+      });
     };
     const few = await measure(20);
     const many = await measure(2000);
@@ -362,6 +366,7 @@ describe("a remote account's featured hashtags with stale statistics (RES-7)", (
       plannedRun(h, /featured_tags f\b/, accountFeaturedTags, {
         id: carol,
         present: { origin: "https://kopje.test" },
+        credential: null,
       });
     const { before, after } = await staleStatistics(h, {
       capture: () => run(),
@@ -377,7 +382,10 @@ describe("a remote account's featured hashtags with stale statistics (RES-7)", (
       },
     });
     expect(after.result).toEqual(before.result);
-    expect(after.result).toMatchObject([{ name: "Cats", statuses_count: "3", last_status_at: "2026-01-01" }]);
+    expect(after.result).toMatchObject({
+      status: "ok",
+      value: [{ name: "Cats", statuses_count: "3", last_status_at: "2026-01-01" }],
+    });
     expect(after.plans).toHaveLength(1);
     const { plan, rows } = after.plans[0]!;
     // The count and the newest: each window through statuses_account, each status of it by id.

@@ -25,6 +25,8 @@ import {
   follow,
   getJson,
   ids,
+  importedNotification,
+  interactWith,
   outbound,
   post,
   remoteAccount,
@@ -120,6 +122,14 @@ describe("POST /api/v1/statuses", () => {
       ].toSorted((a, b) => a.id.localeCompare(b.id)),
     );
     expect(status.tags).toEqual([{ name: "kopje", url: "https://kopje.test/tags/kopje" }]);
+  });
+
+  it("starts a hashtag at the text's start or after whitespace, written # or ＃ (Mastodon 4.7.5)", async () => {
+    const h = await community(["alice"]);
+    const status = await post(h, h.users.alice, { status: "#start (#paren) text.#dot x\u00A0#spaced ＃wide" });
+    expect(status.tags.map((tag) => tag.name)).toEqual(["spaced", "start", "wide"]);
+    expect(status.content).toContain("(#paren) text.#dot");
+    expect(status.content).toContain('rel="tag">#<span>wide</span></a>');
   });
 
   it("reads a mention of the instance's own host as a local mention", async () => {
@@ -926,7 +936,7 @@ describe("favourite, reblog, bookmark", () => {
     expect(first).toMatchObject({
       account: { id: bob.id },
       content: "",
-      reblogged: false,
+      reblogged: true,
       reblog: { id: status.id, reblogged: true, reblogs_count: 1 },
     });
     const second = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
@@ -939,6 +949,86 @@ describe("favourite, reblog, bookmark", () => {
     const undone = await (await act(h, bob, `/api/v1/statuses/${status.id}/unreblog`)).json<Status>();
     expect(undone).toMatchObject({ id: status.id, reblogged: false, reblogs_count: 0 });
     expect((await getJson(h, `/api/v1/statuses/${first.id}`)).status).toBe(404);
+  });
+
+  // Mastodon renders these without a relationships presenter, so Account::Interactions reads status.proper; with one
+  // (timelines, notifications) its maps are keyed by the boost's id.
+  it("shows a boost answered on its own with its original's flags, and its own elsewhere", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const status = await post(h, alice, { status: "x" });
+    await act(h, bob, `/api/v1/statuses/${status.id}/favourite`);
+    await act(h, bob, `/api/v1/statuses/${status.id}/bookmark`);
+    const original = { favourited: true, reblogged: true, bookmarked: true };
+    const own = { favourited: false, reblogged: false, bookmarked: false };
+    const boosted = { ...original, reblog: { id: status.id, ...original } };
+    const created = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    expect(created).toMatchObject({ account: { id: bob.id }, ...boosted });
+    const again = await (await act(h, bob, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    expect(again).toMatchObject({ id: created.id, ...boosted });
+    expect((await getJson<Status>(h, `/api/v1/statuses/${created.id}`, bob.token)).body).toMatchObject(boosted);
+    const listed = await getJson<Status[]>(h, `/api/v1/statuses?id[]=${created.id}&id[]=${status.id}`, bob.token);
+    expect(listed.body).toMatchObject([
+      { id: created.id, ...boosted },
+      { id: status.id, ...original },
+    ]);
+    const policy = await h.request(
+      `/api/v1/statuses/${created.id}/interaction_policy`,
+      bearer(bob.token, json({ quote_approval_policy: "nobody" }, { method: "PUT" })),
+    );
+    expect(await policy.json()).toMatchObject({ id: created.id, ...boosted });
+    // Presented with relationships: the boost's own flags, its original's under `reblog`. The notification is
+    // import-shaped, so the notifications' presentation of a boost is reached.
+    await importedNotification(h.store, bob.id, alice.id, created.id);
+    const elsewhere = { ...own, reblog: { id: status.id, ...original } };
+    for (const path of ["/api/v1/timelines/home", `/api/v1/accounts/${bob.id}/statuses`]) {
+      const { body } = await getJson<Status[]>(h, path, bob.token);
+      expect(
+        body.find((item) => item.id === created.id),
+        path,
+      ).toMatchObject(elsewhere);
+    }
+    const notifications = await getJson<{ id: string; status: Status }[]>(h, "/api/v1/notifications", bob.token);
+    expect(notifications.body.map((n) => n.status)).toMatchObject([{ id: created.id, ...elsewhere }]);
+    type Grouped = { statuses: Status[]; notification_groups: { group_key: string }[] };
+    const grouped = await getJson<Grouped>(h, "/api/v2/notifications", bob.token);
+    expect(grouped.body.statuses).toMatchObject([{ id: created.id, ...elsewhere }]);
+    // A notification shown alone (v1 and v2 show) is rendered without relationships: its original's flags.
+    const notificationId = notifications.body[0]!.id;
+    const shown = await getJson<{ status: Status }>(h, `/api/v1/notifications/${notificationId}`, bob.token);
+    expect(shown.body.status).toMatchObject(boosted);
+    const groupKey = grouped.body.notification_groups[0]!.group_key;
+    const group = await getJson<Grouped>(h, `/api/v2/notifications/${groupKey}`, bob.token);
+    expect(group.body.statuses).toMatchObject([{ id: created.id, ...boosted }]);
+    // Deleting the boost answers with it as it was, before the withdrawal.
+    const deleted = await h.request(`/api/v1/statuses/${created.id}`, bearer(bob.token, { method: "DELETE" }));
+    expect(await deleted.json()).toMatchObject({ id: created.id, ...boosted });
+  });
+
+  // NotificationRequestsController#show renders without relationships (index passes them). The request is
+  // import-shaped: Kopje's requests name the mention that filtered them.
+  it("shows a request's last status, a boost, with its original's flags, and its own in the list", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    const status = await post(h, alice, { status: "x" });
+    await interactWith(h, bob, status.id);
+    const boost = await (await act(h, carol, `/api/v1/statuses/${status.id}/reblog`)).json<Status>();
+    await sql(
+      h.store,
+      "INSERT INTO notification_requests (account_id, from_account_id, last_status_id, notifications_count) VALUES (?, ?, ?, 1)",
+      bob.id,
+      carol.id,
+      boost.id,
+    );
+    const proper = { favourited: true, reblogged: true, bookmarked: true };
+    const own = { favourited: false, reblogged: false, bookmarked: false };
+    type Request = { id: string; last_status: Status | null };
+    const listed = await getJson<Request[]>(h, "/api/v1/notifications/requests", bob.token);
+    expect(listed.body.map((request) => request.last_status)).toMatchObject([
+      { id: boost.id, ...own, reblog: { id: status.id, ...proper } },
+    ]);
+    const shown = await getJson<Request>(h, `/api/v1/notifications/requests/${listed.body[0]!.id}`, bob.token);
+    expect(shown.body.last_status).toMatchObject({ id: boost.id, ...proper, reblog: { id: status.id, ...proper } });
   });
 
   it("refuses to boost direct and others’ private statuses (StatusPolicy#reblog?)", async () => {
