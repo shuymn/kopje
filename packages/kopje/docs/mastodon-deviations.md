@@ -187,7 +187,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
 
 ## Differences the checks cannot see
 
-Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings page):
+Profile credentials (`PATCH /api/v1/accounts/update_credentials`, `GET`, `PATCH` and `PUT /api/v1/profile`, the
+settings page):
 
 - `avatar` and `header` are multipart files only: a data URI or any other non-empty text value answers 400 (Paperclip
   has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
@@ -245,9 +246,13 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   paragraphs, where Mastodon gives the bio back as sent (`\r\n` kept), and `note` writes a line break `<br>`, where
   Mastodon writes `<br />`; the text and paragraphs are the same. Accepted, 2026-11-16.
 - A profile change sends an `Update(Person)` only when the published actor document changed, where Mastodon sends one
-  after every update (`ActivityPub::UpdateDistributionWorker`, `credentials_controller.rb:17`). An image description
-  is published only on its image (the actor's `icon` and `image`, as `ActivityPub::ActorSerializer` writes them), so
-  a description changed while the image is absent sends none; followers get it with the image's next Update.
+  after every update (`ActivityPub::UpdateDistributionWorker`, `credentials_controller.rb:17`,
+  `profiles_controller.rb:16`). An image description is published only on its image (the actor's `icon` and `image`, as
+  `ActivityPub::ActorSerializer` writes them), so a description changed while the image is absent sends none; followers
+  get it with the image's next Update.
+- The Profile's `featured_tags` are the account's first 10 featured hashtags in the order they were featured, as
+  Kopje's writers keep at most 10; Mastodon lists every one of the association, in no stated order. Only an imported
+  account can have more, and its others stay listed by `GET /api/v1/featured_tags`.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.

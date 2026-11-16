@@ -80,11 +80,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - Accounts show `avatar_description`, `header_description`, `show_featured`, `show_media` and `show_media_replies`,
   and grouped notifications' partial accounts `avatar_description`, as Mastodon 4.6. `update_credentials` and the
-  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; the display settings
-  keep their defaults, as nothing sets them yet. Migration `0097_profile_descriptions` adds the five columns with
-  their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
-  run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
-  so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises. Migration
+  `0097_profile_descriptions` adds the five columns with their defaults and two triggers that bound them; the upgrade
+  checks no reference (17 ms for this file in one local run of the migration bench, at a load average of 4 to 7).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 - A signed-in read of a remote public or unlisted status's context fetches its replies collection in the background, as
   Mastodon 4.7.5 does, and answers with `Mastodon-Async-Refresh` while that runs, a header the API exposes to browser
   clients; `GET /api/v1_alpha/async_refreshes/:id` reports the refresh. A refresh reads at most 200 statuses and 100
@@ -99,6 +99,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
   Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
   and no `wrangler.jsonc` change.
+- `GET`, `PATCH` and `PUT /api/v1/profile` serve Mastodon 4.6's profile API, which also sets the display settings
+  (`show_featured`, `show_media`, `show_media_replies`). An update takes what `update_credentials` takes but `source`,
+  avatar and header files included, and answers the Profile. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 

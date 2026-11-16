@@ -424,9 +424,9 @@ their Relationship with the account; no other path reads it (the architecture te
 
 The profile directory (`src/domain/directory.ts`, `GET /api/v1/directory`, Mastodon's `Api::V1::DirectoriesController`)
 lists the discoverable accounts that R12 lists to the viewer: `accounts.discoverable` is 1, a local account's setting
-(`update_credentials`) or what a remote actor published (an actor that published nothing is not listed), and
-`listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute (while the
-mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
+(`update_credentials` or the profile update) or what a remote actor published (an actor that published nothing is not
+listed), and `listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute
+(while the mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
 `not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that
 an account moved). A local account is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon.
 `order=active` orders by the account's newest public, unlisted or private status (`accounts.last_status_id`, which the
