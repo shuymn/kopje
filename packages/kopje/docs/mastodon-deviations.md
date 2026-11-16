@@ -1118,12 +1118,14 @@ Request parameters:
   `maxwidth` and `maxheight`) whose `to_i` is past 9,007,199,254,740,991 (2^53 − 1) is read as that, where Ruby reads
   any length: oEmbed's `width` and `height` show 9,007,199,254,740,991 for a larger `maxwidth` or `maxheight`, where
   Mastodon shows the number sent.
-- A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) reads as 1 on a list paged by `max_id`, `since_id` and `min_id` (the
-  timelines but the link timeline, the notifications, the lists of accounts and statuses, the admin reports, accounts
-  and domain blocks). Mastodon 4.7.5 answers the home, public, hashtag and list timelines and the notifications (v1
-  and v2) `[]` without a `Link`, and the other lists 500, as `records_continue?` holds for the empty page and its
-  cursor is read (`Api::Pagination#pagination_max_id`). A list's members and the endorsements answer every item for
-  `limit=0`, as Mastodon's do.
+- A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) answers `[]` without a `Link` on the timelines and the notifications
+  (v1 and v2), as Mastodon's do, and reads as 1 on the other lists paged by `max_id`, `since_id` and `min_id`: an
+  account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes,
+  domain blocks, follow requests, endorsements and a list's members (but `limit=0`, which answers every item, as
+  Mastodon's do), a status's favourites, boosts and quotes, scheduled statuses, followed hashtags, notification
+  requests, a notification group's accounts, and the admin reports, accounts and domain blocks. Mastodon 4.7.5 answers
+  500 on those, as `records_continue?` holds for the empty page and its cursor is read
+  (`Api::Pagination#pagination_max_id`).
 - Kopje media are images, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`

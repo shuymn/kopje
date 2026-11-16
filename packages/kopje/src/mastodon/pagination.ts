@@ -1,7 +1,7 @@
 import type { Page, PageQuery } from "../domain/accounts";
 import { rubyToI } from "../platform/ruby-to-i";
 import type { ApiContext } from "./context";
-import type { Params } from "./params";
+import { limitParam, type Params } from "./params";
 
 // Keyset pagination for every list: max_id, since_id and min_id cursors, and a Link header with next (older) and
 // prev (newer) pages, as Mastodon sends them.
@@ -9,7 +9,8 @@ import type { Params } from "./params";
 const CURSOR = /^\d{1,19}$/;
 
 // `limit` as limit_param reads it (Api::BaseController#limit_param: `defaultLimit` when absent, else the absolute value
-// of its to_i, at most `maxLimit`), and a limit of 0 as 1 (docs/mastodon-deviations.md, "Request parameters").
+// of its to_i, at most `maxLimit`), and a limit of 0 as 1, where Mastodon answers 500 (docs/mastodon-deviations.md,
+// "Request parameters").
 export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
   const limit = params.last("limit");
   return {
@@ -18,6 +19,13 @@ export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): Pag
     minId: cursor(params.get("min_id")),
     limit: limit === undefined ? defaultLimit : Math.min(Math.max(Math.abs(rubyToI(limit)), 1), maxLimit),
   };
+}
+
+// pageQuery with a limit of 0 kept, for the lists Mastodon answers with an empty page and no Link for it: the timelines
+// (Timelines::BaseController skips the headers of an empty page) and the notifications (v1 and v2, whose next_path and
+// prev_path are guarded by empty?).
+export function feedPageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
+  return { ...pageQuery(params, defaultLimit, maxLimit), limit: limitParam(params, defaultLimit, maxLimit) };
 }
 
 function cursor(value: string | undefined): string | undefined {

@@ -10,7 +10,7 @@ import {
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
 import { supportedTypes } from "./notifications";
-import { linkHeader, pageQuery, pageResponse } from "./pagination";
+import { feedPageQuery, linkHeader, pageQuery, pageResponse } from "./pagination";
 import { limitParam, type Params, parseBoolean } from "./params";
 
 // Grouped notifications (Mastodon 4.5's /api/v2/notifications) and the unread counts of /api/v1 and /api/v2; the Store
@@ -45,7 +45,7 @@ export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p
       ),
     );
   }
-  const page = pageQuery(p);
+  const page = feedPageQuery(p);
   const credential = userCredential(c, deps);
   const { next, prev, ...grouped } = authorized(
     await storeCall(c, deps, (s, b) =>

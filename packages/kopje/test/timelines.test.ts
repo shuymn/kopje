@@ -3,8 +3,12 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { purgeBatch } from "../src/domain/inbox";
+import { homeTimeline, listTimeline, publicTimeline, tagTimeline } from "../src/domain/timelines";
+import type { StoreOperation } from "../src/platform/store-kernel";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { measuredStatements } from "./read-helpers";
 import { act, block, community, follow, getJson, ids, post, remoteAccount, seedStatus } from "./status-helpers";
 
 describe("timeline paging", () => {
@@ -33,7 +37,8 @@ describe("timeline paging", () => {
   });
 
   // limit as Api::BaseController#limit_param reads it: Rails' last value (the query's, else the body's), Ruby's to_i,
-  // its absolute value; 0 or none read as 1 (docs/mastodon-deviations.md, "Request parameters").
+  // its absolute value; 0 read as 1 on a list Mastodon answers with 500 for it (docs/mastodon-deviations.md, "Request
+  // parameters").
   it("reads limit as limit_param: the last value, Ruby's to_i, its absolute value", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -41,11 +46,69 @@ describe("timeline paging", () => {
     for (let i = 0; i < 12; i++) {
       newest.unshift((await post(h, alice, { status: `#${i}` })).id);
     }
-    const page = (query: string) => ids(h, `/api/v1/timelines/public?${query}`, alice.token);
+    const page = (query: string) => ids(h, `/api/v1/accounts/${alice.id}/statuses?${query}`, alice.token);
     expect(await page("limit=1&limit=5")).toEqual(newest.slice(0, 5));
     expect(await page("limit=-5")).toEqual(newest.slice(0, 5));
     expect(await page("limit=1_0")).toEqual(newest.slice(0, 10));
+    expect(await page("limit=0")).toEqual(newest.slice(0, 1));
     expect(await page("limit=abc")).toEqual(newest.slice(0, 1));
+  });
+
+  // Timelines::BaseController (Mastodon 4.7.5) answers a limit of 0 with no statuses (Feed#get's Redis LIMIT 0 0,
+  // Paginable's LIMIT 0) and no Link (insert_pagination_headers skips an empty page), after its lookups.
+  it("answers a limit of 0 on home, list, public and hashtag timelines with no statuses and no Link", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    await follow(h, alice, bob.id);
+    const list = await (await act(h, alice, "/api/v1/lists", { title: "l" })).json<{ id: string }>();
+    expect((await act(h, alice, `/api/v1/lists/${list.id}/accounts`, { account_ids: [bob.id] })).status).toBe(200);
+    await post(h, bob, { status: "#topic one" });
+    await post(h, bob, { status: "#topic two" });
+    const paths = [
+      "/api/v1/timelines/home",
+      `/api/v1/timelines/list/${list.id}`,
+      "/api/v1/timelines/public",
+      "/api/v1/timelines/tag/topic",
+    ];
+    for (const path of paths) {
+      const answer = async (query: string) => {
+        const response = await h.request(`${path}?${query}`, bearer(alice.token));
+        const body = await response.json<unknown[]>();
+        return [path, query, response.status, body.length, response.headers.get("link") !== null];
+      };
+      expect(await answer("limit=1")).toEqual([path, "limit=1", 200, 1, true]);
+      for (const query of ["limit=0", "limit=abc", "limit=5&limit=-0"]) {
+        expect(await answer(query)).toEqual([path, query, 200, 0, false]);
+      }
+    }
+    // A list that is not the viewer's is still not found.
+    const bobs = await (await act(h, bob, "/api/v1/lists", { title: "b" })).json<{ id: string }>();
+    expect((await h.request(`/api/v1/timelines/list/${bobs.id}?limit=0`, bearer(alice.token))).status).toBe(404);
+
+    // The answer reads no status, where a window would read readWindow(0) or streamWindow(0) candidates (per stream).
+    const credential = { tokenHash: await sha256Hex(alice.token), scope: "read" as const, now: NOW };
+    const present = { origin: "https://kopje.test" };
+    const timeline = { credential, now: NOW, local: false, remote: false, onlyMedia: false, present };
+    const statusReads = async <I>(name: string, operation: StoreOperation<I, unknown>, input: (limit: number) => I) => {
+      const read = async (limit: number) => {
+        const { output, statements } = await measuredStatements(h, operation, input(limit));
+        const items = (output as { status: string; value: { items: unknown[] } }).value.items.length;
+        return [name, limit, items, statements.filter(({ query }) => /\bstatuses\b/.test(query)).length > 0];
+      };
+      expect(await read(1)).toEqual([name, 1, 1, true]);
+      expect(await read(0)).toEqual([name, 0, 0, false]);
+    };
+    await statusReads("home", homeTimeline, (limit) => ({ credential, present, page: { limit } }));
+    await statusReads("list", listTimeline, (limit) => ({ credential, id: list.id, present, page: { limit } }));
+    await statusReads("public", publicTimeline, (limit) => ({ ...timeline, page: { limit } }));
+    await statusReads("tag", tagTimeline, (limit) => ({
+      ...timeline,
+      tag: "topic",
+      any: [],
+      all: [],
+      none: [],
+      page: { limit },
+    }));
   });
 
   it("pages bookmarks by the bookmark, not the status", async () => {

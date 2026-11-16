@@ -1,7 +1,7 @@
 import { fallbackTypes } from "../domain/notification-fallback";
 import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
 import { recordNotFound } from "./errors";
-import { pageQuery, pageResponse } from "./pagination";
+import { feedPageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 
 // /api/v1/notifications: the list with types[], exclude_types[], account_id, include_filtered and supported_types,
@@ -11,7 +11,7 @@ import { type Params, parseBoolean } from "./params";
 export const supportedTypes = (p: Params) => fallbackTypes(p.list("supported_types") ?? p.get("supported_types"));
 
 export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
-  const page = pageQuery(p);
+  const page = feedPageQuery(p);
   const accountId = p.get("account_id");
   const credential = userCredential(c, deps);
   const result = authorized(

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { listGroupedNotifications } from "../src/domain/notification-groups";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, form, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { measuredStatements } from "./read-helpers";
 import { act, block, community, follow, getJson, mute, post, remoteAccount, type Status } from "./status-helpers";
 
 type Notification = { id: string; type: string; group_key: string; account: { id: string } };
@@ -201,6 +204,35 @@ describe("grouped notifications (API v2)", () => {
 
   it("pages by the groups found, a group going on in the page after, with Link headers", async () => {
     const { h, alice, bob, carol, dave, id } = await scene();
+    // A limit of 0 answers no groups, with no Link, as Mastodon 4.7.5's (paginate_groups' LIMIT 0; next_path and
+    // prev_path are guarded by empty?).
+    const noGroups = { accounts: [], statuses: [], notification_groups: [] };
+    for (const [query, body] of [
+      ["limit=0", noGroups],
+      ["limit=2&limit=abc", noGroups],
+      ["limit=0&expand_accounts=partial_avatars", { ...noGroups, partial_accounts: [] }],
+    ] as const) {
+      const none = await h.request(`/api/v2/notifications?${query}`, bearer(alice.token));
+      expect([query, none.status, await none.json(), none.headers.get("link")]).toEqual([query, 200, body, null]);
+    }
+    // It reads no notification: the walk stops at a limit of 0 (walkGroups).
+    const credential = { tokenHash: await sha256Hex(alice.token), scope: "read" as const, now: NOW };
+    const readGroups = async (limit: number) => {
+      const { output, statements } = await measuredStatements(h, listGroupedNotifications, {
+        credential,
+        page: { limit },
+        types: [],
+        excludeTypes: [],
+        groupedTypes: null,
+        includeFiltered: false,
+        expandAccounts: "full",
+        present: { origin: "https://kopje.test" },
+      });
+      const groups = output.status === "ok" ? output.value.notification_groups.length : null;
+      return [limit, groups, statements.some(({ query }) => /\bnotifications\b/.test(query))];
+    };
+    expect(await readGroups(1)).toEqual([1, 1, true]);
+    expect(await readGroups(0)).toEqual([0, 0, false]);
     const first = await grouped(h, "/api/v2/notifications?limit=2", alice.token);
     // Each group counts and samples its notifications up to the page's newest, those below the page included.
     expect(first.body.notification_groups.map((g) => [g.type, g.notifications_count, g.sample_account_ids])).toEqual([
