@@ -4090,17 +4090,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stores, quote verification's and a collection sync's never do, so nothing a walk causes starts another walk and no
   walk's caps start afresh. A create walk runs in the same family, steps and charges as a context walk, takes a node's
   first `CREATE_WALK_ITEMS` (5) items on the node's origin that Kopje does not store, reads first pages only, and
-  records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10) documents, so at
-  most 2 × 20 + 10 = 50 documents (400 requests) however its rounds end; the Store applies the item rule and the
-  first-page rule whatever the Worker hands it. Context walks are claimed first, create walks in the order they were
-  recorded, each keeping its place until it ends, and one recorded a day ago is dropped at its claim. Its at most
-  `CREATE_WALK_STATUSES` − 1 replies each lead to a context walk's reply's follow-on work (above)
+  records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10) documents, so at most
+  2 × 20 + 10 = 50 documents (400 requests) however its rounds end; the Store applies the item rule and the first-page
+  rule whatever the Worker hands it, at every stage (a completion that read a page ends the node, whatever next it
+  names). Context walks are claimed first; create walks wait in the order the Store recorded them (the rowid, whatever
+  the Worker's clock or the Store's says), each back in its place at every release (one whose round died holding it is
+  due behind them once its lease runs out), and one the Store recorded a day ago by its own clock is dropped at its
+  claim. Its at most `CREATE_WALK_STATUSES` − 1 replies each lead to a context walk's reply's follow-on work (above)
   (`test/reply-walk-create.test.ts` ("records at most CREATE_WALK_STATUSES nodes and CREATE_WALK_ITEMS items a page",
   "hands out at most CREATE_WALK_PAGES documents", "hands out at most NODE_ATTEMPTS × (CREATE_WALK_STATUSES - 1) +
-  CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there", "a walk's reply: its collection
-  is read by the context walk alone", "quote verification's quoted status, fetched or embedded: its collection is never
-  read", "a collection sync's pin: its collection is never read", "starts no walk along an alternating reply and quote
-  chain longer than a walk", "claims context walks first, then create walks in the order they were queued")).
+  CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there", "ends a status's node at the
+  first page its completion embeds, whatever next it names", "a walk's reply: its collection is read by the context walk
+  alone", "quote verification's quoted status, fetched or embedded: its collection is never read", "a collection sync's
+  pin: its collection is never read", "starts no walk along an alternating reply and quote chain longer than a walk",
+  "claims context walks first, then create walks in the order they were queued", "claims create walks in the order the
+  Store recorded them, whatever the Worker's clock or its own says", "claims at once the walk of a Create whose Worker
+  clock is ahead of the Store's, as its answer asks")).
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs

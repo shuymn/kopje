@@ -15,6 +15,7 @@ import {
   CREATE_WALK,
   CREATE_WALK_PAGES,
   CREATE_WALK_STATUSES,
+  CREATE_WALK_WAITING,
   createItems,
   DEFERRED,
   DONE,
@@ -72,8 +73,9 @@ import { viewable } from "./statuses";
 // reply-walk-create.ts), alike but for these: a create walk records a node's first CREATE_WALK_ITEMS items on the
 // node's origin that Kopje does not store (createItems), reads first pages only, reads the replies of the statuses it
 // creates only, is capped at CREATE_WALK_STATUSES nodes and CREATE_WALK_PAGES documents, and goes once it ends. Context
-// walks are claimed first; create walks in the order they were queued, each keeping its place until it ends, and one
-// queued REFRESH_RUNNING_MS ago is dropped.
+// walks are claimed first; create walks in the order the Store recorded them, each back in its place at every release
+// (one whose round died holding it is due behind them once its lease runs out), and one the Store recorded
+// REFRESH_RUNNING_MS ago is dropped.
 
 // Nodes a walk records at most, the root included; an item past it is not recorded (docs/mastodon-deviations.md:
 // Mastodon's FetchAllRepliesWorker takes 1,000).
@@ -342,14 +344,18 @@ function recordItems(db: Db, walk: Walk, node: Node, entries: readonly (string |
 // replies stage, which fetches the status for its replies only); a URI next (on the node's own origin, Mastodon's
 // non_matching_uri_hosts? refusal) is read from its start, or past the carried skip when this document held no chain.
 // With neither, or once the walk is full, the node is done. A create walk reads a node's first page only
-// (FetchRepliesService's max_pages 1): a page's next, and a chain past the cap, are not read.
+// (FetchRepliesService's max_pages 1), whatever the completion names (createOnward).
 function readReplies(db: Db, walk: Walk, node: Node, replies: RepliesRead | null, input: ReplyStepInput): void {
   if (replies !== null) {
     recordItems(db, walk, node, replies.entries, input);
   }
   const next = replies?.next ?? null;
-  const firstRead = walk.kind === CREATE_WALK && (next === "more" || STAGES[node.stage] === "page");
-  if (replies === null || next === null || firstRead || walk.nodes >= capsOf(walk).statuses) {
+  if (
+    replies === null ||
+    next === null ||
+    (walk.kind === CREATE_WALK && !createOnward(node, replies)) ||
+    walk.nodes >= capsOf(walk).statuses
+  ) {
     endNode(db, walk.id, node.uri);
     return;
   }
@@ -372,6 +378,21 @@ function readReplies(db: Db, walk: Walk, node: Node, replies: RepliesRead | null
     return;
   }
   move(STAGES.indexOf(next.stage), next.uri, replies.from === null ? node.skip : 0);
+}
+
+// Whether a create walk's node reads on past this completion: only from a document that held no page (no chain, no
+// entry) to a later stage, a status's collection or first page, or a collection's first page. A completion that read a
+// page, at any stage, ends the node, whatever next it names, and so does any other next (a chain's, a page's, one
+// naming the node's own stage or an earlier one).
+function createOnward(node: Node, replies: RepliesRead): boolean {
+  const { next } = replies;
+  return (
+    replies.from === null &&
+    replies.entries.length === 0 &&
+    next !== null &&
+    next !== "more" &&
+    STAGES.indexOf(next.stage) > node.stage
+  );
 }
 
 // A node becomes valid: the nodes deferred on it go back to the end of the walk, in their order (each fetched again
@@ -550,11 +571,13 @@ function applyStep(db: Db, walk: Walk, node: Node, input: ReplyStepInput): Autho
 
 type DueWalk = { status_id: string; kind: number; queued_at: number };
 
-// The walk due first of a kind, by due_at: a create walk's is its queued_at again after each claim (releaseReplyWalk).
+// The walk due first of a kind, by due_at, then by rowid: a waiting create walk's due_at is CREATE_WALK_WAITING, so
+// create walks are taken in the order the Store recorded them (reply-walk-create.ts), each again in its place once
+// released (releaseReplyWalk).
 function dueOf(db: Db, kind: number, now: number): DueWalk | undefined {
   return db.first<DueWalk>(
     `SELECT status_id, kind, queued_at FROM reply_walks INDEXED BY reply_walks_due WHERE kind = ? AND due_at <= ?
-			ORDER BY due_at LIMIT 1`,
+			ORDER BY due_at, rowid LIMIT 1`,
     kind,
     now,
   );
@@ -636,7 +659,7 @@ export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInpu
 });
 
 // The end of a round's turn of a walk: under its claim, the walk is due again at once while a node is pending (a
-// create walk in its place, at its queued_at), else it finishes. Returns whether a walk is due.
+// create walk waiting in its place, CREATE_WALK_WAITING), else it finishes. Returns whether a walk is due.
 export const releaseReplyWalk = writeOperation.atStoreTime("now")<
   { statusId: string; token: string; now: number },
   boolean
@@ -645,7 +668,8 @@ export const releaseReplyWalk = writeOperation.atStoreTime("now")<
   if (walk !== undefined) {
     if (hasPending(db, statusId)) {
       db.run(
-        `UPDATE reply_walks SET token = NULL, due_at = IIF(kind = ${CREATE_WALK}, queued_at, ?2) WHERE status_id = ?1`,
+        `UPDATE reply_walks SET token = NULL, due_at = IIF(kind = ${CREATE_WALK}, ${CREATE_WALK_WAITING}, ?2)
+			WHERE status_id = ?1`,
         statusId,
         now,
       );

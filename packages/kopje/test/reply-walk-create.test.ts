@@ -8,6 +8,7 @@ import {
   CREATE_WALK_ITEMS,
   CREATE_WALK_PAGES,
   CREATE_WALK_STATUSES,
+  CREATE_WALK_WAITING,
   createWalkDue,
   recordCreateWalk,
 } from "../src/domain/reply-walk-create";
@@ -124,14 +125,14 @@ async function createWalkOf(store: Setup["store"], uri: string) {
   return row === undefined ? undefined : { ...row, ...(await walkRow(store, id!)), rows: await walkNodes(store, id!) };
 }
 
-// A create walk recorded at NOW for `uri`, its node done and `items` pending at their status stage.
+// A create walk recorded at the Store's NOW for `uri`, waiting, its node done and `items` pending at their status stage.
 function recorded(uri: string, items: readonly string[]) {
   const node = { state: 0, stage: 0, valid: 0, parent: null, fetch: null, skip: 0, attempts: 0 };
   return {
     kind: 1,
     refresh_id: null,
     queued_at: NOW,
-    due_at: NOW,
+    due_at: CREATE_WALK_WAITING,
     finished_at: null,
     token: null,
     next_seq: 1 + items.length,
@@ -594,6 +595,83 @@ describe("the Store's own reading of a create walk's items, whatever the Worker 
     expect(nodes.map((node) => node.uri)).toEqual([s.id, ...taken]);
     expect(nodes[0]).toMatchObject({ state: 1, stage: 2, fetch: page });
   });
+
+  it("ends a status's node at the first page its completion embeds, whatever next it names", async () => {
+    const { t, bob } = await world();
+    const root = mastodonNote(bob);
+    const [child, sibling] = listing(t.web, bob, root) as [string, string];
+    expect(await t.post(bob, create(bob, root))).toBe(202);
+    const id = (await statusRow(t.store, root.id))!.id;
+    const claim = (await t.store.claimReplyWalk(BUILD)) as ClaimedWalk;
+    expect(claim).toMatchObject({ statusId: id, kind: "create", step: { uri: child, stage: "status" } });
+    const status = parseRemoteStatus({ "@context": AS, ...mastodonNote(bob, { id: child, inReplyTo: root.id }) })!;
+    const listed = `${bob.uri}/statuses/c1`;
+    await t.store.completeReplyStep(BUILD, {
+      origin: LOCAL,
+      statusId: id,
+      token: claim.token,
+      step: claim.step,
+      more: false,
+      fetched: {
+        kind: "status",
+        status,
+        replies: { entries: [listed], from: 0, next: { stage: "page", uri: `${child}/replies?page=2` } },
+      },
+    });
+    expect(await storedOf(t.store, [child])).toEqual([child]);
+    const nodes = await walkNodes(t.store, id);
+    expect(nodes.map((node) => node.uri)).toEqual([root.id, child, sibling, listed]);
+    expect(nodes[1]).toMatchObject({ state: 1, stage: 0, fetch: null });
+  });
+
+  // A collection's completion, the root's node then: a page read (embedded, or entries however placed) ends it where it
+  // is, and a next to its own stage ends it and the walk with it (nothing else pending); only a first page to fetch,
+  // with nothing read, moves it on (the control).
+  type Read = { entries: string[]; from: number | null; next: { stage: "collection" | "page"; uri: string } };
+  it.each<[string, "ended" | "gone" | "moved on", Read]>([
+    [
+      "an embedded first page naming a next page",
+      "ended",
+      { entries: ["x"], from: 0, next: { stage: "page", uri: "p2" } },
+    ],
+    [
+      "entries with no chain and a page next",
+      "ended",
+      { entries: ["x"], from: null, next: { stage: "page", uri: "p2" } },
+    ],
+    [
+      "an empty embedded first page naming a next page",
+      "gone",
+      { entries: [], from: 0, next: { stage: "page", uri: "p2" } },
+    ],
+    ["another collection to fetch", "gone", { entries: [], from: null, next: { stage: "collection", uri: "c2" } }],
+    ["the first page to fetch (control)", "moved on", { entries: [], from: null, next: { stage: "page", uri: "p1" } }],
+  ])("at a collection, %s: the root's node is %s", async (_name, outcome, read) => {
+    const { t, bob } = await world();
+    const note = mastodonNote(bob);
+    const { collection } = collected(t.web, bob, note);
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const id = (await statusRow(t.store, note.id))!.id;
+    const claim = (await t.store.claimReplyWalk(BUILD)) as ClaimedWalk;
+    expect(claim).toMatchObject({ statusId: id, kind: "create", step: { uri: note.id, stage: "collection" } });
+    const uri = (part: string) => (part === "x" ? `${bob.uri}/statuses/x` : `${collection}?${part}`);
+    const next = { stage: read.next.stage, uri: uri(read.next.uri) };
+    await t.store.completeReplyStep(BUILD, {
+      origin: LOCAL,
+      statusId: id,
+      token: claim.token,
+      step: claim.step,
+      more: false,
+      fetched: { kind: "replies", replies: { entries: read.entries.map(uri), from: read.from, next } },
+    });
+    const expected = {
+      ended: { state: 1, stage: 1, fetch: collection },
+      gone: undefined,
+      "moved on": { state: 0, stage: 2, fetch: next.uri },
+    }[outcome];
+    const root = (await walkNodes(t.store, id)).find((node) => node.uri === note.id);
+    expect(root).toEqual(expected === undefined ? undefined : expect.objectContaining(expected));
+  });
 });
 
 describe("what a create walk reads", () => {
@@ -800,7 +878,7 @@ describe("claims of create walks", () => {
         spec.kind,
         spec.kind === 0 ? String(i).padStart(32, "a") : null,
         spec.queued,
-        spec.queued,
+        spec.kind === 0 ? spec.queued : CREATE_WALK_WAITING,
       );
       await sql(
         t.store,
@@ -828,7 +906,7 @@ describe("claims of create walks", () => {
     expect(first).toMatchObject({ statusId: a, kind: "create", pending: true });
     // Released with its node pending (the round's turn ended), it is due again in its own place, ahead of b.
     expect(await t.store.releaseReplyWalk(BUILD, { statusId: a, token: first.token })).toBe(true);
-    expect((await walkRow(t.store, a))?.due_at).toBe(NOW - 2000);
+    expect((await walkRow(t.store, a))?.due_at).toBe(CREATE_WALK_WAITING);
     const again = (await claim(t)) as ClaimedWalk;
     expect(again).toMatchObject({ statusId: a, kind: "create" });
     // Its node ended, the walk goes, row and nodes; the next claim takes b.
@@ -844,6 +922,40 @@ describe("claims of create walks", () => {
     expect(await walkRow(t.store, a)).toBeUndefined();
     expect(await walkNodes(t.store, a)).toEqual([]);
     expect(await claim(t)).toMatchObject({ statusId: b, kind: "create" });
+  });
+
+  // bob's Create of a Note listing two of its replies, received with the Worker's clock at `workerNow` and the Store's
+  // at `storeNow`: the Store's answer and the status's id.
+  async function receivedAt(t: Setup, bob: TestActor, workerNow: number, storeNow = NOW) {
+    const note = mastodonNote(bob);
+    listing(t.web, bob, note);
+    vi.setSystemTime(storeNow);
+    const answer = await storeReceive(
+      t.store,
+      bob.uri,
+      { type: "Create", id: `${note.id}/activity`, object: parseRemoteStatus({ "@context": AS, ...note })! },
+      workerNow,
+    );
+    vi.setSystemTime(NOW);
+    return { answer, id: (await statusRow(t.store, note.id))!.id };
+  }
+
+  it("claims create walks in the order the Store recorded them, whatever the Worker's clock or its own says", async () => {
+    const { t, bob } = await world();
+    // b is recorded after a, with both the Worker's clock and the Store's behind a's.
+    const a = await receivedAt(t, bob, NOW - 1000);
+    const b = await receivedAt(t, bob, NOW - 2000, NOW - 500);
+    expect(await walkRow(t.store, a.id)).toMatchObject({ queued_at: NOW, due_at: CREATE_WALK_WAITING });
+    expect(await walkRow(t.store, b.id)).toMatchObject({ queued_at: NOW - 500, due_at: CREATE_WALK_WAITING });
+    expect(await claim(t)).toMatchObject({ statusId: a.id, kind: "create" });
+    expect(await claim(t)).toMatchObject({ statusId: b.id, kind: "create" });
+  });
+
+  it("claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks", async () => {
+    const { t, bob } = await world();
+    const ahead = await receivedAt(t, bob, NOW + 1000);
+    expect(ahead.answer).toMatchObject({ applied: true, jobsPending: true });
+    expect(await claim(t)).toMatchObject({ statusId: ahead.id, kind: "create" });
   });
 
   it("drops a create walk queued REFRESH_RUNNING_MS ago with its nodes, and claims the next", async () => {
@@ -965,8 +1077,12 @@ describe("plans (RES-7)", () => {
     for (const { query, plan } of statements) {
       expect(scansOf(plan, ["reply_walks", "reply_walk_nodes", "statuses"]), query).toEqual([]);
     }
-    for (const { query, rows } of statements) {
+    for (const { query, rows, plan } of statements) {
       expect(rows, query).toBeLessThanOrEqual(2);
+      expect(
+        plan.filter((detail) => detail.includes("TEMP B-TREE")),
+        query,
+      ).toEqual([]);
     }
     expect(statements.some(({ query }) => /kind = \? AND due_at <= \?/.test(query))).toBe(true);
   });

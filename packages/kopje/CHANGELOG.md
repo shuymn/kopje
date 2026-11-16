@@ -95,11 +95,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
   with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
-- A remote status Kopje stores from a delivery or a user's request has the replies on its own server that its replies
-  collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and 20 a thread,
-  reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned statuses
-  start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No Store
-  migration and no `wrangler.jsonc` change.
+- A public or unlisted remote status Kopje stores from a delivery or a user's request has the replies on its own server
+  that its replies collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and
+  20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
+  statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
+  Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 

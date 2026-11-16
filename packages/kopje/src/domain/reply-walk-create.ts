@@ -28,6 +28,11 @@ export const CREATE_WALK_ITEMS = 5;
 // not (Mastodon: 1,000 statuses a request, FetchRemoteStatusService::DISCOVERIES_PER_REQUEST).
 export const CREATE_WALK_STATUSES = 20;
 export const CREATE_WALK_PAGES = 10;
+// A waiting create walk's due_at: due on any clock. The claims' seek of reply_walks_due (kind, due_at, then the rowid
+// every index of a rowid table ends with) so takes the waiting create walks by rowid, which the Store assigns above
+// every row present at the insert: in the order they were recorded, whatever any clock says. queued_at, the Store's
+// time of the record, only ages the walk (REFRESH_RUNNING_MS).
+export const CREATE_WALK_WAITING = 0;
 
 // A URI a walk may record or fetch: an http(s) URI within STATUS_URI_LIMIT (UTF-8 bytes as JSON writes it, which
 // bounds the raw bytes the columns' CHECKs hold to 4096), without NUL.
@@ -58,13 +63,14 @@ export function createItems(db: Db, entries: readonly (string | null)[], nodeUri
 // The create walk of a remote status a store just created, recorded in its transaction when there is work: a public or
 // unlisted status (a walk's root, reply-walk-reads.ts walkRoot) whose embedded first page lists items createItems
 // keeps (its node done, each item pending at its status), or whose replies collection or first page is a URI on its
-// origin (its node pending at that stage, read in a step). Due at once, behind the create walks queued before it (the
-// claims take them in order, reply-walks.ts). Writes one walk row and at most 1 + CREATE_WALK_ITEMS nodes.
+// origin (its node pending at that stage, read in a step). Queued at the Store's time `storeNow` and waiting
+// (CREATE_WALK_WAITING), behind the create walks recorded before it. Writes one walk row and at most 1 +
+// CREATE_WALK_ITEMS nodes.
 export function recordCreateWalk(
   db: Db,
   status: { id: string; uri: string; visibility: Visibility },
   replies: RemoteRepliesInput | null | undefined,
-  now: number,
+  storeNow: number,
 ): void {
   if (replies === null || replies === undefined || !isDistributable(status.visibility)) {
     return;
@@ -74,10 +80,10 @@ export function recordCreateWalk(
     return;
   }
   const recorded = db.run(
-    `INSERT INTO reply_walks (status_id, kind, queued_at, due_at, next_seq, nodes) VALUES (?1, ${CREATE_WALK}, ?2, ?2, ?3, ?3)
-		ON CONFLICT DO NOTHING`,
+    `INSERT INTO reply_walks (status_id, kind, queued_at, due_at, next_seq, nodes)
+		VALUES (?1, ${CREATE_WALK}, ?2, ${CREATE_WALK_WAITING}, ?3, ?3) ON CONFLICT DO NOTHING`,
     status.id,
-    now,
+    storeNow,
     1 + items.length,
   );
   if (recorded === 0) {
@@ -103,12 +109,13 @@ export function recordCreateWalk(
   );
 }
 
-// Whether a create walk is due: a store that recorded one asks the Queue for a jobs round (inbox.ts), as for quotes.
-export function createWalkDue(db: Db, now: number): boolean {
+// Whether a create walk is due at the Store's time `storeNow`: a store that recorded one asks the Queue for a jobs round
+// (inbox.ts), as for quotes.
+export function createWalkDue(db: Db, storeNow: number): boolean {
   return (
     db.first(
       `SELECT 1 AS x FROM reply_walks INDEXED BY reply_walks_due WHERE kind = ${CREATE_WALK} AND due_at <= ? LIMIT 1`,
-      now,
+      storeNow,
     ) !== undefined
   );
 }

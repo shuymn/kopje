@@ -87,11 +87,12 @@ export type StoreContext = {
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
-  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk): set only by the paths
-  // that store what was delivered or what a user asked for (an inbound Create or Update, an Announce's original, an
-  // Add's status, a QuoteRequest's quoting status, a search or interaction resolution), never by a walk, quote
-  // verification or a collection sync, so nothing a walk causes starts another.
-  readReplies?: boolean;
+  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk), its walk queued at the
+  // Store's own time (atStoreTime): set only by the paths that store what was delivered or what a user asked for (an
+  // inbound Create or Update, an Announce's original, an Add's status, a QuoteRequest's quoting status, a search or
+  // interaction resolution), never by a walk, quote verification or a collection sync, so nothing a walk causes starts
+  // another.
+  readReplies?: { storeNow: number };
 };
 
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
@@ -482,8 +483,8 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       now: ctx.now,
     });
   }
-  if (ctx.readReplies === true) {
-    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.now);
+  if (ctx.readReplies !== undefined) {
+    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.readReplies.storeNow);
   }
   return { applied: true, reason: "created", statusId: id };
 }
@@ -908,7 +909,15 @@ export function firstRequestOf(target: ResolutionTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };
+// storeNow: the Store's own time (atStoreTime), which queues the create walk of a status the resolution stores.
+export type ResolveInput = {
+  query: string;
+  resolved: Resolved;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
 export type ResolveResult = { accounts: Account[]; statuses: Status[]; quotesDue?: boolean };
@@ -930,7 +939,7 @@ export type StoredResolution =
 // is removed: Mastodon answers a stored status only after a 401, 403 or 404 (:44).
 export function storeResolved(
   db: Db,
-  { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
+  { query, resolved, now, storeNow, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "storeNow" | "origin">,
 ): StoredResolution {
   const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
     const stored = upsertRemoteActor(db, actor, origin, now, revision);
@@ -949,7 +958,7 @@ export function storeResolved(
         origin,
         deliveredTo: null,
         fetched: true,
-        readReplies: true,
+        readReplies: { storeNow },
       });
       return {
         kind: "status",
@@ -986,7 +995,12 @@ export function storeResolved(
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
 // Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
 // server answered the instance actor with is stored with its audience and shown to nobody else.
-export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db, input, { accountId }, viewer) => {
+export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveInput, ResolveResult>((
+  db,
+  input,
+  { accountId },
+  viewer,
+) => {
   const options = { ...input.present, viewer };
   const account = (id: string | undefined): ResolveResult => {
     const findable =

@@ -549,8 +549,9 @@ in [threat-model.md](threat-model.md)):
   work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
 - A refresh, or a created status's walk below, stores only the replies its stored rows link to the status, each under a
   reply it stored or found stored; a status listed whose parent is not such a reply by the walk's end is not stored, and
-  a stored one is judged by its stored parent. Mastodon stores every status a collection lists. Items are taken from
-  any server, and their collections only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
+  a stored one is judged by its stored parent. Mastodon stores every status a collection lists. A refresh takes items
+  from any server, as Mastodon's, and a created status's walk only from the listing status's own server; both read
+  collections only from the replying status's own server, as Mastodon's (but by origin, below). Accepted, 2026-11-16.
 - Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
   refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
   quote one hop short of a delivered status's, so its quoted status is stored with no quote work of its own.
@@ -567,6 +568,12 @@ in [threat-model.md](threat-model.md)):
   A status Kopje stores otherwise (a reply a walk stores, a quoted status a verification stores, a pinned status a
   profile's sync stores) has none fetched, where Mastodon fetches them for every status it creates: so no chain of
   replies, quotes and pins starts walks without end. A walk not ended a day after its status arrived is dropped.
+  Accepted, 2026-11-16.
+- A created status's walk starts only for a public or unlisted status, where Mastodon's `Create#fetch_replies` checks no
+  visibility: the replies of a private, direct or limited status Kopje creates are not fetched. A created status's walk
+  takes an item only on the origin (scheme, host and port) of the status that lists it, and both walks read a collection
+  document only on the origin of the status whose replies it holds, where Mastodon compares hosts only
+  (`non_matching_uri_hosts?`): an item or document on the same host under another scheme or port is passed over.
   Accepted, 2026-11-16.
 - A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
   is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does; nor does a created
