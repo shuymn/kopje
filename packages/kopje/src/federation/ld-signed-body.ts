@@ -550,20 +550,18 @@ const FULL_CONTEXT_SHADOWED = shadowedNames();
 
 const SENSITIVE_IRI = FULL_CONTEXT_MEANINGS.get("sensitive")?.iri;
 
-// `sensitive` the body's contexts give another type than full_context, which leaves it untyped and so takes any value
-// (takes): the compaction still writes it under the name, an IRI or a typed value as an object, and Mastodon marks the
-// status by any value there but false, 0 and null (its sensitive column is a boolean, which takes an object or an
-// array as true; the patch makes a one-element array one again). Kopje reads it as true wherever Mastodon may mark the
-// status, so that a status Mastodon marks is never shown unmarked: of a name with a @list container, which the
-// compaction writes under its IRI, nothing.
+// `sensitive` the body's contexts define otherwise than full_context, which leaves it untyped and so takes any value
+// (takes): the compaction still writes it under the name, an IRI or a typed value as an object, a list as a @list
+// object, an array (an empty one too) as an array, and Mastodon marks the status by any value there but false, 0 and
+// null (its sensitive column is a boolean, which takes an object or an array as true). Kopje reads it as true wherever
+// Mastodon may mark the status, so that a status Mastodon marks is never shown unmarked: not a lone false or 0 the
+// definition writes as it is (typed @id or @vocab), nor null.
 function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
-  if (meaning === undefined || meaning.iri !== SENSITIVE_IRI || meaning.containers.includes("@list")) {
+  if (meaning === undefined || meaning.iri !== SENSITIVE_IRI || value === null) {
     return false;
   }
   const plain = meaning.coercion === "@id" || meaning.coercion === "@vocab";
-  return (
-    leaves(value).some((item) => item !== null) && !(plain && !Array.isArray(value) && (value === false || value === 0))
-  );
+  return meaning.containers.includes("@list") || !(plain && (value === false || value === 0));
 }
 
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context

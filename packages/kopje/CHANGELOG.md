@@ -254,12 +254,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   emoji, a profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or
   defines otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a
   quote; a `quote` given as `true` no longer makes a Note's other quote a non-legacy one, nor does a poll's `closed`
-  given as an object close it; a `sensitive` the context types otherwise marks the status wherever Mastodon may. A body
-  Mastodon reads as received (past its JSON-LD limits, or with a data-integrity proof that keeps something once JSON-LD
-  expands it, which Kopje tells by expanding the proof with jsonld.js and the preloaded contexts, within Mastodon's
-  1,000 values and 32 contexts and types) is read as received, so a proof that expands to nothing (a null value, or a
-  `@language` beside a null member) no longer has such a `QuoteRequest` read as received. No Store migration and no
-  `wrangler.jsonc` change.
+  given as an object close it; a `sensitive` the context defines otherwise (another type, or a list) marks the status
+  wherever Mastodon may, given an empty array too. A body Mastodon reads as received (past its JSON-LD limits, or with a
+  data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof with
+  jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts and types) is read as received,
+  so a proof that expands to nothing (a null value, or a `@language` beside a null member) no longer has such a
+  `QuoteRequest` read as received. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
