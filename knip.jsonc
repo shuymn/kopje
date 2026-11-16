@@ -28,6 +28,8 @@
         "lint/plugin.js",
         // Loaded by a computed specifier from browser/render.ts.
         "browser/fixtures/pages.tsx",
+        // The held-output bench's object, which run.mjs deploys from a wrangler config it writes.
+        "bench/held-output/worker.ts",
         // The suites of each vitest config, whose `include` is an absolute path the plugin does not read. No module
         // imports a suite, so these name no shared helper.
         "test/**/*.test.ts",
@@ -43,6 +45,7 @@
         "browser/**/*.{ts,tsx}",
         "test/**/*.ts",
         "test-node/**/*.ts",
+        "bench/**/*.{ts,mjs}",
         "*.config.ts",
       ],
       "ignoreIssues": {
