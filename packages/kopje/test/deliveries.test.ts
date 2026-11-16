@@ -11,6 +11,7 @@ import { availableSql, reachQuoters, recipientsFor } from "../src/domain/audienc
 import {
   completeDelivery,
   type DeliveryOutcome,
+  FALLBACK_AUDIENCE_MAX,
   GAVE_UP_RETENTION_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
@@ -805,21 +806,21 @@ describe("outbound reach with stale statistics (RES-7)", () => {
 // and the selectors of its two keys (3), then the walk of both keys, one row to start and one per dot. A key is walked
 // only within DNS_NAME_UTF8_BYTES bytes and ends in a non-dot, so it has at most DNS_NAME_UTF8_BYTES - 1 dots.
 const EP_AVAILABLE_CEILING = 2 + 3 + 1 + 2 * (DNS_NAME_UTF8_BYTES - 1);
-// The values the audience check reads for the provenance's candidates: each walks the activity's audience accounts up
-// to it, reading the one at each place before its own. A Flag's audience is at most 1 + MAX_REPORT_STATUSES distinct
-// accounts in id order (reportForwardees), and the most is read with the PROVENANCE_MAX candidates at its end: the
-// places from its length - PROVENANCE_MAX to its last. An id the audience does not hold reads it once and no account.
-const EP_AUDIENCE_READS =
-  PROVENANCE_MAX * (1 + MAX_REPORT_STATUSES - PROVENANCE_MAX) + (PROVENANCE_MAX * (PROVENANCE_MAX - 1)) / 2;
+// The values the audience check reads for one entry of the provenance: it walks the activity's audience accounts, at
+// most FALLBACK_AUDIENCE_MAX of them however many are stored, up to the entry's, reading the one at each place before
+// it: at most FALLBACK_AUDIENCE_MAX - 1, for the account at the last place. The provenance may name an id more than
+// once (rowProvenanceSql admits it), so every entry may be that one. An id not among those places reads all
+// FALLBACK_AUDIENCE_MAX and no account.
+const EP_AUDIENCE_READS = FALLBACK_AUDIENCE_MAX - 1;
 // The rows personalFallback's provenance candidates read with every input at its cap (RES-7; the witness below): for
-// each of PROVENANCE_MAX candidates, its account, the activity's rows (one per audience inbox of a Flag, at most
-// 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, the chunk's TARGET_CHUNK_SIZE
-// targets, and its availability; the audience check's values; and 4 for the row, its activity and the ends of their
-// reads. The statement's check that a suspend block exists adds no row it counts: the witness reads exactly this with
-// and without the block.
+// each of the provenance's PROVENANCE_MAX entries, its account, the activity's rows (one per audience inbox of a Flag,
+// at most 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, the chunk's
+// TARGET_CHUNK_SIZE targets, its availability and the audience check's values; and 4 for the row, its activity and the
+// ends of their reads. The statement's check that a suspend block exists adds no row it counts: the witness reads
+// exactly this with and without the block.
 const EP_CANDIDATES_CEILING =
-  PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE + EP_AVAILABLE_CEILING) +
-  EP_AUDIENCE_READS +
+  PROVENANCE_MAX *
+    (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE + EP_AVAILABLE_CEILING + EP_AUDIENCE_READS) +
   4;
 // Ids no account holds, of an account id's 18 digits.
 const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
@@ -1232,156 +1233,182 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
   });
 
   // RES-7: the provenance's candidates, every input at its cap at once: the provenance at PROVENANCE_MAX ids in
-  // PROVENANCE_BYTES bytes, the last of the audience's, each a candidate that reaches both checks; the activity (a
-  // Flag) at its audience's cap (1 + MAX_REPORT_STATUSES accounts), with a row at each audience inbox and an unexpanded
-  // chunk of TARGET_CHUNK_SIZE targets, none at a candidate's inbox, so each check walks them all. After ANALYZE, other
-  // activities' rows and chunks and other accounts grow; the statement reads the same rows, by key.
-  it("reads the provenance's candidates by key, flat as other rows grow (RES-7)", async () => {
-    const h = await community(["alice"]);
-    const audience = 1 + MAX_REPORT_STATUSES;
-    await sql(
-      h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+  // PROVENANCE_BYTES bytes, each a candidate that reaches both checks; the activity (a Flag) at its audience's cap (1 +
+  // MAX_REPORT_STATUSES accounts), with a row at each audience inbox and an unexpanded chunk of TARGET_CHUNK_SIZE
+  // targets, none at a candidate's inbox, so each check walks them all. The provenance is the audience's last
+  // PROVENANCE_MAX accounts, or its last one PROVENANCE_MAX times (the ceiling: the audience check reads the most for
+  // each); behind 1,000 other ids, as only an import stores, they are past the accounts the check reads, so none is a
+  // candidate and the row gives up. After ANALYZE, other activities' rows and chunks and other accounts grow; the
+  // statement reads the same rows, by key.
+  it.each([
+    ["distinct, at the audience's end", "distinct", "retry"],
+    ["one repeated, the audience's last", "repeated", "retry"],
+    ["distinct, behind 1,000 other ids of a longer audience", "long", "gave_up"],
+  ] as const)(
+    "reads the provenance's candidates by key, flat as other rows grow: %s (RES-7)",
+    async (_name, kind, status) => {
+      expect(FALLBACK_AUDIENCE_MAX).toBe(1 + MAX_REPORT_STATUSES);
+      const h = await community(["alice"]);
+      const audience = 1 + MAX_REPORT_STATUSES;
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
 			INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
 			SELECT printf('%018d', 700000000000000000 + i), 'https://remote.example/users/u' || i, 'u' || i, 'remote.example',
 				'https://remote.example/users/u' || i || '/inbox', NULL FROM n`,
-      audience,
-    );
-    const ids = (
-      await sql<{ id: string }>(h.store, "SELECT id FROM accounts WHERE domain = 'remote.example' ORDER BY id")
-    ).map((r) => r.id);
-    const named = ids.slice(-PROVENANCE_MAX);
-    expect(JSON.stringify(named)).toHaveLength(PROVENANCE_BYTES);
-    // Every branch of each candidate's availability (availableSql) at its cap: a suspend block of none of their keys,
-    // so each coverage walk runs to its end; two distinct keys of each candidate (its stored domain and its actor id's
-    // host), each of DNS_NAME_UTF8_BYTES bytes with a dot at every byte but its last, the longest walk; each candidate
-    // marked by a domain block's job, an accounts_suspended entry availability reads and passes; and the deleting and
-    // the instance-suspended accounts' indexes holding other accounts.
-    await blockDomain(h.store, "unrelated.example");
-    const key = (last: string) => `${".".repeat(DNS_NAME_UTF8_BYTES - 1)}${last}`;
-    await sql(
-      h.store,
-      `UPDATE accounts SET domain = ?1, uri = 'https://' || ?2 || '/users/' || username, suspended_at = ?3,
+        audience,
+      );
+      const ids = (
+        await sql<{ id: string }>(h.store, "SELECT id FROM accounts WHERE domain = 'remote.example' ORDER BY id")
+      ).map((r) => r.id);
+      const named = kind === "repeated" ? Array<string>(PROVENANCE_MAX).fill(ids.at(-1)!) : ids.slice(-PROVENANCE_MAX);
+      expect(JSON.stringify(named)).toHaveLength(PROVENANCE_BYTES);
+      // The audience as stored: a Flag's (distinct, in id order), or one only an import holds, past
+      // FALLBACK_AUDIENCE_MAX.
+      const stored = kind === "long" ? [...absent(1000), ...ids] : ids;
+      // Every branch of each candidate's availability (availableSql) at its cap: a suspend block of none of their keys,
+      // so each coverage walk runs to its end; two distinct keys of each candidate (its stored domain and its actor
+      // id's host), each of DNS_NAME_UTF8_BYTES bytes with a dot at every byte but its last, the longest walk; each
+      // candidate marked by a domain block's job, an accounts_suspended entry availability reads and passes; and the
+      // deleting and the instance-suspended accounts' indexes holding other accounts.
+      await blockDomain(h.store, "unrelated.example");
+      const key = (last: string) => `${".".repeat(DNS_NAME_UTF8_BYTES - 1)}${last}`;
+      await sql(
+        h.store,
+        `UPDATE accounts SET domain = ?1, uri = 'https://' || ?2 || '/users/' || username, suspended_at = ?3,
 				suspension_source = 'domain' WHERE id IN (SELECT value FROM json_each(?4))`,
-      key("y"),
-      key("z"),
-      new Date(NOW).toISOString(),
-      JSON.stringify(named),
-    );
-    await sql(
-      h.store,
-      `INSERT INTO accounts (id, uri, username, domain, deleted_at, suspended_at, suspension_source)
+        key("y"),
+        key("z"),
+        new Date(NOW).toISOString(),
+        JSON.stringify(named),
+      );
+      await sql(
+        h.store,
+        `INSERT INTO accounts (id, uri, username, domain, deleted_at, suspended_at, suspension_source)
 			VALUES ('799999999999999998', 'https://d.example/users/d', 'd', 'd.example', ?1, NULL, NULL),
 				('799999999999999999', 'https://s.example/users/s', 's', 's.example', NULL, ?1, 'account')`,
-      new Date(NOW).toISOString(),
-    );
-    const activity = await queuedRow(h.store, h.users.alice.id, provenance(named), { kind: "flag", accounts: ids });
-    await sql(
-      h.store,
-      `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+        new Date(NOW).toISOString(),
+      );
+      const activity = await queuedRow(h.store, h.users.alice.id, provenance(named), {
+        kind: "flag",
+        accounts: stored,
+      });
+      await sql(
+        h.store,
+        `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
 			SELECT CAST(?1 AS INTEGER), ?2, 'https://x' || value || '.example/inbox', 'https://x' || value || '.example',
 				'gave_up', ?3, ?3 FROM json_each(?4)`,
-      activity,
-      h.users.alice.id,
-      NOW,
-      JSON.stringify(ids.slice(1)),
-    );
-    await sql(
-      h.store,
-      `INSERT INTO outbound_targets (activity_id, targets) SELECT CAST(?1 AS INTEGER), json_group_array(json_object('inbox',
+        activity,
+        h.users.alice.id,
+        NOW,
+        JSON.stringify(ids.slice(1)),
+      );
+      await sql(
+        h.store,
+        `INSERT INTO outbound_targets (activity_id, targets) SELECT CAST(?1 AS INTEGER), json_group_array(json_object('inbox',
 				'https://t' || value || '.example/inbox')) FROM json_each(?2)`,
-      activity,
-      JSON.stringify(Array.from({ length: TARGET_CHUNK_SIZE }, (_, i) => i)),
-    );
-    expect(
-      await sql(h.store, "SELECT count(*) AS rows FROM deliveries WHERE activity_id = CAST(? AS INTEGER)", activity),
-    ).toEqual([{ rows: audience }]);
-    // A newer activity with a row and a chunk, so each range the candidates walk ends at an entry of another activity
-    // from the start (one index entry past each range), as it would among the neighbours grown below.
-    const newer = await queuedRow(h.store, h.users.alice.id, { sql: "NULL", value: null }, { kind: "flag" });
-    await sql(h.store, "UPDATE deliveries SET state = 'gave_up' WHERE activity_id = CAST(? AS INTEGER)", newer);
-    await sql(
-      h.store,
-      "INSERT INTO outbound_targets (activity_id, targets) VALUES (CAST(? AS INTEGER), json_array(json_object('inbox', ?)))",
-      newer,
-      "https://n.example/inbox",
-    );
-    const subject = (await claim(h.store, NOW, "a")).deliveries[0]!;
-    expect(subject.inbox).toBe(SHARED);
-    const { before, after } = await staleStatistics(h, {
-      capture: async () => {
-        const run = await plannedRun(h, /json_each\(d\.provenance\)/, completeDelivery, {
-          id: subject.id,
-          leaseToken: "a",
-          now: NOW,
-          outcome: MISSING,
-        });
-        // Put the row back as it was, leased at the shared inbox.
-        await sql(
-          h.store,
-          `UPDATE deliveries SET state = 'leased', lease_token = 'a', inbox_url = ?2, recipient_accounts = ?3
+        activity,
+        JSON.stringify(Array.from({ length: TARGET_CHUNK_SIZE }, (_, i) => i)),
+      );
+      expect(
+        await sql(h.store, "SELECT count(*) AS rows FROM deliveries WHERE activity_id = CAST(? AS INTEGER)", activity),
+      ).toEqual([{ rows: audience }]);
+      // A newer activity with a row and a chunk, so each range the candidates walk ends at an entry of another activity
+      // from the start (one index entry past each range), as it would among the neighbours grown below.
+      const newer = await queuedRow(h.store, h.users.alice.id, { sql: "NULL", value: null }, { kind: "flag" });
+      await sql(h.store, "UPDATE deliveries SET state = 'gave_up' WHERE activity_id = CAST(? AS INTEGER)", newer);
+      await sql(
+        h.store,
+        "INSERT INTO outbound_targets (activity_id, targets) VALUES (CAST(? AS INTEGER), json_array(json_object('inbox', ?)))",
+        newer,
+        "https://n.example/inbox",
+      );
+      const subject = (await claim(h.store, NOW, "a")).deliveries[0]!;
+      expect(subject.inbox).toBe(SHARED);
+      const { before, after } = await staleStatistics(h, {
+        capture: async () => {
+          const run = await plannedRun(h, /json_each\(d\.provenance\)/, completeDelivery, {
+            id: subject.id,
+            leaseToken: "a",
+            now: NOW,
+            outcome: MISSING,
+          });
+          // Put the row back as it was, leased at the shared inbox.
+          await sql(
+            h.store,
+            `UPDATE deliveries SET state = 'leased', lease_token = 'a', inbox_url = ?2, recipient_accounts = ?3
 						WHERE id = CAST(?1 AS INTEGER)`,
-          subject.id,
-          SHARED,
-          JSON.stringify(named),
-        );
-        return run;
-      },
-      grow: async () => {
-        await sql(
-          h.store,
-          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+            subject.id,
+            SHARED,
+            JSON.stringify(named),
+          );
+          return run;
+        },
+        grow: async () => {
+          await sql(
+            h.store,
+            `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
 					INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
 					SELECT printf('%018d', 800000000000000000 + i), 'https://g.example/users/g' || i, 'g' || i, 'g.example',
 						'https://g.example/users/g' || i || '/inbox', 'https://g.example/inbox' FROM n`,
-        );
-        await sql(
-          h.store,
-          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+          );
+          await sql(
+            h.store,
+            `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
 					INSERT INTO outbound_activities (account_id, body, object_uri, created_at)
 					SELECT ?1, json_object('activity', json_object('type', 'Flag')), 'https://g.example/' || i, ?2 FROM n`,
-          h.users.alice.id,
-          NOW,
-        );
-        await sql(
-          h.store,
-          `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+            h.users.alice.id,
+            NOW,
+          );
+          await sql(
+            h.store,
+            `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
 					SELECT o.id, o.account_id, 'https://g.example/users/' || n.i || '/inbox', 'https://g.example', 'gave_up', ?1, ?1
 					FROM outbound_activities o CROSS JOIN (SELECT value AS i FROM json_each(?2)) n
 					WHERE o.object_uri GLOB 'https://g.example/*'`,
-          NOW,
-          JSON.stringify(Array.from({ length: 20 }, (_, i) => i)),
-        );
-        await sql(
-          h.store,
-          `INSERT INTO outbound_targets (activity_id, targets) SELECT id, json_array(json_object('inbox', 'https://g.example/inbox'))
+            NOW,
+            JSON.stringify(Array.from({ length: 20 }, (_, i) => i)),
+          );
+          await sql(
+            h.store,
+            `INSERT INTO outbound_targets (activity_id, targets) SELECT id, json_array(json_object('inbox', 'https://g.example/inbox'))
 					FROM outbound_activities WHERE object_uri GLOB 'https://g.example/*'`,
+          );
+        },
+      });
+      for (const [phase, run] of Object.entries({ before, after })) {
+        expect(run.result, phase).toMatchObject({ status });
+        expect(run.plans, phase).toHaveLength(1);
+        // d and o are the row and its activity, one each, read by key.
+        expect(
+          scansOf(run.plans[0]!.plan, ["a", "e", "c", "deliveries", "outbound_activities", "accounts"]),
+          phase,
+        ).toEqual([]);
+        expect(
+          run.plans[0]!.plan.filter((detail) =>
+            /^SEARCH (deliveries|outbound_activities) USING INTEGER PRIMARY KEY/.test(detail),
+          ),
+        ).toHaveLength(2);
+      }
+      expect(after.plans[0]!.rows).toBe(before.plans[0]!.rows);
+      const rows = before.plans[0]!.rows;
+      expect(EP_CANDIDATES_CEILING).toBe(37_332); // The figure docs/threat-model.md (NET-2) states.
+      expect(rows).toBeLessThanOrEqual(EP_CANDIDATES_CEILING);
+      if (kind === "long") {
+        // Each entry reads the first FALLBACK_AUDIENCE_MAX values, none of them a candidate, and no account.
+        expect(rows).toBe(PROVENANCE_MAX * FALLBACK_AUDIENCE_MAX + 4);
+      } else {
+        // The ceiling: every entry the audience's last account, read at the last place the walk reads; distinct ones
+        // read 15, 14, ... 0 values fewer. Each candidate walks the activity's rows, its chunk's targets and both its
+        // keys.
+        expect(rows).toBe(
+          EP_CANDIDATES_CEILING - (kind === "distinct" ? (PROVENANCE_MAX * (PROVENANCE_MAX - 1)) / 2 : 0),
         );
-      },
-    });
-    for (const [phase, run] of Object.entries({ before, after })) {
-      expect(run.result, phase).toMatchObject({ status: "retry" });
-      expect(run.plans, phase).toHaveLength(1);
-      // d and o are the row and its activity, one each, read by key.
-      expect(
-        scansOf(run.plans[0]!.plan, ["a", "e", "c", "deliveries", "outbound_activities", "accounts"]),
-        phase,
-      ).toEqual([]);
-      expect(
-        run.plans[0]!.plan.filter((detail) =>
-          /^SEARCH (deliveries|outbound_activities) USING INTEGER PRIMARY KEY/.test(detail),
-        ),
-      ).toHaveLength(2);
-    }
-    expect(after.plans[0]!.rows).toBe(before.plans[0]!.rows);
-    // The ceiling at these caps: each of PROVENANCE_MAX candidates walks the activity's rows, its chunk's targets and
-    // both its keys to their ends.
-    expect(EP_CANDIDATES_CEILING).toBe(37_212); // The figure docs/threat-model.md (NET-2) states.
-    expect(before.plans[0]!.rows).toBe(EP_CANDIDATES_CEILING);
-    expect(before.plans[0]!.rows).toBeGreaterThan(
-      PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE + 2 * (DNS_NAME_UTF8_BYTES - 1)),
-    );
-  }, 120_000);
+        expect(rows).toBeGreaterThan(PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE + 2 * (DNS_NAME_UTF8_BYTES - 1)));
+      }
+    },
+    120_000,
+  );
 });
 
 // A pending row of `account` to remote.example's shared inbox, its provenance stored as `value` is: a forward's (a

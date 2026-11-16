@@ -138,6 +138,13 @@ export { PROVENANCE_MAX };
 // the longest value Kopje's writers store (expansion copies a target's minified `accounts`; moveToPersonal one id).
 export const PROVENANCE_BYTES = PROVENANCE_MAX * (18 + 2) + (PROVENANCE_MAX - 1) + 2;
 
+// The audience accounts the shared-inbox fallback reads of an activity (personalFallback): the most Kopje writes for an
+// activity it moves a row of (no to, not a forward), a Flag's, the reported account and an account each reported
+// status replies to, distinct (reportForwardees in audience.ts): 1 + MAX_REPORT_STATUSES (reports.ts, which loads this
+// module, so the figure is restated here and test/deliveries.test.ts holds the two equal). Every other such activity
+// names one account or none. A longer audience is only imported; its accounts past these are no candidates.
+export const FALLBACK_AUDIENCE_MAX = 101;
+
 // A row's provenance (VIS-30) as every reader takes it (sendRefused through DUE_ROW, personalFallback,
 // forwardFallback): `column` when it is TEXT of at most PROVENANCE_BYTES bytes, then valid JSON, then an array, then of
 // at most PROVENANCE_MAX values, each tested only once the one before it holds (nested CASEs: nothing past
@@ -3008,11 +3015,12 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 				AND ${rowProvenanceSql("recipient_accounts")} IS NOT NULL`,
       row.id,
     ) !== undefined;
-  // The candidates in id order: the audience's accounts the row's provenance names (at most PROVENANCE_MAX), or the
-  // audience's at this shared inbox (as many as the activity addresses). For content, the first one the send-time check
-  // would still send to (sendRefused): one it would refuse would lose the delivery at the next claim, though another
-  // recipient there may be available. A retraction takes the first, as it is never refused. Each account is sought by
-  // id (RES-7), and each candidate's row and target check reads the activity's own rows and chunks.
+  // The candidates in id order: the audience's accounts, of its first FALLBACK_AUDIENCE_MAX, that the row's provenance
+  // names (at most PROVENANCE_MAX entries, an id possibly more than once), or the audience's at this shared inbox (as
+  // many as the activity addresses). For content, the first one the send-time check would still send to (sendRefused):
+  // one it would refuse would lose the delivery at the next claim, though another recipient there may be available. A
+  // retraction takes the first, as it is never refused. Each account is sought by id (RES-7), and each candidate's row
+  // and target check reads the activity's own rows and chunks.
   type Candidate = { inbox: string; id: string; uri: string; retracts: number; available: number };
   const candidates = named
     ? db.all<Candidate>(
@@ -3022,7 +3030,8 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 				CROSS JOIN (SELECT id, retracts, body FROM outbound_activities WHERE id = CAST(?2 AS INTEGER) LIMIT 1) o
 				CROSS JOIN json_each(d.provenance) r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
 			WHERE d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
-				AND EXISTS (SELECT 1 FROM json_each(o.body, '$.audience.accounts') n WHERE n.value = r.value)
+				AND EXISTS (SELECT 1 FROM (SELECT value FROM json_each(o.body, '$.audience.accounts')
+					LIMIT ${FALLBACK_AUDIENCE_MAX}) n WHERE n.value = r.value)
 				AND a.domain IS NOT NULL AND a.inbox_url <> d.inbox_url
 				AND NOT EXISTS (SELECT 1 FROM deliveries e INDEXED BY deliveries_activity
 					WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
