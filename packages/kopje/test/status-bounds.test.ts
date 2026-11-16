@@ -2045,7 +2045,6 @@ function applicationJson(status: Record<string, unknown>): number {
   return "application" in status ? jsonBytes({ application: status.application }) - 1 : 0;
 }
 
-// The statuses a presented value shows (each object with a quote_approval, which only a Status has).
 // The presented fields with a verification time: a local account's verified fields.
 function verifiedFields(value: unknown): { value: string; verified_at: string }[] {
   if (Array.isArray(value)) {
