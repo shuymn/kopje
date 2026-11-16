@@ -84,11 +84,14 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
 
    If the version changes the compatibility date (`wrangler.jsonc`, `deploy/wrangler.jsonc`) or the workerd versions
    in `pnpm-lock.yaml` since the previous `kopje-v*` tag, run the held-output bench (`bench/held-output/run.mjs`,
-   #1610). It takes about five hours and uses your wrangler login: it deploys temporary Workers named
-   `kopje-bench-held-<random>` and deletes them when it ends, printing the delete command if that fails.
+   #1610). It takes about five hours and uses your wrangler login (`CLOUDFLARE_ACCOUNT_ID` picks the account when it
+   has several): it deploys temporary Workers named `kopje-bench-held-<random>` and deletes them when it ends. A record
+   of each stays in `~/.local/state/kopje/bench-held-output` until its Worker is confirmed gone; if the bench was
+   killed or prints that it could not confirm one, `cleanup` deletes what the records name.
 
    ```sh
    pnpm --filter kopje bench:held-output
+   pnpm --filter kopje bench:held-output cleanup
    ```
 
    Compare its outcomes and the runtime's WebSocket surface (`outcomes.json` in the `held-output-<time>` directory it

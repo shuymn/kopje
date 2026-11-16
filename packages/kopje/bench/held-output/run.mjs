@@ -2,11 +2,18 @@
 // itself, since no signal of unsent output reaches JavaScript (RES-6). It deploys `worker.ts` as a temporary Worker
 // named `kopje-bench-held-<random>` at the compatibility date and flags of the package's wrangler.jsonc, drives it
 // with clients of its own, writes what it observed as JSON lines and the outcomes `classify.mjs` gives them, and
-// deletes the Worker, also when a run fails or the process gets SIGINT, SIGTERM or SIGHUP, and confirms it is gone
-// (printing the delete command when it cannot). `--local` runs the same object under `wrangler dev` on the pinned
-// workerd instead and samples the workerd process's resident memory.
+// deletes the Worker, also when a run fails or the process gets SIGINT, SIGTERM or SIGHUP, and confirms it is gone.
+// `--local` runs the same object under `wrangler dev` on the pinned workerd instead and samples the workerd process's
+// resident memory.
 //
 //   pnpm --filter kopje bench:held-output [--local] [--runs m1,m2,...] [--out <dir>] [--quick]
+//   pnpm --filter kopje bench:held-output cleanup
+//
+// Before each deploy, the driver writes a record of the Worker (its name, account and times; no token) to
+// `$XDG_STATE_HOME/kopje/bench-held-output` (`~/.local/state` without XDG_STATE_HOME), and removes it only once the
+// Worker is confirmed gone (CLEANUP). A record left behind (the driver was killed, or could not confirm) is what
+// `cleanup` works from: it deletes and confirms each record's Worker. The driver prints that command whenever it
+// cannot confirm a Worker gone.
 //
 // Deployed, it uses wrangler's login (CLOUDFLARE_ACCOUNT_ID picks the account when the login has several) and takes
 // about five hours: M1 then M5 on one Worker, M2, M3 and M4 each on their own at the same time, so a reset elsewhere
@@ -35,17 +42,23 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   copyFileSync,
   createWriteStream,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { connect as tcpConnect, createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { connect as tlsConnect } from "node:tls";
@@ -82,21 +95,45 @@ const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "../..");
 const require = createRequire(import.meta.url);
 const WRANGLER = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
-// How the removal of a deployed Worker waits: for a deploy that did not finish to land (it may, after its command
-// ended), and between attempts to delete it and confirm it is gone.
-const CLEANUP = { settleMs: MINUTE_MS, retryMs: 15_000, attempts: 4 };
+// How the removal of a deployed Worker waits. It is confirmed gone only when the API says it does not exist (code
+// 10007) at least `landingMs` after its deploy command ended: wrangler sends its API requests through undici, whose
+// default headers and body timeouts give up on an answer after 300 s, so a request it abandoned may still be carried
+// out up to then; 10 minutes, twice that, leaves the API's own processing room. `retryMs` apart, it tries `attempts`
+// times to delete it and confirm.
+const CLEANUP = { landingMs: 10 * MINUTE_MS, retryMs: 15_000, attempts: 4 };
+const RECORDS = join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), "kopje", "bench-held-output");
+const CLEANUP_COMMAND = "pnpm --filter kopje bench:held-output cleanup";
 
-// Every token this process made: whatever it prints or keeps shows them masked.
+// Every token this process made, in each form wrangler's output could carry it: as is, percent-encoded byte by byte
+// (either case), and base64 or base64url at each of the three alignments it can have within a longer encoding.
 /** @type {Set<string>} */
-const tokens = new Set();
+const tokenForms = new Set();
+
+/** @param {string} token */
+function addToken(token) {
+  const bytes = Buffer.from(token, "utf8");
+  const percent = [...bytes].map((b) => `%${b.toString(16).padStart(2, "0")}`).join("");
+  tokenForms.add(token).add(percent).add(percent.toUpperCase());
+  for (let offset = 0; offset < 3; offset += 1) {
+    const encoded = Buffer.concat([Buffer.alloc(offset), bytes]).toString("base64");
+    // The characters that come from the token's bytes alone, whatever precedes or follows them.
+    const core = encoded.slice(Math.ceil((4 * offset) / 3), Math.floor((4 * (offset + bytes.length)) / 3));
+    tokenForms.add(core).add(core.replaceAll("+", "-").replaceAll("/", "_"));
+  }
+}
 
 /** @param {string} text */
 function masked(text) {
   let result = text;
-  for (const token of tokens) {
-    result = result.replaceAll(token, "<token>");
+  for (const form of tokenForms) {
+    result = result.replaceAll(form, "<token>");
   }
   return result;
+}
+
+/** @param {string} line */
+function log(line) {
+  console.log(`held-output: ${line}`);
 }
 
 /**
@@ -1321,8 +1358,8 @@ function workerdUnder(root) {
 }
 
 /**
- * What a caller may replace: the wrangler the driver runs, and the waits of the removal.
- * @typedef {{ wrangler?: string, cleanup?: typeof CLEANUP }} Overrides
+ * What a caller may replace: the wrangler the driver runs, the waits of the removal, and where the records live.
+ * @typedef {{ wrangler?: string, cleanup?: typeof CLEANUP, records?: string }} Overrides
  */
 
 /**
@@ -1331,7 +1368,7 @@ function workerdUnder(root) {
  *   signal: AbortSignal, log: (line: string) => void } & Overrides} options
  * @param {(target: Target) => Promise<void>} fn
  */
-export async function withTarget({ local, compat, out, label, signal, log, wrangler, cleanup }, fn) {
+export async function withTarget({ local, compat, out, label, signal, log, wrangler, cleanup, records }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "kopje-bench-held-"));
   // Everything written to the directory, the token's file first among them, is removed with it however this ends.
   try {
@@ -1340,7 +1377,7 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
     // token. The token is a secret binding (`.dev.vars` locally, a secrets file deployed), whose value wrangler never
     // prints, unlike a var's; and whatever the driver prints or keeps shows it masked, wrangler's output included.
     const token = randomBytes(32).toString("hex");
-    tokens.add(token);
+    addToken(token);
     const config = join(dir, "wrangler.jsonc");
     // A copy of the object's source: `wrangler dev` reloads on a change to its main module, which would reset the
     // object mid-run if the tree were edited.
@@ -1351,17 +1388,16 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
     } else {
       writeFileSync(join(dir, "secrets.json"), JSON.stringify({ BENCH_TOKEN: token }), { mode: 0o600 });
     }
-    // wrangler's own debug logs go to the temporary directory, which is removed with the token in it.
-    const env = { ...process.env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(dir, "logs") };
     /** @type {Setup} */
     const setup = {
       dir,
       name,
       config,
       token,
-      env,
+      env: wranglerEnv(dir),
       wrangler: wrangler ?? WRANGLER,
       cleanup: cleanup ?? CLEANUP,
+      records: records ?? RECORDS,
       logFile: join(out, `wrangler-${label}.log`),
       signal,
       log,
@@ -1378,31 +1414,196 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
 
 /**
  * @typedef {{ dir: string, name: string, config: string, token: string, env: NodeJS.ProcessEnv, wrangler: string,
- *   cleanup: typeof CLEANUP, logFile: string, signal: AbortSignal, log: (line: string) => void }} Setup
+ *   cleanup: typeof CLEANUP, records: string, logFile: string, signal: AbortSignal, log: (line: string) => void }}
+ *   Setup
+ * @typedef {{ cwd: string, env: NodeJS.ProcessEnv, wrangler: string }} WranglerAt
  */
+
+/**
+ * The environment wrangler runs in: no metrics, its debug log in `dir` (removed with it), and no dump of its
+ * configuration or of a request's body, which carries the token, whatever the caller's environment asks: the default
+ * log level, sanitized, and no output file.
+ * @param {string} dir
+ * @param {string} [accountId] the account every command acts on
+ * @returns {NodeJS.ProcessEnv}
+ */
+function wranglerEnv(dir, accountId) {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("WRANGLER_OUTPUT_FILE_"))),
+    WRANGLER_SEND_METRICS: "false",
+    WRANGLER_LOG: "log",
+    WRANGLER_LOG_SANITIZE: "true",
+    WRANGLER_LOG_PATH: join(dir, "logs"),
+    ...(accountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: accountId }),
+  };
+}
 
 /**
  * Runs wrangler in a process group of its own, so that a signal to the driver's group (a terminal's Ctrl-C, a SIGTERM
  * to the group) reaches the driver alone, which lets wrangler finish instead of cutting a deploy or a delete short.
- * @param {Setup} setup
+ * @param {WranglerAt} at
  * @param {string[]} args
- * @returns {Promise<{ code: number | null, output: string }>}
+ * @param {(pid: number) => void} [started] called with the child's PID once it runs
+ * @returns {Promise<{ code: number | null, stdout: string, output: string }>}
  */
-function runWrangler({ dir, env, wrangler }, args) {
+function runWrangler({ cwd, env, wrangler }, args, started) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [wrangler, ...args], {
-      cwd: dir,
+      cwd,
       env,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (child.pid !== undefined) {
+      started?.(child.pid);
+    }
+    /** @type {Buffer[]} */
+    const stdout = [];
     /** @type {Buffer[]} */
     const output = [];
-    child.stdout.on("data", (data) => output.push(/** @type {Buffer} */ (data)));
+    child.stdout.on("data", (data) => {
+      stdout.push(/** @type {Buffer} */ (data));
+      output.push(/** @type {Buffer} */ (data));
+    });
     child.stderr.on("data", (data) => output.push(/** @type {Buffer} */ (data)));
-    child.on("error", (error) => done({ code: null, output: String(error) }));
-    child.on("close", (code) => done({ code, output: Buffer.concat(output).toString("utf8") }));
+    child.on("error", (error) => done({ code: null, stdout: "", output: String(error) }));
+    child.on("close", (code) =>
+      done({ code, stdout: Buffer.concat(stdout).toString("utf8"), output: Buffer.concat(output).toString("utf8") }),
+    );
   });
+}
+
+/**
+ * Keeps wrangler's output, masked, in `file`. A failed write is reported and changes nothing else, so it never stops
+ * a removal.
+ * @param {string | null} file
+ * @param {string} text
+ */
+function keep(file, text) {
+  if (file === null) {
+    return;
+  }
+  try {
+    appendFileSync(file, masked(text));
+  } catch (error) {
+    console.error(`held-output: could not keep wrangler's output in ${file}: ${String(error)}`);
+  }
+}
+
+/**
+ * What the driver keeps of a deployed Worker until it is confirmed gone, outside the run's temporary directory, so
+ * that it can be found again however the driver ended: where it is, when it was made, and the run's temporary
+ * directory (which holds the token's file until the driver removes it); no token.
+ * @typedef {{ name: string, accountId: string, startedAt: number, driverPid: number, deployPid: number | null,
+ *   deployEndedAt: number | null, dir: string }} WorkerRecord
+ */
+
+/**
+ * Writes the record durably: to a new file, synced, renamed over the old one, the directory synced.
+ * @param {string} records
+ * @param {WorkerRecord} record
+ */
+function saveRecord(records, record) {
+  mkdirSync(records, { recursive: true, mode: 0o700 });
+  const file = join(records, `${record.name}.json`);
+  const fd = openSync(`${file}.tmp`, "w", 0o600);
+  try {
+    writeSync(fd, `${JSON.stringify(record)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(`${file}.tmp`, file);
+  syncDirectory(records);
+}
+
+/**
+ * Updates the record; a failure is reported, and the removal goes on from what is in memory.
+ * @param {string} records
+ * @param {WorkerRecord} record
+ */
+function updateRecord(records, record) {
+  try {
+    saveRecord(records, record);
+  } catch (error) {
+    console.error(`held-output: could not update the record of ${record.name}: ${String(error)}`);
+  }
+}
+
+/** @param {string} dir */
+function syncDirectory(dir) {
+  try {
+    const fd = openSync(dir, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Not every platform syncs a directory; the file itself was synced.
+  }
+}
+
+/**
+ * @param {string} records
+ * @returns {WorkerRecord[]}
+ */
+function loadRecords(records) {
+  /** @type {string[]} */
+  let files = [];
+  try {
+    files = readdirSync(records).filter((file) => file.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  /** @type {WorkerRecord[]} */
+  const found = [];
+  for (const file of files.toSorted()) {
+    try {
+      found.push(/** @type {WorkerRecord} */ (JSON.parse(readFileSync(join(records, file), "utf8"))));
+    } catch (error) {
+      console.error(`held-output: skipping the unreadable record ${join(records, file)}: ${String(error)}`);
+    }
+  }
+  return found;
+}
+
+/** @param {number | null} pid */
+function alive(pid) {
+  if (pid === null) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return /** @type {{ code?: string }} */ (error).code === "EPERM";
+  }
+}
+
+/**
+ * The account the Worker goes to: CLOUDFLARE_ACCOUNT_ID, or else the only account of wrangler's login.
+ * @param {WranglerAt} at
+ */
+async function accountOf(at) {
+  const chosen = process.env["CLOUDFLARE_ACCOUNT_ID"];
+  if (chosen !== undefined && chosen !== "") {
+    return chosen;
+  }
+  const whoami = await runWrangler(at, ["whoami", "--json"]);
+  /** @type {{ id: string }[]} */
+  let accounts = [];
+  try {
+    const json = whoami.stdout.slice(whoami.stdout.indexOf("{"), whoami.stdout.lastIndexOf("}") + 1);
+    accounts = /** @type {{ accounts?: { id: string }[] }} */ (JSON.parse(json)).accounts ?? [];
+  } catch {
+    // Not logged in: no accounts.
+  }
+  const [only] = accounts;
+  if (whoami.code !== 0 || only === undefined || accounts.length > 1) {
+    throw new Error(`wrangler's login offers ${accounts.length} accounts: set CLOUDFLARE_ACCOUNT_ID to the one to use`);
+  }
+  return only.id;
 }
 
 /**
@@ -1482,17 +1683,33 @@ async function runLocal({ dir, config, token, env, wrangler, logFile, signal, lo
  * @param {(target: Target) => Promise<void>} fn
  */
 async function runDeployed(setup, fn) {
-  const { dir, name, config, token, logFile, signal, log } = setup;
-  // Whether the deploy ran to its end; one that did not may still land after its command ended.
-  let settled = false;
+  const { dir, name, config, token, records, logFile, signal, log } = setup;
+  const accountId = await accountOf({ cwd: dir, env: setup.env, wrangler: setup.wrangler });
+  /** @type {WorkerRecord} */
+  const record = {
+    name,
+    accountId,
+    startedAt: Date.now(),
+    driverPid: process.pid,
+    deployPid: null,
+    deployEndedAt: null,
+    dir,
+  };
+  // Written before the deploy starts, so that however the driver ends, the record finds the Worker again.
+  saveRecord(records, record);
   try {
-    log(`deploying ${name}`);
+    log(`deploying ${name} (its record: ${join(records, `${name}.json`)})`);
     const secrets = join(dir, "secrets.json");
-    const deploy = await runWrangler(setup, ["deploy", "--config", config, "--secrets-file", secrets]);
+    const at = { cwd: dir, env: { ...setup.env, CLOUDFLARE_ACCOUNT_ID: accountId }, wrangler: setup.wrangler };
+    const deploy = await runWrangler(at, ["deploy", "--config", config, "--secrets-file", secrets], (pid) => {
+      record.deployPid = pid;
+      updateRecord(records, record);
+    });
+    record.deployEndedAt = Date.now();
+    updateRecord(records, record);
     rmSync(secrets, { force: true });
-    writeFileSync(logFile, masked(deploy.output));
-    settled = deploy.code === 0;
-    if (!settled) {
+    keep(logFile, deploy.output);
+    if (deploy.code !== 0) {
       // Its output stays in the masked log: an error carrying it would print it unmasked.
       throw new Error(`${name}: wrangler deploy exited with ${deploy.code ?? "an error"} (${logFile})`);
     }
@@ -1507,37 +1724,126 @@ async function runDeployed(setup, fn) {
     log(`${name}: ${url}`);
     await fn(target);
   } finally {
-    await removeWorker(setup, settled);
+    await removeWorker(record, { wrangler: setup.wrangler, cleanup: setup.cleanup, records, logFile });
   }
 }
 
 /**
- * Deletes the Worker and confirms that it is gone, retrying both; prints the command to delete it by hand when that
- * cannot be confirmed. After a deploy that did not run to its end, it first waits for that deploy to land.
- * @param {Setup} setup
- * @param {boolean} settled
+ * Deletes the record's Worker and confirms it gone: the API says it does not exist, at least `landingMs` after its
+ * deploy ended (a deploy still running is waited for first, up to `landingMs`). Only then is the record removed; when
+ * that cannot be confirmed, the record stays and the cleanup command is printed. No write here (a log, the record)
+ * stops it by failing. Returns whether the Worker was confirmed gone.
+ * @param {WorkerRecord} record
+ * @param {{ wrangler: string, cleanup: typeof CLEANUP, records: string, logFile: string | null }} options
  */
-async function removeWorker(setup, settled) {
-  const { name, config, cleanup, logFile, log } = setup;
-  if (!settled) {
-    log(`${name}: waiting ${cleanup.settleMs / 1000} s for a deploy that did not finish to land`);
-    await delay(cleanup.settleMs);
-  }
-  for (let attempt = 1; attempt <= cleanup.attempts; attempt += 1) {
-    log(`deleting ${name}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
-    const deleted = await runWrangler(setup, ["delete", "--config", config, "--force"]);
-    // Gone once the API says the Worker does not exist (its code 10007); any other answer leaves it in doubt.
-    const status = await runWrangler(setup, ["deployments", "status", "--config", config, "--json"]);
-    appendFileSync(logFile, masked(`${deleted.output}${status.output}`));
-    if (status.code !== 0 && status.output.includes("[code: 10007]")) {
-      log(`${name}: deleted`);
-      return;
+async function removeWorker(record, { wrangler, cleanup, records, logFile }) {
+  const { name } = record;
+  const confirmed = await confirmGone(record, { wrangler, cleanup, records, logFile }).catch(
+    (/** @type {unknown} */ error) => {
+      console.error(`held-output: removing ${name} failed: ${masked(String(error))}`);
+      return false;
+    },
+  );
+  if (confirmed) {
+    try {
+      rmSync(join(records, `${name}.json`), { force: true });
+      syncDirectory(records);
+    } catch (error) {
+      console.error(`held-output: ${name} is gone, but its record could not be removed: ${String(error)}`);
     }
-    if (attempt < cleanup.attempts) {
+    log(`${name}: deleted`);
+  } else {
+    console.error(
+      `held-output: ${name} is not confirmed gone; its record stays in ${records}; run: ${CLEANUP_COMMAND}`,
+    );
+  }
+  return confirmed;
+}
+
+/**
+ * @param {WorkerRecord} record
+ * @param {{ wrangler: string, cleanup: typeof CLEANUP, records: string, logFile: string | null }} options
+ */
+async function confirmGone(record, { wrangler, cleanup, records, logFile }) {
+  const { name } = record;
+  if (record.deployEndedAt === null) {
+    // The driver ended before its deploy did, or before the deploy started.
+    const until = Date.now() + cleanup.landingMs;
+    while (alive(record.deployPid) && Date.now() < until) {
+      log(`${name}: its deploy (pid ${record.deployPid}) still runs`);
       await delay(cleanup.retryMs);
     }
+    record.deployEndedAt = Date.now();
+    updateRecord(records, record);
   }
-  console.error(`held-output: ${name} may remain; delete it with: pnpm exec wrangler delete ${name} --force`);
+  // wrangler runs from an empty directory and names the Worker, so no configuration but the record's account applies.
+  const dir = mkdtempSync(join(tmpdir(), "kopje-bench-held-cleanup-"));
+  try {
+    /** @type {WranglerAt} */
+    const at = { cwd: dir, env: wranglerEnv(dir, record.accountId), wrangler };
+    let attempt = 1;
+    while (attempt <= cleanup.attempts) {
+      log(`deleting ${name}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
+      const deleted = await runWrangler(at, ["delete", name, "--force"]);
+      const status = await runWrangler(at, ["deployments", "status", "--name", name, "--json"]);
+      keep(logFile, `${deleted.output}${status.output}`);
+      if (status.code !== 0 && status.output.includes("[code: 10007]")) {
+        const wait = record.deployEndedAt + cleanup.landingMs - Date.now();
+        if (wait <= 0) {
+          return true;
+        }
+        // Gone for now; a deploy that ended less than `landingMs` ago may still land, so it is asked again after.
+        log(`${name}: gone; confirming again in ${Math.ceil(wait / 1000)} s, once its deploy can no longer land`);
+        await delay(wait);
+        continue;
+      }
+      log(`${name}: not gone yet: ${masked(status.output.trim().split("\n").at(-1) ?? "")}`);
+      attempt += 1;
+      if (attempt <= cleanup.attempts) {
+        await delay(cleanup.retryMs);
+      }
+    }
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `cleanup`: deletes the Worker of every record left behind and confirms each gone, and removes the temporary
+ * directory its driver left. A record whose driver still runs is left to that driver.
+ * @param {Overrides} overrides
+ */
+async function cleanupCommand(overrides) {
+  const records = overrides.records ?? RECORDS;
+  const found = loadRecords(records);
+  log(`${found.length} records in ${records}`);
+  /** @type {string[]} */
+  const left = [];
+  for (const record of found) {
+    if (record.driverPid !== process.pid && alive(record.driverPid)) {
+      log(`${record.name}: its driver (pid ${record.driverPid}) still runs, and removes it itself`);
+      left.push(record.name);
+      continue;
+    }
+    const options = {
+      wrangler: overrides.wrangler ?? WRANGLER,
+      cleanup: overrides.cleanup ?? CLEANUP,
+      records,
+      logFile: null,
+    };
+    if (!(await removeWorker(record, options))) {
+      left.push(record.name);
+    }
+    try {
+      rmSync(record.dir, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`held-output: could not remove ${record.dir}: ${String(error)}`);
+    }
+  }
+  if (left.length > 0) {
+    throw new Error(`not confirmed gone: ${left.join(", ")}; their records stay in ${records}`);
+  }
 }
 
 /**
@@ -1545,8 +1851,9 @@ async function removeWorker(setup, settled) {
  * @param {Overrides} overrides
  */
 async function main(argv, overrides) {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: argv,
+    allowPositionals: true,
     options: {
       local: { type: "boolean", default: false },
       runs: { type: "string" },
@@ -1554,6 +1861,13 @@ async function main(argv, overrides) {
       quick: { type: "boolean", default: false },
     },
   });
+  if (positionals[0] === "cleanup" && positionals.length === 1) {
+    await cleanupCommand(overrides);
+    return;
+  }
+  if (positionals.length > 0) {
+    throw new Error(`unknown command: ${positionals.join(" ")} (known: cleanup)`);
+  }
   const local = values.local;
   const known = /** @type {Measurement[]} */ (Object.keys(MEASUREMENTS));
   const runs = /** @type {Measurement[]} */ (
@@ -1568,16 +1882,16 @@ async function main(argv, overrides) {
   mkdirSync(out, { recursive: true });
   const observations = join(out, "observations.jsonl");
   const stream = createWriteStream(observations, { flags: "a" });
-  /** @param {string} line */
-  const log = (line) => console.log(`held-output: ${line}`);
-  // A terminal gone (SIGHUP) makes every later write fail: that must not stop the removal of what was started.
-  process.stdout.on("error", () => {});
-  process.stderr.on("error", () => {});
+  if (!local) {
+    const left = loadRecords(overrides.records ?? RECORDS).filter((r) => !alive(r.driverPid));
+    if (left.length > 0) {
+      log(`${left.length} Workers of earlier runs await removal: ${CLEANUP_COMMAND}`);
+    }
+  }
   // Every way the process is asked to stop takes one path: the abort ends each run's waits and sockets, and each
   // Worker is deleted (or wrangler dev stopped) before the process exits. A further signal while that runs is ignored,
   // and wrangler runs in a process group of its own, so neither a deploy nor a delete is cut short; an uncaught error
-  // takes the same path. Only SIGKILL skips it: the delete command for each Worker is then
-  // `pnpm exec wrangler delete <name> --force`, the name printed when it was deployed.
+  // takes the same path. Only SIGKILL skips it, and the record of each deployed Worker then stays for `cleanup`.
   const controller = new AbortController();
   /**
    * @param {string} why
@@ -1652,11 +1966,15 @@ async function main(argv, overrides) {
 }
 
 /**
- * The command: runs the measurements, and on a failure prints it with every token masked and exits with 1.
+ * The command: runs the measurements (or `cleanup`), and on a failure prints it with every token masked and exits
+ * with 1.
  * @param {string[]} argv
  * @param {Overrides} [overrides]
  */
 export async function cli(argv, overrides = {}) {
+  // A terminal gone (SIGHUP) makes every later write fail: that must not stop the removal of what was started.
+  process.stdout.on("error", () => {});
+  process.stderr.on("error", () => {});
   try {
     await main(argv, overrides);
   } catch (error) {
