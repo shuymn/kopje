@@ -1385,6 +1385,12 @@ Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::Ver
   flight, or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its
   own, and the wait runs out as it was; Mastodon verifies the quote at each `Update`
   (`process_status_update_service.rb:60`, `:348`) and has no deferred work to interrupt. Accepted, 2026-11-16.
+- When a remote post that quotes a local post with an approval is edited to quote another post, Kopje retires the
+  approval (it never verifies again) but sends no `Delete` of it, where Mastodon 4.7.5 sends one to the servers both
+  posts reach (`RevokeQuoteService`, run by `ProcessStatusUpdateService#update_quote!`,
+  `process_status_update_service.rb:362`). Neither Mastodon nor Kopje edits a quote's target, and servers that receive
+  the edit drop the old quote themselves. When software that sends such an edit appears, Kopje sends the `Delete` as
+  Mastodon does. Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):
