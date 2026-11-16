@@ -306,11 +306,9 @@ function movedOf(db: Db, rows: readonly AccountRow[]): ReadonlyMap<string, Moved
   );
 }
 
-// What a chunk of accounts shows besides its rows, read once for the chunk: the moved-to accounts (movedOf), and the
-// cached profile images of the accounts and their targets (remote-media.ts cachedImagesOf, one seek a slot, outside
-// the row heap).
-// What a chunk's accounts are presented with: the accounts they moved to, the cached images and the viewer's
-// feature_approval answers of both.
+// What a chunk of accounts shows besides its rows, read once for the chunk: the moved-to accounts (movedOf), and of
+// the accounts and their targets the cached profile images (remote-media.ts cachedImagesOf, one seek a slot, outside
+// the row heap) and the viewer's feature_approval answers (featureApprovalReads, one statement).
 type Related = {
   moved: ReadonlyMap<string, MovedRow>;
   cached: CachedImages;
@@ -320,7 +318,7 @@ type Related = {
 function relatedOf(db: Db, rows: readonly AccountRow[], viewerId: string | null): Related {
   const moved = movedOf(db, rows);
   const ids = [...rows.map((row) => row.id), ...moved.keys()];
-  return { moved, cached: cachedImagesOf(db, ids), approvals: featureApprovalReads(viewerId).of(db, ids) };
+  return { moved, cached: cachedImagesOf(db, ids), approvals: featureApprovalReads(db, ids, viewerId) };
 }
 
 export { DISPLAY_NAME_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT };

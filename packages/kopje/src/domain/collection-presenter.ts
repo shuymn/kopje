@@ -59,7 +59,7 @@ export type CollectionRow = {
 export const COLLECTION_COLUMNS = `c.id, c.account_id, ${usernameSql("a.username")} AS username, c.local, c.name, c.description, c.language, c.sensitive,
 	c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
 
-export type ItemRow = {
+type ItemRow = {
   collection_id: string;
   id: string;
   state: number;

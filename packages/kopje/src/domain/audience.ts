@@ -1339,27 +1339,23 @@ export const FEATURE_APPROVAL_COLUMNS = fixedColumns(
   { id: 18, current_user: 9 },
 );
 
-// The answers of featureApprovalSql to one viewer (null: none signed in, every answer 'denied' without a read).
-export type FeatureApprovalReads = {
-  // One row per account, in no order: one statement, the accounts by their key.
-  of(db: Db, accountIds: readonly string[]): Map<string, FeatureApproval>;
-};
-
-export function featureApprovalReads(viewerId: string | null): FeatureApprovalReads {
-  return {
-    of(db, accountIds) {
-      if (viewerId === null || accountIds.length === 0) {
-        return new Map();
-      }
-      const rows = db.all<{ id: string; current_user: FeatureApproval }>(
-        `SELECT ${selectSql(FEATURE_APPROVAL_COLUMNS.columns)} FROM main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+// The answers of featureApprovalSql to the viewer for the accounts (null: none signed in, every answer 'denied' without
+// a read): one row per account, in no order, in one statement, the accounts by their key.
+export function featureApprovalReads(
+  db: Db,
+  accountIds: readonly string[],
+  viewerId: string | null,
+): Map<string, FeatureApproval> {
+  if (viewerId === null || accountIds.length === 0) {
+    return new Map();
+  }
+  const rows = db.all<{ id: string; current_user: FeatureApproval }>(
+    `SELECT ${selectSql(FEATURE_APPROVAL_COLUMNS.columns)} FROM main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 				WHERE a.id IN (SELECT value FROM json_each(?1))`,
-        JSON.stringify(accountIds),
-        viewerId,
-      );
-      return new Map(rows.map((row) => [row.id, row.current_user]));
-    },
-  };
+    JSON.stringify(accountIds),
+    viewerId,
+  );
+  return new Map(rows.map((row) => [row.id, row.current_user]));
 }
 
 // R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the answer
