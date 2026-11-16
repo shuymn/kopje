@@ -3217,10 +3217,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
   compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
   _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
-  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  (RES-2, stored values) and are read as stored, but the content warning, read through a cut of 16,382 stored bytes
+  (`spoilerReadSql`, which cuts no value a writer stores): content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
-  warning and choices the same. Columns that keep a read-time projection are read through their helper in
+  warning and choices the same. An import may still hold malformed UTF-8 that passes the triggers' counts and decodes
+  past them (0xFF and any number of continuation bytes is one character to the warning's `substr`; `json_quote`
+  counts a malformed byte as one, and it decodes to a U+FFFD of three bytes), so content, source text and the warning
+  are bounded again after decoding: `''` past 128 KiB of JSON (`presentedContent`) and the warning cut to 2,730 code
+  points past 16 KiB (`presentedSpoiler`), in every presented status, edit version, `/source` answer and Note
+  (`test/status-text-bounds.test.ts`). Columns that keep a read-time projection are read through their helper in
   `src/domain/status-bounds.ts` (accounts and actor ids through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes
   reads as ''; at most 4 attachments per status; at most 200 mentions and 70 hashtags (of the 100 stored) per status,
   the first by account id and by name; at most 100 poll choices of 1,000 code points; each edit-history snapshot's first
@@ -4421,7 +4427,12 @@ decoded values in UTF-8, which triples such a byte: it is checked in each unit o
 and 65,534 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of
 the row and that within the raw fill's, and presenting within the escaped fill's account occurrence
 (`test/status-bounds.test.ts`
-("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
+("an account of malformed imported text")). A status whose content and source text (0xFF and 131,069 continuation
+bytes) and warning (0xFF and 1,048,575) are malformed, and an edit of it, are checked the same way: they read the raw
+fill's 131,070 bytes of content and source text and 16,382 of the warning, hold a decoded row within `rowHeapSql` of
+the row and that within the raw fill's, and present within the escaped fill's occurrence of each shape
+(`test/status-bounds.test.ts` ("a status of malformed imported text")).
+A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
