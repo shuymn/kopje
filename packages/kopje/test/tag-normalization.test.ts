@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { isHashtagName } from "../src/domain/status-text";
 import { hashtagObjectName, normalizeOnce, normalizeTag } from "../src/domain/tag-name";
+import { parseRemoteStatus } from "../src/federation/remote-status";
 import { bearer, sql } from "./api-helpers";
 import { mastodonActor, MASTODON } from "./inbox-helpers";
 import { create, followed, mastodonNote, setup, statusRow } from "./inbox-status-helpers";
@@ -243,6 +244,19 @@ describe("one hashtag for the spellings Mastodon takes as one", () => {
     expect(await t.post(bob, create(bob, note))).toBe(202);
     const row = (await statusRow(t.store, note.id))!;
     expect(await sql(t.store, "SELECT name FROM status_tags WHERE status_id = ?", row.id)).toEqual([{ name: "cafe" }]);
+  });
+
+  it("takes a received Hashtag holding each separator Mastodon allows (U+00B7, U+30FB, U+200C)", () => {
+    const tags = (name: string) =>
+      parseRemoteStatus({
+        id: "https://mastodon.example/statuses/1",
+        type: "Note",
+        content: "",
+        tag: [{ type: "Hashtag", name }],
+      })?.tags;
+    for (const separator of ["\u00B7", "\u30FB", "\u200C"]) {
+      expect(tags(`#a${separator}b`)).toEqual([`a${separator}b`]);
+    }
   });
 
   it("takes a hashtag in status text that normalizes to nothing as text, and a name of one as not found", async () => {
