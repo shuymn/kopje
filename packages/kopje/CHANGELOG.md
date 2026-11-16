@@ -314,6 +314,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - A stamp's revocation reads a bounded number of the quotes naming it to find the one it approved. No Store migration
   and no `wrangler.jsonc` change.
+- An `Update` of a remote quote post that changes only its legacy quote form, or names a stamp for a quote that needs
+  none (a quote of a local post, as Mastodon keeps it, or a self-quote,
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification), no longer sets the accepted quote
+  back to pending. No Store migration and no `wrangler.jsonc` change.
+- A remote quote post that arrives again (an `Update`, a boost, a search) while its pending quote is being verified no
+  longer discards that verification, nor cuts short its wait after a failure that may pass; a fetch refused under the
+  key the verification no longer uses, or a stamp gone to it, is retried with the current one rather than rejecting
+  the quote. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

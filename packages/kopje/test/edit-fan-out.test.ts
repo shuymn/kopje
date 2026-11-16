@@ -333,12 +333,12 @@ describe("an implicit Update's update fan-out (a changed approval stamp)", () =>
     expect(await rowsOf(t, "update")).toEqual([]);
   });
 
-  it("notifies no one for a legacy form alone, though it writes the quote back", async () => {
+  it("notifies no one for a legacy form alone, and keeps the quote accepted", async () => {
     const { t, bob, statusId, implicit } = await world(true);
     // The same stamp, the quote named by _misskey_quote and quoteUri only (a legacy form).
     expect(await t.post(bob, implicit({ quote: undefined }))).toBe(202);
     expect(await sql(t.store, "SELECT legacy, state FROM quotes WHERE status_id = ?", statusId)).toEqual([
-      { legacy: 1, state: "pending" },
+      { legacy: 0, state: "accepted" },
     ]);
     expect(await rowsOf(t, "mention")).toEqual([]);
     expect(await rowsOf(t, "update")).toEqual([]);
