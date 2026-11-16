@@ -1,4 +1,4 @@
-import { accepted, type Exceptions, open } from "./mastodon-conformance.js";
+import { accepted, type Exceptions } from "./mastodon-conformance.js";
 
 // The request parameters Mastodon reads and Kopje does not, by route (test/mastodon-params.test.ts). Each is a real
 // gap: tracked by an issue (open) or a decided deviation of docs/mastodon-deviations.md (accepted). A harness
@@ -32,9 +32,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   // Mastodon reads local and remote only to decide whether the link timeline needs a user
   // (TopicController#require_auth?), which it never does while topic feeds are public, Kopje's only setting (MD-5).
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
-
-  // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
-  "POST /api/v1/reports": open(1589, "collections", "collection_ids[]"),
 
   // Admin features not served.
   "POST /api/v1/admin/dimensions": NOT_SERVED("end_at", "keys[]", "limit", "start_at"),

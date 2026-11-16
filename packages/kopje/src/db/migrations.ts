@@ -99,6 +99,9 @@ import m0098 from "../../migrations/0098_card_attribution.sql";
 import m0099 from "../../migrations/0099_reply_walks.sql";
 import m0100 from "../../migrations/0100_poll_refresh.sql";
 import m0101 from "../../migrations/0101_pin_refresh.sql";
+import m0102 from "../../migrations/0102_quote_state_stream.sql";
+import m0103 from "../../migrations/0103_collections.sql";
+import m0104 from "../../migrations/0104_quote_broadcast.sql";
 import m0105 from "../../migrations/0105_media_description_bytes.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
@@ -207,5 +210,8 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0099_reply_walks", sql: m0099 },
   { name: "0100_poll_refresh", sql: m0100, foreignKeys: "unchanged" },
   { name: "0101_pin_refresh", sql: m0101, foreignKeys: "unchanged" },
+  { name: "0102_quote_state_stream", sql: m0102, foreignKeys: "unchanged" },
+  { name: "0103_collections", sql: m0103 },
+  { name: "0104_quote_broadcast", sql: m0104, foreignKeys: "unchanged" },
   { name: "0105_media_description_bytes", sql: m0105, foreignKeys: "unchanged" },
 ];

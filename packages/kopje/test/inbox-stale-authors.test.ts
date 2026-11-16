@@ -74,6 +74,17 @@ describe("a stale author of a fetched original (VIS-6, NET-4; Mastodon possibly_
     expect(home.body.find((s) => s.reblog?.uri === note2.id)?.reblog?.account.avatar).toBe(avatar(erin, 2));
   });
 
+  it("stores a refetched author whose icon is a Document, without an avatar (#1672)", async () => {
+    const { t, bob, erin } = await staleAuthorWorld();
+    const icon = { type: "Document", mediaType: "image/png", url: avatar(erin, 2) };
+    await mastodonActor(t.web, "erin", { origin: OTHER, key: 3, extra: { icon } });
+    const note2 = served(t, erin);
+    expect(await t.post(bob, announce(bob, note2.id))).toBe(202);
+    expect(t.web.fetched).toEqual([note2.id, erin.uri]);
+    expect(await author(t, erin.uri)).toMatchObject({ avatar_url: null, fetched_at: iso(NOW) });
+    expect(await boosted(t, note2.id)).toBe(true);
+  });
+
   it("uses an author fetched less than a day ago as it is", async () => {
     const { t, bob, erin } = await staleAuthorWorld();
     await ageAccount(t, erin.uri, iso(NOW - ACCOUNT_STALE_MS + 1));

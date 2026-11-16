@@ -27,6 +27,7 @@ import {
   type Visibility,
 } from "./audience";
 import { userWriteOperation } from "./auth";
+import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
@@ -51,11 +52,13 @@ import {
   followersUri,
   type StoredStatus,
 } from "./remote-status-reads";
+import { recordCreateWalk } from "./reply-walk-create";
 import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, writeTags } from "./statuses";
+import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
@@ -94,6 +97,12 @@ export type StoreContext = {
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
+  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk), its walk queued at the
+  // Store's own time (atStoreTime): set only by the paths that store what was delivered or what a user asked for (an
+  // inbound Create or Update, an Announce's original, an Add's status, a QuoteRequest's quoting status, a search or
+  // interaction resolution), never by a walk, quote verification or a collection sync, so nothing a walk causes starts
+  // another.
+  readReplies?: { storeNow: number };
 };
 
 // The context of a path that may update a stored status (updateRemoteStatus): also the Store's own time, which an
@@ -124,31 +133,44 @@ function versionOf(value: string | null, now: number): number {
 }
 
 // StatusParser#quote_policy (Status::InteractionPolicyConcern's flags, audience.ts QUOTE_POLICY_FLAGS) of a remote
-// status by `author`: each half's flags from the URIs it lists: the public collection, the author's followers and
-// following collections (as its stored actor document names them), the author itself (which means nobody, so it adds
-// nothing), and anything else unsupported_policy; automatic in the high 16 bits. A Note that states no policy is 0,
-// nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it (explicit or implicit),
-// never from a Create of a status already stored, so a replayed Create cannot bring an older policy back
-// (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a local user
-// may ask (R36); the quoted author's answer decides the quote.
+// status by `author`: each half's flags from the entries it lists, read in Mastodon's order (quote_subpolicy,
+// status_parser.rb:179-196, which deletes each match before the next): the public collection, the author's followers
+// collection, then its following collection (as its stored actor document names them: '' when it names none, as
+// Mastodon stores it, which a listed "" matches), the author itself (which means nobody, so it adds nothing), and
+// anything else, a value that is not a string among them, unsupported_policy; automatic in the high 16 bits. A Note
+// that states no policy is 0, nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it
+// (explicit or implicit), never from a Create of a status already stored, so a replayed Create cannot bring an older
+// policy back (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a
+// local user may ask (R36); the quoted author's answer decides the quote.
 function remoteQuotePolicy(db: Db, author: Author, policy: RemoteQuotePolicyInput | null | undefined): number {
   if (policy === null || policy === undefined) {
     return 0;
   }
-  const collections = db.first<{ followers: string | null; following: string | null }>(
-    `SELECT CASE WHEN json_type(raw, '$.followers') = 'text' THEN json_extract(raw, '$.followers') END AS followers,
-			CASE WHEN json_type(raw, '$.following') = 'text' THEN json_extract(raw, '$.following') END AS following
+  const row = db.first<{ followers: string | null; following: string | null }>(
+    `SELECT ${collectionSql("raw", "followers")} AS followers, ${collectionSql("raw", "following")} AS following
 		FROM accounts WHERE id = ?`,
     author.id,
   );
-  const flags = (entries: readonly string[]): number => {
+  const followers = collectionRead(row?.followers ?? null);
+  const following = collectionRead(row?.following ?? null);
+  // A string past an unreadable collection (collection-requests.ts storedCollectionUri) adds nothing: Mastodon may
+  // store that collection as the very string, and then reads the entry as it, before any later match, so neither a
+  // later collection's flag nor unsupported_policy (which lets anyone ask) is known to be Mastodon's. Adding nothing
+  // grants no one more than Mastodon does. A value that is not a string matches no collection.
+  const flags = (entries: readonly (string | null)[]): number => {
     let half = 0;
     for (const entry of new Set(entries)) {
-      if (isPublicCollection(entry)) {
+      if (entry === null) {
+        half |= QUOTE_POLICY_FLAGS.unsupported_policy;
+      } else if (isPublicCollection(entry)) {
         half |= QUOTE_POLICY_FLAGS.public;
-      } else if (entry === collections?.followers) {
+      } else if (followers === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === followers) {
         half |= QUOTE_POLICY_FLAGS.followers;
-      } else if (entry === collections?.following) {
+      } else if (following === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === following) {
         half |= QUOTE_POLICY_FLAGS.following;
       } else if (entry !== author.uri) {
         half |= QUOTE_POLICY_FLAGS.unsupported_policy;
@@ -488,6 +510,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       now: ctx.now,
     });
   }
+  if (ctx.readReplies !== undefined) {
+    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.readReplies.storeNow);
+  }
   return { applied: true, reason: "created", statusId: id };
 }
 
@@ -699,9 +724,16 @@ export function updateRemoteStatus(
   if (Number.isNaN(version) || version === stored) {
     // ProcessStatusUpdateService#handle_implicit_update!: an Update that names the stored version, or none for a status
     // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
-    // refreshes the counts, the end and the voters of its poll, and verifies a changed stamp of the same quote again;
-    // the quoted status itself changes only with a newer version.
-    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    // refreshes the counts, the end and the voters of its poll, and verifies the same quote again (refreshQuote); the
+    // quoted status itself changes only with a newer version.
+    const reset = refreshQuote(
+      db,
+      { id: existing.id, uri, author },
+      input.quote,
+      { ...arrival, broadcast: true, version: "same" },
+      ctx,
+      storeRemoteStatus,
+    );
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -713,9 +745,10 @@ export function updateRemoteStatus(
       markPollFetched(db, existing.id, poll, ctx.storeNow);
     }
     const pollUpdated = poll === "written";
-    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
-    // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
-    if (restamped) {
+    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): the reset of an accepted quote, at
+    // once; a move its verification makes notifies at that work's decision (quotes.ts finish). Not a legacy form
+    // alone, the same stamp, the poll or the quote policy.
+    if (reset) {
       notifyEdited(db, existing.id, author.id, ctx.now);
     }
     return pollUpdated
@@ -775,7 +808,14 @@ export function updateRemoteStatus(
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(
+    db,
+    { id: existing.id, uri, author },
+    input.quote,
+    { ...arrival, version: "newer" },
+    ctx,
+    storeRemoteStatus,
+  );
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
     // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither
@@ -986,7 +1026,8 @@ export function firstRequestOf(target: FetchTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext).
+// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext) and which queues the
+// create walk of a status the resolution stores.
 export type ResolveInput = {
   query: string;
   resolved: Resolved;
@@ -1090,6 +1131,7 @@ export function storeResolved(
         origin,
         deliveredTo: null,
         fetched: true,
+        readReplies: { storeNow },
       });
       return {
         kind: "status",

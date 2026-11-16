@@ -15,6 +15,7 @@ import { blockActivity, blockUri, followAnswerActivity, recordOutbound, undoBloc
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { activeMuteSql, inDomainSql } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
+import { severCollections } from "./collections";
 import { leaveConversationsWith } from "./conversations";
 import { DOMAIN_BLOCK_CLEANUPS, nextJob, runJobItem } from "./job-attempts";
 import { END_FOLLOW_NOTIFICATIONS_SQL } from "./notifications";
@@ -164,6 +165,7 @@ export const block = userWriteOperation<RelationInput, RelationshipResult>((db, 
     // BlockService#call: a permission given to the account by accepting its request goes too, so after an unblock its
     // notifications meet the policy again.
     db.run("DELETE FROM notification_permissions WHERE account_id = ? AND from_account_id = ?", viewer.id, target.id);
+    severCollections(db, viewer.id, target.id, input.now);
     const edge = db.first<{ id: string }>(
       `INSERT INTO blocks (account_id, target_account_id, created_at) VALUES (?, ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,

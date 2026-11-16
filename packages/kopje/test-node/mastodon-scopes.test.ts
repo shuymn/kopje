@@ -40,6 +40,7 @@ type Entry = {
   unresolved?: string[];
   params?: { names: string[]; unresolved: string[] };
   cache?: { public: string | null; vary: string | null; unresolved?: string[] };
+  deprecation?: { date: string | null; unresolved?: string[] };
 };
 
 const route = (path: string, method = "GET") =>
@@ -1329,5 +1330,81 @@ describe("mastodon-scopes.mjs entity fields", () => {
   ])("leaves a subclass that resets only one of its superclass's tables unresolved: %s", async (reset, reason) => {
     await checkout(partial([reset]));
     expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({ fields: own, unresolved: [reason] });
+  });
+});
+
+// The deprecate_api that marks a route's answers with Deprecation (test/mastodon-access.test.ts).
+describe("mastodon-scopes.mjs deprecations", () => {
+  const routes = (actions: string) =>
+    `namespace :api do\n  namespace :v1 do\n    resources :things, only: [${actions}]\n  end\nend\n`;
+  const file = "app/controllers/api/v1/things_controller.rb";
+  const deprecation = (path: string, method = "GET") => route(path, method)?.deprecation;
+
+  it("reads the date per action, the last that applies along the chain winning", async () => {
+    await checkout({
+      "config/routes/api.rb": routes(":index, :show, :create, :destroy"),
+      "app/controllers/api/v1/parents_controller.rb": [
+        "class Api::V1::ParentsController < Api::BaseController",
+        "  include DeprecationConcern",
+        "",
+        "  deprecate_api '2020-01-01', except: :destroy",
+        "end",
+        "",
+      ].join("\n"),
+      [file]: [
+        "class Api::V1::ThingsController < Api::V1::ParentsController",
+        "  deprecate_api '2021-05-16', only: [:index]",
+        "  deprecate_api '2022-11-14', only: :create",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(deprecation("/api/v1/things")).toEqual({ date: "2021-05-16" });
+    expect(deprecation("/api/v1/things/:id")).toEqual({ date: "2020-01-01" });
+    expect(deprecation("/api/v1/things", "POST")).toEqual({ date: "2022-11-14" });
+    expect(deprecation("/api/v1/things/:id", "DELETE")).toEqual({ date: null });
+  });
+
+  it("leaves a condition, a sunset, a computed date, a block and an unreadable only: unresolved", async () => {
+    await checkout({
+      "config/routes/api.rb": routes(":index, :show, :create, :update, :destroy"),
+      [file]: [
+        "class Api::V1::ThingsController < Api::BaseController",
+        "  deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/things' }",
+        "  deprecate_api '2026-06-10', only: :show, unless: :alpha_path?",
+        "  deprecate_api '2022-11-14', sunset: '2027-01-01', only: :create",
+        "  deprecate_api DEPRECATED_ON, only: :update",
+        "  deprecate_api '2022-11-14', only: ACTIONS",
+        "  if Rails.env.production?",
+        "    deprecate_api '2022-11-14', only: :destroy",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    const unreadable = "unreadable only:/except: in `deprecate_api '2022-11-14', only: ACTIONS`";
+    expect(deprecation("/api/v1/things")).toEqual({
+      date: null,
+      unresolved: [
+        unreadable,
+        `${file}: \`deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/things' }\``,
+      ],
+    });
+    expect(deprecation("/api/v1/things/:id")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2026-06-10', only: :show, unless: :alpha_path?\``],
+    });
+    expect(deprecation("/api/v1/things", "POST")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2022-11-14', sunset: '2027-01-01', only: :create\``],
+    });
+    expect(deprecation("/api/v1/things/:id", "PATCH")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api DEPRECATED_ON, only: :update\``],
+    });
+    expect(deprecation("/api/v1/things/:id", "DELETE")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2022-11-14', only: :destroy\``],
+    });
   });
 });

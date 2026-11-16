@@ -2,7 +2,7 @@ import { jsx } from "hono/jsx";
 import { describe, expect, it } from "vitest";
 
 import { itemBytes, jsonBytes } from "../src/domain/answer-budget";
-import { MAX_STATUS_MEDIA } from "../src/domain/status-bounds";
+import { MAX_STATUS_MEDIA, MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_STATUS_EDITS, type StatusEdit } from "../src/domain/statuses";
 import { altCopyBytes, WEB_PAGE_BYTES } from "../src/domain/web-pages/budget";
 import { PROFILE_PAGE_SIZE } from "../src/domain/web-pages/profile";
@@ -11,6 +11,9 @@ import { TAG_PAGE_SIZE } from "../src/domain/web-pages/tags";
 import {
   ACCOUNT_EMOJIS_BYTES,
   BIO_JSON_BYTES,
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_MAX_ITEMS,
+  COLLECTION_NAME_LENGTH,
   CONTENT_JSON_BYTES,
   DISPLAY_NAME_LIMIT,
   EMOJI_ENTRY_BYTES,
@@ -29,7 +32,7 @@ import {
 import { SPOILER_BYTES, STATUS_CONTENT_BYTES } from "../src/security/html";
 import { InteractionResultPage } from "../src/web/pages/interaction";
 import { EMOJI_FIELD_IMAGES, EMOJI_PAGE_BYTES, EMOJI_PAGE_IMAGES, emojiHtml } from "../src/web/view/emoji";
-import { sql } from "./api-helpers";
+import { seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
 import { BUILD } from "./helpers";
@@ -851,3 +854,60 @@ async function maximalStatusHead(h: Harness, alice: string, head: "short" | "cap
   );
   return id;
 }
+
+// A local collection's page (W-T6): the owner and COLLECTION_MAX_ITEMS accepted members, each at its page maxima, a
+// name and a description of ampersands at their bounds and a hashtag of MAX_TAG_LENGTH four-byte characters
+// (TAG_NAME_BYTES). The members admitted stop at WEB_PAGE_BYTES, short of all of them; the page has no pager.
+describe("the collection page at the maxima", () => {
+  for (const fill of ["emoji", "escape"] as const) {
+    it(`bound the HTML by its read and the page budget, ${fill} fill`, async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      await maximalAccount(h, alice.id, fill, true);
+      const id = nextId();
+      const at = new Date(NOW).toISOString();
+      await sql(
+        h.store,
+        `INSERT INTO collections (id, account_id, local, name, description, language, tag, sensitive, discoverable,
+					created_at, updated_at)
+				VALUES (?, ?, 1, ?, ?, 'en', ?, 0, 1, ?, ?)`,
+        id,
+        alice.id,
+        "&".repeat(COLLECTION_NAME_LENGTH.local),
+        "&".repeat(COLLECTION_DESCRIPTION_LENGTH.local),
+        "\u{20000}".repeat(MAX_TAG_LENGTH),
+        at,
+        at,
+      );
+      for (let i = 0; i < COLLECTION_MAX_ITEMS; i++) {
+        const member = await seedAccount(h.store, { username: `m${i}` });
+        await maximalAccount(h, member, fill, true);
+        await sql(
+          h.store,
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+					VALUES (?, ?, ?, 1, ?, ?, ?)`,
+          nextId(),
+          id,
+          member,
+          i + 1,
+          at,
+          at,
+        );
+      }
+      const read = await h.store.webCollectionPage(BUILD, { id });
+      if (read.status !== "ok") {
+        throw new Error("a page read failed");
+      }
+      expect(new TextEncoder().encode(read.collection.tag?.name).length).toBe(TAG_NAME_BYTES);
+      expect(read.collection.items).toHaveLength(COLLECTION_MAX_ITEMS);
+      expect(read.accounts.length).toBeGreaterThan(0);
+      expect(read.accounts.length).toBeLessThan(COLLECTION_MAX_ITEMS);
+      const page = await measure(h, `/collections/${id}`, read);
+      console.info(`The collection page at the maxima, ${fill} fill: ${JSON.stringify(page)}`);
+      expect(page.json).toBeLessThanOrEqual(WEB_PAGE_BYTES);
+      expect(page.images).toBeLessThanOrEqual(512);
+      expect(page.perField).toBeLessThanOrEqual(64);
+      expect(page.html).toBeLessThanOrEqual(htmlCeiling(page.json));
+    }, 600_000);
+  }
+});

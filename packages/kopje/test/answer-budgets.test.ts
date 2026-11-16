@@ -560,7 +560,9 @@ describe("composite answers within ANSWER_BYTES (RES-3)", () => {
     // The next status is the first rejected: with it, the accounts and statuses alone pass the budget.
     const items = (list: readonly unknown[]) => list.reduce<number>((sum, item) => sum + jsonBytes(item) + 1, 0);
     const taken =
-      jsonBytes({ accounts: [], statuses: [], hashtags: [] }) + items(found.accounts) + items(found.statuses);
+      jsonBytes({ accounts: [], statuses: [], hashtags: [], collections: [] }) +
+      items(found.accounts) +
+      items(found.statuses);
     expect(taken + (await statusBytes(w, w.V[found.statuses.length]!)) + 1).toBeGreaterThan(ANSWER_BYTES);
     // A resolved account the viewer may not find is not put first.
     expect((await search(blocked)).accounts[0]?.id).toBe(needles[0]);

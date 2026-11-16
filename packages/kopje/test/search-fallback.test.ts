@@ -117,6 +117,13 @@ const failing =
   (code: number): Answer =>
   (t, url) =>
     t.web.fail(url, code);
+// The document as served, under another 2xx status (#1687: taken only from a 200).
+const servedAs =
+  (code: number): Answer =>
+  (t, url) => {
+    const served = t.web.served.get(url);
+    t.web.served.set(url, { status: code, body: served?.body });
+  };
 const held: Answer = (t, url) => t.web.delay(url, HELD_MS);
 const lostConnection: Answer = (t, url) => t.web.fail(url, 0);
 
@@ -137,6 +144,7 @@ describe("the stored status after a failed fetch (S2)", () => {
       { name: "500", answer: failing(500), answered: false, requests: 1 },
       { name: "501", answer: failing(501), answered: false, requests: 1 },
       { name: "503", answer: failing(503), answered: false, requests: 1 },
+      { name: "203 with the note", answer: servedAs(203), answered: false, requests: 1 },
       { name: "a timeout", answer: held, answered: false, requests: 1 },
       { name: "a network error", answer: lostConnection, answered: false, requests: 1 },
       {
@@ -249,6 +257,7 @@ describe("the stored account after a failed fetch (S2)", () => {
       { name: "404", answer: failing(404), answered: false, requests: 1 },
       { name: "429", answer: failing(429), answered: false, requests: 1 },
       { name: "501", answer: failing(501), answered: false, requests: 1 },
+      { name: "203 with the actor's document", answer: servedAs(203), answered: false, requests: 1 },
       {
         name: "an HTML 200",
         answer: (w, url) => w.web.serveRaw(url, PLAIN_PAGE, "text/html"),
@@ -337,6 +346,17 @@ describe("the last answer of a URL's own fetches (S1)", () => {
     t.routes.set(t.bob.uri, () => Response.json(t.bob.document));
     expect(await t.resolve(t.bob.uri)).toEqual({ kind: "none", last: 200 });
     expect((await t.search(t.bob.uri)).accounts).toEqual([]);
+  });
+
+  // #1687: a first request answered 203 with a document of the URL is refused with its status, where the same answer
+  // at 200 resolves the status.
+  it("a 2xx other than 200 counts as its status", async () => {
+    const t = await world();
+    const note = t.note();
+    t.web.served.set(note.id, { status: 203, body: { "@context": AS, ...note } });
+    expect(await t.resolve(note.id)).toEqual({ kind: "none", last: 203 });
+    t.web.serve(note.id, { "@context": AS, ...note });
+    expect(await t.resolve(note.id)).toMatchObject({ kind: "status", status: { uri: note.id } });
   });
 
   it("a refused redirect counts as no answer", async () => {
