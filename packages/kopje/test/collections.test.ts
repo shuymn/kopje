@@ -453,6 +453,17 @@ describe("collections: validation", () => {
       '{"error":"Validation failed: Collection items are too many, no more than 25 are allowed"}',
     ]);
     expect(await count(h, "collection_items")).toBe(25);
+    // A pending item counts as live (an imported one: these routes write none yet): 24 accepted and 1 pending refuse
+    // the add the same way.
+    await sql(
+      h.store,
+      "UPDATE collection_items SET state = 0 WHERE collection_id = ? AND account_id = ?",
+      full.id,
+      ids[0]!,
+    );
+    const pending = await call(h, "POST", `/api/v1/collections/${full.id}/items`, alice.token, { account_id: ids[25] });
+    expect([pending.status, pending.text]).toEqual([add.status, add.text]);
+    expect(await count(h, "collection_items")).toBe(25);
     // Precedence, each against the next: an unknown account before the validations, the tag before consent, consent
     // before the validations.
     await sql(h.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", carol.id);
