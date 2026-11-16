@@ -460,6 +460,17 @@ Accounts (the `Account` and credential account entities):
   an invalidation asks for run at most once per account a day, where Mastodon bounds none, so two actors whose
   WebFinger answers alternate stop taking the handle from each other, the last one invalidated staying so until its
   own document, a search or the next day's invalidation refreshes it.
+- A remote account's shared inbox is read as Mastodon 4.7.5 reads it (`endpoints.sharedInbox` when `endpoints` is an
+  object, else the document's `sharedInbox`; an array's first value, an object's `id`;
+  `process_account_service.rb:225`, `:235-245`) and kept only when it is spelled so that Kopje and Mastodon send to the
+  same URL: lower-case `http` or `https` and `//`, a host of ASCII letters, digits and hyphens whose labels are not
+  empty and whose last label begins with a letter, no userinfo, a port of 1 to 65535, a path of RFC 3986's `pchar`
+  literals and upper-case `%HH` escapes below `%80` that encode no such literal, no dot segment, no query and no
+  fragment (`sharedInboxUri` in `src/federation/remote-actor.ts`). Any other spelling is none and the account's
+  personal inbox is used, where Mastodon delivers to its normalized form (`Addressable::URI#normalize`, `request.rb:97`,
+  `:212-214`): a port `0`, a trailing dot in the host, a backslash, tab or line break in the path, an escape Mastodon
+  decodes or re-cases, a query among them (`test/fixtures/shared-inbox/spellings.json` lists Mastodon's destination
+  for each). Accepted, 2026-11-16.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
   Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and

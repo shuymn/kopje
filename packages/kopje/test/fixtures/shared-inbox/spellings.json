@@ -1,0 +1,702 @@
+{
+  "addressable": "2.9.2",
+  "ruby": "4.0.9",
+  "rows": [
+    {
+      "value": "https://peer.example:0/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:00/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:65536/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example:65536/inbox",
+        "destination": "https://peer.example:65536/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:99999/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example:99999/inbox",
+        "destination": "https://peer.example:99999/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:8443/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example:8443/inbox",
+        "destination": "https://peer.example:8443/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:080/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example:80/inbox",
+        "destination": "https://peer.example:80/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:443/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example:443/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:0443/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example:443/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:08443/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example:8443/inbox",
+        "destination": "https://peer.example:8443/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example:/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "http://peer.example:80/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "http://peer.example:80/inbox",
+        "destination": "http://peer.example/inbox"
+      }
+    },
+    {
+      "value": "http://peer.example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "http://peer.example/inbox",
+        "destination": "http://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example./inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example./inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer..example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer..example/inbox",
+        "destination": "https://peer..example/inbox"
+      }
+    },
+    {
+      "value": "https://.peer.example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://.peer.example/inbox",
+        "destination": "https://.peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://0x7f.1/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://0x7f.1/inbox",
+        "destination": "https://0x7f.1/inbox"
+      }
+    },
+    {
+      "value": "https://peer.123/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.123/inbox",
+        "destination": "https://peer.123/inbox"
+      }
+    },
+    {
+      "value": "https://127.0.0.1/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://127.0.0.1/inbox",
+        "destination": "https://127.0.0.1/inbox"
+      }
+    },
+    {
+      "value": "https://[::1]/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://[::1]/inbox",
+        "destination": "https://[::1]/inbox"
+      }
+    },
+    {
+      "value": "https://xn--zz.example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://xn--zz.example/inbox",
+        "destination": "https://xn--zz.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer_x.example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer_x.example/inbox",
+        "destination": "https://peer_x.example/inbox"
+      }
+    },
+    {
+      "value": "https://pèer.example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://pèer.example/inbox",
+        "destination": "https://xn--per-6la.example/inbox"
+      }
+    },
+    {
+      "value": "https://user@peer.example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://user@peer.example/inbox",
+        "destination": "https://user@peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://user:pass@peer.example/inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://user:pass@peer.example/inbox",
+        "destination": "https://user:pass@peer.example/inbox"
+      }
+    },
+    {
+      "value": "https:///inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "https://PEER.Example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://PEER.Example/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://-peer-.example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://-peer-.example/inbox",
+        "destination": "https://-peer-.example/inbox"
+      }
+    },
+    {
+      "value": "https://XN--Bcher-kva.example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://XN--Bcher-kva.example/inbox",
+        "destination": "https://xn--bcher-kva.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.x1/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.x1/inbox",
+        "destination": "https://peer.x1/inbox"
+      }
+    },
+    {
+      "value": "HTTPS://peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "Https://peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "ftp://peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "https:/peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "https:peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": " https://peer.example/inbox",
+      "refused": true,
+      "mastodon": {}
+    },
+    {
+      "value": "https://peer.example/in\\box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in\\box",
+        "destination": "https://peer.example/in%5Cbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in\tbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in\tbox",
+        "destination": "https://peer.example/in%09box"
+      }
+    },
+    {
+      "value": "https://peer.example/in\rbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in\rbox",
+        "destination": "https://peer.example/in%0Dbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in\nbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in\nbox",
+        "destination": "https://peer.example/in%0Abox"
+      }
+    },
+    {
+      "value": "https://peer.example/in box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in box",
+        "destination": "https://peer.example/in%20box"
+      }
+    },
+    {
+      "value": "https://peer.example/in|box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in|box",
+        "destination": "https://peer.example/in%7Cbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in[box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in[box",
+        "destination": "https://peer.example/in%5Bbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in]box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in]box",
+        "destination": "https://peer.example/in%5Dbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in\"box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in\"box",
+        "destination": "https://peer.example/in%22box"
+      }
+    },
+    {
+      "value": "https://peer.example/in{box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in{box",
+        "destination": "https://peer.example/in%7Bbox"
+      }
+    },
+    {
+      "value": "https://peer.example/in^box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in^box",
+        "destination": "https://peer.example/in%5Ebox"
+      }
+    },
+    {
+      "value": "https://peer.example/in`box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in`box",
+        "destination": "https://peer.example/in%60box"
+      }
+    },
+    {
+      "value": "https://peer.example/in<box",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/in<box",
+        "destination": "https://peer.example/in%3Cbox"
+      }
+    },
+    {
+      "value": "https://peer.example/inbôx",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbôx",
+        "destination": "https://peer.example/inb%C3%B4x"
+      }
+    },
+    {
+      "value": "https://peer.example/%7einbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%7einbox",
+        "destination": "https://peer.example/~inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/%7Einbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%7Einbox",
+        "destination": "https://peer.example/~inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/%41inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%41inbox",
+        "destination": "https://peer.example/Ainbox"
+      }
+    },
+    {
+      "value": "https://peer.example/%40inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%40inbox",
+        "destination": "https://peer.example/@inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/%2Einbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%2Einbox",
+        "destination": "https://peer.example/.inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/a%2fb",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/a%2fb",
+        "destination": "https://peer.example/a%2Fb"
+      }
+    },
+    {
+      "value": "https://peer.example/%c3%a9",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%c3%a9",
+        "destination": "https://peer.example/%C3%A9"
+      }
+    },
+    {
+      "value": "https://peer.example/%C3%A9",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%C3%A9",
+        "destination": "https://peer.example/%C3%A9"
+      }
+    },
+    {
+      "value": "https://peer.example/e%CC%81",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/e%CC%81",
+        "destination": "https://peer.example/%C3%A9"
+      }
+    },
+    {
+      "value": "https://peer.example/%zz",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%zz",
+        "destination": "https://peer.example/%25zz"
+      }
+    },
+    {
+      "value": "https://peer.example/%",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%",
+        "destination": "https://peer.example/%25"
+      }
+    },
+    {
+      "value": "https://peer.example/%4",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/%4",
+        "destination": "https://peer.example/%254"
+      }
+    },
+    {
+      "value": "https://peer.example/./inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/./inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/../inbox",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/../inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/a/.",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/a/.",
+        "destination": "https://peer.example/a/"
+      }
+    },
+    {
+      "value": "https://peer.example/a/..",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/a/..",
+        "destination": "https://peer.example/"
+      }
+    },
+    {
+      "value": "https://peer.example/a/%2E%2E/b",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/a/%2E%2E/b",
+        "destination": "https://peer.example/b"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox?",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox?",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox?x=1",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox?x=1",
+        "destination": "https://peer.example/inbox?x=1"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox?x=a'b",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox?x=a'b",
+        "destination": "https://peer.example/inbox?x=a'b"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox?a=;",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox?a=;",
+        "destination": "https://peer.example/inbox?a=%3B"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox?y=%3D",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox?y=%3D",
+        "destination": "https://peer.example/inbox?y=="
+      }
+    },
+    {
+      "value": "https://peer.example/inbox#f",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox#f",
+        "destination": "https://peer.example/inbox#f"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox#",
+      "refused": true,
+      "mastodon": {
+        "stored": "https://peer.example/inbox#",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example",
+        "destination": "https://peer.example/"
+      }
+    },
+    {
+      "value": "https://peer.example/",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/",
+        "destination": "https://peer.example/"
+      }
+    },
+    {
+      "value": "https://peer.example//x",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example//x",
+        "destination": "https://peer.example//x"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox/",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/inbox/",
+        "destination": "https://peer.example/inbox/"
+      }
+    },
+    {
+      "value": "https://peer.example/inbox",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/inbox",
+        "destination": "https://peer.example/inbox"
+      }
+    },
+    {
+      "value": "https://peer.example/a.b/..c/c../.d",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a.b/..c/c../.d",
+        "destination": "https://peer.example/a.b/..c/c../.d"
+      }
+    },
+    {
+      "value": "https://peer.example/a%2Fb",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%2Fb",
+        "destination": "https://peer.example/a%2Fb"
+      }
+    },
+    {
+      "value": "https://peer.example/a%20b",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%20b",
+        "destination": "https://peer.example/a%20b"
+      }
+    },
+    {
+      "value": "https://peer.example/a%25b",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%25b",
+        "destination": "https://peer.example/a%25b"
+      }
+    },
+    {
+      "value": "https://peer.example/a%5Cb",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%5Cb",
+        "destination": "https://peer.example/a%5Cb"
+      }
+    },
+    {
+      "value": "https://peer.example/a%7Cb",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%7Cb",
+        "destination": "https://peer.example/a%7Cb"
+      }
+    },
+    {
+      "value": "https://peer.example/a%00b",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%00b",
+        "destination": "https://peer.example/a%00b"
+      }
+    },
+    {
+      "value": "https://peer.example/a%7Fb",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a%7Fb",
+        "destination": "https://peer.example/a%7Fb"
+      }
+    },
+    {
+      "value": "https://peer.example/!$&'()*+,;=",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/!$&'()*+,;=",
+        "destination": "https://peer.example/!$&'()*+,;="
+      }
+    },
+    {
+      "value": "https://peer.example/a:b@c",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/a:b@c",
+        "destination": "https://peer.example/a:b@c"
+      }
+    },
+    {
+      "value": "https://peer.example/-._~",
+      "refused": false,
+      "mastodon": {
+        "stored": "https://peer.example/-._~",
+        "destination": "https://peer.example/-._~"
+      }
+    }
+  ]
+}

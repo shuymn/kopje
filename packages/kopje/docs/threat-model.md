@@ -133,17 +133,18 @@ against their own instance. TLS is assumed between all parties.
   other object of keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the
   document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
   property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
-  as fetched. Fedify parses an actor document without its `icon`, `image`, `followers` and `following`, which Kopje
-  reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), also one it loads
-  itself while verifying an HTTP signature, live, on replay and in the rollback drain (a key at the actor's URL, or a
-  key document's owner: `actorViewLoader`), so a value of a type Fedify does not expect there refuses neither the actor
-  nor its keys; leaving members out never adds a key or changes the id (`test/remote-actor-images.test.ts`, "verifies a
-  signature by an actor whose icon is not an Image", "verifies a key Fedify fetches itself, by an actor whose icon is
-  not an Image"). A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at
-  that id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC
-  9421 signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA
-  key, and one that names any other key is answered as a signature that does not verify (401), live, on replay and in
-  the rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
+  as fetched. Fedify parses an actor document without its `icon`, `image`, `followers`, `following` and `endpoints`,
+  which Kopje reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), also
+  one it loads itself while verifying an HTTP signature, live, on replay and in the rollback drain (a key at the
+  actor's URL, or a key document's owner: `actorViewLoader`), so a value of a type Fedify does not expect there refuses
+  neither the actor nor its keys; leaving members out never adds a key or changes the id
+  (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
+  Fedify fetches itself, by an actor whose icon is not an Image"). A key id the Store does not hold fresh, or whose
+  stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
+  for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the
+  algorithm its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a
+  signature that does not verify (401), live, on replay and in the rollback drain. A stored key (`remote_keys`, kept
+  per key id with its owner, whatever the shape of the key URL) is
   trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
   document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
   the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own
@@ -2180,22 +2181,24 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
   shared inbox; an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient
   through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
-  personal inbox, as Mastodon's `reject_remote_follows!` sends it), and moves to its distinct personal inbox on
-  the same origin (same lane, within the row's attempts) if the shared inbox answers 404, 405 or 410; targets pass
-  NET-3; a non-public activity is never sent to a redirect target. Claims serialize each lane; the POST timeout (30 s)
-  is shorter than the lease (60 s), and completion requires the current lease token, so a stale completion cannot settle
-  a later claim. A POST answered 400 or 401 is sent once more at once, signed with RFC 9421 by the same key
-  (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform` does, after the deadline and host
-  checks and the Store's confirmation again, within the same 30 s; its answer settles the delivery, and a retry the
-  deadline leaves no room for fails as transient, never as the first answer. A lane is `(actor, inbox origin)`:
-  everything an actor sends one server, to shared and personal inboxes
-  alike, arrives in order, so a later `Update` or `Delete` cannot overtake the `Create`. A forwarded `Delete` (VIS-3) is
-  one intent per local booster or quoter, signed by it in its own lanes, never by one owner for another's audience,
-  behind the `Create` of its quoting statuses in each lane; its
-  shared-inbox fallback moves a row in place, keeping its place in the lane, for a single recipient behind the inbox
-  only. The whole path from claim to POST (key loading, DNS, signing, each POST) runs under one absolute deadline, the
-  earlier of 30 s and 10 s before the lease ends; the clock is checked against it after the key is loaded and right
-  before each POST, so a late timer cannot let a POST through. _Enforced (main):_
+  personal inbox, as Mastodon's `reject_remote_follows!` sends it). A remote actor's shared inbox is the one Mastodon
+  4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
+  inbox is used and nothing goes to a guessed inbox (`sharedInboxUri` in `src/federation/remote-actor.ts`;
+  `test/remote-actor-images.test.ts` ("keeps a spelling only where Kopje POSTs to Mastodon's URL")). Such a row moves
+  to its recipient's distinct personal inbox on the same origin (same lane, within the row's attempts) if the shared
+  inbox answers 404, 405 or 410; targets pass NET-3; a non-public activity is never sent to a redirect target. Claims
+  serialize each lane; the POST timeout (30 s) is shorter than the lease (60 s), and completion requires the current
+  lease token, so a stale completion cannot settle a later claim. A POST answered 400 or 401 is sent once more at once,
+  signed with RFC 9421 by the same key (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform`
+  does, after the deadline and host checks and the Store's confirmation again, within the same 30 s; its answer settles
+  the delivery, and a retry the deadline leaves no room for fails as transient, never as the first answer. A lane is
+  `(actor, inbox origin)`: everything an actor sends one server, to shared and personal inboxes alike, arrives in order,
+  so a later `Update` or `Delete` cannot overtake the `Create`. A forwarded `Delete` (VIS-3) is one intent per local
+  booster or quoter, signed by it in its own lanes, never by one owner for another's audience, behind the `Create` of
+  its quoting statuses in each lane; its shared-inbox fallback moves a row in place, keeping its place in the lane, for
+  a single recipient behind the inbox only. The whole path from claim to POST (key loading, DNS, signing, each POST)
+  runs under one absolute deadline, the earlier of 30 s and 10 s before the lease ends; the clock is checked against it
+  after the key is loaded and right before each POST, so a late timer cannot let a POST through. _Enforced (main):_
   `src/domain/deliveries.ts` (expansion, lanes, claims, completions), `src/federation/delivery.ts` (the POST);
   `test/delivery-post.test.ts` ("the RFC 9421 retry", "sends no retry past the deadline"), `test/deliveries.test.ts`
   ("NET-2: delivers a public status once per shared inbox", "NET-2: a recipient outside the
