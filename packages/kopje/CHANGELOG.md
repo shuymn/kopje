@@ -95,6 +95,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
   with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
+  `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
+  Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
+  and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -285,8 +289,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 - An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
-  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
-  Store migration and no `wrangler.jsonc` change.
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget, and a
+  local account's actor is published within the same bounds at its endpoint and in its `Update`s. No Store migration
+  and no `wrangler.jsonc` change.
 - A status restored from a dump with malformed UTF-8 in its content, source text or content warning is presented
   within those fields' bounds (content and source text empty past 128 KiB of JSON, the warning cut to 2,730
   characters past 16 KiB) in the API, streaming, public pages and its ActivityPub Note; a warning was presented at up

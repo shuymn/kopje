@@ -736,8 +736,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   nothing through a converted limited boost", "forwards through a local quote in every state", "a direct quote's
   forward reaches its receipts and no follower inbox", "skips a withdrawn quoting status", "the barriers before a
   quote's evidence goes"), `test/migrations.test.ts` ("0091_live_local_quotes").
-  A profile change (API or settings page, images and fields included) records an `Update` of the actor to Public for
-  the followers, only when the published document changed; it replaces the earlier actor Updates still waiting, and
+  A profile change (API or settings page, images, their descriptions and fields included) records an `Update` of the
+  actor to Public for the followers, only when the published document changed (a description is published only while
+  its image exists); it replaces the earlier actor Updates still waiting, and
   is never turned into a Create. A suspended actor sends none. Publication of a cutover records the same Update for
   each local profile whose images the conversion changed (OPS-8). _Enforced (main):_
   `src/domain/actor-update.ts`, `enqueueActivity` in `src/domain/deliveries.ts`; `test/actor-update.test.ts`.
@@ -3242,7 +3243,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `0097_profile_descriptions`, for imports too), and read as stored; since 0xFF and 599 continuation bytes pass as one
   character and decode to 600 U+FFFD, each description is cut again at 150 code points after decoding
   (`presentedProfileDescription`), at most 902 JSON bytes, and is `''` while the account is unavailable
-  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` read both as stored (#1583). Mentions
+  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary`, and its icon's and image's `summary`,
+  take the same reads and presenters wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in
+  `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
+  `test/actor-update.test.ts`). Mentions
   read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
   from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and

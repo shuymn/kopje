@@ -668,8 +668,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
+  // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
+  "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
@@ -705,8 +706,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
 			contact_username, never presented`,
   },
   "src/domain/activities.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.username": { count: 7, reason: LOCAL },
+  "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },
   "src/domain/admin-authority.ts column a.username": { count: 1, reason: LOCAL },
   "src/domain/deliveries.ts accounts.username": {

@@ -244,10 +244,29 @@ describe("profile image descriptions through update_credentials", () => {
     expect(await stored()).toEqual(["A cat", "A field"]);
   });
 
-  // The actor does not publish them yet: a change of a description alone changes no published document.
-  it("send no Update when only a description changes", async () => {
-    const { h, patch } = await writer();
+  // The actor publishes a description as its image's `summary` (federation.ts image): a change of a description alone
+  // records an Update(Person) while the image exists, and none without it, as the document changes only then.
+  it("send an Update carrying the summary when only a description changes, while the image exists", async () => {
+    const { h, alice, patch } = await writer();
+    const sent = async () => (await outbound(h.store)).filter((o) => o.activity.type === "Update");
     expect((await patch({ avatar_description: "A cat", header_description: "A field" })).status).toBe(200);
-    expect((await outbound(h.store)).filter((o) => o.activity.type === "Update")).toEqual([]);
+    expect(await sent()).toEqual([]);
+    for (const [kind, key] of [
+      ["avatar", "icon"],
+      ["header", "image"],
+    ] as const) {
+      await sql(
+        h.store,
+        `UPDATE accounts SET ${kind}_url = 'https://kopje.test/media/${kind}.webp' WHERE id = ?`,
+        alice.id,
+      );
+      expect((await patch({ [`${kind}_description`]: `${kind} described` })).status).toBe(200);
+      const object = (await sent()).at(-1)?.activity.object as Record<string, unknown> | undefined;
+      expect(object?.[key], kind).toEqual({
+        type: "Image",
+        url: `https://kopje.test/media/${kind}.webp`,
+        summary: `${kind} described`,
+      });
+    }
   });
 });

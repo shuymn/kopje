@@ -244,6 +244,10 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   once, as the HTML it presents and federates, so `source.note` gives line breaks as `\n` and one blank line between
   paragraphs, where Mastodon gives the bio back as sent (`\r\n` kept), and `note` writes a line break `<br>`, where
   Mastodon writes `<br />`; the text and paragraphs are the same. Accepted, 2026-11-16.
+- A profile change sends an `Update(Person)` only when the published actor document changed, where Mastodon sends one
+  after every update (`ActivityPub::UpdateDistributionWorker`, `credentials_controller.rb:17`). An image description
+  is published only on its image (the actor's `icon` and `image`, as `ActivityPub::ActorSerializer` writes them), so
+  a description changed while the image is absent sends none; followers get it with the image's next Update.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
