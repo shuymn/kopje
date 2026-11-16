@@ -250,13 +250,13 @@ function hasPending(db: Db, walkId: string): boolean {
 }
 
 // A walk's end: its nodes go (deferred ones dropped); a context walk's row is kept finished, with its refresh, for
-// REFRESH_FINISHED_MS (the claims' prune), and a create walk's goes.
+// REFRESH_FINISHED_MS (the claims' prune), and a create walk's goes, its nodes with it (ON DELETE CASCADE).
 function finish(db: Db, walkId: string, kind: number, now: number): void {
-  db.run("DELETE FROM reply_walk_nodes WHERE status_id = ?", walkId);
   if (kind === CREATE_WALK) {
     db.run("DELETE FROM reply_walks WHERE status_id = ?", walkId);
     return;
   }
+  db.run("DELETE FROM reply_walk_nodes WHERE status_id = ?", walkId);
   db.run("UPDATE reply_walks SET due_at = NULL, finished_at = ?2, token = NULL WHERE status_id = ?1", walkId, now);
 }
 

@@ -26,7 +26,7 @@ import {
   type RemoteLoaders,
 } from "./federation";
 import type { InboxDeps } from "./inbox";
-import { itemsOf } from "./json-shapes";
+import { isObject, itemsOf } from "./json-shapes";
 import { REQUEST_DEADLINE_MS, requestBudget } from "./loader";
 import { loadActor } from "./quotes";
 import type { FetchedActor } from "./remote-actor";
@@ -54,10 +54,6 @@ if (REPLY_WALK_LEASE_MS < 2 * REPLY_STEPS_PER_WALK * REQUEST_DEADLINE_MS) {
 }
 
 type Json = Record<string, unknown>;
-
-function isObject(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function originOf(uri: string): string | null {
   try {
