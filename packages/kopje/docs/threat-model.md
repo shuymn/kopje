@@ -4434,6 +4434,7 @@ not asserted.
 | A filtered favourite of the quote, as include_filtered lists it  | 6,966,335         | 5,532,027       | 5,548,025         | 1,952     | 5,648 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
+| Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
 | Listed hashtag (search, followed, suggested), from its caps      |                   | 4,543           | 5,070             |           |       | 0.1%           |

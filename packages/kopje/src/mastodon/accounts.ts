@@ -1,4 +1,4 @@
-import type { CredentialChanges, ProfileImages } from "../domain/account-actions";
+import type { AccountUpdate, CredentialChanges, CredentialsUpdated, ProfileImages } from "../domain/account-actions";
 import {
   type FieldSource,
   MAX_ACCOUNTS_BY_ID,
@@ -12,11 +12,12 @@ import {
   type Visibility,
 } from "../domain/accounts";
 import { QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
-import type { UserCredential } from "../domain/auth";
+import type { Authorized, UserCredential } from "../domain/auth";
 import { DIRECTORY_DEFAULT_LIMIT, DIRECTORY_MAX_LIMIT } from "../domain/directory";
 import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
+import type { StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { PROFILE_DESCRIPTION_LIMIT, withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -169,6 +170,16 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
   return { changes, problems };
 }
 
+// The changes the profile update asks for (Api::V1::ProfilesController#account_params): accountChanges and the display
+// settings, which only it sets. source[...] is neither read nor validated, as there.
+function profileChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
+  const { changes, problems } = accountChanges(p);
+  changes.showFeatured = parseBoolean(p.get("show_featured"));
+  changes.showMedia = parseBoolean(p.get("show_media"));
+  changes.showMediaReplies = parseBoolean(p.get("show_media_replies"));
+  return { changes, problems };
+}
+
 // Account::AttributionDomains' normalization: each value stripped of surrounding whitespace and of an http://,
 // https:// and *. prefix, blanks dropped, duplicates removed. Values are kept as written otherwise.
 function normalizeAttributionDomains(values: readonly string[]): string[] {
@@ -271,66 +282,88 @@ function profileFailure(kind: ProfileImage, error: string): string {
   return error.replace("Validation failed: File ", `Validation failed: ${IMAGE_ATTRIBUTE[kind]} `);
 }
 
-// PATCH /api/v1/accounts/update_credentials. A multipart body may carry the avatar and header files, so its token is
-// checked before the body is read (an invalid or under-scoped token reads no 17.9 MB body); text, then images, are
-// validated before anything is reserved, and the Store applies everything in one transaction.
-export const updateCredentials: ApiHandler = async (c, deps) => {
-  const multipart = mediaTypeOf(c.req.header("content-type")) === "multipart/form-data";
-  if (multipart) {
-    const value = credential(c, deps);
-    authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, value)));
-  }
-  const read = await readParams(c.req.raw, { files: PROFILE_FILES });
-  if (!read.ok) {
-    const response = mastodonError(
-      read.status,
-      read.status === 413 ? "Request body is too large" : "Malformed request body",
-    );
-    return multipart ? response : refuseAfterAuth(c, deps, response);
-  }
-  const p = read.params;
-  const { changes, problems } = credentialChanges(p);
-  const files = await profileFiles(p);
-  if (files === "string") {
-    return refuseAfterAuth(c, deps, mastodonError(400, "Bad Request"));
-  }
-  problems.push(...files.problems);
-  if (problems.length > 0) {
-    return refuseAfterAuth(c, deps, validationFailed(problems));
-  }
-  const owned: ProfileUpload[] = [];
-  let committed = false;
-  try {
-    const images = await storeProfileImages(c, deps, () => userCredential(c, deps), files.images, owned);
-    if ("error" in images) {
-      return mastodonError(images.status, images.error);
+// PATCH /api/v1/accounts/update_credentials and PATCH or PUT /api/v1/profile: `changesOf` takes the changes from the
+// parameters, `call` applies them and presents the account. A multipart body may carry the avatar and header files, so
+// its token is checked before the body is read (an invalid or under-scoped token reads no 17.9 MB body); text, then
+// images, are validated before anything is reserved, and the Store applies everything in one transaction.
+function credentialsUpdate<A>(
+  changesOf: (p: Params) => { changes: CredentialChanges; problems: string[] },
+  call: (
+    store: StoreStub,
+    build: string,
+    input: AccountUpdate & { credential: UserCredential },
+  ) => Promise<Authorized<CredentialsUpdated<A>>>,
+): ApiHandler {
+  return async (c, deps) => {
+    const multipart = mediaTypeOf(c.req.header("content-type")) === "multipart/form-data";
+    if (multipart) {
+      const value = credential(c, deps);
+      authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, value)));
     }
-    const value = userCredential(c, deps);
-    const result = authorized(
-      await storeCall(c, deps, (s, b) =>
-        s.updateCredentials(b, { credential: value, changes, images, present: present(c), now: deps.now() }),
-      ),
-    );
-    if (result.status === "upload_gone") {
-      return mastodonError(422, "Validation failed: The upload expired");
+    const read = await readParams(c.req.raw, { files: PROFILE_FILES });
+    if (!read.ok) {
+      const response = mastodonError(
+        read.status,
+        read.status === 413 ? "Request body is too large" : "Malformed request body",
+      );
+      return multipart ? response : refuseAfterAuth(c, deps, response);
     }
-    if (result.status === "not_found") {
-      return recordNotFound();
+    const p = read.params;
+    const { changes, problems } = changesOf(p);
+    const files = await profileFiles(p);
+    if (files === "string") {
+      return refuseAfterAuth(c, deps, mastodonError(400, "Bad Request"));
     }
-    committed = true;
-    if (owned.length > 0) {
-      // The replaced images' uploads go with the sweep.
-      sweepSoon(c, deps);
+    problems.push(...files.problems);
+    if (problems.length > 0) {
+      return refuseAfterAuth(c, deps, validationFailed(problems));
     }
-    if (result.accepting) {
-      requestJobsSoon(c, deps);
+    const owned: ProfileUpload[] = [];
+    let committed = false;
+    try {
+      const images = await storeProfileImages(c, deps, () => userCredential(c, deps), files.images, owned);
+      if ("error" in images) {
+        return mastodonError(images.status, images.error);
+      }
+      const value = userCredential(c, deps);
+      const result = authorized(
+        await storeCall(c, deps, (s, b) =>
+          call(s, b, { credential: value, changes, images, present: present(c), now: deps.now() }),
+        ),
+      );
+      if (result.status === "upload_gone") {
+        return mastodonError(422, "Validation failed: The upload expired");
+      }
+      if (result.status === "not_found") {
+        return recordNotFound();
+      }
+      committed = true;
+      if (owned.length > 0) {
+        // The replaced images' uploads go with the sweep.
+        sweepSoon(c, deps);
+      }
+      if (result.accepting) {
+        requestJobsSoon(c, deps);
+      }
+      return c.json(result.account);
+    } finally {
+      if (!committed) {
+        await discardProfileUploads(c, deps, owned);
+      }
     }
-    return c.json(result.account);
-  } finally {
-    if (!committed) {
-      await discardProfileUploads(c, deps, owned);
-    }
-  }
+  };
+}
+
+export const updateCredentials = credentialsUpdate(credentialChanges, (s, b, input) => s.updateCredentials(b, input));
+
+// The profile update, answered with the Profile (REST::ProfileSerializer).
+export const updateProfile = credentialsUpdate(profileChanges, (s, b, input) => s.updateProfile(b, input));
+
+// GET /api/v1/profile.
+export const getProfile: ApiHandler = async (c, deps) => {
+  const credential = userCredential(c, deps);
+  const profile = authorized(await storeCall(c, deps, (s, b) => s.profile(b, { credential, present: present(c) })));
+  return profile === null ? recordNotFound() : c.json(profile);
 };
 
 // DELETE /api/v1/profile/avatar and /api/v1/profile/header: the account shows the default image again and other

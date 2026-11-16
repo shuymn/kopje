@@ -321,6 +321,8 @@ export const STORE_RPC = {
   verifyCredentials: accounts.verifyCredentials,
   userinfo: accounts.userinfo,
   updateCredentials: accountActions.updateCredentials,
+  profile: accountActions.profile,
+  updateProfile: accountActions.updateProfile,
   preferences: accounts.preferences,
   relationships: accounts.relationships,
   familiarFollowers: accounts.familiarFollowers,

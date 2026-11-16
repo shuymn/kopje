@@ -66,6 +66,7 @@ import {
   userWriteOperation,
 } from "./auth";
 import { type CustomEmoji, emojiCacheOf, presentEmojis, referencedEmojis } from "./custom-emojis";
+import type { FeaturedTag } from "./featured-tags";
 import { remoteFieldLink } from "./field-verification";
 import { readOperation } from "./operation";
 import { htmlToPlainText } from "./plain-text";
@@ -501,13 +502,13 @@ const MOVED_BOUNDS: IdentityBounds = {
 // both `fallback` unless the image is shown (null: unavailable or unset); then a remote account's cached copy on the
 // instance origin when there is one for its current URL (`cached`: the full file and its still, or the full file when
 // it has none), else the static when it is shown too, else the image. Each is shown within `bounds.image`.
-function shownImage(
+function shownImage<F extends string | null>(
   bounds: IdentityBounds,
   image: string | null,
   still: string | null,
-  fallback: string,
+  fallback: F,
   cached: { image: string; still: string } | null,
-): { image: string; still: string } {
+): { image: string | F; still: string | F } {
   const href = bounds.image(image);
   if (href === null) {
     return { image: fallback, still: fallback };
@@ -1043,6 +1044,79 @@ export function credentialAccount(db: Db, accountId: string, present: Present): 
     },
     // The OAuth admin has the Owner role with the permissions Kopje serves; every other user the default role.
     role: localRole(db, accountId),
+  };
+}
+
+// REST::ProfileSerializer (/api/v1/profile, Mastodon 4.6): the token's own account as its owner edits it, the texts
+// as written and as formatted. Only its current, functional user reaches it, so nothing is redacted.
+export type Profile = {
+  id: string;
+  display_name: string;
+  // The note as written (source.note's), and as the Account formats it.
+  note: string;
+  fields: (FieldSource & { verified_at: string | null })[];
+  formatted_note: string;
+  formatted_fields: Field[];
+  // null unless the account has the image (Mastodon's `*_file_name.present?`), never the default image.
+  avatar: string | null;
+  avatar_static: string | null;
+  avatar_description: string;
+  header: string | null;
+  header_static: string | null;
+  header_description: string;
+  locked: boolean;
+  bot: boolean;
+  hide_collections: boolean;
+  discoverable: boolean | null;
+  indexable: boolean;
+  show_media: boolean;
+  show_media_replies: boolean;
+  show_featured: boolean;
+  attribution_domains: string[];
+  featured_tags: FeaturedTag[];
+};
+
+// The Profile of the local account `accountId`, with `featuredTags` (account-actions.ts reads them: featured-tags.ts
+// imports this module); null when it has no local row. Each text through the bound every Account presenter applies
+// after decoding (presentedDisplayName, presentedNote, presentedProfileDescription; presentedAttributionDomains over
+// attributionDomainsSql's projection, read by key from local_accounts).
+export function presentProfile(db: Db, accountId: string, featuredTags: FeaturedTag[]): Profile | null {
+  const row = accountRow(db, accountId);
+  const local = db.first<{ attribution_domains: string }>(
+    `SELECT ${attributionDomainsSql("attribution_domains")} AS attribution_domains
+			FROM local_accounts INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} WHERE account_id = ?`,
+    accountId,
+  );
+  if (row === undefined || local === undefined) {
+    return null;
+  }
+  const note = presentedNote(row.note);
+  const fields = localFields(row);
+  const avatar = shownImage(ACCOUNT_BOUNDS, row.avatar_url, row.avatar_static_url, null, null);
+  const header = shownImage(ACCOUNT_BOUNDS, row.header_url, row.header_static_url, null, null);
+  return {
+    id: row.id,
+    display_name: presentedDisplayName(row.display_name),
+    note: htmlToPlainText(note),
+    fields,
+    formatted_note: note,
+    formatted_fields: fields.map(presentField),
+    avatar: avatar.image,
+    avatar_static: avatar.still,
+    avatar_description: presentedProfileDescription(row.avatar_description),
+    header: header.image,
+    header_static: header.still,
+    header_description: presentedProfileDescription(row.header_description),
+    locked: row.locked === 1,
+    bot: isBotActorType(row.actor_type),
+    hide_collections: row.hide_collections === 1,
+    discoverable: row.discoverable === null ? null : row.discoverable === 1,
+    indexable: row.indexable === 1,
+    show_media: row.show_media !== 0,
+    show_media_replies: row.show_media_replies !== 0,
+    show_featured: row.show_featured !== 0,
+    attribution_domains: presentedAttributionDomains(local.attribution_domains),
+    featured_tags: featuredTags,
   };
 }
 
