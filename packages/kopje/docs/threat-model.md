@@ -3292,8 +3292,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-3: lists are bounded.** Pageable lists return at most 80 items; relationships read at most 100 ids; any other
   collection names its count and byte bound. _Enforced (main):_ `src/mastodon/pagination.ts`, `MAX_RELATIONSHIP_IDS` in
   `src/domain/accounts.ts`. _Gap: neither cap is tested._ _Enforced (main)_ for search: at
-  most 40 results per type (80 for the account search), and offsets past 10,000 answer an empty page;
-  `test/search.test.ts` ("bounds the query, the limit and the offset"). _Enforced (main):_
+  most 40 results per type (80 for the account search), `limit=0` answers nothing, and offsets past 10,000 answer an
+  empty page, where an offset of `/api/v2/search` counts only with a `type`, as Mastodon's; `test/search.test.ts`
+  ("bounds the query, the limit and the offset", "reads the limit and the offset as SearchService#call does").
+  _Enforced (main):_
   the domain block list (`GET /api/v1/domain_blocks`) returns at most 200 domains, as Mastodon's does
   (`src/mastodon/blocks.ts`). _Enforced (main):_ `GET /api/v1/instance/peers` lists at most
   10,000 domains (`MAX_PEERS` in `src/domain/instance.ts`); `GET /api/v1/instance/domain_blocks` admits whole
@@ -3707,9 +3709,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
   resolution makes one more Store call (`actorState`) before each actor fetch and before a URL's probe, and fetches the
-  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). A
-  probe answered 200 with another type follows at most two alternates, the `Link` header's and then the page's, one
-  fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
+  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). It
+  fetches nothing for `limit=0`, for a URL whose answer is empty whatever it finds (a `type` with an offset past 0, a
+  `type` other than `accounts` and `statuses`), or for an address when accounts are not searched
+  (`test/search-resolution-store-calls.test.ts`, "the limit, offset and type of a resolving search"). A probe answered
+  200 with another type follows at most two alternates, the `Link` header's and then the page's, one fetch and one
+  domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
   alternate, is charged to the request's bytes like any document, so a page alternate after a large header alternate
   can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md), Search);
   `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A fetch

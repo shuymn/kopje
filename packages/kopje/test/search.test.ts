@@ -239,6 +239,33 @@ describe("GET /api/v2/search", () => {
     expect(await ids("&limit=-1&type=collections")).toEqual([id]);
   });
 
+  // SearchService#call (search_service.rb:11, :17) with limit_param (api/base_controller.rb:33-37): a limit of 0
+  // answers nothing, a negative one counts as its absolute value, and the offset counts only with a type. The answer
+  // with a URL and resolve=true: test/search-resolution-store-calls.test.ts.
+  it("reads the limit and the offset as SearchService#call does", async () => {
+    const { h, search, statusIds } = await fixture();
+    const older = await post(h, h.users.alice, { status: "paged older #pagedtag" });
+    const newer = await post(h, h.users.alice, { status: "paged newer" });
+    const both = [newer.id, older.id];
+    const statuses = async (extra: string) => (await search("paged", extra)).statuses.map((s) => s.id);
+    // The guarded branches: the same queries find both statuses without the parameter.
+    expect(await statuses("")).toEqual(both);
+    expect(await search("paged", "&limit=0")).toEqual({ accounts: [], statuses: [], hashtags: [], collections: [] });
+    expect(await statusIds("paged", "&limit=0")).toEqual([]);
+    expect(await statusIds("paged", "&limit=-2")).toEqual(both);
+    expect(await statusIds("paged", "&limit=-1")).toEqual([newer.id]);
+    for (const offset of ["1", "20000"]) {
+      expect(await statuses(`&offset=${offset}`)).toEqual(both);
+      expect(await statuses(`&offset=${offset}&type=`)).toEqual(both);
+    }
+    expect(await statusIds("paged", "&offset=1")).toEqual([older.id]);
+    expect(await statusIds("paged", "&offset=20000")).toEqual([]);
+    // A plain query's type=hashtags searches hashtags, with resolve=true too: only a URL lookup is answered by nothing.
+    expect((await search("#pagedtag", "&type=hashtags&resolve=true")).hashtags.map((t) => t.name)).toEqual([
+      "pagedtag",
+    ]);
+  });
+
   it("answers resolve=true from local data when the query is neither a URL nor an address", async () => {
     // Remote resolution of URLs and addresses: test/inbox-statuses.test.ts ("search with resolve=true").
     const { h, search } = await fixture();

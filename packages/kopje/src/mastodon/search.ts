@@ -21,16 +21,23 @@ import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
 // autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag. Collections
 // are found only by resolve=true.
 //
-// resolve=true (Mastodon's SearchService): a local collection's URL (its uri or url) answers that collection alone when
-// R45 shows it to the viewer (ResolveURLService#process_local_url), with no fetch, under SearchService#call's limit and
-// offset. Otherwise, after the token is verified, a URL or user@domain query is fetched (federation/resolve.ts, signed
-// by the instance actor) and stored by the Store with inbound validation. A URL query answers with what it resolved to
-// alone, if the viewer may see it; an address query answers the account search with the resolved account first, which
-// the Store's search puts there (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests
-// are refused before anything is fetched (401, the route's scope), and a request the Store could not store for
-// (resolveQuery) is answered as without resolve=true. The final search takes a fresh credential, so a token that
-// expired while resolving is refused. GET /api/v1/accounts/search resolves addresses only, through the same
-// resolveQuery (mastodon/accounts.ts).
+// Limit and offset are Mastodon 4.7.5's SearchService#call's: a limit of 0 (limit_param keeps it) answers nothing and
+// resolves nothing (search_service.rb:17), and the offset counts only with a type (`:11`).
+//
+// resolve=true: a URL query is answered by its lookup alone, never by the plain search, and by nothing past offset 0 or
+// for a type the lookup did not find (`:19-20`). A local collection's URL (its uri or url) answers that collection when
+// R45 shows it to the viewer (ResolveURLService#process_local_url), with no fetch. Otherwise, after the token is
+// verified, a URL or user@domain query is fetched (federation/resolve.ts, signed by the instance actor) and stored by
+// the Store with inbound validation. A URL query answers with what it resolved to, if the viewer may see it. A URL
+// lookup whose answer is empty whatever it finds (an offset past 0, a type other than accounts and statuses) fetches
+// nothing, where Mastodon fetches and stores first (docs/mastodon-deviations.md, Search). An address is resolved only
+// when accounts are searched at offset 0, as only AccountSearchService resolves one (`:90-100`,
+// account_search_service.rb:206), and answers the account search with the resolved account first, which the Store's
+// search puts there (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests are refused
+// before anything is fetched (401, the route's scope), and a request the Store could not store for (resolveQuery) is
+// answered as without resolve=true. The final search takes a fresh credential, so a token that expired while resolving
+// is refused. GET /api/v1/accounts/search resolves addresses only, through the same resolveQuery
+// (mastodon/accounts.ts).
 
 // The raw bound of q before it is normalized and split (RES-1). Terms beyond the eighth are ignored (search-text.ts).
 const MAX_QUERY_LENGTH = 500;
@@ -62,43 +69,55 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
     return refuseAfterAuth(c, deps, parsed.error);
   }
   // Mastodon: 20 by default, at most 40, per type. An unknown type finds nothing.
-  const { limit, maxId, minId } = pageQuery(p, 20, 40);
+  const limit = limitParam(p, 20, 40);
+  const { maxId, minId } = pageQuery(p, 20, 40);
   const type = p.get("type");
   const anyType = type === undefined || type === "";
   const types = anyType ? TYPES : TYPES.filter((t) => t === type);
   const collections = anyType || type === "collections";
   const excludeUnreviewed = parseBoolean(p.get("exclude_unreviewed")) === true;
-  const offset = parsed.offset > MAX_SEARCH_OFFSET ? null : parsed.offset;
+  const offset = anyType ? 0 : parsed.offset;
   const query = parsed.query.trim();
   const resolve = parseBoolean(p.get("resolve")) ?? false;
-  const resolving = resolve && offset === 0;
-  const collection = resolve && isUrlQuery(query) ? localCollectionId(query, new URL(c.req.url).origin) : null;
-  if (collection !== null) {
-    // SearchService#call: nothing for a limit of 0 (limit_param's, search_service.rb:11) or past offset 0, which
-    // counts only with a type (`:17`: an empty type searches from 0), or for another type than collections.
-    if (!collections || limitParam(p, 20, 40) === 0 || (anyType ? 0 : parsed.offset) > 0) {
-      authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
-      return c.json(NOTHING);
-    }
-    const input = { credential: userCredential(c, deps), id: collection, present: present(c) };
-    const found = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
-    return c.json({ ...NOTHING, collections: found === null ? [] : [found] });
-  }
-  if (offset === null || types.length === 0) {
+  const urlQuery = resolve && isUrlQuery(query);
+  const nothing = async () => {
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
     return c.json(NOTHING);
+  };
+  if (limit === 0) {
+    return nothing();
   }
-  let resolved: Found | null = null;
-  if (resolving && (isUrlQuery(query) || parseAddress(query) !== null)) {
-    resolved = await resolveQuery(c, deps, query);
-    if (resolved !== null && isUrlQuery(query)) {
+  if (urlQuery) {
+    if (offset > 0) {
+      return nothing();
+    }
+    const collection = localCollectionId(query, new URL(c.req.url).origin);
+    if (collection !== null) {
+      if (!collections) {
+        return nothing();
+      }
+      const input = { credential: userCredential(c, deps), id: collection, present: present(c) };
+      const found = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
+      return c.json({ ...NOTHING, collections: found === null ? [] : [found] });
+    }
+    // Any other URL resolves to an account or a status only (resolveQuery).
+    if (!types.includes("accounts") && !types.includes("statuses")) {
+      return nothing();
+    }
+    const looked = await resolveQuery(c, deps, query);
+    if (looked !== null) {
       return c.json({
         ...NOTHING,
-        accounts: types.includes("accounts") ? resolved.accounts : [],
-        statuses: types.includes("statuses") ? resolved.statuses : [],
+        accounts: types.includes("accounts") ? looked.accounts : [],
+        statuses: types.includes("statuses") ? looked.statuses : [],
       });
     }
   }
+  if (offset > MAX_SEARCH_OFFSET || types.length === 0) {
+    return nothing();
+  }
+  const address = resolve && !urlQuery && offset === 0 && types.includes("accounts") && parseAddress(query) !== null;
+  const resolved = address ? await resolveQuery(c, deps, query) : null;
   const accountId = p.get("account_id");
   const results = await storeCall(c, deps, (s, b) =>
     s.search(b, {
