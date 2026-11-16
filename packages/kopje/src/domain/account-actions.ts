@@ -20,12 +20,15 @@ import {
   type Present,
   fieldSources,
   credentialAccount,
+  type Profile,
+  presentProfile,
 } from "./accounts";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { availableSql, followableBySql, type QuotePolicyName } from "./audience";
-import { userMediaDeleteOperation, userWriteOperation } from "./auth";
+import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { localEmojiSnapshot } from "./custom-emojis";
+import { accountFeaturedTagsOf, MAX_FEATURED_TAGS } from "./featured-tags";
 import { armFieldLinks } from "./field-links";
 import { applyProfileImage, PROFILE_IMAGES, type ProfileImage, profileUploadReady } from "./media";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
@@ -65,9 +68,10 @@ export type CredentialChanges = {
 // The uploads (completed, unattached, media.ts) a credentials update makes the account's avatar or header.
 export type ProfileImages = Partial<Record<ProfileImage, string>>;
 
-export type CredentialsUpdated =
+// `account`: the CredentialAccount of update_credentials, or the Profile of the profile update.
+export type CredentialsUpdated<A = CredentialAccount> =
   // accepting: the update unlocked the account, so the unlock job has pending requests to accept (unlock-accepts.ts).
-  | { status: "ok"; account: CredentialAccount; accepting: boolean }
+  | { status: "ok"; account: A; accepting: boolean }
   | { status: "not_found" }
   // An upload is no longer the viewer's own live upload (swept, deleted or attached since): nothing changed.
   | { status: "upload_gone" };
@@ -207,19 +211,43 @@ function applyAccountChanges(
   return { status: "ok", accepting: unlockChanged(db, accountId, current.locked === 1, changes.locked) };
 }
 
-// update_credentials (applyAccountChanges), answered with the CredentialAccount. A media-delete operation: replacing
-// an image dooms the upload behind it (MEDIA-2).
-export const updateCredentials = userMediaDeleteOperation<
-  { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number },
-  CredentialsUpdated
->((db, { changes, images = {}, present, now }, { accountId }) => {
+export type AccountUpdate = { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number };
+
+// applyAccountChanges, then the account as `presented` shows it.
+function updated<A>(
+  db: Db,
+  accountId: string,
+  { changes, images = {}, now }: AccountUpdate,
+  presented: () => A | null,
+): CredentialsUpdated<A> {
   const applied = applyAccountChanges(db, accountId, changes, images, now);
   if (applied.status !== "ok") {
     return applied;
   }
-  const account = credentialAccount(db, accountId, present);
+  const account = presented();
   return account === null ? { status: "not_found" } : { status: "ok", account, accepting: applied.accepting };
-});
+}
+
+// update_credentials and the profile update (Api::V1::ProfilesController#update), answered with the CredentialAccount
+// and the Profile. Media-delete operations: replacing an image dooms the upload behind it (MEDIA-2).
+export const updateCredentials = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated>(
+  (db, input, { accountId }) => updated(db, accountId, input, () => credentialAccount(db, accountId, input.present)),
+);
+
+export const updateProfile = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated<Profile>>(
+  (db, input, { accountId }) => updated(db, accountId, input, () => profileOf(db, accountId, input.present)),
+);
+
+// The Profile with the account's first MAX_FEATURED_TAGS featured hashtags in id order (ACCOUNT_FEATURED_SQL, at most
+// that many rows read): Mastodon's association has no order, and creation order is the closest stable one.
+function profileOf(db: Db, accountId: string, present: Present): Profile | null {
+  return presentProfile(db, accountId, accountFeaturedTagsOf(db, accountId, present.origin, MAX_FEATURED_TAGS));
+}
+
+// GET /api/v1/profile.
+export const profile = userReadOperation<{ present: Present }, Profile | null>((db, { present }, { accountId }) =>
+  profileOf(db, accountId, present),
+);
 
 function bit(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0;

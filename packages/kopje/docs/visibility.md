@@ -49,12 +49,12 @@ Accounts (always over an account id, never over a status or a follow row):
 
 Statuses:
 
-| Fragment                                           | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `visibleSql(s, viewer)`, `canView(db, viewer, id)` | R2 (`StatusPolicy#show?`): an available author; a withdrawn status (`statuses.withdrawn`: its `Delete` or `Undo` is recorded and its removal runs) is seen by nobody, its author included, as Mastodon's kept scope leaves out a discarded status; the author sees all else of their own; an author who blocks the viewer hides everything from them; public and unlisted are seen by everyone else but a remote account on a domain the author blocks, private by accepted followers and the mentioned, direct and limited by the mentioned only (silent mentions included). It has no time. |
-| `viewableSql(s, viewer)`                           | R3: visible, and so is a reblogged original.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `listableSql(s, viewer, now)`                      | R8 (`StatusFilter`): viewable, and the viewer filters neither the author nor a reblogged original's author. Feeds, context, bookmarks, favourites and search.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `homeFilterSql(s, viewer, now)`                    | R9, what home hides for the viewer's choices (`FeedManager#filter_from_home`): what the list rule hides, and a status or boosted original that mentions (not silently) an account the viewer blocks or mutes. The viewer's own statuses pass. Home membership and the follow's options (boosts, replies, languages) stay in the home query.                                                                                                                                                                                                                                                   |
+| Fragment                                           | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `visibleSql(s, viewer)`, `canView(db, viewer, id)` | R2 (`StatusPolicy#show?`): an available author; a withdrawn status (`statuses.withdrawn`: its `Delete` or `Undo` is recorded, or its own URI answered 404 to a pin sync's fetch, and its removal runs) is seen by nobody, its author included, as Mastodon's kept scope leaves out a discarded status; the author sees all else of their own; an author who blocks the viewer hides everything from them; public and unlisted are seen by everyone else but a remote account on a domain the author blocks, private by accepted followers and the mentioned, direct and limited by the mentioned only (silent mentions included). It has no time. |
+| `viewableSql(s, viewer)`                           | R3: visible, and so is a reblogged original.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `listableSql(s, viewer, now)`                      | R8 (`StatusFilter`): viewable, and the viewer filters neither the author nor a reblogged original's author. Feeds, context, bookmarks, favourites and search.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `homeFilterSql(s, viewer, now)`                    | R9, what home hides for the viewer's choices (`FeedManager#filter_from_home`): what the list rule hides, and a status or boosted original that mentions (not silently) an account the viewer blocks or mutes. The viewer's own statuses pass. Home membership and the follow's options (boosts, replies, languages) stay in the home query.                                                                                                                                                                                                                                                                                                       |
 
 Annual reports:
 
@@ -385,10 +385,13 @@ timeline's not replies to others (a hashtag's keeps them, as Mastodon's `TagFeed
 the viewer neither blocks, mutes nor domain-blocks and who do not block the viewer (R8). Positioned at x, the read is
 the status's own row: the public timeline's by its key, a hashtag's by the status's row of the hashtag. Mastodon's
 streaming server also drops, per connection, a status that mentions an account the viewer blocks or mutes; Kopje does
-the same (`mentionsFilteredFor`), which only narrows R33. Mastodon sends nothing on these streams for a silenced
-account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's `RemoveStatusService` publishes
-a public status's delete on `public`, its local or remote stream, their media streams when it had media, and the
-hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's tombstone holds those
+the same (`mentionsFilteredFor`), which only narrows R33. A status on them is presented as REST presents it to the
+viewer, as on every stream (its flags, poll votes, quote approval and quote state, R35, and `filtered` are the
+viewer's), unlike Mastodon's rendering of these streams for no viewer
+([mastodon-deviations.md](mastodon-deviations.md), feed streams). Mastodon sends nothing on these streams for a
+silenced account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's `RemoveStatusService`
+publishes a public status's delete on `public`, its local or remote stream, their media streams when it had media, and
+the hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's tombstone holds those
 facts from before the delete, and the hashtags only some account subscribed to then. Unlike Mastodon, the viewer must
 have been able to view the status at capture (R3): an author who blocks the viewer sends them no `delete`.
 
@@ -421,9 +424,9 @@ their Relationship with the account; no other path reads it (the architecture te
 
 The profile directory (`src/domain/directory.ts`, `GET /api/v1/directory`, Mastodon's `Api::V1::DirectoriesController`)
 lists the discoverable accounts that R12 lists to the viewer: `accounts.discoverable` is 1, a local account's setting
-(`update_credentials`) or what a remote actor published (an actor that published nothing is not listed), and
-`listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute (while the
-mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
+(`update_credentials` or the profile update) or what a remote actor published (an actor that published nothing is not
+listed), and `listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute
+(while the mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
 `not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that
 an account moved). A local account is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon.
 `order=active` orders by the account's newest public, unlisted or private status (`accounts.last_status_id`, which the
@@ -446,9 +449,11 @@ checks after each that no other table changed and that each account sees only it
 
 A poll (`src/domain/polls.ts`, migration `0013_polls`) is shown with its status, to whoever may see the status, and
 its API id is its status's: `GET /api/v1/polls/:id` and its votes answer 404 for a poll on a status the viewer may
-not see by itself (R3). Who may vote is R27 (`mayVoteSql`, Mastodon's `PollPolicy#vote?`): the status is viewable and
-the voter blocks neither its author (an author who blocks the voter hides it already) nor the author's domain
-(where the vote would not be delivered); a remote vote, a Note naming a
+not see by itself (R3). A signed-in read of a remote poll refreshes it from its post's document only for a reader who
+may see the status, judged again when the attempt is reserved, and the answer after the refresh is judged again
+([mastodon-deviations.md](mastodon-deviations.md), "Polls"). Who may vote is R27 (`mayVoteSql`, Mastodon's
+`PollPolicy#vote?`): the status is viewable and the voter blocks neither its author (an author who blocks the voter
+hides it already) nor the author's domain (where the vote would not be delivered); a remote vote, a Note naming a
 choice in reply to a local poll, passes the same rule (Mastodon checks none for it) and is never stored as a status.
 Votes are their voters' own: a poll shows its counts (`votes_count`, `voters_count`, and each choice's, which
 `hide_totals` hides from everyone, the author included, until the poll ends, as `Poll#show_totals_now?`), and the

@@ -216,6 +216,25 @@ describe("Params#objects with file fields", () => {
     const form = await read(post("media_attributes[][thumbnail]=x", "application/x-www-form-urlencoded"));
     expect(form.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: "x" }]);
   });
+
+  it("reads a JSON null as blank, and as not sent with nulls: absent", async () => {
+    const body = {
+      o: [
+        { a: null, b: "1" },
+        { a: "", b: null },
+      ],
+      s: null,
+    };
+    const p = await read(post(JSON.stringify(body), "application/json"));
+    expect(p.get("s")).toBe("");
+    expect(p.objects("o")).toEqual([
+      { a: "", b: "1" },
+      { a: "", b: "" },
+    ]);
+    expect(p.objects("o", { nulls: "absent" })).toEqual([{ b: "1" }, { a: "" }]);
+    const form = await read(post("o[][a]=&o[][b]=1", "application/x-www-form-urlencoded"));
+    expect(form.objects("o", { nulls: "absent" })).toEqual([{ a: "", b: "1" }]);
+  });
 });
 
 describe("readParams: body and text bounds", () => {

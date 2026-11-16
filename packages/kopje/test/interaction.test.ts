@@ -1003,6 +1003,46 @@ describe("POST /authorize_interaction (look-up)", () => {
       { content: "<p>the note</p>" },
     ]);
   });
+
+  // Mastodon's ResolveURLService without on_behalf_of (authorize_interactions_controller.rb:33) answers no stored
+  // status after a failed fetch (resolve_url_service.rb:44), where search answers one after a 401, 403 or 404
+  // (test/search-fallback.test.ts).
+  it("shows no stored status after a failed fetch", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    for (const status of [401, 403, 404]) {
+      t.web.fail(note.id, status);
+      const from = t.web.fetched.length;
+      expect((await lookUp(t, browser, note.id)).html, `${status}`).toContain(STRINGS.interact.notFoundTitle);
+      expect(t.web.fetched.slice(from), `${status}`).toContain(note.id);
+    }
+    expect(await sql(t.store, "SELECT content FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the note</p>" },
+    ]);
+  });
+
+  // The stored account whose uri is the URL, after a server error or no answer only (resolve_url_service.rb:39-42).
+  it("shows a stored account after 503", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const account = async () => {
+      const { response, html } = await lookUp(t, browser, t.bob.uri);
+      expect(response.status).toBe(200);
+      return query(parseHtml(html), "form").some((f) => attr(f, "action") === "/authorize_interaction/follow")
+        ? formOf(html, "/authorize_interaction/follow").get("uri")
+        : null;
+    };
+    expect(await account()).toBe(t.bob.uri);
+    t.web.fail(t.bob.uri, 503);
+    expect(await account()).toBe(t.bob.uri);
+    t.web.fail(t.bob.uri, 404);
+    const from = t.web.fetched.length;
+    expect(await account()).toBeNull();
+    expect(t.web.fetched.slice(from)).toContain(t.bob.uri);
+    expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", t.bob.uri)).toEqual([{ n: 1 }]);
+  });
 });
 
 describe("POST /authorize_interaction/follow", () => {

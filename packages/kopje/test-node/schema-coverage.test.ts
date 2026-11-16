@@ -23,7 +23,7 @@ const NOT_DUMPED: Record<string, string> = {
   remote_media_objects: "the cache's R2 ledger; remote/ is not backed up, and an empty ledger's orphans are swept",
   remote_media_usage: "the cache's sums, one row the migration inserts; an empty cache counts nothing",
   reply_walk_nodes: "the statuses of a walk of replies collections under way; a restored Store starts none",
-  reply_walks: "walks of replies collections Kopje runs for a context read; a restored Store starts none",
+  reply_walks: "walks of replies collections Kopje runs for a context read or a Create; a restored Store starts none",
   stream_conversation_marks:
     "the streaming conversation marks of one object; a restored Store makes them again from the conversations' stream_seq",
   stream_cursor: "the streaming fan-out's position, over the journal of one object",

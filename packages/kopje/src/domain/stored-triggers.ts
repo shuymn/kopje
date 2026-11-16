@@ -15,7 +15,10 @@ import {
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
+  nextDocumentRevisionSql,
   oembedEndpointPastBoundSql,
+  POLL_REVISION_COLUMNS,
+  pollRevisionPastBoundSql,
   PROFILE_DESCRIPTION_COLUMNS,
   PROFILE_SETTING_COLUMNS,
   profileSettingsPastBoundSql,
@@ -346,6 +349,19 @@ END;`,
     profileSettingsPastBoundSql("NEW"),
     "accounts: profile setting past its stored bound",
   ),
+  // 0100_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
+  // of a refresh (remote-statuses.ts refreshPoll).
+  ...boundTriggers(
+    "polls_revision",
+    "polls",
+    "revision",
+    pollRevisionPastBoundSql("NEW"),
+    "polls: revision past its stored bound",
+  ),
+  `CREATE TRIGGER polls_revision AFTER UPDATE OF ${POLL_REVISION_COLUMNS.join(", ")} ON polls
+BEGIN
+  UPDATE polls SET revision = ${nextDocumentRevisionSql("revision")} WHERE status_id = NEW.status_id;
+END;`,
 ];
 
 // Each registered trigger's statement by its name.

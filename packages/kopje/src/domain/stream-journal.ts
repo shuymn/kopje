@@ -11,7 +11,7 @@ export const JOURNAL_SPAN = 4096;
 // `user:notification`, on a list, or, for a public status that is not a boost, on a `public*` or `hashtag*` stream.
 // Who is sent it is judged when it is sent (R33). The listener condition of stream_status_edited (migration
 // 0056_announcements), checked equal to it by test/streaming/status-update-journal.test.ts, and the text of
-// stream_quote_state's (migration 0100_quote_state_stream; test/migrations.test.ts).
+// stream_quote_state's (migration 0102_quote_state_stream; test/migrations.test.ts).
 export const EDIT_LISTENED_SQL = `(
     EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key IN ('user', 'user:notification'))
     OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'list:' AND stream_key < 'list;')

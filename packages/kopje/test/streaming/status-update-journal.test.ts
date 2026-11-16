@@ -235,7 +235,7 @@ describe("journalStatusUpdate", () => {
   // Each listener set (the subscriptions of one local account) against each status, without a socket: the rows
   // journalStatusUpdate writes, with and without mentions, those stream_status_edited writes for an edited_at change
   // of the same status, and those stream_quote_state writes for a state change of the status's quote (migration
-  // 0100_quote_state_stream).
+  // 0102_quote_state_stream).
   it("journals exactly when the edit triggers do, for every listener set and status", async () => {
     const h = await community(["alice"]);
     const listener = h.users.alice.id;

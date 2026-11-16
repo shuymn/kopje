@@ -24,7 +24,7 @@ import { quoteAccept, quoteReject, quoteRequest, quoting, serveStamp } from "../
 import { drained, type Inbox, settled, subscribed } from "./stream-helpers";
 
 // A quote's state change streams its quoting status (the trigger stream_quote_state, migration
-// 0100_quote_state_stream; docs/threat-model.md VIS-26, RES-6): whatever writes the state, one `edit` row is journaled
+// 0102_quote_state_stream; docs/threat-model.md VIS-26, RES-6): whatever writes the state, one `edit` row is journaled
 // for the quoting status, and a `user` socket that home shows it to is sent one `status.update` with the new
 // `quote.state`; a hidden quoting status costs the row and is sent to no one (R33). One case per writer of the state.
 
