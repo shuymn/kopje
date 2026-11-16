@@ -362,11 +362,11 @@ describe("the route table's declarations", () => {
       images: (e: Env) => imagesCodec(e.IMAGES),
     };
     const emojis = ROUTES.find((route) => route.path === "/api/v1/custom_emojis")!;
-    expect(() => mastodonApi(deps, [{ ...emojis, caching: EVERYONE }])).toThrow(
+    expect(() => mastodonApi(deps, [{ ...emojis, caching: EVERYONE }], new Map())).toThrow(
       "GET /api/v1/custom_emojis reads a token: it cannot be cached for everyone",
     );
     // The branch ran on a route that reads none.
-    expect(() => mastodonApi(deps, [{ ...emojis, access: "public", caching: EVERYONE }])).not.toThrow();
+    expect(() => mastodonApi(deps, [{ ...emojis, access: "public", caching: EVERYONE }], new Map())).not.toThrow();
   });
 });
 

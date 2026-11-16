@@ -379,6 +379,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   longer waits for the sender's actor cache (3 minutes on Mastodon). Keys and inboxes still come only from the actor
   document Kopje fetches ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). No Store migration and
   no `wrangler.jsonc` change.
+- API answers carry Mastodon's `Content-Security-Policy`, `X-Frame-Options` and `Referrer-Policy`, and Mastodon's
+  deprecated routes (`/api/v1/instance`, `/api/v1/filters`, `/api/v1/suggestions`, `/api/v1/trends`,
+  `/api/v1/accounts/:id/identity_proofs`) its `Deprecation` header. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
