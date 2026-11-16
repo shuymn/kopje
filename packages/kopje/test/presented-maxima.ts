@@ -177,6 +177,6 @@ export type UnitPeak = { rows: number; objects: number; transient: number; peak:
 export const STREAM_UNIT_PEAKS: Record<"status" | "conversation" | "notification" | "announcement", UnitPeak> = {
   status: { rows: 19_339_642.5, objects: 17_456_490, transient: 2_121_652, peak: 38_917_784.5 },
   conversation: { rows: 23_018_052.5, objects: 21_453_999, transient: 2_121_652, peak: 46_593_703.5 },
-  notification: { rows: 25_873_005, objects: 19_877_580, transient: 2_121_652, peak: 47_872_237 },
+  notification: { rows: 25_875_672.5, objects: 19_880_787, transient: 2_121_652, peak: 47_878_111.5 },
   announcement: { rows: 7_283_520, objects: 746_991, transient: 2_974_810, peak: 11_005_321 },
 };

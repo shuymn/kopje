@@ -4361,7 +4361,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
   measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,872,237 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 47,878,111.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
@@ -5121,7 +5121,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
 | Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
 | Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
-| Notification (its status, report and warning together) | 25.87 MB                | 19.88 MB          | 2.12 MB             | 47.87 MB |
+| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 2.12 MB             | 47.88 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)
