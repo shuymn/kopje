@@ -325,6 +325,66 @@ describe("a local collection's page", () => {
     }
   });
 
+  // Mastodon's route is `/ap/users/:account_id/collections/:id(.:format)`, and Rails reads parameters[:format] before
+  // the Accept: the extension (percent-decoded, exact case) over the query's `format` (the last plain one; nil without
+  // `=`, so the Accept decides). Rack (in a middleware) and then Rails (in the controller) parse the query first: a bad
+  // `%`, a key nested as two kinds, a key or value that is not UTF-8, is 400 (a Rack limit is Mastodon's 500, 400
+  // here), and these and an Accept Rails cannot read answer before the collection is found. Each form's answer is
+  // Mastodon 4.7.5's for an existing collection, then for a missing one.
+  it("reads a collection document's format parameter as Mastodon's route does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const missing = collectionId(99);
+    const deep = (n: number) => `format=json&a${"[b]".repeat(n)}=1`;
+    const fields = (n: number) => `format=json&${Array.from({ length: n }, (_, i) => `k${i}=1`).join("&")}`;
+    const forms: [string, Record<string, string>, number, number][] = [
+      [".json", {}, 200, 404],
+      [".html", { accept: "application/json" }, 302, 404],
+      [".xhtml", {}, 302, 404],
+      [".xml", {}, 406, 404],
+      [".JSON", {}, 406, 404],
+      [".j%73on", {}, 200, 404],
+      [".%2E", {}, 406, 404],
+      [".", {}, 404, 404],
+      [".%FF", {}, 400, 400],
+      ["?format=json", { accept: "text/html" }, 200, 404],
+      ["?format=html", { accept: "application/json" }, 302, 404],
+      [".json?format=html", {}, 200, 404],
+      ["?format", { accept: "application/json" }, 200, 404],
+      ["?format=", { accept: "application/json" }, 406, 404],
+      ["?format[]=json", { accept: "application/json" }, 406, 404],
+      ["?format=json&format=html", { accept: "application/json" }, 302, 404],
+      ["?%66ormat=json", {}, 200, 404],
+      ["?format=json;format=html", { accept: "application/json" }, 406, 404],
+      ["?format=json&a=2&a[b]=1", {}, 400, 400],
+      ["?format=json&a=1&a[]=2", {}, 400, 400],
+      ["?format=json&a=%FF", {}, 400, 400],
+      ["?format=json&a=%ZZ", {}, 400, 400],
+      ["?a[b]=1&a=2", { accept: "foo bar" }, 406, 406],
+      ["?format=json&a[][b]=1&a[]&a[][b][c]=2", {}, 400, 400],
+      [`?${deep(31)}`, {}, 200, 404],
+      [`?${deep(32)}`, {}, 400, 400],
+      [`?${fields(4095)}`, {}, 200, 404],
+      [`?${fields(4096)}`, {}, 400, 400],
+      ["", { accept: "foo bar" }, 406, 406],
+    ];
+    for (const [suffix, headers, found, gone] of forms) {
+      const answers = [];
+      for (const target of [id, missing]) {
+        const answer = await h.request(`/ap/users/alice/collections/${target}${suffix}`, { headers });
+        answers.push([answer.status, answer.headers.get("location")]);
+      }
+      const location = found === 302 ? `/collections/${id}` : null;
+      expect([suffix.slice(0, 60), answers]).toEqual([
+        suffix.slice(0, 60),
+        [
+          [found, location],
+          [gone, null],
+        ],
+      ]);
+    }
+  });
+
   it("reads each page and the site facts in one Store call", async () => {
     const { h, calls } = await countedHarness(["alice", "bob"]);
     const served = await seedCollection(h, h.users.alice.id, 1);

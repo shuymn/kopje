@@ -1,19 +1,23 @@
 import { rubyStrip } from "../platform/strip";
+import type { RailsParam } from "./rails-params";
 
-// The representation Mastodon 4.7.5 gives a request, from its Accept, X-Requested-With and Content-Type, at a
-// controller that serves both a page and a document (`respond_to { format.html; format.json }`): "html" when
-// request.format.html? or respond_to picks html, "json" when it picks json, and "none" when it picks neither
-// (ActionController::UnknownFormat) or a type cannot be read (Mime::Type::InvalidMimeType), both 406. Rails 8.1.3.1's
-// actionpack: MimeNegotiation#formats with no format parameter or path extension (Kopje reads neither),
-// Mime::Type.parse with AcceptList.sort!, and negotiate_mime; the types as Rails and Mastodon's
-// config/initializers/mime_types.rb register them.
-export type RailsFormat = "html" | "json" | "none";
+// The representation Mastodon 4.7.5 gives a request, from its format parameter, Accept, X-Requested-With and
+// Content-Type, at a controller that serves both a page and a document (`respond_to { format.html; format.json }`):
+// "html" when request.format.html? or respond_to picks html, "json" when it picks json, "none" when it picks neither
+// (ActionController::UnknownFormat, 406 once the controller has found what it shows), and "invalid" when a type cannot
+// be read (Mime::Type::InvalidMimeType, 406 at the first callback that reads the format, before anything is found).
+// Rails 8.1.3.1's actionpack: MimeNegotiation#formats (the format parameter, else the Accept; the path extension is
+// the route's format parameter), Mime::Type.parse with AcceptList.sort!, and negotiate_mime; the types as Rails and
+// Mastodon's config/initializers/mime_types.rb register them.
+export type RailsFormat = "html" | "json" | "none" | "invalid";
 
-// The request's headers, as the Worker reads them: each byte one char (a ByteString).
+// The request's headers, as the Worker reads them (each byte one char, a ByteString), and its format parameter
+// (rails-params.ts railsFormatParam).
 export type RailsRequest = {
   accept: string | undefined;
   requestedWith: string | undefined;
   contentType: string | undefined;
+  format: RailsParam | undefined;
 };
 
 // Ruby's \s, which String#strip also removes (and NUL, which a header value never holds). Puma passes a header value
@@ -98,6 +102,68 @@ const LOOKUP = new Map<string, Format>([
   ...HTML_TYPES.map((type) => [type, "html"] as const),
   ...JSON_TYPES.map((type) => [type, "json"] as const),
   ...OTHER_TYPES.map((type) => [type, "other"] as const),
+]);
+
+// Mime::EXTENSION_LOOKUP: the extensions a format parameter names, each with its registered type.
+const HTML_EXTENSIONS = ["html", "xhtml"];
+const OTHER_EXTENSIONS = [
+  "aac",
+  "atom",
+  "bmp",
+  "css",
+  "csv",
+  "gif",
+  "gz",
+  "gzip",
+  "ics",
+  "jpe",
+  "jpeg",
+  "jpg",
+  "js",
+  "m4a",
+  "m4v",
+  "markdown",
+  "md",
+  "mp1",
+  "mp2",
+  "mp3",
+  "mp4",
+  "mpe",
+  "mpeg",
+  "mpg4",
+  "mpg",
+  "multipart_form",
+  "oga",
+  "ogg",
+  "opus",
+  "otf",
+  "pdf",
+  "pjpeg",
+  "png",
+  "rss",
+  "spx",
+  "svg",
+  "text",
+  "tif",
+  "tiff",
+  "ttf",
+  "txt",
+  "url_encoded_form",
+  "vcf",
+  "vtt",
+  "webm",
+  "webp",
+  "woff2",
+  "woff",
+  "xml",
+  "yaml",
+  "yml",
+  "zip",
+];
+const EXTENSIONS = new Map<string, Format>([
+  ...HTML_EXTENSIONS.map((extension) => [extension, "html"] as const),
+  ["json", "json"],
+  ...OTHER_EXTENSIONS.map((extension) => [extension, "other"] as const),
 ]);
 
 // parse_data_with_trailing_star: the registered types naming `text` or `application`, in Mime::SET's order.
@@ -218,9 +284,15 @@ function contentMime(header: string | undefined): ReturnType<typeof lookup> | un
   return lookup(rubyStrip(header.split(/[,;]/, 1)[0]!).replace(/[A-Z]+/g, (upper) => upper.toLowerCase()));
 }
 
-// MimeNegotiation#formats: the Accept's types when valid_accept_header (an XHR's present Accept, or its Content-Type's
-// type without one; any other present Accept not BROWSER_LIKE), else Mime[:js] for an XHR and Mime[:html] otherwise.
+// MimeNegotiation#formats: Mime[parameters[:format]] when the parameter is set (a String's type by its exact
+// extension, none for another String, an Array or a Hash); else the Accept's types when valid_accept_header (an XHR's
+// present Accept, or its Content-Type's type without one; any other present Accept not BROWSER_LIKE), else Mime[:js]
+// for an XHR and Mime[:html] otherwise.
 function formatsOf(request: RailsRequest): ReturnType<typeof lookup>[] {
+  if (request.format !== undefined && request.format !== null) {
+    const format = typeof request.format === "string" ? EXTENSIONS.get(request.format) : undefined;
+    return format === undefined ? [] : [format];
+  }
   const accept = request.accept ?? "";
   const present = !BLANK.test(accept);
   const xhr = XHR.test(request.requestedWith ?? "");
@@ -236,7 +308,7 @@ function formatsOf(request: RailsRequest): ReturnType<typeof lookup>[] {
 export function railsFormat(request: RailsRequest): RailsFormat {
   const formats = formatsOf(request);
   if (formats.includes(null)) {
-    return "none";
+    return "invalid";
   }
   // request.format.html? for the first; else negotiate_mime([html, json]), which takes */* as the first of them.
   for (const format of formats) {

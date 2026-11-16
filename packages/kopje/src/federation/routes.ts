@@ -20,6 +20,7 @@ import {
 import { signatureKeyId } from "./inbox-request";
 import type { LoaderDeps } from "./loader";
 import { railsFormat } from "./rails-format";
+import { railsFormatParam } from "./rails-params";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
 
@@ -27,9 +28,10 @@ const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:aut
 
 // A local account's collections (FEP-7aa9, D18): the featured_collections Collection, a FeaturedCollection, a
 // FeaturedItem, and a member's FeatureAuthorization. A collection's id holds digits only, so the route never takes
-// /collections/featured or /collections/tags.
+// /collections/featured or /collections/tags; it may end in an extension, as Mastodon's `(.:format)` (COLLECTION reads
+// it from the raw path).
 const FEATURED_COLLECTIONS_ROUTE = "/ap/users/:username/featured_collections";
-const COLLECTION_ROUTE = "/ap/users/:username/collections/:id{[0-9]+}";
+const COLLECTION_ROUTE = "/ap/users/:username/collections/:id{[0-9]+(?:\\.[^/]*)?}";
 const COLLECTION_ITEM_ROUTE = "/ap/users/:username/collection_items/:id";
 const FEATURE_AUTHORIZATION_ROUTE = "/ap/users/:username/feature_authorizations/:id";
 
@@ -195,28 +197,17 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
         : null;
     }
     case COLLECTION_ROUTE: {
-      const [, username, id] = COLLECTION.exec(url.pathname)!;
+      const path = COLLECTION.exec(url.pathname);
+      if (path === null) {
+        return { response: collectionDocument(null), source: null };
+      }
+      const [, username, id, extension] = path;
       const input = { username: username!, id: id!, keyId: signatureKeyId(c.req.raw.headers) };
       const answer = await read((s, b) => s.apFeaturedCollection(b, input));
       if (answer.status !== "ok") {
         return null;
       }
-      // CollectionsController#show as Rails negotiates its format (rails-format.ts): a request it answers with the page
-      // moves to the page (#redirect_to_canonical_url), and one it answers with neither representation is refused.
-      const format =
-        answer.document === null
-          ? "json"
-          : railsFormat({
-              accept: c.req.header("accept"),
-              requestedWith: c.req.header("x-requested-with"),
-              contentType: c.req.header("content-type"),
-            });
-      const response =
-        format === "html"
-          ? new Response(null, { status: 302, headers: { location: `/collections/${input.id}` } })
-          : format === "none"
-            ? new Response("Not Acceptable", { status: 406 })
-            : collectionDocument(answer.document);
+      const response = collectionAnswer(c, answer.document, input.id, extension, url.search.slice(1));
       return away(answer.domain) ?? { response, source: null };
     }
     case COLLECTION_ITEM_ROUTE: {
@@ -314,11 +305,42 @@ function collectionDocument(document: string | null, headers: Record<string, str
   });
 }
 
+// CollectionsController#show as Mastodon answers it (rails-params.ts, rails-format.ts), in its order: a query or
+// extension Rack or Rails refuses (400), then a type Rails cannot read (406), both before the collection is found; then
+// a collection not found (404); then a request it answers with the page moves to the page
+// (#redirect_to_canonical_url), and one it answers with neither representation is refused (406).
+function collectionAnswer(
+  c: Context<FederationEnv>,
+  document: string | null,
+  id: string,
+  extension: string | undefined,
+  query: string,
+): Response {
+  const param = railsFormatParam(extension, query);
+  if (param.refused) {
+    return new Response("Bad Request", { status: 400 });
+  }
+  const negotiated = railsFormat({
+    accept: c.req.header("accept"),
+    requestedWith: c.req.header("x-requested-with"),
+    contentType: c.req.header("content-type"),
+    format: param.format,
+  });
+  if (negotiated === "invalid" || (document !== null && negotiated === "none")) {
+    return new Response("Not Acceptable", { status: 406 });
+  }
+  if (document !== null && negotiated === "html") {
+    return new Response(null, { status: 302, headers: { location: `/collections/${id}` } });
+  }
+  return collectionDocument(document);
+}
+
 const NO_STORE = { "cache-control": "no-store" };
 
 const USERNAME = "([A-Za-z0-9_]{1,64})";
 const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collections$`);
-const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})$`);
+// Mastodon's `(.:format)`: an extension of anything but `/`, `.` and `?`, percent-decoded (rails-params.ts).
+const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})(?:\\.([^/.?]+))?$`);
 const ITEM = new RegExp(`^/ap/users/${USERNAME}/collection_items/(\\d{18})$`);
 const AUTHORIZATION = new RegExp(`^/ap/users/${USERNAME}/feature_authorizations/(\\d{18})$`);
 
