@@ -3,8 +3,11 @@
 
 import { preloadedContexts } from "@fedify/fedify";
 
-import { sensitiveShapeBody, sensitiveShapes } from "./sensitive-shapes.mjs";
+import { sensitiveShapes, sensitiveShapeText } from "./sensitive-shapes.mjs";
 
 const urls = ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"];
 const contexts = Object.fromEntries(urls.map((url) => [url, preloadedContexts[url]]));
-console.log(JSON.stringify({ contexts, bodies: sensitiveShapes().map(sensitiveShapeBody) }));
+// Each body as its text, so that a float 0 stays one.
+console.log(
+  `{"contexts":${JSON.stringify(contexts)},"bodies":[${sensitiveShapes().map(sensitiveShapeText).join(",")}]}`,
+);

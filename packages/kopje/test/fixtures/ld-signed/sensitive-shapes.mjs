@@ -31,11 +31,16 @@ const DEFINITIONS = {
 /** @typedef {keyof typeof DEFINITIONS} SensitiveDefinition */
 /** @typedef {{ definition: SensitiveDefinition, value: string, name: string, given: unknown }} SensitiveShape */
 
+// A float 0, which Mastodon's boolean column takes as true and an integer 0 as false: JSON.stringify writes no float
+// 0, so the value is given as this marker and written as 0.0 in the body's text (sensitiveShapeText).
+const FLOAT_ZERO = "float zero, written 0.0";
+
 /** @type {[string, unknown][]} */
 const VALUES = [
   ["false", false],
   ["true", true],
   ["0", 0],
+  ["0.0", FLOAT_ZERO],
   ["1", 1],
   ['"false"', "false"],
   ['"x"', "x"],
@@ -61,8 +66,20 @@ export function sensitiveShapes() {
   );
 }
 
+// The body's text, as it is posted and captured.
 /** @param {SensitiveShape} shape */
-export function sensitiveShapeBody({ definition, given }) {
+export function sensitiveShapeText(shape) {
+  return JSON.stringify(shapeBody(shape)).replace(JSON.stringify(FLOAT_ZERO), "0.0");
+}
+
+// The body as its text parses (a float 0 as 0).
+/** @param {SensitiveShape} shape */
+export function sensitiveShapeBody(shape) {
+  return /** @type {Record<string, unknown>} */ (JSON.parse(sensitiveShapeText(shape)));
+}
+
+/** @param {SensitiveShape} shape */
+function shapeBody({ definition, given }) {
   return {
     "@context": [AS, SEC, { sensitive: DEFINITIONS[definition] }],
     id: `${BOB}/statuses/sensitive/activity`,

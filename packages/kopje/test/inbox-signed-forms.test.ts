@@ -18,7 +18,7 @@ import formsFixture from "./fixtures/ld-signed/forms.json";
 import proofShapesFixture from "./fixtures/ld-signed/proof-shapes.json";
 import { LANGUAGE_PROOFS, proofShapeBody, proofShapes } from "./fixtures/ld-signed/proof-shapes.mjs";
 import sensitiveShapesFixture from "./fixtures/ld-signed/sensitive-shapes.json";
-import { sensitiveShapeBody, sensitiveShapes } from "./fixtures/ld-signed/sensitive-shapes.mjs";
+import { sensitiveShapeBody, sensitiveShapes, sensitiveShapeText } from "./fixtures/ld-signed/sensitive-shapes.mjs";
 import { BUILD } from "./helpers";
 import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
@@ -473,9 +473,10 @@ describe("D1: forms whose readings differ, each named by its class", () => {
 
     // The same for each definition of `sensitive` the rules admit, given each shape of value (sensitive-shapes.json,
     // Mastodon's reading and the status it creates): a list is written as a @list object, an array, an empty one too,
-    // as an array, each true. Kopje marks the status wherever Mastodon does, and also where Mastodon's json-ld refuses
-    // a datatype given as xsd: (it reads `false`, `0` or `"false"` as received) or keeps one of two equal values typed
-    // @id (the patch then stops at the array of one, and the compaction's false stands).
+    // as an array, each true, and so is a float 0 (0.0), which JSON parses as 0. Kopje marks the status wherever
+    // Mastodon does, and also where the value is an integer 0 typed @id, where Mastodon's json-ld refuses a datatype
+    // given as xsd: (it reads `false`, `0` or `"false"` as received) or keeps one of two equal values typed @id (the
+    // patch then stops at the array of one, and the compaction's false stands).
     it("sensitive defined otherwise, given each shape: marked wherever Mastodon marks it", async () => {
       const shapes = sensitiveShapes();
       expect(sensitiveShapesFixture.reference).toBe("mastodon-4.7.5");
@@ -490,7 +491,9 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(more).toEqual([
+        "typed @id, given 0",
         "typed @id, given [false, false]",
+        "typed @id, a set, given 0",
         "typed @id, a set, given [false, false]",
         "typed as xsd:boolean, given false",
         "typed as xsd:boolean, given 0",
@@ -1254,16 +1257,18 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(applied(name).effect.statuses).toMatchObject([{ sensitive }]);
   });
 
-  // A list, and an empty array typed @id: Mastodon's compaction writes a @list object and an empty array under the
-  // name, each of which its boolean column takes as true (sensitive-shapes.json).
-  it.each(["a list, given false", "typed @id, given []"])(
+  // A list, an empty array typed @id and a float 0 typed @id: Mastodon's compaction writes a @list object, an empty
+  // array and 0.0 under the name, each of which its boolean column takes as true (sensitive-shapes.json). The body is
+  // posted as its text, which keeps the float.
+  it.each(["a list, given false", "typed @id, given []", "typed @id, given 0.0"])(
     "a Note, its sensitive %s, is shown sensitive, as in Mastodon",
     async (name) => {
       const index = sensitiveShapes().findIndex((shape) => shape.name === name);
       expect(sensitiveShapesFixture.sensitive[index]).toBe("t");
       const { t, bob } = await world();
-      const received = sensitiveShapeBody(sensitiveShapes()[index]!);
-      expect(await t.post(bob, received)).toBe(202);
+      const shape = sensitiveShapes()[index]!;
+      const received = sensitiveShapeBody(shape);
+      expect(await t.post(bob, sensitiveShapeText(shape))).toBe(202);
       const id = (await statusRow(t.store, (received.object as Json).id as string))!.id;
       expect((await t.api<{ sensitive: boolean }>(`/api/v1/statuses/${id}`, "alice")).body.sensitive).toBe(true);
     },

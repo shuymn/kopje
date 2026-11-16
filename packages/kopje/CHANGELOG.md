@@ -255,14 +255,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   defines otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a
   quote; a `quote` given as `true` no longer makes a Note's other quote a non-legacy one, nor does a poll's `closed`
   given as an object close it; a `sensitive` the context defines otherwise (another type, or a list) marks the status
-  wherever Mastodon may, given an empty array too. A body Mastodon reads as received (past its JSON-LD limits, or with a
-  data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof with
-  jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts, types and keys whose definition
-  carries a context, counted in every node, and only where each key of the proof that starts with `@` is one a node
-  holds) is read as received, so a proof that expands to nothing (a null value, or a `@language` beside a null member or
-  beside a keyword of contexts such as `@version`) no longer has such a `QuoteRequest` read as received. An LD-signed
-  activity with a type array of two values or more one of which is not a string, on which Mastodon's job raises and
-  applies nothing, is ignored. No Store migration and no `wrangler.jsonc` change.
+  wherever Mastodon may, given an empty array or a `0` too. A body Mastodon reads as received (past its JSON-LD limits,
+  or with a data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof
+  with jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts, types and keys whose
+  definition carries a context, counted in every node, and only where each key of the proof that starts with `@` is one
+  a node holds) is read as received, so a proof that expands to nothing (a null value, or a `@language` beside a null
+  member or beside a keyword of contexts such as `@version`) no longer has such a `QuoteRequest` read as received. An
+  LD-signed activity with a type array of two values or more one of which is not a string, on which Mastodon's job
+  raises and applies nothing, is ignored. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
