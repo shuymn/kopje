@@ -276,6 +276,8 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       "under an inline context",
       "with a proof of plain names",
       "with a number where an IRI is expected",
+      "with a type naming id",
+      "with a type naming type",
     ])(
       "an Undo of a block typed as IRIs %s: Mastodon compacts it and lifts the block; Kopje cannot tell it does",
       (variant) => {
@@ -399,8 +401,12 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name)).toEqual({ name, effect });
     });
 
-    it("an Undo of a block typed as IRIs in a body Mastodon compacts: both lift the block", () => {
-      const name = "Undo of a block, both typed as IRIs";
+    // Tags that are also the keyword aliases `id` and `type` are tags in a language map, for both.
+    it.each([
+      "Undo of a block, both typed as IRIs",
+      "Undo of a block, both typed as IRIs, with a language map tagged id and type",
+    ])("%s, in a body Mastodon compacts: both lift the block", (name) => {
+      expect(form(name).fallback).toBeUndefined();
       expect(accepted(kopje(form(name)))).toMatchObject({ type: "Undo", object: { type: "Block" } });
       expect(applied(name)).toEqual({ name, effect: {} });
     });
@@ -430,6 +436,8 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         /^Mastodon::InvalidJsonLdError: has too many/,
       ],
       ["with IRIs as lists past the value limit once compacted", /^Mastodon::InvalidJsonLdError: has too many/],
+      ["with a null type in a language map array", /^JSON::LD::JsonLdError::InvalidTypeValue/],
+      ["with a null id in a language map array", /^JSON::LD::JsonLdError::InvalidIdValue/],
     ])("an Undo of a block typed as IRIs %s: Mastodon reads it as received, so neither lifts it", (variant, cause) => {
       const name = `Undo of a block, both typed as IRIs, ${variant}`;
       expect(form(name).fallback).toMatch(cause);
@@ -490,29 +498,30 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(15);
+      expect(renamed.length).toBe(17);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
-      // a proof, a number where an IRI is expected): their types are read as given, so such an activity applies less
-      // than Mastodon's.
+      // a proof, a number where an IRI is expected, a type naming a keyword alias): their types are read as given, so
+      // such an activity applies less than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
         "Undo of a block, both typed as IRIs, with an array in an array",
         "Undo of a block, both typed as IRIs, under an inline context",
         "Undo of a block, both typed as IRIs, with a proof of plain names",
         "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
+        "Undo of a block, both typed as IRIs, with a type naming id",
+        "Undo of a block, both typed as IRIs, with a type naming type",
       ]);
     });
 
     // The shape's bounds on the same body, where no capture varies them: an object with no id or type is a node like
     // any other, and a null among IRIs is dropped (as in the captured `to: [null]` forms); an id over a prefix only
-    // full_context defines (as the captured `cc` and type ones) or a blank node, a type naming a keyword alias, and a
-    // language map value other than a map of tags to strings are outside it.
+    // full_context defines (as the captured `cc` and type ones) or a blank node, and a language map value other than a
+    // map of tags to strings are outside it.
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
       { added: { cc: [null] }, read: "Undo" },
       { added: { instrument: { id: "toot:client" } }, read: "as:Undo" },
       { added: { instrument: { id: "_:client" } }, read: "as:Undo" },
-      { added: { tag: [{ type: "id" }] }, read: "as:Undo" },
       { added: { summaryMap: 5 }, read: "as:Undo" },
       { added: { summaryMap: { en: ["blocked"] } }, read: "as:Undo" },
       { added: { summaryMap: { "not a tag": "blocked" } }, read: "as:Undo" },
@@ -738,10 +747,13 @@ describe("D1 through the inbox: what the received form stores", () => {
     return id;
   }
 
-  it("an Undo of a block typed as IRIs in a body Mastodon compacts lifts it, as in Mastodon", async () => {
+  it.each([
+    "Undo of a block, both typed as IRIs",
+    "Undo of a block, both typed as IRIs, with a language map tagged id and type",
+  ])("%s, in a body Mastodon compacts, lifts it, as in Mastodon", async (name) => {
     const { t, bob, status } = await world();
     const id = await blockedStatus(t, bob);
-    expect(await t.post(bob, body("Undo of a block, both typed as IRIs", status))).toBe(202);
+    expect(await t.post(bob, body(name, status))).toBe(202);
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
   });
 
@@ -766,8 +778,12 @@ describe("D1 through the inbox: what the received form stores", () => {
     "with IRIs as lists past the value limit once compacted",
     "with an array in an array",
     "under an inline context",
+    "with a null type in a language map array",
+    "with a null id in a language map array",
     "with a proof of plain names",
     "with a number where an IRI is expected",
+    "with a type naming id",
+    "with a type naming type",
   ])("an Undo of a block typed as IRIs %s leaves the block", async (variant) => {
     const { t, bob, status } = await world();
     const id = await blockedStatus(t, bob);
@@ -792,6 +808,8 @@ describe("D1 through the inbox: what the received form stores", () => {
       );
     };
     await replay("Undo of a block, both typed as IRIs, with a proof typed by a number");
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    await replay("Undo of a block, both typed as IRIs, with a null type in a language map array");
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
     await replay("Undo of a block, both typed as IRIs");
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);

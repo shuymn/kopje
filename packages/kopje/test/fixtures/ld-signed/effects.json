@@ -1038,6 +1038,30 @@
     "effect": {}
   },
   {
+    "name": "Undo of a block, both typed as IRIs, with a null type in a language map array",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a null id in a language map array",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type naming id",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type naming type",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a language map tagged id and type",
+    "effect": {}
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [

@@ -537,6 +537,30 @@ const forms = {
     [AS, SEC],
     activity("as:Undo", { object: BLOCK, instrument: 5 }),
   ),
+  // A language map name given an array: JSON-LD reads each member as a value of the term (an object as a node), not as
+  // a language map, so a node's null type or id is refused there too.
+  "Undo of a block, both typed as IRIs, with a null type in a language map array": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, contentMap: [{ type: null }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a null id in a language map array": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, summaryMap: [{ id: null }] }),
+  ),
+  // A type naming a keyword alias, which the gate does not hold to.
+  "Undo of a block, both typed as IRIs, with a type naming id": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: "id" }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a type naming type": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: "type" }] }),
+  ),
+  // Language tags that are also the contexts' keyword aliases (`id` is Indonesian's): a language map all the same.
+  "Undo of a block, both typed as IRIs, with a language map tagged id and type": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, summaryMap: { id: "diblokir", type: "text" } }),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

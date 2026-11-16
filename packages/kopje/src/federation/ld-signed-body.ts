@@ -261,8 +261,10 @@ export function inlineDefinitionIris(context: unknown): Map<string, string> | nu
   return readContext(context)?.iris ?? null;
 }
 
-// Rule (3): every key of every object in the body is a plain name, but the top-level @context, signature and proof
-// (whose contents Mastodon's reading leaves out or does not compact). Each value is visited once.
+// Rule (3): every key of every object in the body is a plain name, but the top-level @context (rules 1 and 2),
+// signature and proof. Mastodon leaves the signature out of the compaction; a proof it compacts as any other member,
+// keywords included, so the rule does not hold a proof's keys and D5 renames no type in a body that has one
+// (mastodonCompacts). Each value is visited once.
 function bodyKeysReadable(json: Json): boolean {
   const pending: unknown[] = [];
   for (const [key, value] of Object.entries(json)) {
@@ -305,10 +307,13 @@ function bodyKeysReadable(json: Json): boolean {
 //     and at most three for each other value (a scalar may become a value object of value and type, or a list);
 //   - every `id`, and every value of a name either context types @id but a null or an object, is a string that is an
 //     http(s) IRI as written or over a prefix of the body's context (an IRI with an authority, which the compaction
-//     cannot confuse with a prefix of full_context); every `type` is such an IRI or a name other than `id` and `type`,
-//     or an array of them;
-//   - every value of a language map name is a map of language tags to strings or nulls;
+//     cannot confuse with a prefix of full_context); every `type` is such an IRI or a name other than `id` and `type`
+//     (which expand to keywords), or an array of them;
+//   - every value of a language map name is itself a map of language tags to strings or nulls (JSON-LD reads a
+//     language map only from a map: each member of an array there is a value of the term, a node for an object);
 //   - no array is directly in another.
+// A member of an array is held to its key's rule, as JSON-LD expands it under the same term (its type coercion
+// included); an object is a node under any other key.
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -373,7 +378,7 @@ function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
   while (pending.length > 0) {
     const [key, value] = pending.pop()!;
     if (Array.isArray(value)) {
-      if (value.some(Array.isArray)) {
+      if (LANGUAGE_MAPS.has(key) || value.some(Array.isArray)) {
         return false;
       }
       pending.push(...value.map((item): [string, unknown] => [key, item]));
