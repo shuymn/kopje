@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { ACCOUNT_COLUMN_MAP } from "../src/domain/account-columns";
+import { MAX_NOTE } from "../src/domain/accounts";
 import { htmlToPlainText } from "../src/domain/plain-text";
+import { MAX_RAW_LENGTH, noteLength } from "../src/domain/status-text";
 import { utf8Length } from "../src/platform/dump-format";
 import { BIO_JSON_BYTES, DISPLAY_NAME_LIMIT, DISPLAY_NAME_READ_BYTES } from "../src/platform/stored-bounds";
-import { bearer, sql } from "./api-helpers";
+import { bearer, json, sql } from "./api-helpers";
+import { WIDEST_NOTE } from "./note-fills";
 import { community, remoteAccount, seedStatus } from "./status-helpers";
 
 // RES-3: an Account's display name and note as an import may hold them, in malformed UTF-8 that passes the triggers of
@@ -112,5 +115,29 @@ describe("an Account's display name and note (RES-3)", () => {
     const own = await credential();
     expect(own.source.note).toBe(htmlToPlainText(note));
     expect(own.source.note).toHaveLength(15_527);
+  });
+
+  // The writer's worst note (E5 of #1606): MAX_RAW_LENGTH code units, each at most six bytes once stored as HTML and
+  // quoted as JSON (`"` as `&quot;`, a control character as \u00XX), with <p></p> and json_quote's quotes around them.
+  // Within BIO_JSON_BYTES, which migration 0048's trigger and noteSql enforce, so a note the writer stores is presented
+  // whole. The witness is the widest note noteLength counts as MAX_NOTE (test/note-fills.ts).
+  it("a counted note stays within the note's stored bound", async () => {
+    const { h, local } = await setup();
+    const worst = 6 * MAX_RAW_LENGTH + 9;
+    expect(worst).toBeLessThanOrEqual(BIO_JSON_BYTES);
+    expect([WIDEST_NOTE.length, noteLength(WIDEST_NOTE)]).toEqual([MAX_RAW_LENGTH, MAX_NOTE]);
+    const response = await h.request(
+      "/api/v1/accounts/update_credentials",
+      bearer(h.users.alice.token, json({ note: WIDEST_NOTE }, { method: "PATCH" })),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ source: { note: WIDEST_NOTE } });
+    const [stored] = await sql<{ bytes: number }>(
+      h.store,
+      "SELECT octet_length(json_quote(note)) AS bytes FROM accounts WHERE id = ?",
+      local,
+    );
+    expect(stored!.bytes).toBe(47_588);
+    expect(stored!.bytes).toBeLessThanOrEqual(worst);
   });
 });

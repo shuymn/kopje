@@ -2,6 +2,8 @@ import { type ByIds, writeEach } from "../db/by-ids";
 import {
   ACCOUNTS_ID_INDEX,
   ACCOUNTS_URI_INDEX,
+  COLLECTION_ITEMS_ID_INDEX,
+  COLLECTIONS_ID_INDEX,
   FEATURED_TAGS_ACCOUNT_INDEX,
   FEATURED_TAGS_ID_INDEX,
   FILTER_STATUSES_ID_INDEX,
@@ -25,7 +27,7 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
-import { type FetchSigner, fetchSignerOf, instanceDomainOf } from "./actors";
+import { instanceDomainOf } from "./actors";
 import {
   activeMuteSql,
   availableLocalSql,
@@ -57,6 +59,7 @@ import {
   supersedeEarlier,
 } from "./deliveries";
 import { recountFeatured } from "./featured-tags";
+import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { insertWithFreshId, NEW_GENERATION, remoteId } from "./ids";
 import { actorDomainBlocked, type PolicyTicket, ticketFor } from "./instance-domain-blocks";
@@ -69,7 +72,6 @@ import {
   recordJobAttempt,
   resetJobAttempts,
 } from "./job-attempts";
-import { deleteCard } from "./link-cards";
 import { listsHolding } from "./lists";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
@@ -84,18 +86,19 @@ import {
   quoteArrival,
   recheckStamp,
   rejectOurQuote,
-  retireQuoteOf,
   revokeStamp,
   sweepQuoteRequests,
 } from "./quotes";
 import {
   type RemoteActorInput,
+  type RemoteProfileInput,
   type DocumentRevision,
   RetryLater,
   type ActorState,
   actorState,
   NO_ACTOR_STATE,
   upsertRemoteActor,
+  upsertEmbeddedActor,
   originOf,
   SWEEP_BATCH,
   type RemoteRow,
@@ -109,6 +112,7 @@ import {
 } from "./remote-actors";
 import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } from "./remote-collections";
 import { retireAccountSlots, retireStatusMediaSlots } from "./remote-media";
+import { HIDE_ROWS, hideRemoteStatus, startRemoval } from "./remote-removal";
 import { followersUri, type RemoteStatusInput, statusByUri, visibilityOf } from "./remote-status-reads";
 import {
   hasLocalFollowers,
@@ -116,10 +120,11 @@ import {
   MAX_STATUS_MENTION_ROWS,
   firstRequestOf,
   resolutionTarget,
-  type StoreContext,
+  type UpdateContext,
   storeRemoteStatus,
   updateRemoteStatus,
 } from "./remote-statuses";
+import { createWalkDue } from "./reply-walk-create";
 import { fileRemoteReports } from "./reports";
 import {
   canRetract,
@@ -319,6 +324,11 @@ export type ReceiveInput = {
   actorUri: string;
   // A fresh document of the actor to store, or null to use the stored row as it is.
   actor: RemoteActorInput | null;
+  // An UpdateActor's embedded actor (docs/threat-model.md ID-1), read by the Worker as a fetched document is, its claim
+  // confirmed: its profile, handle claim, movedTo and document, stored over `actor`'s or the stored row's keys and
+  // inboxes (upsertEmbeddedActor). null: an embedded actor the Worker could not read, which applies nothing. Absent:
+  // the Update embeds no actor, and `actor`, fetched for it, is stored as for any activity.
+  profile?: RemoteProfileInput | null;
   // The actor's revision as the Worker read it before it fetched `actor` (inboxGate), the same in every round: the
   // document is stored only while it holds (upsertRemoteActor), so a later round never stores it again.
   actorRevision: DocumentRevision;
@@ -1274,10 +1284,16 @@ function finishJob(db: Db, kind: JobKind, key: string, now: number): void {
   );
 }
 
-// The actor document itself was stored before the handler ran (input.actor); receive answers retryLater instead of
-// running it when that store was superseded (upsertRemoteActor), so a document reaching it was stored.
+// The actor document itself was stored before the handler ran (input.actor, or the embedded profile over it or over
+// the stored row: input.profile); receive answers retryLater instead of running it when that store was superseded
+// (upsertRemoteActor, upsertEmbeddedActor), so a document reaching it was stored. An embedded actor the Worker could
+// not read applies nothing (profile null), as Mastodon's ProcessAccountService drops it.
 const updateActor: Handler<"UpdateActor"> = (_db, _actor, _activity, input) =>
-  input.actor === null ? ignored("no-document") : applied("actor-updated");
+  input.profile === null
+    ? ignored("invalid-actor")
+    : input.actor === null && input.profile === undefined
+      ? ignored("no-document")
+      : applied("actor-updated");
 
 // Mastodon's DeleteAccountService for a remote account, as a durable job: the purge job (the actor's tombstone) is
 // written with the first batch, and each batch removes a bounded part of what the account has (purgeBatch); the
@@ -1696,6 +1712,33 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
     "DELETE FROM collection_syncs WHERE account_id IN (SELECT account_id FROM collection_syncs WHERE account_id = ? LIMIT ?)",
     id,
   );
+  // Its items in any collection, then the items of its collections (MAX_STORED_ITEMS each), then each of its
+  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections).
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
+			(SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2)`,
+    id,
+  );
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
+			(SELECT i.id FROM collections c INDEXED BY collections_account
+				CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
+			WHERE c.account_id = ?1 LIMIT ?2)`,
+    id,
+  );
+  spend(
+    db,
+    budget,
+    `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
+			(SELECT c.id FROM collections c INDEXED BY collections_account WHERE c.account_id = ?1
+				AND NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = c.id)
+			LIMIT ?2)`,
+    id,
+  );
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,
@@ -2023,7 +2066,8 @@ export const STATUS_CHILDREN: readonly {
   // becoming deleted in the same statement (the quotes CHECK refuses an accepted quote without its target), its work
   // ended; an accepted one also takes itself off this status's count (the trigger quotes_count_changed) and, for a
   // quote of a local status, has Kopje's authorization retired (the trigger quotes_authorization_retired records it in
-  // quote_revocations), so a batch takes a third of the rows left.
+  // quote_revocations) and its state change journaled for its quoting status (the trigger stream_quote_state, while
+  // someone listens), so a batch takes a fourth of the rows left. A quote in another state keeps it: nothing journaled.
   {
     table: "quotes",
     column: "quoted_status_id",
@@ -2031,7 +2075,7 @@ export const STATUS_CHILDREN: readonly {
       `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX}
 			SET quoted_status_id = NULL, quoted_account_id = NULL, generation = ${NEW_GENERATION}, lease_until = NULL,
 				state = CASE state WHEN 'accepted' THEN 'deleted' ELSE state END, verify_after = NULL, authorization_id = NULL
-			WHERE status_id IN (SELECT status_id FROM quotes WHERE quoted_status_id = ?1 LIMIT CAST(?2 / 3 AS INTEGER))`,
+			WHERE status_id IN (SELECT status_id FROM quotes WHERE quoted_status_id = ?1 LIMIT CAST(?2 / 4 AS INTEGER))`,
     ],
   },
   // The status's own quote, one row at most: deleted before the status, so it never cascades, with the count of its
@@ -2146,6 +2190,8 @@ export const PURGED_ACCOUNT_CHILDREN: readonly { table: string; check: string; f
   { table: "collection_syncs", check: "account_id = ?1" },
   { table: "remote_field_links", check: "account_id = ?1" },
   { table: "collection_pins_pending", check: "account_id = ?1" },
+  { table: "collection_items", check: "account_id = ?1" },
+  { table: "collections", check: "account_id = ?1" },
 ];
 
 // What names a remote account without a foreign key (logical references, which no delete of the account cascades to):
@@ -2257,31 +2303,11 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (status.reblog_of_id !== null) {
     return applied("boost-deleted", removeBoost(db, actor, { id: status.id, original: status.reblog_of_id }, now));
   }
-  // R32: the streaming delete is captured when the job is created, before the first batch removes its mentions; the
-  // job row is the marker, so a Delete delivered again (or the later batches) captures nothing more. It writes outside
-  // the batch's budget, which deleteStatusBatch starts after it.
-  const created = db.first(
-    `INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('delete', ?, ?, ?) ON CONFLICT DO NOTHING
-		RETURNING key`,
-    status.id,
-    actor.uri,
-    now,
-  );
-  // The hide follows the capture (which reads the audience it ends), before any batch removes a mention (VIS-1), also
-  // outside the batch's budget: from here no one sees the status, no local account may boost it (it is direct) or
-  // unboost it (removalBegunSql), so its kept local boosts are fixed in this transaction.
-  if (created !== undefined) {
-    streamDelete(db, status.id, now);
-    hideRemoteStatus(db, status.id);
-  }
-  // Its accepted quote ends now, before any batch, outside the batch's budget (one quote row, its target's count and
-  // the revocation of Kopje's authorization if it holds one): neither the quotes list nor the count of its target
-  // shows it (VIS-27), and no stamp is served (VIS-28), while the removal runs.
-  retireQuoteOf(db, status.id, now);
+  const created = startRemoval(db, status.id, actor.uri, now);
   // The forwards are recorded by the request that created the job only, and staged before any of their evidence goes
   // (stageForwards and its barriers); so this transaction runs no batch once it recorded one.
   if (
-    created !== undefined &&
+    created &&
     status.reblog_of_id === null &&
     activity.proven !== undefined &&
     isDistributable(status.visibility) &&
@@ -2505,24 +2531,6 @@ function stageForwards(db: Db, originalId: string, budget: JobBudget): boolean {
     }
   }
   return true;
-}
-
-// The hide of a remote status whose Delete is recorded (VIS-1): it writes the status, the account's last status, which
-// the trigger of migration 0021_directory moves back, and deletes the status's card (link-cards.ts: a direct status
-// holds none), and the copy of withdrawn on its own quote row when that row is marked local (migration
-// 0091_live_local_quotes; only an import marks a remote status's quote so), so four rows at most, and nothing once done. It also marks the status withdrawn (its retraction is
-// recorded), which refuses a local unboost of it (statuses.ts unboostableId) and skips its recounts
-// (deleteStatusWithin).
-const HIDE_ROWS = 4;
-function hideRemoteStatus(db: Db, statusId: string): void {
-  db.run(
-    `UPDATE statuses SET withdrawn = 1, visibility = 'direct', content = '', spoiler_text = '', search_text = NULL,
-			filter_text_units = NULL
-		WHERE id = ? AND (withdrawn = 0 OR visibility <> 'direct' OR content <> '' OR spoiler_text <> ''
-			OR search_text IS NOT NULL)`,
-    statusId,
-  );
-  deleteCard(db, statusId);
 }
 
 // A Delete relayed by another server (federation/inbound.ts, ID-1's exception), never applied to an actor. Of a stored
@@ -2758,8 +2766,15 @@ function deliveredTo(db: Db, recipient: string | null | undefined): string | nul
   );
 }
 
-function storeContext(db: Db, input: ReceiveInput): StoreContext {
-  return { now: input.now, origin: input.origin, deliveredTo: deliveredTo(db, input.recipient), fetched: false };
+function storeContext(db: Db, input: StoreReceiveInput): UpdateContext {
+  return {
+    now: input.now,
+    storeNow: input.storeNow,
+    origin: input.origin,
+    deliveredTo: deliveredTo(db, input.recipient),
+    fetched: false,
+    readReplies: { storeNow: input.storeNow },
+  };
 }
 
 function outcome(result: { applied: boolean; reason: string }): ReceiveResult {
@@ -2784,6 +2799,7 @@ const quoteRequest: Handler<"QuoteRequest"> = (db, actor, activity, input) => {
       origin: input.origin,
       deliveredTo: deliveredTo(db, input.recipient),
       prefetched: input.prefetched?.statuses[activity.instrument],
+      storeNow: input.storeNow,
     },
     storeRemoteStatus,
   );
@@ -2960,10 +2976,10 @@ function newOriginal(
   db: Db,
   actor: RemoteRow,
   activity: Extract<InboundActivity, { type: "Announce" }>,
-  input: ReceiveInput,
+  input: StoreReceiveInput,
 ): Original | ReceiveResult {
   const { now, origin } = input;
-  const context = { now, origin, deliveredTo: null, fetched: true };
+  const context = { now, origin, deliveredTo: null, fetched: true, readReplies: { storeNow: input.storeNow } };
   const embedded = activity.embedded;
   if (embedded !== null && embedded.uri === activity.object && embedded.attributedTo === actor.uri) {
     const stored = storeRemoteStatus(db, actor, embedded, context);
@@ -3380,6 +3396,7 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
       origin: input.origin,
       deliveredTo: null,
       fetched: true,
+      readReplies: { storeNow: input.storeNow },
     });
     // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
     // than the one asked for pins nothing.
@@ -3471,7 +3488,9 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (!sameOrigin(activity.id, actorUri)) {
     return ignored("foreign-id");
   }
-  if (input.actor !== null && input.actor.uri !== actorUri) {
+  // The embedded actor is the UpdateActor's alone.
+  const profile = activity.type === "UpdateActor" ? (input.profile ?? null) : null;
+  if ((input.actor !== null && input.actor.uri !== actorUri) || (profile !== null && profile.uri !== actorUri)) {
     return ignored("actor-mismatch");
   }
   // A deleted actor does nothing more while its tombstone lasts; a repeated Delete only continues the purge.
@@ -3481,13 +3500,14 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
       : ignored("actor-deleted");
   }
   // R38, VIS-30: the inbound gate, in every round. An unavailable actor (individually suspended) first takes a routing
-  // refresh from its verified document; then only its cleanups apply, with its stored row and no upsert (SUSPENDED_
-  // ADMITS), and anything else is ignored. An actor an instance domain block covers is held the same way, without the
-  // refresh; one with no stored row has nothing to clean up, and nothing of it is stored.
-  // The routing refresh and the upsert store the document only while the revision the Worker read before fetching it
-  // holds (DocumentRevision), so a round after the first, or a document fetched before another store committed, stores
-  // nothing (ID-1). A non-Update activity was verified against that document, and applies with the stored row; an
-  // Update(Person) whose document was superseded is answered 503, and its retry fetches the document again.
+  // refresh from its fetched document (never from an embedded one); then only its cleanups apply, with its stored row
+  // and no upsert (SUSPENDED_ADMITS), and anything else is ignored. An actor an instance domain block covers is held the
+  // same way, without the refresh; one with no stored row has nothing to clean up, and nothing of it is stored.
+  // The routing refresh and the upsert store the document (and an UpdateActor's embedded profile) only while the
+  // revision the inbox gate read before the request's first fetch holds (DocumentRevision), so a round after the first,
+  // or a document fetched before another store committed, stores nothing (ID-1). A non-Update activity was verified
+  // against that document, and applies with the stored row; an Update(Person) whose store was superseded is answered
+  // 503, and its retry reads the state again.
   const held = unavailableRemote(db, actorUri);
   if (held === undefined && actorDomainBlocked(db, actorUri)) {
     return ignored("actor-suspended");
@@ -3500,16 +3520,21 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
       return ignored("actor-suspended");
     }
   }
+  const documented = input.actor !== null || profile !== null;
   const upserted =
-    held === undefined && input.actor !== null && activity.type !== "DeleteActor"
-      ? upsertRemoteActor(db, input.actor, origin, now, input.actorRevision)
-      : undefined;
+    held !== undefined || activity.type === "DeleteActor"
+      ? undefined
+      : profile !== null
+        ? upsertEmbeddedActor(db, profile, input.actor, origin, now, input.actorRevision)
+        : input.actor !== null
+          ? upsertRemoteActor(db, input.actor, origin, now, input.actorRevision)
+          : undefined;
   if (upserted === "superseded" && activity.type === "UpdateActor") {
     retryLater("actor-changed");
   }
   const actor =
     held ??
-    (input.actor === null || activity.type === "DeleteActor" || upserted === "superseded"
+    (!documented || activity.type === "DeleteActor" || upserted === "superseded"
       ? remoteAccount(db, actorUri)
       : upserted);
   if (actor === undefined && activity.type === "DeleteActor" && input.actor !== null) {
@@ -3531,9 +3556,10 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   }
   const handler = HANDLERS[activity.type] as Handler<typeof activity.type>;
   const result = handler(db, actor, activity, input);
-  // A sync of the actor's collections was asked for, or quotes have verification work due (only the job rounds verify
-  // them): the Worker asks the Queue for a round (cron runs one regardless).
-  const waiting = ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now);
+  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is (only
+  // the job rounds verify and walk them): the Worker asks the Queue for a round (cron runs one regardless).
+  const waiting =
+    ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now) || createWalkDue(db, input.storeNow);
   return waiting ? { ...result, jobsPending: true } : result;
 }
 
@@ -3669,25 +3695,6 @@ export const inboxOwnerExists = readOperation<{ username: string }, boolean>((db
   ownerExists(db, username),
 );
 
-// What a fetch a Store answer decided needs, read in that answer (docs/engineering.md, "How a request talks to the
-// Store"): its signer by DATA-7's rule (fetchSignerOf), wrapped (DATA-1), and the domain policy's verdict for its
-// first request (ticketFor; null when the loader would refuse the target anyway). Optional: the Worker reads what is
-// missing itself, as it would without it.
-export type FetchPreparation = { signer: FetchSigner; ticket: PolicyTicket | null };
-
-// The one producer of FetchPreparation, for the three answers that decide a fetch: the inbox gate, a receiveActivity
-// need and a search resolution's gate (resolutionGate). Null for a target of this instance's own origin: the paths it
-// serves never fetch one (federation/inbound.ts fetchNeeded and prepare; resolutionTarget), so no key leaves the
-// Store for it; a signature key at this origin, which Fedify may still fetch, then costs the Worker its own signer and
-// policy reads.
-function fetchPreparation(db: Db, by: string | FollowerSigner | null, target: string): FetchPreparation | null {
-  const domain = instanceDomainOf(db);
-  if (domain !== null && originOf(target) === `https://${domain}`) {
-    return null;
-  }
-  return { signer: fetchSignerOf(db, by), ticket: ticketFor(db, target) };
-}
-
 // What a search resolution (federation/resolve.ts) is decided on before any network work, in one read, in this order:
 // the credential (as checkCredential judges it, so a failing token is answered first); then whether writes are refused
 // (`refused`, decided by Store.resolutionGate in the same transaction), which answers the reason and reads nothing more,
@@ -3710,7 +3717,7 @@ export const resolutionGate = userReadOperation<
   return {
     refused: null,
     domain,
-    prefetch: target === null ? null : fetchPreparation(db, null, firstRequestOf(target)),
+    prefetch: target === null || target.kind === "local" ? null : fetchPreparation(db, null, firstRequestOf(target)),
   };
 });
 

@@ -3,6 +3,7 @@ import { expect, inject, it } from "vitest";
 
 import { MIGRATIONS } from "../../src/db/migrations";
 import { MAX_FEATURED_TAGS } from "../../src/domain/featured-tags";
+import { MAX_REMOTE_PINS } from "../../src/domain/remote-collections";
 import { JOURNAL_SPAN } from "../../src/domain/stream-journal";
 import { BUILD, freshStore, testKernel } from "../helpers";
 
@@ -120,10 +121,12 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts);
 // 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
-// and pending cards seeded); 0100_quote_broadcast adds a checked column to quotes, which SQLite tests against each
-// quote, as 0094 does. A migration that reads another table must add it here before it is measured. The measured
-// time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only
-// between I/O events, so the clock is read across an await on each side.
+// and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
+// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
+// quote, as 0094 does. A migration that reads another table must add it here before it is measured. The measured time
+// is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only between
+// I/O events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -922,6 +925,22 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.local,
       );
     }
+    // While 0101_pin_refresh is pending: MAX_REMOTE_PINS pending pins of each of the first remote accounts, as many
+    // accounts as SHAPE.collectionSyncs, the rows it tests its CHECK on.
+    const refreshPending = pending("0101_pin_refresh") && has("collection_pins_pending");
+    if (refreshPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+				SELECT CAST(100000000000000000 + ?2 + i / ?3 AS TEXT), 'https://d' || (i % ?4) || '.bench/statuses/p' || i, ?5
+				FROM n WHERE ?1 > 0`,
+        collectionSyncs * MAX_REMOTE_PINS,
+        SHAPE.local,
+        MAX_REMOTE_PINS,
+        SHAPE.domains,
+        now,
+      );
+    }
     if (handlesPending && sharedHandles > 0) {
       run(
         `UPDATE accounts SET username = p.username, domain = p.domain,
@@ -999,6 +1018,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       pins: pinsPending ? count("status_pins") : 0,
       excessPins: excessPins(),
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
+      pendingPins: refreshPending ? count("collection_pins_pending") : 0,
       // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
       sharedHandles: handlesPending
         ? count(
@@ -1048,13 +1068,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
-    // 0100_quote_broadcast: the column, and the quotes holding its default.
+    // 0104_quote_broadcast: the column, and the quotes holding its default.
     const quoteBroadcast = has("quotes", "broadcast")
       ? { quotes: count("quotes"), zero: count("quotes WHERE broadcast = 0") }
       : undefined;
     // 0098_card_attribution: the column, and the cards holding NULL.
     const cardAuthors = has("status_cards", "unverified_author_account_id")
       ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
+      : undefined;
+    // 0101_pin_refresh: the pending pins, and those holding the new column's default.
+    const pinRefresh = has("collection_pins_pending", "refresh")
+      ? { rows: count("collection_pins_pending"), pending: count("collection_pins_pending WHERE refresh = 0") }
       : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
@@ -1123,6 +1147,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           remoteHandles,
           profileSettings,
           cardAuthors,
+          pinRefresh,
           quoteBroadcast,
         },
       };
@@ -1159,6 +1184,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         remoteHandles,
         profileSettings,
         cardAuthors,
+        pinRefresh,
         quoteBroadcast,
       },
     };
@@ -1259,8 +1285,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const cards = seeded.cards + seeded.pendingCards;
     expect(measured.cardAuthors).toEqual({ cards, none: cards });
   }
-  // 0100 tested its CHECK against every seeded quote, received and local, each taking the default.
-  if (applied.includes("0100_quote_broadcast")) {
+  // 0101 tested its CHECK on every seeded pending pin, each holding the default (a pending row).
+  if (applied.includes("0101_pin_refresh")) {
+    const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
+    expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0104 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0104_quote_broadcast")) {
     expect(seeded.quotes).toBeGreaterThan(0);
     expect(measured.quoteBroadcast).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
   }

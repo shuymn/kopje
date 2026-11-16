@@ -134,7 +134,8 @@ const ENVELOPE_BYTES =
 // end of the staging of one still staging, which only an import holds: outbound_activities_staging_ended), the
 // intent, the hide and the account's last status (its trigger), the card, trend row, review, author's pin and poll,
 // its own quote (the quote, its withdrawn copy written by the hide's trigger, migration 0091_live_local_quotes, its
-// target's count and Kopje's revocation), MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA media, the two counts and the job.
+// target's count, Kopje's revocation and its streaming journal row, stream_quote_state), MAX_STATUS_TAGS hashtags,
+// MAX_STATUS_MEDIA media, the two counts and the job.
 // The signed Delete of a public or unlisted status as stored (activities.ts signedDeleteEnvelope), at its maxima, over
 // a skeleton whose status uri and actor id are the short canonical U and A: its status's uri three times (the activity
 // id, the Tombstone and its atomUri), its author's actor id three times (actor, the signature's creator and the
@@ -184,7 +185,7 @@ function canonicalUri(prefix: string, limit: number): string {
 }
 
 const SUPERSEDE_ROWS = 3 * DELETE_SUPERSEDES;
-const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 4 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
+const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 5 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
 
 describe("the Delete of a local status (VIS-3, RES-6)", () => {
   it("stores its envelope within its derived bound, the identities at their bound at the worst escaping", async () => {
@@ -372,8 +373,9 @@ describe("the Delete of a local status (VIS-3, RES-6)", () => {
 // of many senders with one holding all MAX_PUSH_BACKLOG pushes, remote boosts and a local boost, receipts staged over
 // more than one call, a voter in no other part of its audience, replies, near-exhausting authorized quotes of it, an
 // accepted quote of its own, conversations, a trend row, a review and a card, earlier activities about it past
-// DELETE_SUPERSEDES with delivered, leased, exposed and given-up rows, and every streaming subscription.
-async function worst(t: Setup) {
+// DELETE_SUPERSEDES with delivered, leased, exposed and given-up rows, and every streaming subscription. `retractions`
+// of it still staging (an import's).
+async function worst(t: Setup, retractions = DELETE_SUPERSEDES - 1) {
   const bob = await mastodonActor(t.web, "bob");
   await followed(t, bob, DAVE);
   const parent = mastodonNote(bob);
@@ -567,9 +569,8 @@ async function worst(t: Setup) {
 		VALUES (?, 'https://link.example/', 0, 1, 'a link', 0)`,
     id,
   );
-  // DELETE_SUPERSEDES - 1 retractions of it still staging (an import's), recorded before the Updates: the request
-  // supersedes them.
-  await seedStagingRetractions(t.store, DELETE_SUPERSEDES - 1, ALICE, status.uri, "Delete");
+  // The retractions still staging, recorded before the Updates: the request supersedes them.
+  await seedStagingRetractions(t.store, retractions, ALICE, status.uri, "Delete");
   // DELETE_SUPERSEDES + 1 earlier Updates about it, each with a row in another state (and exposed).
   await sql(
     t.store,
@@ -606,6 +607,36 @@ async function worst(t: Setup) {
 }
 
 describe("a local status deleted at every bound at once (RES-6)", () => {
+  it("writes exactly REQUEST_ROWS with every term at its maximum", async () => {
+    // worst's status with DELETE_SUPERSEDES retractions still staging and its Create superseded already, so the
+    // request supersedes three rows each (SUPERSEDE_ROWS), and 256 viewers to capture: alice and dave, and 254 accounts
+    // on `public` that may see it (a tombstone with them).
+    const t = await setup();
+    const w = await worst(t, DELETE_SUPERSEDES);
+    await sql(
+      t.store,
+      `UPDATE outbound_activities SET superseded = 1, staged = NULL
+			WHERE object_uri = ? AND retracts = 0 AND json_extract(body, '$.activity.type') = 'Create'`,
+      w.status.uri,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO stream_subscriptions (account_id, stream_key, sockets)
+			SELECT id, 'public', 1 FROM accounts WHERE id GLOB '6*' ORDER BY id LIMIT 254`,
+    );
+    const { answer, wrote } = await deleted(t, w.id);
+    expect(answer).toBe("ok");
+    expect(
+      await sql(
+        t.store,
+        `SELECT (SELECT count(*) FROM stream_delete_viewers) AS viewers,
+					(SELECT count(*) FROM retraction_stagings WHERE ended = 1) AS ended,
+					(SELECT count(*) FROM stream_events WHERE kind = 'edit') AS journaled`,
+      ),
+    ).toEqual([{ viewers: 256, ended: DELETE_SUPERSEDES, journaled: 1 }]);
+    expect(wrote).toBe(REQUEST_ROWS);
+  });
+
   it("writes the request within its derived rows, each batch within PURGE_BATCH, and reaches every receiver", async () => {
     const t = await setup();
     const w = await worst(t);

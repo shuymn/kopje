@@ -1312,6 +1312,28 @@ describe("dump", () => {
     );
   }, 120_000);
 
+  it("restores a dump taken before 0101_pin_refresh, whose sync rows upgrade to pending rows", async () => {
+    await restoredBefore(
+      "0101_pin_refresh",
+      (sql) => {
+        sql.exec(
+          `INSERT INTO accounts (id, uri, username, domain)
+					VALUES ('100000000000000001', 'https://remote.example/users/a', 'a', 'remote.example')`,
+        );
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+					VALUES ('100000000000000001', 'https://remote.example/users/a/statuses/1', '2026-11-16T00:00:00.000Z')`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0101_pin_refresh"] });
+        expect(sql.exec("SELECT uri, refresh FROM collection_pins_pending").toArray()).toEqual([
+          { uri: "https://remote.example/users/a/statuses/1", refresh: 0 },
+        ]);
+      },
+    );
+  }, 120_000);
+
   it("round-trips a card's unverified author (0098), and refuses one past its stored bound on import", async () => {
     const source = await seeded(1);
     const [account, status] = await runInDurableObject(source, (_instance, state) => {
@@ -1360,6 +1382,81 @@ describe("dump", () => {
       expect(String(await rejectionOf(importViaRpc(target, text.replace(line!, changed))))).toMatch(
         /status_cards: a value past its stored bound/,
       );
+    }
+  }, 120_000);
+
+  it("round-trips collections and a report's collection ids (0100), and refuses a dump past their bounds", async () => {
+    const source = await seeded(1);
+    const at = "2026-11-16T00:00:00.000Z";
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      // An owner and 26 accounts, 25 of them accepted members of its collection and the 26th not.
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 26)
+				INSERT INTO accounts (id, uri, username) SELECT printf('72%016d', i), 'https://kopje.test/ap/users/m' || i, 'm' || i FROM n`,
+      );
+      sql.exec(
+        `INSERT INTO collections (id, account_id, local, name, description, language, sensitive, discoverable, tag,
+					created_at, updated_at)
+				VALUES ('730000000000000001', '720000000000000000', 1, 'name', 'about', 'en', 1, 0, 'Tag', ?1, ?1)`,
+        at,
+      );
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25)
+				INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+				SELECT printf('74%016d', i), '730000000000000001', printf('72%016d', i), 1, i, ?1, ?1 FROM n`,
+        at,
+      );
+      sql.exec(
+        `INSERT INTO reports (account_id, target_account_id, status_ids, collection_ids, uri, created_at)
+				VALUES ('720000000000000001', '720000000000000000', '[]', '["730000000000000001"]',
+					'https://kopje.test/reports/1', ?1)`,
+        at,
+      );
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, problems: [] });
+    const rows = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) => {
+        const sql = state.storage.sql;
+        return [
+          sql.exec("SELECT * FROM collections").toArray(),
+          sql.exec("SELECT * FROM collection_items ORDER BY id").toArray(),
+          sql.exec("SELECT collection_ids FROM reports WHERE collection_ids IS NOT NULL").toArray(),
+        ];
+      });
+    const [collections, items, reports] = await rows(restored);
+    expect(collections).toHaveLength(1);
+    expect(items).toHaveLength(25);
+    expect(reports).toEqual([{ collection_ids: '["730000000000000001"]' }]);
+    expect(await rows(restored)).toEqual(await rows(source));
+
+    // A dump from elsewhere, as its text could hold it: a 26th live member, and a report naming 51 collections.
+    const item = text
+      .split("\n")
+      .find((l) => l.startsWith('INSERT INTO "collection_items"') && l.includes("740000000000000025"));
+    const report = text.split("\n").find((l) => l.includes(`'["730000000000000001"]'`));
+    expect(item).toContain("'720000000000000025'");
+    const ids = JSON.stringify(Array.from({ length: 51 }, (_, i) => String(730000000000000001n + BigInt(i))));
+    for (const [changed, message] of [
+      [
+        text.replace(
+          item!,
+          `${item}\n${item!.replace("740000000000000025", "740000000000000026").replace("'720000000000000025'", "'720000000000000026'")}`,
+        ),
+        /collection_items: past the live bound/,
+      ],
+      [
+        text.replace(report!, report!.replace(`'["730000000000000001"]'`, `'${ids}'`)),
+        /reports: collection_ids past its stored bound/,
+      ],
+    ] as const) {
+      expect(changed).not.toBe(text);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, changed)))).toMatch(message);
     }
   }, 120_000);
 

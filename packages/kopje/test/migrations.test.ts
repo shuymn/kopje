@@ -33,8 +33,10 @@ import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
+import { EDIT_LISTENED_SQL, JOURNAL_SPAN } from "../src/domain/stream-journal";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
 import { normalizeOnce, normalizeTag } from "../src/domain/tag-name";
+import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import {
   EMOJI_EDGE_LIMIT,
@@ -108,8 +110,12 @@ import {
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
   cardAttributionMigrationSql,
+  collectionsMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
   PROFILE_DESCRIPTION_LIMIT,
+  POLL_REVISION_COLUMNS,
+  POLL_REVISION_MAX,
+  pollRefreshMigrationSql,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -358,6 +364,10 @@ const HAND_WRITTEN_TRIGGERS: readonly { reason: string; names: readonly string[]
       "reject_replays_guard_update",
     ],
   },
+  {
+    reason: "0100: the stream journal's row for a quote's state change (the listener condition of stream-journal.ts)",
+    names: ["stream_quote_state"],
+  },
 ];
 
 // What differs between the triggers of `sql`'s schema and the registry: a trigger whose text (SQLite keeps it
@@ -399,9 +409,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(72);
+      expect(STORED_TRIGGERS.size).toBe(83);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        72 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        83 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -13248,13 +13258,630 @@ describe("0099_reply_walks", () => {
   });
 });
 
-describe("0100_quote_broadcast", () => {
-  const NAME = "0100_quote_broadcast";
+describe("0100_poll_refresh", () => {
+  const NAME = "0100_poll_refresh";
+  const at = NAMES.indexOf(NAME);
+  const [ACCOUNT, STATUS, OTHER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const REVISION_REFUSED = /polls: revision past its stored bound/;
+  const label = (value: unknown) => JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  it("follows 0099, declared foreignKeys: 'unchanged', and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0099_reply_walks");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(POLL_REVISION_MAX).toBe(2 ** 53 - 1);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(
+      statements(
+        `${pollRefreshMigrationSql()}\n${emitTriggers(["polls_revision_insert", "polls_revision_update", "polls_revision"])}`,
+      ),
+    );
+  });
+
+  it("polls.fetched_at, refresh_at and revision", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/a', 'a', 'remote.test')",
+        ACCOUNT,
+      );
+      for (const id of [STATUS, OTHER]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://remote.test/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+          id,
+          ACCOUNT,
+        );
+      }
+      sql.exec(
+        `INSERT INTO polls (status_id, options, tallies, expires_at, votes_count, voters_count)
+				VALUES (?, '["a","b"]', '[1,2]', '2026-11-17T00:00:00.000Z', 3, 3)`,
+        STATUS,
+      );
+      const before = sql.exec("SELECT * FROM polls").one();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // A carried poll was never fetched nor tried, and holds revision 0: it is due at its first signed-in read.
+      expect(sql.exec("SELECT * FROM polls").one()).toEqual({
+        ...before,
+        fetched_at: null,
+        refresh_at: null,
+        revision: 0,
+      });
+
+      const read = (column: string) =>
+        sql.exec(`SELECT ${column} AS v, typeof(${column}) AS t FROM polls WHERE status_id = ?`, STATUS).one();
+      const update = (column: string, value: SqlStorageValue) =>
+        sql.exec(`UPDATE polls SET ${column} = ? WHERE status_id = ?`, value, STATUS);
+      const insert = (column: string, value: SqlStorageValue) => {
+        sql.exec("DELETE FROM polls WHERE status_id = ?", OTHER);
+        sql.exec(
+          `INSERT INTO polls (status_id, options, tallies, ${column}) VALUES (?, '["a","b"]', '[0,0]', ?)`,
+          OTHER,
+          value,
+        );
+      };
+      // The times' CHECK: NULL, 0, 2^53 - 1 and what INTEGER affinity stores as an integer are kept; -1, past 2^53 - 1,
+      // a REAL that is not integral, a text and a BLOB are refused, on insert and on update.
+      for (const column of ["fetched_at", "refresh_at"]) {
+        for (const [value, kept] of [
+          [null, null],
+          [0, 0],
+          [POLL_REVISION_MAX, POLL_REVISION_MAX],
+          ["7", 7],
+          [8.0, 8],
+        ] as const) {
+          update(column, value);
+          expect(read(column), `${column} ${String(value)}`).toEqual({
+            v: kept,
+            t: kept === null ? "null" : "integer",
+          });
+          insert(column, value);
+        }
+        for (const value of [-1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+          expect(() => update(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+          expect(() => insert(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+        }
+        expect(read(column)).toEqual({ v: 8, t: "integer" });
+        update(column, null);
+      }
+      // The revision's triggers: 0, 2^53 - 1 and integer affinity's integers kept; anything else refused, NULL included.
+      for (const [value, kept] of [
+        [0, 0],
+        [POLL_REVISION_MAX, POLL_REVISION_MAX],
+        ["7", 7],
+        [8.0, 8],
+      ] as const) {
+        update("revision", value);
+        expect(read("revision")).toEqual({ v: kept, t: "integer" });
+        insert("revision", value);
+      }
+      for (const value of [null, -1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+        expect(() => update("revision", value), label(value)).toThrow(REVISION_REFUSED);
+        expect(() => insert("revision", value), label(value)).toThrow(REVISION_REFUSED);
+      }
+
+      // polls_revision: a write of any of the poll's columns moves the revision, from any stored value the maximum
+      // included, to another value within the bound; a write of the others moves nothing.
+      const revision = () =>
+        sql.exec<{ v: number }>("SELECT revision AS v FROM polls WHERE status_id = ?", STATUS).one().v;
+      const values: Record<(typeof POLL_REVISION_COLUMNS)[number], SqlStorageValue> = {
+        options: '["c","d"]',
+        cut_options: "[1]",
+        tallies: "[4,5]",
+        multiple: 1,
+        expires_at: "2026-11-18T00:00:00.000Z",
+        votes_count: 9,
+        voters_count: null,
+        ended: 1,
+        generation: 1,
+        removed: 1,
+        fetched_at: 5,
+      };
+      for (const column of POLL_REVISION_COLUMNS) {
+        for (const start of [0, POLL_REVISION_MAX]) {
+          update("revision", start);
+          update(column, values[column]);
+          const moved = revision();
+          expect(moved, `${column} from ${start}`).not.toBe(start);
+          expect(moved).toBeGreaterThanOrEqual(0);
+          expect(moved).toBeLessThanOrEqual(POLL_REVISION_MAX);
+        }
+      }
+      update("revision", POLL_REVISION_MAX);
+      for (const [column, value] of [
+        ["refresh_at", 6],
+        ["update_due_at", "2026-11-18T00:00:00.000Z"],
+        ["stale", 1],
+        ["hide_totals", 1],
+      ] as const) {
+        update(column, value);
+        expect(revision(), column).toBe(POLL_REVISION_MAX);
+      }
+    });
+  });
+});
+
+describe("0101_pin_refresh", () => {
+  const NAME = "0101_pin_refresh";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+
+  it("follows 0100, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0100_poll_refresh");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("keeps every sync row a pending row, and holds refresh to 0 and 1", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        ACCOUNT,
+      );
+      for (const n of ["1", "2"]) {
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+					VALUES (?, 'https://remote.example/users/a/statuses/' || ?, '2026-11-16T00:00:00.000Z')`,
+          ACCOUNT,
+          n,
+        );
+      }
+      const before = sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray()).toEqual(
+        before.map((row) => ({ ...row, refresh: 0 })),
+      );
+      const set = (value: SqlStorageValue) =>
+        sql.exec(
+          "UPDATE collection_pins_pending SET refresh = ? WHERE uri = 'https://remote.example/users/a/statuses/1'",
+          value,
+        );
+      for (const value of [1, 0, 1]) {
+        set(value);
+      }
+      expect(
+        sql.exec("SELECT refresh, typeof(refresh) AS t FROM collection_pins_pending ORDER BY uri").toArray(),
+      ).toEqual([
+        { refresh: 1, t: "integer" },
+        { refresh: 0, t: "integer" },
+      ]);
+      const refused = /CHECK constraint failed: refresh IN \(0, 1\)/;
+      for (const value of [2, -1, "x", 0.5]) {
+        expect(() => set(value), String(value)).toThrow(refused);
+      }
+      expect(() => set(null)).toThrow(/NOT NULL constraint failed/);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at, refresh)
+					VALUES (?, 'https://remote.example/users/a/statuses/3', '2026-11-16T00:00:00.000Z', 2)`,
+          ACCOUNT,
+        ),
+      ).toThrow(refused);
+    });
+  });
+});
+
+describe("0102_quote_state_stream", () => {
+  const NAME = "0102_quote_state_stream";
   const at = NAMES.indexOf(NAME);
   const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
 
-  it("follows 0099, declared foreignKeys: 'unchanged'", () => {
-    expect(NAMES[at - 1]).toBe("0099_reply_walks");
+  it("follows 0101, declared foreignKeys: 'unchanged', and adds one trigger whose listener condition is EDIT_LISTENED_SQL", async () => {
+    expect(NAMES[at - 1]).toBe("0101_pin_refresh");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      const triggers = () =>
+        sql
+          .exec<{ name: string; sql: string }>(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+          )
+          .toArray();
+      const before = triggers().map((t) => t.name);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const added = triggers().filter((t) => !before.includes(t.name));
+      expect(added.map((t) => t.name)).toEqual(["stream_quote_state"]);
+      // The listener condition is journalStatusUpdate's text, read for the quoting status; the span is JOURNAL_SPAN's.
+      expect(added[0]!.sql).toContain(`FROM statuses s WHERE s.id = NEW.status_id AND ${EDIT_LISTENED_SQL};`);
+      expect(added[0]!.sql).toContain(
+        `coalesce((SELECT max(id) FROM stream_events) - (SELECT min(id) FROM stream_events), 0) < ${JOURNAL_SPAN}`,
+      );
+    });
+  });
+
+  // R's status Q quotes O; `user` is a listener on `user` once `listening` is set.
+  async function quoted(listening: boolean) {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/1', 'u', 'x.test')", R);
+      for (const id of [Q, O]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'private', '2026-11-01T00:00:00.000Z')`,
+          id,
+          R,
+        );
+      }
+      sql.exec(
+        `INSERT INTO quotes (status_id, quoted_uri, state, updated_at)
+					VALUES (?1, 'https://x.test/s/' || ?2, 'pending', '2026-11-01T00:00:00.000Z')`,
+        Q,
+        O,
+      );
+      if (listening) {
+        sql.exec("INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)", R);
+      }
+    });
+    return store;
+  }
+
+  const journal = (sql: SqlStorage) =>
+    sql
+      .exec<{ kind: string; subject: string; created_at: string }>(
+        "SELECT kind, subject, created_at FROM stream_events ORDER BY id",
+      )
+      .toArray();
+
+  it("journals one edit of the quoting status, dated by the quote, for each state change while someone listens", async () => {
+    await runInDurableObject(await quoted(true), (_instance, state) => {
+      const sql = state.storage.sql;
+      const moves = [
+        ["rejected", ""],
+        ["pending", ""],
+        ["accepted", `, quoted_status_id = '${O}', quoted_account_id = '${R}'`],
+        ["revoked", ""],
+        ["deleted", ""],
+      ] as const;
+      for (const [i, [to, extra]] of moves.entries()) {
+        sql.exec(
+          `UPDATE quotes SET state = ?, updated_at = ?${extra} WHERE status_id = ?`,
+          to,
+          `2026-11-0${i + 2}T00:00:00.000Z`,
+          Q,
+        );
+      }
+      expect(journal(sql)).toEqual(
+        moves.map((_, i) => ({ kind: "edit", subject: Q, created_at: `2026-11-0${i + 2}T00:00:00.000Z` })),
+      );
+    });
+  });
+
+  it("journals nothing for a write that sets the state to its own value, nor while nobody listens", async () => {
+    await runInDurableObject(await quoted(true), (_instance, state) => {
+      const sql = state.storage.sql;
+      // The trigger's event: the state is in the SET, its value unchanged (a retry's write, a write-back to pending).
+      sql.exec("UPDATE quotes SET state = 'pending', attempts = attempts + 1 WHERE status_id = ?", Q);
+      sql.exec("UPDATE quotes SET state = state, approval_uri = 'https://x.test/a/1' WHERE status_id = ?", Q);
+      expect(
+        sql.exec<{ attempts: number; approval_uri: string }>("SELECT attempts, approval_uri FROM quotes").one(),
+      ).toEqual({
+        attempts: 1,
+        approval_uri: "https://x.test/a/1",
+      });
+      expect(journal(sql)).toEqual([]);
+    });
+    await runInDurableObject(await quoted(false), (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("UPDATE quotes SET state = 'rejected' WHERE status_id = ?", Q);
+      expect(sql.exec<{ state: string }>("SELECT state FROM quotes").one().state).toBe("rejected");
+      expect(journal(sql)).toEqual([]);
+    });
+  });
+
+  it("takes no row once the journal spans JOURNAL_SPAN ids, and one below it", async () => {
+    for (const [low, taken] of [
+      [1, false],
+      [2, true],
+    ] as const) {
+      await runInDurableObject(await quoted(true), (_instance, state) => {
+        const sql = state.storage.sql;
+        for (const id of [low, 1 + JOURNAL_SPAN]) {
+          sql.exec("INSERT INTO stream_events (id, kind, subject, created_at) VALUES (?, 'status', ?, '')", id, O);
+        }
+        sql.exec("UPDATE quotes SET state = 'rejected' WHERE status_id = ?", Q);
+        expect(journal(sql).map((row) => row.kind)).toEqual(
+          taken ? ["status", "status", "edit"] : ["status", "status"],
+        );
+      });
+    }
+  });
+});
+
+describe("0103_collections", () => {
+  const NAME = "0103_collections";
+  const at = NAMES.indexOf(NAME);
+  const [OWNER, OTHER] = ["100000000000000001", "100000000000000002"];
+  const T = "2026-11-16T00:00:00.000Z";
+  const ASTRAL = "\u{1F600}";
+  const id = (n: number) => String(200000000000000000n + BigInt(n));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const TRIGGERS = [
+    "collections_per_account",
+    "collections_per_account_move",
+    "collection_items_per_collection",
+    "collection_items_per_collection_move",
+    "collection_items_live",
+    "collection_items_live_update",
+    "reports_collection_ids_insert",
+    "reports_collection_ids_update",
+  ];
+
+  // A Store at 0100 with a local owner and a remote account, and helpers inserting rows of the two tables.
+  async function migrated(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        OTHER,
+      );
+      run(sql);
+    });
+  }
+  const insert = (sql: SqlStorage, table: string, row: Record<string, SqlStorageValue>) => {
+    const keys = Object.keys(row);
+    sql.exec(
+      `INSERT INTO ${table} (${keys.join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`,
+      ...Object.values(row),
+    );
+  };
+  const collection = (sql: SqlStorage, n: number, fields: Record<string, SqlStorageValue> = {}) =>
+    insert(sql, "collections", {
+      id: id(n),
+      account_id: OWNER,
+      local: 1,
+      name: "n",
+      sensitive: 0,
+      discoverable: 1,
+      created_at: T,
+      updated_at: T,
+      ...fields,
+    });
+  const item = (sql: SqlStorage, n: number, fields: Record<string, SqlStorageValue> = {}) =>
+    insert(sql, "collection_items", {
+      id: id(1000 + n),
+      collection_id: id(1),
+      object_uri: `https://remote.example/users/m${n}`,
+      state: 0,
+      position: 1,
+      created_at: T,
+      updated_at: T,
+      ...fields,
+    });
+
+  it("follows 0102, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0102_quote_state_stream");
+    // New tables: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toBe(
+      statements(
+        `${collectionsMigrationSql([...TREND_LANGUAGES], { bytes: TAG_NAME_BYTES, length: MAX_TAG_LENGTH })}\n${emitTriggers(TRIGGERS)}`,
+      ),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("holds a collection's columns to their bounds, by locality", async () => {
+    await migrated((sql) => {
+      // At the bounds: 40 and 100 four-byte characters on a local collection, 256 and 2,048 on a remote one, a
+      // tag of MAX_TAG_LENGTH four-byte characters, a script-tagged locale, and a remote URI of 2,048 bytes.
+      collection(sql, 1, {
+        name: ASTRAL.repeat(40),
+        description: ASTRAL.repeat(100),
+        language: "mn-Mong",
+        tag: ASTRAL.repeat(MAX_TAG_LENGTH),
+      });
+      collection(sql, 2, { description: "" });
+      const uri = (bytes: number) => "https://remote.example/c/".padEnd(bytes, "x");
+      collection(sql, 3, {
+        account_id: OTHER,
+        local: 0,
+        name: ASTRAL.repeat(256),
+        description: ASTRAL.repeat(2048),
+        uri: uri(2048),
+        url: uri(2048),
+        total_items: 2147483647,
+      });
+      const refused: [string, Record<string, SqlStorageValue>, string][] = [
+        ["an empty name", { name: "" }, "collection_name"],
+        ["41 characters on a local one", { name: ASTRAL.repeat(41) }, "collection_name"],
+        [
+          "257 on a remote one",
+          { account_id: OTHER, local: 0, name: "a".repeat(257), uri: uri(30) },
+          "collection_name",
+        ],
+        ["101 characters of description", { description: "a".repeat(101) }, "collection_description"],
+        ["an empty language", { language: "" }, "collection_language"],
+        ["an unsupported language", { language: "xx" }, "collection_language"],
+        ["a flag of 2", { sensitive: 2 }, "collection_sensitive"],
+        ["an empty tag", { tag: "" }, "collection_tag"],
+        ["a tag past its length", { tag: "a".repeat(MAX_TAG_LENGTH + 1) }, "collection_tag"],
+        ["a URI on a local one", { uri: uri(30) }, "collection_uri"],
+        ["a remote one without a URI", { account_id: OTHER, local: 0 }, "collection_uri"],
+        ["a remote URI past 2,048 bytes", { account_id: OTHER, local: 0, uri: uri(2049) }, "collection_uri"],
+        ["an http URI", { account_id: OTHER, local: 0, uri: "http://remote.example/c" }, "collection_uri"],
+        ["total_items on a local one", { total_items: 1 }, "collection_total_items"],
+        ["a 17-digit id", { id: id(9).slice(1) }, "collection_id"],
+        ["a time of another form", { created_at: "2026-11-16T00:00:00Z" }, "collection_created_at"],
+      ];
+      for (const [what, fields, check] of refused) {
+        expect(() => collection(sql, 9, fields), what).toThrow(new RegExp(`CHECK constraint failed: ${check}\\b`));
+      }
+      expect(sql.exec("SELECT count(*) AS n FROM collections").one().n).toBe(3);
+    });
+  });
+
+  it("ties an item's columns to each other and keeps one verified authorization per member", async () => {
+    await migrated((sql) => {
+      collection(sql, 1);
+      collection(sql, 2);
+      const AUTH = "https://remote.example/auth/1";
+      const refused: [string, Record<string, SqlStorageValue>, string][] = [
+        ["neither an account nor an object", { object_uri: null }, "collection_item_member"],
+        ["a queued check without a candidate", { check_due_at: 5 }, "collection_item_queued"],
+        ["a token not queued", { check_token: "00000000-0000-4000-8000-000000000000" }, "collection_item_claimed"],
+        [
+          "a watched answer under a claim",
+          {
+            candidate_approval_uri: AUTH,
+            check_due_at: 5,
+            check_token: "00000000-0000-4000-8000-000000000000",
+            answer_activity_id: 1,
+          },
+          "collection_item_watched",
+        ],
+        ["a verified authorization without an account", { approval_uri: AUTH }, "collection_item_approved"],
+        [
+          "a retraction on an accepted item",
+          { account_id: OTHER, state: 1, retracted_approval_uri: AUTH },
+          "collection_item_retracted",
+        ],
+        [
+          "a retraction beside a verified authorization",
+          { account_id: OTHER, approval_uri: AUTH, retracted_approval_uri: `${AUTH}x` },
+          "collection_item_retracted",
+        ],
+        [
+          "a retraction beside a candidate",
+          { candidate_approval_uri: AUTH, retracted_approval_uri: `${AUTH}x` },
+          "collection_item_retracted",
+        ],
+        ["an accepted item without an account", { state: 1 }, "collection_item_accepted"],
+        ["a state of 4", { state: 4 }, "collection_item_state"],
+        ["a position of 0", { position: 0 }, "collection_item_position"],
+        ["six attempts", { check_attempts: 6 }, "collection_item_check_attempts"],
+      ];
+      for (const [what, fields, check] of refused) {
+        expect(() => item(sql, 9, fields), what).toThrow(new RegExp(`CHECK constraint failed: ${check}\\b`));
+      }
+      // A pending item's first retraction, and a queued watch of an answer, are accepted.
+      item(sql, 1, { retracted_approval_uri: AUTH });
+      item(sql, 2, { candidate_approval_uri: AUTH, check_due_at: 5, answer_activity_id: 1 });
+      // Two members' rows may hold one authorization; one member's two rows may not.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/b', 'b', 'remote.example')",
+        id(500),
+      );
+      item(sql, 3, { account_id: OTHER, state: 1, approval_uri: AUTH });
+      item(sql, 4, { account_id: id(500), state: 1, approval_uri: AUTH });
+      expect(() => item(sql, 5, { collection_id: id(2), account_id: OTHER, state: 1, approval_uri: AUTH })).toThrow(
+        /UNIQUE constraint failed/,
+      );
+      // One item per member and collection, whatever its state.
+      expect(() => item(sql, 6, { account_id: OTHER, state: 3 })).toThrow(/UNIQUE constraint failed/);
+    });
+  });
+
+  it("refuses a 51st stored collection of one account, inserted or moved", async () => {
+    await migrated((sql) => {
+      for (let n = 1; n <= 50; n++) {
+        collection(sql, n);
+      }
+      expect(() => collection(sql, 51)).toThrow(/collections: past the per-account bound/);
+      collection(sql, 51, { account_id: OTHER, local: 0, uri: "https://remote.example/c/51" });
+      expect(() => sql.exec("UPDATE collections SET account_id = ? WHERE id = ?", OWNER, id(51))).toThrow(
+        /collections: past the per-account bound/,
+      );
+      // A row's other columns change freely at the bound.
+      sql.exec("UPDATE collections SET name = 'm' WHERE id = ?", id(50));
+      expect(sql.exec("SELECT count(*) AS n FROM collections WHERE account_id = ?", OWNER).one().n).toBe(50);
+    });
+  });
+
+  it("refuses a 26th live item and a 51st stored one in a collection, inserted, revived or moved", async () => {
+    await migrated((sql) => {
+      collection(sql, 1);
+      collection(sql, 2);
+      for (let n = 1; n <= 25; n++) {
+        item(sql, n);
+      }
+      expect(() => item(sql, 26)).toThrow(/collection_items: past the live bound/);
+      for (let n = 26; n <= 50; n++) {
+        item(sql, n, { state: n % 2 === 0 ? 2 : 3 });
+      }
+      expect(() => item(sql, 51, { state: 2 })).toThrow(/collection_items: past the per-collection bound/);
+      // A retired row back to pending past 25, and a live one moved into a collection holding 25.
+      expect(() => sql.exec("UPDATE collection_items SET state = 0 WHERE id = ?", id(1026))).toThrow(
+        /collection_items: past the live bound/,
+      );
+      item(sql, 60, { collection_id: id(2) });
+      expect(() => sql.exec("UPDATE collection_items SET collection_id = ? WHERE id = ?", id(1), id(1060))).toThrow(
+        /collection_items: past the per-collection bound|collection_items: past the live bound/,
+      );
+      // A live item stays live and moves within the bound: its position and its state between pending and accepted.
+      sql.exec("UPDATE collection_items SET position = 2 WHERE id = ?", id(1001));
+      sql.exec("UPDATE collection_items SET state = 1, account_id = ? WHERE id = ?", OTHER, id(1001));
+      // Retiring one frees a live slot.
+      sql.exec("UPDATE collection_items SET state = 3 WHERE id = ?", id(1002));
+      sql.exec("DELETE FROM collection_items WHERE id = ?", id(1026));
+      sql.exec("UPDATE collection_items SET state = 0 WHERE id = ?", id(1027));
+      const count = (where: string) =>
+        sql.exec(`SELECT count(*) AS n FROM collection_items WHERE collection_id = ? AND ${where}`, id(1)).one().n;
+      expect([count("state IN (0, 1)"), count("1")]).toEqual([25, 49]);
+    });
+  });
+
+  it("holds reports.collection_ids to 50 ids of 18 digits", async () => {
+    await migrated((sql) => {
+      const ids = (count: number) => JSON.stringify(Array.from({ length: count }, (_, n) => id(n)));
+      const report = (value: SqlStorageValue) =>
+        sql.exec(
+          "INSERT INTO reports (account_id, target_account_id, uri, created_at, collection_ids) VALUES (?, ?, ?, ?, ?)",
+          OWNER,
+          OTHER,
+          `https://kopje.test/r/${crypto.randomUUID()}`,
+          T,
+          value,
+        );
+      report(null);
+      report(ids(50));
+      for (const value of [ids(51), '["1"]', "[1]", "{}", '["1"', blob("[]"), `[${JSON.stringify(id(1).slice(1))}]`]) {
+        expect(() => report(value), typeof value === "string" ? value : "a blob").toThrow(
+          /reports: collection_ids past its stored bound/,
+        );
+      }
+      expect(() => sql.exec("UPDATE reports SET collection_ids = ?", ids(51))).toThrow(
+        /reports: collection_ids past its stored bound/,
+      );
+      expect(sql.exec("SELECT count(*) AS n FROM reports").one().n).toBe(2);
+    });
+  });
+});
+
+describe("0104_quote_broadcast", () => {
+  const NAME = "0104_quote_broadcast";
+  const at = NAMES.indexOf(NAME);
+  const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
+
+  it("follows 0103, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0103_collections");
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     expect(MIGRATIONS[at]?.sql).toContain("CHECK (typeof(broadcast) = 'integer' AND broadcast IN (0, 1, 2))");
   });

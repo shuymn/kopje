@@ -5,6 +5,7 @@ import type { InboundActivity } from "../src/domain/inbox";
 import { readOperation, writeOperation } from "../src/domain/operation";
 import {
   fileRemoteReports,
+  MAX_FLAG_OBJECTS,
   MAX_REMOTE_REPORT_COMMENT,
   MAX_REPORT_STATUSES,
   MAX_UNRESOLVED_REMOTE_REPORTS,
@@ -514,14 +515,58 @@ describe("Flag: bounds (RES-2, RES-7)", () => {
     });
   });
 
-  it("reads the first 101 object entries: a target at entry 101 is reported, at entry 102 it is not", async () => {
+  it("reads the first 151 object entries: a target at entry 151 is reported, at entry 152 it is not", async () => {
     const t = await world();
     const actor = await mastodonInstanceActor(t.web);
     const fillers = (n: number) => Array.from({ length: n }, (_, i) => `${LOCAL}/ap/o/unknown-${i}`);
-    expect(await t.post(actor, mastodonFlag(actor, [...fillers(101), DAVE_URI], "x"))).toBe(202);
+    expect(MAX_FLAG_OBJECTS).toBe(151);
+    expect(await t.post(actor, mastodonFlag(actor, [...fillers(MAX_FLAG_OBJECTS), DAVE_URI], "x"))).toBe(202);
     expect(await reports(t)).toEqual([]);
-    expect(await t.post(actor, mastodonFlag(actor, [...fillers(100), DAVE_URI], "x"))).toBe(202);
+    expect(await t.post(actor, mastodonFlag(actor, [...fillers(MAX_FLAG_OBJECTS - 1), DAVE_URI], "x"))).toBe(202);
     expect(await reports(t)).toHaveLength(1);
+  });
+
+  // ActivityPub::Activity::Flag (Mastodon 4.7.5): the collections it names by URI are attached to their owner's report.
+  it("attaches the local collections it names, by uri or url, to their owner's report only", async () => {
+    const t = await world();
+    const actor = await mastodonInstanceActor(t.web);
+    const at = new Date(NOW).toISOString();
+    for (const [id, owner] of [
+      ["700000000000000001", DAVE],
+      ["700000000000000002", DAVE],
+      ["700000000000000003", ALICE],
+    ] as const) {
+      await sql(
+        t.store,
+        `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+				VALUES (?, ?, 1, 'c', 0, 0, ?3, ?3)`,
+        id,
+        owner,
+        at,
+      );
+    }
+    const flag = mastodonFlag(
+      actor,
+      [
+        DAVE_URI,
+        `${LOCAL}/collections/700000000000000002`,
+        `${LOCAL}/ap/users/dave/collections/700000000000000001`,
+        `${LOCAL}/collections/700000000000000003`,
+        `${LOCAL}/collections/799999999999999999`,
+        "https://elsewhere.example/collections/700000000000000001",
+      ],
+      "x",
+    );
+    expect(await t.post(actor, flag)).toBe(202);
+    expect(await sql(t.store, "SELECT target_account_id, collection_ids FROM reports")).toEqual([
+      { target_account_id: DAVE, collection_ids: '["700000000000000002","700000000000000001"]' },
+    ]);
+    // A Flag naming none of the target's leaves the column NULL.
+    expect(await t.post(actor, { ...mastodonFlag(actor, [DAVE_URI], "y"), id: `${MASTODON}/payloads/none` })).toBe(202);
+    expect(await sql(t.store, "SELECT collection_ids FROM reports ORDER BY id")).toEqual([
+      { collection_ids: '["700000000000000002","700000000000000001"]' },
+      { collection_ids: null },
+    ]);
   });
 
   it("cuts the comment to 5,000 code points, NUL and astral ones included, and reads anything else as none", async () => {

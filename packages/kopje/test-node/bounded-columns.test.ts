@@ -384,6 +384,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "foundSql",
   "hidesCollectionsSql",
   "hostCoveredSql",
+  // R45, whether an item lists its collection among those featuring the viewer: a predicate (domain/audience.ts).
+  "inCollectionsSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
   // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).
@@ -420,6 +422,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "rowHeapSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
+  // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
+  "spoilerReadSql",
   // As rowHeapSql: the heap of the rows one status reads (status-rows.ts), a number.
   "statusRowTerms",
   // statuses.url read through its stored bound (platform/stored-bounds.ts).
@@ -666,8 +670,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
+  // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
+  "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
@@ -681,13 +686,14 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },
   "src/domain/local-emojis.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/media.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // The poll refresh's reservation: the status to fetch and its author, sent and compared with the document.
+  "src/domain/polls.ts statuses.uri": { count: 2, reason: IDENTITY },
+  "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/quotes.ts statuses.uri": { count: 7, reason: IDENTITY },
   "src/domain/quotes.ts accounts.uri": { count: 7, reason: IDENTITY },
-  "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  "src/domain/remote-collections.ts accounts.uri": { count: 4, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/remote-statuses.ts accounts.uri": { count: 1, reason: IDENTITY },
+  "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
@@ -702,8 +708,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
 			contact_username, never presented`,
   },
   "src/domain/activities.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.username": { count: 7, reason: LOCAL },
+  "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },
   "src/domain/admin-authority.ts column a.username": { count: 1, reason: LOCAL },
   "src/domain/deliveries.ts accounts.username": {
@@ -715,6 +721,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: "compared with the author's featured tags to count them, never presented",
   },
   "src/domain/oauth.ts accounts.username": { count: 1, reason: LOCAL },
+  "src/domain/polls.ts accounts.username": { count: 1, reason: `the reader who signs a poll refresh (${LOCAL})` },
   "src/domain/polls.ts polls.options": { count: 3, reason: POLL },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('url'))": { count: 1, reason: SNAPSHOT },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('preview_url'))": { count: 1, reason: SNAPSHOT },

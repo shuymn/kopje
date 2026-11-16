@@ -260,14 +260,17 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a thumbnail"
     expect([tooLarge.status, await tooLarge.json()]).toEqual([413, { error: "Request body is too large" }]);
   });
 
-  it("answers authentication first, and the thumbnail before the media lookup", async () => {
+  // MediaController: authentication, then set_media_attachment (404), then update!'s validation of the thumbnail.
+  it("answers authentication first, and the media lookup before the thumbnail", async () => {
     const { h, update } = await described();
     const body = () => multipartForm([["thumbnail", png()]]);
     expect((await update({ body: body() }, "not-a-token")).status).toBe(401);
     const reader = await userToken(h, "alice@example.com", "read");
     expect((await update({ body: body() }, reader)).status).toBe(403);
     const foreign = await update({ body: body() }, h.users.bob.token);
-    expect([foreign.status, await foreign.json()]).toEqual([422, REFUSED]);
+    expect([foreign.status, await foreign.json()]).toEqual([404, { error: "Record not found" }]);
+    const own = await update({ body: body() });
+    expect([own.status, await own.json()]).toEqual([422, REFUSED]);
   });
 });
 

@@ -1,6 +1,8 @@
 import { createExecutionContext } from "cloudflare:test";
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 
+import { apiHeaders } from "../src/mastodon/caching";
 import type { ApiHandler } from "../src/mastodon/context";
 import { mastodonApi, ROUTES } from "../src/mastodon/routes";
 import { imagesCodec } from "../src/platform/images";
@@ -345,7 +347,12 @@ async function send(h: ApiHarness, request: AnonymousRequest, token: string | nu
   } catch {
     // An empty or non-JSON answer is compared as its text.
   }
-  return { status: response.status, body, cacheControl: response.headers.get("cache-control") };
+  return {
+    status: response.status,
+    body,
+    cacheControl: response.headers.get("cache-control"),
+    vary: response.headers.get("vary"),
+  };
 }
 
 // What an answer is compared by: an app registration's new credentials differ on every request.
@@ -357,7 +364,8 @@ function comparable(answer: Awaited<ReturnType<typeof send>>) {
   return answer;
 }
 
-const REFUSED = { ...DISABLED, cacheControl: null };
+// Private, varying by Authorization as every anonymous route's answer does (WEB-7): never a public header.
+const REFUSED = { ...DISABLED, cacheControl: "private, no-store", vary: "Authorization" };
 
 const register = (h: ApiHarness, token: string | null) =>
   answer(
@@ -376,7 +384,7 @@ describe("an anonymous route with a token", () => {
     expect([...covered].toSorted()).toEqual(anonymous.toSorted());
   });
 
-  it("answers a suspended owner's token, expired or not, 403 without cache headers, errors and early answers included", async () => {
+  it("answers a suspended owner's token, expired or not, a private 403, errors and early answers included", async () => {
     const w = await anonymousWorld();
     for (const request of anonymousRequests(w)) {
       for (const token of [w.tokens.suspended, w.tokens.suspendedExpired]) {
@@ -398,7 +406,8 @@ describe("an anonymous route with a token", () => {
       expect(anonymous.status, request.label).not.toBe(403);
       for (const token of ["unknown-token", w.tokens.bobExpired, w.tokens.app, w.bob.token]) {
         const { result, calls } = await w.store.callsOf(() => send(w.h, request, token));
-        expect(comparable(result), request.label).toEqual(anonymous);
+        // The same answer, but private: a request with Authorization is never cached (WEB-7).
+        expect(comparable(result), request.label).toEqual({ ...anonymous, cacheControl: "private, no-store" });
         // The judgment ran: in the route's one operation, or once after the handler.
         if (request.judgedBy === "after") {
           expect(calls.at(-1), request.label).toBe("checkNotSuspended");
@@ -415,7 +424,7 @@ describe("an anonymous route with a token", () => {
 
   it("drops the replaced answer's headers", async () => {
     const w = await anonymousWorld();
-    // The real route table, with the languages answered under a public Cache-Control.
+    // The real route table, with the languages answered under a public Cache-Control of the handler's own.
     const cached =
       (handler: ApiHandler): ApiHandler =>
       async (c, deps) => {
@@ -449,6 +458,25 @@ describe("an anonymous route with a token", () => {
       null,
       DISABLED.body,
     ]);
+    // Under the API's caching middleware the route's declaration decides, never a handler's header: the anonymous
+    // answer is public with Vary, and the suspended owner's 403 private (WEB-7).
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("/api/*", apiHeaders);
+    app.route("/", api);
+    const throughApp = async (token: string | null) => {
+      const response = await app.fetch(
+        new Request("https://kopje.test/api/v1/instance/languages", token === null ? {} : bearer(token)),
+        w.h.env,
+        createExecutionContext(),
+      );
+      return [response.status, response.headers.get("cache-control"), response.headers.get("vary")];
+    };
+    expect(await throughApp(null)).toEqual([
+      200,
+      "max-age=300, public, stale-while-revalidate=30, stale-if-error=86400",
+      "Authorization",
+    ]);
+    expect(await throughApp(w.tokens.suspended)).toEqual([403, "private, no-store", "Authorization"]);
   });
 
   it("records no activity", async () => {

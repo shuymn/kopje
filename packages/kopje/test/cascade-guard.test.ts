@@ -75,11 +75,11 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "fires on an update of quotes.withdrawn, status_id or local: no batched delete or purge makes one itself (a detach sets quoted_status_id only), and when quotes_withdrawn_status_changed's copy fires it, the copy already equals its rule, so it writes no row",
   quotes_count_inserted: "fires on a quote insert, which no batched delete or purge makes",
   quotes_count_changed:
-    "one statuses row per accepted quote that leaves its count or changes its target, two at most: a detach (STATUS_CHILDREN's quoted_status_id entry) takes an accepted one off the status being deleted, and takes a third of the rows left (with quotes_authorization_retired), a revocation batch (quotes.ts) half",
+    "one statuses row per accepted quote that leaves its count or changes its target, two at most: a detach (STATUS_CHILDREN's quoted_status_id entry) takes an accepted one off the status being deleted, and takes a fourth of the rows left (with quotes_authorization_retired and stream_quote_state), a revocation batch (quotes.ts) a third (with stream_quote_state)",
   quotes_count_deleted:
     "one statuses row per accepted quote deleted: STATUS_CHILDREN's status_id entry takes a third of the rows left",
   quotes_authorization_retired:
-    "one quote_revocations row per authorization of Kopje's cleared: only quotes of local statuses hold one, which a local status's removal detaches in STATUS_CHILDREN's quoted_status_id entry, a third of the rows left (the quote, its target's count and this row); a Delete of the quoting status clears its own before batching (retireQuoteOf)",
+    "one quote_revocations row per authorization of Kopje's cleared: only quotes of local statuses hold one, which a local status's removal detaches in STATUS_CHILDREN's quoted_status_id entry, a fourth of the rows left (the quote, its target's count, this row and stream_quote_state's); a Delete of the quoting status clears its own before batching (retireQuoteOf)",
   quotes_authorization_deleted:
     "one quote_revocations row per quote deleted while holding an authorization of Kopje's (a purge of its quoting author): STATUS_CHILDREN's status_id entry takes a third of the rows left",
   stream_notification_inserted:
@@ -90,6 +90,8 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "one journal row when an owner's mark moves, at most one per owner ahead of the position: counted with conversation_statuses_removed, a fourth row per link",
   stream_status_edited:
     "fires only when edited_at changes, which no batched delete or purge does: hiding a status writes its visibility and content (the exact-budget cases below run with `user`, a list and the feeds listening, and with the feeds alone)",
+  stream_quote_state:
+    "one journal row per quote whose state changes, while someone listens: a detach (STATUS_CHILDREN's quoted_status_id entry) moves an accepted one to deleted within a fourth of the rows left, a revocation batch (quotes.ts revocationBatch) within a third, and a Delete's retirement (retireQuoteOf) counts it in its fixed rows (test/forward-delete.test.ts DELETE_HANDLER_ROWS); the status_id entry deletes, firing nothing",
   outbound_activities_staging_ended:
     "one retraction_stagings row per superseded retraction still staging with a staging row: a batch's supersedeEarlier runs below the oldest one still staging (inbox.ts deleteLocalStatusBatch), so it meets none, and beginRetraction counts them (headed) before it supersedes",
   handshake_replays_generation:
@@ -97,7 +99,9 @@ const WRITING_TRIGGERS: Record<string, string> = {
   reject_replays_follow_stored:
     "fires on a follow insert, which no batched delete or purge makes (a remote follower's follow of a local account deletes its pair's held Reject, one row at most)",
   statuses_filter_text_stale:
-    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, inbox.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
+    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, remote-removal.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
+  polls_revision:
+    "one polls row, the poll's own revision, per update of a column it watches (POLL_REVISION_COLUMNS), which no batched delete or purge makes: a status's removal deletes its poll (STATUS_EXEMPT's polls entry) and a vote purge deletes poll_votes and keeps the counts; the updates are the poll's own writers (polls.ts resetPoll, editPoll, countVotes, storeRemotePoll, markPollFetched, pollRound) and the local DELETE's end mark (statuses.ts deleteStatus), within its request maximum (test/local-delete.test.ts REQUEST_ROWS, whose status has a poll)",
 };
 
 // Streaming subscriptions of the account on `user`, `user:notification`, a list, `direct`, `public` and a hashtag, which
@@ -683,6 +687,70 @@ describe("a status's own delete within a batch", () => {
       expect(await journaled(h.store)).toEqual(before);
     },
   );
+});
+
+describe("a quoted status's detach while someone listens", () => {
+  // 400 accepted quotes of one status, each holding an authorization of Kopje's, by remote statuses the listener's
+  // `user` stream arms: each detach writes the quote, its target's count (quotes_count_changed), the authorization's
+  // revocation (quotes_authorization_retired) and the journal row (stream_quote_state), so a batch takes a fourth of
+  // the rows left (STATUS_CHILDREN's quoted_status_id entry). A local status's removal meets the same rows
+  // (test/local-delete.test.ts, its worst case).
+  it("writes at most PURGE_BATCH rows a batch, four a quote", async () => {
+    const h = await community(["alice"]);
+    await listen(h.store, true, h.users.alice.id);
+    const carol = await remoteAccount(h.store, "carol");
+    const quoted = await seedStatus(h.store, { accountId: carol, visibility: "public" });
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 400)
+			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+			SELECT printf('7%017d', i), 'https://remote.example/quotes/' || i, ?1, 'public', '2026-10-12T00:00:00.000Z' FROM n`,
+      await remoteAccount(h.store, "bob"),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, authorization_id, updated_at)
+			SELECT s.id, q.uri, q.id, q.account_id, 'accepted', hex(randomblob(16)), '2026-10-12T00:00:00.000Z'
+			FROM statuses s, statuses q WHERE s.id GLOB '7*' AND q.id = ?`,
+      quoted,
+    );
+    const counted = async () =>
+      (
+        await sql<{ deleted: number; journaled: number; retired: number }>(
+          h.store,
+          `SELECT (SELECT count(*) FROM quotes WHERE state = 'deleted') AS deleted,
+				(SELECT count(*) FROM stream_events WHERE kind = 'edit') AS journaled,
+				(SELECT count(*) FROM quote_revocations) AS retired`,
+        )
+      )[0]!;
+    const batches: { wrote: number; deleted: number; journaled: number; retired: number }[] = [];
+    for (let i = 0; i < 10; i++) {
+      const { wrote, remaining } = await runInDurableObject(h.store, (_instance, state) => {
+        const db = new Db(state.storage.sql);
+        const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+        const before = changes();
+        const more = state.storage.transactionSync(() => deleteStatusBatch(db, quoted, NOW));
+        return { wrote: changes() - before, remaining: more };
+      });
+      batches.push({ wrote, ...(await counted()) });
+      if (!remaining) {
+        break;
+      }
+    }
+    expect(batches.every((batch) => batch.wrote <= PURGE_BATCH)).toBe(true);
+    // Each quote at its four rows. The first batch also hides the status (as its Delete's request would have); the
+    // second, its whole budget left, detaches a fourth of PURGE_BATCH.
+    const [first, second] = batches;
+    expect(first!.wrote).toBeGreaterThanOrEqual(4 * first!.deleted);
+    expect([second!.deleted - first!.deleted, second!.journaled - first!.journaled]).toEqual([
+      PURGE_BATCH / 4,
+      PURGE_BATCH / 4,
+    ]);
+    expect(second!.wrote).toBe(PURGE_BATCH);
+    expect(batches.every((batch) => batch.deleted === batch.journaled && batch.deleted === batch.retired)).toBe(true);
+    expect(batches.at(-1)).toMatchObject({ deleted: 400, journaled: 400, retired: 400 });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", quoted)).toEqual([{ n: 0 }]);
+  }, 60_000);
 });
 
 describe("trend and card rows within a batch (0057_trends, 0067_status_cards)", () => {

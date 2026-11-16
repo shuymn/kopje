@@ -11,9 +11,10 @@ import { MAX_SPOILER_LENGTH } from "../src/domain/remote-statuses";
 import { MAX_RAW_LENGTH, parseStatusText, renderFieldValue, renderStatusHtml } from "../src/domain/status-text";
 import { remoteActorInput } from "../src/federation/remote-actor";
 import { parseRemoteStatus } from "../src/federation/remote-status";
-import { REMOTE_USERNAME_LIMIT, STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
+import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT, STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
 import { mediaUrl, SERVED_TYPES } from "../src/platform/media-files";
 import {
+  COLLECTION_URI_BYTES,
   APP_ID_BYTES,
   APP_NAME_BYTES,
   APP_NAME_JSON_BYTES,
@@ -334,11 +335,12 @@ function checkColumn(sql: Sql, { projection, writer, text }: Column, input: stri
 
 describe("stored bounds (RES-2)", () => {
   it("repeats the bounds it shares with security/html.ts and identity-bounds.ts", () => {
-    expect([BIO_JSON_BYTES, CONTENT_JSON_BYTES, SPOILER_JSON_BYTES, STATUS_URL_LIMIT]).toEqual([
+    expect([BIO_JSON_BYTES, CONTENT_JSON_BYTES, SPOILER_JSON_BYTES, STATUS_URL_LIMIT, COLLECTION_URI_BYTES]).toEqual([
       REMOTE_BIO_BYTES,
       STATUS_CONTENT_BYTES,
       SPOILER_BYTES,
       STATUS_URI_LIMIT,
+      ACTOR_URI_LIMIT,
     ]);
   });
 
@@ -391,15 +393,15 @@ describe("stored bounds (RES-2)", () => {
 
   // An actor's display name of lone surrogates is stored as U+FFFD, three bytes each, and reads back at that size.
   it("stores a display name of lone surrogates from ingestion within three bytes a character, read back alike", async () => {
-    const actor = await Person.fromJsonLd({
+    const document = {
       "@context": "https://www.w3.org/ns/activitystreams",
       id: "https://remote.example/users/s",
       type: "Person",
       preferredUsername: "s",
       name: "\ud800".repeat(DISPLAY_NAME_LIMIT),
       inbox: "https://remote.example/users/s/inbox",
-    });
-    const input = await remoteActorInput(actor, {});
+    };
+    const input = await remoteActorInput(await Person.fromJsonLd(document), document);
     expect(input).not.toBeNull();
     const store = await migratedStore();
     const stored = await runInDurableObject(store, (_instance, state) =>
