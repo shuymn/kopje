@@ -246,9 +246,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   that passes, and its embedded object's, given as an IRI (`as:Follow`, or the absolute one) are read as the name
   Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
   given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
-  that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends
-  the follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as
-  naming nothing. No Store migration and no `wrangler.jsonc` change.
+  that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the
+  follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as naming
+  nothing. A name, as a member or as a type, is read only where Mastodon's compaction writes it so (where the body's
+  contexts give it the meaning `full_context` does, or neither defines it): a `QuoteRequest`, a hashtag, an emoji, a
+  profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or defines
+  otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a quote; a
+  body Mastodon reads as received (past its JSON-LD limits, or with a data-integrity proof) is read as received. No
+  Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

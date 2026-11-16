@@ -40,7 +40,7 @@ import {
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
-import { ldSignedTypeReader, type TypeReader } from "./ld-signed-body";
+import { ldSignedReading, type TypeReader } from "./ld-signed-body";
 import {
   createContextLoader,
   createSafeLoader,
@@ -227,32 +227,34 @@ export function hasActivityStreamsContext(context: unknown): boolean {
 const AS_GIVEN: TypeReader = (type) => type;
 
 // The activity as received (Mastodon reads an LD-signed one as its compaction, patched toward the body as received;
-// one whose context or keys could give what Kopje reads another meaning there is ignored, ldSignedTypeReader): ids as
+// one whose context or keys could give what Kopje reads another meaning there is ignored, ldSignedReading): ids as
 // strings or objects with an id. Other types and objects Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
 // and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in, its types (the
 // activity's and its embedded object's) as the compaction names them where Kopje shows Mastodon compacts it, as given
-// elsewhere (ID-1, ldSignedTypeReader). Shared by the inbox and the cutover rollback's drain, so neither hands on an
-// activity the other would ignore.
+// elsewhere, and its names, as members and types, read only where the compaction writes them so (ID-1,
+// ldSignedReading): `read` is the body Kopje reads, the activity as received is still what is forwarded and proven.
+// Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the other would ignore.
 function activityEnvelope(
   json: Json,
 ):
-  | { ok: true; actor: string; id: string; type: string; readType: TypeReader }
+  | { ok: true; actor: string; id: string; type: string; readType: TypeReader; read: Json }
   | { ok: false; reason: "no-context" | "ld-context" | "incomplete" } {
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
   }
-  const readType = isObject(json.signature) ? ldSignedTypeReader(json) : AS_GIVEN;
-  if (readType === null) {
+  const reading = isObject(json.signature) ? ldSignedReading(json) : { readType: AS_GIVEN, body: json };
+  if (reading === null) {
     return { ok: false, reason: "ld-context" };
   }
-  const actor = idOf(json.actor);
-  const id = typeof json.id === "string" ? json.id : null;
-  const type = typeof json.type === "string" ? readType(json.type) : null;
+  const { readType, body: read } = reading;
+  const actor = idOf(read.actor);
+  const id = typeof read.id === "string" ? read.id : null;
+  const type = typeof read.type === "string" ? readType(read.type) : null;
   if (actor === null || originOf(actor) === null || id === null || type === null) {
     return { ok: false, reason: "incomplete" };
   }
-  return { ok: true, actor, id, type, readType };
+  return { ok: true, actor, id, type, readType, read };
 }
 
 export function parseActivity(body: Uint8Array): Parsed {
@@ -275,12 +277,12 @@ export function parseActivity(body: Uint8Array): Parsed {
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
-  const { actor, id, type, readType } = envelope;
-  const activity = activityOf(type, id, actor, json, object, readType);
+  const { actor, id, type, readType, read } = envelope;
+  const activity = activityOf(type, id, actor, read, object, readType);
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
-  return { ok: true, actor, activity, target: type === "Move" ? idOf(json.target) : null, body: json };
+  return { ok: true, actor, activity, target: type === "Move" ? idOf(read.target) : null, body: json };
 }
 
 function strings(value: unknown): string[] {

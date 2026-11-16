@@ -860,10 +860,13 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
 };
 
 // An answer to our QuoteRequest: an inlined QuoteRequest, or its id (the quoting status's uri with #quote-request,
-// activities.ts quoteRequestUri), which no Follow of ours carries. Either is matched by its id only (quotes.ts
+// activities.ts quoteRequestUri), which no Follow of ours carries, untyped or typed with a name Mastodon reads as a
+// blank node (an LD-signed body whose context leaves QuoteRequest undefined, ld-signed-body.ts namedAsCompacted:
+// Mastodon's Accept and Reject seek the quote by the id whatever the type). Either is matched by its id only (quotes.ts
 // answeredQuote), so an inlined QuoteRequest under another id changes nothing (quote-unchanged).
 function isQuoteAnswer(ref: ActivityRef): boolean {
-  return ref.type === "QuoteRequest" || (ref.type === null && ref.id !== null && ref.id.endsWith("#quote-request"));
+  const untyped = ref.type === null || ref.type.startsWith("_:");
+  return ref.type === "QuoteRequest" || (untyped && ref.id !== null && ref.id.endsWith("#quote-request"));
 }
 
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,

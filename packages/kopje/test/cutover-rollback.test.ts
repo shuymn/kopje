@@ -820,7 +820,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     ]);
   });
 
-  it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedTypeReader)", async () => {
+  it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedReading)", async () => {
     const store = await importedStore();
     const r = await rollback(store);
     const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };

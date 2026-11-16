@@ -127,16 +127,24 @@ against their own instance. TLS is assumed between all parties.
   name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
   set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
   `@context`, `signature` and `proof` is a plain name. Any other is ignored before the gate, on the inbox, its replay
-  and the rollback drain alike (`ldSignedTypeReader` in `src/federation/ld-signed-body.ts`, called by the envelope
-  check of `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
-  `ld-context` and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object,
-  or redefine a mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded
-  object's, given as an IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape
-  whose compaction Kopje can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as
-  received: a body its JSON-LD limits or processing refuse is never one Kopje renames a type in. The readings still
-  differ in shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities").
-  None of those differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's audience, a
-  lifted block); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
+  and the rollback drain alike (`ldSignedReading` in `src/federation/ld-signed-body.ts`, called by the envelope check of
+  `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason `ld-context`
+  and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object, or redefine a
+  mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded object's, given as
+  an IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje
+  can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as received: a body its
+  JSON-LD limits or processing refuse is never one Kopje renames a type in. Kopje reads a name, as a member or as a
+  type, only where the compaction writes it so, whatever the body's shape (`namedAsCompacted`): where it means in the
+  body's contexts what it means in `full_context` (a type, where the IRI they give it is the one `full_context` names
+  so), or neither defines it. A name `full_context` defines that the body's contexts leave undefined (`QuoteRequest`,
+  `Hashtag`, `Emoji`, `PropertyValue`, `sensitive`, `quote`, … under the ActivityStreams and security contexts alone)
+  the compaction writes as a blank node's name, and one they define otherwise (a `quote` not typed `@id`) as its IRI;
+  Mastodon's readers read neither, and nor does Kopje, so such a `QuoteRequest` grants no quote, nor does any for a
+  quote so named. A body Kopje can show Mastodon reads as received it reads as received; where Mastodon gives up the
+  compaction of another, or writes the name for a value of another shape, Kopje reads less. The readings still differ in
+  shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
+  differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's audience, a lifted block, a
+  quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
   `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. The owner is the actor whose
   document lists the key, by id and key material, and the key names no other owner. An actor's keys are what its
   document embeds among its

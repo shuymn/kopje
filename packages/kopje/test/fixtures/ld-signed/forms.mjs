@@ -47,6 +47,18 @@ const STATUS_EXTENSION = {
   Hashtag: "as:Hashtag",
 };
 const STATUS_CONTEXT = [AS, STATUS_EXTENSION, SEC];
+// The rest of Mastodon 4.7.5's extension object for a status's tags and media and an actor (full_context).
+const ACTOR_EXTENSION = {
+  Emoji: "toot:Emoji",
+  focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+  blurhash: "toot:blurhash",
+  featured: { "@id": "toot:featured", "@type": "@id" },
+  manuallyApprovesFollowers: "as:manuallyApprovesFollowers",
+  discoverable: "toot:discoverable",
+  schema: "http://schema.org#",
+  PropertyValue: "schema:PropertyValue",
+  value: "schema:value",
+};
 
 // Misskey 2026.11.0's CONTEXT (packages/backend/src/core/activitypub/misc/contexts.ts).
 const MISSKEY_CONTEXT = [
@@ -121,6 +133,9 @@ const BOBS_FOLLOW = { id: `${BOB}/follows/14`, type: "Follow", actor: BOB, objec
 // bob's block of alice, as effects.rb seeds it for an entry named for a block, with both types as IRIs.
 const BLOCK = { id: `${BOB}/blocks/1`, type: "as:Block", actor: BOB, object: ALICE };
 const QUOTE_REQUEST = "https://w3id.org/fep/044f#QuoteRequest";
+// alice's QuoteRequest for her status local-2, quoting bob's pinned status, as effects.rb seeds it for an entry named
+// for our quote request.
+const OUR_QUOTE_REQUEST = "https://kopje.test/ap/o/local-2#quote-request";
 /** @type {(value: unknown) => number} The values JsonLdHelper#check_jsonld_limits! counts. */
 const values = (value) => {
   /** @type {unknown[]} */
@@ -560,6 +575,119 @@ const forms = {
   "Undo of a block, both typed as IRIs, with a language map tagged id and type": signed(
     [AS, SEC],
     activity("as:Undo", { object: BLOCK, summaryMap: { id: "diblokir", type: "text" } }),
+  ),
+
+  // Names full_context defines that the ActivityStreams and security contexts leave undefined, as types and as members
+  // (row 22): Mastodon's compaction writes each as a blank node's name (`_:QuoteRequest`), which its readers do not
+  // read. Each beside the same body under a context that defines them.
+  ...Object.fromEntries(
+    /** @type {[string, unknown][]} */ ([
+      ["left undefined", [AS, SEC]],
+      ["defined", [AS, { QuoteRequest: QUOTE_REQUEST }, STATUS_EXTENSION, ACTOR_EXTENSION, SEC]],
+    ]).flatMap(([variant, context]) => [
+      [
+        `QuoteRequest, its type ${variant}`,
+        signed(context, activity("QuoteRequest", { object: LOCAL_STATUS, instrument: `${BOB}/statuses/quoting` })),
+      ],
+      [
+        `Accept of our quote request, its object's type ${variant}`,
+        signed(
+          context,
+          activity("Accept", {
+            object: { id: OUR_QUOTE_REQUEST, type: "QuoteRequest", actor: ALICE, object: `${BOB}/statuses/pinned` },
+            result: `${BOB}/quote_authorizations/1`,
+          }),
+        ),
+      ],
+      [
+        `Note, its extension members and tag types ${variant}`,
+        create(
+          note({
+            sensitive: true,
+            conversation: "tag:mastodon.example,2026-11-16:objectId=1:objectType=Conversation",
+            tag: [
+              { type: "Hashtag", href: "https://mastodon.example/tags/kopje", name: "#kopje" },
+              {
+                type: "Emoji",
+                id: "https://mastodon.example/emojis/1",
+                name: ":kopje:",
+                icon: { type: "Image", mediaType: "image/png", url: "https://mastodon.example/emoji/kopje.png" },
+              },
+            ],
+            attachment: [
+              {
+                type: "Document",
+                mediaType: "image/png",
+                url: "https://mastodon.example/media/3.png",
+                blurhash: "UBL_:rOpGG-oBUNG,qRj2so|=eE1w^n4S5NH",
+                focalPoint: [0.5, -0.5],
+              },
+            ],
+            quote: LOCAL_STATUS,
+            _misskey_quote: LOCAL_STATUS,
+            quoteUri: LOCAL_STATUS,
+            quoteAuthorization: `${BOB}/quote_authorizations/2`,
+            interactionPolicy: { canQuote: { automaticApproval: [PUBLIC], manualApproval: [FOLLOWERS] } },
+          }),
+          context,
+        ),
+      ],
+      [
+        `Question, its votersCount ${variant}`,
+        create({ ...question([option("Yes"), option("No")]), votersCount: 3 }, context),
+      ],
+      [
+        `Delete by an atomUri ${variant}`,
+        signed(
+          context,
+          activity("Delete", {
+            object: { id: `${BOB}/statuses/elsewhere`, type: "Tombstone", atomUri: `${BOB}/statuses/deleted` },
+            to: [PUBLIC],
+          }),
+        ),
+      ],
+      [
+        `Add of a Hashtag, its type ${variant}`,
+        signed(
+          context,
+          activity("Add", {
+            object: { type: "Hashtag", href: "https://mastodon.example/tags/kopje", name: "#kopje" },
+            target: `${BOB}/collections/featured`,
+          }),
+        ),
+      ],
+      [
+        `Update(Person), its extension members and types ${variant}`,
+        signed(
+          context,
+          activity("Update", {
+            to: [PUBLIC],
+            object: {
+              id: BOB,
+              type: "Person",
+              preferredUsername: "bob",
+              name: "Bob renamed",
+              inbox: `${BOB}/inbox`,
+              outbox: `${BOB}/outbox`,
+              followers: FOLLOWERS,
+              following: `${BOB}/following`,
+              featured: `${BOB}/collections/featured`,
+              manuallyApprovesFollowers: true,
+              discoverable: true,
+              attachment: [{ type: "PropertyValue", name: "Site", value: "https://bob.example/" }],
+              tag: [
+                {
+                  type: "Emoji",
+                  id: "https://mastodon.example/emojis/2",
+                  name: ":bob:",
+                  icon: { type: "Image", mediaType: "image/png", url: "https://mastodon.example/emoji/bob.png" },
+                },
+              ],
+            },
+          }),
+        ),
+      ],
+    ]),
   ),
 };
 

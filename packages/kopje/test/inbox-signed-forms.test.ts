@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { isPublicCollection } from "../src/domain/audience";
 import { LIKE_TYPES, parseActivity } from "../src/federation/inbound";
-import { ACTIVITY_VOCABULARY, ldSignedBodyReadable, ldSignedTypeReader } from "../src/federation/ld-signed-body";
+import { ACTIVITY_VOCABULARY, ldSignedBodyReadable, ldSignedReading } from "../src/federation/ld-signed-body";
 import { ACTOR_TYPES, CONVERTED_TYPES, STATUS_TYPES } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
@@ -16,6 +16,7 @@ import formsFixture from "./fixtures/ld-signed/forms.json";
 import { BUILD } from "./helpers";
 import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
+  accountId,
   ALICE,
   create,
   followed,
@@ -27,7 +28,7 @@ import {
   setup,
   statusRow,
 } from "./inbox-status-helpers";
-import { quoteAccept } from "./quote-helpers";
+import { quoteAccept, quoteRequest, quoting } from "./quote-helpers";
 
 // Activities that carry a Linked Data signature, read as received where Mastodon 4.7.5 reads them as their compaction
 // under its full_context, patched back toward the body as received (docs/mastodon-deviations.md, "Reading inbound
@@ -179,44 +180,45 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     }
   });
 
-  // Fedify's two RSA-only bodies that read otherwise, each pinned below.
-  const DIFFERING = new Set(["Create(Question), RSA", "EmojiReact, RSA"]);
-
-  it.each(
-    corpus
-      .filter((entry) => !DIFFERING.has(entry.name))
-      .map((entry) => [`${entry.sender} ${entry.name}`, entry] as const),
-  )("%s", (_, entry) => {
+  it.each(corpus.map((entry) => [`${entry.sender} ${entry.name}`, entry] as const))("%s", (_, entry) => {
     expect(kopje(entry)).toEqual(mastodon(entry));
   });
 
+  // Fedify's two RSA-only bodies name what their contexts define otherwise than full_context, each pinned below.
+  const DEFINED_OTHERWISE = new Set(["Create(Question), RSA", "EmojiReact, RSA"]);
+
   it("Mastodon's reading of every other payload is the body as received", () => {
     // The patch puts back the public collection's IRI and every one-element array the compaction made a single value.
-    for (const entry of corpus.filter((e) => e.fallback === undefined && !DIFFERING.has(e.name))) {
+    for (const entry of corpus.filter((e) => e.fallback === undefined && !DEFINED_OTHERWISE.has(e.name))) {
       expect(asReceived(entry), `${entry.sender} ${entry.name}`).toBe(true);
     }
   });
 
-  it("reads more content than Mastodon: Fedify's votersCount, typed otherwise than full_context", () => {
-    // Fedify types it xsd:nonNegativeInteger; full_context leaves it untyped, so the compaction keeps a value object,
-    // which the patch leaves (it puts back only arrays and the public collection's IRI).
-    const entry = corpus.find((e) => e.name === "Create(Question), RSA")!;
-    expect(statusOf(kopje(entry)).poll).toMatchObject({ votersCount: 0 });
-    expect((mastodonReading(entry).object as Json).votersCount).toEqual({
+  // A name the body's context defines otherwise than full_context is read where the compaction writes it so
+  // (ldSignedReading): Fedify types votersCount xsd:nonNegativeInteger, which full_context leaves untyped, so the
+  // compaction keeps a value object (which the patch leaves, and neither reads as a count); and it defines EmojiReact
+  // as litepub's, which full_context leaves undefined, so the compaction writes it as its IRI (a type neither reads).
+  it("Fedify's votersCount and EmojiReact, defined otherwise than full_context: read as Mastodon reads them", () => {
+    const question = corpus.find((e) => e.name === "Create(Question), RSA")!;
+    expect((mastodonReading(question).object as Json).votersCount).toEqual({
       type: "xsd:nonNegativeInteger",
       "@value": 0,
     });
-    expect(statusOf(mastodon(entry)).poll).toMatchObject({ votersCount: null });
-    const rest = (reading: Reading) => ({ ...statusOf(reading), poll: null });
-    expect(rest(kopje(entry))).toEqual(rest(mastodon(entry)));
+    expect(statusOf(kopje(question)).poll).toMatchObject({ votersCount: null });
+    const react = corpus.find((e) => e.name === "EmojiReact, RSA")!;
+    expect(mastodonReading(react).type).toBe("http://litepub.social/ns#EmojiReact");
+    expect(kopje(react)).toEqual({ ok: false, reason: "unsupported" });
   });
 
-  it("reads more content than Mastodon: an EmojiReact, a type Mastodon reads in neither form", () => {
-    // Kopje reads it as a favourite (LIKE_TYPES); the compaction writes its type as the full IRI.
-    const entry = corpus.find((e) => e.name === "EmojiReact, RSA")!;
-    expect(accepted(kopje(entry))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
-    expect(mastodonReading(entry).type).toBe("http://litepub.social/ns#EmojiReact");
-    expect(mastodon(entry)).toEqual({ ok: false, reason: "unsupported" });
+  // With a proof in the data-integrity context, Mastodon reads the same bodies as received (its JSON-LD limits refuse
+  // the compaction's @graph), and so does Kopje: the count, and the reaction as a favourite (LIKE_TYPES), where
+  // Mastodon has no reader for an EmojiReact.
+  it("Fedify's votersCount and EmojiReact with a proof: read as received, as Mastodon reads them", () => {
+    const question = corpus.find((e) => e.name === "Create(Question), RSA and Ed25519")!;
+    expect(question.fallback).toMatch(/^Mastodon::InvalidJsonLdError: contains unsupported/);
+    expect(statusOf(kopje(question)).poll).toMatchObject({ votersCount: 0 });
+    const react = corpus.find((e) => e.name === "EmojiReact, RSA and Ed25519")!;
+    expect(accepted(kopje(react))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
   });
 
   it("refuses Mastodon's Add, Remove and FeatureRequest in both forms, as they carry no id or no actor", () => {
@@ -333,24 +335,11 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect((mastodonReading(form(name)).object as Json).inbox).toEqual([]);
       expect(applied(name)).toEqual({ name, effect: {} });
     });
-
-    it.each([
-      ["sensitive left undefined", (status: Json) => status.sensitive === true, "_:sensitive"],
-      ["interactionPolicy left undefined", (status: Json) => status.quotePolicy !== null, "_:interactionPolicy"],
-      ["quote untyped", (status: Json) => status.quote !== null, "https://w3id.org/fep/044f#quote"],
-      ["quoteUrl defined", (status: Json) => status.quote !== null, "as:quoteUrl"],
-    ])("an extension property the context leaves undefined or types otherwise: %s", (name, kept, key) => {
-      const entry = form(name);
-      expect(kept(statusOf(kopje(entry)))).toBe(true);
-      expect(kept(statusOf(mastodon(entry)))).toBe(false);
-      // Mastodon's reading keeps the value only under a key it does not read, which the patch leaves.
-      expect(Object.keys(mastodonReading(entry).object as Json)).toContain(key);
-    });
   });
 
   describe("the same effect as Mastodon", () => {
     // The compaction writes a type given as an IRI as the vocabulary's name, and the patch leaves it so: Kopje reads
-    // the activity's type and its embedded object's so (ldSignedTypeReader), and a retraction ends what Mastodon's
+    // the activity's type and its embedded object's so (ldSignedReading), and a retraction ends what Mastodon's
     // ends.
     it.each([
       ["type as a compact IRI", LIKED],
@@ -400,6 +389,133 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       });
       expect(applied(name)).toEqual({ name, effect });
     });
+
+    // A name full_context defines that the body's context leaves undefined, as a type or as a member, is a blank
+    // node's name in Mastodon's reading (`_:QuoteRequest`), which neither reader reads (ldSignedReading); each beside
+    // the same body with the name defined, which both read.
+    it.each([
+      "QuoteRequest, its type",
+      "Accept of our quote request, its object's type",
+      "Note, its extension members and tag types",
+      "Question, its votersCount",
+      "Delete by an atomUri",
+      "Add of a Hashtag, its type",
+      "Update(Person), its extension members and types",
+    ])("%s left undefined, and defined: read as Mastodon reads it", (base) => {
+      for (const name of [`${base} left undefined`, `${base} defined`]) {
+        expect(form(name).fallback, name).toBeUndefined();
+        expect(kopje(form(name)), name).toEqual(mastodon(form(name)));
+      }
+    });
+
+    it.each(["sensitive left undefined", "interactionPolicy left undefined"])(
+      "%s: read as Mastodon reads it",
+      (name) => {
+        expect(kopje(form(name))).toEqual(mastodon(form(name)));
+        expect(statusOf(kopje(form(name)))).toMatchObject({ sensitive: false, quotePolicy: null });
+        expect(applied(name).effect.statuses).toMatchObject([{ sensitive: false }]);
+      },
+    );
+
+    // The context defines the name, but otherwise than full_context does: untyped where full_context types it @id, or
+    // a name full_context leaves to ActivityStreams' @vocab given an IRI of its own. Mastodon's reading keeps the value
+    // only under a key it does not read, which the patch leaves; Kopje reads no quote either (ldSignedReading).
+    it.each([
+      ["quote untyped", "https://w3id.org/fep/044f#quote"],
+      ["quoteUrl defined", "as:quoteUrl"],
+    ])(
+      "an extension property the context defines otherwise than full_context, %s: read as Mastodon reads it",
+      (name, key) => {
+        const entry = form(name);
+        expect(Object.keys(mastodonReading(entry).object as Json)).toContain(key);
+        expect(statusOf(kopje(entry)).quote).toBeNull();
+        expect(kopje(entry)).toEqual(mastodon(entry));
+      },
+    );
+
+    // A body Kopje can show Mastodon reads as received, by the refusals captured above (too many values as received, a
+    // @graph key, a proof the data-integrity context makes a @graph), it reads as received too: the names its context
+    // leaves undefined as written (ldSignedReading).
+    it.each([
+      [
+        "past the value limit as received",
+        (body: Json) => ({ ...body, padding: Array.from({ length: 1_000 }, () => "x") }),
+      ],
+      [
+        "with @graph in its signature",
+        (body: Json) => ({ ...body, signature: { ...(body.signature as Json), "@graph": [] } }),
+      ],
+      [
+        "with a proof in the data-integrity context",
+        (body: Json) => ({
+          ...body,
+          "@context": [...(body["@context"] as unknown[]), "https://w3id.org/security/data-integrity/v1"],
+          proof: { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3placeholder" },
+        }),
+      ],
+    ])("a Note with names its context leaves undefined, %s: read as received", (_, change) => {
+      const received = form("Note, its extension members and tag types left undefined").received;
+      expect(statusOf(read(received)).sensitive).toBe(false);
+      const changed = change(received);
+      expect(statusOf(read(changed))).toMatchObject({ sensitive: true, tags: ["kopje"] });
+      expect(statusOf(read(changed))).toEqual(statusOf(read(without(changed, "signature"))));
+    });
+
+    // What Kopje reads from each, beside what Mastodon applied from it: the same, left undefined or defined.
+    const status = (reading: Reading) => {
+      const object = statusOf(reading);
+      const media = object.media as Json[];
+      return {
+        sensitive: object.sensitive,
+        tags: object.tags,
+        emojis: (object.emojiTags as Json[]).map((tag) => tag.shortcode),
+        conversation: object.conversation,
+        quote: (object.quote as Json | null)?.uri ?? null,
+        quotePolicy: object.quotePolicy !== null,
+        media: media.flatMap(({ blurhash, focus }) =>
+          blurhash === null && focus === null ? [] : [{ blurhash, focus }],
+        ),
+      };
+    };
+    const created = (effect: Json & { statuses?: Json[] }) => {
+      const object = effect.statuses![0]!;
+      return {
+        sensitive: object.sensitive,
+        tags: object.tags ?? [],
+        emojis: effect.emojis ?? [],
+        conversation: object.conversation ?? null,
+        quote: (object.quote as Json | undefined)?.uri ?? null,
+        quotePolicy: object.quote_policy !== undefined,
+        media: object.media_meta ?? [],
+      };
+    };
+    it.each([
+      ["QuoteRequest, its type", (r: Reading) => r.ok, (e: Json) => e.quote_changes !== undefined],
+      ["Note, its extension members and tag types", status, created],
+      [
+        "Question, its votersCount",
+        (r: Reading) => (statusOf(r).poll as Json).votersCount,
+        (e: Effect["effect"]) => e.statuses![0]!.voters ?? null,
+      ],
+      [
+        "Delete by an atomUri",
+        (r: Reading) => accepted(r).atomUri,
+        (e: Json) => (e.removed_statuses as string[] | undefined)?.[0] ?? null,
+      ],
+      [
+        "Add of a Hashtag, its type",
+        (r: Reading) => (r.ok ? ((r.activity.object as Json).hashtag as string).slice(1) : null),
+        (e: Json) => (e.featured_tags as string[] | undefined)?.[0] ?? null,
+      ],
+    ] as [string, (r: Reading) => unknown, (e: Effect["effect"]) => unknown][])(
+      "%s: Kopje reads what Mastodon applies, left undefined or defined",
+      (base, kopjeRead, mastodonApplied) => {
+        const [undefinedName, definedName] = [`${base} left undefined`, `${base} defined`];
+        expect(kopjeRead(kopje(form(undefinedName)))).toEqual(mastodonApplied(applied(undefinedName).effect));
+        expect(kopjeRead(kopje(form(definedName)))).toEqual(mastodonApplied(applied(definedName).effect));
+        expect(kopjeRead(kopje(form(undefinedName)))).not.toEqual(kopjeRead(kopje(form(definedName))));
+      },
+    );
 
     // Tags that are also the keyword aliases `id` and `type` are tags in a language map, for both.
     it.each([
@@ -462,10 +578,12 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       const kept = new Set<string>();
       let names = 0;
       for (const entry of [...corpus, ...forms.values()]) {
-        const readType = typeof entry.received.signature === "object" ? ldSignedTypeReader(entry.received) : null;
-        if (readType === null) {
+        const ours = typeof entry.received.signature === "object" ? ldSignedReading(entry.received) : null;
+        if (ours === null) {
           continue;
         }
+        // The body as Kopje reads it: a name its context leaves undefined named as the compaction names it.
+        const { readType, body: named } = ours;
         const label = entry.name ?? entry.reference;
         const compacts = readType("as:Like") === "Like";
         if (compacts) {
@@ -473,17 +591,18 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
         const reading = mastodonReading(entry);
         const object = (body: Json) => (typeof body.object === "object" && body.object !== null ? body.object : {});
-        for (const [given, read] of [
-          [entry.received.type, reading.type],
-          [(object(entry.received) as Json).type, (object(reading) as Json).type],
+        for (const [given, name, read] of [
+          [entry.received.type, named.type, reading.type],
+          [(object(entry.received) as Json).type, (object(named) as Json).type, (object(reading) as Json).type],
         ]) {
           if (typeof given !== "string" || typeof read !== "string") {
             continue;
           }
           if (!given.includes(":")) {
-            // A name keeps its meaning (D4), but one outside the vocabulary (EmojiReact, read as a favourite).
+            // A name keeps its meaning (D4), or is a blank node's where the context leaves it undefined, but one
+            // outside the vocabulary (EmojiReact, read as a favourite).
             if (ACTIVITY_VOCABULARY.has(given)) {
-              expect(readType(given), label).toBe(read);
+              expect(readType(name as string), label).toBe(read);
               names++;
             }
           } else if (compacts) {
@@ -515,19 +634,23 @@ describe("D1: forms whose readings differ, each named by its class", () => {
 
     // The shape's bounds on the same body, where no capture varies them: an object with no id or type is a node like
     // any other, and a null among IRIs is dropped (as in the captured `to: [null]` forms); an id over a prefix only
-    // full_context defines (as the captured `cc` and type ones) or a blank node, and a language map value other than a
-    // map of tags to strings are outside it.
+    // full_context defines (as the captured `cc` and type ones), a blank node, an http(s) IRI whose scheme is upper-case
+    // or not followed by `//`, a boolean where an IRI is expected, and a language map value other than a map of tags to
+    // strings are outside it.
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
       { added: { cc: [null] }, read: "Undo" },
       { added: { instrument: { id: "toot:client" } }, read: "as:Undo" },
       { added: { instrument: { id: "_:client" } }, read: "as:Undo" },
+      { added: { instrument: { id: "HTTPS://mastodon.example/client" } }, read: "as:Undo" },
+      { added: { instrument: { id: "https:mastodon.example/client" } }, read: "as:Undo" },
+      { added: { cc: true }, read: "as:Undo" },
       { added: { summaryMap: 5 }, read: "as:Undo" },
       { added: { summaryMap: { en: ["blocked"] } }, read: "as:Undo" },
       { added: { summaryMap: { "not a tag": "blocked" } }, read: "as:Undo" },
     ])("reads the compacted Undo of a block, given $added, as $read", ({ added, read }) => {
       const body = { ...form("Undo of a block, both typed as IRIs").received, ...added };
-      expect(ldSignedTypeReader(body)?.("as:Undo")).toBe(read);
+      expect(ldSignedReading(body)?.readType("as:Undo")).toBe(read);
     });
 
     it("type as a one-element array: neither applies it", () => {
@@ -838,6 +961,133 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await t.post(bob, body("Delete typed as:Delete", status))).toBe(202);
     expect(await statusRow(t.store, deleted)).toBeUndefined();
     expect(applied("Delete typed as:Delete").effect).toEqual({ removed_statuses: [deleted] });
+  });
+
+  // A name full_context defines that the body's context leaves undefined, as a type or as a member, is read as
+  // Mastodon's compaction names it, a blank node's: what Mastodon's readers do not read applies nothing here either,
+  // and the same body with the name defined applies it in both (ldSignedReading).
+  it.each([
+    ["left undefined", "pending"],
+    ["defined", "accepted"],
+  ])("a QuoteRequest, its type %s, leaves bob's quote of alice's status %s, as in Mastodon", async (variant, state) => {
+    const { t, bob, status } = await world();
+    const uri = "https://mastodon.example/users/bob/statuses/quoting";
+    expect(await t.post(bob, create(bob, quoting(bob, status.uri, null, { id: uri, atomUri: uri })))).toBe(202);
+    const id = (await statusRow(t.store, uri))!.id;
+    const quote = async () =>
+      (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", id))[0]?.state;
+    expect(await quote()).toBe("pending");
+    const name = `QuoteRequest, its type ${variant}`;
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    expect(await quote()).toBe(state);
+    expect(applied(name).effect).toEqual(state === "pending" ? {} : { quote_changes: [{ status: uri, state }] });
+  });
+
+  // Mastodon's Accept seeks our quote by the object's id whatever its type (Accept#quote_request_from_object).
+  it.each(["left undefined", "defined"])(
+    "an Accept of our quote request, its object's type %s, accepts it, as in Mastodon",
+    async (variant) => {
+      const { t, bob } = await world();
+      const note = mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+      const mine = await localStatus(t, { status: "quote", quoted_status_id: (await statusRow(t.store, note.id))!.id });
+      const state = async () =>
+        (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", mine.id))[0]?.state;
+      expect(await state()).toBe("pending");
+      const name = `Accept of our quote request, its object's type ${variant}`;
+      const local = "https://kopje.test/ap/o/local-2";
+      expect(await t.post(bob, JSON.parse(JSON.stringify(form(name).received).replaceAll(local, mine.uri)))).toBe(202);
+      expect(await state()).toBe("accepted");
+      expect(applied(name).effect).toEqual({ quote_changes: [{ status: local, state: "accepted" }] });
+    },
+  );
+
+  // A quote under a context that types it otherwise than full_context is no quote in Mastodon's reading, so no
+  // QuoteRequest can approve it there (Mastodon's raises on the instrument's missing quote); unsigned, both read it.
+  it.each([
+    ["signed", "no quote", undefined],
+    ["unsigned", "an accepted quote", "accepted"],
+  ])("a Note quoting alice's status under an untyped quote, %s, then a QuoteRequest: %s", async (variant, _, state) => {
+    const { t, bob, status } = await world();
+    const received = JSON.parse(
+      JSON.stringify(form("quote untyped").received).replaceAll("https://other.example/statuses/1", status.uri),
+    ) as Json;
+    const create = variant === "signed" ? received : without(received, "signature");
+    expect(await t.post(bob, create)).toBe(202);
+    const note = (create.object as Json).id as string;
+    expect(await t.post(bob, quoteRequest(bob, status.uri, note))).toBe(202);
+    const id = (await statusRow(t.store, note))!.id;
+    const quote = await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", id);
+    expect(quote[0]?.state).toBe(state);
+    expect(Object.keys(mastodonReading(form("quote untyped")).object as Json)).not.toContain("quote");
+  });
+
+  it.each([
+    ["left undefined", { sensitive: false, tags: [], quote: undefined }],
+    ["defined", { sensitive: true, tags: ["kopje"], quote: "pending" }],
+  ])("a Note, its extension members and tag types %s, is stored as Mastodon stores it", async (variant, expected) => {
+    const { t, bob, status } = await world();
+    const name = `Note, its extension members and tag types ${variant}`;
+    const received = body(name, status);
+    expect(await t.post(bob, received)).toBe(202);
+    const id = (await statusRow(t.store, (received.object as Json).id as string))!.id;
+    const shown = (await t.api<{ sensitive: boolean; tags: { name: string }[] }>(`/api/v1/statuses/${id}`, "alice"))
+      .body;
+    const quote = (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", id))[0];
+    expect({ sensitive: shown.sensitive, tags: shown.tags.map((tag) => tag.name), quote: quote?.state }).toEqual(
+      expected,
+    );
+    const stored = applied(name).effect.statuses![0]!;
+    expect({ sensitive: stored.sensitive, tags: stored.tags ?? [], quote: (stored.quote as Json)?.state }).toEqual(
+      expected,
+    );
+  });
+
+  it.each([
+    ["left undefined", true],
+    ["defined", false],
+  ])("a Delete by an atomUri %s: the status stays %s, as in Mastodon", async (variant, stays) => {
+    const { t, bob, status } = await world();
+    const deleted = "https://mastodon.example/users/bob/statuses/deleted";
+    expect(await t.post(bob, create(bob, mastodonNote(bob, { id: deleted, atomUri: deleted })))).toBe(202);
+    const name = `Delete by an atomUri ${variant}`;
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    expect((await statusRow(t.store, deleted)) !== undefined).toBe(stays);
+    expect(applied(name).effect).toEqual(stays ? {} : { removed_statuses: [deleted] });
+  });
+
+  it.each([
+    ["left undefined", []],
+    ["defined", ["kopje"]],
+  ])("an Add of a Hashtag, its type %s, features %j, as in Mastodon", async (variant, featured) => {
+    const { t, bob, status } = await world();
+    const name = `Add of a Hashtag, its type ${variant}`;
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    const id = (await accountId(t.store, bob.uri))!;
+    const tags = await t.api<{ name: string }[]>(`/api/v1/accounts/${id}/featured_tags`, null);
+    expect(tags.body.map((tag) => tag.name)).toEqual(featured);
+    expect(applied(name).effect.featured_tags ?? []).toEqual(featured);
+  });
+
+  it.each([
+    ["left undefined", { fields: [], locked: false }],
+    ["defined", { fields: ["Site"], locked: true }],
+  ])("an Update(Person), its extension members and types %s, is applied as in Mastodon", async (variant, expected) => {
+    const { t, bob, status } = await world();
+    const name = `Update(Person), its extension members and types ${variant}`;
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    const id = (await accountId(t.store, bob.uri))!;
+    const account = (
+      await t.api<{ display_name: string; fields: { name: string }[]; locked: boolean }>(
+        `/api/v1/accounts/${id}`,
+        "alice",
+      )
+    ).body;
+    expect(account.display_name).toBe("Bob renamed");
+    expect({ fields: account.fields.map((field) => field.name), locked: account.locked }).toEqual(expected);
+    const { effect } = applied(name);
+    expect(effect.display_name).toBe("Bob renamed");
+    expect({ fields: effect.fields ?? [], locked: effect.locked ?? false }).toEqual(expected);
   });
 
   it("a Create whose content is a one-element array is stored with empty content", async () => {

@@ -6,7 +6,7 @@ import {
   ACTIVITY_VOCABULARY,
   FULL_CONTEXT_VALUES,
   inlineDefinitionIris,
-  ldSignedTypeReader,
+  ldSignedReading,
   SIGNED_CONTEXT_URLS,
 } from "../src/federation/ld-signed-body";
 import corpus from "./fixtures/ld-signed/corpus.json";
@@ -148,11 +148,11 @@ describe("ldSignedBodyReadable's tables", () => {
   });
 
   // A type given as an IRI of the vocabulary, absolute or over ActivityStreams' prefix: the name Kopje reads it as
-  // (ldSignedTypeReader) is the one jsonld.js's compaction under full_context writes, and any type it writes as an
+  // (ldSignedReading) is the one jsonld.js's compaction under full_context writes, and any type it writes as an
   // IRI is read as given.
   it("reads a type given as a vocabulary IRI as jsonld.js's compaction under full_context names it", async () => {
     const context = [AS, "https://w3id.org/security/v1"];
-    const readType = ldSignedTypeReader({ "@context": context })!;
+    const { readType } = ldSignedReading({ "@context": context })!;
     const named: string[] = [];
     for (const iri of new Set(ACTIVITY_VOCABULARY.values())) {
       if (iri.startsWith("@")) {
@@ -170,6 +170,122 @@ describe("ldSignedBodyReadable's tables", () => {
     }
     expect(named).toEqual(expect.arrayContaining(["Follow", "Like", "Undo", "Reject", "Block", "Delete", "Note"]));
     expect(named).toContain("QuoteRequest");
+  });
+
+  // A name full_context defines that the body's contexts leave undefined, as a member or as a type, is read as the
+  // blank node's name jsonld.js's compaction under full_context writes (`_:QuoteRequest`); a name they define, and one
+  // full_context does not define, keep their own (ldSignedReading's body). Each such name, under the ActivityStreams
+  // and security contexts alone and with full_context's extension object (which leaves the cid and webfinger
+  // contexts' names undefined).
+  it("names each member and type as jsonld.js's compaction under full_context names it", async () => {
+    const base = new Set([AS, "https://w3id.org/security/v1"].flatMap((url) => Object.keys(definitions(url))));
+    const names = [
+      ...new Set(
+        fullContext.flatMap((entry) => Object.keys(typeof entry === "string" ? definitions(entry) : (entry as Json))),
+      ),
+    ].filter((name) => isName(name) && !base.has(name));
+    expect(names).toEqual(expect.arrayContaining(["QuoteRequest", "Hashtag", "Emoji", "PropertyValue", "sensitive"]));
+    const tested = [...names, "quoteUrl", "kopjeUndefined"];
+    const lists = fullContext.flatMap((entry) =>
+      Object.entries(typeof entry === "string" ? definitions(entry) : (entry as Json)).flatMap(([name, definition]) =>
+        names.includes(name) && (definition as Json | null)?.["@container"] === "@list" ? [name] : [],
+      ),
+    );
+    expect(lists).toEqual(["focalPoint"]);
+    let renamed = 0;
+    for (const context of [
+      [AS, "https://w3id.org/security/v1"],
+      [AS, "https://w3id.org/security/v1", extension],
+    ]) {
+      const body = {
+        "@context": context,
+        id: "https://mastodon.example/users/bob/activities/1",
+        type: "Create",
+        actor: "https://mastodon.example/users/bob",
+        object: {
+          id: "https://mastodon.example/users/bob/statuses/1",
+          // A language map's keys are tags, whatever names they spell.
+          summaryMap: { value: "v", quote: "q", toot: "t" },
+          // focalPoint is a list term: the compaction writes it by its name only for a list (its two numbers).
+          ...Object.fromEntries(
+            tested.map((name) => [name, name === "focalPoint" ? [0.5, -0.5] : "https://mastodon.example/value"]),
+          ),
+        },
+        // A type named after a list term (focalPoint) the compaction writes as its IRI: no type Kopje reads is one.
+        tag: tested.filter((name) => name !== "focalPoint").map((name) => ({ type: name })),
+      };
+      const compacted = (await jsonld.compact(
+        await jsonld.expand(body, options),
+        { "@context": fullContext },
+        options,
+      )) as Json;
+      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body;
+      const keys = (json: Json) => Object.keys(json.object as Json).toSorted();
+      const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
+      expect(keys(read), JSON.stringify(context)).toEqual(keys(compacted));
+      expect(types(read), JSON.stringify(context)).toEqual(types(compacted));
+      expect((read.object as Json).summaryMap).toEqual((compacted.object as Json).summaryMap);
+      renamed += types(read).filter((type) => String(type).startsWith("_:")).length;
+    }
+    // Each name full_context defines is renamed under the two contexts alone, and the cid and webfinger contexts'
+    // names under the extension object too.
+    expect(renamed).toBeGreaterThan(names.length);
+  });
+
+  // A name the body's contexts define otherwise than full_context, here each of its extension object's names but its
+  // namespace prefixes and its list term (focalPoint) and those ActivityStreams defines (which the rules hold to it),
+  // typed @id where full_context leaves it untyped and untyped where it types it @id: Kopje reads none of them. The
+  // compaction writes none given a value the definition coerces to a literal (an IRI string, untyped), and so reads it
+  // nowhere Kopje does not; given a node (an IRI string, typed @id, or an object with an id) it still writes the name,
+  // where Kopje reads less than Mastodon. Types are read by their IRI, the same in both.
+  it("reads no member its context defines otherwise, where jsonld.js's compaction may still write one", async () => {
+    const base = new Set([AS, "https://w3id.org/security/v1"].flatMap((url) => Object.keys(definitions(url))));
+    const flippable = Object.keys(extension).filter(
+      (name) => isName(name) && !base.has(name) && !MASTODON_PREFIXES.includes(name) && name !== "focalPoint",
+    );
+    const flipped = Object.fromEntries(
+      Object.entries(extension).map(([name, definition]) => {
+        if (!flippable.includes(name)) {
+          return [name, definition];
+        }
+        const { "@id": id, "@type": type } =
+          typeof definition === "string" ? { "@id": definition } : (definition as Json);
+        return [name, type === "@id" ? id : { "@id": id, "@type": "@id" }];
+      }),
+    );
+    const typedId = flippable.filter((name) => typeof flipped[name] !== "string");
+    expect(typedId).toEqual(expect.arrayContaining(["sensitive", "Hashtag", "votersCount", "conversation"]));
+    expect(flippable.filter((name) => !typedId.includes(name))).toEqual(
+      expect.arrayContaining(["quote", "quoteAuthorization", "interactionPolicy", "featured"]),
+    );
+    const context = [AS, "https://w3id.org/security/v1", flipped];
+    for (const [value, written] of [
+      ["https://mastodon.example/value", typedId],
+      [{ id: "https://mastodon.example/value" }, flippable],
+    ] as const) {
+      const body = {
+        "@context": context,
+        id: "https://mastodon.example/users/bob/activities/1",
+        type: "Create",
+        actor: "https://mastodon.example/users/bob",
+        object: {
+          id: "https://mastodon.example/users/bob/statuses/1",
+          ...Object.fromEntries(flippable.map((name) => [name, value])),
+        },
+        tag: flippable.map((name) => ({ type: name })),
+      };
+      const compacted = (await jsonld.compact(
+        await jsonld.expand(body, options),
+        { "@context": fullContext },
+        options,
+      )) as Json;
+      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body;
+      const names = (json: Json) => Object.keys(json.object as Json).filter((name) => flippable.includes(name));
+      const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
+      expect(names(read)).toEqual([]);
+      expect(names(compacted).toSorted()).toEqual([...written].toSorted());
+      expect(types(read)).toEqual(types(compacted));
+    }
   });
 
   it("the rule's IRI for every inline definition in the fixtures equals jsonld.js's", async () => {

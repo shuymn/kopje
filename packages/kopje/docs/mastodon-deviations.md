@@ -1294,45 +1294,61 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Delete of a Note, Announce and its Undo, `Update(Person)`, Delete of an account, Add and Remove of a featured hashtag,
   Move, QuoteRequest, FeatureRequest, and the Delete of a quote's and of a collection item's stamp) and Fedify 2.4.5's
   Create of a Note and of a Question, `Update(Person)`, Follow, Like, Announce, Undo, Delete, Accept, Block and
-  EmojiReact, with and without an FEP-8b32 proof, Mastodon reads as received but in two points: Fedify's `votersCount`,
-  typed otherwise than `full_context` types it, is read, where Mastodon's reading keeps a value object in its place; and
-  an `EmojiReact` is read as a favourite, where Mastodon reads it in neither form. A Fedify activity with a proof
-  Mastodon reads as received too. The fixtures and their capture scripts are in `test/fixtures/ld-signed/`
-  (`test/inbox-signed-forms.test.ts`). The activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an
-  `Accept`'s) given as an IRI (`as:Follow`, or the absolute one) are read as the name the compaction gives them, as
-  Mastodon reads them, only in a body of a closed shape whose compaction Kopje can show succeeds: under the
-  ActivityStreams context, alone or with security/v1's, and without a proof; at most 1,000 values as received, and at
-  most 1,000 once compacted, counting `full_context` for its context and three for each other value; every `id`, and
-  every value of an IRI-typed property but a null or an object, an http(s) IRI as written or over a prefix of the body's
-  context; every type such an IRI or a name other than `id` and `type` (which expand to keywords); every value of a
-  language map property itself a map of language tags to strings or nulls; and no array directly in another. Every other
-  body's types are read as given. Where Mastodon's limits or its JSON-LD processing refuse the body, it reads the body
-  as received too (each refusal is captured: too many values as received or once compacted, a `@graph` key, a
-  data-integrity proof, an `id` or a type that is null or not a string, a type or an IRI over a prefix only
-  `full_context` defines, a proof's member JSON-LD refuses, a language map member that is not a string, an object with a
-  null `id` or type in an array given to a language map property, which JSON-LD reads as a node). Where Mastodon
-  compacts it all the same (an inline context, an array in an array, a proof, a blank node, a relative or non-http(s)
-  IRI, a number where an IRI is expected, a type naming `id` or `type`, a language map given as an array or of another
-  shape, a body whose compaction stays within the limit where the count of three per value passes it), such an activity
-  applies less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717
-  tracks. Otherwise the readings differ only for forms none of these writes, and Kopje reads each as written: a status's
-  or a mention's `type` given as an IRI is read as given, so such a status is refused and such a mention read as absent,
-  where Mastodon reads the type the compaction gives it; an extension property the sender's context leaves undefined or
-  types otherwise than Mastodon (`sensitive`, `quote`, `quoteUrl`, `votersCount`, an interaction policy) is read, where
-  Mastodon's reading keeps it under a key it does not read. A one-element array both read as received, and each reader
-  then reads it as it reads the same body unsigned: an `actor` given so is refused, where Mastodon applies the activity
-  for the request's signer (so such a `Reject`, `Undo` or `Delete` leaves what Mastodon's ends, #1717); a text given so
-  is read as empty, where Mastodon stores the array's JSON; `sensitive: [true]` is read as false, where Mastodon marks
-  the status (so such media are shown unmarked); an `inReplyTo` given so is read as absent, where Mastodon's job raises
-  and stores nothing; an `object`, `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as
-  absent, where Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array
-  the compaction shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]`
-  drops the update. And it stops there, so the members after it in the same object keep the compaction's single values:
-  an `object` given as a one-element array after `to: [null]` is refused, where Mastodon applies the activity (#1717).
-  Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
-  readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
-  writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.
-  Accepted, 2026-11-16.
+  EmojiReact, with and without an FEP-8b32 proof, Kopje reads as Mastodon reads them. Mastodon's reading of each is the
+  body as received but for Fedify's `votersCount` and `EmojiReact` without a proof, names Fedify's context defines
+  otherwise than `full_context`, which neither reads (below); a Fedify activity with a proof Mastodon reads as received,
+  and so does Kopje, which reads an `EmojiReact` as a favourite, as it does unsigned, where Mastodon has no reader for
+  one. The fixtures and their capture scripts are in `test/fixtures/ld-signed/` (`test/inbox-signed-forms.test.ts`). The
+  activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an IRI (`as:Follow`,
+  or the absolute one) are read as the name the compaction gives them, as Mastodon reads them, only in a body of a
+  closed shape whose compaction Kopje can show succeeds: under the ActivityStreams context, alone or with security/v1's,
+  and without a proof; at most 1,000 values as received, and at most 1,000 once compacted, counting `full_context` for
+  its context, its signature once as received, and three for each other value; every `id`, and every value of an
+  IRI-typed property but a null or an object, an http(s) IRI as written or over a prefix of the body's context; every
+  type such an IRI or a name other than `id` and `type` (which expand to keywords); every value of a language map
+  property itself a map of language tags to strings or nulls; and no array directly in another. Every other body's types
+  are read as given. Where Mastodon's limits or its JSON-LD processing refuse the body, it reads the body as received
+  too (each refusal is captured: too many values as received or once compacted, a `@graph` key, a data-integrity proof,
+  an `id` or a type that is null or not a string, a type or an IRI over a prefix only `full_context` defines, a proof's
+  member JSON-LD refuses, a language map member that is not a string, an object with a null `id` or type in an array
+  given to a language map property, which JSON-LD reads as a node). Where Mastodon compacts it all the same (an inline
+  context, an array in an array, a proof, a blank node, a relative or non-http(s) IRI (one whose http(s) scheme is
+  upper-case or not followed by `//` included), a number or a boolean where an IRI is expected (`cc: true`), a type
+  naming `id` or `type`, a language map given as an array or of another shape, a body whose compaction stays within the
+  limit where the count of three per value passes it), such an activity applies less than Mastodon's: a retraction so
+  typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. Kopje reads a name, as a member or as a
+  type, only where the compaction writes it so, as Mastodon's readers read it, whatever the body's shape: a member's
+  name where it means in the body's contexts what it means in `full_context`, or neither defines it; a type's where the
+  IRI the body's contexts give it is the one `full_context` names so. A name `full_context` defines that the body's
+  contexts leave undefined (under the ActivityStreams and security contexts alone: `QuoteRequest`, `Hashtag`, `Emoji`,
+  `PropertyValue`, `sensitive`, `quote`, `atomUri`, `conversation`, `votersCount`, `focalPoint`, `blurhash`, an
+  interaction policy, `manuallyApprovesFollowers`, `discoverable`, `featured`, …) the compaction writes as a blank
+  node's name (`_:QuoteRequest`), and a member's name they define otherwise (a `quote` not typed `@id`, Misskey's
+  `quoteUrl` as `as:quoteUrl`, which `full_context` leaves undefined) as its IRI. So neither applies such a
+  `QuoteRequest`, a `Delete` naming its status by such an `atomUri`, or an `Add` of such a `Hashtag`, nor reads such a
+  status's sensitivity, hashtags, emojis, quote, conversation, poll voters or media focus and blurhash, or such an
+  actor's fields, emojis or settings, and a `QuoteRequest` cannot approve a quote neither reads; each is captured beside
+  the same body with the name defined, which both apply. An `Accept` of our quote request is matched by its id whatever
+  its type, as in Mastodon. Kopje reads less than Mastodon where a name its context defines otherwise is given a value
+  the compaction still writes under the name (an object with an `id`, or an IRI where the context types the name `@id`
+  and `full_context` does not), and where Mastodon gives up the compaction of a body Kopje cannot show it gives up
+  (Kopje reads as received a body Mastodon's JSON-LD limits refuse as received, and one whose proof is in the
+  data-integrity context), as #1717 tracks. Otherwise the readings differ only for forms none of these writes, and Kopje
+  reads each as written: a status's or a mention's `type` given as an IRI is read as given, so such a status is refused
+  and such a mention read as absent, where Mastodon reads the type the compaction gives it. A one-element array both
+  read as received, and each reader then reads it as it reads the same body unsigned: an `actor` given so is refused,
+  where Mastodon applies the activity for the request's signer (so such a `Reject`, `Undo` or `Delete` leaves what
+  Mastodon's ends, #1717); a text given so is read as empty, where Mastodon stores the array's JSON; `sensitive: [true]`
+  is read as false, where Mastodon marks the status (so such media are shown unmarked); an `inReplyTo` given so is read
+  as absent, where Mastodon's job raises and stores nothing; an `object`, `target` or `instrument` given so is refused,
+  and an `Undo`'s or a `Reject`'s read as absent, where Mastodon's job raises too; a single poll option is a poll in
+  both. The patch cannot put back an array the compaction shortened (a `null` it left out): an embedded actor's
+  `inbox: [null]` is read, where Mastodon's `[]` drops the update. And it stops there, so the members after it in the
+  same object keep the compaction's single values: an `object` given as a one-element array after `to: [null]` is
+  refused, where Mastodon applies the activity (#1717). Compacting would add JSON-LD processing to every signed activity
+  before its HTTP signature is verified, and its readers would read a form other than the one the author proof verifies.
+  This is weighed again when a sender is seen writing one of these forms, or when the fixtures re-captured at a new
+  reference release no longer read the same. Accepted, 2026-11-16.
 - An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
   Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
   property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a
