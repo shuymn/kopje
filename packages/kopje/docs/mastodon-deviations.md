@@ -34,7 +34,7 @@ Other documents point here rather than repeat the release.
   twice, in its address and its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event
   whose rest takes R bytes is sent while its descriptions take at most 524,288 − R. A post and its quote with eight
   descriptions of 10,000 characters (320,000 bytes of emoji, 560,000 of U+0001) are sent beside plain text, a poll and
-  profiles (R about 84,000), and skipped beside three long links in each post (R about 224,000) or with descriptions of
+  profiles (R about 141,000), and skipped beside three long links in each post (R about 281,000) or with descriptions of
   U+0001; a post without a quote is sent with four such descriptions beside any of these. Events whose statuses are
   near their stored bounds (remote statuses, or content filled by mentions) are skipped too. The figures are pinned by
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
@@ -193,8 +193,8 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
   and JPEG, PNG, GIF or WebP by its signature; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of
   text plus two files and their part headers), its text at most 1 MiB in UTF-8 bytes.
-- Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422 (Mastodon keeps
-  the account unchanged and answers 200).
+- Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
+  `avatar` or `header` (Mastodon keeps the account unchanged and answers 200).
 - For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most
   640 px on the long edge (the upload's preview); Mastodon's is 400×400 or the header's own size, and only for a GIF.
   Otherwise they equal `avatar` and `header`.
@@ -217,19 +217,33 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
 - An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
-  domain name. A compliant host is shorter than 256 characters, so only one padded with characters IDNA ignores (U+00AD)
-  is that long; Mastodon refuses such padding much sooner, when its IDNA conversion fails (between 60 and 120 U+00AD in
-  a check), and Kopje accepts it up to the 1,020 bytes (#1606). Domains and lists past the presented bounds, whether
-  saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
-  `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
-  (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
-- A JSON `true` or `false` sent as `avatar_description` or `header_description` is stored and shown as `true` or
-  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores it
-  too); Mastodon casts a boolean to `t` or `f`. Either is a client's error, `true` is what the client sent, and a
-  description reads JSON as the other text parameters do. Accepted, 2026-11-16.
+  domain name. As in Mastodon, a label of 64 or more characters as written is refused, even of characters IDNA ignores
+  (U+00AD), so only a host padded in many labels is that long; Mastodon accepts such a host up to about 128 labels of
+  padding. Domains and lists past the presented bounds, whether saved before this check or imported, stay stored and
+  are hidden from `source.attribution_domains` and the actor's `attributionDomains`: an entry whose JSON string passes
+  1,022 bytes is left out, and a list past 102,302 bytes in all (100 such domains pass it) is shown as none. Accepted,
+  2026-11-15.
+- A refusal lists at most 100 invalid attribution domains, in `error` and in `details`, before the count's error;
+  Mastodon lists every one. Each listed domain is written twice, so the cap bounds the answer
+  (`test/accounts.test.ts` derives its maximum). Accepted, 2026-11-16.
+- An unknown `source[privacy]`, `source[quote_policy]` or `source[language]` is refused with 422, an error of
+  `privacy`, `quote_policy` or `language` after the account's own, and nothing is saved; Mastodon saves the account's
+  other changes and answers 500. Accepted, 2026-11-16.
+- A JSON `true` or `false` sent as a text parameter (`display_name`, `note`, `avatar_description`,
+  `header_description`, an `attribution_domains[]` entry, a field's `name` or `value`) is stored and shown as `true` or
+  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores a
+  number it casts to text too); Mastodon casts a boolean to `t` or `f`, and leaves a field whose name or value is not
+  a string out of every read. Either is a client's error, `true` is what the client sent, and every text parameter
+  reads JSON the same way. Accepted, 2026-11-16.
+- A bio (`note`) longer than 10,000 UTF-16 code units as sent is refused as too long before it is counted, as a post's
+  text is (`MAX_RAW_LENGTH`); Mastodon counts each link as 23 characters whatever its length, so it accepts a longer
+  bio of long links. Which runs of a bio count as links is linkify-it's, as for posts: a link right after `#` or `@`
+  counts as 23, where Mastodon's pattern reads no link there. Accepted, 2026-11-16.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
-  once, as the HTML it presents and federates.
+  once, as the HTML it presents and federates, so `source.note` gives line breaks as `\n` and one blank line between
+  paragraphs, where Mastodon gives the bio back as sent (`\r\n` kept), and `note` writes a line break `<br>`, where
+  Mastodon writes `<br />`; the text and paragraphs are the same. Accepted, 2026-11-16.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.

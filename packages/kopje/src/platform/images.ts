@@ -147,16 +147,18 @@ export { IMAGE_MATRIX_LIMIT };
 export const PROFILE_IMAGE_LIMIT = 8 * 1024 * 1024;
 const PROFILE_IMAGE_TYPES: readonly ImageType[] = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
-export const PROFILE_TOO_LARGE = "file size must be less than 8 MB";
+// Paperclip's less_than message for a profile image at or past PROFILE_IMAGE_LIMIT (the size as
+// number_to_human_size writes it), which it adds to the image and to its file size.
+export const PROFILE_TOO_LARGE = "must be less than 8 MB";
 
 // The leading bytes sniffImageType reads.
 export const SIGNATURE_BYTES = 12;
 
-// Paperclip's content type validation of a profile image from its first SIGNATURE_BYTES bytes (its message, without
-// the attribute), or null when it is an accepted type.
-export function profileImageProblem(head: Uint8Array): "content type is invalid" | null {
+// Paperclip's content type validation of a profile image, from its first SIGNATURE_BYTES bytes: whether it is an
+// accepted type.
+export function profileImageAccepted(head: Uint8Array): boolean {
   const type = sniffImageType(head);
-  return type !== null && PROFILE_IMAGE_TYPES.includes(type) ? null : "content type is invalid";
+  return type !== null && PROFILE_IMAGE_TYPES.includes(type);
 }
 
 // The served image keeps at most this long edge (UHD); the preview at most SMALL_EDGE, close to Mastodon's small

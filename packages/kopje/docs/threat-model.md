@@ -2870,18 +2870,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Resources (RES)
 
 - **RES-1: input is bounded before it is parsed.** API parameter bodies and inbox bodies stop at 1 MiB, by
-  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text: 10,000
-  code units). Media uploads have their own limit. _Enforced (main)_ for bodies: `src/platform/body.ts`,
-  `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops reading a streamed inbox
-  body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless the route sets one), and a
-  route that reads files (`readParams`' file rule: `update_credentials`' avatar and header, the settings page's
-  image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
-  `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit in
-  UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
+  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text and a
+  local bio: 10,000 code units). Media uploads have their own limit. _Enforced (main)_ for bodies:
+  `src/platform/body.ts`, `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops
+  reading a streamed inbox body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless
+  the route sets one), and a route that reads files (`readParams`' file rule: `update_credentials`' avatar and header,
+  the settings page's image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes
+  for `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit
+  in UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
   arrays) or 2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of
-  nesting; `update_credentials` checks the token before reading a multipart
-  body; `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two
-  files and refuses one byte more", "answers an invalid or under-scoped token without reading a multipart body").
+  nesting; `update_credentials` checks the token before reading a multipart body; `test/params.test.ts`,
+  `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two files and refuses one byte
+  more", "answers an invalid or under-scoped token without reading a multipart body").
   _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"); the Store checks the raw bound of
   the text and warning as sent before it judges a blank text or moves its warning into the text (`convertedPost`, which
   `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`), and an edit to a blank text checks it again on
@@ -2889,7 +2889,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in the Store, before the warning moves, posted now or scheduled", "counts the text and the kept warning as written,
   as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB and 16,777,216 pixels, read
   with the body bound before parsing): `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts`
-  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for remote profiles:
+  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for a local bio: the
+  note as sent is refused past the status text's raw bound before its links are found and counted (`accountChanges` in
+  `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike; `test/accounts.test.ts` ("refuses
+  a note past the raw bound before parsing it")). _Enforced (main)_ for remote profiles:
   bios are cut at 50,000 code units before sanitizing and display names at 2,048 (`src/security/html.ts`,
   `src/federation/remote-actor.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;
