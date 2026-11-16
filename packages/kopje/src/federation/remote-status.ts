@@ -9,6 +9,7 @@ import type {
   RemoteMediaInput,
   RemoteQuoteInput,
   RemoteQuotePolicyInput,
+  RemoteRepliesInput,
   RemoteStatusInput,
 } from "../domain/remote-status-reads";
 import {
@@ -19,6 +20,7 @@ import {
   MAX_STATUS_TAGS,
   MAX_TAG_LENGTH,
 } from "../domain/remote-statuses";
+import { CREATE_WALK_ITEMS } from "../domain/reply-walk-create";
 import { MAX_URL_LENGTH } from "../domain/status-text";
 import { hashtagObjectName } from "../domain/tag-name";
 import { httpUrl } from "../platform/http-url";
@@ -41,7 +43,7 @@ import {
   sanitizeRemoteContent,
   SPOILER_BYTES,
 } from "../security/html";
-import { asArray, isObject, typeIs } from "./json-shapes";
+import { asArray, isObject, itemsOf, typeIs } from "./json-shapes";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
@@ -431,6 +433,57 @@ export function statusIdentity(value: unknown): string | null {
     : null;
 }
 
+// Object#blank? of a JSON value (ActiveSupport): null, false, a blank string, an empty array or object.
+function blank(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    value === false ||
+    (typeof value === "string" && railsBlank(value)) ||
+    (Array.isArray(value) && value.length === 0) ||
+    (isObject(value) && Object.keys(value).length === 0)
+  );
+}
+
+// A status identity on `origin` (non_matching_uri_hosts? against the status's), else null.
+function identityOn(value: unknown, origin: string): string | null {
+  const uri = statusIdentity(value);
+  return uri !== null && new URL(uri).origin === origin ? uri : null;
+}
+
+// A first page's items as Create#fetch_replies takes them (FetchRepliesService#filter_replies): the ids
+// (value_or_id) on `origin`, the first CREATE_WALK_ITEMS of them.
+export function createPageItems(page: Json, origin: string): string[] {
+  return (itemsOf(page) ?? [])
+    .map((item) => identityOn(idOf(item), origin))
+    .filter((uri): uri is string => uri !== null)
+    .slice(0, CREATE_WALK_ITEMS);
+}
+
+// A status's replies as Mastodon 4.7.5's Create#fetch_replies reads them (create.rb:400-410; FetchRepliesService#call,
+// JsonLdHelper#collection_items with max_pages 1), the status being on `origin`: none when blank; an embedded
+// collection's first page, embedded (its `first`, or the collection itself when that is blank), gives its
+// createPageItems; a URI for the collection, or for its first page, is fetched later (FetchRepliesWorker, and
+// fetch_collection_page in 4.7.5 even for an embedded collection), only on `origin`. null for none, or for nothing that
+// would be read (another origin, a first page with no such item). A walk reads a fetched collection the same way
+// (federation/replies.ts).
+export function createRepliesOf(value: unknown, origin: string): RemoteRepliesInput | null {
+  if (blank(value)) {
+    return null;
+  }
+  if (!isObject(value)) {
+    const uri = identityOn(value, origin);
+    return uri === null ? null : { stage: "collection", uri };
+  }
+  const first = value.first;
+  if (!blank(first) && !isObject(first)) {
+    const uri = identityOn(first, origin);
+    return uri === null ? null : { stage: "page", uri };
+  }
+  const items = createPageItems(isObject(first) && !blank(first) ? first : value, origin);
+  return items.length === 0 ? null : { items };
+}
+
 // The status an object describes, or null if it is not one Kopje stores. `activity` supplies to and cc when the
 // object has none (StatusParser falls back to the activity's addressing). embedQuote: keep a Note embedded as the
 // quoted status (false for an embedded one itself).
@@ -505,6 +558,7 @@ export function parseRemoteStatus(
     quotePolicy: quotePolicyOf(object),
     cardLink: cardLinkOf(object),
     cardCandidates,
+    replies: createRepliesOf(object.replies, new URL(uri).origin),
     raw: JSON.stringify(object),
   };
 }

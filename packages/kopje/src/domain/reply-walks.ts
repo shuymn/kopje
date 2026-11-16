@@ -1,7 +1,6 @@
 import { REPLY_WALKS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
-import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql } from "../platform/stored-bounds";
 import { userReadOperation, userWriteOperation } from "./auth";
@@ -11,6 +10,19 @@ import { QUOTE_HOPS } from "./quotes";
 import { type ActorState, type DocumentRevision, isDeletedActor, type RemoteActorInput } from "./remote-actors";
 import type { RemoteStatusInput } from "./remote-status-reads";
 import { storeRemoteStatus } from "./remote-statuses";
+import {
+  CONTEXT_WALK,
+  CREATE_WALK,
+  CREATE_WALK_PAGES,
+  CREATE_WALK_STATUSES,
+  createItems,
+  DEFERRED,
+  DONE,
+  PENDING,
+  STAGES,
+  walkUri,
+  type WalkStage,
+} from "./reply-walk-create";
 import {
   recentlyRefreshed,
   REFRESH_FINISHED_MS,
@@ -55,6 +67,13 @@ import { viewable } from "./statuses";
 // step (inbox.ts fetchedAuthor) and storeRemoteStatus as a fetched status, its quote one hop short of a root's
 // (QUOTE_HOPS - 1): its quoted status is stored with none, and nothing a walk stores starts another walk. Collection
 // items are ids only: an embedded object is never taken as a status.
+//
+// A walk is a context walk (the refresh a context read starts) or a create walk (the Create trigger,
+// reply-walk-create.ts), alike but for these: a create walk records a node's first CREATE_WALK_ITEMS items on the
+// node's origin that Kopje does not store (createItems), reads first pages only, reads the replies of the statuses it
+// creates only, is capped at CREATE_WALK_STATUSES nodes and CREATE_WALK_PAGES documents, and goes once it ends. Context
+// walks are claimed first; create walks in the order they were queued, each keeping its place until it ends, and one
+// queued REFRESH_RUNNING_MS ago is dropped.
 
 // Nodes a walk records at most, the root included; an item past it is not recorded (docs/mastodon-deviations.md:
 // Mastodon's FetchAllRepliesWorker takes 1,000).
@@ -74,18 +93,20 @@ export const WALK_PRUNE_BATCH = 100;
 // REFRESH_RUNNING_MS, one with nothing left to hand out), as claimCollectionSync drops syncs.
 export const REPLY_CLAIM_DROPS = 3;
 
-const STAGES = ["status", "collection", "page", "replies"] as const;
-type WalkStage = (typeof STAGES)[number];
-const [PENDING, DONE, DEFERRED] = [0, 1, 2];
-
 // A node handed out: its URI, its stage, the document the step fetches (the URI itself at the status stage), the raw
 // entries of that document's chain the step passes over (`skip`, RepliesRead), and the hand-out's number in the walk,
 // which its completion hands back.
 export type ReplyStep = { uri: string; stage: WalkStage; fetch: string; skip: number; handout: number };
 
-// A walk a round claimed: the claim's token, which every completion hands back, and its first node, charged. pending:
-// another walk is due.
-export type ClaimedWalk = { statusId: string; token: string; step: ReplyStep; pending: boolean };
+// A walk a round claimed: its kind, the claim's token, which every completion hands back, and its first node, charged.
+// pending: another walk is due.
+export type ClaimedWalk = {
+  statusId: string;
+  kind: "context" | "create";
+  token: string;
+  step: ReplyStep;
+  pending: boolean;
+};
 
 // Entries of a chain one step reads at most, after the ones it passes over (JsonLdHelper#collection_items reads whole
 // pages; past it, the step's next reads the same document again).
@@ -135,6 +156,7 @@ export type ReplyStepAnswer = { next: ReplyStep | null; need: AuthorNeed | null;
 // whose completion is awaited, null once it is applied.
 type Walk = {
   id: string;
+  kind: number;
   nextSeq: number;
   nodes: number;
   pages: number;
@@ -155,6 +177,7 @@ type Node = {
 
 function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
   const row = db.first<{
+    kind: number;
     next_seq: number;
     nodes: number;
     pages: number;
@@ -162,7 +185,7 @@ function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
     handouts: number;
     handout: number | null;
   }>(
-    `SELECT next_seq, nodes, pages, result_count, handouts, handout FROM reply_walks
+    `SELECT kind, next_seq, nodes, pages, result_count, handouts, handout FROM reply_walks
 			WHERE status_id = ? AND token = ? AND due_at IS NOT NULL`,
     statusId,
     token,
@@ -171,6 +194,7 @@ function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
     ? undefined
     : {
         id: statusId,
+        kind: row.kind,
         nextSeq: row.next_seq,
         nodes: row.nodes,
         pages: row.pages,
@@ -178,6 +202,13 @@ function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
         handouts: row.handouts,
         handout: row.handout,
       };
+}
+
+// A walk's caps by its kind: the nodes it records and the collection documents it hands out at most (D3, D12).
+function capsOf(walk: Walk): { statuses: number; pages: number } {
+  return walk.kind === CREATE_WALK
+    ? { statuses: CREATE_WALK_STATUSES, pages: CREATE_WALK_PAGES }
+    : { statuses: WALK_STATUSES, pages: WALK_PAGES };
 }
 
 function saveWalk(db: Db, walk: Walk): void {
@@ -216,17 +247,21 @@ function hasPending(db: Db, walkId: string): boolean {
   );
 }
 
-// A walk's end: its nodes go (deferred ones dropped), and its row is kept finished, with its refresh, for
-// REFRESH_FINISHED_MS (the claims' prune).
-function finish(db: Db, walkId: string, now: number): void {
+// A walk's end: its nodes go (deferred ones dropped); a context walk's row is kept finished, with its refresh, for
+// REFRESH_FINISHED_MS (the claims' prune), and a create walk's goes.
+function finish(db: Db, walkId: string, kind: number, now: number): void {
   db.run("DELETE FROM reply_walk_nodes WHERE status_id = ?", walkId);
+  if (kind === CREATE_WALK) {
+    db.run("DELETE FROM reply_walks WHERE status_id = ?", walkId);
+    return;
+  }
   db.run("UPDATE reply_walks SET due_at = NULL, finished_at = ?2, token = NULL WHERE status_id = ?1", walkId, now);
 }
 
 // The next pending node, charged: an attempt, and a page at every stage but the status; it takes the walk's next
 // hand-out number, the only one a completion is then applied for. A node with no attempt left, or at those stages once
-// WALK_PAGES are spent, is ended without a fetch, and the next is taken: each turn of the loop ends a pending node, so
-// it reads at most WALK_STATUSES of them. null: none is pending.
+// the walk's pages are spent (capsOf), is ended without a fetch, and the next is taken: each turn of the loop ends a
+// pending node, so it reads at most the walk's nodes. null: none is pending.
 function handOut(db: Db, walk: Walk): ReplyStep | null {
   for (;;) {
     const node = db.first<{ uri: string; stage: number; fetch: string | null; skip: number; attempts: number }>(
@@ -238,7 +273,7 @@ function handOut(db: Db, walk: Walk): ReplyStep | null {
       return null;
     }
     const page = node.stage !== 0;
-    if (node.attempts >= NODE_ATTEMPTS || (page && walk.pages >= WALK_PAGES)) {
+    if (node.attempts >= NODE_ATTEMPTS || (page && walk.pages >= capsOf(walk).pages)) {
       endNode(db, walk.id, node.uri);
       continue;
     }
@@ -255,20 +290,6 @@ function handOut(db: Db, walk: Walk): ReplyStep | null {
       skip: node.skip,
       handout: walk.handouts,
     };
-  }
-}
-
-// A URI a walk may record or fetch: an http(s) URI within STATUS_URI_LIMIT (UTF-8 bytes as JSON writes it, which
-// bounds the raw bytes the columns' CHECKs hold to 4096), without NUL.
-function walkUri(value: string): boolean {
-  if (!withinIdentityBound(value, STATUS_URI_LIMIT) || value.includes("\0")) {
-    return false;
-  }
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
   }
 }
 
@@ -290,16 +311,17 @@ function skipped(db: Db, uri: string, now: number): boolean {
   );
 }
 
-// A chain's entries recorded as pending nodes, by raw position, while the walk holds fewer than WALK_STATUSES: each an
-// id a walk may fetch, not of this instance's origin, not a node of the walk already, and not a stored status skipped;
-// any other entry is passed. Items of any other origin are taken (FetchAllRepliesService does not filter them by
-// host).
-function recordItems(db: Db, walk: Walk, entries: readonly (string | null)[], input: ReplyStepInput): void {
-  for (const uri of entries) {
-    if (walk.nodes >= WALK_STATUSES) {
+// A chain's entries recorded as pending nodes of `node`'s walk, by raw position, while the walk holds fewer nodes than
+// its cap (capsOf): in a context walk each an id a walk may fetch, not of this instance's origin, not a node of the walk
+// already, and not a stored status skipped, any other entry passed, items of any other origin taken
+// (FetchAllRepliesService does not filter them by host); in a create walk the items createItems keeps of the node's.
+function recordItems(db: Db, walk: Walk, node: Node, entries: readonly (string | null)[], input: ReplyStepInput): void {
+  const create = walk.kind === CREATE_WALK;
+  for (const uri of create ? createItems(db, entries, node.uri) : entries) {
+    if (walk.nodes >= capsOf(walk).statuses) {
       return;
     }
-    if (uri === null || !walkUri(uri) || sameOrigin(uri, input.origin) || skipped(db, uri, input.now)) {
+    if (uri === null || (!create && (!walkUri(uri) || sameOrigin(uri, input.origin) || skipped(db, uri, input.now)))) {
       continue;
     }
     const inserted = db.run(
@@ -319,13 +341,15 @@ function recordItems(db: Db, walk: Walk, entries: readonly (string | null)[], in
 // walk has room. On 'more', the same document is read again past the entries taken (a chain the status holds at the
 // replies stage, which fetches the status for its replies only); a URI next (on the node's own origin, Mastodon's
 // non_matching_uri_hosts? refusal) is read from its start, or past the carried skip when this document held no chain.
-// With neither, or once the walk is full, the node is done.
+// With neither, or once the walk is full, the node is done. A create walk reads a node's first page only
+// (FetchRepliesService's max_pages 1): a page's next, and a chain past the cap, are not read.
 function readReplies(db: Db, walk: Walk, node: Node, replies: RepliesRead | null, input: ReplyStepInput): void {
   if (replies !== null) {
-    recordItems(db, walk, replies.entries, input);
+    recordItems(db, walk, node, replies.entries, input);
   }
   const next = replies?.next ?? null;
-  if (replies === null || next === null || walk.nodes >= WALK_STATUSES) {
+  const firstRead = walk.kind === CREATE_WALK && (next === "more" || STAGES[node.stage] === "page");
+  if (replies === null || next === null || firstRead || walk.nodes >= capsOf(walk).statuses) {
     endNode(db, walk.id, node.uri);
     return;
   }
@@ -429,12 +453,14 @@ function judge(
     return null;
   }
   const parentId = statusIdOf(db, parent.uri);
+  // A create walk reads the replies of the statuses it creates only (a stored one's Create is not run again).
+  const repliesOf = (created: boolean) => (walk.kind === CONTEXT_WALK || created ? fetched.replies : null);
   if (stored !== undefined) {
     // A stored status still unlinked is out of the context's reach, as is one linked elsewhere.
     if (parentId === undefined || stored.linked !== parentId) {
       endNode(db, walk.id, node.uri);
     } else {
-      validate(db, walk, node, fetched.replies, input);
+      validate(db, walk, node, repliesOf(false), input);
     }
     return null;
   }
@@ -482,7 +508,7 @@ function judge(
   if (outcome.statusId === undefined || parentId === undefined || !linkedTo(db, outcome.statusId, parentId)) {
     endNode(db, walk.id, node.uri);
   } else {
-    validate(db, walk, node, fetched.replies, input);
+    validate(db, walk, node, repliesOf(outcome.reason === "created"), input);
   }
   return null;
 }
@@ -522,19 +548,27 @@ function applyStep(db: Db, walk: Walk, node: Node, input: ReplyStepInput): Autho
 
 // ---- Operations: claims, steps and releases of the Worker's rounds (federation/replies.ts)
 
-function dueWalk(db: Db, now: number): { status_id: string; queued_at: number } | undefined {
-  return db.first<{ status_id: string; queued_at: number }>(
-    `SELECT status_id, queued_at FROM reply_walks INDEXED BY reply_walks_due WHERE kind = 0 AND due_at <= ?
+type DueWalk = { status_id: string; kind: number; queued_at: number };
+
+// The walk due first of a kind, by due_at: a create walk's is its queued_at again after each claim (releaseReplyWalk).
+function dueOf(db: Db, kind: number, now: number): DueWalk | undefined {
+  return db.first<DueWalk>(
+    `SELECT status_id, kind, queued_at FROM reply_walks INDEXED BY reply_walks_due WHERE kind = ? AND due_at <= ?
 			ORDER BY due_at LIMIT 1`,
+    kind,
     now,
   );
 }
 
-// The context walk due first, claimed for REPLY_WALK_LEASE_MS with its next node handed out. First the finished walks
-// past REFRESH_FINISHED_MS are pruned (WALK_PRUNE_BATCH at most). A walk running REFRESH_RUNNING_MS after its latest
-// start is deleted, one whose root is gone or no longer a walk root is finished, and one with no node left to hand out
-// is finished; then the next due is taken, at most REPLY_CLAIM_DROPS + 1 in all. 'more': that many were dropped and
-// another is due; null: none is due.
+function dueWalk(db: Db, now: number): DueWalk | undefined {
+  return dueOf(db, CONTEXT_WALK, now) ?? dueOf(db, CREATE_WALK, now);
+}
+
+// The walk due first, a context walk before any create walk, claimed for REPLY_WALK_LEASE_MS with its next node handed
+// out. First the finished walks past REFRESH_FINISHED_MS are pruned (WALK_PRUNE_BATCH at most). A walk queued
+// REFRESH_RUNNING_MS ago (a context walk's latest start, a create walk's record) is deleted, one whose root is gone or
+// no longer a walk root is finished, and one with no node left to hand out is finished; then the next due is taken, at
+// most REPLY_CLAIM_DROPS + 1 in all. 'more': that many were dropped and another is due; null: none is due.
 export const claimReplyWalk = writeOperation.atStoreTime("now")<{ now: number }, ClaimedWalk | "more" | null>((
   db,
   { now },
@@ -557,7 +591,7 @@ export const claimReplyWalk = writeOperation.atStoreTime("now")<{ now: number },
       continue;
     }
     if (walkRoot(db, id, now) === undefined) {
-      finish(db, id, now);
+      finish(db, id, row.kind, now);
       continue;
     }
     const token = crypto.randomUUID();
@@ -566,10 +600,11 @@ export const claimReplyWalk = writeOperation.atStoreTime("now")<{ now: number },
     const step = handOut(db, walk);
     saveWalk(db, walk);
     if (step === null) {
-      finish(db, id, now);
+      finish(db, id, row.kind, now);
       continue;
     }
-    return { statusId: id, token, step, pending: dueWalk(db, now) !== undefined };
+    const kind = row.kind === CREATE_WALK ? "create" : "context";
+    return { statusId: id, kind, token, step, pending: dueWalk(db, now) !== undefined };
   }
   return dueWalk(db, now) === undefined ? null : "more";
 });
@@ -594,23 +629,28 @@ export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInpu
   const next = input.more ? handOut(db, walk) : null;
   saveWalk(db, walk);
   if (next === null && !hasPending(db, walk.id)) {
-    finish(db, walk.id, input.now);
+    finish(db, walk.id, walk.kind, input.now);
     return { next: null, need: null, done: true };
   }
   return { next, need: null, done: false };
 });
 
-// The end of a round's turn of a walk: under its claim, the walk is due again at once while a node is pending, else it
-// finishes. Returns whether a walk is due.
+// The end of a round's turn of a walk: under its claim, the walk is due again at once while a node is pending (a
+// create walk in its place, at its queued_at), else it finishes. Returns whether a walk is due.
 export const releaseReplyWalk = writeOperation.atStoreTime("now")<
   { statusId: string; token: string; now: number },
   boolean
 >((db, { statusId, token, now }) => {
-  if (walkOf(db, statusId, token) !== undefined) {
+  const walk = walkOf(db, statusId, token);
+  if (walk !== undefined) {
     if (hasPending(db, statusId)) {
-      db.run("UPDATE reply_walks SET token = NULL, due_at = ?2 WHERE status_id = ?1", statusId, now);
+      db.run(
+        `UPDATE reply_walks SET token = NULL, due_at = IIF(kind = ${CREATE_WALK}, queued_at, ?2) WHERE status_id = ?1`,
+        statusId,
+        now,
+      );
     } else {
-      finish(db, statusId, now);
+      finish(db, statusId, walk.kind, now);
     }
   }
   return dueWalk(db, now) !== undefined;
@@ -630,7 +670,9 @@ function newRefreshId(): string {
 // REPLIES_INITIAL_WAIT_MS ago, with no refresh started within REPLIES_COOLDOWN_MS, while fewer than
 // MAX_RUNNING_REFRESHES run. A refresh already running is answered as it is. The status's row is created with a drawn
 // id, or a kept one (finished, or running past REFRESH_RUNNING_MS) is rewritten with its own: running from now with
-// result_count 0, its nodes replaced by the root's. Answers the running refresh, or null.
+// result_count 0, its nodes replaced by the root's. A create walk of the status becomes this refresh the same way, with
+// a drawn id: its nodes and counters go, and its claim's token, so its round's completions change nothing (D12).
+// Answers the running refresh, or null.
 export const startRepliesRefresh = userWriteOperation.atStoreTime("now")<{ id: string; now: number }, Refresh | null>((
   db,
   { id, now },

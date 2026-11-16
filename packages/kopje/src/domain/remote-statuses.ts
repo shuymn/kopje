@@ -43,6 +43,7 @@ import {
   followersUri,
   type StoredStatus,
 } from "./remote-status-reads";
+import { recordCreateWalk } from "./reply-walk-create";
 import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
@@ -86,6 +87,11 @@ export type StoreContext = {
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
+  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk): set only by the paths
+  // that store what was delivered or what a user asked for (an inbound Create or Update, an Announce's original, an
+  // Add's status, a QuoteRequest's quoting status, a search or interaction resolution), never by a walk, quote
+  // verification or a collection sync, so nothing a walk causes starts another.
+  readReplies?: boolean;
 };
 
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
@@ -475,6 +481,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       isReply,
       now: ctx.now,
     });
+  }
+  if (ctx.readReplies === true) {
+    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.now);
   }
   return { applied: true, reason: "created", statusId: id };
 }
@@ -940,6 +949,7 @@ export function storeResolved(
         origin,
         deliveredTo: null,
         fetched: true,
+        readReplies: true,
       });
       return {
         kind: "status",

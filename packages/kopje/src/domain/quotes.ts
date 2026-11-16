@@ -1219,6 +1219,7 @@ export function answerQuoteRequest(
       origin: ctx.origin,
       deliveredTo: ctx.deliveredTo,
       fetched: true,
+      readReplies: true,
     });
     // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
     // than the instrument's is not it.
