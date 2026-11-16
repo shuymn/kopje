@@ -278,9 +278,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade cuts a stored one (only an imported row of malformed UTF-8 or a BLOB holds one). The API, ActivityPub and
   filters show at most a description's first 10,000 code points once decoded. Migration
   `0105_media_description_bytes` rewrites such descriptions and makes the media bound triggers again; the upgrade
-  checks no reference (6,630 ms for this file in one local run of the migration bench, at a load average of 21 to
-  40). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
-  rolling back past it needs a point-in-time restore.
+  checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,204 ms with this file and
+  12,545 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Fixed
 
