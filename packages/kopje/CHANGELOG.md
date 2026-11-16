@@ -117,9 +117,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   kept, so the post is stored again if it arrives later) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   "Retractions and edits of remote statuses"). A sync still fetches at most 20 posts and makes at most 552 requests.
   Migration `0101_pin_refresh` adds a column of `collection_pins_pending` with its default, reading every row for its
-  CHECK; the upgrade checks no reference (<ms> for this file in one local run of the migration bench, at a load average
-  of <x>). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
-  rolling back past it needs a point-in-time restore.
+  CHECK; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 11,333 ms
+  with this file and 11,149 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
