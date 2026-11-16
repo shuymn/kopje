@@ -5,6 +5,9 @@ import { ACTOR_URI_LIMIT, STATUS_URI_LIMIT, withinIdentityBound } from "../platf
 import { iso } from "../platform/iso-time";
 import {
   isoTimeSql,
+  presentedContent,
+  presentedSpoiler,
+  spoilerReadSql,
   STATUS_EMOJIS_BYTES,
   statusPublishedSql,
   storedBlurhash,
@@ -925,7 +928,8 @@ type OwnStatus = {
 };
 
 // The viewer's own status `id`, unless it is withdrawn (R2: its author no longer sees it): what an edit, a delete and
-// a write on an own status find (ownStatusId's rule).
+// a write on an own status find (ownStatusId's rule). The warning is read through its byte cut (spoilerReadSql); an
+// edit that keeps it copies the stored value in SQL.
 function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   const resolved = resolveStatusId(db, id);
   if (resolved === null) {
@@ -933,8 +937,9 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   }
   return (
     db.first<OwnStatus>(
-      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text, spoiler_text, sensitive,
-				language, ${statusPublishedSql("statuses")} AS published_at
+      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text,
+				${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive, language,
+				${statusPublishedSql("statuses")} AS published_at
 			FROM statuses WHERE id = ? AND account_id = ? AND withdrawn = 0`,
       resolved,
       accountId,
@@ -1698,16 +1703,16 @@ export function editVersions(
         created_at: string;
         emojis: string | null;
       }>(
-        `SELECT content, spoiler_text, sensitive, ${editMediaSql("media_json")} AS media_json, poll_options, created_at,
-					emojis
+        `SELECT content, ${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive,
+					${editMediaSql("media_json")} AS media_json, poll_options, created_at, emojis
 				FROM status_edits WHERE id = CAST(? AS INTEGER)`,
         editId,
       );
       yield edit === undefined
         ? undefined
         : {
-            content: edit.content,
-            spoiler_text: edit.spoiler_text,
+            content: presentedContent(edit.content),
+            spoiler_text: presentedSpoiler(edit.spoiler_text),
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
@@ -1779,7 +1784,7 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
     resolved === null
       ? undefined
       : db.first<{ id: string; source_text: string | null; content: string; spoiler_text: string }>(
-          `SELECT id, source_text, content, spoiler_text
+          `SELECT id, source_text, content, ${spoilerReadSql("spoiler_text")} AS spoiler_text
 					FROM statuses WHERE id = ? AND account_id = ? AND reblog_of_id IS NULL AND withdrawn = 0`,
           resolved,
           accountId,
@@ -1787,7 +1792,14 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
   if (row === undefined) {
     return { status: "not_found" };
   }
-  return { status: "ok", value: { id: row.id, text: row.source_text ?? row.content, spoiler_text: row.spoiler_text } };
+  return {
+    status: "ok",
+    value: {
+      id: row.id,
+      text: presentedContent(row.source_text ?? row.content),
+      spoiler_text: presentedSpoiler(row.spoiler_text),
+    },
+  };
 });
 
 // ---------------------------------------------------------------------------------------------------------------
