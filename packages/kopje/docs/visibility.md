@@ -148,10 +148,13 @@ newest left, or deletes the conversation when none is left (`AccountConversation
 blocker's conversations with the blocked account (`AfterBlockService#clear_conversations!`). The list reads only the
 owner's rows, newest last status first, through the `(account_id, last_status_id)` index; anyone else's conversation
 is not found, read, marked or deleted. Mastodon renders a conversation's last status with no read rule; Kopje shows it
-only when the owner may still see it (`statusReads` under `visible`, R2), and otherwise shows `last_status: null`, as
-Mastodon does for a last status it can no longer load: so a last status whose author is suspended or blocks the owner
-is not shown, while the conversation and its participants stay. The participants are presented as accounts are
-elsewhere (an unavailable one redacted); with nobody else in it, the owner's own account.
+only when the owner may still see it (`statusReads` under `visible`, R2) and it is not a boost, and otherwise shows
+`last_status: null`, as Mastodon does for a last status it can no longer load: so a last status whose author is
+suspended or blocks the owner is not shown, while the conversation and its participants stay. Mastodon never puts a
+boost in a conversation, and no writer of Kopje's links one (`addToConversation`), so only a restored row names one,
+as its last status or as a link the trigger moves the last status back to; the read shows it as null (RES-3). The
+participants are presented as accounts are elsewhere (an unavailable one redacted); with nobody else in it, the owner's
+own account.
 
 Notifications: `shownSql(r, type, from, status, now, admin, warning)` is R15, one rule for writing (`notify`), listing
 and reading notifications, and for sending their pushes (`domain/push.ts`, judged again at the time of sending). The
