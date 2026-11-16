@@ -221,6 +221,15 @@ settings page):
   timeline's heap past half the isolate's memory. An image given by reference rather than embedded is not fetched, so
   the account has neither the image nor its description; Mastodon fetches it. A value Mastodon cannot read (a numeric
   `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
+- A remote actor document is read as Mastodon 4.7 reads it, each member by its literal spelling, except that Fedify
+  parses the members Kopje reads from its object (`FEDIFY_MEMBERS` in `src/federation/remote-actor.ts`: the id, type,
+  username, inbox, name, bio, URL, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
+  after JSON-LD expansion. Every other member, in any spelling, is read by spelling or not at all, so none refuses the
+  actor. Mastodon stores the account in three cases where Kopje refuses the actor, because Fedify cannot decode a
+  member it parses: a `url` that is a `Link` whose `href` is not a string, a `publicKey` typed otherwise than a key,
+  and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
+  `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon
+  reads only `name` and `summary`.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
