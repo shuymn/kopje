@@ -82,7 +82,7 @@ describe("search of a stored status applies the served document as an Update", (
     expect(history.body.map((version) => version.content)).toEqual([note.content, "<p>edited</p>"]);
   });
 
-  // #1655 P2: the poll is marked fetched at the Store's time, as by a delivered Update (polls.ts markPollFetched).
+  // #1655: the poll is marked fetched at the Store's time, as by a delivered Update (polls.ts markPollFetched).
   it("refreshes a never-edited poll's counts from a document that names no version; edited_at stays null", async () => {
     const { t, note, id } = await stored(poll(0));
     expect(await sql(t.store, "SELECT fetched_at FROM polls")).toEqual([{ fetched_at: null }]);

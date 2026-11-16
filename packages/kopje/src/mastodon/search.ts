@@ -104,8 +104,8 @@ type Found = { accounts: { id: string }[]; statuses: unknown[] };
 
 // The reasons a Store refuses a write while it still serves reads (store-kernel.ts refusalOf under a hold or an
 // upgrade, store-flags.ts flagRefusal): readonly maintenance, a dump's freeze, an unpublished import, a held or
-// upgrading Store. The plain search can still answer then.
-const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
+// upgrading Store. The plain search can still answer then, and a poll read its stored poll (mastodon/polls.ts).
+export const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
   "maintenance",
   "dump-in-progress",
   "unpublished",

@@ -473,7 +473,7 @@ describe("a remote Question", () => {
   });
 });
 
-// Poll#last_fetched_at (#1655, P2): polls.fetched_at is the Store's time of the last Update whose poll was accepted,
+// Poll#last_fetched_at (#1655): polls.fetched_at is the Store's time of the last Update whose poll was accepted,
 // changed or not, delivered or fetched; a Create, a refused implicit change and a removal leave it. The Store's clock
 // is faked (StoreKernel reads Date at each call), each step a second apart, so the time names the step that wrote it.
 describe("the time a remote poll was fetched", () => {
@@ -542,7 +542,7 @@ describe("the time a remote poll was fetched", () => {
     expect(await sql(t.store, "SELECT removed, fetched_at FROM polls")).toEqual([{ removed: 1, fetched_at: edited }]);
   });
 
-  // P7: each write of a poll's values costs one more row, the trigger's. Derived by running the same steps on two
+  // Each write of a poll's values costs one more row, the trigger's. Derived by running the same steps on two
   // Stores, one without polls_revision: the difference in SQLite's total_changes() at each step is the trigger's rows.
   it("costs one more row for each write of a poll", async () => {
     const steps = async (withTrigger: boolean) => {

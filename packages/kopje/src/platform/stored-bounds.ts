@@ -2026,12 +2026,18 @@ export function nextDocumentRevisionSql(current: string | null): string {
     : `(${current} + 1 + ${draw} % ${DOCUMENT_REVISION_MAX}) % ${DOCUMENT_REVISION_MAX + 1}`;
 }
 
-// ---- A remote poll's refresh: migration 0099_poll_refresh (domain/polls.ts)
+// ---- A remote poll's refresh: migration 0099_poll_refresh (domain/polls.ts pollDueSql)
 
 // polls.fetched_at and refresh_at: NULL, or a time in ms on the Store's clock, an integer from 0 to 2^53 - 1 (the
 // columns' CHECK, emitted by pollRefreshMigrationSql).
 function pollTimeCheckSql(column: string): string {
   return `${column} IS NULL OR (typeof(${column}) = 'integer' AND ${column} BETWEEN 0 AND ${SAFE_INTEGER_MAX})`;
+}
+
+// The stored poll time `column` as a refresh's due check reads it at the Store's time `now`: the value, or NULL when
+// it is not an integer or lies after `now` (an imported or skewed time), so such a poll is due as one never fetched.
+export function pollTimeReadSql(column: string, now: string): string {
+  return `CASE WHEN typeof(${column}) = 'integer' AND ${column} <= ${now} THEN ${column} END`;
 }
 
 // polls.revision: an integer from 0 to POLL_REVISION_MAX, the fence of a poll's refresh (domain/polls.ts), issued anew

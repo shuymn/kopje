@@ -1,4 +1,10 @@
-import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import {
+  ACCOUNTS_ID_INDEX,
+  ACCOUNTS_URI_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
+  POLLS_STATUS_INDEX,
+  STATUSES_ID_INDEX,
+} from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
@@ -24,6 +30,7 @@ import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
 import { notify } from "./notifications";
+import { type Poll, presentPoll } from "./poll-presenter";
 import { isLocalPoll, markPollFetched, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
 import { withinRealTimeWindow } from "./real-time-window";
@@ -813,6 +820,64 @@ function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ct
   }
   return outcome;
 }
+
+// The refresh of a remote poll on read (Mastodon 4.7.5's FetchRemotePollService), after its reservation
+// (polls.ts reservePollRefresh) and the Worker's fetch of the status's own document (federation/poll-refresh.ts).
+// revision: the poll's revision as the reservation set it (TEXT, DATA-6).
+export type PollRefreshInput = {
+  statusId: string;
+  revision: string;
+  status: RemoteStatusInput;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
+
+// poll: the poll as the reader sees it now, null when its status is gone or no longer visible to them (404).
+// quotesDue: the status has a quote whose verification is due (the Worker asks the Queue for a job round).
+export type PollRefreshResult = { poll: Poll | null; quotesDue: boolean };
+
+// Applies the fetched document as its author's Update (storeFetchedStatus: the Update's version rules, its fan-out, its
+// quote and R38), only while the reader may see the status (R3) and the poll's revision is still the reservation's:
+// nothing has written the poll since (a vote, an Update delivered or fetched, its end, a reset or a newer
+// reservation), so a refresh never overwrites a state committed during its fetch (ID-7). Otherwise it applies
+// nothing. Either way it answers the poll as stored now, judged again for the reader.
+export const refreshPoll = userWriteOperation.atStoreTime("storeNow")<PollRefreshInput, PollRefreshResult>((
+  db,
+  input,
+  { accountId },
+  { now },
+) => {
+  const { statusId } = input;
+  const current =
+    viewableStatusId(db, accountId, statusId) === null
+      ? undefined
+      : db.first<{ author_id: string; author_uri: string }>(
+          `SELECT s.account_id AS author_id, a.uri AS author_uri
+					FROM polls p INDEXED BY ${POLLS_STATUS_INDEX}
+					CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = p.status_id
+					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
+				WHERE p.status_id = ?1 AND p.revision = CAST(?2 AS INTEGER) AND s.uri = ?3`,
+          statusId,
+          input.revision,
+          input.status.uri,
+        );
+  if (current !== undefined) {
+    storeFetchedStatus(db, { id: current.author_id, uri: current.author_uri }, input.status, {
+      now: input.now,
+      storeNow: input.storeNow,
+      origin: input.origin,
+      deliveredTo: null,
+      fetched: true,
+    });
+  }
+  const visible = viewableStatusId(db, accountId, statusId);
+  return {
+    poll: visible === null ? null : presentPoll(db, visible, accountId, now, input.present.origin),
+    quotesDue: current !== undefined && quoteDue(db, statusId, input.now),
+  };
+});
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses

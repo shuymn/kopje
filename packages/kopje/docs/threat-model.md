@@ -1411,7 +1411,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
   resolution's `resolutionGate` and its `actorState` before the actor's fetch) comes with that answer and is spent
   on that request alone; every other request, redirect hops and RFC 9421 retries included, reads it anew
-  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  (`fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
   policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
   `test/search-resolution-store-calls.test.ts`). Its inbound
