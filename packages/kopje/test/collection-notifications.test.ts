@@ -200,8 +200,9 @@ describe("collection_update (2-T5)", () => {
     expect(await updates()).toEqual(settled);
   });
 
-  // As an edit's update (notify's replacement): a collection_update a mute drops leaves the earlier one. Fails if notify
-  // deletes the earlier before knowing the new one is written.
+  // As an edit's update (notify's replacement): a collection_update a mute drops leaves the earlier one, where Mastodon
+  // deletes it first (docs/mastodon-deviations.md, "Collections"). Fails if notify deletes the earlier before knowing
+  // the new one is written.
   it("keeps the collection_update written before the mute when a later update is not notified", async () => {
     const { h, alice, bob } = await world();
     const collection = await created(h, alice, [bob]);

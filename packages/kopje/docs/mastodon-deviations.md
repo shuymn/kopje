@@ -685,6 +685,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - An `added_to_collection` notification is deleted with its membership (removal, eviction or a block), and a
   `collection_update` with its collection, where Mastodon keeps an `added_to_collection` whose item is gone, presented
   without a collection. Accepted, 2026-11-16.
+- A collection update the rule does not notify to a member (the member has muted the owner's notifications since) leaves
+  the member's earlier `collection_update` as it was, as an edit's `update` is kept, where Mastodon's
+  `LocalNotificationWorker` deletes the earlier one before `NotifyService` judges the new one: after an unmute the
+  earlier one shows again. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
