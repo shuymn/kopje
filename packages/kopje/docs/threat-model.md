@@ -2936,8 +2936,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   note as sent is refused past the status text's raw bound before its links are found and counted (`accountChanges` in
   `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike; `test/accounts.test.ts` ("refuses
   a note past the raw bound before parsing it")). _Enforced (main)_ for remote profiles:
-  bios are cut at 50,000 code units before sanitizing and display names at 2,048 (`src/security/html.ts`,
-  `src/federation/remote-actor.ts`). _Enforced (main):_ a
+  bios are cut at 50,000 code units before sanitizing, display names at 2,048 and image descriptions at 150 code points
+  (`src/security/html.ts`, `src/federation/remote-actor.ts`; `test/profile-descriptions.test.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;
   `test/markers.test.ts` ("answers 422 with Mastodon's validation message")). _Enforced (main)_ for scheduled statuses:
   `scheduled_at` is read only up to 64 characters, and a scheduled status's params are a JSON object of a fixed shape

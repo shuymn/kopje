@@ -212,6 +212,19 @@ settings page):
   Without a cached copy they equal the remote URLs. The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` (default
   4 GiB), and a profile image is kept while its account shows it. A suspended account's copies are deleted, where
   Mastodon keeps them private.
+- A remote account's `avatar_description` and `header_description` are read from its actor's `icon` and `image` as
+  Mastodon 4.7 reads them (the first value, an embedded `Image`, its `summary` else its `name`), but cut at 150 code
+  points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon writes is within
+  150, its limit for a local account, and an account is embedded in nearly every answer (a conversation shows 14, a
+  boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a timeline's heap past half
+  the isolate's memory. An image given by reference rather than embedded gives no description, as Kopje fetches no
+  image; a value Mastodon cannot read (a numeric `@value`) is none, where Mastodon fails the document. Accepted,
+  2026-11-15.
+- A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
+  `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
+  when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
+  non-empty string other than a false value is true) and fails the document on `null` and on an empty string, which
+  casts to `nil`.
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
   they are replaced.
 - The `preview_url` of an animated upload (status media included) is a still.

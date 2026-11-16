@@ -102,6 +102,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - `GET`, `PATCH` and `PUT /api/v1/profile` serve Mastodon 4.6's profile API, which also sets the display settings
   (`show_featured`, `show_media`, `show_media_replies`). An update takes what `update_credentials` takes but `source`,
   avatar and header files included, and answers the Profile. No Store migration and no `wrangler.jsonc` change.
+- Remote accounts' image descriptions (up to 150 characters) and display settings are read from their actors, as
+  Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
+  account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 

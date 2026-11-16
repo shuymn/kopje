@@ -553,6 +553,11 @@ const R_ACTOR: RemoteActorInput = {
   emojiTags: [],
   raw: "{}",
   movedTo: null,
+  avatarDescription: "",
+  headerDescription: "",
+  showFeatured: null,
+  showMedia: null,
+  showRepliesInMedia: null,
 };
 
 // L's search of `uri` with resolve=true, through the Store's resolution (the Worker's fetch replaced by what R's
