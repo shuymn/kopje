@@ -58,6 +58,7 @@ import {
 import type { storeRemoteStatus } from "./remote-statuses";
 import { isDeleted, RETRACTION_TTL_MS } from "./retractions";
 import { RowBudget } from "./row-budget";
+import { journalHead, quietJournaledEdit } from "./stream-journal";
 
 // How a received status is stored: remote-statuses.ts storeRemoteStatus, which its callers pass. Storing a status
 // records its quote here, and a quote fetches and stores its quoted status, at most QUOTE_HOPS deep; this module
@@ -168,15 +169,16 @@ function quoteRow(db: Db, statusId: string): QuoteRow | undefined {
 
 // Mastodon's ActivityPub::Activity::Create#process_quote and ProcessStatusUpdateService#update_quote!: the quote a
 // stored status's Note names, written with its work. A Note that names none removes the status's quote; a Tombstone is
-// a deleted quote, with no work; a quote whose target or stamp changed starts over as pending (the count trigger takes
-// an accepted one off its target); an unchanged one is promoted when its status arrived as a root. A stamp of this
+// a deleted quote, with no work; a quote whose target changed, or whose stamp changed where Mastodon resets it, starts
+// over as pending (the count trigger takes an accepted one off its target); one Mastodon keeps is promoted when its
+// status arrived as a root. A stamp of this
 // instance's origin is not a remote stamp, and is dropped (StatusParser#quote_approval_uri). A quoted Note embedded in
 // the status (Mastodon's safe_prefetched_embed) is stored first, with one hop less of work, only when it
 // is the status's author's own (its attributedTo is the author, its id on the author's origin): the author vouches for
 // it as for the status itself, so a private self-quote that its server serves nobody is still known. A withdrawn status
 // (its Delete recorded, its removal under way) is never linked as the quoted status.
 // Answers whether it rewrote the stamp: wrote the quote back with an approval URI other than the stored one (after its
-// normalization). A legacy form alone, a deleted quote named again, a new or removed quote and a promotion do not.
+// normalization). A kept quote, a deleted quote named again, a new or removed quote and a promotion do not.
 export function recordQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },
@@ -188,10 +190,10 @@ export function recordQuote(
   const named = quote === undefined || quote === null || (!quote.tombstone && quote.uri === status.uri) ? null : quote;
   const existing = db.first<{
     quoted_uri: string | null;
+    quoted_account_id: string | null;
     approval_uri: string | null;
     state: QuoteState;
-    legacy: number;
-  }>("SELECT quoted_uri, approval_uri, state, legacy FROM quotes WHERE status_id = ?", status.id);
+  }>("SELECT quoted_uri, quoted_account_id, approval_uri, state FROM quotes WHERE status_id = ?", status.id);
   if (named === null) {
     if (existing !== undefined) {
       db.run("DELETE FROM quotes WHERE status_id = ?", status.id);
@@ -222,20 +224,29 @@ export function recordQuote(
       ? null
       : named.approvalUri;
   const legacy = named.legacy ? 1 : 0;
-  // An unchanged quote is only promoted. So is a deleted quote of a local status that is gone or withdrawn, which the
-  // Note still names, whatever stamp or legacy form it now carries: the status's removal detached it (R35), and only
-  // Kopje's answer to a QuoteRequest changes the state of a quote of a local status (VIS-28), never a received Note.
-  // Mastodon's update_quote! and update_quote_approval! likewise keep a quote whose quoted status is gone in its state
+  const localTarget = originOf(named.uri) === ctx.origin;
+  // A quote Mastodon never resets is kept, its stored form and state as they are, and only promoted: the same target,
+  // still a quote or still a Tombstone, and any of
+  //   - the same stamp: the legacy form alone changes nothing, as Mastodon changes `legacy` only with a reset
+  //     (process_status_update_service.rb:346, :368 in v4.7.5);
+  //   - a local target, whatever stamp or form: only Kopje's answer to its QuoteRequest decides it (VIS-28, C20 of
+  //     test/quote-model.ts), and Mastodon stores no approval for it (quote.rb:40; :341, verify_quote_service.rb:17);
+  //   - an accepted self-quote, which needs no stamp (FEP-044f): a recorded departure, v4.7.5 fetches a self-quote's
+  //     stamp (docs/mastodon-deviations.md, "Quote verification").
+  // So is a deleted quote of a local status that is gone or withdrawn, which the Note still names, whatever stamp or
+  // legacy form it now carries: the status's removal detached it (R35), and Mastodon's update_quote! and
+  // update_quote_approval! likewise keep a quote whose quoted status is gone in its state
   // (process_status_update_service.rb:288-336; verify_quote_service.rb:16-17).
   if (
     existing !== undefined &&
     existing.quoted_uri === named.uri &&
-    ((existing.approval_uri === approval &&
-      existing.legacy === legacy &&
-      (existing.state === "deleted") === named.tombstone) ||
+    (((existing.state === "deleted") === named.tombstone &&
+      (existing.approval_uri === approval ||
+        localTarget ||
+        (existing.state === "accepted" && existing.quoted_account_id === status.author.id))) ||
       (existing.state === "deleted" &&
         !named.tombstone &&
-        originOf(named.uri) === ctx.origin &&
+        localTarget &&
         db.first("SELECT 1 AS x FROM statuses WHERE uri = ? AND withdrawn = 0", named.uri) === undefined))
   ) {
     promoteQuote(db, status.id, arrival, ctx.now);
@@ -243,7 +254,7 @@ export function recordQuote(
   }
   // A quote of a local status is decided by Kopje's answer to its QuoteRequest alone (answerQuoteRequest), never by a
   // verification round: it gets no work.
-  const work = !named.tombstone && arrival.hops > 0 && originOf(named.uri) !== ctx.origin;
+  const work = !named.tombstone && arrival.hops > 0 && !localTarget;
   db.run(
     `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, legacy, approval_uri,
 			verify_after, attempts, hops, fetch_as, generation, updated_at)
@@ -272,11 +283,12 @@ export function recordQuote(
 }
 
 // ProcessStatusUpdateService#handle_implicit_update!: an Update that names no newer version never changes which status
-// is quoted, but a changed stamp of the same quote is recorded (and verified again); anything else only promotes the
-// quote, the status having arrived again as a root. Answers whether it rewrote the stamp: Mastodon broadcasts the
-// update when it moved the quote's state (process_status_update_service.rb:73-83 in v4.7.5), which
-// update_quote_approval! does when the approval URI changes (:346), whatever the legacy form; Kopje verifies the stamp
-// in later rounds, so its write-back is where the state is known to move (remote-statuses.ts).
+// is quoted, but a changed stamp of the same quote is recorded (and verified again) where Mastodon resets it
+// (recordQuote); anything else only promotes the quote, the status having arrived again as a root. Answers whether it
+// rewrote the stamp: Mastodon broadcasts the update when it moved the quote's state
+// (process_status_update_service.rb:73-83 in v4.7.5), which update_quote_approval! does when the approval URI changes
+// (:346), whatever the legacy form; Kopje verifies the stamp in later rounds, so its write-back is where the state is
+// known to move (remote-statuses.ts).
 export function refreshQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },
@@ -296,8 +308,11 @@ export function refreshQuote(
   return false;
 }
 
-// A root re-arrival renews a pending quote's full budget and due time (a new work: its attempts and author fetches
-// start again), using its fetch identity when present.
+// A root re-arrival gives a pending quote its full budget, using its fetch identity when present. An idle work
+// (verify_after null) is renewed: due now, a new generation, its attempts and author fetches starting again. A live one
+// (due, leased or backing off) keeps its generation, due time, attempts and author fetches, so the claim in flight
+// applies its outcome and a backoff runs out: arrivals that keep coming cannot hold a quote undecided. Its budget and
+// signer change nothing current() checks; a fetch refused under a signer the row no longer names is retried (failed).
 // Verification arrivals (fewer hops) promote nothing, nor do quotes of local statuses (no work: recordQuote) or local
 // quoting statuses (no round decides them: test/quote-authoring.test.ts concurrency row 17).
 export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, now: number): void {
@@ -305,8 +320,12 @@ export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, no
     return;
   }
   db.run(
-    `UPDATE quotes SET hops = ?2, attempts = 0, author_fetches = 0, verify_after = ?3,
-			fetch_as = COALESCE(?4, fetch_as), updated_at = ?5, generation = ${NEW_GENERATION}
+    `UPDATE quotes SET hops = ?2, fetch_as = COALESCE(?4, fetch_as),
+			attempts = CASE WHEN verify_after IS NULL THEN 0 ELSE attempts END,
+			author_fetches = CASE WHEN verify_after IS NULL THEN 0 ELSE author_fetches END,
+			updated_at = CASE WHEN verify_after IS NULL THEN ?5 ELSE updated_at END,
+			generation = CASE WHEN verify_after IS NULL THEN ${NEW_GENERATION} ELSE generation END,
+			verify_after = COALESCE(verify_after, ?3)
 		WHERE status_id = ?1 AND state = 'pending' AND quoted_uri IS NOT NULL AND local = 0
 			AND NOT EXISTS (SELECT 1 FROM local_accounts l WHERE l.account_id = quotes.quoted_account_id)`,
     statusId,
@@ -499,36 +518,43 @@ function moved(db: Db, row: QuoteRow, now: number): QuoteVerified {
   return { done: false, due: true, state: row.state, next: true };
 }
 
+// The username of the local account whose key fetches for a quote's work: fetch_as, rechecked, so it signs only while
+// it is an available local account that is still a recipient of the quoting status (status_mentions, silent included)
+// or an accepted follower of its author; otherwise null, the instance actor. quoteWork reads it before a stage, and
+// failed() again after one, to tell a refusal under a signer the work has since left.
+function signerOf(db: Db, row: QuoteRow): string | null {
+  if (row.fetch_as === null) {
+    return null;
+  }
+  return (
+    db.first<{ username: string }>(
+      `SELECT a.username FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
+				WHERE l.account_id = ?1 AND ${availableLocalSql("l")}
+					AND (EXISTS (SELECT 1 FROM status_mentions m WHERE m.status_id = ?2 AND m.account_id = ?1)
+						OR EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?3 AND f.state = 'accepted'))`,
+      row.fetch_as,
+      row.status_id,
+      row.account_id,
+    )?.username ?? null
+  );
+}
+
 // The quote of `statusId` when it has work to do (pending, or accepted and being checked again), with the stage it is
-// at. fetch_as is rechecked here: it signs only while it is an available local account that is still a recipient of the
-// quoting status (status_mentions, silent included) or an accepted follower of its author; otherwise the instance
-// actor fetches.
+// at and the signer of its fetch (signerOf).
 export const quoteWork = readOperation<{ statusId: string; now: number }, QuoteWork | null>((db, { statusId, now }) => {
   const row = quoteRow(db, statusId);
   if (row === undefined || row.quoted_uri === null || (row.state !== "pending" && row.state !== "accepted")) {
     return null;
   }
   const { stage, fetch } = stageOf(db, row, now);
-  const signer =
-    row.fetch_as === null
-      ? undefined
-      : db.first<{ username: string }>(
-          `SELECT a.username FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
-					WHERE l.account_id = ?1 AND ${availableLocalSql("l")}
-						AND (EXISTS (SELECT 1 FROM status_mentions m WHERE m.status_id = ?2 AND m.account_id = ?1)
-							OR EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?3 AND f.state = 'accepted'))`,
-          row.fetch_as,
-          row.status_id,
-          row.account_id,
-        );
   return {
     statusId: row.status_id,
     quotedUri: row.quoted_uri,
     approvalUri: row.approval_uri,
     stage,
     fetch,
-    signer: signer?.username ?? null,
+    signer: signerOf(db, row),
     generation: row.generation,
     authorState: stage === "author" && fetch !== null ? actorState(db, fetch) : NO_ACTOR_STATE,
   };
@@ -547,6 +573,8 @@ export type QuoteVerification = {
   generation: number;
   stage: QuoteStage;
   fetch: string | null;
+  // The signer the stage fetched as (quoteWork's): a refusal under another signer than the row names now may pass.
+  signer: string | null;
   // What the stage fetched: the quoted status, its author's document or the stamp.
   quoted?: Fetched<RemoteStatusInput>;
   author?: Fetched<RemoteActorInput>;
@@ -592,9 +620,12 @@ function finish(
   return { done: !again, due: quotesDue(db, now), state, next: false };
 }
 
-// A failed fetch's outcome: gone or unusable end the work; one that may pass (a fetch budget or deadline that ran out
-// included) charges an attempt: the stage had a whole budget of its own. A stale stored author's refetch is not one of
-// these (refreshQuoted).
+// A failed fetch's outcome: gone or unusable end the work, leaving `ends` (the state it keeps, unless a gone stamp
+// rejects or revokes it); one that may pass (a fetch budget or deadline that ran out included) charges an attempt: the
+// stage had a whole budget of its own. So does gone or unusable under a signer other than the one the row names now (a
+// root arrival gave the work a recipient's key while the fetch was in flight, promoteQuote), since a server may refuse
+// one signer only, as Mastodon answers 404 to a viewer it refuses: the retry keeps the state and signs with the current
+// one, within the work's attempts. A stale stored author's refetch is not one of these (refreshQuoted).
 function failed(
   db: Db,
   row: QuoteRow,
@@ -602,9 +633,10 @@ function failed(
   fetched: Fetched<unknown>,
   input: QuoteVerification,
   held: string | null,
+  ends: QuoteState = keep,
 ) {
-  return fetched.kind !== "transient"
-    ? finish(db, row, keep, "done", input.now)
+  return fetched.kind !== "transient" && input.signer === signerOf(db, row)
+    ? finish(db, row, ends, "done", input.now)
     : finish(db, row, keep, "retry", input.now, held);
 }
 
@@ -757,9 +789,9 @@ function storeQuoted(
 // (linked, or found by its uri and linked now) is decided. Only a pending quote is accepted, and only for a self-quote
 // or a valid stamp; an accepted one being checked again is revoked only when its stamp is gone or no longer valid. A
 // pending quote whose stamp is gone is rejected (Mastodon's VerifyQuoteService); one that fails a check stays pending,
-// its work done. Every failure that may pass charges an attempt, a fetch budget or deadline that ran out included,
-// except a stale stored author's refetch, which falls back to the stored account with no attempt charged, counted as an
-// author fetch (refreshQuoted).
+// its work done. A stamp is gone only to the signer the row names now (failed). Every failure that may pass charges an
+// attempt, a fetch budget or deadline that ran out included, except a stale stored author's refetch, which falls back
+// to the stored account with no attempt charged, counted as an author fetch (refreshQuoted).
 export function verifyQuote(db: Db, input: QuoteVerification, store: StoreRemoteStatus): QuoteVerified {
   const { now } = input;
   const row = quoteRow(db, input.statusId);
@@ -816,11 +848,11 @@ export function verifyQuote(db: Db, input: QuoteVerification, store: StoreRemote
     // The quoted status was stored by this stage: the stamp is the next.
     return { done: false, due: true, state: keep, next: true };
   }
-  if (stamp.kind === "gone") {
-    return finish(db, row, lost(true), "done", now);
-  }
+  // A stamp that is gone rejects a pending quote and revokes an accepted one only when the signer the row names now
+  // fetched it (failed): QuoteAuthorizationsController answers 404 to a viewer StatusPolicy refuses, a public status's
+  // included.
   if (stamp.kind !== "ok") {
-    return failed(db, row, keep, stamp, input, null);
+    return failed(db, row, keep, stamp, input, null, stamp.kind === "gone" ? lost(true) : keep);
   }
   return finish(db, row, stampValid(stamp.value, row, quoted) ? "accepted" : lost(false), "done", now);
 }
@@ -913,12 +945,12 @@ function revocationItem(db: Db, revocation: Revocation, left: () => number, now:
 
 // One batch of a revocation (Mastodon's Delete#revoke_quote, Quote#reject!): the quotes still pending or accepted that
 // name the stamp and quote a status by the actor (a seek of quotes_approval, whatever other quotes name the stamp)
-// become rejected or revoked, at most `left() / 2` (each row and the count trigger it fires). The predicate is the
-// cursor: a processed row leaves it. Clears the revocation's pending mark once none is left. Returns whether rows
-// remain.
+// become rejected or revoked, at most `left() / 3` (each row, the count trigger it fires and its streaming journal row,
+// stream_quote_state). The predicate is the cursor: a processed row leaves it. Clears the revocation's pending mark
+// once none is left. Returns whether rows remain.
 function revocationBatch(db: Db, approvalUri: string, actorUri: string, left: () => number, now: number) {
   const actorId = db.first<{ id: string }>("SELECT id FROM accounts WHERE uri = ?", actorUri)?.id;
-  const room = Math.floor(left() / 2);
+  const room = Math.floor(left() / 3);
   if (actorId !== undefined && room > 0) {
     db.run(
       `UPDATE quotes SET state = CASE state WHEN 'accepted' THEN 'revoked' ELSE 'rejected' END, verify_after = NULL,
@@ -1156,7 +1188,13 @@ export function answerQuoteRequest(
   db: Db,
   actor: { id: string; uri: string },
   request: QuoteRequestInput,
-  ctx: { now: number; origin: string; deliveredTo: string | null; prefetched: RemoteStatusInput | null | undefined },
+  ctx: {
+    now: number;
+    origin: string;
+    deliveredTo: string | null;
+    prefetched: RemoteStatusInput | null | undefined;
+    storeNow: number;
+  },
   store: StoreRemoteStatus,
 ): QuoteRequestOutcome {
   const { now } = ctx;
@@ -1219,6 +1257,7 @@ export function answerQuoteRequest(
       origin: ctx.origin,
       deliveredTo: ctx.deliveredTo,
       fetched: true,
+      readReplies: { storeNow: ctx.storeNow },
     });
     // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
     // than the instrument's is not it.
@@ -1246,6 +1285,9 @@ export function answerQuoteRequest(
     return { kind: "answered", reason: "quote-accepted-again" };
   }
   const authorization = freshAuthorization();
+  // The move's `status.update` (stream_quote_state) is quiet: Mastodon broadcasts it with skip_notifications
+  // (activity/quote_request.rb:41 in v4.7.5), so no account only a mention shows the quoting status to is sent it.
+  const head = journalHead(db);
   db.run(
     `UPDATE quotes SET state = 'accepted', authorization_id = ?3, activity_uri = ?4, verify_after = NULL,
 			lease_until = NULL, recheck = 0, need_author = NULL, generation = ${NEW_GENERATION}, updated_at = ?5
@@ -1256,6 +1298,7 @@ export function answerQuoteRequest(
     request.id,
     iso(now),
   );
+  quietJournaledEdit(db, head, quotingId);
   ensureQuotedAccess(db, quotingId, quoted.account_id);
   recordOutbound(
     db,
@@ -1293,8 +1336,10 @@ export function sweepQuoteRequests(db: Db, now: number): void {
 // accepted, is retired at once, whether or not it holds an authorization of Kopje's (an imported one may hold none), so
 // it leaves its target's quotes list and count (quotes_accepted, the trigger quotes_count_changed) and its stamp is
 // never served (the trigger quotes_authorization_retired records it) while the status's removal runs in batches. At
-// most three rows: a status has one quote. With `pending` (a local status's hide, statuses.ts deleteStatus), a pending
-// quote ends too, revoked: no Accept of its QuoteRequest applies once its status is withdrawn (acceptOurQuote).
+// most four rows, a status having one quote: the quote, its target's count, the authorization's revocation and the
+// streaming journal's row (stream_quote_state; sent to no one for a hidden status). With `pending` (a local status's
+// hide, statuses.ts deleteStatus), a pending quote ends too, revoked: no Accept of its QuoteRequest applies once its
+// status is withdrawn (acceptOurQuote).
 export function retireQuoteOf(db: Db, statusId: string, now: number, pending = false): void {
   db.run(
     `UPDATE quotes SET state = 'revoked', authorization_id = NULL, verify_after = NULL, lease_until = NULL,

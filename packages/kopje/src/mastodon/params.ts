@@ -36,8 +36,9 @@ type FilePart = readonly [name: string, at: number];
 // The value objects(name, { files }) reads for a listed field sent as a file part: presence only, never the file.
 export const SENT_FILE = "(file)";
 
-// `files`: fields of the objects whose file parts are read, as SENT_FILE, at their place in the body.
-export type ObjectOptions = { files?: readonly string[] };
+// `files`: fields of the objects whose file parts are read, as SENT_FILE, at their place in the body. `nulls:
+// "absent"`: a field a JSON body sent as null is read as not sent, where other reads take it as blank.
+export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
 // A file part's value while objects() groups the parts; no text value equals it.
 const FILE_VALUE: unique symbol = Symbol("file part");
@@ -53,7 +54,8 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
-    // The names a JSON body sent as null, which read as blank (sentNull tells them apart).
+    // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
+    // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
   ) {}
 
@@ -118,6 +120,7 @@ export class Params {
   objects(name: string, options: ObjectOptions = {}): Record<string, string>[] {
     const prefix = `${name}[`;
     const files = options.files === undefined ? null : new Set(options.files);
+    const absent = options.nulls === "absent" ? this.nulls : new Set<string>();
     const indexed = new Map<string, Record<string, Value>>();
     const sequential: Record<string, Value>[] = [];
     const add = (key: string, value: Value) => {
@@ -149,7 +152,9 @@ export class Params {
     };
     this.entries.forEach(([key, value], at) => {
       partsBefore(at);
-      add(key, value);
+      if (!absent.has(key)) {
+        add(key, value);
+      }
     });
     partsBefore(Infinity);
     const project = (object: Record<string, Value>): Record<string, string> =>

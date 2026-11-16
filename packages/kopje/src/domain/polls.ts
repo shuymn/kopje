@@ -3,12 +3,14 @@ import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_I
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
-import { yieldsMoreThan } from "../platform/stored-bounds";
+import { nextDocumentRevisionSql, pollTimeReadSql, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { type Present, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
-import { mayVoteSql, viewableStatusId } from "./audience";
+import { instanceDomainOf } from "./actors";
+import { isDistributable, mayVoteSql, viewableStatusId, type Visibility } from "./audience";
 import { optionalUserReadOperation, userWriteOperation } from "./auth";
+import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { requireExactIncrement } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
@@ -260,14 +262,129 @@ function viewablePoll(db: Db, viewerId: string | null, id: string): string | nul
   return statusId === null ? null : viewableStatusId(db, viewerId, statusId);
 }
 
+// ---- Refreshing a remote poll on read (#1655; Api::V1::PollsController#refresh_poll).
+
+// Poll::MAKE_FETCH_HAPPEN: a remote poll is fetched again only once more than this has passed since its last applied
+// Update, and here also since its last refresh attempt.
+const MAKE_FETCH_HAPPEN_MS = 60_000;
+
+// The ISO time of the integer ms `ms` (0 or more, within year 9999), in the 24-byte form polls.expires_at holds, by
+// integer arithmetic so that it equals JavaScript's toISOString.
+function isoOfMsSql(ms: string): string {
+  return `(strftime('%Y-%m-%dT%H:%M:%S', ${ms} / 1000, 'unixepoch') || '.' || printf('%03d', ${ms} % 1000) || 'Z')`;
+}
+
+// P1: whether the live poll `p` is due for a refresh at the Store's time `now` (both SQL), Mastodon 4.7.5's
+// Poll#possibly_stale? (poll.rb:55-57,113-119) with one more condition of Kopje's. F (fetched_at, the last applied
+// Update) and A (refresh_at, the last attempt's reservation) are read as NULL when not an integer or after `now`
+// (pollTimeReadSql):
+//   - F is NULL, or before the poll's end, or the poll has no end (last_fetched_before_expiration?);
+//   - F is NULL or before `now` - MAKE_FETCH_HAPPEN_MS (time_passed_since_last_fetch?: `last_fetched_at <
+//     MAKE_FETCH_HAPPEN.ago`, strictly, so a poll fetched exactly a minute ago is not due yet);
+//   - A is NULL or before `now` - MAKE_FETCH_HAPPEN_MS, strictly as for F, so both minute rules read alike: after any
+//     attempt, whatever its outcome, the next waits a full minute.
+// The author's being remote is the caller's (remotePollSql). getPoll and reservePollRefresh judge it alike.
+function pollDueSql(p: string, now: string): string {
+  const fetched = pollTimeReadSql(`${p}.fetched_at`, now);
+  const attempt = pollTimeReadSql(`${p}.refresh_at`, now);
+  return `(${p}.removed = 0
+		AND (${fetched} IS NULL OR ${p}.expires_at IS NULL OR ${isoOfMsSql(fetched)} < ${p}.expires_at)
+		AND (${fetched} IS NULL OR ${fetched} < ${now} - ${MAKE_FETCH_HAPPEN_MS})
+		AND (${attempt} IS NULL OR ${attempt} < ${now} - ${MAKE_FETCH_HAPPEN_MS}))`;
+}
+
+// Whether the poll `p`'s status is by a remote account (Poll#remote?), by the status's key and its author's.
+function remotePollSql(p: string): string {
+  return `EXISTS (SELECT 1 FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+		CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
+		WHERE s.id = ${p}.status_id AND a.domain IS NOT NULL)`;
+}
+
+export type PollRead = { poll: Poll; due: boolean };
+
 // GET /api/v1/polls/:id: the poll, if the viewer may see its status (Api::V1::PollsController authorizes
-// StatusPolicy#show?); otherwise not found.
-export const getPoll = optionalUserReadOperation<{ id: string; present: Present }, Poll | null>(
-  (db, { id, present }, { accountId, now }) => {
-    const pollId = viewablePoll(db, accountId, id);
-    return pollId === null ? null : presentPoll(db, pollId, accountId, now, present.origin);
-  },
-);
+// StatusPolicy#show?); otherwise not found. due: a signed-in user (not an anonymous viewer, not an app token) reads a
+// remote poll that P1 (pollDueSql) holds of at the Store's time, so the Worker reserves a refresh (reservePollRefresh).
+export const getPoll = optionalUserReadOperation.atStoreTime("storeNow")<
+  { id: string; present: Present; storeNow: number },
+  PollRead | null
+>((db, { id, present, storeNow }, { accountId, now }) => {
+  const pollId = viewablePoll(db, accountId, id);
+  const poll = pollId === null ? null : presentPoll(db, pollId, accountId, now, present.origin);
+  if (pollId === null || poll === null) {
+    return null;
+  }
+  const due =
+    accountId !== null &&
+    db.first(
+      `SELECT 1 AS due FROM polls p WHERE p.status_id = ?1 AND ${pollDueSql("p", "?2")} AND ${remotePollSql("p")}`,
+      pollId,
+      storeNow,
+    ) !== undefined;
+  return { poll, due };
+});
+
+// What a refresh's reservation answers the Worker: the status to fetch, its author, the revision the refresh must
+// still find (as TEXT, DATA-6), the instance's domain, and the fetch's preparation, signed per DATA-7's poll rule.
+export type PollReservation = {
+  statusId: string;
+  uri: string;
+  authorUri: string;
+  revision: string;
+  domain: string;
+  // The local account that signs (a private, direct or limited post), or null: the instance actor.
+  signer: string | null;
+  prefetch: FetchPreparation | null;
+};
+
+// The reservation of a due poll's refresh attempt, in one transaction before any fetch: the reader may still see the
+// status (R3, viewablePoll), P1 still holds, and refresh_at takes the Store's time with a new revision, so a
+// concurrent read of the poll finds it not due and starts no fetch, and the refresh applies only while nothing has
+// written the poll since (refreshPoll). Null when another read reserved first or the poll is no longer due.
+// Signer (DATA-7): a public or unlisted status's document is fetched as the instance actor, which tells its server
+// nothing about who read it; another's by the reader, whom its server already addressed.
+export const reservePollRefresh = userWriteOperation.atStoreTime("storeNow")<
+  { id: string; storeNow: number },
+  PollReservation | null
+>((db, { id, storeNow }, { accountId }) => {
+  const statusId = viewablePoll(db, accountId, id);
+  const domain = instanceDomainOf(db);
+  if (statusId === null || domain === null) {
+    return null;
+  }
+  const reserved = db.first<{ revision: string }>(
+    `UPDATE polls SET refresh_at = ?2, revision = ${nextDocumentRevisionSql("revision")}
+		WHERE status_id = ?1 AND ${pollDueSql("polls", "?2")} AND ${remotePollSql("polls")}
+		RETURNING CAST(revision AS TEXT) AS revision`,
+    statusId,
+    storeNow,
+  );
+  if (reserved === undefined) {
+    return null;
+  }
+  const status = db.first<{ uri: string; author_uri: string; visibility: Visibility; reader: string }>(
+    `SELECT s.uri, a.uri AS author_uri, s.visibility, r.username AS reader
+			FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
+			CROSS JOIN accounts r INDEXED BY ${ACCOUNTS_ID_INDEX} ON r.id = ?2
+		WHERE s.id = ?1`,
+    statusId,
+    accountId,
+  );
+  if (status === undefined) {
+    return null;
+  }
+  const signer = isDistributable(status.visibility) ? null : status.reader;
+  return {
+    statusId,
+    uri: status.uri,
+    authorUri: status.author_uri,
+    revision: reserved.revision,
+    domain,
+    signer,
+    prefetch: fetchPreparation(db, signer, status.uri),
+  };
+});
 
 // ---- Voting.
 
@@ -535,30 +652,34 @@ export function remotePollChanges(db: Db, statusId: string, poll: RemotePollInpu
   );
 }
 
+// What storeRemotePoll did: refused an implicit update that changes the choices; left no poll (`removed`, whether one
+// was there or not); or accepted the poll, its values `written` or `unchanged`.
+export type StoredPoll = "refused" | "removed" | "unchanged" | "written";
+
 // Writes or refreshes the poll of a remote status as ProcessStatusUpdateService#update_poll! does. With `significant`
 // (a new status, or an Update newer than the stored version), anything: a new poll, new choices or a new multiple
 // (which drop the votes cast, Poll#reset_votes!), or no poll any more. Otherwise (an implicit update, such as the
 // Update of counts Mastodon's DistributePollUpdateWorker sends) only the counts, the end and the voters of a poll whose
-// choices stay. Whether anything was written. A poll whose end has been handled is never ended again.
+// choices stay. A poll whose end has been handled is never ended again.
 export function storeRemotePoll(
   db: Db,
   statusId: string,
   poll: RemotePollInput | null,
   significant: boolean,
   now: number,
-): boolean {
+): StoredPoll {
   const row = db.first<{ removed: number }>("SELECT removed FROM polls WHERE status_id = ?", statusId);
   const exists = row !== undefined;
   const live = row?.removed === 0;
   const changes = remotePollChanges(db, statusId, poll);
   if (changes && !significant) {
-    return false;
+    return "refused";
   }
   if (poll === null) {
     if (live) {
       resetPoll(db, statusId, true);
     }
-    return live;
+    return "removed";
   }
   const options = JSON.stringify(poll.options);
   const tallies = JSON.stringify(poll.tallies);
@@ -579,27 +700,37 @@ export function storeRemotePoll(
       iso(now),
       JSON.stringify(poll.cut),
     );
-    return true;
+    return "written";
   }
   if (changes && live) {
     resetPoll(db, statusId, false);
   }
-  return (
-    db.run(
-      `UPDATE polls SET options = ?2, multiple = ?3, tallies = ?4, votes_count = ?5, voters_count = ?6, expires_at = ?7,
+  return db.run(
+    `UPDATE polls SET options = ?2, multiple = ?3, tallies = ?4, votes_count = ?5, voters_count = ?6, expires_at = ?7,
 				removed = 0, ended = CASE WHEN removed = 1 THEN 0 ELSE ended END, cut_options = ?8
 			WHERE status_id = ?1 AND (removed = 1 OR options IS NOT ?2 OR multiple IS NOT ?3 OR tallies IS NOT ?4
 				OR voters_count IS NOT ?6 OR expires_at IS NOT ?7 OR cut_options IS NOT ?8)`,
-      statusId,
-      options,
-      poll.multiple ? 1 : 0,
-      tallies,
-      votes,
-      poll.votersCount,
-      expiresAt,
-      JSON.stringify(poll.cut),
-    ) > 0
-  );
+    statusId,
+    options,
+    poll.multiple ? 1 : 0,
+    tallies,
+    votes,
+    poll.votersCount,
+    expiresAt,
+    JSON.stringify(poll.cut),
+  ) > 0
+    ? "written"
+    : "unchanged";
+}
+
+// Poll#last_fetched_at, which ProcessStatusUpdateService#update_poll! sets on every Update whose poll it accepts
+// (process_status_update_service.rb:162 in v4.7.5): `storeNow`, the Store's time, for a poll `stored` as accepted
+// (written or unchanged), never for a refused or removed one, nor on a Create. The write moves the poll's revision
+// (polls_revision), so a refresh reserved before it applies nothing (refreshPoll).
+export function markPollFetched(db: Db, statusId: string, stored: StoredPoll, storeNow: number): void {
+  if (stored === "written" || stored === "unchanged") {
+    db.run("UPDATE polls SET fetched_at = ?2 WHERE status_id = ?1", statusId, storeNow);
+  }
 }
 
 // ---- Purges (inbox.ts): votes go in bounded batches, so a status or account with many never deletes them at once.

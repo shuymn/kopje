@@ -19,7 +19,10 @@ import {
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
+  nextDocumentRevisionSql,
   oembedEndpointPastBoundSql,
+  POLL_REVISION_COLUMNS,
+  pollRevisionPastBoundSql,
   PROFILE_DESCRIPTION_COLUMNS,
   PROFILE_SETTING_COLUMNS,
   profileSettingsPastBoundSql,
@@ -118,7 +121,7 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
 
-// A count trigger of 0100_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
+// A count trigger of 0103_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
 // row to another parent, when the parent holds `max` rows already (rows other than the moved one). The count reads at
 // most `max` entries of the parent's index.
 function countTriggers(name: string, table: string, key: string, max: number, message: string): string[] {
@@ -366,7 +369,20 @@ END;`,
     profileSettingsPastBoundSql("NEW"),
     "accounts: profile setting past its stored bound",
   ),
-  // 0100_collections: the per-account and per-collection counts, the live items (an insert or a change into pending
+  // 0100_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
+  // of a refresh (remote-statuses.ts refreshPoll).
+  ...boundTriggers(
+    "polls_revision",
+    "polls",
+    "revision",
+    pollRevisionPastBoundSql("NEW"),
+    "polls: revision past its stored bound",
+  ),
+  `CREATE TRIGGER polls_revision AFTER UPDATE OF ${POLL_REVISION_COLUMNS.join(", ")} ON polls
+BEGIN
+  UPDATE polls SET revision = ${nextDocumentRevisionSql("revision")} WHERE status_id = NEW.status_id;
+END;`,
+  // 0103_collections: the per-account and per-collection counts, the live items (an insert or a change into pending
   // or accepted), and reports.collection_ids.
   ...countTriggers(
     "collections_per_account",

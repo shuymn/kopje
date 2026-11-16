@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RouteAccess } from "../src/mastodon/access";
 import { ANONYMOUS, ANONYMOUS_LONG, type Caching, EVERYONE, PRIVATE } from "../src/mastodon/caching";
-import { ROUTES } from "../src/mastodon/routes";
+import { DEPRECATED_ROUTES, ROUTES } from "../src/mastodon/routes";
 import { grants, type RequiredScope, SCOPES } from "../src/security/scopes";
 import mastodon from "./fixtures/mastodon-4.7.5-api-access.json";
 import { sameRoute, unroutedFailures } from "./mastodon-conformance";
@@ -604,5 +604,122 @@ describe(`route caching matches Mastodon v${mastodon.mastodon}`, () => {
     expect(cachingSides({ ...timeline, caching: ANONYMOUS_LONG })?.kopje).not.toBe(cachingSides(timeline)?.mastodon);
     expect(cachingSides({ ...timeline, caching: EVERYONE })?.kopje).not.toBe(cachingSides(timeline)?.mastodon);
     expect(cachingSides(timeline)).toMatchObject({ kopje: kopjeCaching(ANONYMOUS), mastodon: kopjeCaching(ANONYMOUS) });
+  });
+});
+
+// Each route's Deprecation (DEPRECATED_ROUTES, src/mastodon/routes.ts) as the deprecate_api that marks Mastodon's same
+// route, read from its source into the fixture's `deprecation`: its date, or none. As for access, a difference is
+// listed in DEPRECATION_EXCEPTIONS with both sides and the reason, so a regenerated fixture shows a route Mastodon newly
+// deprecates as a failing route.
+
+type MastodonDeprecation = { date: string | null; unresolved?: string[] };
+
+const showDeprecation = (date: string | null) => (date === null ? "not deprecated" : `deprecated ${date}`);
+
+function mastodonDeprecation(deprecation: MastodonDeprecation): string {
+  const shown = showDeprecation(deprecation.date);
+  return deprecation.unresolved === undefined ? shown : `unresolved (${deprecation.unresolved.join("; ")}): ${shown}`;
+}
+
+// Api::V1::Trends::TagsController deprecates its index only when the request's path is /api/v1/trends, one of the two
+// paths routed to it; the admin list inherits the condition.
+const TRENDS_CONDITION =
+  "unresolved (app/controllers/api/v1/trends/tags_controller.rb: `deprecate_api '2022-03-30', only: :index, if: -> " +
+  "{ request.path == '/api/v1/trends' }`): not deprecated";
+const NEVER_THAT_PATH = "Mastodon's condition is the request path, which on this route is never /api/v1/trends";
+
+// The collections and items controllers deprecate their actions `if: :alpha_path?`, which the fixture leaves
+// unresolved: Kopje lists them deprecated under /api/v1_alpha alone (DEPRECATED_ROUTES).
+function collectionDeprecationExceptions(prefix: "/api/v1" | "/api/v1_alpha"): Record<string, Exception> {
+  const alpha = prefix === "/api/v1_alpha";
+  const condition = (controller: string) =>
+    `unresolved (app/controllers/api/v1/${controller}_controller.rb: \`deprecate_api '2026-06-10', if: :alpha_path?\`): ` +
+    "not deprecated";
+  const exception = (controller: string): Exception => ({
+    kopje: alpha ? "deprecated 2026-06-10" : "not deprecated",
+    mastodon: condition(controller),
+    reason: alpha
+      ? "Mastodon's condition is the request path, which on this route is always under /api/v1_alpha"
+      : "Mastodon's condition is the request path, which on this route is never under /api/v1_alpha",
+  });
+  return {
+    [`GET ${prefix}/accounts/:id/collections`]: exception("collections"),
+    [`POST ${prefix}/collections`]: exception("collections"),
+    [`GET ${prefix}/collections/:id`]: exception("collections"),
+    [`PATCH ${prefix}/collections/:id`]: exception("collections"),
+    [`PUT ${prefix}/collections/:id`]: exception("collections"),
+    [`DELETE ${prefix}/collections/:id`]: exception("collections"),
+    [`POST ${prefix}/collections/:id/items`]: exception("collection_items"),
+    [`DELETE ${prefix}/collections/:id/items/:item_id`]: exception("collection_items"),
+    [`POST ${prefix}/collections/:id/items/:item_id/revoke`]: exception("collection_items"),
+  };
+}
+
+const DEPRECATION_EXCEPTIONS: Record<string, Exception> = {
+  ...collectionDeprecationExceptions("/api/v1"),
+  ...collectionDeprecationExceptions("/api/v1_alpha"),
+  "GET /api/v1/trends": {
+    kopje: "deprecated 2022-03-30",
+    mastodon: TRENDS_CONDITION,
+    reason: "Mastodon's condition is the request path: this alias of /api/v1/trends/tags, which Kopje routes apart",
+  },
+  "GET /api/v1/trends/tags": { kopje: "not deprecated", mastodon: TRENDS_CONDITION, reason: NEVER_THAT_PATH },
+  "GET /api/v1/admin/trends/tags": { kopje: "not deprecated", mastodon: TRENDS_CONDITION, reason: NEVER_THAT_PATH },
+};
+
+// Both sides of a route's deprecation as compared, or undefined for a route Mastodon does not have. deprecated stands
+// in for DEPRECATED_ROUTES in the check that the comparison sees a changed table.
+function deprecationSides(route: (typeof ROUTES)[number], deprecated = DEPRECATED_ROUTES) {
+  const theirs = mastodonRoute(route.method, route.path);
+  if (theirs === undefined) {
+    return undefined;
+  }
+  return {
+    kopje: showDeprecation(deprecated.get(`${route.method} ${route.path}`) ?? null),
+    mastodon: mastodonDeprecation(theirs.deprecation),
+    source: `${theirs.controller}#${theirs.action}`,
+  };
+}
+
+describe(`route deprecations match Mastodon v${mastodon.mastodon}`, () => {
+  const compared = ROUTES.flatMap((route) => {
+    const now = deprecationSides(route);
+    return now === undefined ? [] : [[`${route.method} ${route.path}`, now] as const];
+  });
+
+  it.each(compared)("%s", (name, now) =>
+    compareSides(name, now, DEPRECATION_EXCEPTIONS[name], "DEPRECATION_EXCEPTIONS"),
+  );
+
+  it("deprecates only routes Mastodon has", () => {
+    const names = new Set<string>(compared.map(([name]) => name));
+    expect([...DEPRECATED_ROUTES.keys()].filter((name) => !names.has(name))).toEqual([]);
+  });
+
+  it("lists deprecation exceptions only for routes compared", () => {
+    const names = new Set<string>(compared.map(([name]) => name));
+    expect(Object.keys(DEPRECATION_EXCEPTIONS).filter((name) => !names.has(name))).toEqual([]);
+  });
+
+  it("reads the deprecation of every route Mastodon has", () => {
+    // A tripwire for a generator that loses the field.
+    expect(mastodon.routes.filter((route) => !("deprecation" in route))).toEqual([]);
+    expect(mastodon.routes.filter((route) => route.deprecation.date !== null)).toHaveLength(9);
+  });
+
+  it("sees a deprecation removed, added or with another date", () => {
+    const instance = ROUTES.find((route) => route.method === "GET" && route.path === "/api/v1/instance")!;
+    const v2 = ROUTES.find((route) => route.method === "GET" && route.path === "/api/v2/instance")!;
+    const without = new Map([...DEPRECATED_ROUTES].filter(([name]) => name !== "GET /api/v1/instance"));
+    const added = new Map([...DEPRECATED_ROUTES, ["GET /api/v2/instance", "2022-11-14"]]);
+    const redated = new Map([...DEPRECATED_ROUTES, ["GET /api/v1/instance", "2022-03-30"]]);
+    expect(deprecationSides(instance, without)?.kopje).not.toBe(deprecationSides(instance)?.mastodon);
+    expect(deprecationSides(instance, redated)?.kopje).not.toBe(deprecationSides(instance)?.mastodon);
+    expect(deprecationSides(v2, added)?.kopje).not.toBe(deprecationSides(v2)?.mastodon);
+    expect(deprecationSides(instance)).toMatchObject({
+      kopje: "deprecated 2022-11-14",
+      mastodon: "deprecated 2022-11-14",
+    });
+    expect(deprecationSides(v2)).toMatchObject({ kopje: "not deprecated", mastodon: "not deprecated" });
   });
 });

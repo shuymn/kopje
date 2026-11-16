@@ -37,7 +37,7 @@ export type ReportRow = {
   comment: string;
   category: string;
   rule_ids: string | null;
-  // Migration 0100_collections: NULL for none, and on every report filed before it.
+  // Migration 0103_collections: NULL for none, and on every report filed before it.
   collection_ids: string | null;
   forwarded: number;
   created_at: string;

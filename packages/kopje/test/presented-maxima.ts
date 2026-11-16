@@ -121,6 +121,10 @@ export const CONSERVATIVE_JSON: Record<ShapeName, number> = {
 // The nested moved-to account, derived from its caps: its JSON, and the SQLite bytes, count and heap of its rows.
 export const MOVED_ACCOUNT_MAXIMA = { json: 11_137, sqlite: 12_456, rows: 1, heap: 25_632 };
 
+// The Profile (/api/v1/profile): the JSON of a witness with every part at its cap, and the conservative JSON derived
+// from the caps (test/profile-api.test.ts).
+export const PROFILE_MAXIMA = { json: 326_185, conservative: 372_038 };
+
 // The ActivityPub Note of a local status at its bounds, its card's Link included, addressed to MAX_LOCAL_ADDRESSED
 // accounts: what its read takes out of SQLite, the rows and nodes, and the JSON of the Note and of its Create.
 export const NOTE_MAXIMA = { sqlite: 3_700_089, rows: 1_338, nodes: 3_172, note: 4_245_597, create: 6_301_685 };

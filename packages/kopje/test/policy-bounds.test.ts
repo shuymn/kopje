@@ -859,6 +859,10 @@ function shown(output: unknown): number {
   if (typeof value.count === "number") {
     return value.count;
   }
+  // A poll read: the poll, and whether a refresh is due.
+  if (typeof value.due === "boolean") {
+    return shown(value.poll);
+  }
   if (Array.isArray(value.options)) {
     return value.options.length;
   }
@@ -2270,7 +2274,7 @@ describe("polls are presented from their counts, not their votes (RES-7)", () =>
       tagged: null,
       present: PRESENT,
     };
-    const show = { credential: read, id: poll(0), now: NOW, present: { origin: "https://kopje.test" } };
+    const show = { credential: read, id: poll(0), now: NOW, storeNow: NOW, present: { origin: "https://kopje.test" } };
     const cast = {
       credential: { ...read, scope: "write" as const },
       id: poll(0),

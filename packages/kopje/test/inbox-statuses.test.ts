@@ -843,7 +843,7 @@ describe("a mention a remote Create tags but does not address (the limited accou
       tag: [{ type: "Mention", href: DAVE_URI, name: "@dave" }],
     };
     const author = { id: bobId, uri: bob.uri };
-    const ctx = { now: NOW, origin: LOCAL, deliveredTo: null, fetched: false };
+    const ctx = { now: NOW, storeNow: NOW, origin: LOCAL, deliveredTo: null, fetched: false };
     const edit = (updated: string) => (db: Db) =>
       updateRemoteStatus(db, author, parseRemoteStatus({ ...tagged, updated })!, ctx);
     expect(await policyRuns(t, edit("2026-10-11T13:00:00Z"))).toBe(1);
@@ -1681,7 +1681,7 @@ describe("bounds (RES-2, RES-4)", () => {
     expect(input.media).toHaveLength(MAX_STATUS_MEDIA);
     return { ...input, media: [...input.media, { ...input.media[3]!, url: png(4).url }] };
   };
-  const CTX = { now: NOW, origin: LOCAL, deliveredTo: null, fetched: true };
+  const CTX = { now: NOW, storeNow: NOW, origin: LOCAL, deliveredTo: null, fetched: true };
 
   it("stores at most 4 attachments whatever the input holds", async () => {
     const t = await setup();

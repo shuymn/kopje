@@ -1,11 +1,19 @@
+import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseProfileUpdates, PROFILE_UPDATES } from "../platform/dump-catalog";
 import { httpUrl } from "../platform/http-url";
-import { ACCOUNT_EMOJIS_BYTES, presentedAttributionDomains } from "../platform/stored-bounds";
+import { railsBlank } from "../platform/rails-blank";
+import {
+  ACCOUNT_EMOJIS_BYTES,
+  presentedAttributionDomains,
+  presentedDisplayName,
+  presentedNote,
+  presentedProfileDescription,
+} from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
-import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
+import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
 import { PUBLIC_COLLECTION } from "./audience";
 import { localEmojiTags } from "./custom-emojis";
 import type { DeliveryEnvelope } from "./deliveries";
@@ -35,20 +43,30 @@ const CONTEXT = [
     alsoKnownAs: { "@id": "as:alsoKnownAs", "@type": "@id" },
     attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
     Emoji: "toot:Emoji",
+    showFeatured: "toot:showFeatured",
+    showMedia: "toot:showMedia",
+    showRepliesInMedia: "toot:showRepliesInMedia",
   },
 ];
 
 // The context of a suspended actor's Update, which names `suspended` (toot:suspended) as Mastodon's context does.
 const SUSPENDED_CONTEXT = [...CONTEXT.slice(0, 3), { ...(CONTEXT[3] as object), suspended: "toot:suspended" }];
 
-function image(stored: string | null): { type: "Image"; url: string } | undefined {
+// An image as the actor endpoint publishes it (federation.ts image): `summary` only when the presented description is
+// not railsBlank.
+function image(
+  stored: string | null,
+  description: string,
+): { type: "Image"; url: string; summary?: string } | undefined {
   const url = httpUrl(stored);
-  return url === null ? undefined : { type: "Image", url: url.href };
+  return url === null
+    ? undefined
+    : { type: "Image", url: url.href, ...(railsBlank(description) ? {} : { summary: description }) };
 }
 
 function actorRow(db: Db, accountId: string): ActorRow | undefined {
   return db.first<ActorRow>(
-    `SELECT ${ACTOR_ROW_COLUMNS}
+    `SELECT ${selectSql(ACTOR_ROW_COLUMN_MAP)}
 		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 		CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id WHERE a.id = ?`,
     accountId,
@@ -57,7 +75,8 @@ function actorRow(db: Db, accountId: string): ActorRow | undefined {
 
 // The document of an actor row. A suspended actor is presented as the actor endpoint presents it (federation.ts, as
 // Mastodon's ActivityPub::ActorSerializer): no name, summary, icon, image, aliases or fields, not locked or
-// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections and `webfinger` handle stay. Every
+// discoverable or indexable, and `suspended: true`; its keys, inboxes, collections, `webfinger` handle and display
+// settings stay. Every
 // link, the handle's host included, is on the actor id's origin (ID-5), as the endpoint's are on the id it serves,
 // whatever domain /admin/config stores later.
 function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
@@ -70,7 +89,7 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
     webfinger: `${row.username}@${actorId.host}`,
     type: row.actor_type,
     preferredUsername: row.username,
-    ...(suspended ? {} : { name: row.display_name, summary: row.note }),
+    ...(suspended ? {} : { name: presentedDisplayName(row.display_name), summary: presentedNote(row.note) }),
     url: `${origin}/@${row.username}`,
     inbox: `${row.uri}/inbox`,
     outbox: `${row.uri}/outbox`,
@@ -87,8 +106,8 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
           manuallyApprovesFollowers: row.locked === 1,
           discoverable: row.discoverable === null ? undefined : row.discoverable === 1,
           indexable: row.indexable === 1,
-          icon: image(row.avatar_url),
-          image: image(row.header_url),
+          icon: image(row.avatar_url, presentedProfileDescription(row.avatar_description)),
+          image: image(row.header_url, presentedProfileDescription(row.header_description)),
           alsoKnownAs: (JSON.parse(row.also_known_as) as string[]).flatMap((uri) => httpUrl(uri)?.href ?? []),
           attachment: fieldSources(row.fields).map((field) => ({
             type: "PropertyValue",
@@ -97,6 +116,10 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
           })),
           ...(emojis.length === 0 ? {} : { tag: emojis }),
         }),
+    // The display settings as stored, on every actor, a suspended one's too (ActivityPub::ActorSerializer).
+    showFeatured: row.show_featured !== 0,
+    showMedia: row.show_media !== 0,
+    showRepliesInMedia: row.show_media_replies !== 0,
     ...attributionDomainsOf(row.attribution_domains),
   };
 }
