@@ -1412,7 +1412,8 @@ async function maximalStatuses(fill: Fill) {
 // CARD_DIMENSION_MAX whose iframe src is at its raw bound in ASCII (the raw fill) or at its escaped bound with as many
 // & as fit (the others), and its iframe dimensions at CARD_DIMENSION_MAX; and (0070_card_images) a stored image of a
 // 64-byte token at CARD_IMAGE_EDGE_MAX by CARD_IMAGE_EDGE_MAX with a blurhash at BLURHASH_BYTES, its source URL at its
-// bound and its alt text at its JSON bound.
+// bound and its alt text at its JSON bound; and (0098_card_attribution) an unverified author at its stored bound (18
+// digits), an account other than the viewer's (ALICE), so its missing_attribution is false.
 async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void> {
   const text = (bytes: number) =>
     fill === "raw" ? "a".repeat(bytes - 2) : C.repeat(Math.floor((bytes - 2) / 6)) + "a".repeat((bytes - 2) % 6);
@@ -1451,11 +1452,13 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
   );
   await sql(
     t.store,
-    "UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4 WHERE status_id = ?1",
+    `UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4, unverified_author_account_id = ?5
+		WHERE status_id = ?1`,
     statusId,
     atLimit("https://img.example/", CARD_URL_LIMIT),
     imageId,
     text(CARD_IMAGE_DESCRIPTION_JSON_BYTES),
+    "222222222222222222",
   );
 }
 
@@ -2745,7 +2748,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(62_897);
+    expect(spare).toBe(62_869);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -2816,15 +2819,15 @@ describe("the table of maxima (RES-3)", () => {
     };
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_818_802,
-      conversation: 7_567_975,
-      notification: 6_625_832,
+      status: 5_818_830,
+      conversation: 7_568_003,
+      notification: 6_625_860,
       announcement: ANNOUNCEMENT,
-      most: 7_567_975,
+      most: 7_568_003,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_805_968);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_806_024);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_074_750, conversationPayload: 7_836_032, notification: 5_918_775 });
+    expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
