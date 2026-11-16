@@ -34,7 +34,9 @@ import {
   recordCollectionUpdate,
   recordItemAdd,
   recordItemRemove,
+  stageItemRemove,
 } from "./collection-documents";
+import { beginCollectionJobs } from "./collection-jobs";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { blank } from "./lists";
 import { writeOperation } from "./operation";
@@ -818,10 +820,13 @@ export const revokeCollectionItem = userWriteOperation<
 });
 
 // BlockService#handle_collections, in the block's transaction: the blocker's items in the target's collections are
-// revoked, and the target's items in the blocker's collections deleted, each item's Remove recorded as its revoke or
-// removal records it (a revoked item's in a local collection only). Each reads one account's collections (at most
-// MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most that many rows and Removes each.
-export function severCollections(db: Db, blocker: string, target: string, now: number): void {
+// revoked, and the target's items in the blocker's collections deleted, each item's Remove as its revoke or removal
+// sends it (a local collection's only), recorded with its members' targets and its owner's followers left to a
+// collection job (collection-jobs.ts), as Mastodon's CollectionRawDistributionWorker reaches them after the block. Each
+// reads one account's collections (at most MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most
+// that many rows and Removes each, and each Remove reads its collection's items (at most MAX_STORED_ITEMS) and no
+// follower. Returns whether it left a job.
+export function severCollections(db: Db, blocker: string, target: string, now: number): boolean {
   const revoked = db.all<{ id: string; collection_id: string }>(
     `UPDATE collection_items INDEXED BY collection_items_member
 			SET state = ?3, retracted_approval_uri = NULL, updated_at = ?4
@@ -833,8 +838,15 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
     COLLECTION_ITEM_STATES.revoked,
     new Date(now).toISOString(),
   );
+  const removes: { owner: string; intent: string }[] = [];
+  const stage = (item: { id: string; collection_id: string }, account: string) => {
+    const staged = stageItemRemove(db, { id: item.id, collection: item.collection_id, account }, now);
+    if (staged !== null) {
+      removes.push(staged);
+    }
+  };
   for (const item of revoked) {
-    recordItemRemove(db, { id: item.id, collection: item.collection_id, account: blocker }, now);
+    stage(item, blocker);
   }
   const deleted = db.all<{ id: string; collection_id: string }>(
     `DELETE FROM collection_items INDEXED BY collection_items_member
@@ -845,8 +857,9 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
     target,
   );
   for (const item of deleted) {
-    recordItemRemove(db, { id: item.id, collection: item.collection_id, account: target }, now);
+    stage(item, target);
   }
+  return beginCollectionJobs(db, removes);
 }
 
 // The cron's cleanup (CollectionItemCleanupScheduler): rejected and revoked items unchanged for RETIRED_ITEM_TTL_MS,

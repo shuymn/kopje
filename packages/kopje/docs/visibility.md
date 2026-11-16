@@ -737,8 +737,10 @@ none of them and its `FeaturedItem` is not found. A non-discoverable collection 
 listings only. Each change of a local collection is sent, signed by its owner, to the owner's followers and the
 collection's pending and accepted remote members (R23: an `Update` is content, an `Add` or `Remove` other): its `Add`,
 `Update` and `Remove`, and the `Add` and `Remove` of an item, the `Remove` also to the item's member and recorded too
-when a member revokes its item or a block takes it out. Its `Add` and `Update` embed the same projection; a
-suspension sends nothing.
+when a member revokes its item or a block takes it out. A block's `Remove` goes to the members from the block on and
+to the owner's followers as a collection job reads them after it (`src/domain/collection-jobs.ts`, as Mastodon's
+`CollectionRawDistributionWorker`), after the item's `Add` in every lane. Its `Add` and `Update` embed the same
+projection; a suspension sends nothing.
 
 ## Filters
 

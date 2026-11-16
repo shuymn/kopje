@@ -709,4 +709,58 @@ describe("collections over ActivityPub: the activities (D17)", () => {
       ],
     ]);
   });
+
+  // 3-T7. A block around the owner's own changes of the same item, before any job round: alice adds bob and blocks him
+  // in the next request, and carol, added to another collection, blocks alice, who then deletes carol's revoked item.
+  // Each item's Add goes before its Removes in every lane: mem's (a member's copy, written in the block) as the
+  // follower's (written by the job, after it). Fails if a Remove a block stages supersedes the item's Add.
+  it("keeps an item's Add before the Removes a block and its owner record around it", async () => {
+    const { h, alice, bob, carol, member } = await audience();
+    const create = async (name: string) => {
+      const created = await change(h, alice, "POST", "/api/v1/collections", {
+        name,
+        sensitive: false,
+        discoverable: true,
+        account_ids: [],
+      });
+      return (await created.json<{ collection: { id: string } }>()).collection.id;
+    };
+    const add = async (collection: string, account: string) => {
+      const added = await change(h, alice, "POST", `/api/v1/collections/${collection}/items`, { account_id: account });
+      return (await added.json<{ collection_item: { id: string } }>()).collection_item.id;
+    };
+    const first = await create("First");
+    const second = await create("Second");
+    await seedItem(h, first, 91, member, 9);
+    const ofBob = await add(first, bob.id);
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    const ofCarol = await add(second, carol.id);
+    expect((await act(h, carol, `/api/v1/accounts/${alice.id}/block`)).status).toBe(200);
+    expect((await change(h, alice, "DELETE", `/api/v1/collections/${second}/items/${ofCarol}`)).status).toBe(200);
+    expect((await change(h, alice, "POST", `/api/v1/collections/${first}/items`, { account_id: bob.id })).status).toBe(
+      403,
+    );
+    const all = await sent(h);
+    expect(all.map((a) => [a.activity.type, a.superseded])).toEqual([
+      ["Add", 0],
+      ["Add", 0],
+      ["Add", 0],
+      ["Remove", 0],
+      ["Add", 0],
+      ["Remove", 0],
+      ["Remove", 0],
+    ]);
+    const bobUri = `${actor("alice")}/collection_items/${ofBob}`;
+    const carolUri = `${actor("alice")}/collection_items/${ofCarol}`;
+    expect(await lane(h, FAN_INBOX)).toEqual([
+      "Add FeaturedCollection",
+      "Add FeaturedCollection",
+      "Add FeaturedItem",
+      "Add FeaturedItem",
+      `Remove ${carolUri}`,
+      `Remove ${bobUri}`,
+      `Remove ${carolUri}`,
+    ]);
+    expect(await lane(h, MEMBER_INBOX)).toEqual(["Add FeaturedItem", `Remove ${bobUri}`]);
+  });
 });

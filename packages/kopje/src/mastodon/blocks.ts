@@ -5,6 +5,7 @@ import {
   authorized,
   present,
   refuseAfterAuth,
+  requestJobsSoon,
   storeCall,
   userCredential,
   withParams,
@@ -17,11 +18,16 @@ import { type Params, parseBoolean } from "./params";
 // MutesController, DomainBlocksController and DomainBlocks::PreviewsController); the Store does the work
 // (domain/blocks.ts).
 
-// block, unblock and unmute take only the account: each answers its Relationship.
+// block, unblock and unmute take only the account: each answers its Relationship. A block that left collection jobs
+// asks for their round (the cron runs one regardless).
 function relation(call: "block" | "unblock" | "unmute"): ApiHandler {
   return async (c, deps) => {
     const input = { credential: userCredential(c, deps), target: c.req.param("id") ?? "", now: deps.now() };
-    return relationshipResponse(c, authorized(await storeCall(c, deps, (s, b) => s[call](b, input))));
+    const result = authorized(await storeCall(c, deps, (s, b) => s[call](b, input)));
+    if ("jobsPending" in result && result.jobsPending === true) {
+      requestJobsSoon(c, deps);
+    }
+    return relationshipResponse(c, result);
   };
 }
 

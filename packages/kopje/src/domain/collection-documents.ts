@@ -3,6 +3,7 @@ import type { Db } from "../db/sql";
 import { MAX_STORED_COLLECTIONS } from "../platform/stored-bounds";
 import { followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
+import { beginFollowerStaging, type DeliveryEnvelope } from "./deliveries";
 import { allocateLocalId } from "./ids";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
@@ -511,34 +512,37 @@ function reachOf(db: Db, id: string): Reach | null {
 
 const ID_KINDS = { Add: "adds", Remove: "removes", Update: "updates" } as const;
 
-// Records an activity of the collection's owner for its reach, and for `also` (an item's member) besides.
-function deliver(
+type CollectionActivity = { type: keyof typeof ID_KINDS; context: unknown; target?: string; object: unknown };
+
+// An activity of the collection's owner for its reach (its followers and members), and for `also` (an item's member)
+// besides.
+function envelopeOf(
   db: Db,
   reach: Reach,
   now: number,
-  activity: { type: keyof typeof ID_KINDS; context: unknown; target?: string; object: unknown },
+  activity: CollectionActivity,
   also: string | null = null,
-): void {
-  recordOutbound(
-    db,
-    reach.owner,
-    {
-      activity: {
-        "@context": activity.context,
-        id: `${reach.uri}#${ID_KINDS[activity.type]}/${allocateLocalId(db, now)}`,
-        type: activity.type,
-        actor: reach.ownerUri,
-        to: [PUBLIC_COLLECTION],
-        ...(activity.target === undefined ? {} : { target: activity.target }),
-        object: activity.object,
-      },
-      audience: {
-        followers: true,
-        accounts: also === null || reach.members.includes(also) ? reach.members : [...reach.members, also],
-      },
+): DeliveryEnvelope {
+  return {
+    activity: {
+      "@context": activity.context,
+      id: `${reach.uri}#${ID_KINDS[activity.type]}/${allocateLocalId(db, now)}`,
+      type: activity.type,
+      actor: reach.ownerUri,
+      to: [PUBLIC_COLLECTION],
+      ...(activity.target === undefined ? {} : { target: activity.target }),
+      object: activity.object,
     },
-    now,
-  );
+    audience: {
+      followers: true,
+      accounts: also === null || reach.members.includes(also) ? reach.members : [...reach.members, also],
+    },
+  };
+}
+
+// Records an activity of the collection's owner for its reach (envelopeOf).
+function deliver(db: Db, reach: Reach, now: number, activity: CollectionActivity, also: string | null = null): void {
+  recordOutbound(db, reach.owner, envelopeOf(db, reach, now, activity, also), now);
 }
 
 // CreateCollectionService: the collection's Add to the owner's featured_collections, its accepted items embedded.
@@ -589,7 +593,26 @@ export function recordItemRemove(
 ): void {
   const reach = reachOf(db, item.collection);
   if (reach !== null) {
-    const object = collectionItemUri(reach.ownerUri, item.id);
-    deliver(db, reach, now, { type: "Remove", context: AS_CONTEXT, target: reach.uri, object }, item.account);
+    deliver(db, reach, now, itemRemove(reach, item.id), item.account);
   }
+}
+
+function itemRemove(reach: Reach, id: string): CollectionActivity {
+  return { type: "Remove", context: AS_CONTEXT, target: reach.uri, object: collectionItemUri(reach.ownerUri, id) };
+}
+
+// The same Remove of an item a block takes out, recorded with its members' targets and its followers left to the
+// owner's collection job (deliveries.ts beginFollowerStaging): its owner and intent, or null for a collection that is
+// not local.
+export function stageItemRemove(
+  db: Db,
+  item: { id: string; collection: string; account: string },
+  now: number,
+): { owner: string; intent: string } | null {
+  const reach = reachOf(db, item.collection);
+  if (reach === null) {
+    return null;
+  }
+  const envelope = envelopeOf(db, reach, now, itemRemove(reach, item.id), item.account);
+  return { owner: reach.owner, intent: beginFollowerStaging(db, reach.owner, envelope, now) };
 }

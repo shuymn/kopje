@@ -10,6 +10,7 @@ import {
   DOMAIN_BLOCK_WINDOW,
   runDomainBlockCleanups,
 } from "../src/domain/blocks";
+import { COLLECTION_REACH_ROUND, COLLECTION_ROUNDS, runCollectionJobs } from "../src/domain/collection-jobs";
 import { severCollections } from "../src/domain/collections";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { publicTimeline } from "../src/domain/timelines";
@@ -421,9 +422,131 @@ describe("blocks", () => {
       state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW));
       return read();
     });
-    // The two statements' 14 rows (with what they return), and the two Removes' 27, each reading its collection with
-    // its owner, its members, an id, the followers and addressed accounts, and an expansion step. None is carol's.
-    expect(read).toBe(41);
+    // The two statements' 14 rows (with what they return), and the two Removes' with their jobs' 23, each Remove
+    // reading its collection with its owner, its members, an id and its addressed accounts, and no follower (the jobs
+    // read them, collection-jobs.ts). None is carol's.
+    expect(read).toBe(37);
+  });
+
+  // `count` remote followers of `accountId`, each on a host of its own with its own inbox, ids from `base`.
+  async function seedRemoteFollowers(h: ApiHarness, accountId: string, count: number, base: bigint) {
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url)
+			SELECT printf('%018d', CAST(?2 AS INTEGER) + i), 'https://h' || ?2 || i || '.example/users/u', 'u',
+				'h' || ?2 || i || '.example', 'https://h' || ?2 || i || '.example/inbox' FROM n`,
+      count,
+      String(base),
+    );
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO follows (account_id, target_account_id, state) SELECT printf('%018d', CAST(?2 AS INTEGER) + i), ?3,
+				'accepted' FROM n`,
+      count,
+      String(base),
+      accountId,
+    );
+  }
+
+  // `count` collections of `owner`, each featuring `member` (ids from `base`).
+  async function seedFeaturing(h: ApiHarness, owner: string, member: string, count: number, base: number) {
+    const at = new Date(NOW).toISOString();
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			SELECT printf('64%016d', ?2 + i), ?3, 1, 'c' || i, 0, 1, ?4, ?4 FROM n`,
+      count,
+      base,
+      owner,
+      at,
+    );
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			SELECT printf('65%016d', ?2 + i), printf('64%016d', ?2 + i), ?3, 1, 1, ?4, ?4 FROM n`,
+      count,
+      base,
+      member,
+      at,
+    );
+  }
+
+  // The block's transaction reads no follower (RES-6, RES-7): each Remove it takes out of a collection is recorded with
+  // its members' targets and its owner's followers left to a collection job, so the rows severCollections reads grow
+  // with its Removes alone, whatever either owner's followers, as followers and Removes grow together. Fails if a
+  // Remove reads its followers in the block (recordItemRemove, whose enqueueActivity reads them).
+  it("reads no follower to record a block's collection Removes, however many followers (RES-6, RES-7)", async () => {
+    async function blockRead(followers: number, removes: number): Promise<number> {
+      const h = await community(["alice", "bob"]);
+      const { alice, bob } = h.users;
+      await seedRemoteFollowers(h, alice.id, followers, 700000000000000000n);
+      await seedRemoteFollowers(h, bob.id, followers, 710000000000000000n);
+      await seedFeaturing(h, alice.id, bob.id, removes, 0);
+      await seedFeaturing(h, bob.id, alice.id, removes, 1000);
+      return runInDurableObject(h.store, (_instance, state) => {
+        const { sql: counting, read } = countingSql(state.storage.sql);
+        expect(state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW))).toBe(
+          removes > 0,
+        );
+        return read();
+      });
+    }
+    const one = await blockRead(0, 1);
+    const two = await blockRead(0, 2);
+    const grown = [await blockRead(200, 1), await blockRead(0, 5), await blockRead(200, 5)];
+    expect(grown).toEqual([one, one + 4 * (two - one), one + 4 * (two - one)]);
+  });
+
+  // A collection job's round reads at most COLLECTION_REACH_ROUND rows of the kind its phase reads (the LIMIT of each
+  // phase's statement), so a call of COLLECTION_ROUNDS rounds stays within ROUND_ROWS each, however many followers the
+  // block's Removes reach; and every follower's inbox gets each Remove once, after which the job's rows are gone.
+  // Fails if a phase reads past its round (its LIMIT dropped).
+  it("delivers a block's collection Removes to every follower in bounded rounds (RES-6)", async () => {
+    // A round's rows: a followers round reads its follows with their accounts and a probe of each inbox it stages, a
+    // write round its staged inboxes and the chunks it writes, a drop round its staged inboxes and their deletes; each
+    // with its job's selection and bookkeeping. An unbounded followers round would read about three rows a follower.
+    const ROUND_ROWS = 3 * COLLECTION_REACH_ROUND + 64;
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const followers = 6 * COLLECTION_REACH_ROUND + 1;
+    await seedRemoteFollowers(h, alice.id, followers, 700000000000000000n);
+    await seedFeaturing(h, alice.id, bob.id, 2, 0);
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    const reads: number[] = [];
+    for (let call = 0; call < 100; call++) {
+      const { pending, read } = await runInDurableObject(h.store, (_instance, state) => {
+        const { sql: counting, read } = countingSql(state.storage.sql);
+        const round = state.storage.transactionSync(() =>
+          runCollectionJobs.run(counting, { now: NOW }, (fn) => state.storage.transactionSync(fn)),
+        );
+        return { pending: round.pending, read: read() };
+      });
+      reads.push(read);
+      if (!pending) {
+        break;
+      }
+    }
+    expect(reads.length).toBeGreaterThan(1);
+    expect(Math.max(...reads)).toBeLessThanOrEqual(COLLECTION_ROUNDS * ROUND_ROWS);
+    await settleDeliveries(h.store);
+    const reached = await sql<{ n: number }>(
+      h.store,
+      `SELECT count(DISTINCT d.inbox_url) AS n FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
+			WHERE json_extract(o.body, '$.activity.type') = 'Remove' GROUP BY o.id ORDER BY o.id`,
+    );
+    expect(reached).toEqual([{ n: followers }, { n: followers }]);
+    expect(
+      await sql(
+        h.store,
+        `SELECT (SELECT count(*) FROM collection_jobs) + (SELECT count(*) FROM collection_job_intents)
+				+ (SELECT count(*) FROM collection_reach) + (SELECT count(*) FROM outbound_activities WHERE staged IS NOT NULL)
+				AS n`,
+      ),
+    ).toEqual([{ n: 0 }]);
   });
 });
 

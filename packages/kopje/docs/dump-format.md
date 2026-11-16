@@ -121,13 +121,13 @@ executing the text, so a row of any size stays under the platform's 100 KB state
 A job's retry state is its row's `attempts` and `due_at`, in `inbound_jobs` (migration `0080_inbound_job_attempts`)
 and in `quote_revocations`, `domain_block_cleanups`, `notification_request_jobs`, `notification_clears`,
 `notification_dismissals`, `moderation_jobs` and `remote_moderation_jobs` (migration `0084_family_job_attempts`),
-RES-5: fresh (`0`, NULL), backing off after a failed or stalled batch (`1` to `5`, an INTEGER time in ms from 0 to
-2^53 − 1 when it may run again) or parked (`6`, NULL). Any other pair fails with `CHECK constraint failed`. A dump
-carries them as they are, so a restored Store keeps its parked jobs parked until `kopje-admin jobs retry`; a file built
-from legacy data writes `0` and NULL. From the same migration on, `notification_request_jobs.cursor` is inclusive: the
-highest id of the sender's notifications the job still walks. A dump taken before that migration holds exclusive
-cursors: it restores into a Store at its own migrations, whose upgrade then makes them inclusive; importing it into a
-Store already past the migration is refused.
+and `collection_jobs` (migration `0108_collection_jobs`), RES-5: fresh (`0`, NULL), backing off after a failed or
+stalled batch (`1` to `5`, an INTEGER time in ms from 0 to 2^53 − 1 when it may run again) or parked (`6`, NULL). Any
+other pair fails with `CHECK constraint failed`. A dump carries them as they are, so a restored Store keeps its parked
+jobs parked until `kopje-admin jobs retry`; a file built from legacy data writes `0` and NULL. From the same migration
+on, `notification_request_jobs.cursor` is inclusive: the highest id of the sender's notifications the job still walks. A
+dump taken before that migration holds exclusive cursors: it restores into a Store at its own migrations, whose upgrade
+then makes them inclusive; importing it into a Store already past the migration is refused.
 
 A retraction still staging its targets (RES-6) is its `outbound_activities` row with `staged` set and, from migration
 `0085_retraction_staging` on, the `retraction_stagings` row its `staged` names (its id as TEXT; `''` before the first
@@ -138,6 +138,14 @@ on a personal copy with an empty inbox), and a staged target names an existing s
 are, so a restored Store goes on staging from the same cursor. A `staged` value that names no live staging of its own
 intent (a key a dump taken before that migration holds, or anything else) starts the staging anew, so a target
 written before may get its retraction twice.
+
+A block's collection `Remove` still reaching its owner's followers (RES-6) is, from migration `0108_collection_jobs`
+on, its `outbound_activities` row with `staged` `''`, named by a `collection_job_intents` row of its owner's
+`collection_jobs` row, with the followers' inboxes gathered so far in `collection_reach`. Each column has the CHECK the
+migration gives it (a `phase` it knows, INTEGER follow ids and intent ids, an inbox cursor and a staged inbox of 1 to
+4,096 UTF-8 bytes without NUL), and both child tables name an existing job. A dump carries them as they are, so a
+restored Store goes on from the same phase and cursors. A round writes only to an intent that is a staged `Remove` of
+the job's own owner; any other intent a row names gets no target and leaves the job.
 
 An `outbound_activities.body` is checked as JSON only (`json_valid`). The `Delete` of a public or unlisted status
 (VIS-3 in [threat-model.md](threat-model.md)) is stored signed: `activity` is the body as its author signed it, sent

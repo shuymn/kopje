@@ -142,15 +142,18 @@ function relationTarget(db: Db, viewerId: string, id: string): Target {
 }
 
 export type RelationInput = { target: string; now: number };
+type BlockResult = RelationshipResult & { jobsPending?: true };
 
 // BlockService: the follows either way end, then the block is recorded, and a remote target is sent the Block. Blocking
-// an account already blocked changes nothing.
-export const block = userWriteOperation<RelationInput, RelationshipResult>((db, input, { accountId }) => {
+// an account already blocked changes nothing. jobsPending: the block took items out of local collections, whose
+// Removes a collection job delivers to their owners' followers (collection-jobs.ts).
+export const block = userWriteOperation<RelationInput, BlockResult>((db, input, { accountId }) => {
   const found = relationTarget(db, accountId, input.target);
   if (found.status !== "ok") {
     return found;
   }
   const { viewer, target } = found;
+  let jobsPending = false;
   const existing = db.first(
     "SELECT 1 AS x FROM blocks WHERE account_id = ? AND target_account_id = ?",
     viewer.id,
@@ -165,7 +168,7 @@ export const block = userWriteOperation<RelationInput, RelationshipResult>((db, 
     // BlockService#call: a permission given to the account by accepting its request goes too, so after an unblock its
     // notifications meet the policy again.
     db.run("DELETE FROM notification_permissions WHERE account_id = ? AND from_account_id = ?", viewer.id, target.id);
-    severCollections(db, viewer.id, target.id, input.now);
+    jobsPending = severCollections(db, viewer.id, target.id, input.now);
     const edge = db.first<{ id: string }>(
       `INSERT INTO blocks (account_id, target_account_id, created_at) VALUES (?, ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,
@@ -184,7 +187,8 @@ export const block = userWriteOperation<RelationInput, RelationshipResult>((db, 
       );
     }
   }
-  return relationshipResult(db, viewer.id, target.id, input.now);
+  const result = relationshipResult(db, viewer.id, target.id, input.now);
+  return jobsPending ? { ...result, jobsPending: true } : result;
 });
 
 // UnblockService: the block goes, and a remote target is sent its Undo. A migrated block without a uri is named as

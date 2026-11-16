@@ -1536,7 +1536,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stop that POST; a confirmation that fails, or finds the lease taken over, sends nothing, and the lease expires.
   Accepted residuals: a shared inbox serving an available recipient besides unavailable ones is sent (content expansion
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
-  retraction's earlier receivers) gets the inbox host rule only; Mastodon's `DeliveryWorker` has no such check, so this
+  retraction's earlier receivers, the followers a collection job writes to a block's `Remove`) gets the inbox host rule
+  only; Mastodon's `DeliveryWorker` has no such check, so this
   is stricter than Mastodon, whose reach already leaves deleted accounts out. A dropped row writes no receipt. A
   dropped `Follow` or `Accept` that its follow's current generation still owes holds that follow, at most one hold a
   follow, and a job family records it again with its original id once, read live, it may be sent; a dropped `Reject`
@@ -1640,7 +1641,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   included, holds only accepted items whose member is available, so a suspended member is in none and its
   `FeaturedItem` is not found. Each change of a local collection (its `Add`, `Update` and `Remove`, an item's `Add`
   and `Remove`, the owner's `Remove` of an item its member revokes or a block takes out) is sent, signed by the owner,
-  to the owner's followers and the collection's pending and accepted remote members alone (R23), and a suspension
+  to the owner's followers and the collection's pending and accepted remote members alone (R23), a block's members
+  from the block on and its followers through a collection job after it, each after the item's `Add`; a suspension
   sends none.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`, `severCollections`
@@ -1648,11 +1650,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
   collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
   block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
-  `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's
+  collection Removes to every follower in bounded rounds (RES-6)"), `test/federation-collections.test.ts` ("refuses a
+  fetcher the owner blocks or domain-blocks, and an authorization
   to one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and
   the page do", "sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members",
-  "sends the owner's Remove of an item a block or its member's revoke takes out"), `test/policy-oracle.test.ts`
+  "sends the owner's Remove of an item a block or its member's revoke takes out", "keeps an item's Add before the
+  Removes a block and its owner record around it"), `test/policy-oracle.test.ts`
   (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and
   `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
 
@@ -3596,13 +3600,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   bound deletes the collection's oldest retired item first. The 5-minute cron deletes retired (rejected or revoked)
   items a day after they retired, at most 500 a run, oldest first, through `collection_items_retired`
   (`pruneCollectionItems` in `src/domain/collections.ts`). A block's step reads the blocker's and the target's
-  collections (at most 50 each) and writes at most 50 items each way. The purge of a remote account deletes its items,
+  collections (at most 50 each) and writes at most 50 items each way, recording each item's `Remove` with its
+  collection's member targets and reading no follower; one `collection_jobs` row per owner (migration
+  `0108_collection_jobs`) then stages the owner's followers up to the block's follow bound into `collection_reach`,
+  writes them to each `Remove` and deletes them, a round reading at most 500 rows of its phase's kind
+  (`COLLECTION_REACH_ROUND`), at most 4 rounds a run, as a job family of its own (RES-5;
+  `src/domain/collection-jobs.ts`). The purge of a remote account deletes its items,
   the items of its collections and then its collections, each step counted against the batch's budget
   (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest retired item when an add meets the stored
   bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round, keeping younger and live ones"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
-  `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget"),
-  `test/cascade-guard.test.ts`.
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "reads no follower to record
+  a block's collection Removes, however many followers (RES-6, RES-7)", "delivers a block's collection Removes to every
+  follower in bounded rounds (RES-6)"), `test/inbox-regressions.test.ts` ("purges a remote account's collections and
+  memberships within the batch budget"), `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -3625,20 +3635,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has nine error boundaries: six Store calls (the
+  next round (a live inbox request still sends its own). A round has ten error boundaries: seven Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
-  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs,
-  quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries the Store
-  calls recorded are rung once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`),
-  counts as having no work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance,
-  a retryable or reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates
-  (a CPU or memory limit) fails
+  remote moderation jobs in one, the collection jobs, the held handshakes, the unlock acceptances), then the Worker's
+  collection syncs, quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries
+  the Store calls recorded are rung once, before the Worker's fetches. A family that fails is logged
+  (`kopje.jobs.family.failed`), counts as having no work left, and stops no other family (the next resolves a new stub);
+  a Store refusal (maintenance, a retryable or reset error) ends the round and counts nothing, and cron runs the next. A
+  call the platform terminates (a CPU or memory limit) fails
   its own family only, or ends the round when it surfaces as a retryable or reset error; either way that family's
   first item is selected again. `jobsRound` and `handleQueue` in `src/jobs/queue.ts`; `test/job-families.test.ts`
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
   readonly", "runs one round and sends at most one jobs message for 3 jobs messages and 5 such replays", "keeps its own
   nudge, and its job runs in the next round", "runs the quote verifications when every Store family and the collection
-  syncs throw", "walks when every other family throws: nine boundaries, each logged once", "stops no other family when
+  syncs throw", "walks when every other family throws: ten boundaries, each logged once", "stops no other family when
   it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
   stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint

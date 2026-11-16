@@ -2011,6 +2011,17 @@ export function beginStagedUpdate(db: Db, signerId: string, envelope: DeliveryEn
   if (object !== null) {
     supersede(db, signerId, object, false, supersededTypes(envelope.activity), true);
   }
+  return insertStagedIntent(db, signerId, envelope, object, now);
+}
+
+// A staged intent's row (staged '', before its first stage), as beginStagedUpdate and beginFollowerStaging record it.
+function insertStagedIntent(
+  db: Db,
+  signerId: string,
+  envelope: DeliveryEnvelope,
+  object: string | null,
+  now: number,
+): string {
   return db.first<{ id: string }>(
     `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, staged, created_at)
 		VALUES (?, ?, ?, 0, '', ?) RETURNING CAST(id AS TEXT) AS id`,
@@ -2019,6 +2030,27 @@ export function beginStagedUpdate(db: Db, signerId: string, envelope: DeliveryEn
     object,
     now,
   )!.id;
+}
+
+// An intent whose followers a collection job stages (domain/collection-jobs.ts): a block's Remove of an item from a
+// local collection. beginFollowerStaging records it with the targets of its addressed accounts (the collection's
+// members and the item's, at most its stored items) and no follower, so the block's transaction reads none of them;
+// the job writes the followers' inboxes to it (stageTargets) and releases it (endStaging). Its addressed targets may
+// expand at once. The chunks the job writes come after those of intents recorded meanwhile, and after the item's Add,
+// recorded before it; an item's Remove supersedes nothing (supersededTypes). Returns the intent's id.
+export function beginFollowerStaging(db: Db, signerId: string, envelope: DeliveryEnvelope, now: number): string {
+  const { object } = subjectOf(envelope.activity, false);
+  const { targets } = targetsOf(
+    db,
+    signerId,
+    envelope.activity,
+    { ...envelope.audience, followers: false },
+    false,
+    envelope.reachOf ?? [],
+  );
+  const id = insertStagedIntent(db, signerId, envelope, object, now);
+  insertChunks(db, id, chunked(targets));
+  return id;
 }
 
 // Writes `inboxes` (neutral copies) as chunks of the staged intent `intentId`, and returns how many rows it wrote; none
