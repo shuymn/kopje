@@ -7,7 +7,7 @@ import {
   statusReach,
   undoFollowActivity,
 } from "../src/domain/activities";
-import { reachQuoters, recipientsFor } from "../src/domain/audience";
+import { availableSql, reachQuoters, recipientsFor } from "../src/domain/audience";
 import {
   completeDelivery,
   type DeliveryOutcome,
@@ -31,7 +31,8 @@ import { bearer, json, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { BUILD, claimSent, type SentClaim } from "./helpers";
+import { BUILD, claimSent, migratedStore, type SentClaim } from "./helpers";
+import { ACCESS, copyConfig, dumpViaRpc, importViaRpc } from "./ops-helpers";
 import { plannedRun, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import { act, community, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 
@@ -1029,6 +1030,64 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
         ["Follow", status === "retry" ? moved : personal("dave"), status === "retry" ? "pending" : "gave_up"],
       ]);
     }
+  });
+
+  // A retraction moves to its first candidate whether or not that one is available, as the send-time check never
+  // refuses one (VIS-30): an Undo still reaches a recipient suspended since it was queued.
+  it("moves an Undo to the personal inbox of a recipient unavailable since", async () => {
+    const h = await community(["alice"]);
+    const dave = await remoteAccount(h.store, "dave", "remote.example");
+    await act(h, h.users.alice, `/api/v1/accounts/${dave}/follow`);
+    const follow = await claim(h.store, NOW, "f");
+    expect(await complete(h.store, follow.deliveries[0]!.id, "f", NOW, OK)).toMatchObject({ status: "delivered" });
+    await act(h, h.users.alice, `/api/v1/accounts/${dave}/unfollow`);
+    const round = await claim(h.store, NOW, "a");
+    expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
+    await sql(
+      h.store,
+      "UPDATE accounts SET suspended_at = ?, suspension_source = 'account' WHERE id = ?",
+      new Date(NOW).toISOString(),
+      dave,
+    );
+    expect(await sql(h.store, `SELECT ${availableSql("?1")} AS available`, dave)).toEqual([{ available: 0 }]);
+    expect(await failed(h, round.deliveries[0]!.id)).toMatchObject({ status: "retry" });
+    expect(await state(h)).toEqual([["Undo", personal("dave"), "pending"]]);
+    const again = await claim(h.store, NOW, "b");
+    expect(again.deliveries.map((d) => d.inbox)).toEqual([personal("dave")]);
+  });
+
+  // The candidate's host check (inboxCovered of its actor id): availability judges an account's stored domain and its
+  // actor id's host as stored, the check that host as the URL parser reads it. They differ for an actor the cutover's
+  // conversion keeps with a non-ASCII host and a port: its domain is the URL's host with the port, its id stays as
+  // written (cli/lib/cutover/convert.js), and the Store's import takes both, so a block of the host's punycode form
+  // covers neither key and only the check keeps the row from that server's account.
+  it("moves no row to an imported account of a server blocked under its punycode form", async () => {
+    const source = await community(["alice"]);
+    const uri = "https://bücher.example:8443/users/dave";
+    const dave = "600000000000000001";
+    await sql(
+      source.store,
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url) VALUES (?1, ?2, 'dave', ?3, ?4, ?5)`,
+      dave,
+      uri,
+      "xn--bcher-kva.example:8443",
+      personal("dave"),
+      SHARED,
+    );
+    const store = await migratedStore();
+    await copyConfig(source.store, store);
+    expect((await importViaRpc(store, (await dumpViaRpc(source.store)).text)).report).toMatchObject({ ok: true });
+    expect(await store.publish(BUILD, ACCESS)).toMatchObject({ ok: true });
+    expect(await sql(store, "SELECT uri, domain FROM accounts WHERE id = ?", dave)).toEqual([
+      { uri, domain: "xn--bcher-kva.example:8443" },
+    ]);
+    await blockDomain(store, "xn--bcher-kva.example");
+    expect(await sql(store, `SELECT ${availableSql("?1")} AS available`, dave)).toEqual([{ available: 1 }]);
+    await queuedRow(store, source.users.alice.id, provenance([dave]), { kind: "flag", accounts: [dave] });
+    const round = await claim(store, NOW, "a");
+    expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
+    expect(await failed({ store }, round.deliveries[0]!.id)).toMatchObject({ status: "gave_up" });
+    expect(await state({ store })).toEqual([["Flag", SHARED, "gave_up"]]);
   });
 
   // EP-T7: what still keeps a row from moving.
