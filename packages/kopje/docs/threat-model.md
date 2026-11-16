@@ -189,17 +189,17 @@ against their own instance. TLS is assumed between all parties.
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
   `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
-  `src/domain/remote-collections.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`,
-  `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
-  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"). A second exception: a `Delete`
-  another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
-  server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
-  Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
-  actor's own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the
-  Worker, before the Store is called, against a key the actor's current document embeds (a legacy key or, for an
-  FEP-8b32 proof, an `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew
-  in the request, never from a cache, so a key the actor has since replaced proves nothing (no other key is ever
-  loaded).
+  `src/domain/remote-collections.ts`, `walkTurn` in `src/federation/replies.ts`; `test/inbox-actor-revision.test.ts`,
+  `test/inbox-gone.test.ts`, `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
+  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"), `test/reply-walk-rounds.test.ts` ("a walk's
+  author whose URI answers 410"). A second exception: a `Delete` another server relays, signed with its own key (a
+  booster or quoter forwarding the author's `Delete` of a status, or a server holding the quoting status forwarding the
+  quoted author's revocation of its stamp, as Mastodon forwards both). Its HTTP signer must own its key by the same
+  rule; the `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked
+  Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key
+  the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an `assertionMethod` Multikey, within the
+  first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request, never from a cache, so a key the actor
+  has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
   `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and

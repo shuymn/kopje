@@ -15,6 +15,7 @@ import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
+import { goneSettler, type SettleGone } from "./actor-gone";
 import { documentOn, itemsOf } from "./collections";
 import {
   afterRevisionRead,
@@ -26,6 +27,7 @@ import {
 import type { InboxDeps } from "./inbox";
 import { REQUEST_DEADLINE_MS, requestBudget } from "./loader";
 import { loadActor } from "./quotes";
+import type { FetchedActor } from "./remote-actor";
 import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
 
 // The Worker's part of a walk of a remote replies collection (domain/reply-walks.ts; Mastodon 4.7.5's
@@ -156,17 +158,19 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
 // claim confirmed against the handle the need read, or 'gone'. An unknown author (no state) whose claim WebFinger
 // refuses gives no document (null), so the Store stores neither it nor its status. A fetch or confirmation that may
 // pass is 'transient', which fails the step unless the author is a stale stored one (its stored row is used: null).
+// gone: the fetch's own outcome when the author is gone, which the caller settles (actor-gone.ts).
 async function fetchAuthor(
   need: AuthorNeed,
   origin: string,
   loaders: RemoteLoaders,
-): Promise<NonNullable<ReplyStepInput["author"]> | "transient"> {
-  const { author } = await loadActor(need.uri, origin, loaders, need.state?.handle ?? null);
+): Promise<{ author: NonNullable<ReplyStepInput["author"]> | "transient"; gone?: FetchedActor }> {
+  const { author, gone } = await loadActor(need.uri, origin, loaders, need.state?.handle ?? null);
   if (author.kind === "transient" && !need.refresh) {
-    return "transient";
+    return { author: "transient" };
   }
   const document = author.kind === "ok" ? author.value : author.kind === "gone" ? "gone" : null;
-  return { uri: need.uri, document, ...(need.state === undefined ? {} : { revision: need.state.revision }) };
+  const revision = need.state === undefined ? {} : { revision: need.state.revision };
+  return { author: { uri: need.uri, document, ...revision }, ...(gone === undefined ? {} : { gone }) };
 }
 
 // A Store refusal inside a loader (a signing key's RPC in maintenance) made the fetch fail: no outcome of the step's.
@@ -183,6 +187,8 @@ type Turn = {
   store: () => StoreStub;
   federation: FederationDeps;
   state: FederationState;
+  // What a gone author's document does (actor-gone.ts).
+  settle: SettleGone;
 };
 
 // A round's turn of one claimed walk: up to REPLY_STEPS_PER_WALK steps, each with loaders and a fetch budget of its
@@ -190,7 +196,7 @@ type Turn = {
 // document it cannot store) ends the turn, its charge kept. The walk is released at the end. Returns whether a walk is
 // due.
 async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
-  const { build, origin, store, federation, state } = turn;
+  const { build, origin, store, federation, state, settle } = turn;
   const deadline = Date.now() + REPLY_STEPS_PER_WALK * REQUEST_DEADLINE_MS;
   let step: ReplyStep | null = claim.step;
   for (let n = 0; step !== null; n++) {
@@ -211,8 +217,16 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
       if (answer.need !== null) {
         // A revision read after the step's first fetch takes a fresh memo (afterRevisionRead).
         const need = answer.need;
-        const author = await fetchAuthor(need, origin, need.state === undefined ? loaders : afterRevisionRead(loaders));
+        const { author, gone } = await fetchAuthor(
+          need,
+          origin,
+          need.state === undefined ? loaders : afterRevisionRead(loaders),
+        );
         rethrowStoreError(state);
+        // A stored author whose own URI answered 410 is deleted under the revision the need read, before the step.
+        if (gone !== undefined) {
+          await settle(gone, need.uri, need.state?.revision);
+        }
         const retried =
           author === "transient" ? { ...input, fetched: { kind: "transient" } as const } : { ...input, author };
         answer = await callStore(() => store().completeReplyStep(build, retried));
@@ -230,7 +244,7 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
 }
 
 // One job round (jobs/queue.ts): up to REPLY_WALKS_PER_ROUND walks, claimed one after another. Returns whether a walk
-// is due. A Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again
+// is due, or a deletion a gone author's 410 started has its purge a batch left. A Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again
 // after its lease, its charges kept.
 export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
   const build = deps.build(env);
@@ -240,6 +254,9 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
     return false;
   }
   const config = readConfig(env);
+  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch: the round asks for another.
+  let goneJobs = false;
+  const settled = goneSettler(store, build, deps.now);
   const turn: Turn = {
     build,
     origin: `https://${domain}`,
@@ -254,14 +271,19 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
       loader: deps.loader,
     },
     state: { resolvedUsername: null, source: null, storeError: null, ticket: null },
+    settle: async (fetched, uri, revision) => {
+      const gone = await settled(fetched, uri, revision);
+      goneJobs ||= gone.jobsPending;
+      return gone;
+    },
   };
   let pending = false;
   for (let w = 0; w < REPLY_WALKS_PER_ROUND; w++) {
     const claim = await callStore<ClaimedWalk | "more" | null>(() => store().claimReplyWalk(build));
     if (claim === null) {
-      return false;
+      return goneJobs;
     }
     pending = claim === "more" ? true : await walkTurn(turn, claim);
   }
-  return pending;
+  return pending || goneJobs;
 }

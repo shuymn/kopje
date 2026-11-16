@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { PURGE_BATCH } from "../src/domain/inbox";
 import { QUOTE_AUTHOR_FETCHES, QUOTE_HOPS, QUOTE_LEASE_MS, type QuoteVerification } from "../src/domain/quotes";
 import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
@@ -175,6 +176,118 @@ describe("a walk of a Mastodon thread", () => {
       display_name: "bob refreshed",
       fetched_at: new Date(NOW).toISOString(),
     });
+  });
+});
+
+// A walk's author whose own URI answers 410 (federation/actor-gone.ts): a stored one is deleted under the revision its
+// need read, as by its Delete, before the step; a 404, a redirected 410, a 410 fetched before another store of the
+// author committed, and a 410 of an author never stored delete nothing.
+describe("a walk's author whose URI answers 410", () => {
+  // bob, stored stale unless `known` is false, replies to the root; a walk of the root, started.
+  async function bobReplying(known = true) {
+    const { t, root, bob } = await world();
+    if (known) {
+      await followed(t, bob, DAVE);
+      await sql(t.store, "UPDATE accounts SET fetched_at = '2026-01-01T00:00:00.000Z' WHERE uri = ?", bob.uri);
+    }
+    const note = mastodonNote(root);
+    const answer = reply(t.web, bob, note.id);
+    const { id } = await walkOf(t, root, note, [answer.id]);
+    return {
+      t,
+      bob,
+      answer,
+      id,
+      round: () =>
+        walkReplies(
+          t.env,
+          inboxDeps(() => t.store, t.web.loader),
+        ),
+    };
+  }
+  async function deletion(t: Setup, uri: string) {
+    const [row] = await sql<{ deleted_at: string | null }>(
+      t.store,
+      "SELECT deleted_at FROM accounts WHERE uri = ?",
+      uri,
+    );
+    const [jobs] = await sql<{ n: number }>(
+      t.store,
+      "SELECT count(*) AS n FROM inbound_jobs WHERE kind = 'purge' AND key = ?",
+      uri,
+    );
+    return { stored: row !== undefined, deletedAt: row?.deleted_at ?? null, purges: jobs!.n };
+  }
+  const untouched = { stored: true, deletedAt: null, purges: 0 };
+
+  it("deletes a stored author whose own URI answers 410, stores none of its replies, and asks for a round", async () => {
+    const { t, bob, answer, id, round } = await bobReplying();
+    // More statuses of bob's than one purge batch removes, so the deletion is still running after the round.
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+			SELECT printf('3%017d', i), ?2 || '/seeded/' || i, (SELECT id FROM accounts WHERE uri = ?2), 'public',
+				'2026-10-01T00:00:00.000Z' FROM n`,
+      PURGE_BATCH + 1,
+      bob.uri,
+    );
+    t.web.fail(bob.uri, 410);
+    expect(await round()).toBe(true);
+    expect(await deletion(t, bob.uri)).toEqual({ stored: true, deletedAt: new Date(NOW).toISOString(), purges: 1 });
+    expect(await storedOf(t.store, [answer.id])).toEqual([]);
+    expect((await walkRow(t.store, id))?.finished_at).toBe(NOW);
+  });
+
+  it.each([
+    ["a 404", (t: Setup, bob: TestActor) => t.web.fail(bob.uri, 404)],
+    [
+      "a 410 after a same-origin redirect",
+      (t: Setup, bob: TestActor) => {
+        t.web.served.set(bob.uri, { status: 301, location: `${OTHER_ORIGIN}/retired` });
+        t.web.fail(`${OTHER_ORIGIN}/retired`, 410);
+      },
+    ],
+  ] as const)("deletes no stored author on %s", async (_name, answer) => {
+    const { t, bob, id, round } = await bobReplying();
+    answer(t, bob);
+    expect(await round()).toBe(false);
+    expect(await deletion(t, bob.uri)).toEqual(untouched);
+    expect((await walkRow(t.store, id))?.finished_at).toBe(NOW);
+  });
+
+  it("deletes no stored author on a 410 fetched before another store of it committed (ID-1)", async () => {
+    const { t, bob, id, round } = await bobReplying();
+    t.web.fail(bob.uri, 410);
+    const held = t.web.hold(bob.uri, { snapshot: true });
+    const walked = round();
+    try {
+      await held.reached;
+      // bob's server answers again, and bob's Update(Person) stores his document under a new revision.
+      t.web.serve(bob.uri, bob.document);
+      const update = {
+        "@context": AS,
+        id: `${bob.uri}#updates/${nextId()}`,
+        type: "Update",
+        actor: bob.uri,
+        object: bob.document,
+      };
+      expect(await t.post(bob, update)).toBe(202);
+    } finally {
+      held.release();
+    }
+    expect(await walked).toBe(false);
+    expect(await deletion(t, bob.uri)).toEqual(untouched);
+    expect((await walkRow(t.store, id))?.finished_at).toBe(NOW);
+  });
+
+  it("writes no account for an author never stored whose URI answers 410", async () => {
+    const { t, bob, answer, id, round } = await bobReplying(false);
+    t.web.fail(bob.uri, 410);
+    expect(await round()).toBe(false);
+    expect(await deletion(t, bob.uri)).toEqual({ stored: false, deletedAt: null, purges: 0 });
+    expect(await storedOf(t.store, [answer.id])).toEqual([]);
+    expect((await walkRow(t.store, id))?.finished_at).toBe(NOW);
   });
 });
 
