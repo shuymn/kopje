@@ -90,12 +90,14 @@ import {
 } from "./quotes";
 import {
   type RemoteActorInput,
+  type RemoteProfileInput,
   type DocumentRevision,
   RetryLater,
   type ActorState,
   actorState,
   NO_ACTOR_STATE,
   upsertRemoteActor,
+  upsertEmbeddedActor,
   originOf,
   SWEEP_BATCH,
   type RemoteRow,
@@ -319,6 +321,11 @@ export type ReceiveInput = {
   actorUri: string;
   // A fresh document of the actor to store, or null to use the stored row as it is.
   actor: RemoteActorInput | null;
+  // An UpdateActor's embedded actor (docs/threat-model.md ID-1), read by the Worker as a fetched document is, its claim
+  // confirmed: its profile, handle claim, movedTo and document, stored over `actor`'s or the stored row's keys and
+  // inboxes (upsertEmbeddedActor). null: an embedded actor the Worker could not read, which applies nothing. Absent:
+  // the Update embeds no actor, and `actor`, fetched for it, is stored as for any activity.
+  profile?: RemoteProfileInput | null;
   // The actor's revision as the Worker read it before it fetched `actor` (inboxGate), the same in every round: the
   // document is stored only while it holds (upsertRemoteActor), so a later round never stores it again.
   actorRevision: DocumentRevision;
@@ -1274,10 +1281,16 @@ function finishJob(db: Db, kind: JobKind, key: string, now: number): void {
   );
 }
 
-// The actor document itself was stored before the handler ran (input.actor); receive answers retryLater instead of
-// running it when that store was superseded (upsertRemoteActor), so a document reaching it was stored.
+// The actor document itself was stored before the handler ran (input.actor, or the embedded profile over it or over
+// the stored row: input.profile); receive answers retryLater instead of running it when that store was superseded
+// (upsertRemoteActor, upsertEmbeddedActor), so a document reaching it was stored. An embedded actor the Worker could
+// not read applies nothing (profile null), as Mastodon's ProcessAccountService drops it.
 const updateActor: Handler<"UpdateActor"> = (_db, _actor, _activity, input) =>
-  input.actor === null ? ignored("no-document") : applied("actor-updated");
+  input.profile === null
+    ? ignored("invalid-actor")
+    : input.actor === null && input.profile === undefined
+      ? ignored("no-document")
+      : applied("actor-updated");
 
 // Mastodon's DeleteAccountService for a remote account, as a durable job: the purge job (the actor's tombstone) is
 // written with the first batch, and each batch removes a bounded part of what the account has (purgeBatch); the
@@ -2909,6 +2922,49 @@ function announceable(authorId: string, actorId: string, visibility: Visibility)
   return authorId === actorId || isDistributable(visibility);
 }
 
+// The author of a status fetched by its id (Mastodon's FetchRemoteStatusService, which fetches an unknown or stale
+// author first), for the boosted original and the walks of replies collections (reply-walks.ts): a stored author is
+// used, a stale one is refetched first (applyRefresh, under the revision the need carried: a refresh is not content,
+// so the caller's checks then read the refreshed row), and an unknown one is fetched (need) and stored by `store`
+// (upsertRemoteActor), which the caller runs once its own checks pass, so a status it refuses stores no author. The
+// collection sync a refresh asks for is left to the job rounds. followers: the author's followers collection, which
+// VIS-6 reads. The caller has refused an author whose deletion has started (isDeletedActor, ID-7) first.
+export type FetchedAuthor = { followers: string | null; store: () => RemoteRow | undefined };
+
+export function fetchedAuthor(
+  db: Db,
+  authorUri: string,
+  prefetched: Prefetched | undefined,
+  origin: string,
+  now: number,
+): FetchedAuthor | ReceiveResult {
+  const stored = remoteAccount(db, authorUri);
+  const document = prefetched?.actors[authorUri];
+  if (stored === undefined) {
+    if (document === undefined) {
+      return { ...ignored("need-author"), need: { kind: "actor", uri: authorUri } };
+    }
+    if (document === null || document === "gone" || document.uri !== authorUri) {
+      return ignored("unfetchable");
+    }
+    return { followers: followersOf(document.raw), store: () => upsertRemoteActor(db, document, origin, now) };
+  }
+  let author = stored;
+  if (document !== undefined) {
+    const refreshed = applyRefresh(db, author, document, origin, now, prefetched?.revisions?.[authorUri] ?? null);
+    if (refreshed.kind === "refused") {
+      return ignored("unfetchable");
+    }
+    author = refreshed.author;
+  } else if (staleAccount(db, author.id, now)) {
+    return {
+      ...ignored("need-author-refresh"),
+      need: { kind: "actor", uri: authorUri, refresh: true, state: actorState(db, authorUri) },
+    };
+  }
+  return { followers: followersUri(db, author.id), store: () => author };
+}
+
 // The boosted original of an Announce that is not stored yet, stored now if it may be boosted: the actor's own
 // embedded status (Mastodon's status_from_object), or the original fetched by its id with its author (asked of the
 // Worker through `need`). VIS-6: whether it may be boosted is decided before anything is stored, so a boost of a
@@ -2946,48 +3002,14 @@ function newOriginal(
   if (known !== undefined) {
     return known;
   }
-  let author = remoteAccount(db, authorUri);
-  const document = input.prefetched?.actors[authorUri];
-  let followers: string | null;
-  if (author === undefined) {
-    if (document === undefined) {
-      return { ...ignored("need-author"), need: { kind: "actor", uri: authorUri } };
-    }
-    if (document === null || document === "gone" || document.uri !== authorUri) {
-      return ignored("unfetchable");
-    }
-    followers = followersOf(document.raw);
-  } else {
-    // A stale stored author is refetched first (Mastodon's account_from_uri), before VIS-6, which then reads the
-    // refreshed followers: a refresh is not content, so one VIS-6 refuses still stands. The collection sync a refresh
-    // asks for is left to the job rounds (receive propagates the sender's only).
-    if (document !== undefined) {
-      const refreshed = applyRefresh(
-        db,
-        author,
-        document,
-        origin,
-        now,
-        input.prefetched?.revisions?.[authorUri] ?? null,
-      );
-      if (refreshed.kind === "refused") {
-        return ignored("unfetchable");
-      }
-      author = refreshed.author;
-    } else if (staleAccount(db, author.id, now)) {
-      return {
-        ...ignored("need-author-refresh"),
-        need: { kind: "actor", uri: authorUri, refresh: true, state: actorState(db, authorUri) },
-      };
-    }
-    followers = followersUri(db, author.id);
+  const found = fetchedAuthor(db, authorUri, input.prefetched, origin, now);
+  if ("reason" in found) {
+    return found;
   }
-  if (authorUri !== actor.uri && !isDistributable(visibilityOf(fetched, followers))) {
+  if (authorUri !== actor.uri && !isDistributable(visibilityOf(fetched, found.followers))) {
     return ignored("not-announceable");
   }
-  if (author === undefined && document !== undefined && document !== null && document !== "gone") {
-    author = upsertRemoteActor(db, document, origin, now);
-  }
+  const author = found.store();
   if (author === undefined) {
     return ignored("unknown-author");
   }
@@ -3462,7 +3484,9 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (!sameOrigin(activity.id, actorUri)) {
     return ignored("foreign-id");
   }
-  if (input.actor !== null && input.actor.uri !== actorUri) {
+  // The embedded actor is the UpdateActor's alone.
+  const profile = activity.type === "UpdateActor" ? (input.profile ?? null) : null;
+  if ((input.actor !== null && input.actor.uri !== actorUri) || (profile !== null && profile.uri !== actorUri)) {
     return ignored("actor-mismatch");
   }
   // A deleted actor does nothing more while its tombstone lasts; a repeated Delete only continues the purge.
@@ -3472,13 +3496,14 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
       : ignored("actor-deleted");
   }
   // R38, VIS-30: the inbound gate, in every round. An unavailable actor (individually suspended) first takes a routing
-  // refresh from its verified document; then only its cleanups apply, with its stored row and no upsert (SUSPENDED_
-  // ADMITS), and anything else is ignored. An actor an instance domain block covers is held the same way, without the
-  // refresh; one with no stored row has nothing to clean up, and nothing of it is stored.
-  // The routing refresh and the upsert store the document only while the revision the Worker read before fetching it
-  // holds (DocumentRevision), so a round after the first, or a document fetched before another store committed, stores
-  // nothing (ID-1). A non-Update activity was verified against that document, and applies with the stored row; an
-  // Update(Person) whose document was superseded is answered 503, and its retry fetches the document again.
+  // refresh from its fetched document (never from an embedded one); then only its cleanups apply, with its stored row
+  // and no upsert (SUSPENDED_ADMITS), and anything else is ignored. An actor an instance domain block covers is held the
+  // same way, without the refresh; one with no stored row has nothing to clean up, and nothing of it is stored.
+  // The routing refresh and the upsert store the document (and an UpdateActor's embedded profile) only while the
+  // revision the inbox gate read before the request's first fetch holds (DocumentRevision), so a round after the first,
+  // or a document fetched before another store committed, stores nothing (ID-1). A non-Update activity was verified
+  // against that document, and applies with the stored row; an Update(Person) whose store was superseded is answered
+  // 503, and its retry reads the state again.
   const held = unavailableRemote(db, actorUri);
   if (held === undefined && actorDomainBlocked(db, actorUri)) {
     return ignored("actor-suspended");
@@ -3491,16 +3516,21 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
       return ignored("actor-suspended");
     }
   }
+  const documented = input.actor !== null || profile !== null;
   const upserted =
-    held === undefined && input.actor !== null && activity.type !== "DeleteActor"
-      ? upsertRemoteActor(db, input.actor, origin, now, input.actorRevision)
-      : undefined;
+    held !== undefined || activity.type === "DeleteActor"
+      ? undefined
+      : profile !== null
+        ? upsertEmbeddedActor(db, profile, input.actor, origin, now, input.actorRevision)
+        : input.actor !== null
+          ? upsertRemoteActor(db, input.actor, origin, now, input.actorRevision)
+          : undefined;
   if (upserted === "superseded" && activity.type === "UpdateActor") {
     retryLater("actor-changed");
   }
   const actor =
     held ??
-    (input.actor === null || activity.type === "DeleteActor" || upserted === "superseded"
+    (!documented || activity.type === "DeleteActor" || upserted === "superseded"
       ? remoteAccount(db, actorUri)
       : upserted);
   if (actor === undefined && activity.type === "DeleteActor" && input.actor !== null) {

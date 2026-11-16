@@ -19,6 +19,7 @@ import {
   domainBlock,
   follow,
   getJson,
+  interactWith,
   mute,
   post,
   remoteAccount,
@@ -317,6 +318,67 @@ describe("update on public and hashtag streams", () => {
       ["hashtag:local #Cats", "status.update", status.id],
     ]);
   });
+
+  // A departure (mastodon-deviations.md, feed streams): Mastodon renders these streams once with no viewer.
+  it("a feed carries the subscriber's own fields, as REST shows them", async () => {
+    const h = await community(["alice", "bob"]);
+    const status = await post(h, h.users.bob, {
+      status: "before #cats",
+      visibility: "public",
+      quote_approval_policy: "public",
+      poll: { options: ["yes", "no"], expires_in: 3600 },
+    });
+    const poll = (status as Status & { poll: { id: string } }).poll.id;
+    await interactWith(h, h.users.alice, status.id);
+    expect((await act(h, h.users.alice, `/api/v1/polls/${poll}/votes`, { choices: [1] })).status).toBe(200);
+    const filter = await h.request(
+      "/api/v2/filters",
+      bearer(
+        h.users.alice.token,
+        json({
+          title: "Later",
+          context: ["public"],
+          filter_action: "warn",
+          keywords_attributes: [{ keyword: "after" }],
+        }),
+      ),
+    );
+    expect(filter.status).toBe(200);
+    const inbox = await subscribed(h, h.users.alice.token, "public:local");
+    inbox.send({ type: "subscribe", stream: "hashtag", tag: "cats" });
+    await settled(h, inbox);
+    // The fan-out presents at the Store's clock, the API at NOW: the same instant, so the poll reads the same.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    try {
+      const edited = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(
+          h.users.bob.token,
+          json({ status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600 } }, { method: "PUT" }),
+        ),
+      );
+      expect(edited.status).toBe(200);
+      await drained(h, inbox);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(events(inbox)).toEqual([
+      ["public:local", "status.update", status.id],
+      ["hashtag cats", "status.update", status.id],
+    ]);
+    const rest = await getJson<Status>(h, `/api/v1/statuses/${status.id}`, h.users.alice.token);
+    expect(rest.body).toMatchObject({
+      favourited: true,
+      reblogged: true,
+      bookmarked: true,
+      poll: { voted: true, own_votes: [1] },
+      quote_approval: { current_user: "automatic" },
+      filtered: [{ filter: { title: "Later" }, keyword_matches: ["after"] }],
+    });
+    for (let i = 0; i < 2; i++) {
+      expect(JSON.parse((await inbox.next()).payload!)).toEqual(rest.body);
+    }
+  });
 });
 
 // missing_attribution follows the subscriber's relationship fields here (favourited, reblogged, bookmarked), which
@@ -521,7 +583,7 @@ describe("feeds at the caps", () => {
 // past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 84_013, boost: 93_643 };
+  const PLAIN_R = { quote: 141_013, boost: 179_143 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -620,8 +682,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
   // 320,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 224_183, boost: 233_813 }],
-    ["every", FILLS.every, { quote: 235_063, boost: 249_937 }],
+    ["links", FILLS.links, { quote: 281_183, boost: 319_313 }],
+    ["every", FILLS.every, { quote: 327_221, boost: 388_174 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -735,7 +797,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
         rests.push(shown.rest);
       }
-      expect(rests).toEqual([117_353, 132_227]);
+      expect(rests).toEqual([163_432, 224_385]);
       expect(skips(warn)).toEqual([]);
     } finally {
       warn.mockRestore();

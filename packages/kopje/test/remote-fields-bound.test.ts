@@ -6,6 +6,7 @@ import { ACCOUNT_FROM, type Field } from "../src/domain/accounts";
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import { MAX_LIST_MEMBERS_ANSWERED } from "../src/domain/lists";
 import { utf8Length } from "../src/platform/dump-format";
+import { rubyStrip } from "../src/platform/strip";
 import { sanitizeRemoteHtml } from "../src/security/html";
 import { seedFollows, sql } from "./api-helpers";
 import { ALICE, setup, type Setup } from "./inbox-status-helpers";
@@ -67,7 +68,12 @@ function wholeFields(attachment: string | null): Field[] {
     if (!types.includes("PropertyValue") || typeof name !== "string" || typeof value !== "string") {
       continue;
     }
-    fields.push({ name: name.slice(0, 255), value: sanitizeRemoteHtml(value.slice(0, 4096)), verified_at: null });
+    // Account::Field#sanitize: stripped (Ruby's String#strip), then cut.
+    fields.push({
+      name: rubyStrip(name).slice(0, 255),
+      value: sanitizeRemoteHtml(rubyStrip(value).slice(0, 4096)),
+      verified_at: null,
+    });
   }
   return fields;
 }
@@ -351,11 +357,16 @@ describe("remote profile fields are projected bounded (RES-2)", () => {
       { name: "name", value: "x\u0000y\u0000" },
       { name: "\u0000", value: "\u0000" },
     ]);
+    // Shown stripped as Account::Field#sanitize strips (Ruby's String#strip removes a NUL at either end, not inside).
     const shown = await bothWays(t, within!);
-    expect(shown.bounded.map((f) => f.name)).toEqual(["A\u0000B", "name", "\u0000"]);
+    expect(shown.bounded.map((f) => [f.name, f.value])).toEqual([
+      ["A\u0000B", "ok"],
+      ["name", "x\u0000y"],
+      ["", ""],
+    ]);
     expect(shown.bounded).toEqual(shown.whole);
     const api = await t.api<{ fields: { name: string }[] }>(`/api/v1/accounts/${within!}`);
-    expect(api.body.fields.map((f) => f.name)).toEqual(["A\u0000B", "name", "\u0000"]);
+    expect(api.body.fields.map((f) => f.name)).toEqual(["A\u0000B", "name", ""]);
     // SQLite's substr stops at the NUL: each string comes out as what precedes it.
     expect(JSON.parse(p!.attachment)).toEqual([{ name: "A", value: "v" }]);
     const cut = await bothWays(t, past!);
