@@ -14,7 +14,10 @@ import {
   GAVE_UP_RETENTION_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
+  PROVENANCE_BYTES,
+  PROVENANCE_MAX,
   retryDelay,
+  rowProvenanceSql,
 } from "../src/domain/deliveries";
 import { readOperation } from "../src/domain/operation";
 import { noteQuote } from "../src/domain/quotes";
@@ -786,3 +789,156 @@ describe("outbound reach with stale statistics (RES-7)", () => {
     }
   }, 60_000);
 });
+
+// A row's provenance as stored (recipient_accounts), read by every reader within its written bound (rowProvenanceSql):
+// a value an import leaves (the column has no CHECK) that is not TEXT of at most PROVENANCE_BYTES bytes holding a JSON
+// array of at most PROVENANCE_MAX values reads as a row without provenance (NET-2, VIS-30, RES-7).
+describe("a row's stored provenance is read within its written bound (EP-T8)", () => {
+  const SHARED = "https://remote.example/inbox";
+  const PERSONAL = "https://remote.example/users/dave/inbox";
+  // Ids no account holds, of an account id's 18 digits.
+  const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
+  // A JSON array of `id` and an astral string, `bytes` UTF-8 bytes long (`["id","…"]`, each astral 4 bytes).
+  const astral = (id: string, bytes: number) => {
+    const pad = bytes - (2 + 18 + 3 + 2);
+    return JSON.stringify([id, "\u{1F600}".repeat(Math.floor(pad / 4)) + "x".repeat(pad % 4)]);
+  };
+  // Each stored value, as an SQL expression over its parameter, naming `id` among absent ones; `admitted`: whether the
+  // readers take it. The sharp ones pass every test but one, and name `id` as a string, as an account id is stored
+  // (an unquoted integer matches no TEXT id): 338 bytes of 16 values (bytes), 17 values in 54 bytes (count), an object
+  // (array), unterminated JSON (JSON), a BLOB of an array's text (TEXT).
+  const cases = (id: string): { name: string; sql: string; value: string | null; admitted: boolean }[] => {
+    const sixteen = [id, ...absent(15)];
+    return [
+      { name: "16 ids, 337 bytes", sql: "?", value: JSON.stringify(sixteen), admitted: true },
+      { name: "astral, 337 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES), admitted: true },
+      { name: "16 ids, 338 bytes", sql: "?", value: ` ${JSON.stringify(sixteen)}`, admitted: false },
+      { name: "astral, 338 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES + 1), admitted: false },
+      { name: "17 ids", sql: "?", value: JSON.stringify([...sixteen, ...absent(17).slice(16)]), admitted: false },
+      {
+        name: "17 values, 54 bytes",
+        sql: "?",
+        value: JSON.stringify([id, ...Array<number>(16).fill(0)]),
+        admitted: false,
+      },
+      { name: "an object", sql: "?", value: JSON.stringify({ a: id }), admitted: false },
+      { name: "invalid JSON", sql: "?", value: `["${id}"`, admitted: false },
+      // SQLite's JSON functions read TEXT up to a NUL, every reader alike: the array before it.
+      { name: "a NUL", sql: "?", value: `["${id}"]\0x`, admitted: true },
+      { name: "a BLOB", sql: "CAST(? AS BLOB)", value: JSON.stringify([id]), admitted: false },
+      { name: "an integer", sql: "CAST(? AS INTEGER)", value: id, admitted: false },
+    ];
+  };
+
+  it("measures the sharp cases in bytes and values", () => {
+    const id = "100000000000000002";
+    const byName = Object.fromEntries(cases(id).map((c) => [c.name, c.value ?? ""]));
+    const bytes = (name: string) => new TextEncoder().encode(byName[name]).length;
+    expect(PROVENANCE_BYTES).toBe(337);
+    expect([bytes("16 ids, 337 bytes"), bytes("astral, 337 bytes")]).toEqual([337, 337]);
+    expect([bytes("16 ids, 338 bytes"), bytes("astral, 338 bytes")]).toEqual([338, 338]);
+    expect(byName["astral, 338 bytes"]!.length).toBeLessThan(PROVENANCE_BYTES);
+    expect(bytes("17 values, 54 bytes")).toBe(54);
+    expect((JSON.parse(byName["17 values, 54 bytes"]!) as unknown[]).length).toBe(PROVENANCE_MAX + 1);
+    expect((JSON.parse(byName["16 ids, 338 bytes"]!) as unknown[]).length).toBe(PROVENANCE_MAX);
+  });
+
+  // The send-time check (VIS-30) reads the row's provenance from the due-row read: a row naming only an unavailable
+  // recipient is dropped when admitted, and checked by its inbox host only (sent) otherwise.
+  it("is the send-time check's provenance only when admitted", async () => {
+    for (const c of cases("")) {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const dave = await remoteAccount(h.store, "dave", "remote.example");
+      await act(h, alice, `/api/v1/accounts/${dave}/follow`);
+      await claim(h.store, NOW, "settle");
+      await sql(h.store, "UPDATE deliveries SET state = 'pending', lease_token = NULL, next_attempt_at = ?", NOW);
+      await sql(h.store, "UPDATE accounts SET deleted_at = ? WHERE id = ?", new Date(NOW).toISOString(), dave);
+      const value = cases(dave).find((d) => d.name === c.name)!;
+      await sql(h.store, `UPDATE deliveries SET recipient_accounts = ${value.sql}`, value.value);
+      const round = await claim(h.store, NOW, "a");
+      expect(
+        round.deliveries.map((d) => d.inbox),
+        c.name,
+      ).toEqual(c.admitted ? [] : [SHARED]);
+    }
+  });
+
+  // A forward's row (Audience.shares) moves only by an admitted provenance naming one account behind its inbox.
+  it("is a forward's fallback provenance only when admitted", async () => {
+    for (const c of cases("")) {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const dave = await remoteAccount(h.store, "dave", "remote.example");
+      const value = cases(dave).find((d) => d.name === c.name)!;
+      await forwardRow(h.store, alice.id, value);
+      const round = await claim(h.store, NOW, "a");
+      expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
+      expect(await complete(h.store, round.deliveries[0]!.id, "a", NOW, MISSING), c.name).toMatchObject({
+        status: c.admitted ? "retry" : "gave_up",
+      });
+      expect((await rows(h.store)).map((r) => r.inbox_url)).toEqual([c.admitted ? PERSONAL : SHARED]);
+    }
+  });
+
+  // The bound is the writers': expansion over PROVENANCE_MAX accounts behind one shared inbox writes PROVENANCE_BYTES
+  // bytes, which the readers admit; one more account writes recipients_many instead.
+  it("holds what expansion writes", async () => {
+    for (const [count, many] of [
+      [PROVENANCE_MAX, false],
+      [PROVENANCE_MAX + 1, true],
+    ] as const) {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+				SELECT printf('%018d', 800000000000000000 + i), 'https://many.example/users/u' || i, 'u' || i,
+					'many.example', 'https://many.example/users/u' || i || '/inbox', 'https://many.example/inbox' FROM n`,
+        count,
+      );
+      await sql(
+        h.store,
+        "INSERT INTO follows (account_id, target_account_id, state) SELECT id, ?, 'accepted' FROM accounts WHERE domain = 'many.example'",
+        alice.id,
+      );
+      await post(h, alice, { status: "to many" });
+      await claim(h.store, NOW, "a");
+      expect(
+        await sql(
+          h.store,
+          `SELECT length(CAST(recipient_accounts AS BLOB)) AS bytes, ${rowProvenanceSql("recipient_accounts")} IS NOT NULL
+						AS admitted, recipients_many AS many FROM deliveries WHERE inbox_url = 'https://many.example/inbox'`,
+        ),
+      ).toEqual([many ? { bytes: null, admitted: 0, many: 1 } : { bytes: PROVENANCE_BYTES, admitted: 1, many: null }]);
+    }
+  });
+});
+
+// A pending forward's row (a forwarded Delete: Audience.shares, a retraction, so the send-time check passes it) of
+// `account` to remote.example's shared inbox, its provenance stored as `value` is.
+async function forwardRow(store: StoreStub, account: string, value: { sql: string; value: string | null }) {
+  const [activity] = await sql<{ id: string }>(
+    store,
+    `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+			VALUES (?1, json_object('activity', json_object('type', 'Delete', 'id', 'https://other.example/notes/1#delete',
+				'actor', 'https://other.example/users/o', 'object', 'https://other.example/notes/1'),
+				'audience', json_object('shares', json_array('https://kopje.test/ap/o/1'), 'accounts', json_array())),
+				'https://other.example/notes/1', 1, ?2)
+			RETURNING CAST(id AS TEXT) AS id`,
+    account,
+    NOW,
+  );
+  await sql(
+    store,
+    `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at,
+			recipient_accounts)
+			VALUES (CAST(?1 AS INTEGER), ?2, 'https://remote.example/inbox', 'https://remote.example', 'pending', ?3, ?3,
+				${value.sql})`,
+    activity!.id,
+    account,
+    NOW,
+    value.value,
+  );
+}

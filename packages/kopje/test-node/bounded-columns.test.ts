@@ -420,6 +420,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",
+  // A delivery row's provenance within its written bound (domain/deliveries.ts), a JSON array of account ids or NULL.
+  "rowProvenanceSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
   // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.

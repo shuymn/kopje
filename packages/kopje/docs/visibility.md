@@ -955,8 +955,10 @@ At the claim, and again at confirmation right before each POST (`confirmDelivery
 `availableSql` reads an unknown id as available, so the accounts rule joins `accounts`: a purged recipient counts as
 gone. A recipient the instance suspended (R38) is unavailable, so content to its personal inbox, or to a shared inbox
 serving only suspended recipients, is dropped; a shared inbox that also serves an available recipient is sent (the
-suspended one is left out of the content's audience already). A row without provenance gets the sender and inbox
-rules only. Retractions are never dropped. A recipient covered only through a stored domain that differs from the host
+suspended one is left out of the content's audience already). A row without provenance, or whose stored accounts
+`rowProvenanceSql` does not admit (TEXT of at most 337 bytes holding an array of at most 16 values; only an import
+stores another), gets the sender and inbox rules only. Retractions are never dropped. A recipient covered only through a
+stored domain that differs from the host
 its provenance lists counts as not covered at a shared inbox, as a mixed inbox does; a row without provenance to a
 gateway inbox for a blocked domain is judged by the gateway's host. The oracle's `sends` in `test/policy-model.ts`
 states the rule.

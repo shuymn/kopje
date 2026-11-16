@@ -133,6 +133,25 @@ export type Target = { inbox: string; addressee: string | null } & Provenance;
 
 export { PROVENANCE_MAX };
 
+// The most a row's stored provenance (recipient_accounts) may hold, in UTF-8 bytes: PROVENANCE_MAX account ids of 18
+// digits (accounts.id's CHECK, migration 0000_initial), each quoted, the commas between them and the brackets, which is
+// the longest value Kopje's writers store (expansion copies a target's minified `accounts`; moveToPersonal one id).
+export const PROVENANCE_BYTES = PROVENANCE_MAX * (18 + 2) + (PROVENANCE_MAX - 1) + 2;
+
+// A row's provenance (VIS-30) as every reader takes it (sendRefused through DUE_ROW, personalFallback,
+// forwardFallback): `column` when it is TEXT of at most PROVENANCE_BYTES bytes, then valid JSON, then an array, then of
+// at most PROVENANCE_MAX values, each tested only once the one before it holds (nested CASEs: nothing past
+// PROVENANCE_BYTES is parsed); NULL otherwise, a row without provenance. The column has no CHECK (migration
+// 0044_delivery_provenance) and an import stores it as given (platform/store-import.ts), so the bound is this read's,
+// whatever value a row holds.
+export function rowProvenanceSql(column: string): string {
+  return `(CASE WHEN typeof(${column}) = 'text'
+		THEN CASE WHEN length(CAST(${column} AS BLOB)) <= ${PROVENANCE_BYTES}
+		THEN CASE WHEN json_valid(${column})
+		THEN CASE WHEN json_type(${column}) = 'array'
+		THEN CASE WHEN json_array_length(${column}) <= ${PROVENANCE_MAX} THEN ${column} END END END END END)`;
+}
+
 function uris(value: unknown): string[] {
   if (typeof value === "string") {
     return [value];
@@ -2556,7 +2575,8 @@ function staleAnswer(type: string, at: "cancel" | "claim" | "confirm" | "failure
   console.warn({ event: "kopje.delivery.stale_follow_answer", type, at });
 }
 
-// A due row (`d`) with its activity (`o`, LEFT JOINed: found is 0 when it is gone) as the send-time check reads it.
+// A due row (`d`) with its activity (`o`, LEFT JOINed: found is 0 when it is gone) as the send-time check reads it,
+// its provenance as rowProvenanceSql admits it.
 type DueRow = LaneRow & {
   addressee: string | null;
   recipient_accounts: string | null;
@@ -2572,7 +2592,8 @@ type DueRow = LaneRow & {
 };
 
 const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
-	d.attempts, d.addressee, d.recipient_accounts, d.recipient_domains, o.id IS NOT NULL AS found, o.retracts,
+	d.attempts, d.addressee, ${rowProvenanceSql("d.recipient_accounts")} AS recipient_accounts, d.recipient_domains,
+	o.id IS NOT NULL AS found, o.retracts,
 	${REFUSED_SENDER} AS refused_sender, json_extract(o.body, '$.signedBy') AS signed_by,
 	CASE json_extract(o.body, '$.activity.type') WHEN 'Announce' THEN json_extract(o.body, '$.activity.object') END
 		AS boosted, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type`;
@@ -3025,17 +3046,17 @@ function moveToPersonal(
   console.warn({ event: "kopje.delivery.shared_inbox_fallback", status });
 }
 
-// personalFallback for a forward's row: it moves in place, as there, only when its provenance (recipient_accounts, at
+// personalFallback for a forward's row: it moves in place, as there, only when its provenance (rowProvenanceSql: at
 // most PROVENANCE_MAX ids, each sought by id: RES-7) names exactly one account behind this shared inbox with a
 // different personal inbox on the same origin, which the activity has no row or unexpanded target for. A row serving
 // several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a
-// reference) does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
-// boost's Undo) overtake the copies written behind it.
+// reference, a stored value rowProvenanceSql does not admit) does not move and gives up visibly: one row moved to
+// several inboxes would let a later activity of its lane (the boost's Undo) overtake the copies written behind it.
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
-		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
-				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
+		FROM (SELECT addressee, inbox_url, ${rowProvenanceSql("recipient_accounts")} AS recipient_accounts, recipients_many
+				FROM deliveries WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
 			CROSS JOIN json_each(row.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
 		WHERE row.addressee IS NULL AND row.recipient_accounts IS NOT NULL

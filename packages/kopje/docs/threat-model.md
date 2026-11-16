@@ -1526,7 +1526,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the recipients behind it (merged across followers, addressed accounts, silent recipients, poll voters and other
   statuses' reach before deduplication by inbox): up to 16 account ids, the hosts of their actor ids (none for a
   retraction staged in bounded steps, RES-6, which the check exempts), or `many` above 16, meaning "not all
-  unavailable"; expansion copies them onto the delivery row. A row that is not a retraction (by its persisted
+  unavailable"; expansion copies them onto the delivery row. Every reader takes a row's account ids only when they are
+  TEXT of at most `PROVENANCE_BYTES` (337) bytes, the most Kopje's writers store, holding a JSON array of at most 16
+  values (`rowProvenanceSql` in `src/domain/deliveries.ts`, tested in that order, so nothing longer is parsed); any
+  other stored value, which only an import leaves (the column has no CHECK), reads as no provenance
+  (`test/deliveries.test.ts` ("a row's stored provenance is read within its written bound")). A row that is not a
+  retraction (by its persisted
   `retracts` flag) is dropped, its lane promoted, when its sender is refused (R1), an instance domain block covers its
   inbox host, none of its listed accounts exists and is available (R1: a recipient the instance suspended, or one being
   deleted or purged), or a block covers every listed host. The check runs at the claim and again in `confirmDelivery`,
@@ -1537,7 +1542,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stop that POST; a confirmation that fails, or finds the lease taken over, sends nothing, and the lease expires.
   Accepted residuals: a shared inbox serving an available recipient besides unavailable ones is sent (content expansion
   already left the unavailable out); a row without provenance (queued before migration `0044`, phase A's staged reach, a
-  retraction's earlier receivers) gets the inbox host rule only; Mastodon's `DeliveryWorker` has no such check, so this
+  retraction's earlier receivers, an imported value the read does not admit) gets the inbox host rule only; Mastodon's
+  `DeliveryWorker` has no such check, so this
   is stricter than Mastodon, whose reach already leaves deleted accounts out. A dropped row writes no receipt. A
   dropped `Follow` or `Accept` that its follow's current generation still owes holds that follow, at most one hold a
   follow, and a job family records it again with its original id once, read live, it may be sent; a dropped `Reject`
