@@ -2687,14 +2687,10 @@ describe("an attachment of malformed imported text (RES-3)", () => {
     const { note, image, filterText } = await runInDurableObject(t.store, (_instance, state) => {
       const db = new Db(state.storage.sql);
       const facts = statusFacts(db, id, noteQuote, { reached: false })!;
-      const legacy = getLegacyObject.run(state.storage.sql, { uuid: "legacy-image", origin: ORIGIN }) as unknown;
-      let found = legacy as { image?: string | null; value?: unknown; status?: string };
-      while (found.image === undefined && found.value !== undefined) {
-        found = found.value as typeof found;
-      }
+      const legacy = getLegacyObject.run(state.storage.sql, { uuid: "legacy-image", origin: ORIGIN });
       return {
         note: noteOf(facts),
-        image: JSON.parse(found.image ?? "null") as { name?: string },
+        image: JSON.parse(legacy.image ?? "null") as { name?: string },
         filterText: storedSearchableText(db, id, at),
       };
     });
