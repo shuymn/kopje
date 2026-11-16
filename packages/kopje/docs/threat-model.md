@@ -4002,7 +4002,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   concurrent outcome is discarded. Only job rounds verify quotes: an inbox request that makes work due only asks the
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
   without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
-  leased one to be checked once more, so replays never keep a genuine 404 from applying. A job round (Queue or cron)
+  leased one to be checked once more, so replays never keep a genuine 404 from applying; it seeks the accepted quote
+  the stamp approved among at most `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter
+  applied outside that cap (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read
+  (`test/quotes.test.ts` ("reads at most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before
+  they grew")). A job round (Queue or cron)
   verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
   and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
   or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,

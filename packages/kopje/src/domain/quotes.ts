@@ -1013,14 +1013,41 @@ export function continueRevocations(db: Db, left: () => number, now: number): bo
 // flight match (at most a round's claim each).
 const MAX_RECHECKED = 100;
 
+// The accepted quotes naming a stamp of an actor that stampHolder reads at most.
+export const STAMP_HOLDER_CANDIDATES = 16;
+
+// The received accepted quote that a stamp of `actor` accepted: a valid stamp names one quoting status (stampValid), by
+// another author. An inner seek of quotes_approval on (stamp, actor, accepted) reads at most STAMP_HOLDER_CANDIDATES
+// raw candidates in the index's order, and the author and local filters apply outside that LIMIT, the first that passes
+// taken (RES-6). Past the cap only quotes accepted without a stamp's verification can stand ahead of the holder: the
+// actor's own self-quotes naming the stamp, or imported rows. Then nothing is found, and only the actor that flooded its
+// own stamp loses what finding the holder would do; every revocation batch still meets every quote naming the stamp.
+export function stampHolder(
+  db: Db,
+  actor: { id: string },
+  approvalUri: string,
+  now: number,
+): { status_id: string; verify_after: number | null; leased: number } | undefined {
+  return db.first<{ status_id: string; verify_after: number | null; leased: number }>(
+    `SELECT c.status_id, c.verify_after, c.leased
+		FROM (SELECT status_id, local, verify_after, ${LEASED} AS leased FROM quotes INDEXED BY quotes_approval
+				WHERE approval_uri = ?1 AND quoted_account_id = ?2 AND state = 'accepted' LIMIT ?4) c
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = c.status_id
+		WHERE s.account_id <> ?2 AND c.local = 0 LIMIT 1`,
+    approvalUri,
+    actor.id,
+    now,
+    STAMP_HOLDER_CANDIDATES,
+  );
+}
+
 // A Delete of a stamp relayed by another server without the author's proof (federation/inbound.ts): nothing is revoked
 // on its word, but the quotes of the actor's statuses that name the stamp and could still be accepted by it are checked
 // again, their state unchanged until then, so a stamp that is gone revokes or rejects them. Replays coalesce:
-//   - the accepted quote that a stamp accepted (one at most: a valid stamp names exactly one quoting status; a
-//     self-quote, accepted without one, may name the stamp too and is passed over, and so is a local quote, which only
-//     its quoted author's answers decide: VIS-28, quote-authoring concurrency row 17) is renewed when idle (due now,
-//     attempts reset, a new generation), left as it is when due or backing off (its next fetch is fresh anyway), and
-//     marked when a round has leased it;
+//   - the accepted quote that a stamp accepted (stampHolder: a self-quote, accepted without one, may name the stamp too
+//     and is passed over, and so is a local quote, which only its quoted author's answers decide: VIS-28,
+//     quote-authoring concurrency row 17) is renewed when idle (due now, attempts reset, a new generation), left as it
+//     is when due or backing off (its next fetch is fresh anyway), and marked when a round has leased it;
 //   - a pending quote is marked only when a round has leased it (its first stamp fetch is in flight), matched by the
 //     stamp alone, since a round may not have linked its target yet (the target found by its uri); marking one of
 //     another author's costs at most one more check. Otherwise its next fetch is fresh anyway.
@@ -1028,15 +1055,7 @@ const MAX_RECHECKED = 100;
 // finds the stamp valid. A round's 404 thus always applies, and a Delete that races a fetch is never lost. Returns
 // whether such a quote exists.
 export function recheckStamp(db: Db, actor: { id: string }, approvalUri: string, now: number): boolean {
-  const accepted = db.first<{ status_id: string; verify_after: number | null; leased: number }>(
-    `SELECT q.status_id, q.verify_after, ${LEASED} AS leased
-		FROM quotes q INDEXED BY quotes_approval CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
-		WHERE q.approval_uri = ?1 AND q.quoted_account_id = ?2 AND q.state = 'accepted' AND s.account_id <> ?2
-			AND q.local = 0 LIMIT 1`,
-    approvalUri,
-    actor.id,
-    now,
-  );
+  const accepted = stampHolder(db, actor, approvalUri, now);
   if (accepted?.leased === 1) {
     db.run("UPDATE quotes SET recheck = 1 WHERE status_id = ?", accepted.status_id);
   } else if (accepted !== undefined && accepted.verify_after === null) {

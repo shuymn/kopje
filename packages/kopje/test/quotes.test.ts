@@ -7,6 +7,7 @@ import { Db, type Savepoint } from "../src/db/sql";
 import { stampDeleteActivity } from "../src/domain/activities";
 import { PURGE_BATCH, receiveActivity, runInboundJobs } from "../src/domain/inbox";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
+import { readOperation } from "../src/domain/operation";
 import { completeQuote } from "../src/domain/quote-verification";
 import {
   MAX_LINKED_QUOTES,
@@ -18,6 +19,8 @@ import {
   type QuoteVerification,
   type QuoteWork,
   REVOCATION_BATCHES,
+  STAMP_HOLDER_CANDIDATES,
+  stampHolder,
 } from "../src/domain/quotes";
 import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
 import { RETRACTION_TTL_MS } from "../src/domain/retractions";
@@ -77,7 +80,7 @@ import {
   update,
 } from "./inbox-status-helpers";
 import { contexts, QUOTE_CONTEXT, quoting, serveFeatured, serveStamp } from "./quote-helpers";
-import { rowsRead, watchedCursor } from "./read-helpers";
+import { measuredRead, rowsRead, watchedCursor } from "./read-helpers";
 
 // Quotes received from remote servers (Mastodon 4.5's Quote, StatusParser's quote properties, VerifyQuoteService and the
 // Delete of a QuoteAuthorization; FEP-044f): stored with every status that names one, verified inline or by the job
@@ -2790,5 +2793,93 @@ describe("the quoted status of a quote being verified (RES-7)", () => {
     );
     const many = await read();
     expect(many).toBeLessThanOrEqual(few + 10);
+  }, 60_000);
+});
+
+describe("the holder of a stamp (stampHolder, RES-6)", () => {
+  // carol's stamp accepted bob's quote; `ahead` self-quotes of carol's naming the same stamp (accepted without it, as
+  // only a flood of carol's own or an import makes them) stand before it in quotes_approval's order (lower rowids).
+  async function flooded() {
+    const { t, bob, carol } = await world();
+    await followed(t, carol);
+    const pair = quotedPair(t, bob, carol);
+    const own = mastodonNote(carol);
+    expect(await t.post(carol, create(carol, own))).toBe(202);
+    expect(await t.post(bob, create(bob, pair.quote))).toBe(202);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted", approval_uri: pair.stamp });
+    const carolId = (await accountId(t.store, carol.uri))!;
+    const ownId = (await statusRow(t.store, own.id))!.id;
+    const holderId = (await statusRow(t.store, pair.quote.id))!.id;
+    let ahead = 0;
+    const flood = async (to: number) => {
+      await sql(
+        t.store,
+        `WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('979%015d', i), ?3 || '/self' || i, ?4, 'public', '', '2026-10-11T12:00:00.000Z' FROM n`,
+        ahead + 1,
+        to,
+        carol.uri,
+        carolId,
+      );
+      await sql(
+        t.store,
+        `INSERT INTO quotes (rowid, status_id, quoted_uri, quoted_status_id, quoted_account_id, state, approval_uri,
+					updated_at)
+				SELECT -CAST(substr(id, 4) AS INTEGER), id, ?1, ?2, ?3, 'accepted', ?4, '2026-10-11T12:00:00.000Z'
+				FROM statuses WHERE id > printf('979%015d', ?5) AND id <= printf('979%015d', ?6)`,
+        own.id,
+        ownId,
+        carolId,
+        pair.stamp,
+        ahead,
+        to,
+      );
+      ahead = to;
+    };
+    const holder = readOperation<{ actor: string; stamp: string }, string | null>(
+      (db, input) => stampHolder(db, { id: input.actor }, input.stamp, NOW)?.status_id ?? null,
+    );
+    const read = () => measuredRead(t, holder, { actor: carolId, stamp: pair.stamp });
+    return { t, carol, pair, holderId, flood, read };
+  }
+
+  it("reads at most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before they grew", async () => {
+    const { t, holderId, flood, read } = await flooded();
+    // Statistics taken with three self-quotes ahead; then the candidates at their cap (STAMP_HOLDER_CANDIDATES ahead of
+    // the holder), and 2,000 ahead, each passing the seek and failing the author filter.
+    await flood(3);
+    await sql(t.store, "ANALYZE");
+    const before = { atCap: await read() };
+    await flood(STAMP_HOLDER_CANDIDATES);
+    const atCap = await read();
+    await flood(2000);
+    const after = { atCap, grown: await read() };
+    // Within the cap, the holder is found past the self-quotes; at the cap or past it, it is not.
+    expect(before.atCap.output).toBe(holderId);
+    expect(after.atCap.output).toBeNull();
+    expect(after.grown.output).toBeNull();
+    // The rows read stay those of a full cap: the seek's candidates and one status key each.
+    expect(after.grown.rows).toBe(after.atCap.rows);
+    expect(after.grown.rows).toBe(2 * STAMP_HOLDER_CANDIDATES);
+  }, 60_000);
+
+  it("renews the holder's check on a relayed Delete only when it is within the cap", async () => {
+    const { t, carol, pair, flood } = await flooded();
+    const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+    const relay = () =>
+      t.postOnly(dan, {
+        "@context": AS,
+        id: `${carol.uri}#delete-${nextId()}`,
+        type: "Delete",
+        actor: carol.uri,
+        object: pair.stamp,
+      });
+    await flood(STAMP_HOLDER_CANDIDATES);
+    expect(await relay()).toBe(202);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: null });
+    await sql(t.store, "DELETE FROM quotes WHERE status_id GLOB '979*' AND rowid < -3");
+    expect(await relay()).toBe(202);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: NOW });
   }, 60_000);
 });
