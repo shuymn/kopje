@@ -31,7 +31,7 @@ describe("the coverage rule", () => {
     expect(covers({ method: "last", name: "a" }, "a[]")).toBe(false);
     expect(covers({ method: "query", name: "acct" }, "acct")).toBe(true);
     expect(covers({ method: "file", name: "avatar" }, "avatar")).toBe(true);
-    for (const method of ["has", "getAll"] as const) {
+    for (const method of ["has", "getAll", "getAllIntegers"] as const) {
       expect(covers({ method, name: "id" }, "id")).toBe(true);
       expect(covers({ method, name: "id" }, "id[]")).toBe(true);
     }

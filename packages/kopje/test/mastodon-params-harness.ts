@@ -27,7 +27,7 @@ import type { User } from "./status-helpers";
 
 // ---- Observation ----
 
-const PARAMS_METHODS = ["get", "last", "has", "getAll", "list", "objects", "hasObject"] as const;
+const PARAMS_METHODS = ["get", "last", "has", "getAll", "getAllIntegers", "list", "objects", "hasObject"] as const;
 
 type Spy = MockInstance<(...args: never[]) => unknown>;
 

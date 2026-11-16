@@ -354,6 +354,22 @@ describe("POST /api/v1/polls/:id/votes", () => {
     ]);
   });
 
+  // VoteService reads each choice by Ruby's Integer(): a base prefix, a leading 0 as octal, underscores, ASCII
+  // whitespace around it; a JSON number by its to_i. One Integer() raises on is no choice (Mastodon answers 500).
+  it("reads each choice by Ruby's Integer()", async () => {
+    const h = await community(["alice", "bob", "carol", "dave"]);
+    const { alice, bob, carol, dave } = h.users;
+    const multiple = await polled(h, alice, { options: ["a", "b", "c", "d"], expires_in: 600, multiple: true });
+    const response = await voteOn(h, bob, multiple.id, ["0d1", "0b10", " 0x3\n", "0_0"]);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({ own_votes: [1, 2, 3, 0] });
+    expect(await (await voteOn(h, carol, multiple.id, [1.9, "02"])).json()).toMatchObject({ own_votes: [1, 2] });
+    const invalid = { status: 422, body: { error: "Validation failed: The chosen vote option does not exist" } };
+    for (const choice of ["010", "08", "1.5", "1e0", "1__0", "\u00a01", "0x"]) {
+      expect([choice, await refusal(await voteOn(h, dave, multiple.id, [choice]))]).toEqual([choice, invalid]);
+    }
+  });
+
   it("refuses a vote as Mastodon's VoteValidator does, counting nothing", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;

@@ -42,8 +42,15 @@ export const SENT_FILE = "(file)";
 export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
 // A parameter's name and text, and the number a JSON body sent as it: `text` is the number as JSON writes it, and
-// integer parameters read `number` (Params#last).
+// integer parameters read `number` (integerText).
 export type ParamEntry = readonly [name: string, text: string, number?: number];
+
+// An entry's text as integer parameters read it: a JSON number as the decimal of its Ruby to_i (Float#to_i and
+// Integer() of a Float both truncate), so `1e21` reads as 10^21 (capped as rubyToI caps), where the string "1e21" is
+// read by the parameter's own reader.
+function integerText([, text, number]: ParamEntry): string {
+  return number === undefined ? text : String(rubyNumberToI(number));
+}
 
 // A file part's value while objects() groups the parts; no text value equals it.
 const FILE_VALUE: unique symbol = Symbol("file part");
@@ -102,12 +109,11 @@ export class Params {
     return this.entries.find(([key]) => key === name)?.[1];
   }
 
-  // Rails' `params[name]` as an integer parameter reads it: the last value (Rack assigns a repeated plain name, so the
-  // last wins), the query's for a top-level key the query sent, else the body's (withQuery); a JSON number as the
-  // decimal of its Ruby to_i, so `1e21` reads as 10^21 (capped as rubyToI caps), where the string "1e21" reads as 1.
+  // Rails' `params[name]` as an integer parameter reads it (integerText): the last value (Rack assigns a repeated plain
+  // name, so the last wins), the query's for a top-level key the query sent, else the body's (withQuery).
   last(name: string): string | undefined {
     const entry = this.entries.findLast(([key]) => key === name);
-    return entry?.[2] === undefined ? entry?.[1] : String(rubyNumberToI(entry[2]));
+    return entry === undefined ? undefined : integerText(entry);
   }
 
   // A declared file parameter whose effective value is a file (readParams' typed selection): then get(name) is
@@ -218,6 +224,11 @@ export class Params {
   // Values of `name[]` and of a repeated `name`.
   getAll(name: string): string[] {
     return this.entries.filter(([key]) => key === name || key === `${name}[]`).map(([, value]) => value);
+  }
+
+  // getAll, each value as integer parameters read it (integerText).
+  getAllIntegers(name: string): string[] {
+    return this.entries.filter(([key]) => key === name || key === `${name}[]`).map(integerText);
   }
 }
 

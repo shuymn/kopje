@@ -3,6 +3,7 @@ import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_I
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
+import { rubyInteger } from "../platform/ruby-integer";
 import { rubyToI } from "../platform/ruby-to-i";
 import { nextDocumentRevisionSql, pollTimeReadSql, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -430,11 +431,6 @@ type VotedPoll = {
   cut_options: number[];
 };
 
-// A choice as Ruby's Integer() reads a decimal one; anything else is no choice of the poll.
-function choiceOf(value: string): number {
-  return /^[+-]?\d{1,9}$/.test(value.trim()) ? Number(value.trim()) : -1;
-}
-
 // VoteValidator's errors for one more vote in `choice`, given the voter's votes so far: the poll ended, a choice it does
 // not have, the author's own poll, or a vote again (any in a single-choice poll, the same choice in a multiple one).
 function voteErrors(poll: VotedPoll, voterId: string, choice: number, votes: number[], now: string): string[] {
@@ -565,7 +561,8 @@ export const vote = userWriteOperation<{ id: string; choices: string[]; now: num
     const votes = [...before];
     const choices: number[] = [];
     for (const raw of input.choices) {
-      const choice = choiceOf(raw);
+      // VoteService's Integer(choice); one it raises on is no choice of the poll (Mastodon answers 500).
+      const choice = rubyInteger(raw) ?? -1;
       const errors = voteErrors(poll, accountId, choice, votes, now);
       if (errors.length > 0) {
         return { status: "invalid", error: `Validation failed: ${errors.join(", ")}` };

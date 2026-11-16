@@ -306,17 +306,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
   actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
   (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
-- Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as
-  Ruby's `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i`
-  of the number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), a blank oEmbed `maxheight` or
-  filter `expires_in` as Rails' `blank?` reads it (U+0085 is a space, U+FEFF is not), and a negative `limit` as its
-  absolute value (#1729). A top-level key the query sends replaces the body's whole value under it, as Rails merges
-  them: a query `poll[expires_in]` leaves none of a body's `poll`, its choices included, and a query `expires_in[]`
-  drops a body's `expires_in`; a body's file parameter still wins over the query's. A `limit` of 0, or one that is not a number, answers no statuses and no `Link` on the home,
-  list, public and hashtag timelines and no notifications on `/api/v1/notifications` and `/api/v2/notifications`, as
-  Mastodon's do; the other lists paged by `max_id` read it as 1 (Mastodon answers 500), where one that is not a number
-  read as the default before ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No
-  Store migration and no `wrangler.jsonc` change.
+- Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as Ruby's
+  `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i` of the
+  number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), a blank oEmbed `maxheight` or filter
+  `expires_in` as Rails' `blank?` reads it (U+0085 is a space, U+FEFF is not), and a negative `limit` as its absolute
+  value (#1729). A vote's choices are read by Ruby's `Integer()`, as Mastodon reads them: `0x1`, `0b1`, `0d1` and `0_1`
+  are 1, a leading 0 is octal (`010` is 8), and a JSON number is truncated (`1.9` is 1), where only decimal digits were
+  read before. A top-level key the query sends replaces the body's whole value under it, as Rails merges them: a query
+  `poll[expires_in]` leaves none of a body's `poll`, its choices included, and a query `expires_in[]` drops a body's
+  `expires_in`; a body's file parameter still wins over the query's. A `limit` of 0, or one that is not a number,
+  answers no statuses and no `Link` on the home, list, public and hashtag timelines and no notifications on
+  `/api/v1/notifications` and `/api/v2/notifications`, as Mastodon's do; the other lists paged by `max_id` read it as 1
+  (Mastodon answers 500), where one that is not a number read as the default before
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration and no
+  `wrangler.jsonc` change.
 - Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
   included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
   the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is

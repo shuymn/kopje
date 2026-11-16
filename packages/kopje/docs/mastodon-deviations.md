@@ -1119,6 +1119,9 @@ Request parameters:
   any length: oEmbed's `width` and `height` show 9,007,199,254,740,991 for a larger `maxwidth` or `maxheight`, where
   Mastodon shows the number sent. A JSON number past a Float's range (`1e400`) is read as that too, where Mastodon
   answers 500.
+- A vote choice Ruby's `Integer()` cannot read (`08`, `1.5`, `1e0`, text after the number) answers 422 `Validation
+  failed: The chosen vote option does not exist`, and an empty one is dropped (with none left, the choices are missing:
+  400), where Mastodon answers 500 for either.
 - A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) answers `[]` without a `Link` on the timelines and the notifications
   (v1 and v2), as Mastodon's do, and reads as 1 on the other lists paged by `max_id`, `since_id` and `min_id`: an
   account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes,

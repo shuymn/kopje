@@ -12,7 +12,9 @@ import {
   readParams,
   SENT_FILE,
 } from "../src/mastodon/params";
+import { rubyInteger } from "../src/platform/ruby-integer";
 import { rubyNumberToI, rubyToI } from "../src/platform/ruby-to-i";
+import integer from "./fixtures/ruby-integer/integer.json";
 import toI from "./fixtures/ruby-to-i/to-i.json";
 import { multipartForm } from "./media-helpers";
 
@@ -41,6 +43,36 @@ describe("rubyToI", () => {
       const exact = ruby === null ? (number < 0 ? -max : max) : BigInt(ruby);
       const capped = exact > max ? max : exact < -max ? -max : exact;
       expect(rubyNumberToI(number)).toBe(Number(capped));
+    },
+  );
+});
+
+// Ruby 4.0.9's Kernel#Integer of each value (integer.json, captured by its capture.rb), null where it raises; a
+// magnitude past Number.MAX_SAFE_INTEGER is read as that.
+describe("rubyInteger", () => {
+  it("is checked against Mastodon 4.7.5's Ruby", () => {
+    expect(integer.ruby).toBe("4.0.9");
+  });
+
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  const capped = (ruby: string) => {
+    const exact = BigInt(ruby);
+    return Number(exact > max ? max : exact < -max ? -max : exact);
+  };
+  it.each(integer.strings.map((row) => [row.value, row.integer] as const))(
+    "reads %j as Ruby's Integer() reads it, %s",
+    (value, ruby) => {
+      expect(rubyInteger(value)).toBe(ruby === null ? null : capped(ruby));
+    },
+  );
+
+  // Integer() of a JSON number truncates it as to_i does, so integer parameters read both by rubyNumberToI; null where
+  // Ruby raises (a Float past its range), which Kopje reads as the cap.
+  it.each(integer.numbers.map((row) => [row.json, row.integer] as const))(
+    "reads the JSON number %s as Ruby's Integer() of it, %s",
+    (json, ruby) => {
+      const number = JSON.parse(json) as number;
+      expect(rubyNumberToI(number)).toBe(ruby === null ? Math.sign(number) * Number(max) : capped(ruby));
     },
   );
 });
@@ -125,6 +157,15 @@ describe("Params#last", () => {
     expect(["a", "b", "c", "d", "e"].map((name) => p.last(name))).toEqual(["9007199254740991", "1e21", "0", "0", "3"]);
     // Other reads keep the number as JSON writes it.
     expect([p.get("a"), p.get("c")]).toEqual(["1e+21", "1e-7"]);
+  });
+
+  it("reads each value of a list as integer parameters read it", async () => {
+    const p = await read(post('{"c":[1.9,"0x1",1e21,"1e21"]}', "application/json", "?d[]=1.9&d=2"));
+    expect([p.getAllIntegers("c"), p.getAll("c"), p.getAllIntegers("d")]).toEqual([
+      ["1", "0x1", "9007199254740991", "1e21"],
+      ["1.9", "0x1", "1e+21", "1e21"],
+      ["1.9", "2"],
+    ]);
   });
 
   it("reads a declared file in the body over a query text, as Rails' last-part rule", async () => {
