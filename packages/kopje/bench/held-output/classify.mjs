@@ -3,7 +3,8 @@
 // - A run with a reset other than the headroom probe's own, with the object's storage lost or an answer whose start
 //   could not be ordered against the newest (unordered), or with frames handed and neither received nor ended by the
 //   run's end (an unfinished tail), is inconclusive for what it measures; an unfinished tail's largest age is a lower
-//   bound. An end after a reset is the reset's, never a client drop; what follows the run's `done` record is the
+//   bound. A reset claims the ends of the sockets of the start it replaced, from one state read before its `since` on
+//   (`resetsOfClients`): such an end is the reset's, never a client drop. What follows the run's `done` record is the
 //   driver's cleanup, not the run's. What was handed is the object's own totals where the run recorded them, and
 //   otherwise every hand, those whose answer was lost included.
 // - M1 (does held output count against the Store's memory?) is "counted" at a held volume when the headroom falls by
@@ -25,6 +26,9 @@ import { pathToFileURL } from "node:url";
 
 // The headroom probe's step: /alloc holds one more MiB per request.
 export const PROBE_STEP_BYTES = 1024 * 1024;
+// How often run.mjs reads the object's state and has each client summarize what it received; it bounds how closely a
+// run places a reset (`resetsOfClients`).
+export const STATE_MS = 5_000;
 
 /**
  * @typedef {{ type: "run", run: string, measurement: string, at: number, volume?: number, frameBytes?: number,
@@ -34,7 +38,7 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
  * @typedef {{ type: "unordered", run: string, at: number, id: string, generation: number, newest: string }}
  *   UnorderedRecord
  * @typedef {{ type: "hand", run: string, client: string, at: number, firstSeq: number, frames: number,
- *   bytes: number }} HandRecord
+ *   bytes: number, generation?: number }} HandRecord
  * @typedef {{ type: "hand-unknown", run: string, client: string, at: number, frames: number, bytes: number }}
  *   UnknownHandRecord
  * @typedef {{ type: "totals", run: string, client: string, at: number, frames: number, bytes: number, seq: number }}
@@ -99,6 +103,41 @@ function resetsOf(starts) {
 }
 
 /**
+ * The reset that ended each client's socket: the first after the start that accepted it, since a fresh start keeps no
+ * socket; so a reset never claims a socket a later start accepted (a later trial's). That start is the generation
+ * frame 0 named, or, in records written without it, the newest recorded before frame 0.
+ *
+ * The reset claims the socket's ends from one state read (STATE_MS) before its `since`, the latest question the start
+ * it replaced answered. A reset drops every socket at once, but the object stamps their ends with its own clock, and
+ * that start can still answer after them: in a deployed run, the read asked 31 ms after the closes the object stamped
+ * still listed those sockets open, so the run cannot order an end against the reset more closely than its reads. An
+ * end earlier than one read before `since` is a cut of its own, unless the replaced start answered a whole read after
+ * dropping its sockets, which no run has shown.
+ * @param {Observation[]} records
+ * @param {StartRecord[]} resets
+ */
+function resetsOfClients(records, resets) {
+  const positions = new Map(resets.map((r) => [r, records.indexOf(r)]));
+  /** @type {Map<string, StartRecord>} */
+  const ended = new Map();
+  for (const [index, record] of records.entries()) {
+    if (record.type !== "hand" || record.firstSeq !== 0) {
+      continue;
+    }
+    const { generation } = record;
+    const reset = resets.find((r) =>
+      generation === undefined || r.generation === undefined
+        ? Number(positions.get(r)) > index
+        : r.generation > generation,
+    );
+    if (reset !== undefined) {
+      ended.set(record.client, reset);
+    }
+  }
+  return ended;
+}
+
+/**
  * The trend of the per-summary largest ages: rising when every summary of the last third saw an older frame than any
  * of the first third, falling for the reverse, steady otherwise.
  * @param {RecvRecord[]} recvs
@@ -123,6 +162,7 @@ function trendOf(recvs) {
  * @param {StartRecord[]} resets
  */
 function clientsOf(records, end, resets) {
+  const resetOf = resetsOfClients(records, resets);
   /** @type {Map<string, { hands: HandRecord[], unknown: UnknownHandRecord[], totals: TotalsRecord | null,
    *   recvs: RecvRecord[], pauses: PauseRecord[], resumes: PauseRecord[], closed: ClosedRecord[],
    *   ends: EndRecord[] }>} */
@@ -244,11 +284,10 @@ function clientsOf(records, end, resets) {
       unfinishedTail,
       ends: ends.map((e) => {
         const pause = pauses.findLast((p) => p.at <= e.at);
-        // An end within the millisecond of the last answer before a reset may be the reset's own: never a drop.
-        const reset = resets.find((r) => r.since <= e.at);
+        const reset = resetOf.get(client);
         /** @type {End["cause"]} */
         let cause = "platform";
-        if (reset !== undefined) {
+        if (reset !== undefined && e.at >= reset.since - STATE_MS) {
           cause = "reset";
         } else if (closed.some((c) => c.at <= e.at)) {
           cause = "closed";

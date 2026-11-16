@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classify, type Observation, PROBE_STEP_BYTES } from "../bench/held-output/classify.mjs";
+import { classify, type Observation, PROBE_STEP_BYTES, STATE_MS } from "../bench/held-output/classify.mjs";
 import {
   CLIENT_BACKLOG_BYTES,
   framesToHand,
@@ -390,6 +390,239 @@ describe("M1, held output against the headroom", () => {
       }));
       expect([why, classify([...baseline, ...held]).m1?.class]).toEqual([why, "inconclusive"]);
     }
+  });
+});
+
+describe("resets and cuts in a deployed run's records", () => {
+  // A deployed M1 run's records as the driver wrote them, in its order, each time less `base`: frame 0 (`hello`), each
+  // end as the object (`server`, its clock) or the client saw it, each start the run saw (the probe's reset, with the
+  // latest question the start it replaced answered), each probe's headroom with what its stopped clients held.
+  type Recorded =
+    | ["hello", string, number]
+    | ["end", string, number, "server" | "client"]
+    | ["start", number, number, number]
+    | ["headroom", number, number, number, number]
+    | ["done", number];
+  function recorded(id: string, frameBytes: number, base: number, events: Recorded[]): Observation[] {
+    return [
+      run(id, "m1", { volume: 64 * MIB, frameBytes, baseline: "m1-none" }),
+      ...events.map((event): Observation => {
+        const client = (role: string) => `${id}.${role}`;
+        switch (event[0]) {
+          case "hello":
+            return {
+              type: "hand",
+              run: id,
+              client: client(event[1]),
+              at: base + event[2],
+              firstSeq: 0,
+              frames: 1,
+              bytes: 96,
+            };
+          case "end":
+            return { type: "end", run: id, client: client(event[1]), at: base + event[2], side: event[3], code: 1006 };
+          case "start":
+            return {
+              type: "start",
+              run: id,
+              at: base + event[2],
+              id: `${id}-${event[1]}`,
+              kind: "fresh",
+              generation: event[1],
+              since: base + event[3],
+              listedBefore: 5,
+              heldMibBefore: 128,
+              probe: true,
+            };
+          case "headroom":
+            return {
+              type: "headroom",
+              run: id,
+              at: base + event[2],
+              attempt: event[1],
+              bytes: event[3],
+              capped: false,
+              held: { bytes: event[4], unknown: 0, ended: 0, endedDuringProbe: 0 },
+            };
+          default:
+            return { type: "done", run: id, at: base + event[1] };
+        }
+      }),
+    ];
+  }
+  const causes = (outcome: { clients: { client: string; ends: { cause: string }[] }[] }) =>
+    outcome.clients.map((c) => [c.client.slice(c.client.indexOf(".") + 1), c.ends.map((e) => e.cause)]);
+
+  // 512 KiB × 64 MiB: each trial's control and four stopped clients, ended by the probe's reset. In trial 1 the object
+  // stamped all five closes 31 ms before the latest question the start it replaced answered (`since`).
+  const reset512k = (since1: number): Observation[] =>
+    recorded("m1-524288b-64m", 512 * KIB, 1_794_796_000_000, [
+      ["hello", "c1", 252_363],
+      ["hello", "s1-0", 252_700],
+      ["hello", "s1-1", 252_989],
+      ["hello", "s1-2", 253_318],
+      ["hello", "s1-3", 253_626],
+      ["end", "c1", 387_654, "client"],
+      ["start", 5, 388_443, since1],
+      ["end", "c1", 387_290, "server"],
+      ["end", "s1-0", 387_290, "server"],
+      ["end", "s1-1", 387_290, "server"],
+      ["end", "s1-2", 387_290, "server"],
+      ["end", "s1-3", 387_290, "server"],
+      ["headroom", 1, 388_443, 133_169_152, 64 * MIB],
+      ["end", "s1-0", 388_775, "client"],
+      ["end", "s1-1", 388_783, "client"],
+      ["end", "s1-3", 388_799, "client"],
+      ["end", "s1-2", 388_803, "client"],
+      ["hello", "c2", 388_967],
+      ["hello", "s2-0", 389_255],
+      ["hello", "s2-1", 389_612],
+      ["hello", "s2-2", 389_914],
+      ["hello", "s2-3", 390_217],
+      ["end", "c2", 524_522, "client"],
+      ["start", 6, 524_849, 522_344],
+      ["end", "c2", 524_122, "server"],
+      ["end", "s2-0", 524_122, "server"],
+      ["end", "s2-1", 524_122, "server"],
+      ["end", "s2-2", 524_122, "server"],
+      ["end", "s2-3", 524_122, "server"],
+      ["headroom", 2, 524_849, 134_217_728, 64 * MIB],
+      ["end", "s2-3", 525_171, "client"],
+      ["end", "s2-1", 525_188, "client"],
+      ["end", "s2-0", 525_214, "client"],
+      ["end", "s2-2", 525_235, "client"],
+      ["hello", "c3", 525_322],
+      ["hello", "s3-0", 525_625],
+      ["hello", "s3-1", 525_907],
+      ["hello", "s3-2", 526_189],
+      ["hello", "s3-3", 526_510],
+      ["end", "c3", 660_285, "client"],
+      ["start", 7, 660_576, 657_362],
+      ["headroom", 3, 660_576, 133_169_152, 64 * MIB],
+      ["end", "s3-2", 660_906, "client"],
+      ["end", "s3-3", 660_920, "client"],
+      ["end", "s3-1", 660_924, "client"],
+      ["end", "s3-0", 660_933, "client"],
+      ["done", 661_009],
+    ]);
+
+  // 64 B × 64 MiB: stopped clients cut alone (s1-0, s1-3, s2-3, s3-2) seconds before their trial's reset.
+  const cuts64b = recorded("m1-64b-64m", 64, 1_794_799_000_000, [
+    ["hello", "c1", 213_069],
+    ["hello", "s1-0", 213_423],
+    ["hello", "s1-1", 213_710],
+    ["hello", "s1-2", 214_010],
+    ["hello", "s1-3", 214_293],
+    ["end", "s1-0", 215_113, "server"],
+    ["end", "s1-3", 221_079, "server"],
+    ["end", "c1", 228_890, "client"],
+    ["start", 20, 229_236, 228_024],
+    ["end", "c1", 228_441, "server"],
+    ["end", "s1-1", 228_441, "server"],
+    ["end", "s1-2", 228_441, "server"],
+    ["headroom", 1, 229_236, 134_217_728, 4_194_304],
+    ["end", "s1-3", 229_276, "client"],
+    ["end", "s1-1", 229_511, "client"],
+    ["end", "s1-2", 229_586, "client"],
+    ["end", "s1-0", 229_590, "client"],
+    ["hello", "c2", 229_684],
+    ["hello", "s2-0", 229_991],
+    ["hello", "s2-1", 230_279],
+    ["hello", "s2-2", 230_572],
+    ["hello", "s2-3", 230_865],
+    ["end", "s2-3", 245_477, "server"],
+    ["end", "c2", 259_560, "client"],
+    ["start", 21, 260_933, 258_032],
+    ["end", "c2", 259_138, "server"],
+    ["end", "s2-0", 259_138, "server"],
+    ["end", "s2-1", 259_138, "server"],
+    ["end", "s2-2", 259_138, "server"],
+    ["headroom", 2, 260_933, 134_217_728, 11_534_336],
+    ["end", "s2-0", 261_221, "client"],
+    ["end", "s2-2", 261_250, "client"],
+    ["end", "s2-3", 261_254, "client"],
+    ["end", "s2-1", 261_265, "client"],
+    ["hello", "c3", 261_379],
+    ["hello", "s3-0", 261_685],
+    ["hello", "s3-1", 261_991],
+    ["hello", "s3-2", 262_302],
+    ["hello", "s3-3", 262_620],
+    ["end", "s3-2", 267_352, "server"],
+    ["end", "c3", 280_824, "client"],
+    ["start", 22, 281_393, 278_034],
+    ["end", "c3", 280_358, "server"],
+    ["end", "s3-0", 280_358, "server"],
+    ["end", "s3-1", 280_358, "server"],
+    ["end", "s3-3", 280_358, "server"],
+    ["headroom", 3, 281_393, 134_217_728, 6_291_456],
+    ["end", "s3-2", 281_407, "client"],
+    ["end", "s3-3", 281_696, "client"],
+    ["end", "s3-0", 281_821, "client"],
+    ["end", "s3-1", 281_826, "client"],
+    ["done", 282_050],
+  ]);
+
+  it("lets a reset claim the closes stamped up to one state read before the replaced start's last answer", () => {
+    const reset = ["reset", "reset"];
+    const held = (c: string) => [c, reset];
+    expect(causes(outcome(reset512k(387_321), "m1-524288b-64m"))).toEqual(
+      ["c1", "s1-0", "s1-1", "s1-2", "s1-3", "c2", "s2-0", "s2-1", "s2-2", "s2-3"]
+        .map(held)
+        .concat(["c3", "s3-0", "s3-1", "s3-2", "s3-3"].map((c) => [c, ["reset"]])),
+    );
+    // The window is one state read: a close stamped that long before `since` is the reset's, and one more ms is not.
+    const first = (since1: number) => outcome(reset512k(since1), "m1-524288b-64m").clients[1]?.ends[0]?.cause;
+    expect(first(387_290 + STATE_MS)).toBe("reset");
+    expect(first(387_290 + STATE_MS + 1)).toBe("platform");
+  });
+
+  it("binds a socket to the reset after the start its frame 0 names, though recorded after that reset", () => {
+    const id = "m1-524288b-64m";
+    const records = reset512k(387_321);
+    const at = records.findIndex((r) => r.type === "start");
+    // Accepted by generation 4 just before its reset, the socket's frame 0 is recorded after generation 5's start.
+    const late = (generation?: number): Observation[] => [
+      ...records.slice(0, at + 1),
+      {
+        type: "hand",
+        run: id,
+        client: `${id}.late`,
+        at: 1_794_796_387_200,
+        firstSeq: 0,
+        frames: 1,
+        bytes: 96,
+        ...(generation === undefined ? {} : { generation }),
+      },
+      { type: "end", run: id, client: `${id}.late`, at: 1_794_796_387_290, side: "server", code: 1006 },
+      ...records.slice(at + 1),
+    ];
+    const cause = (generation?: number) =>
+      outcome(late(generation), id).clients.find((c) => c.client === `${id}.late`)?.ends[0]?.cause;
+    expect(cause(4)).toBe("reset");
+    // Without the generation, the record order binds it to the next trial's reset, whose window it misses.
+    expect(cause(undefined)).toBe("platform");
+  });
+
+  it("lets a reset claim only the sockets of the start it replaced, keeping a later trial's lone cut", () => {
+    const lone = (c: string) => [c, ["platform", "reset"]];
+    const reset = (c: string) => [c, ["reset", "reset"]];
+    expect(causes(outcome(cuts64b, "m1-64b-64m"))).toEqual([
+      reset("c1"),
+      lone("s1-0"),
+      reset("s1-1"),
+      reset("s1-2"),
+      lone("s1-3"),
+      reset("c2"),
+      reset("s2-0"),
+      reset("s2-1"),
+      reset("s2-2"),
+      lone("s2-3"),
+      reset("c3"),
+      reset("s3-0"),
+      reset("s3-1"),
+      lone("s3-2"),
+      reset("s3-3"),
+    ]);
   });
 });
 

@@ -323,6 +323,12 @@ describe("held-output driver", () => {
     fake.holdState = "asked";
     await run.client("b", { mode: "control" });
     expect(records.filter((r) => r.type === "start").map((r) => r.id)).toEqual([fake.start.id]);
+    // Each frame 0's record names the generation that accepted its socket.
+    const hellos = records.filter((r) => r.type === "hand" && r.firstSeq === 0);
+    expect(hellos.map((r) => r.type === "hand" && r.generation)).toEqual([
+      fake.start.generation - 1,
+      fake.start.generation,
+    ]);
     fake.releaseState();
     await run.done();
   });

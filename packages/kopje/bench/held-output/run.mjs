@@ -67,7 +67,7 @@ import { connect as tlsConnect } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inspect, parseArgs } from "node:util";
 
-import { classify, parseObservations } from "./classify.mjs";
+import { classify, parseObservations, STATE_MS } from "./classify.mjs";
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -83,8 +83,6 @@ export const PACED_FRAME_BYTES = 16 * KIB;
 // M3's throttled clients, in bytes a second.
 export const THROTTLED_RATES = [KIB, 16 * KIB, 256 * KIB];
 
-// How often each run reads the object's state and each client summarizes what it received.
-const STATE_MS = 5_000;
 // The headroom probe stops at this many MiB without a reset: locally workerd enforces no isolate limit.
 const PROBE_CAP_MIB = { local: 512, deployed: 4096 };
 // How long a resumed client may take to receive what it was handed.
@@ -463,9 +461,11 @@ class Client {
     const handAt = Number(match?.[2] ?? Number.NaN);
     const age = Date.now() - handAt;
     if (seq === 0) {
-      // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it.
+      // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it: its record
+      // carries that start's generation, which tells the reset that ends the socket.
+      const generation = match?.[3] === undefined ? undefined : Number(match[5]);
       if (match?.[3] !== undefined && this.#connecting !== null) {
-        const start = { id: match[3], kind: match[4] === "wake" ? "wake" : "fresh", generation: Number(match[5]) };
+        const start = { id: match[3], kind: match[4] === "wake" ? "wake" : "fresh", generation };
         this.run.saw(/** @type {Start} */ (start), this.#connecting);
       }
       this.connectedAt = Date.now();
@@ -477,6 +477,7 @@ class Client {
         firstSeq: 0,
         frames: 1,
         bytes: this.#messageBytes,
+        ...(generation === undefined ? {} : { generation }),
       });
     }
     this.receivedFrames += 1;
