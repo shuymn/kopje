@@ -6,6 +6,7 @@ import { INTERACTION_TARGET_BYTES, interactionTarget, SESSION_LIFETIME_MS } from
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { csrfToken } from "../src/web/session";
+import { STRINGS } from "../src/web/strings";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { countingStore, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK } from "./federation-helpers";
@@ -959,6 +960,48 @@ describe("POST /authorize_interaction (look-up)", () => {
     expect(found.response.status).toBe(200);
     // Asked during the request, with no cron run.
     expect(t.jobs).toHaveBeenCalledTimes(1);
+  });
+
+  // ID-7: the look-up's fetch of a status Kopje stores is applied as its author's Update, as search resolution's
+  // (storeResolved; test/search-refetch.test.ts), Mastodon's ResolveURLService serving both.
+  it("applies a newer version of a stored status it finds again", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    t.web.serve(note.id, { "@context": AS, ...note, content: "<p>the edit</p>", updated: "2026-10-11T13:00:00Z" });
+    expect((await lookUp(t, browser, note.id)).html).toContain("the edit");
+    expect(await sql(t.store, "SELECT content, edited_at FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the edit</p>", edited_at: "2026-10-11T13:00:00.000Z" },
+    ]);
+  });
+
+  // ID-2, ID-7: as search's (federation/resolve.ts ownDocument), a document another URL of the status's origin serves is
+  // taken only as its id answers.
+  it("updates nothing from another URL naming a stored status's id", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    const other = `${new URL(note.id).origin}/other`;
+    t.web.serve(other, { "@context": AS, ...note, content: "<p>forged</p>", updated: "2026-10-11T13:00:00Z" });
+    expect((await lookUp(t, browser, other)).html).toContain("the note");
+    expect(await sql(t.store, "SELECT content, edited_at FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the note</p>", edited_at: null },
+    ]);
+  });
+
+  // As search's: a 410 finds nothing (resolve_url_service.rb:44), and the stored status stays.
+  it("finds nothing for a stored status whose fetch answers 410, and keeps it", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    t.web.fail(note.id, 410);
+    expect((await lookUp(t, browser, note.id)).html).toContain(STRINGS.interact.notFoundTitle);
+    expect(await sql(t.store, "SELECT content FROM statuses WHERE uri = ?", note.id)).toEqual([
+      { content: "<p>the note</p>" },
+    ]);
   });
 });
 

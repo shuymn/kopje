@@ -1,5 +1,6 @@
 import { LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { spoilerReadSql } from "../platform/stored-bounds";
 import { remoteHtmlText } from "../security/html";
 import { presentAccountById } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
@@ -231,7 +232,7 @@ function target(db: Db, id: string, now: number): TargetRow | undefined {
     `WITH subscription AS MATERIALIZED (SELECT * FROM push_subscriptions
 			WHERE id = (SELECT d.subscription_id FROM push_deliveries d WHERE d.id = CAST(?1 AS INTEGER)))
 		SELECT p.endpoint, p.key_p256dh, p.key_auth, p.standard, p.token_hash, p.token_sealed,
-			n.id AS notification_id, n.type, n.from_account_id, s.spoiler_text,
+			n.id AS notification_id, n.type, n.from_account_id, ${spoilerReadSql("s.spoiler_text")} AS spoiler_text,
 			s.content
 		FROM subscription p
 			CROSS JOIN oauth_tokens t INDEXED BY sqlite_autoindex_oauth_tokens_1 ON t.token_hash = p.token_hash
