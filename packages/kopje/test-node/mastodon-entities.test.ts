@@ -66,10 +66,10 @@ const MAPPING: Record<string, Mapping> = {
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
   "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
   "REST::ProfileSerializer": { file: "src/domain/accounts.ts", typeName: "Profile" },
-  "REST::CollectionSerializer": { file: "src/domain/collections.ts", typeName: "Collection" },
-  "REST::CollectionItemSerializer": { file: "src/domain/collections.ts", typeName: "CollectionItem" },
+  "REST::CollectionSerializer": { file: "src/domain/collection-presenter.ts", typeName: "Collection" },
+  "REST::CollectionItemSerializer": { file: "src/domain/collection-presenter.ts", typeName: "CollectionItem" },
   "REST::CollectionWithAccountsSerializer": { file: "src/domain/collections.ts", typeName: "CollectionWithAccounts" },
-  "REST::ShallowTagSerializer": { file: "src/domain/collections.ts", typeName: "ShallowTag" },
+  "REST::ShallowTagSerializer": { file: "src/domain/collection-presenter.ts", typeName: "ShallowTag" },
   "REST::NotificationPolicySerializer": {
     file: "src/mastodon/notification-requests.ts",
     typeName: "NotificationPolicyV2",
@@ -91,7 +91,6 @@ const ACCOUNT: Record<string, Exception> = {
 const NOTIFICATION: Record<string, Exception> = {
   // Moderation that severs relationships writes no severed_relationships notification.
   ...accepted("MD-2", "event"),
-  ...open(1589, "collection notifications", "collection"),
 };
 
 const ENTITY_EXCEPTIONS: Exceptions = {

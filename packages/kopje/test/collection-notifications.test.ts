@@ -2,8 +2,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { jsonBytes } from "../src/domain/answer-budget";
 import {
   addCollectionItem,
+  COLLECTION_JSON_MAX,
   deleteCollection,
   pruneCollectionItems,
   RETIRED_ROWS_PER_ROUND,
@@ -11,12 +13,20 @@ import {
   severCollections,
 } from "../src/domain/collections";
 import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { FALLBACK_JSON_MAX } from "../src/domain/notification-fallback";
 import { MAX_PUSH_BACKLOG } from "../src/domain/notifications";
 import { completePush, confirmPush } from "../src/domain/push";
-import { MAX_STORED_COLLECTIONS, MAX_STORED_ITEMS } from "../src/platform/stored-bounds";
+import {
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
+  MAX_STORED_COLLECTIONS,
+  MAX_STORED_ITEMS,
+} from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { CONSERVATIVE_JSON } from "./presented-maxima";
 import { community, remoteAccount, type User } from "./status-helpers";
 
 // The collection notifications (#1589 PR 2, design §6 2-T4 to 2-T6 and 2-T9): added_to_collection and
@@ -217,6 +227,112 @@ describe("collection_update (2-T5)", () => {
     expect((await rows(h, "collection_update")).length).toBe(1);
     expect((await call(h, "DELETE", `/api/v1/collections/${collection}`, alice)).status).toBe(200);
     expect(await sql(h.store, "SELECT type, count(*) AS n FROM notifications GROUP BY type")).toEqual([]);
+  });
+});
+
+type Presented = { type: string; account: { id: string }; collection?: { id: string; items: { id: string }[] } };
+type Fallback = { title: string; summary: string; description: null };
+
+// carol's collection notifications as v1 and v2 present them, the v2 groups' collections beside their types.
+async function presented(h: ApiHarness, carol: User, query = "") {
+  const v1 = await call(h, "GET", `/api/v1/notifications${query}`, carol);
+  const v2 = await call(h, "GET", `/api/v2/notifications${query}`, carol);
+  expect(v1.status, v1.text).toBe(200);
+  expect(v2.status, v2.text).toBe(200);
+  const groups = (v2.body as unknown as { notification_groups: (Presented & { fallback?: Fallback })[] })
+    .notification_groups;
+  return { v1: v1.body as unknown as (Presented & { fallback?: Fallback })[], v2: groups };
+}
+
+describe("presentation, fallback and push titles (2-T7)", () => {
+  // Fails if a notification leaves out its collection, or presents it for no viewer (dave's item, which carol blocks,
+  // would show).
+  it("presents the collection to its recipient, with the items R45 shows the recipient, on v1 and v2", async () => {
+    const { h, alice, bob, carol, dave } = await world();
+    expect((await call(h, "POST", `/api/v1/accounts/${dave.id}/block`, carol)).status).toBe(200);
+    const collection = await created(h, alice, [bob, carol, dave]);
+    expect((await call(h, "PATCH", `/api/v1/collections/${collection}`, alice, { name: "renamed" })).status).toBe(200);
+    const shown = [await itemOf(h, collection, bob.id), await itemOf(h, collection, carol.id)];
+    const { v1, v2 } = await presented(h, carol);
+    const entry = (type: string) => ({
+      type,
+      account: expect.objectContaining({ id: alice.id }),
+      collection: expect.objectContaining({
+        id: collection,
+        items: shown.map((id): unknown => expect.objectContaining({ id })),
+      }),
+    });
+    expect(v1).toEqual([
+      expect.objectContaining(entry("collection_update")),
+      expect.objectContaining(entry("added_to_collection")),
+    ]);
+    expect(v2.map(({ type, collection: c }) => ({ type, collection: c }))).toEqual(
+      ["collection_update", "added_to_collection"].map((type) => {
+        const { account: _, ...rest } = entry(type);
+        return rest;
+      }),
+    );
+  });
+
+  // RES-3: a collection notification adds no shape to "Maxima of presented units" (docs/threat-model.md): its account,
+  // its collection (a remote one's longer name and description and its uri and url, each character at six bytes, over
+  // the local bound) and its fallback at their bounds, with its own keys, stay under a warning notification's
+  // conservative JSON, and as a group under a warning group's.
+  it("presents within a warning notification's maximum, so it adds no shape", () => {
+    const id = "9".repeat(20);
+    const collection =
+      COLLECTION_JSON_MAX +
+      6 * (COLLECTION_NAME_LENGTH.remote - COLLECTION_NAME_LENGTH.local) +
+      6 * (COLLECTION_DESCRIPTION_LENGTH.remote - COLLECTION_DESCRIPTION_LENGTH.local) +
+      2 * 6 * COLLECTION_URI_BYTES;
+    const parts = CONSERVATIVE_JSON.account + collection + FALLBACK_JSON_MAX;
+    const keys = { type: "collection_update", fallback: 0, collection: 0 };
+    const notification =
+      jsonBytes({ id, ...keys, created_at: T, group_key: `ungrouped-${id}`, filtered: true, account: 0 }) + parts;
+    const group =
+      jsonBytes({
+        group_key: `ungrouped-${id}`,
+        notifications_count: 1,
+        most_recent_notification_id: Number.MAX_SAFE_INTEGER,
+        page_min_id: id,
+        page_max_id: id,
+        latest_page_notification_at: T,
+        sample_account_ids: [id],
+        ...keys,
+      }) + parts;
+    expect({ notification, group }).toEqual({ notification: 225_871, group: 226_023 });
+    expect(notification).toBeLessThan(CONSERVATIVE_JSON.warningNotification);
+    expect(group).toBeLessThan(CONSERVATIVE_JSON.warningGroup);
+  });
+
+  // Fails if either type leaves FALLBACK_TYPES, or its title names the owner otherwise than by its mention link.
+  it("gives each type its fallback, the owner by its mention link, to a client that does not support it", async () => {
+    const { h, alice, bob } = await world();
+    const collection = await created(h, alice, [bob]);
+    expect((await call(h, "PATCH", `/api/v1/collections/${collection}`, alice, { name: "renamed" })).status).toBe(200);
+    const name =
+      '<span class="h-card" translate="no"><a href="https://kopje.test/@alice" class="u-url mention">@<span>alice</span></a></span>';
+    const summary =
+      "You're on an app that does not support the most recent version of Mastodon. " +
+      '<a href="https://kopje.test/">Visit kopje.test</a>.';
+    const fallbacks = [
+      { title: `${name} updated a collection you are in`, summary, description: null },
+      { title: `${name} added you to a collection`, summary, description: null },
+    ];
+    const { v1, v2 } = await presented(h, bob, "?supported_types[]=mention");
+    expect(v1.map((n) => n.fallback)).toEqual(fallbacks);
+    expect(v2.map((g) => g.fallback)).toEqual(fallbacks);
+    const supported = await presented(
+      h,
+      bob,
+      "?supported_types[]=added_to_collection&supported_types[]=collection_update",
+    );
+    expect([...supported.v1, ...supported.v2].map((n) => n.fallback)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });
 

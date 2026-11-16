@@ -682,6 +682,9 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
   Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer
   carries whichever viewer's answer filled the cache. Accepted, 2026-11-16.
+- An `added_to_collection` notification is deleted with its membership (removal, eviction or a block), and a
+  `collection_update` with its collection, where Mastodon keeps an `added_to_collection` whose item is gone, presented
+  without a collection. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
@@ -1036,13 +1039,17 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 
 Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
 
-- The summary of an `admin.report` and of a `moderation_warning` is `You're on an app that does not support the most
-  recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's link reads `Sign in
-  to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
+- The summary of an `admin.report`, a `moderation_warning` and a collection notification is `You're on an app that does
+  not support the most recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's
+  link reads `Sign in to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
   `moderation_warning`'s goes to the strike's dispute page; Kopje has neither a web app nor disputes. Accepted,
   2026-11-15.
-- Only `admin.report` and `moderation_warning` carry one: Kopje writes no other type outside Mastodon's baseline, and a
-  restored row of another such type has none.
+- Only `admin.report`, `moderation_warning`, `added_to_collection` and `collection_update` carry one: Kopje writes no
+  other type outside Mastodon's baseline, and a restored row of another such type has none.
+- A `collection_update`'s title names the collection's owner by its mention link, as an `added_to_collection`'s does,
+  where Mastodon interpolates the account object (its default text). A Web Push of either collection type is titled
+  with its fallback sentence and the owner's display name, where Mastodon's title is a missing-translation text.
+  Accepted, 2026-11-16.
 - A title names an account within the presented bounds (RES-2): its username as `usernameSql` reads it, within 255
   bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
   within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.

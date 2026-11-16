@@ -163,6 +163,27 @@ describe("the subscribe protocol", () => {
     ]);
   });
 
+  // Fails if the streamed notification leaves out its collection (notificationStream, which REST shares).
+  it("streams a collection notification with its collection, as REST presents it to the subscriber", async () => {
+    const h = await community(["alice", "bob"]);
+    await sql(h.store, "UPDATE accounts SET discoverable = 1");
+    const inbox = await subscribed(h, h.users.bob.token, "user:notification");
+    await settled(h, inbox);
+    const created = await h.request(
+      "/api/v1/collections",
+      bearer(
+        h.users.alice.token,
+        json({ name: "c", sensitive: false, discoverable: true, account_ids: [h.users.bob.id] }),
+      ),
+    );
+    expect(created.status).toBe(200);
+    const { collection } = await created.json<{ collection: { id: string } }>();
+    await drained(h, inbox);
+    expect(notifications(inbox.rest(), "user:notification")).toMatchObject([
+      { type: "added_to_collection", account: { id: h.users.alice.id }, collection: { id: collection.id } },
+    ]);
+  });
+
   it("sends no fallback: the event carries the notification as REST shows it without supported_types", async () => {
     const h = await community(["owner", "alice", "carol"]);
     await setSetting(h.store, "admin_email", "owner@example.com");

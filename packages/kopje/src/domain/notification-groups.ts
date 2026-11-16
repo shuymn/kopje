@@ -15,9 +15,11 @@ import { adminAccountIdOnce } from "./admin-authority";
 import { admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, firstUses, jsonBytes } from "./answer-budget";
 import { statusReads } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
+import { type Collection, notifiedCollection } from "./collection-presenter";
 import { isIntegerKey } from "./ids";
 import { fallbackSet, type NotificationFallback, notificationFallback } from "./notification-fallback";
 import {
+  COLLECTION_TYPES,
   GROUPABLE_TYPES,
   NOTIFICATION_COLUMNS,
   removeNotifications,
@@ -118,6 +120,8 @@ type NotificationGroup = {
   report?: Report;
   // A moderation_warning's warning (REST::NotificationGroupSerializer#moderation_warning_event?).
   moderation_warning?: AccountWarning;
+  // REST::NotificationGroupSerializer#collection_type?: the group's newest notification's collection.
+  collection?: Collection;
 };
 
 // REST::DedupNotificationGroupSerializer: partial_accounts only with expand_accounts=partial_avatars.
@@ -470,12 +474,16 @@ function admitGroups(
     // An ungrouped notification's one sample is whole in either mode, and its warning reuses it.
     const sample = samples[0] === undefined ? undefined : (whole.get(samples[0]) ?? admitted.accounts.get(samples[0]));
     const warning = warningOf(db, first, viewer.accountId, sample);
+    const collection = COLLECTION_TYPES.has(first.type)
+      ? notifiedCollection(db, first.id, viewer.accountId, options.present.origin)
+      : null;
     if (
       newest === undefined ||
       samples.length === 0 ||
       (first.status_id !== null && status === undefined) ||
       (first.report_id !== null && report === undefined) ||
-      warning === null
+      warning === null ||
+      collection === undefined
     ) {
       admitted.consumed++;
       continue;
@@ -510,6 +518,7 @@ function admitGroups(
       ...(STATUS_TYPES.has(first.type) ? { status_id: status?.id ?? null } : {}),
       ...(report === undefined ? {} : { report }),
       ...(warning === undefined ? {} : { moderation_warning: warning }),
+      ...(collection === null ? {} : { collection }),
     };
     // What the group adds, each with a separator.
     let size = jsonBytes(group) + 1;

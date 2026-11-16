@@ -7,6 +7,7 @@ import { adminAccountIdOnce } from "./admin-authority";
 import { availableLocalSql, keptSql, shownNotificationSql, UNFILTERED_SQL } from "./audience";
 import { userReadOperation, userSessionOperation, userWriteOperation } from "./auth";
 import { CLAIM_LIMIT, type DeliveryOutcome, LEASE_MS, MAX_ATTEMPTS, retryDelay } from "./deliveries";
+import { COLLECTION_TITLES } from "./notification-fallback";
 import { pushWantedSql } from "./notifications";
 import { writeOperation } from "./operation";
 
@@ -28,8 +29,9 @@ import { writeOperation } from "./operation";
 //     adds the access token, which the Store holds only sealed (AUTH-7, security/web-push.ts).
 
 // Mastodon's Notification::TYPES as of 4.7.5, the alerts a subscription may set (data_params,
-// app/controllers/api/v1/push/subscriptions_controller.rb:65-69). Kopje emits only some of them: the collection types
-// are stored and echoed back, and match no notification Kopje writes (pushWantedSql matches by type).
+// app/controllers/api/v1/push/subscriptions_controller.rb:65-69). Kopje emits only some of them: admin.sign_up,
+// severed_relationships and annual_report are stored and echoed back, and match no notification Kopje writes
+// (pushWantedSql matches by type).
 export const ALERT_TYPES = [
   "mention",
   "status",
@@ -153,7 +155,9 @@ export const PUSH_TTL_MS = 48 * 60 * 60 * 1000;
 // Mastodon truncates the body to 140 characters, the omission included.
 const BODY_LENGTH = 140;
 
-// Mastodon's notification_mailer subjects (en), by type; %{name} is the sender's display name or username.
+// Mastodon's notification_mailer subjects (en), by type; %{name} is the sender's display name or username. The
+// collection types have none (Mastodon's title is a missing-translation text): their fallback titles in plain text
+// (docs/mastodon-deviations.md, "Notification fallbacks").
 const TITLES: Record<string, (name: string) => string> = {
   mention: (name) => `You were mentioned by ${name}`,
   status: (name) => `${name} just posted`,
@@ -165,6 +169,7 @@ const TITLES: Record<string, (name: string) => string> = {
   poll: (name) => `A poll by ${name} has ended`,
   quote: (name) => `${name} quoted your post`,
   "admin.report": (name) => `${name} submitted a report`,
+  ...COLLECTION_TITLES,
 };
 
 // Rails' truncate: at most `length` characters, the last three replaced by '...' when cut.

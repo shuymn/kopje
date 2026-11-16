@@ -15,6 +15,7 @@ import {
   type WithVisibleStatus,
 } from "./audience";
 import { currentCredentialSql, type UserContext, userReadOperation, userWriteOperation } from "./auth";
+import { type Collection, notifiedCollection } from "./collection-presenter";
 import { addToConversation } from "./conversations";
 import { isIntegerKey } from "./ids";
 import { jobDueSql, nextJob, NOTIFICATION_CLEARS, NOTIFICATION_DISMISSALS, runJobItem } from "./job-attempts";
@@ -81,7 +82,13 @@ export type Notification = {
   report?: Report;
   // A moderation_warning's warning (REST::NotificationSerializer#moderation_warning_event?).
   moderation_warning?: AccountWarning;
+  // An added_to_collection's or a collection_update's collection (REST::NotificationSerializer#collection_type?), as
+  // R45 shows it to the recipient.
+  collection?: Collection;
 };
+
+// The types that show their collection (REST::NotificationSerializer#collection_type?).
+export const COLLECTION_TYPES: ReadonlySet<string> = new Set(["added_to_collection", "collection_update"]);
 
 export type NotifyInput = {
   recipientId: string;
@@ -369,10 +376,10 @@ export const NOTIFICATION_COLUMNS = {
 export const NOTIFICATION_CHUNK = 2;
 
 // The notifications of `rows` in order, for an admission (admit): each one atomic, with its account, its status, its
-// report, its warning and, for a type in `fallback`, its fallback, presented when the admission reaches it; undefined
-// for one whose account, status, report or warning the presenter cannot show (left out, as Mastodon leaves out a
-// notification it cannot render). An account or status that several notifications share is presented once
-// (firstUses), under one presentation of the rows' statuses.
+// report, its warning, its collection and, for a type in `fallback`, its fallback, presented when the admission reaches
+// it; undefined for one whose account, status, report, warning or collection the presenter cannot show (left out, as
+// Mastodon leaves out a notification it cannot render). An account or status that several notifications share is
+// presented once (firstUses), under one presentation of the rows' statuses.
 function* notificationStream(
   db: Db,
   rows: readonly WithVisibleStatus<NotificationRow, "status_id">[],
@@ -394,11 +401,15 @@ function* notificationStream(
     const report =
       row.report_id === null ? undefined : presentReport(db, row.report_id, presentFor(present, viewer.accountId));
     const warning = warningOf(db, row, viewer.accountId, account);
+    const collection = COLLECTION_TYPES.has(row.type)
+      ? notifiedCollection(db, row.id, viewer.accountId, present.origin)
+      : null;
     if (
       account === undefined ||
       (row.status_id !== null && status === undefined) ||
       (row.report_id !== null && report === undefined) ||
-      warning === null
+      warning === null ||
+      collection === undefined
     ) {
       yield undefined;
       continue;
@@ -421,6 +432,7 @@ function* notificationStream(
       ...(status === undefined ? {} : { status }),
       ...(report === undefined ? {} : { report }),
       ...(warning === undefined ? {} : { moderation_warning: warning }),
+      ...(collection === null ? {} : { collection }),
     };
   }
 }

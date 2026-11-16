@@ -11,7 +11,7 @@ import {
 import { admit, ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import { listableSql, statusReads } from "./audience";
 import { type UserContext, userReadOperation } from "./auth";
-import type { Collection } from "./collections";
+import type { Collection } from "./collection-presenter";
 import { statusQueryTerms } from "./search-text";
 import { tagNameSql } from "./status-bounds";
 import { presentation, presentStatusesWithin, type Status } from "./status-presenter";

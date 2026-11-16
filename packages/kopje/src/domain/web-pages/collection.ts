@@ -1,5 +1,6 @@
 import { type Account, presentAccountsWithin } from "../accounts";
-import { type Collection, localCollectionOf } from "../collections";
+import type { Collection } from "../collection-presenter";
+import { localCollectionOf } from "../collections";
 import { admitMandatory, pageBudget } from "./budget";
 import { pageAccountById } from "./profile";
 import { pagePresent, pageRead, type Site } from "./site";

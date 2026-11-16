@@ -1618,14 +1618,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   judged the token to be (the Worker sends the origin alone), so no request reads another account's answer.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, the
-  account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `severCollections`
-  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`); `test/collections.test.ts` ("shows a
-  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
-  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
-  `test/feature-approval.test.ts`, `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`,
-  `collectionListed`, `collectionItemShown`, `featureApproval`, `mayFeature` and `inCollections` in
-  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
+  account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection` and
+  `shownItems` (`src/domain/collection-presenter.ts`), `severCollections` (`src/domain/collections.ts`, run by a local
+  block in `src/domain/blocks.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows",
+  "asks the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
+  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
+  collection memberships a block severs"), `test/collection-notifications.test.ts` ("presents the collection to its
+  recipient, with the items R45 shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`,
+  `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`,
+  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
 
 ### Authorization (AUTH)
 
@@ -4852,7 +4853,13 @@ shown), an owner's username at its bound and an instance domain of 253 octets; t
 the account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
 collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, each
 then within `COLLECTION_JSON_MAX`); a remote collection, stored only by an import yet, has larger text bounds (256 and
-2,048 characters, URIs of 2,048 bytes) and the same 25 shown items.
+2,048 characters, URIs of 2,048 bytes) and the same 25 shown items. A collection notification (`added_to_collection`,
+`collection_update`) presents its owner's account, its collection for its recipient and its fallback: at most 225,871
+bytes, and 226,023 as a group, with a remote collection's longer text at six bytes a character, under a warning
+notification's and a warning group's conservative JSON, so it adds no shape (`test/collection-notifications.test.ts`,
+"presents within a warning notification's maximum, so it adds no shape"). Its collection is read by key, with at most
+`MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in `src/domain/collection-presenter.ts`), as a report
+notification reads its report.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
 caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the
