@@ -102,12 +102,12 @@ type ScheduledRow = { id: string; scheduled_at: string | null; params: string | 
 // Whether the stored params `params` (SQL) are past their stored bound, beside the CHECK of 0011_scheduled_statuses (a
 // JSON object within MAX_PARAMS_BYTES): not text, or a NUL anywhere. The CHECK passes both (a BLOB, and json_valid
 // stops at the NUL), and JSON.parse throws on each as the Worker reads it (an ArrayBuffer, a raw NUL). The WHEN of
-// 0104_scheduled_params's triggers (domain/stored-triggers.ts), and the writer's rule (postStatus).
+// 0110_scheduled_params's triggers (domain/stored-triggers.ts), and the writer's rule (postStatus).
 export function paramsPastBoundSql(params: string): string {
   return `typeof(${params}) <> 'text' OR instr(CAST(${params} AS BLOB), x'00') > 0`;
 }
 
-// The stored params `params` (SQL) as read: NULL past paramsPastBoundSql, which a row restored before 0104 may hold.
+// The stored params `params` (SQL) as read: NULL past paramsPastBoundSql, which a row restored before 0110 may hold.
 // Only a prefilter of what JSON.parse refuses: storedParams decides.
 export function paramsReadSql(params: string): string {
   return `CASE WHEN NOT (${paramsPastBoundSql(params)}) THEN ${params} END`;

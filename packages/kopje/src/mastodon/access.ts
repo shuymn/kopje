@@ -3,6 +3,7 @@ import { createMiddleware } from "hono/factory";
 import type { RequiredScope } from "../security/scopes";
 import { sha256Hex } from "../security/tokens";
 import { noteActivitySoon } from "./activity";
+import { markSuspendedAnswer } from "./caching";
 import { adminForbiddenError, type ApiDeps, type ApiEnv, storeCall, suspendedError } from "./context";
 import { invalidTokenError } from "./errors";
 
@@ -67,6 +68,7 @@ export function requireAccess(access: RouteAccess, deps: Pick<ApiDeps, "build" |
           // Unset first: Hono's setter copies the replaced answer's headers (Cache-Control among them) onto the new.
           c.res = undefined;
           c.res = suspendedError();
+          markSuspendedAnswer(c);
         }
       }
       return;

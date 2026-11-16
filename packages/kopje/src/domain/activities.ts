@@ -2,7 +2,15 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from ".
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
-import { STATUS_EMOJIS_BYTES, statusEditedSql, statusPublishedSql, storedBlurhash } from "../platform/stored-bounds";
+import {
+  presentedContent,
+  presentedSpoiler,
+  spoilerReadSql,
+  STATUS_EMOJIS_BYTES,
+  statusEditedSql,
+  statusPublishedSql,
+  storedBlurhash,
+} from "../platform/stored-bounds";
 import {
   addresses,
   addressingOf,
@@ -30,7 +38,7 @@ import {
   pollOptionsSql,
   tagNameSql,
 } from "./status-bounds";
-import { shownCardUrl } from "./status-presenter";
+import { presentedMediaDescription, shownCardUrl } from "./status-presenter";
 import { CARD_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
@@ -228,7 +236,8 @@ export function statusFacts(
     actor_uri: string;
     username: string;
   }>(
-    `SELECT s.id, s.uri, s.visibility, s.content, s.spoiler_text, s.sensitive, s.language,
+    `SELECT s.id, s.uri, s.visibility, s.content, ${spoilerReadSql("s.spoiler_text")} AS spoiler_text, s.sensitive,
+			s.language,
 			${statusPublishedSql("s")} AS published_at, ${statusEditedSql("s")} AS edited_at,
 			s.in_reply_to_uri, s.in_reply_to_id, s.quote_policy, s.emojis, a.uri AS actor_uri, a.username
 		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
@@ -286,8 +295,9 @@ export function statusFacts(
     url: `${origin}/@${row.username}/${row.id}`,
     actorUri: row.actor_uri,
     visibility: row.visibility,
-    content: row.content,
-    spoilerText: row.spoiler_text,
+    // As the API presents them ("Status text as presented" in stored-bounds.ts, RES-3).
+    content: presentedContent(row.content),
+    spoilerText: presentedSpoiler(row.spoiler_text),
     sensitive: row.sensitive === 1,
     language: row.language,
     publishedAt: row.published_at,
@@ -337,7 +347,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
             type: "Document",
             mediaType: m.content_type,
             url: url.href,
-            name: m.description === "" ? null : m.description,
+            name: presentedMediaDescription(m.description),
             ...(m.blurhash === null ? {} : { blurhash: m.blurhash }),
           },
         ];
@@ -978,6 +988,7 @@ export function flagActivity(input: {
   actorUri: string;
   targetUri: string;
   statusUris: readonly string[];
+  collectionUris: readonly string[];
   comment: string;
   recipients: readonly string[];
 }) {
@@ -988,7 +999,7 @@ export function flagActivity(input: {
       type: "Flag",
       actor: input.actorUri,
       content: input.comment,
-      object: [input.targetUri, ...input.statusUris],
+      object: [input.targetUri, ...input.statusUris, ...input.collectionUris],
     },
     audience: { followers: false, accounts: [...input.recipients] },
     signedBy: "instance",
@@ -1067,6 +1078,7 @@ export const getLegacyObject = readOperation<{ uuid: string; origin: string }, L
   if (image === undefined || url === null) {
     return { location: null, image: null };
   }
+  const name = presentedMediaDescription(image.description);
   return {
     location: null,
     image: JSON.stringify({
@@ -1076,7 +1088,7 @@ export const getLegacyObject = readOperation<{ uuid: string; origin: string }, L
       attributedTo: image.author,
       url: url.href,
       ...(image.content_type === null ? {} : { mediaType: image.content_type }),
-      ...(image.description === "" ? {} : { name: image.description }),
+      ...(name === null ? {} : { name }),
     }),
   };
 });

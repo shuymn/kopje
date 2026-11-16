@@ -1065,15 +1065,15 @@ describe("nothing leaks before publication", () => {
   }, 60_000);
 });
 
-// ---- RES-2: params that cannot be read (0104_scheduled_params).
+// ---- RES-2: params that cannot be read (0110_scheduled_params).
 
-const PARAMS_FILE = MIGRATIONS.find((m) => m.name === "0104_scheduled_params")?.sql ?? "";
+const PARAMS_FILE = MIGRATIONS.find((m) => m.name === "0110_scheduled_params")?.sql ?? "";
 const PAST_BOUND = /scheduled_statuses: a value past its stored bound/;
 
 // `text` as a BLOB of its UTF-8 bytes.
 const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
 
-// Runs `write` as a Store before 0104 could (its triggers dropped), then the file's statements, as its upgrade runs
+// Runs `write` as a Store before 0110 could (its triggers dropped), then the file's statements, as its upgrade runs
 // them.
 async function beforeParamsBound(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
   await runInDurableObject(h.store, (_instance, state) => {
@@ -1086,7 +1086,7 @@ async function beforeParamsBound(h: ApiHarness, write: (sql: SqlStorage) => void
 }
 
 describe("a scheduled status whose params cannot be read (RES-2)", () => {
-  // Restored before 0104: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
+  // Restored before 0110: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
   // a readable scheduled status, each due at NOW + HOUR but the BLOB's, a day later.
   it("is left out of the list, not found when shown or updated, deleted, and dropped as params when due", async () => {
     const h = await community(["alice"]);
@@ -1166,7 +1166,7 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
     ]);
   });
 
-  // Restored before 0104: 42 scheduled statuses of alice (…001 to …042), some with unreadable params. A page reads
+  // Restored before 0110: 42 scheduled statuses of alice (…001 to …042), some with unreadable params. A page reads
   // toward its limit by the ids it read (Page.cut), so its Link header, from those ids, passes over the rows it leaves
   // out, and a walk either way reaches every readable row once, as Mastodon's walk over the same rows with the
   // unreadable ones absent does.
@@ -1253,7 +1253,7 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
       ["whitespace JSON allows", `char(9, 10, 13, 32) || '{}' || char(32)`, true, true],
       ["an array", `'[]'`, false, false],
     ];
-    // Each value as a restore before 0104 stores it (the CHECK alone), read back as the Store reads params; then, with
+    // Each value as a restore before 0110 stores it (the CHECK alone), read back as the Store reads params; then, with
     // the triggers made again, whether they refuse it.
     const decided = await runInDurableObject(h.store, (_instance, state) => {
       const sql = state.storage.sql;

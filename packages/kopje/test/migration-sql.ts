@@ -28,11 +28,14 @@ function startsTrigger(tokens: SqlToken[]): boolean {
   );
 }
 
-// The top-level statements, split at each ';'. Only a CREATE [TEMP] TRIGGER statement holds blocks: its one BEGIN
-// opens the body, each CASE opens an expression, and END closes the innermost; the body's END must end the statement.
-// Elsewhere BEGIN, CASE and END are refused, so a word that SQLite reads as an identifier (`AS begin`, a column named
-// end) can neither open nor close a block. Refused too: unquoted non-ASCII and a word the tokenizer split (longer than
-// its 256 characters), since SQLite reads either as part of one identifier.
+// The top-level statements, split at each ';'. In a CREATE [TEMP] TRIGGER statement, its one BEGIN opens the body,
+// each CASE opens an expression, and END closes the innermost; the body's END must end the statement. Elsewhere BEGIN
+// is refused, so a word that SQLite reads as an identifier (`AS begin`) cannot open a block, and a statement splits at
+// every ';': each CASE opens an expression, END closes the innermost and is refused when none is open, and a ';' inside
+// one is refused. SQLite reserves CASE (never an identifier), so the count opens a CASE wherever SQLite does and closes
+// one wherever SQLite does (and at an identifier named end besides): it never holds more open than SQLite, and every
+// ';' it splits at either ends SQLite's statement too or is a syntax error there. Refused too: unquoted non-ASCII and a
+// word the tokenizer split (longer than its 256 characters), since SQLite reads either as part of one identifier.
 function statements(sql: string, tokens: SqlToken[]): Statement[] | string {
   const out: Statement[] = [];
   let current: SqlToken[] = [];
@@ -65,12 +68,22 @@ function statements(sql: string, tokens: SqlToken[]): Statement[] | string {
       }
       continue;
     }
+    if (t.kind === "punct" && t.text === ";" && !startsTrigger(current)) {
+      return "a CASE must end before its statement does";
+    }
     current.push(t);
     if (t.kind !== "word" || !BLOCK_WORDS.has(t.text)) {
       continue;
     }
     if (!startsTrigger(current)) {
-      return `${t.text} is allowed only in a trigger statement`;
+      if (t.text === "CASE") {
+        blocks.push("CASE");
+      } else if (t.text === "BEGIN") {
+        return "BEGIN is allowed only in a trigger statement";
+      } else if (blocks.pop() === undefined) {
+        return "END is allowed only in a trigger statement or to close a CASE";
+      }
+      continue;
     }
     if (body === "closed") {
       return `${t.text} after the END of a trigger's body`;

@@ -3,6 +3,10 @@ import { expect, inject, it } from "vitest";
 
 import { MIGRATIONS } from "../../src/db/migrations";
 import { MAX_FEATURED_TAGS } from "../../src/domain/featured-tags";
+import { MAX_REMOTE_PINS } from "../../src/domain/remote-collections";
+import { CREATE_WALK_WAITING } from "../../src/domain/reply-walk-create";
+import { MAX_RUNNING_REFRESHES } from "../../src/domain/reply-walk-reads";
+import { WALK_STATUSES } from "../../src/domain/reply-walks";
 import { JOURNAL_SPAN } from "../../src/domain/stream-journal";
 import { BUILD, freshStore, testKernel } from "../helpers";
 
@@ -117,10 +121,21 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // column's CHECK on every notification_policies row; 0096_remote_handles reads every remote account twice (its
 // reserved-form pass, and its shared-address pass with a seek of accounts_domain_username each), rebuilds that index
 // UNIQUE and reads the pending collection syncs (10,000 seeded while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also
-// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts). A
-// migration that reads another table must add it here before it is measured. The measured time is the whole upgrade,
-// from before the bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock
-// is read across an await on each side.
+// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts);
+// 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
+// triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
+// and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
+// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
+// quote, as 0094 does; 0105_media_description_bytes reads every media attachment's description and rewrites the
+// imported ones seeded while it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after
+// longMedia's rows); 0106_reply_walk_debts tests its columns' CHECKs on every reply_walks and reply_walk_nodes row and
+// reads every node for its two partial indexes (SHAPE.replyWalks walks of the first statuses, seeded while it is
+// pending: MAX_RUNNING_REFRESHES context walks running with WALK_STATUSES nodes each, the rest create walks waiting
+// with their root node), and as it creates tables its upgrade checks every reference. A migration that reads another
+// table must add it here before it is measured. The measured time is the whole upgrade, from before the bookmark to
+// after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across an await on
+// each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -172,11 +187,18 @@ const SHAPE = {
   revocations: 10_000,
   familyJobs: 1_000,
   collectionSyncs: 10_000,
+  // Walks of replies while 0106_reply_walk_debts is pending, of the first statuses: MAX_RUNNING_REFRESHES context walks
+  // running, the rest create walks waiting.
+  replyWalks: 10_000,
   // Rows past their stored bounds (not scaled).
   longContent: 100,
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
+  // Imported descriptions 0105_media_description_bytes rewrites (not scaled): malformed runs past its byte bound, and
+  // BLOBs at the largest 0048's triggers accept, in the media rows after longMedia's.
+  malformedDescriptions: 1_000,
+  blobDescriptions: 1_000,
   // Pins while 0089_pin_cap is pending (not scaled): of each local account, and of each of pinningRemotes remote
   // accounts (none: the measured worst case concentrates the pins in the local accounts).
   localPins: 120_000,
@@ -873,6 +895,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
+    const descriptionsPending = pending("0105_media_description_bytes");
+    if (descriptionsPending) {
+      run(
+        `UPDATE media_attachments SET description = CASE WHEN id < CAST(700000000000000000 + ?1 + ?2 AS TEXT)
+					THEN CAST(x'FF' || unhex(replace(hex(zeroblob(49999)), '00', '80')) AS TEXT) ELSE zeroblob(10000) END
+				WHERE id >= CAST(700000000000000000 + ?1 AS TEXT) AND id < CAST(700000000000000000 + ?1 + ?2 + ?3 AS TEXT)`,
+        SHAPE.longMedia,
+        SHAPE.malformedDescriptions,
+        SHAPE.blobDescriptions,
+      );
+    }
     // Each local account pins distinct statuses: at most as many as there are (a scaled run holds fewer).
     const localPins = Math.min(SHAPE.localPins, statuses);
     const pinsPending =
@@ -911,12 +944,56 @@ it("applies the migration to the benchmark store within the budget", async () =>
     // collision its reserved-form pass fixes).
     const handlesPending = pending("0096_remote_handles");
     const collectionSyncs = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local);
+    const replyWalks = Math.min(Math.round(SHAPE.replyWalks * scale), statuses);
     if (handlesPending && has("collection_syncs")) {
       run(
         `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
 				INSERT INTO collection_syncs (account_id, due_at) SELECT CAST(100000000000000000 + ?2 + i AS TEXT), i FROM n`,
         collectionSyncs,
         SHAPE.local,
+      );
+    }
+    // While 0101_pin_refresh is pending: MAX_REMOTE_PINS pending pins of each of the first remote accounts, as many
+    // accounts as SHAPE.collectionSyncs, the rows it tests its CHECK on.
+    const refreshPending = pending("0101_pin_refresh") && has("collection_pins_pending");
+    if (refreshPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+				SELECT CAST(100000000000000000 + ?2 + i / ?3 AS TEXT), 'https://d' || (i % ?4) || '.bench/statuses/p' || i, ?5
+				FROM n WHERE ?1 > 0`,
+        collectionSyncs * MAX_REMOTE_PINS,
+        SHAPE.local,
+        MAX_REMOTE_PINS,
+        SHAPE.domains,
+        now,
+      );
+    }
+    // While 0106_reply_walk_debts is pending: SHAPE.replyWalks walks of the first statuses, the rows it tests its
+    // CHECKs on and indexes: MAX_RUNNING_REFRESHES context walks running, each holding WALK_STATUSES nodes (its first
+    // half done), and create walks waiting, each holding its root node.
+    const walksPending = pending("0106_reply_walk_debts") && has("reply_walks");
+    if (walksPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes)
+				SELECT CAST(500000000000000000 + i AS TEXT), iif(i < ?2, 0, 1), iif(i < ?2, printf('%032x', i), NULL), ?3,
+					iif(i < ?2, ?3, ?4), iif(i < ?2, ?5, 1), iif(i < ?2, ?5, 1)
+				FROM n WHERE ?1 > 0`,
+        replyWalks,
+        Math.min(MAX_RUNNING_REFRESHES, replyWalks),
+        Date.parse(now),
+        CREATE_WALK_WAITING,
+        WALK_STATUSES,
+      );
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO reply_walk_nodes (status_id, uri, seq, state, valid)
+				SELECT w.status_id,
+					'https://bench.example/s/' || (CAST(w.status_id AS INTEGER) - 500000000000000000) || iif(n.i = 0, '', '/r' || n.i),
+					n.i, iif(w.kind = 0 AND n.i < ?1 / 2, 1, 0), 1
+				FROM reply_walks w JOIN n ON n.i < iif(w.kind = 0, ?1, 1)`,
+        WALK_STATUSES,
       );
     }
     if (handlesPending && sharedHandles > 0) {
@@ -950,6 +1027,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
 							HAVING count(*) > iif((SELECT a.domain FROM accounts a WHERE a.id = status_pins.account_id) IS NULL, 5, 20))`,
           )
         : 0;
+    // The descriptions that are not text or pass 40,000 bytes, which 0105_media_description_bytes rewrites, and the
+    // malformed runs (0xFF and continuation bytes).
+    const pastDescriptions = () =>
+      count("media_attachments WHERE typeof(description) <> 'text' OR length(CAST(description AS BLOB)) > 40000");
+    const MALFORMED_RUN = "hex(substr(CAST(description AS BLOB), 1, 2)) = 'FF80'";
     // The rows under the jamo spelling of 가, which 0087_tag_key_fixed_points renames.
     const jamoKeys = () => count("status_tags INDEXED BY status_tags_name WHERE name = char(0x1100, 0x1161)");
     const seeded = {
@@ -995,7 +1077,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
       jamoKeys: jamoKeys(),
       pins: pinsPending ? count("status_pins") : 0,
       excessPins: excessPins(),
+      pastDescriptions: descriptionsPending ? pastDescriptions() : 0,
+      malformedDescriptions: descriptionsPending ? count(`media_attachments WHERE ${MALFORMED_RUN}`) : 0,
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
+      pendingPins: refreshPending ? count("collection_pins_pending") : 0,
+      replyWalks: walksPending ? [count("reply_walks"), count("reply_walk_nodes")] : [0, 0],
       // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
       sharedHandles: handlesPending
         ? count(
@@ -1027,6 +1113,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
     const pinsLeft = pinsPending ? [count("status_pins"), excessPins()] : [0, 0];
+    // 0105_media_description_bytes: the descriptions left past its bound, and the malformed runs it cut to it.
+    const descriptions = descriptionsPending
+      ? {
+          past: pastDescriptions(),
+          cut: count(`media_attachments WHERE ${MALFORMED_RUN} AND length(CAST(description AS BLOB)) = 40000`),
+        }
+      : undefined;
     // 0091_live_local_quotes: the backfilled copies, the rows of its index, and the plan of its backfill.
     const liveQuotes = has("quotes", "withdrawn")
       ? {
@@ -1044,6 +1137,31 @@ it("applies the migration to the benchmark store within the budget", async () =>
     // 0094_quote_author_fetches: the column, and the quotes holding its default.
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
+      : undefined;
+    // 0104_quote_broadcast: the column, and the quotes holding its default.
+    const quoteBroadcast = has("quotes", "broadcast")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE broadcast = 0") }
+      : undefined;
+    // 0098_card_attribution: the column, and the cards holding NULL.
+    const cardAuthors = has("status_cards", "unverified_author_account_id")
+      ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
+      : undefined;
+    // 0101_pin_refresh: the pending pins, and those holding the new column's default.
+    const pinRefresh = has("collection_pins_pending", "refresh")
+      ? { rows: count("collection_pins_pending"), pending: count("collection_pins_pending WHERE refresh = 0") }
+      : undefined;
+    // 0106_reply_walk_debts: the walks and nodes holding the new columns' defaults, and its partial indexes and new
+    // tables, empty.
+    const walkDebts = has("reply_walks", "debts_seen")
+      ? {
+          walks: count("reply_walks WHERE debt_walk IS NULL AND debt_after_walk IS NULL AND debts_seen = 0"),
+          nodes: count("reply_walk_nodes WHERE lane = 0 AND scan_due = 0 AND depth = 0 AND resume_page IS NULL"),
+          indexed: [
+            count("reply_walk_nodes INDEXED BY reply_walk_nodes_owed WHERE lane <> 0"),
+            count("reply_walk_nodes INDEXED BY reply_walk_nodes_scan WHERE scan_due = 1"),
+          ],
+          tables: [count("reply_walk_debts"), count("reply_walk_cursors")],
+        }
       : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
@@ -1074,6 +1192,27 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .one().unique,
         }
       : undefined;
+    // 0097_profile_descriptions: its columns and triggers, and the accounts holding the columns' defaults.
+    const profileSettings = has("accounts", "show_media_replies")
+      ? {
+          accounts: count(
+            `accounts WHERE avatar_description = '' AND header_description = '' AND show_featured = 1 AND show_media = 1
+							AND show_media_replies = 1`,
+          ),
+          columns: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM pragma_table_info('accounts') WHERE name LIKE '%description' OR name LIKE 'show_%' ORDER BY cid",
+            )
+            .toArray()
+            .map((row) => row.name),
+          triggers: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'accounts_profile_settings_%' ORDER BY name",
+            )
+            .toArray()
+            .map((row) => row.name),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
@@ -1084,11 +1223,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
           retryEstimateMs: ms,
           jamoLeft,
           pinsLeft,
+          descriptions,
           liveQuotes,
           rejectReplays,
           authorFetches,
           botPolicies,
           remoteHandles,
+          profileSettings,
+          cardAuthors,
+          pinRefresh,
+          quoteBroadcast,
+          walkDebts,
         },
       };
     }
@@ -1117,11 +1262,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
         retryEstimateMs: ms + resumedMs,
         jamoLeft,
         pinsLeft,
+        descriptions,
         liveQuotes,
         rejectReplays,
         authorFetches,
         botPolicies,
         remoteHandles,
+        profileSettings,
+        cardAuthors,
+        pinRefresh,
+        quoteBroadcast,
+        walkDebts,
       },
     };
   });
@@ -1205,6 +1356,47 @@ it("applies the migration to the benchmark store within the budget", async () =>
     }
     const rewritten = seeded.sharedHandles + seeded.reservedHandles;
     expect(measured.remoteHandles).toEqual({ invalidated: rewritten, refresh: rewritten, unique: 1 });
+    expect(measured.foreignKeyCheck).toBe("store");
+  }
+  // 0097 added the five columns and two triggers, every account holding the defaults, and checked no reference.
+  if (applied.includes("0097_profile_descriptions")) {
+    expect(measured.profileSettings).toEqual({
+      accounts,
+      columns: ["avatar_description", "header_description", "show_featured", "show_media", "show_media_replies"],
+      triggers: ["accounts_profile_settings_insert", "accounts_profile_settings_update"],
+    });
+  }
+  // 0098 added the column to every seeded card, attached and pending, each holding NULL.
+  if (applied.includes("0098_card_attribution")) {
+    expect(seeded.cards).toBeGreaterThan(0);
+    const cards = seeded.cards + seeded.pendingCards;
+    expect(measured.cardAuthors).toEqual({ cards, none: cards });
+  }
+  // 0101 tested its CHECK on every seeded pending pin, each holding the default (a pending row).
+  if (applied.includes("0101_pin_refresh")) {
+    const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
+    expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0104 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0104_quote_broadcast")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.quoteBroadcast).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
+  }
+  // 0105 found the seeded descriptions past its bound and rewrote each within it, the malformed runs to 40,000 bytes.
+  if (applied.includes("0105_media_description_bytes")) {
+    expect(seeded.malformedDescriptions).toBeGreaterThan(0);
+    expect(seeded.pastDescriptions).toBeGreaterThan(seeded.malformedDescriptions);
+    expect(measured.descriptions).toEqual({ past: 0, cut: seeded.malformedDescriptions });
+  }
+  // 0106 tested its CHECKs on every seeded walk and node, each holding the defaults, indexed the nodes (none in either
+  // partial index), and its upgrade checked every reference. A range from 0099 on seeds no walk.
+  if (applied.includes("0106_reply_walk_debts")) {
+    const walks = applied.includes("0099_reply_walks") ? 0 : Math.min(Math.round(SHAPE.replyWalks * scale), statuses);
+    const nodes = walks + Math.min(MAX_RUNNING_REFRESHES, walks) * (WALK_STATUSES - 1);
+    expect([seeded.replyWalks, measured.walkDebts]).toEqual([
+      [walks, nodes],
+      { walks, nodes, indexed: [0, 0], tables: [0, 0] },
+    ]);
     expect(measured.foreignKeyCheck).toBe("store");
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;

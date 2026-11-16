@@ -6,6 +6,7 @@ import {
   type CardEndpoint,
   type CardFields,
   type CardOutcome,
+  CARD_CREATOR_CHARS,
   cardHost,
   storedCardText,
 } from "../domain/link-cards";
@@ -140,8 +141,8 @@ function unattempted(failure: WebPageFailure, admissionFailed: boolean, spent: b
 }
 
 // The card's fields as the Store keeps them (domain/link-cards.ts recordCard applies the same cuts): what a cold claim
-// retains of its page while its endpoint is fetched.
-function storedFields(fields: CardFields): CardFields {
+// retains of its page while its endpoint is fetched; a creator past CARD_CREATOR_CHARS is none.
+export function storedFields(fields: CardFields): CardFields {
   const url = (value: string) => (value.length <= CARD_OPTIONAL_URL_LIMIT ? value : "");
   return {
     ...fields,
@@ -154,6 +155,7 @@ function storedFields(fields: CardFields): CardFields {
     imageUrl: fields.imageUrl.length <= CARD_URL_LIMIT ? fields.imageUrl : "",
     imageDescription: storedCardText(fields.imageDescription, CARD_IMAGE_DESCRIPTION_JSON_BYTES),
     finalUrl: fields.finalUrl.length <= CARD_URL_LIMIT ? fields.finalUrl : "",
+    creator: fields.creator !== null && fields.creator.length <= CARD_CREATOR_CHARS ? fields.creator : null,
   };
 }
 

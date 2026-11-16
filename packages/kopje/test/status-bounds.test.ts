@@ -25,8 +25,9 @@ import {
   MAX_FIELDS,
   VERIFIED_AT_JSON_BYTES,
 } from "../src/domain/accounts";
-import { createActivity, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { createActivity, getLegacyObject, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
+import { ANNOUNCEMENT_CONTENT_BYTES, ANNOUNCEMENT_ROW_CAPS } from "../src/domain/announcements";
+import { ANSWER_BYTES, encodedTwiceBytes } from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { OWNER_ROLE } from "../src/domain/auth";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
@@ -60,11 +61,12 @@ import {
   presentation,
   presentedMediaUrl,
   presentStatusesWithin,
+  storedSearchableText,
 } from "../src/domain/status-presenter";
-import { statusRowBoundSql } from "../src/domain/status-rows";
+import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
-import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
-import { streamUnit } from "../src/domain/streaming";
+import { getStatus, getStatuses, recordEdit, statusHistory } from "../src/domain/statuses";
+import { STREAM_EVENT_NAMES, streamUnit } from "../src/domain/streaming";
 import {
   LINK_ACCT_JSON_BYTES,
   LINK_URL_JSON_BYTES,
@@ -91,6 +93,7 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
+  MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
   mediaCategorySql,
   ACCOUNT_EMOJIS_BYTES,
@@ -100,10 +103,15 @@ import {
   MAX_ACCOUNT_COUNT,
   MAX_EMOJIS,
   presentedEmojiBytes,
+  PROFILE_DESCRIPTION_BYTES,
+  PROFILE_DESCRIPTION_LIMIT,
   REMOTE_FIELD_INDEXES,
   REMOTE_FIELD_LINK_BYTES,
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_VERIFIED_SHOWN,
+  REPORT_COLLECTION_IDS,
+  SPOILER_CUT_LIMIT,
+  SPOILER_READ_BYTES,
   STATIC_URL_LIMIT,
   STATUS_EMOJIS_BYTES,
   VERIFIED_LINKS_BYTES,
@@ -135,16 +143,20 @@ import {
 import { BUILD } from "./helpers";
 import { ALICE, setup, type Setup } from "./inbox-status-helpers";
 import { localSnapshotAtCap } from "./local-emoji-helpers";
+import { LOCAL_FIELD_VALUE_JSON_MAX, LOCAL_FIELDS_JSON_MAX, localLinkValue } from "./local-field-maxima";
 import {
   CONSERVATIVE_JSON,
   type Fill,
   FILL_SHAPES,
   FILLS,
   HEAP_PEAKS,
+  MESSAGE_MAX,
   MOVED_ACCOUNT_MAXIMA,
   NOTE_MAXIMA,
   type Peaks,
   type Shape,
+  SHAPE_CEILING_PERCENT,
+  STREAM_UNIT_PEAKS,
 } from "./presented-maxima";
 import { ESCAPED_STATIC_WITNESS, fullestFields, MAX_BIO, MOVED_ROW_SQLITE_MAX } from "./profile-fixtures";
 import { pinStatuses, profileFrameBytes, tagFrameBytes, walkProfile } from "./profile-page-helpers";
@@ -233,12 +245,15 @@ const WARNING_TEXTS: Record<Fill, string | ArrayBuffer> = {
 };
 const W = "𠀀";
 const RAW_BIO = `<p>${"x".repeat(REMOTE_BIO_BYTES - 9)}</p>`;
+// An image description at its bound for each fill: PROFILE_DESCRIPTION_LIMIT characters JSON escapes to six bytes (902
+// JSON bytes), or of four bytes (raw: 600 bytes read, PROFILE_DESCRIPTION_BYTES).
+const profileDescription = (fill: Fill) => (fill === "raw" ? W : C).repeat(PROFILE_DESCRIPTION_LIMIT);
 
 // The most JSON a nested moved-to account presents (accounts.ts presentMovedAccount), from its decoded limits at worst
 // escaping: characters of six JSON bytes at each text limit, URLs and uri at MOVED_URL_LIMIT (JSON-measured), counts
 // of 20 characters (any int64; presentedCountSql shows at most MAX_ACCOUNT_COUNT, 16), emojis of MOVED_EMOJIS_BYTES
 // (a string of that many JSON bytes stands for them), and every key at once, a local account's (noindex, roles) and
-// an unavailable one's (suspended) included.
+// an unavailable one's (suspended) included; its image descriptions '' (not read) and its display settings false.
 const MOVED_ACCOUNT_JSON_MAX = utf8Length(
   JSON.stringify({
     id: "9".repeat(18),
@@ -256,13 +271,18 @@ const MOVED_ACCOUNT_JSON_MAX = utf8Length(
     uri: "u".repeat(MOVED_URL_LIMIT),
     avatar: "u".repeat(MOVED_URL_LIMIT),
     avatar_static: "u".repeat(MOVED_URL_LIMIT),
+    avatar_description: "",
     header: "u".repeat(MOVED_URL_LIMIT),
     header_static: "u".repeat(MOVED_URL_LIMIT),
+    header_description: "",
     followers_count: -(2 ** 63),
     following_count: -(2 ** 63),
     statuses_count: -(2 ** 63),
     last_status_at: C.repeat(MOVED_LAST_STATUS_AT_LIMIT),
     hide_collections: false,
+    show_media: false,
+    show_media_replies: false,
+    show_featured: false,
     emojis: "x".repeat(MOVED_EMOJIS_BYTES - 2),
     fields: [],
     noindex: false,
@@ -303,7 +323,8 @@ function movedAccounts(value: unknown): unknown[] {
 // cap: escaped (and derived, emoji-poll), characters JSON escapes to six bytes at each decoded limit, URLs at
 // MOVED_URL_LIMIT, counts at MAX_ACCOUNT_COUNT (the most presentedCountSql shows) and a display name that references
 // emojis whose JSON fills MOVED_EMOJIS_BYTES; raw, four-byte characters where a limit is in characters and every
-// column at its byte cap, the emoji snapshot at its stored bound. Its last status gives last_status_at.
+// column at its byte cap, the emoji snapshot at its stored bound; its display settings off (false, the longer JSON).
+// Its last status gives last_status_at.
 const MOVED_REFERENCED = 3;
 // The longest url of MOVED_REFERENCED one-character entries whose presented JSON fits MOVED_EMOJIS_BYTES.
 const MOVED_EMOJI_URL = Math.floor(((MOVED_EMOJIS_BYTES - 1) / MOVED_REFERENCED - EMOJI_ENTRY_BYTES - 1) / 2);
@@ -338,8 +359,8 @@ async function movedTarget(t: Setup, fill: Fill): Promise<string> {
   await sql(
     t.store,
     `INSERT INTO accounts (id, uri, username, domain, display_name, url, avatar_url, header_url, emojis, created_at,
-			followers_count, following_count, statuses_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?11, ?11, ?11)`,
+			followers_count, following_count, statuses_count, show_featured, show_media, show_media_replies)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?11, ?11, ?11, 0, 0, 0)`,
     id,
     atLimit(`https://moved.example/users/${id}/`, MOVED_URL_LIMIT),
     `${"u".repeat(USERNAME_LIMIT - 18)}${id}`,
@@ -366,17 +387,19 @@ async function movedTarget(t: Setup, fill: Fill): Promise<string> {
   return id;
 }
 
-// A remote account with every profile column at its bound; `light`: only what a mention reads is at its bound. Its
-// counts, light or not, at MAX_ACCOUNT_COUNT, the most a remote account learns. One that is not light moved to an
-// account of its own at the nested caps (movedTarget).
+// A remote account with every profile column at its bound, its image descriptions at PROFILE_DESCRIPTION_LIMIT
+// (profileDescription) and its display settings off (false, the longer JSON); `light`: only what a mention reads is at
+// its bound. Its counts, light or not, at MAX_ACCOUNT_COUNT, the most a remote account learns. One that is not light
+// moved to an account of its own at the nested caps (movedTarget).
 async function maximalAccount(t: Setup, light = false, fill: Fill = "escaped"): Promise<string> {
   const id = nextId();
   const username = `${"u".repeat(USERNAME_LIMIT - 18)}${id}`;
   await sql(
     t.store,
     `INSERT INTO accounts (id, uri, username, domain, display_name, note, url, avatar_url, header_url, raw, emojis,
-			followers_count, following_count, statuses_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?12, ?12, ?12)`,
+			followers_count, following_count, statuses_count, avatar_description, header_description, show_featured,
+			show_media, show_media_replies)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?12, ?12, ?12, ?13, ?13, ?14, ?14, ?14)`,
     id,
     atLimit(`https://${HOST}/users/${id}/`, ACTOR_URI_LIMIT),
     username,
@@ -389,6 +412,8 @@ async function maximalAccount(t: Setup, light = false, fill: Fill = "escaped"): 
     light ? null : JSON.stringify({ type: "Person", attachment: fullestFields() }),
     light ? null : accountEmojis(fill),
     MAX_ACCOUNT_COUNT,
+    light ? "" : profileDescription(fill),
+    light ? 1 : 0,
   );
   if (fill === "raw") {
     await cachedProfile(t, id, "files.example");
@@ -1335,13 +1360,16 @@ async function maximalStatuses(fill: Fill) {
   const t = await setup();
   await sql(
     t.store,
-    "UPDATE accounts SET display_name = ?, note = ?, url = ?, avatar_url = ?, header_url = ?, emojis = ? WHERE id = ?",
+    `UPDATE accounts SET display_name = ?, note = ?, url = ?, avatar_url = ?, header_url = ?, emojis = ?,
+			avatar_description = ?7, header_description = ?7, show_featured = 0, show_media = 0, show_media_replies = 0
+		WHERE id = ?8`,
     (fill === "raw" ? W : C).repeat(2048),
     fill === "raw" ? RAW_BIO : MAX_BIO,
     atLimit(`https://kopje.test/@alice/`, PROFILE_URL_LIMIT),
     atLimit(`https://kopje.test/a/alice/`, PROFILE_URL_LIMIT),
     atLimit(`https://kopje.test/h/alice/`, PROFILE_URL_LIMIT),
     accountEmojis(fill),
+    profileDescription(fill),
     ALICE,
   );
   const [booster, quoter, quotedAuthor] = [
@@ -1393,7 +1421,8 @@ async function maximalStatuses(fill: Fill) {
 // CARD_DIMENSION_MAX whose iframe src is at its raw bound in ASCII (the raw fill) or at its escaped bound with as many
 // & as fit (the others), and its iframe dimensions at CARD_DIMENSION_MAX; and (0070_card_images) a stored image of a
 // 64-byte token at CARD_IMAGE_EDGE_MAX by CARD_IMAGE_EDGE_MAX with a blurhash at BLURHASH_BYTES, its source URL at its
-// bound and its alt text at its JSON bound.
+// bound and its alt text at its JSON bound; and (0098_card_attribution) an unverified author at its stored bound (18
+// digits), an account other than the viewer's (ALICE), so its missing_attribution is false.
 async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void> {
   const text = (bytes: number) =>
     fill === "raw" ? "a".repeat(bytes - 2) : C.repeat(Math.floor((bytes - 2) / 6)) + "a".repeat((bytes - 2) % 6);
@@ -1432,11 +1461,13 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
   );
   await sql(
     t.store,
-    "UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4 WHERE status_id = ?1",
+    `UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4, unverified_author_account_id = ?5
+		WHERE status_id = ?1`,
     statusId,
     atLimit("https://img.example/", CARD_URL_LIMIT),
     imageId,
     text(CARD_IMAGE_DESCRIPTION_JSON_BYTES),
+    "222222222222222222",
   );
 }
 
@@ -1616,13 +1647,15 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
   const reporter = await maximalAccount(t, false, fill);
   const [report] = await sql<{ id: string }>(
     t.store,
-    `INSERT INTO reports (account_id, target_account_id, status_ids, uri, comment, created_at, assigned_account_id,
-			action_taken_by_account_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+    `INSERT INTO reports (account_id, target_account_id, status_ids, collection_ids, uri, comment, created_at,
+			assigned_account_id, action_taken_by_account_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
     reporter,
     (await sql<{ account_id: string }>(t.store, "SELECT account_id FROM statuses WHERE id = ?", quote))[0]!.account_id,
     // status_ids at its stored bound: 100 ids (2,101 bytes), the rest naming no stored status.
     JSON.stringify([quote, quoted, ...Array.from({ length: 98 }, (_, i) => String(990000000000000000 + i))]),
+    // collection_ids at its stored bound: 50 ids of 18 digits, naming no stored collection (none is read).
+    JSON.stringify(Array.from({ length: REPORT_COLLECTION_IDS }, (_, i) => String(980000000000000000 + i))),
     atLimit(`https://${HOST}/payloads/`, 4096),
     REPORT_COMMENTS[fill],
     new Date(NOW).toISOString(),
@@ -1809,17 +1842,18 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
     fill,
   ).toEqual([0, 10, 1, 1, 1, 9]);
   // The escaped fill's streamed witnesses of the turn's hard bound (stream-hub.ts): a conversation of alice's with the
-  // table's participants whose last status is the boost of the quote, and a favourite notification of alice's whose
-  // status is that boost, each presented as a stream unit presents it (unfiltered, as R33 reads it).
+  // table's participants whose last status is the quote (it shows no boost: conversationStream), and a favourite
+  // notification of alice's whose status is the boost of the quote, each presented as a stream unit presents it
+  // (unfiltered, as R33 reads it).
   let streamed: FillMeasure["streamed"];
   if (fill === "escaped") {
     const [conversation] = await sql<{ id: string }>(
       t.store,
-      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-boost', ?, ?)
+      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-streamed', ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,
       ALICE,
       JSON.stringify(participants.toSorted()),
-      boost,
+      quote,
     );
     const [notification] = await sql<{ id: string }>(
       t.store,
@@ -1838,17 +1872,26 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       expect(made.payload, kind).not.toBeNull();
       return made.payload as Record<string, unknown>;
     };
-    const talkOfBoost = await unit("conversation", conversation!.id);
-    expect((talkOfBoost.last_status as { id: string }).id).toBe(boost);
+    const talkOfQuote = await unit("conversation", conversation!.id);
+    expect((talkOfQuote.last_status as { id: string }).id).toBe(quote);
     const notified = await unit("notification", notification!.id);
     expect((notified.status as { id: string }).id).toBe(boost);
     streamed = {
-      conversation: jsonBytes(talkOfBoost),
-      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfBoost))),
+      conversation: jsonBytes(talkOfQuote),
+      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfQuote))),
       notification: jsonBytes(notified),
     };
+    expect([encodedTwiceBytes(talkOfQuote), encodedTwiceBytes(notified)]).toEqual([
+      streamed.conversationPayload,
+      utf8Length(JSON.stringify(JSON.stringify(notified))),
+    ]);
   }
   const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
+  // RES-6: the hub's measure of a stream payload (encodedTwiceBytes) is the twice-encoded JSON's UTF-8 bytes on every
+  // maximal shape of the fill, a streamed one or not.
+  for (const [name, answer] of Object.entries({ ...answers, streamedWarning })) {
+    expect(encodedTwiceBytes(answer), `${fill} ${name}`).toBe(utf8Length(JSON.stringify(JSON.stringify(answer))));
+  }
   return {
     streamed,
     warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
@@ -1949,8 +1992,11 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       status: one.heaps,
       quote: two.heaps,
       boostOfQuote: pair.heaps,
+      conversation: listed.heaps,
       group: grouped.heaps,
       report: reported.heaps,
+      reportNotification: notified.heaps,
+      warningNotification: warned.heaps,
     },
   };
 }
@@ -2024,32 +2070,6 @@ const APPLICATION_JSON_MAX =
 function applicationJson(status: Record<string, unknown>): number {
   return "application" in status ? jsonBytes({ application: status.application }) - 1 : 0;
 }
-
-// The statuses a presented value shows (each object with a quote_approval, which only a Status has).
-// A local field value at its bound that renderFieldValue links: a URL of MAX_FIELD_VALUE code units, its path '&'.
-function localLinkValue(i: number): string {
-  const prefix = `https://x.test/${i}`;
-  return prefix + "&".repeat(MAX_FIELD_VALUE - prefix.length);
-}
-
-// The most JSON a local field value presents (renderFieldValue and linkHtml, src/domain/status-text.ts): every code
-// unit at most twice (in a link's href and its shown text) as an HTML escape of at most six ASCII bytes (&quot;),
-// which JSON keeps, and each link's markup once (its quotes escaped by JSON); a link holds at least 'http://' and a
-// host character, and a separator from the next, so a value of MAX_FIELD_VALUE code units holds at most
-// (MAX_FIELD_VALUE + 1) / 9 of them.
-const LINK_MARKUP =
-  '<a href="" target="_blank" rel="nofollow noopener noreferrer"><span class="invisible"></span><span class="ellipsis">' +
-  '</span><span class="invisible"></span></a>';
-const LOCAL_FIELD_VALUE_JSON_MAX =
-  2 + 12 * MAX_FIELD_VALUE + (jsonBytes(LINK_MARKUP) - 2) * Math.floor((MAX_FIELD_VALUE + 1) / ("http://".length + 2));
-
-// The most JSON a local account's fields present: MAX_FIELDS names of control characters (six bytes each), each value
-// at LOCAL_FIELD_VALUE_JSON_MAX and verified (VERIFIED_AT_JSON_BYTES).
-const LOCAL_FIELDS_JSON_MAX =
-  jsonBytes(
-    Array.from({ length: MAX_FIELDS }, () => ({ name: C.repeat(MAX_FIELD_NAME), value: "", verified_at: "" })),
-  ) +
-  MAX_FIELDS * (LOCAL_FIELD_VALUE_JSON_MAX - 2 + VERIFIED_AT_JSON_BYTES - 2);
 
 // The presented fields with a verification time: a local account's verified fields.
 function verifiedFields(value: unknown): { value: string; verified_at: string }[] {
@@ -2180,6 +2200,22 @@ async function conservativeJson(): Promise<Record<string, number>> {
         fallbacks[name]!.deficit,
     ]),
   );
+}
+
+// The most JSON each streamed kind presents (stream-hub.ts, RES-6): `update` and `status.update` a status, at most a
+// boost of a quote; `conversation` its participants and a last status, at most a quote (conversationStream shows no
+// boost); `notification` its account, its status and a report and a warning together (their conservative figures
+// count a fallback each, which a streamed notification does not carry); an announcement, at its derived maximum
+// (test/announcement-bounds.test.ts).
+const ANNOUNCEMENT_JSON = 248_997;
+async function streamedKinds(): Promise<Record<"status" | "conversation" | "notification" | "announcement", number>> {
+  const c = await conservativeJson();
+  return {
+    status: c.boostOfQuote!,
+    conversation: c.conversation!,
+    notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
+    announcement: ANNOUNCEMENT_JSON,
+  };
 }
 
 // The peaks of "Heap at 8 MiB per answer" (docs/threat-model.md, its model and terms) for answers whose largest item
@@ -2507,8 +2543,9 @@ describe("an account of malformed imported text (RES-3)", () => {
   it("reads and presents within the fills' maxima", async () => {
     const t = await setup();
     // A conversation of MAX_PRESENTED_PARTICIPANTS accounts of the raw fill, each display name 0xFF and 1,048,575
-    // continuation bytes (one character to 0048's cut) and each note 65,534 continuation bytes (within noteSql's
-    // bound, as json_quote copies them); its last status is by an account of the raw fill as it is, the reference.
+    // continuation bytes (one character to 0048's cut), each note 65,534 continuation bytes (within noteSql's bound,
+    // as json_quote copies them) and each image description 0xFF and 599 continuation bytes (one character to 0097's
+    // trigger); its last status is by an account of the raw fill as it is, the reference.
     const participants: string[] = [];
     for (let i = 0; i < MAX_PRESENTED_PARTICIPANTS; i++) {
       participants.push(await maximalAccount(t, false, "raw"));
@@ -2516,13 +2553,17 @@ describe("an account of malformed imported text (RES-3)", () => {
     const reference = await maximalAccount(t, false, "raw");
     const name = new Uint8Array(1_048_576).fill(0x80);
     name[0] = 0xff;
+    const description = new Uint8Array(PROFILE_DESCRIPTION_BYTES).fill(0x80);
+    description[0] = 0xff;
     await sql(
       t.store,
-      `UPDATE accounts SET display_name = CAST(?1 AS TEXT), note = CAST(?2 AS TEXT)
+      `UPDATE accounts SET display_name = CAST(?1 AS TEXT), note = CAST(?2 AS TEXT),
+				avatar_description = CAST(?4 AS TEXT), header_description = CAST(?4 AS TEXT)
 			WHERE id IN (SELECT value FROM json_each(?3))`,
       name.buffer,
       new Uint8Array(65_534).fill(0x80).buffer,
       JSON.stringify(participants),
+      description.buffer,
     );
     const last = await storedStatus(t, reference, {
       content: "",
@@ -2542,35 +2583,63 @@ describe("an account of malformed imported text (RES-3)", () => {
     const rows = await runInDurableObject(t.store, (_instance, state) =>
       [...participants, reference].map((id) => {
         const bounds = state.storage.sql
-          .exec<{ stored: number; name: number; note: number; heap: number }>(
+          .exec<{ stored: number; name: number; note: number; avatar: number; header: number; heap: number }>(
             `SELECT octet_length(a.display_name) AS stored, octet_length(${ACCOUNT_COLUMN_MAP.display_name}) AS name,
-							octet_length(${ACCOUNT_COLUMN_MAP.note}) AS note, ${rowHeapSql(ACCOUNT_COLUMN_MAP)} AS heap
+							octet_length(${ACCOUNT_COLUMN_MAP.note}) AS note,
+							octet_length(${ACCOUNT_COLUMN_MAP.avatar_description}) AS avatar,
+							octet_length(${ACCOUNT_COLUMN_MAP.header_description}) AS header,
+							${rowHeapSql(ACCOUNT_COLUMN_MAP)} AS heap
 						FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
             id,
           )
           .one();
         const row = state.storage.sql
-          .exec<{ display_name: string; note: string }>(
+          .exec<{ display_name: string; note: string; avatar_description: string; header_description: string }>(
             `SELECT ${selectSql(ACCOUNT_COLUMN_MAP)} FROM ${ACCOUNT_FROM} WHERE a.id = ?`,
             id,
           )
           .one();
-        return { ...bounds, decoded: rowHeapBytes(row), names: row.display_name.length, notes: row.note.length };
+        return {
+          ...bounds,
+          decoded: rowHeapBytes(row),
+          names: row.display_name.length,
+          notes: row.note.length,
+          avatars: row.avatar_description.length,
+          headers: row.header_description.length,
+        };
       }),
     );
     const own = rows.pop()!;
-    expect(own).toMatchObject({ stored: 4 * 2048, name: 4 * 2048, note: utf8Length(RAW_BIO) });
+    expect(own).toMatchObject({
+      stored: 4 * 2048,
+      name: 4 * 2048,
+      note: utf8Length(RAW_BIO),
+      avatar: PROFILE_DESCRIPTION_BYTES,
+      header: PROFILE_DESCRIPTION_BYTES,
+    });
     for (const row of rows) {
-      // Read: the raw fill's bytes, of the 1,048,576 stored.
-      expect(row).toMatchObject({ stored: 1_048_576, name: own.name, note: own.note });
+      // Read: the raw fill's bytes, of the 1,048,576 stored; the descriptions as stored, the raw fill's 600 bytes.
+      expect(row).toMatchObject({
+        stored: 1_048_576,
+        name: own.name,
+        note: own.note,
+        avatar: own.avatar,
+        header: own.header,
+      });
       // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
       // that bound is the reference's.
-      expect({ names: row.names, notes: row.notes }).toEqual({ names: row.name, notes: row.note });
+      expect({ names: row.names, notes: row.notes, avatars: row.avatars, headers: row.headers }).toEqual({
+        names: row.name,
+        notes: row.note,
+        avatars: row.avatar,
+        headers: row.header,
+      });
       expect(row.decoded).toBeLessThanOrEqual(row.heap);
       expect(row.heap).toBeLessThanOrEqual(own.heap);
     }
     // Presented: each account within the escaped fill's account occurrence, its display name within the escaped
-    // fill's (2,048 code points of six JSON bytes) and its note within BIO_JSON_BYTES.
+    // fill's (2,048 code points of six JSON bytes), its note within BIO_JSON_BYTES, and each description within the
+    // escaped fill's (PROFILE_DESCRIPTION_LIMIT code points of six JSON bytes).
     const listed = await measured(
       t,
       listConversations as never,
@@ -2582,15 +2651,332 @@ describe("an account of malformed imported text (RES-3)", () => {
       expect(jsonBytes(account.display_name)).toBeLessThanOrEqual(jsonBytes(C.repeat(2048)));
       expect(jsonBytes(account.note)).toBeLessThanOrEqual(REMOTE_BIO_BYTES);
       expect(jsonBytes(account)).toBeLessThanOrEqual(FILL_SHAPES.escaped.account.json);
-      expect({ name: account.display_name, note: account.note }).toEqual({ name: "\uFFFD".repeat(2048), note: "" });
+      for (const key of ["avatar_description", "header_description"]) {
+        expect(jsonBytes(account[key])).toBeLessThanOrEqual(jsonBytes(profileDescription("escaped")));
+      }
+      expect({
+        name: account.display_name,
+        note: account.note,
+        avatar: account.avatar_description,
+        header: account.header_description,
+      }).toEqual({
+        name: "\uFFFD".repeat(2048),
+        note: "",
+        avatar: "\uFFFD".repeat(PROFILE_DESCRIPTION_LIMIT),
+        header: "\uFFFD".repeat(PROFILE_DESCRIPTION_LIMIT),
+      });
     }
   }, 300_000);
 });
 
+describe("a status of malformed imported text (RES-3)", () => {
+  it("reads and presents within the fills' maxima", async () => {
+    // The raw fill's statuses. The quoted one takes content and source text of 0xFF and 131,069 continuation bytes
+    // (the raw fill's 131,070 bytes; json_quote's 131,072, within contentSql's bound) and a warning of 0xFF and
+    // 1,048,575 continuation bytes (one character to spoilerSql's cut), and two versions of the same; the quote, of the
+    // raw fill as it is, with a version of its own text, is the reference.
+    const { t, quoted, quote, boost } = await maximalStatuses("raw");
+    const text = new Uint8Array(STATUS_CONTENT_BYTES - 2).fill(0x80);
+    text[0] = 0xff;
+    const warning = new Uint8Array(1_048_576).fill(0x80);
+    warning[0] = 0xff;
+    await sql(
+      t.store,
+      `UPDATE statuses SET content = CAST(?1 AS TEXT), source_text = CAST(?1 AS TEXT), spoiler_text = CAST(?2 AS TEXT)
+			WHERE id = ?3`,
+      text.buffer,
+      warning.buffer,
+      quoted,
+    );
+    for (const id of [quoted, quoted, quote]) {
+      await sql(
+        t.store,
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				SELECT id, content, spoiler_text, '[]', ?2 FROM statuses WHERE id = ?1`,
+        id,
+        new Date(NOW).toISOString(),
+      );
+    }
+    const [own, reference] = await runInDurableObject(t.store, (_instance, state) =>
+      [quoted, quote].map((id) => {
+        const bounds = state.storage.sql
+          .exec<{ stored: number; spoiler: number; content: number; source: number; heap: number }>(
+            `SELECT octet_length(s.spoiler_text) AS stored, octet_length(${STATUS_COLUMN_MAP.spoiler_text}) AS spoiler,
+							octet_length(${STATUS_COLUMN_MAP.content}) AS content,
+							octet_length(${STATUS_COLUMN_MAP.source_text}) AS source, ${rowHeapSql(STATUS_COLUMN_MAP)} AS heap
+						FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        const row = state.storage.sql
+          .exec<{ spoiler_text: string; content: string; source_text: string }>(
+            `SELECT ${selectSql(STATUS_COLUMN_MAP)} FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        return {
+          ...bounds,
+          decoded: rowHeapBytes(row),
+          spoilers: row.spoiler_text.length,
+          contents: row.content.length,
+          sources: row.source_text.length,
+        };
+      }),
+    );
+    expect(reference).toMatchObject({
+      stored: SPOILER_BYTES - 2,
+      spoiler: SPOILER_BYTES - 2,
+      content: STATUS_CONTENT_BYTES - 2,
+      source: STATUS_CONTENT_BYTES - 2,
+    });
+    // Read: the raw fill's bytes, the warning's SPOILER_READ_BYTES of the 1,048,576 stored.
+    expect(own).toMatchObject({
+      stored: 1_048_576,
+      spoiler: reference!.spoiler,
+      content: reference!.content,
+      source: reference!.source,
+    });
+    // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
+    // that bound is the reference's.
+    expect({ spoilers: own!.spoilers, contents: own!.contents, sources: own!.sources }).toEqual({
+      spoilers: own!.spoiler,
+      contents: own!.content,
+      sources: own!.source,
+    });
+    expect(own!.decoded).toBeLessThanOrEqual(own!.heap);
+    expect(own!.heap).toBeLessThanOrEqual(reference!.heap);
+    // What the three statuses and the quoted one's history read of each text column (decoded, in code units): within
+    // the raw fill's bytes, the versions' warnings too.
+    const viewer = { ...(await credential(t)), scope: "read" as const };
+    const longest = new Map<string, number>();
+    const [items, history] = await runInDurableObject(t.store, (_instance, state) => {
+      const counting = observedSql(state.storage.sql, (rows) => {
+        for (const row of rows) {
+          for (const column of ["spoiler_text", "content", "source_text"]) {
+            const value = row[column];
+            if (typeof value === "string") {
+              longest.set(column, Math.max(longest.get(column) ?? 0, value.length));
+            }
+          }
+        }
+      });
+      const unwrap = (answer: unknown): unknown => {
+        let value = answer as Record<string, unknown>;
+        while (value.status === "ok" && "value" in value) {
+          value = value.value as Record<string, unknown>;
+        }
+        return value;
+      };
+      const present = { origin: ORIGIN };
+      return [
+        [quoted, quote, boost].map((id) =>
+          unwrap(getStatus.run(counting, { credential: viewer, now: NOW, id, present })),
+        ) as Presented[],
+        unwrap(statusHistory.run(counting, { credential: viewer, now: NOW, id: quoted, present })) as Presented[],
+      ] as const;
+    });
+    expect(Object.fromEntries(longest)).toEqual({
+      spoiler_text: SPOILER_READ_BYTES,
+      content: STATUS_CONTENT_BYTES - 2,
+      source_text: STATUS_CONTENT_BYTES - 2,
+    });
+    // Presented: each status within the escaped fill's occurrence of its shape, and the quoted one's text, as a status,
+    // as the quote's and the boost's, and in both versions of its history, within its bounds: content '' and the
+    // warning 2,730 U+FFFD (8,192 JSON bytes).
+    expect(items.map((item) => item.id)).toEqual([quoted, quote, boost]);
+    const shapes = [FILL_SHAPES.escaped.status, FILL_SHAPES.escaped.quote, FILL_SHAPES.escaped.boostOfQuote];
+    for (const [i, item] of items.entries()) {
+      expect(jsonBytes(item)).toBeLessThanOrEqual(shapes[i]!.json);
+    }
+    const shown = [...presentedStatuses(items).filter((status) => status.id === quoted), ...history];
+    expect(shown).toHaveLength(5);
+    for (const status of shown) {
+      expect({ content: status.content, spoiler: status.spoiler_text }).toEqual({
+        content: "",
+        spoiler: "�".repeat(SPOILER_CUT_LIMIT),
+      });
+      expect(jsonBytes(status.content)).toBeLessThanOrEqual(STATUS_CONTENT_BYTES);
+      expect(jsonBytes(status.spoiler_text)).toBeLessThanOrEqual(SPOILER_BYTES);
+    }
+  }, 300_000);
+});
+
+// A status of alice's whose four attachments hold imported descriptions of malformed UTF-8 at 0105's stored bound:
+// 0xFF and continuation bytes to MEDIA_DESCRIPTION_BYTES, one character to SQLite, which decode to 40,000 U+FFFD.
+// Every presenter shows MAX_MEDIA_DESCRIPTION_LENGTH of them (presentedMediaDescription), within the escaped fill's
+// description (that many code points of six JSON bytes): REST, the stream unit of its edit, the edit history (a
+// snapshot an edit recorded, and an imported one past the byte bound), the Note's attachment names, the legacy
+// Image's name and the filter text; and the rows its read takes stay within R.
+// 0xFF and continuation bytes to `bytes` in all, then `tail`: one character to SQLite's length and substr.
+function malformedRun(bytes: number, tail = ""): ArrayBuffer {
+  const run = new Uint8Array(bytes).fill(0x80);
+  run[0] = 0xff;
+  return new Uint8Array([...run, ...new TextEncoder().encode(tail)]).buffer;
+}
+
+// A status of alice's (content "<p>described</p>") whose MAX_STATUS_MEDIA attachments hold descriptions of malformed
+// UTF-8 at their stored bound, MEDIA_DESCRIPTION_BYTES, as only an import stores them.
+async function malformedAttachments(t: Setup): Promise<string> {
+  const id = await storedStatus(t, ALICE, {
+    content: "<p>described</p>",
+    spoiler: "",
+    media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
+      url: `https://m.example/${i}.png`,
+      preview: null,
+      description: "",
+      meta: null,
+    })),
+    mentions: [],
+    tags: [],
+    poll: null,
+  });
+  await sql(
+    t.store,
+    "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+    malformedRun(MEDIA_DESCRIPTION_BYTES),
+    id,
+  );
+  return id;
+}
+
+describe("an attachment of malformed imported text (RES-3)", () => {
+  const SHOWN = "�".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+  const DESCRIPTION_JSON_MAX = jsonBytes(C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH));
+
+  it("presents each description within MAX_MEDIA_DESCRIPTION_LENGTH code points everywhere", async () => {
+    const t = await setup();
+    const id = await malformedAttachments(t);
+    const at = new Date(NOW).toISOString();
+    await runInDurableObject(t.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(
+        `UPDATE media_attachments SET legacy_ap_o = 'legacy-image'
+				WHERE id = (SELECT min(id) FROM media_attachments WHERE status_id = ?)`,
+        id,
+      );
+      // An edit records the status as it is now (statuses.ts recordEdit), and an imported snapshot holds one past the
+      // byte bound, within EDIT_MEDIA_BYTES.
+      recordEdit(new Db(sql), id, at);
+      sql.exec(
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				VALUES (?1, '<p>imported</p>', '', CAST(?2 AS TEXT), ?3)`,
+        id,
+        new Uint8Array([
+          ...new TextEncoder().encode('[{"id":"m","type":"image","description":"'),
+          ...new Uint8Array(malformedRun(100_000)),
+          ...new TextEncoder().encode('"}]'),
+        ]).buffer,
+        at,
+      );
+      sql.exec("UPDATE statuses SET edited_at = ? WHERE id = ?", at, id);
+      // Stored: MEDIA_DESCRIPTION_BYTES each, one character to SQLite.
+      expect(
+        sql
+          .exec(
+            "SELECT length(CAST(description AS BLOB)) AS bytes, length(description) AS characters FROM media_attachments WHERE status_id = ?",
+            id,
+          )
+          .toArray(),
+      ).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, () => ({ bytes: MEDIA_DESCRIPTION_BYTES, characters: 1 })));
+    });
+    const described = (media: readonly { description?: unknown; name?: unknown }[], key: "description" | "name") => {
+      expect(media).toHaveLength(MAX_STATUS_MEDIA);
+      for (const m of media) {
+        expect(m[key]).toBe(SHOWN);
+        expect(jsonBytes(m[key])).toBeLessThanOrEqual(DESCRIPTION_JSON_MAX);
+      }
+    };
+    // REST.
+    const rest = (await read(t, getStatus, id)).answer as Presented;
+    described(rest.media_attachments, "description");
+    // The stream unit of an edit, as the hub presents it.
+    const tokenHashes = [await sha256Hex(t.tokens.alice)];
+    const unit = await runInDurableObject(t.store, (_instance, state) =>
+      streamUnit.run(state.storage.sql, { kind: "edit", subject: id, accountId: ALICE, tokenHashes, now: NOW }),
+    );
+    expect(unit.event).toBe("status.update");
+    described((unit.payload as Presented).media_attachments, "description");
+    // The edit history: the current version, the snapshot the edit recorded and the imported one, whose description
+    // editMediaSql cuts to MEDIA_DESCRIPTION_BYTES (40,000 U+FFFD decoded).
+    const history = (await read(t, statusHistory, id)).answer as {
+      content: string;
+      media_attachments: Presented["media_attachments"];
+    }[];
+    const versions = Object.fromEntries(history.map((v) => [v.content, v.media_attachments]));
+    described(versions["<p>described</p>"]!.slice(0, MAX_STATUS_MEDIA), "description");
+    expect(versions["<p>imported</p>"]!.map((m) => m.description)).toEqual([SHOWN]);
+    // The Note's attachments, and the legacy Image.
+    const { note, image, filterText } = await runInDurableObject(t.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const facts = statusFacts(db, id, noteQuote, { reached: false })!;
+      const legacy = getLegacyObject.run(state.storage.sql, { uuid: "legacy-image", origin: ORIGIN });
+      return {
+        note: noteOf(facts),
+        image: JSON.parse(legacy.image ?? "null") as { name?: string },
+        filterText: storedSearchableText(db, id, at),
+      };
+    });
+    described(
+      (note.attachment as { name?: unknown }[]).filter((a) => "name" in a),
+      "name",
+    );
+    expect(image.name).toBe(SHOWN);
+    // The filter text holds the descriptions as shown.
+    expect(filterText).toBe(
+      ["", "described", Array.from({ length: MAX_STATUS_MEDIA }, () => SHOWN).join("\n\n")].join("\n\n"),
+    );
+    // The rows the read takes stay within R.
+    const rows = await runInDurableObject(t.store, (_instance, state) => {
+      const real = state.storage.sql;
+      const visible = [id as VisibleStatusId];
+      const shared = presentation(new Db(real), visible, { origin: ORIGIN, viewer: { accountId: ALICE, now: at } });
+      let bytes = 0;
+      const counting = observedSql(real, (read) => {
+        bytes += heap(read);
+      });
+      presentStatusesWithin(new Db(counting), shared, visible, Infinity, true, 1);
+      const [bound] = real
+        .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS)
+        .toArray();
+      return { bytes, bound: bound!.bytes };
+    });
+    expect(rows.bytes).toBeLessThanOrEqual(rows.bound);
+  }, 120_000);
+
+  // A keyword past the 10,000th code point of a description as decoded is not in the filter text, as it is not shown.
+  it("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the filter text", async () => {
+    const t = await setup();
+    const id = await storedStatus(t, ALICE, {
+      content: "<p>x</p>",
+      spoiler: "",
+      media: [{ url: "https://m.example/0.png", preview: null, description: "", meta: null }],
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    const text = await runInDurableObject(t.store, (_instance, state) => {
+      // 10,001 bytes of a malformed run, then the keyword: seven characters to SQLite, within both bounds.
+      state.storage.sql.exec(
+        "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+        malformedRun(MAX_MEDIA_DESCRIPTION_LENGTH + 1, "secret"),
+        id,
+      );
+      return storedSearchableText(new Db(state.storage.sql), id, new Date(NOW).toISOString());
+    });
+    expect(text).toBe(`\n\nx\n\n${SHOWN}`);
+    expect(text).not.toContain("secret");
+  });
+});
+
+// The least spare the timeline heap and the conversation's JSON keep (#1142).
+const SPARE_FLOOR = 4096;
+
 describe("the table of maxima (RES-3)", () => {
   // docs/threat-model.md "Maxima of presented units" states these. An answer admits a whole item, so every atomic
-  // shape stays within 85% of ANSWER_BYTES (8 MiB) with filters included, measured and conservative alike.
-  const LIMIT = 0.85 * 8 * 1024 * 1024;
+  // shape stays within SHAPE_CEILING_PERCENT of ANSWER_BYTES (8 MiB) with filters included, measured and conservative
+  // alike.
+  const ceiling = (percent: number) => Math.floor((ANSWER_BYTES * percent) / 100);
+  const LIMIT = ceiling(SHAPE_CEILING_PERCENT);
 
   it.each<[string, Fill]>([
     ["the escaped worst case: the most JSON", "escaped"],
@@ -2635,7 +3021,7 @@ describe("the table of maxima (RES-3)", () => {
 
   // The conservative JSON of every shape is within the ceiling too, and bounds the emoji-poll fill, whose polls each
   // show the most emoji JSON less what their references displace (37 escaped characters: 185 bytes).
-  it("keeps the conservative JSON of every shape within 85%, above every fill", async () => {
+  it("keeps the conservative JSON of every shape within the ceiling, above every fill", async () => {
     const conservative = await conservativeJson();
     // Every presented account but the viewer's own shows a moved-to account, counted at MOVED_ACCOUNT_JSON_MAX.
     for (const fill of await Promise.all(FILLS.map(measureFill))) {
@@ -2671,8 +3057,12 @@ describe("the table of maxima (RES-3)", () => {
         (POLLS_SHOWN[name] ?? 0) * (POLL_EMOJIS_JSON - displaced),
       );
     }
-    // The conversation's spare under the ceiling (one card in that shape): at least 4,096 bytes (#1142).
-    expect(Math.floor(LIMIT - conservative.conversation!)).toBe(7_459);
+    // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
+    // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
+    const spare = LIMIT - conservative.conversation!;
+    expect(spare).toBe(62_869);
+    expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
+    expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
   }, 600_000);
 
@@ -2688,8 +3078,8 @@ describe("the table of maxima (RES-3)", () => {
     const payload =
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
     expect({ measured: Math.max(...payloads), conservative: payload }).toEqual({
-      measured: 332_952,
-      conservative: 471_650,
+      measured: 337_412,
+      conservative: 476_110,
     });
     expect(payload).toBeLessThan(STREAM_LIMITS.payloadBytes);
     // The derived bounds of a local field value and of a local account's fields, and the fill's linked value.
@@ -2724,31 +3114,23 @@ describe("the table of maxima (RES-3)", () => {
 
   // The most a stream turn presents (stream-hub.ts, RES-6): a turn starts a unit while UNIT_WORST is left of
   // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
-  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
-  // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
-  // status, which a stored row may make a boost of a quote; `notification` its account, its status and a report and
-  // a warning (their conservative figures count a fallback each, which a streamed notification does not carry); an
-  // announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents
+  // (streamedKinds): the quote conversation's, since a conversation shows no boost as its last status. The streamed
+  // witnesses, a conversation whose last status is the quote and a notification whose status is the boost of the
+  // quote, present within their kinds.
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
-    const c = await conservativeJson();
-    const ANNOUNCEMENT = 248_997;
-    const kinds = {
-      status: c.boostOfQuote!,
-      conversation: c.conversation! - c.quote! + c.boostOfQuote!,
-      notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
-      announcement: ANNOUNCEMENT,
-    };
+    const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_812_706,
-      conversation: 7_537_495,
-      notification: 6_611_840,
-      announcement: ANNOUNCEMENT,
-      most: 7_537_495,
+      status: 5_818_830,
+      conversation: 7_151_333,
+      notification: 6_626_929,
+      announcement: ANNOUNCEMENT_JSON,
+      most: 7_151_333,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_745_008);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(17_972_684);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_455_236, conversationPayload: 8_269_925, notification: 5_910_647 });
+    expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -2763,15 +3145,13 @@ describe("the table of maxima (RES-3)", () => {
     expect({
       chunk: 50 * (shapes.account!.sqlite + 2 * STATIC_URL_LIMIT + REMOTE_VERIFIED_JSON_BYTES + MOVED_ROW_SQLITE_MAX),
       page: 80 * conservative.account!,
-    }).toEqual({ chunk: 6_842_600, page: 11_839_200 });
+    }).toEqual({ chunk: 6_905_000, page: 12_001_760 });
   }, 600_000);
 
   // Half of the Store isolate's 128 MB. A timeline's largest item is a status, a quote or a boost of a quote; groups
   // and reports keep the presentation's state besides (10.1 and 12.5 MB, docs/threat-model.md) and pass half, below
   // the whole (the RES-3 gap).
   const HALF = 64_000_000;
-  // The least spare the timeline heap and the conversation's JSON keep (#1142).
-  const SPARE_FLOOR = 4096;
   const CAP_STEP = 8 * 1024;
   it("keeps the peaks of the heap model within their bounds, from the maxima per column", async () => {
     const timelines = await peaks(["status", "quote", "boostOfQuote"], PAGE_CHUNKS, 0);
@@ -2789,6 +3169,99 @@ describe("the table of maxima (RES-3)", () => {
     expect(HALF - (timelines.backstop + 1.25 * CAP_STEP)).toBeLessThan(SPARE_FLOOR);
     for (const p of [groups, reports]) {
       expect(p.backstop).toBeLessThanOrEqual(2 * HALF);
+    }
+  }, 900_000);
+
+  // A stream unit's isolate peak (stream-hub.ts, RES-6): a unit presents one subject for one viewer, measures its
+  // payload from the presented object (encodedTwiceBytes) and, within payloadBytes, encodes it and sends one stream's
+  // envelope at a time. Under the heap model ("Heap at 8 MiB per answer"), each streamed kind takes its rows with 25%
+  // headroom at their per-column maxima (a status the largest timeline item's; a conversation its read's; a
+  // notification its status's, a report notification's and a warning's together; an announcement its list's and one
+  // presentation's, ANNOUNCEMENT_ROW_CAPS), three times its conservative JSON (the presented object), four times
+  // MESSAGE_MAX (the payload encoded once and twice, then the twice-encoded payload and one envelope, at two bytes a
+  // code unit), and its presentation's scratch (a moved-to account's emoji; an announcement's rendering:
+  // test/announcement-bounds.test.ts). MESSAGE_MAX is the largest frame: payloadBytes, the envelope's keys, the
+  // longest event and the longest stream, `["hashtag:local", tag]` with a tag of tagBytes bytes escaped to six each.
+  // Imported text of malformed UTF-8 stays within the fills ("an account of malformed imported text", "a status of
+  // malformed imported text"), an attachment's too: its description values read within the fills' largest, at its
+  // stored bound, and each description it presents within the escaped fill's.
+  it("bounds a stream unit's isolate peak by the most a subject presents", async () => {
+    const envelopeKeys = jsonBytes({ stream: 0, event: 0, payload: 0 }) - 3;
+    const longestEvent = Math.max(...STREAM_EVENT_NAMES.map((name) => jsonBytes(name)));
+    const longestStream = jsonBytes(["hashtag:local", C.repeat(STREAM_LIMITS.tagBytes)]);
+    const messageMax = STREAM_LIMITS.payloadBytes + envelopeKeys + longestEvent + longestStream;
+    expect({ envelopeKeys, longestEvent, longestStream, messageMax }).toEqual({
+      envelopeKeys: 31,
+      longestEvent: 23,
+      longestStream: 1556,
+      messageMax: MESSAGE_MAX,
+    });
+    const measures = await Promise.all(FILLS.map(measureFill));
+    const rows = (item: string) => perColumn(measures.map((m) => m.heaps[item]!)).heap;
+    const kinds = await streamedKinds();
+    const unit = (rowHeap: number, json: number, scratch: number) => {
+      const peak = { rows: 1.25 * rowHeap, objects: 3 * json, transient: 4 * messageMax + scratch };
+      return { ...peak, peak: peak.rows + peak.objects + peak.transient };
+    };
+    const peaks = {
+      status: unit(Math.max(rows("status"), rows("quote"), rows("boostOfQuote")), kinds.status, MOVED_EMOJI_SCRATCH),
+      conversation: unit(rows("conversation"), kinds.conversation, MOVED_EMOJI_SCRATCH),
+      notification: unit(
+        rows("boostOfQuote") + rows("reportNotification") + rows("warningNotification"),
+        kinds.notification,
+        MOVED_EMOJI_SCRATCH,
+      ),
+      announcement: unit(
+        ANNOUNCEMENT_ROW_CAPS.list + ANNOUNCEMENT_ROW_CAPS.presentation,
+        kinds.announcement,
+        2 * (ANNOUNCEMENT_CONTENT_BYTES + 310_064 + 60_009),
+      ),
+    };
+    expect(peaks).toEqual(STREAM_UNIT_PEAKS);
+    for (const peak of Object.values(peaks)) {
+      expect(peak.peak).toBeLessThanOrEqual(HALF);
+    }
+    // The attachment witness: four descriptions of malformed UTF-8 at MEDIA_DESCRIPTION_BYTES, each decoded to 40,000
+    // U+FFFD. As for the account witness, RowMeter's count of a value (two bytes a code unit) is the model's of its
+    // stored bytes (two a byte), the raw fill's largest description; the status's rows stay within the fills', and
+    // each description is presented within the escaped fill's.
+    const t = await setup();
+    const id = await malformedAttachments(t);
+    const input = { credential: await credential(t), now: NOW, id, present: { origin: ORIGIN } };
+    const witness = await runInDurableObject(t.store, (_instance, state) => {
+      let rowHeap = 0;
+      let description = 0;
+      const counting = observedSql(state.storage.sql, (read) => {
+        rowHeap += heap(read);
+        for (const row of read) {
+          if (typeof row.description === "string") {
+            description = Math.max(description, VALUE_BYTES + 2 * row.description.length);
+          }
+        }
+      });
+      let answer = getStatus.run(counting, input as never) as Record<string, unknown>;
+      while (answer.status === "ok" && "value" in answer) {
+        answer = answer.value as Record<string, unknown>;
+      }
+      const { stored } = state.storage.sql
+        .exec<{ stored: number }>(
+          "SELECT max(octet_length(description)) AS stored FROM media_attachments WHERE status_id = ?",
+          id,
+        )
+        .one();
+      return { rowHeap, description, stored, answer: answer as unknown as Presented };
+    });
+    const fillsDescription = Math.max(
+      ...measures.flatMap((m) => [...m.heaps.status!.values()].map((h) => h.columns.get("description")?.largest ?? 0)),
+    );
+    expect(witness.stored).toBe(MEDIA_DESCRIPTION_BYTES);
+    expect(witness.description).toBe(VALUE_BYTES + 2 * witness.stored);
+    expect(witness.description).toBeLessThanOrEqual(fillsDescription);
+    expect(witness.rowHeap).toBeLessThanOrEqual(rows("status"));
+    const shown = witness.answer.media_attachments.map((m) => jsonBytes(m.description));
+    expect(shown).toHaveLength(MAX_STATUS_MEDIA);
+    for (const bytes of shown) {
+      expect(bytes).toBeLessThanOrEqual(jsonBytes(C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH)));
     }
   }, 900_000);
 

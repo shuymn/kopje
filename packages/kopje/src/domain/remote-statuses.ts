@@ -1,10 +1,18 @@
-import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import {
+  ACCOUNTS_ID_INDEX,
+  ACCOUNTS_URI_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
+  POLLS_STATUS_INDEX,
+  STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
+} from "../db/indexes";
 import type { Db } from "../db/sql";
-import { parseAddress } from "../platform/domain-name";
-import { sameOrigin } from "../platform/http-url";
+import { normalizeDomain, parseAddress } from "../platform/domain-name";
+import { httpUrl, sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
-import { type Account, type Present, presentAccountById } from "./accounts";
+import { type Account, accountIdByAddress, type Present, presentAccountById } from "./accounts";
+import { instanceDomainOf } from "./actors";
 import {
   availableSql,
   domainBlocksSql,
@@ -20,11 +28,13 @@ import {
   type Visibility,
 } from "./audience";
 import { userWriteOperation } from "./auth";
+import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
 import { notify } from "./notifications";
-import { isLocalPoll, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
+import { type Poll, presentPoll } from "./poll-presenter";
+import { isLocalPoll, markPollFetched, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
 import { withinRealTimeWindow } from "./real-time-window";
 import {
@@ -43,16 +53,19 @@ import {
   followersUri,
   type StoredStatus,
 } from "./remote-status-reads";
+import { recordCreateWalk } from "./reply-walk-create";
 import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, resolveStatusId, writeTags } from "./statuses";
+import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
-// ActivityPub::Activity::Create and ProcessStatusUpdateService store them. The Worker has parsed the object as
-// Mastodon reads it (compacted JSON), sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to
-// the bounds below (RES-2, RES-4); here it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
+// ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
+// Kopje already stores is its author's Update (storeFetchedStatus). The Worker has parsed the object as Mastodon reads
+// it (compacted JSON), sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to the bounds below
+// (RES-2, RES-4); here it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
 //
 // Addressing goes through interpretAddressing (audience.ts): known accounts in to/cc that are not mentioned, and the
 // owner of the personal inbox it came to, are silent mentions; a direct status with any is limited (VIS-2). Unknown
@@ -85,7 +98,17 @@ export type StoreContext = {
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
+  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk), its walk queued at the
+  // Store's own time (atStoreTime): set only by the paths that store what was delivered or what a user asked for (an
+  // inbound Create or Update, an Announce's original, an Add's status, a QuoteRequest's quoting status, a search or
+  // interaction resolution), never by a walk, quote verification or a collection sync, so nothing a walk causes starts
+  // another.
+  readReplies?: { storeNow: number };
 };
+
+// The context of a path that may update a stored status (updateRemoteStatus): also the Store's own time, which an
+// accepted poll records as fetched (polls.ts markPollFetched).
+export type UpdateContext = StoreContext & { storeNow: number };
 
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
 
@@ -111,31 +134,44 @@ function versionOf(value: string | null, now: number): number {
 }
 
 // StatusParser#quote_policy (Status::InteractionPolicyConcern's flags, audience.ts QUOTE_POLICY_FLAGS) of a remote
-// status by `author`: each half's flags from the URIs it lists: the public collection, the author's followers and
-// following collections (as its stored actor document names them), the author itself (which means nobody, so it adds
-// nothing), and anything else unsupported_policy; automatic in the high 16 bits. A Note that states no policy is 0,
-// nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it (explicit or implicit),
-// never from a Create of a status already stored, so a replayed Create cannot bring an older policy back
-// (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a local user
-// may ask (R36); the quoted author's answer decides the quote.
+// status by `author`: each half's flags from the entries it lists, read in Mastodon's order (quote_subpolicy,
+// status_parser.rb:179-196, which deletes each match before the next): the public collection, the author's followers
+// collection, then its following collection (as its stored actor document names them: '' when it names none, as
+// Mastodon stores it, which a listed "" matches), the author itself (which means nobody, so it adds nothing), and
+// anything else, a value that is not a string among them, unsupported_policy; automatic in the high 16 bits. A Note
+// that states no policy is 0, nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it
+// (explicit or implicit), never from a Create of a status already stored, so a replayed Create cannot bring an older
+// policy back (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a
+// local user may ask (R36); the quoted author's answer decides the quote.
 function remoteQuotePolicy(db: Db, author: Author, policy: RemoteQuotePolicyInput | null | undefined): number {
   if (policy === null || policy === undefined) {
     return 0;
   }
-  const collections = db.first<{ followers: string | null; following: string | null }>(
-    `SELECT CASE WHEN json_type(raw, '$.followers') = 'text' THEN json_extract(raw, '$.followers') END AS followers,
-			CASE WHEN json_type(raw, '$.following') = 'text' THEN json_extract(raw, '$.following') END AS following
+  const row = db.first<{ followers: string | null; following: string | null }>(
+    `SELECT ${collectionSql("raw", "followers")} AS followers, ${collectionSql("raw", "following")} AS following
 		FROM accounts WHERE id = ?`,
     author.id,
   );
-  const flags = (entries: readonly string[]): number => {
+  const followers = collectionRead(row?.followers ?? null);
+  const following = collectionRead(row?.following ?? null);
+  // A string past an unreadable collection (collection-requests.ts storedCollectionUri) adds nothing: Mastodon may
+  // store that collection as the very string, and then reads the entry as it, before any later match, so neither a
+  // later collection's flag nor unsupported_policy (which lets anyone ask) is known to be Mastodon's. Adding nothing
+  // grants no one more than Mastodon does. A value that is not a string matches no collection.
+  const flags = (entries: readonly (string | null)[]): number => {
     let half = 0;
     for (const entry of new Set(entries)) {
-      if (isPublicCollection(entry)) {
+      if (entry === null) {
+        half |= QUOTE_POLICY_FLAGS.unsupported_policy;
+      } else if (isPublicCollection(entry)) {
         half |= QUOTE_POLICY_FLAGS.public;
-      } else if (entry === collections?.followers) {
+      } else if (followers === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === followers) {
         half |= QUOTE_POLICY_FLAGS.followers;
-      } else if (entry === collections?.following) {
+      } else if (following === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === following) {
         half |= QUOTE_POLICY_FLAGS.following;
       } else if (entry !== author.uri) {
         half |= QUOTE_POLICY_FLAGS.unsupported_policy;
@@ -475,6 +511,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       now: ctx.now,
     });
   }
+  if (ctx.readReplies !== undefined) {
+    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.readReplies.storeNow);
+  }
   return { applied: true, reason: "created", statusId: id };
 }
 
@@ -611,8 +650,10 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 
 // Mastodon's ActivityPub::Activity::Update#update_status and ProcessStatusUpdateService, for `author`'s status.
 //   - ID-6: only the status's author updates it; a local status is never one (ID-3).
-//   - An Update whose `updated` is not newer than the stored version is ignored, so a reordered or repeated Update
-//     changes nothing (ID-7).
+//   - An Update whose `updated` is older than the stored version, or that names none for an edited status (edited_at
+//     set), changes nothing; one naming the stored version, or none for a status never edited, is the implicit update
+//     (its poll's counts, its quote policy, its quote's stamp); so a reordered or repeated Update changes no content
+//     (ID-7).
 //   - The visibility never changes, and the audience of a private, direct or limited status never widens: a mention
 //     the edit adds is linked in the content but adds no recipient (as an outbound edit does). Public and unlisted
 //     statuses take new mentions, as Mastodon does. A mention the edit removes stays as a silent mention.
@@ -623,7 +664,12 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     names a stored status: Update#update_status reaches Create#create_status, which finds that status
 //     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
 //     id, under that status's uri.
-export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+export function updateRemoteStatus(
+  db: Db,
+  author: Author,
+  input: RemoteStatusInput,
+  ctx: UpdateContext,
+): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
   }
@@ -669,27 +715,41 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   }
   // The watermark is the last accepted version, whether or not it changed the history, as the remote wrote it.
   const stored = Date.parse(existing.watermark ?? "");
-  // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included.
-  if (version < stored) {
+  // ProcessStatusUpdateService#already_updated_more_recently?: an older version changes nothing, its poll included;
+  // and so does one that names no version for an edited status (process_status_update_service.rb:32-34 in v4.7.5,
+  // "an older update"), such as a peer's cached copy from before the edit (ID-7).
+  if (version < stored || (Number.isNaN(version) && existing.edited_at !== null)) {
     return { applied: false, reason: "stale" };
   }
   const arrival = arrivalOf(db, author, ctx);
   if (Number.isNaN(version) || version === stored) {
-    // ProcessStatusUpdateService#handle_implicit_update!: an Update that names no newer version (such as the Update of
-    // a poll's counts, which names none, or the same one) still refreshes the counts, the end and the voters of its
-    // poll, and verifies a changed stamp of the same quote again; the quoted status itself changes only with a newer
-    // version.
-    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    // ProcessStatusUpdateService#handle_implicit_update!: an Update that names the stored version, or none for a status
+    // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
+    // refreshes the counts, the end and the voters of its poll, and verifies the same quote again (refreshQuote); the
+    // quoted status itself changes only with a newer version.
+    const reset = refreshQuote(
+      db,
+      { id: existing.id, uri, author },
+      input.quote,
+      { ...arrival, broadcast: true, version: "same" },
+      ctx,
+      storeRemoteStatus,
+    );
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
         remoteQuotePolicy(db, author, input.quotePolicy),
         existing.id,
       ) > 0;
-    const pollUpdated = input.poll !== undefined && storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
-    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
-    // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
-    if (restamped) {
+    const poll = input.poll === undefined ? undefined : storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    if (poll !== undefined) {
+      markPollFetched(db, existing.id, poll, ctx.storeNow);
+    }
+    const pollUpdated = poll === "written";
+    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): the reset of an accepted quote, at
+    // once; a move its verification makes notifies at that work's decision (quotes.ts finish). Not a legacy form
+    // alone, the same stamp, the poll or the quote policy.
+    if (reset) {
       notifyEdited(db, existing.id, author.id, ctx.now);
     }
     return pollUpdated
@@ -721,7 +781,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (significant && versions === 0) {
     recordEdit(db, existing.id, existing.published_at);
   }
-  storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now);
+  markPollFetched(db, existing.id, storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now), ctx.storeNow);
   db.run(
     `UPDATE statuses SET content = ?, spoiler_text = ?, sensitive = ?, language = ?, raw = ?, search_text = ?,
 			remote_version = ?, edited_at = CASE WHEN ? THEN ? ELSE edited_at END, quote_policy = ?, emojis = ?,
@@ -749,7 +809,14 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(
+    db,
+    { id: existing.id, uri, author },
+    input.quote,
+    { ...arrival, version: "newer" },
+    ctx,
+    storeRemoteStatus,
+  );
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
     // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither
@@ -771,6 +838,93 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   }
   return { applied: true, reason: significant ? "edited" : "updated", statusId: existing.id };
 }
+
+// A status Kopje fetched, which it may already store, as ActivityPub::FetchRemoteStatusService#call takes it
+// (fetch_remote_status_service.rb:44-48 in v4.7.5): nothing for an unavailable author (R38, VIS-30), an update included;
+// a status stored under the document's id (never its atomUri), by `author`, an original, is updated as by its author's
+// Update (updateRemoteStatus: its version rules, fan-out and quote); anything else is a Create (storeRemoteStatus,
+// whose lookup by atomUri keeps what it finds). An update that stops before its quote step (an older version, one
+// past the skew, or none for an edited status) still has the status arrive again as a root, as storeRemoteStatus's
+// known branch does (promoteQuote), and its outcome names the stored status unless that is retracted.
+export function storeFetchedStatus(
+  db: Db,
+  author: Author,
+  input: RemoteStatusInput,
+  ctx: UpdateContext,
+): StatusOutcome {
+  if (db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, author.id) === undefined) {
+    return { applied: false, reason: "author-unavailable" };
+  }
+  const stored = statusByUri(db, input.uri);
+  if (stored === undefined || stored.account_id !== author.id || stored.reblog_of_id !== null) {
+    return storeRemoteStatus(db, author, input, ctx);
+  }
+  const outcome = updateRemoteStatus(db, author, input, ctx);
+  // updateRemoteStatus answers these without a status id only from its checks before the quote step.
+  if (outcome.statusId === undefined && (outcome.reason === "stale" || outcome.reason === "future")) {
+    promoteQuote(db, stored.id, arrivalOf(db, author, ctx), ctx.now);
+    return { ...outcome, statusId: stored.id };
+  }
+  return outcome;
+}
+
+// The refresh of a remote poll on read (Mastodon 4.7.5's FetchRemotePollService), after its reservation
+// (polls.ts reservePollRefresh) and the Worker's fetch of the status's own document (federation/poll-refresh.ts).
+// revision: the poll's revision as the reservation set it (TEXT, DATA-6).
+export type PollRefreshInput = {
+  statusId: string;
+  revision: string;
+  status: RemoteStatusInput;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
+
+// poll: the poll as the reader sees it now, null when its status is gone or no longer visible to them (404).
+// quotesDue: the status has a quote whose verification is due (the Worker asks the Queue for a job round).
+export type PollRefreshResult = { poll: Poll | null; quotesDue: boolean };
+
+// Applies the fetched document as its author's Update (storeFetchedStatus: the Update's version rules, its fan-out, its
+// quote and R38), only while the reader may see the status (R3) and the poll's revision is still the reservation's:
+// nothing has written the poll since (a vote, an Update delivered or fetched, its end, a reset or a newer
+// reservation), so a refresh never overwrites a state committed during its fetch (ID-7). Otherwise it applies
+// nothing. Either way it answers the poll as stored now, judged again for the reader.
+export const refreshPoll = userWriteOperation.atStoreTime("storeNow")<PollRefreshInput, PollRefreshResult>((
+  db,
+  input,
+  { accountId },
+  { now },
+) => {
+  const { statusId } = input;
+  const current =
+    viewableStatusId(db, accountId, statusId) === null
+      ? undefined
+      : db.first<{ author_id: string; author_uri: string }>(
+          `SELECT s.account_id AS author_id, a.uri AS author_uri
+					FROM polls p INDEXED BY ${POLLS_STATUS_INDEX}
+					CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = p.status_id
+					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
+				WHERE p.status_id = ?1 AND p.revision = CAST(?2 AS INTEGER) AND s.uri = ?3`,
+          statusId,
+          input.revision,
+          input.status.uri,
+        );
+  if (current !== undefined) {
+    storeFetchedStatus(db, { id: current.author_id, uri: current.author_uri }, input.status, {
+      now: input.now,
+      storeNow: input.storeNow,
+      origin: input.origin,
+      deliveredTo: null,
+      fetched: true,
+    });
+  }
+  const visible = viewableStatusId(db, accountId, statusId);
+  return {
+    poll: visible === null ? null : presentPoll(db, visible, accountId, now, input.present.origin),
+    quotesDue: current !== undefined && quoteDue(db, statusId, input.now),
+  };
+});
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
@@ -825,13 +979,16 @@ function updateMentions(
 // ---------------------------------------------------------------------------------------------------------------
 
 // What the Worker fetched for a resolve query (federation/resolve.ts): an account, or a status with its author, each
-// fetched through the safe loader signed by the instance actor and parsed as inbound documents are. none: nothing was
-// fetched (a local URL, an unusable answer, a failed fetch); the query is then looked up by uri in stored data only.
-// revision: the actor's (the author's) as read before its document was fetched (remote-actors.ts DocumentRevision).
+// fetched through the safe loader signed by the instance actor and parsed as inbound documents are. revision: the
+// actor's (the author's) as read before its document was fetched (remote-actors.ts DocumentRevision). local: a target
+// on this instance, which nothing is fetched for (resolutionTarget). none: nothing resolved; `last` is the status of
+// the last answer the URL's own fetches received (Mastodon's FetchResourceService#response_code), null when none did
+// (federation/resolve.ts resolveUrl), and storeResolved answers stored data by it.
 export type Resolved =
   | { kind: "account"; actor: RemoteActorInput; revision: DocumentRevision }
   | { kind: "status"; status: RemoteStatusInput; author: RemoteActorInput; revision: DocumentRevision }
-  | { kind: "none" };
+  | { kind: "local" }
+  | { kind: "none"; last: number | null };
 
 // The queries resolve=true fetches (Mastodon's SearchService#url_query? and AccountSearchService's address forms): an
 // http(s) URL, or an address (parseAddress in platform/domain-name.ts: user@domain, @user@domain or acct:user@domain).
@@ -845,15 +1002,16 @@ export function webfingerUrl(username: string, host: string): string {
 }
 
 // What a search resolution of the trimmed `query` fetches (federation/resolve.ts resolveWith), read one way for the
-// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; null when nothing is
-// fetched: an address on the instance `domain`, a URL on its host (both answered from stored data), or a query that is
-// neither.
-export type ResolutionTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; local, nothing, for
+// an address on the instance `domain` or a URL on its host (answered from stored data); null, nothing, for a query that
+// is neither.
+export type FetchTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+export type ResolutionTarget = FetchTarget | { kind: "local" };
 
 export function resolutionTarget(query: string, domain: string): ResolutionTarget | null {
   const address = parseAddress(query);
   if (address !== null) {
-    return address.domain === domain ? null : { kind: "address", ...address };
+    return address.domain === domain ? { kind: "local" } : { kind: "address", ...address };
   }
   let url: URL;
   try {
@@ -861,15 +1019,24 @@ export function resolutionTarget(query: string, domain: string): ResolutionTarge
   } catch {
     return null;
   }
-  return url.host === domain ? null : { kind: "url", href: url.href };
+  return url.host === domain ? { kind: "local" } : { kind: "url", href: url.href };
 }
 
 // The first request a resolution of `target` makes.
-export function firstRequestOf(target: ResolutionTarget): string {
+export function firstRequestOf(target: FetchTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };
+// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext) and which queues the
+// create walk of a status the resolution stores.
+export type ResolveInput = {
+  query: string;
+  resolved: Resolved;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
 export type ResolveResult = { accounts: Account[]; statuses: Status[]; quotesDue?: boolean };
@@ -881,13 +1048,71 @@ export type StoredResolution =
   | { kind: "status"; id: string | undefined; quotesDue: boolean }
   | { kind: "none" };
 
+// Mastodon 4.7.5's ResolveURLService::USERNAME_STATUS_RE: `/@`, Account::USERNAME_RE (case-insensitive, which Ruby's
+// case folding extends to U+017F and U+212A), `/`, an optional `statuses/` and an id, at the end of the path (`\Z`,
+// before a final newline too). URI_PARTS splits a URI as Addressable::URI.parse does (RFC 3986, appendix B): what
+// precedes the path, the path, and the query and fragment.
+const USERNAME_CHAR = "[a-zA-Z0-9_\\u017F\\u212A]";
+const USERNAME_STATUS_RE = new RegExp(
+  `/@(${USERNAME_CHAR}+(?:[.-]+${USERNAME_CHAR}+)*)/(?:statuses/)?([0-9a-zA-Z]+)(?=\\n?$)`,
+);
+const URI_PARTS = /^((?:[^:/?#]+:)?(?:\/\/[^/?#]*)?)([^?#]*)([\s\S]*)$/;
+
+// The uri process_url_from_db guesses for a status's web address `url` (resolve_url_service.rb:50-54): the URL with its
+// path replaced by /users/<username>/statuses/<id> when the path matches USERNAME_STATUS_RE, everything else kept as
+// written (Addressable's path=); null when it does not match.
+export function guessedStatusUri(url: string): string | null {
+  const parts = URI_PARTS.exec(url);
+  const matched = parts === null ? null : USERNAME_STATUS_RE.exec(parts[2] ?? "");
+  if (parts === null || matched === null) {
+    return null;
+  }
+  return `${parts[1] ?? ""}/users/${matched[1] ?? ""}/statuses/${matched[2] ?? ""}${parts[3] ?? ""}`;
+}
+
+// The last answers after which process_url_from_db looks stored data up (resolve_url_service.rb:39, :44).
+const ACCOUNT_AFTER: ReadonlySet<number | null> = new Set([500, 502, 503, 504, null]);
+const STATUS_AFTER: ReadonlySet<number | null> = new Set([401, 403, 404]);
+
+// The stored account whose uri is `uri` (a unique key).
+function storedAccount(db: Db, uri: string): StoredResolution | null {
+  const row = db.first<{ id: string }>(`SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?1`, uri);
+  return row === undefined ? null : { kind: "account", id: row.id };
+}
+
+// The stored original whose uri is `uri`, or whose uri is `guessed` and whose url is `uri`, the lower id of two
+// (Mastodon's scope.first; ids are 18 digits, so text order is numeric): two seeks of a unique key. Never a boost,
+// whose uri is its Announce's id. It arrives as a root, and its quote is verified as any root's.
+function storedStatus(db: Db, uri: string, guessed: string | null, now: number): StoredResolution | null {
+  const row = db.first<{ id: string; account_id: string }>(
+    `SELECT id, account_id FROM statuses INDEXED BY ${STATUSES_URI_INDEX} WHERE uri = ?1 AND reblog_of_id IS NULL
+		UNION ALL SELECT id, account_id FROM statuses INDEXED BY ${STATUSES_URI_INDEX}
+			WHERE uri = ?2 AND url = ?1 AND reblog_of_id IS NULL
+		ORDER BY id LIMIT 1`,
+    uri,
+    guessed,
+  );
+  if (row === undefined) {
+    return null;
+  }
+  promoteQuote(db, row.id, quoteArrival(db, row.account_id, null), now);
+  return { kind: "status", id: row.id, quotesDue: quoteDue(db, row.id, now) };
+}
+
 // Stores what was resolved with the validation of inbound activities (ID-3, ID-7, HTML-1, HTML-3, RES-4): the one
-// ingestion of search resolution and of /authorize_interaction (domain/interaction.ts). A document superseded since its
-// revision was read is not stored; the stored row is answered instead. With nothing fetched, the query is looked up by
-// uri in stored data; a stored status found so arrives as a root, and its quote is verified as any root's.
+// ingestion of search resolution (`viewer` true) and of /authorize_interaction (domain/interaction.ts, `viewer` false).
+// An actor document superseded since its revision was read is not stored; the stored row is answered instead. A
+// fetched status goes through storeFetchedStatus, so one Kopje stores is applied as its author's Update (Mastodon's
+// ResolveURLService hands the fetched body to FetchRemoteStatusService, resolve_url_service.rb:28). A local target is
+// looked up by uri. A URL that resolved nothing is answered from stored data as process_url_from_db answers it
+// (:38-63), by the last answer of its fetches: after a 500, 502, 503, 504 or none, the stored account whose uri it is;
+// after a 401, 403 or 404, for a viewer only (Mastodon's on_behalf_of), the stored status whose uri it is or that its
+// web address names (guessedStatusUri); nothing otherwise, and for an address. Nothing stored is removed on any branch
+// (ID-7).
 export function storeResolved(
   db: Db,
-  { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
+  { query, resolved, now, storeNow, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "storeNow" | "origin">,
+  viewer: boolean,
 ): StoredResolution {
   const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
     const stored = upsertRemoteActor(db, actor, origin, now, revision);
@@ -901,11 +1126,13 @@ export function storeResolved(
       if (author === undefined) {
         return { kind: "none" };
       }
-      const stored = storeRemoteStatus(db, author, resolved.status, {
+      const stored = storeFetchedStatus(db, author, resolved.status, {
         now,
+        storeNow,
         origin,
         deliveredTo: null,
         fetched: true,
+        readReplies: { storeNow },
       });
       return {
         kind: "status",
@@ -913,33 +1140,128 @@ export function storeResolved(
         quotesDue: stored.statusId !== undefined && quoteDue(db, stored.statusId, now),
       };
     }
+    case "local":
+      return storedStatus(db, query, null, now) ?? storedAccount(db, query) ?? { kind: "none" };
     case "none": {
-      const byUri = db.first<{ kind: string; id: string }>(
-        `SELECT 'status' AS kind, id FROM statuses WHERE uri = ?1 AND reblog_of_id IS NULL
-				UNION ALL SELECT 'account', id FROM accounts WHERE uri = ?1
-				LIMIT 1`,
-        query,
-      );
-      if (byUri === undefined) {
+      const { last } = resolved;
+      if (!isUrlQuery(query)) {
         return { kind: "none" };
       }
-      if (byUri.kind === "account") {
-        return { kind: "account", id: byUri.id };
-      }
-      const author = db.first<{ account_id: string }>("SELECT account_id FROM statuses WHERE id = ?", byUri.id);
-      if (author !== undefined) {
-        promoteQuote(db, byUri.id, quoteArrival(db, author.account_id, null), now);
-      }
-      return { kind: "status", id: byUri.id, quotesDue: quoteDue(db, byUri.id, now) };
+      const account = ACCOUNT_AFTER.has(last) ? storedAccount(db, query) : null;
+      const status = viewer && STATUS_AFTER.has(last) ? storedStatus(db, query, guessedStatusUri(query), now) : null;
+      return account ?? status ?? { kind: "none" };
     }
   }
+}
+
+// Kopje's routes for what Mastodon 4.7.5's ResolveURLService#process_local_url finds (resolve_url_service.rb:93-123),
+// read as its router reads its own (config/routes.rb:113, :160-179) through recognize_path, which Rails 8.1.3.1 runs on
+// the URL's path as written, not normalized (routing/route_set.rb: an absolute URL skips normalize_path), against
+// routes anchored at both ends (journey/path/pattern.rb), so a trailing `/` or a dot segment matches none of them: a
+// profile or one of its tabs (accounts#show, whose username takes no `@`, `/` or `.`), an actor URI (Kopje's for
+// /users/:username, also accounts#show), a status page (statuses#show, whose username is a profile's and whose id takes
+// no `.`), an object URI (Kopje's for /users/:u/statuses/:id), each with Rails' optional `.:format`; then, under any
+// handle (home#index, which takes no format), an address with no rest and a status page.
+const FORMAT = "(?:\\.[^/.]+)?";
+const LOCAL_PROFILE = new RegExp(
+  `^/@([^@/.]+)(?:/(?:featured|collections|with_replies|media|tagged/[^/.]+))?${FORMAT}$`,
+);
+const LOCAL_ACTOR = new RegExp(`^/ap/users/([^/.]+)${FORMAT}$`);
+const LOCAL_STATUS_SHOW = new RegExp(`^/@[^@/.]+/([^/.]+)${FORMAT}$`);
+const LOCAL_OBJECT = new RegExp(`^/ap/o/([^/.]+)${FORMAT}$`);
+const LOCAL_ADDRESS = /^\/@([^/]+)$/;
+const LOCAL_STATUS_PAGE = /^\/@[^/]+\/([^/]+)$/;
+
+// An http(s) URL as Rack's env_for parses it before recognize_path (URI::Parser, RFC 3986's on Ruby 4.0.9: §3.2's
+// authority with a reg-name host, §3.3-3.5's path, query and fragment), its path captured. Mastodon raises on any other
+// (ActionController::RoutingError, answered 404: docs/mastodon-deviations.md, Search).
+const PCHAR = "(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})";
+const RFC3986_URL = new RegExp(
+  "^https?://(?:(?=[^/?#]*@)(?:[A-Za-z0-9\\-._~!$&'()*+,;=:]|%[0-9A-Fa-f]{2})*@)?" +
+    "(?:[A-Za-z0-9\\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})*(?::[0-9]*)?" +
+    `((?:/${PCHAR}*)*)(?:\\?(?:${PCHAR}|[/?])*)?(?:#(?:${PCHAR}|[/?])*)?$`,
+  "i",
+);
+
+// A path parameter as recognize_path gives it: Journey decodes each %HH once (CGI.unescapeURIComponent,
+// journey/router.rb) and recognize_path_with_request once more (URI::RFC2396_PARSER.unescape, routing/route_set.rb),
+// both on bytes and leaving any other `%` as it is; null when the bytes are not UTF-8, which a lookup here cannot bind.
+const ESCAPED = /%([0-9A-Fa-f]{2})/g;
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+function routeParam(segment: string | undefined): string | null {
+  const unescape = (bytes: string) =>
+    bytes.replace(ESCAPED, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  const bytes = unescape(unescape(segment ?? ""));
+  try {
+    return UTF8.decode(Uint8Array.from(bytes, (c) => c.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
+
+// What a URL of this instance names on Kopje's routes (LOCAL_*), for a search resolution the stored lookup by uri did
+// not find: a profile or one of its tabs, or an actor URI, by the local account of that username (Account.find_local,
+// `:105`); an address /@<user>@<other domain> by the stored remote account of that address, nothing fetched
+// (Account.find_remote, `:116`), its user and domain the first two fields of Ruby's split('@') after one leading `@` is
+// removed (`:113`), and /@<user>@<this domain> by the local account, as its profile page serves it, where Mastodon
+// finds none (docs/mastodon-deviations.md, Search); a status page /@<handle>/<id>, whatever the handle (Mastodon reads
+// the id alone, `:100`, `:110`), by its API or legacy id as written (Mastodon casts it as Rails casts an integer,
+// listed there), never a boost; an object URI by its uri (storedStatus). Whether the viewer may see it is
+// resolveSearch's. It reads the instance's domain, then one status by unique key and its row again for the boost check,
+// or one account by its address index. The interaction page maps its own forms (interaction.ts localTarget).
+function localSearchTarget(db: Db, query: string, now: number): StoredResolution {
+  const none: StoredResolution = { kind: "none" };
+  const domain = instanceDomainOf(db);
+  const url = domain === null ? null : httpUrl(query);
+  const path = url === null ? undefined : RFC3986_URL.exec(query)?.[1];
+  if (domain === null || url === null || url.host !== domain || path === undefined) {
+    return none;
+  }
+  const account = (username: string | null, at: string | null): StoredResolution => {
+    if (username === null || username === "" || at === "") {
+      return none;
+    }
+    const remote = at === null || at.toLowerCase() === domain ? null : (normalizeDomain(at) ?? at.toLowerCase());
+    const id = accountIdByAddress(db, username, remote);
+    return id === undefined ? none : { kind: "account", id };
+  };
+  const profile = LOCAL_PROFILE.exec(path) ?? LOCAL_ACTOR.exec(path);
+  if (profile !== null) {
+    return account(routeParam(profile[1]), null);
+  }
+  const object = LOCAL_OBJECT.exec(path);
+  if (object !== null) {
+    const id = routeParam(object[1]);
+    return id === null ? none : (storedStatus(db, `https://${domain}/ap/o/${id}`, null, now) ?? none);
+  }
+  const address = LOCAL_ADDRESS.exec(path);
+  const handle = address === null ? null : routeParam(address[1]);
+  if (handle !== null) {
+    const fields = handle.replace(/^@/, "").split("@");
+    return account(fields[0] ?? null, fields[1] ?? "");
+  }
+  const page = LOCAL_STATUS_SHOW.exec(path) ?? LOCAL_STATUS_PAGE.exec(path);
+  const raw = page === null ? null : routeParam(page[1]);
+  const id = raw === null ? null : resolveStatusId(db, raw);
+  const original =
+    id !== null &&
+    db.first(
+      `SELECT 1 AS x FROM statuses INDEXED BY ${STATUSES_ID_INDEX} WHERE id = ?1 AND reblog_of_id IS NULL`,
+      id,
+    ) !== undefined;
+  return original ? { kind: "status", id, quotesDue: false } : none;
 }
 
 // Stores what was resolved (storeResolved), then answers with it only if the viewer may see it (VIS-1): an account only
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
 // Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
 // server answered the instance actor with is stored with its audience and shown to nobody else.
-export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db, input, { accountId }, viewer) => {
+export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveInput, ResolveResult>((
+  db,
+  input,
+  { accountId },
+  viewer,
+) => {
   const options = { ...input.present, viewer };
   const account = (id: string | undefined): ResolveResult => {
     const findable =
@@ -959,7 +1281,11 @@ export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db
     const found = visible === null ? null : presentStatus(db, visible, options);
     return { accounts: [], statuses: found === null ? [] : [found] };
   };
-  const stored = storeResolved(db, input);
+  const fetched = storeResolved(db, input, true);
+  const stored =
+    fetched.kind === "none" && input.resolved.kind === "local"
+      ? localSearchTarget(db, input.query, input.now)
+      : fetched;
   switch (stored.kind) {
     case "account":
       return account(stored.id);

@@ -159,6 +159,73 @@ describe("Store calls of a resolving search", () => {
   });
 });
 
+// SearchService#call (Mastodon 4.7.5, search_service.rb:11-21) for a resolving search (#1706): a limit of 0 answers
+// nothing and resolves nothing; the offset counts only with a type; a URL is answered by its lookup alone, and one
+// whose answer is empty whatever it finds fetches nothing (docs/mastodon-deviations.md, Search); an address is resolved
+// only when accounts are searched.
+describe("the limit, offset and type of a resolving search", () => {
+  const NOTHING = { accounts: [], statuses: [], hashtags: [], collections: [] };
+
+  // erin's display name holds the URL, so the plain search would find her for the URL query.
+  async function typedWorld() {
+    const { t, bob, note } = await world(false);
+    await seedAccount(t.store, { username: "erin", displayName: note.id });
+    return { t, bob, note, url: encodeURIComponent(note.id) };
+  }
+
+  it("answers a limit of 0 with nothing, after one credential check and no fetch", async () => {
+    const { t, url } = await typedWorld();
+    const c = counted(t);
+    for (const query of [url, ADDRESS, "erin"]) {
+      const response = await c.request(`/api/v2/search?resolve=true&limit=0&q=${query}`);
+      expect(await response.json()).toEqual(NOTHING);
+    }
+    expect(c.calls()).toEqual(Array.from({ length: 3 }, () => ["instanceDomain", "checkCredential"]).flat());
+    expect([t.web.fetched, c.dns]).toEqual([[], []]);
+  });
+
+  it("resolves a URL at any offset without a type, and answers it alone", async () => {
+    const { t, note } = await typedWorld();
+    const c = counted(t);
+    const response = await c.request(`/api/v2/search?resolve=true&offset=1&q=${encodeURIComponent(note.id)}`);
+    const body = await response.json<{ accounts: unknown[]; statuses: { uri: string }[] }>();
+    expect([body.accounts, body.statuses.map((s) => s.uri)]).toEqual([[], [note.id]]);
+    expect(c.calls()).not.toContain("search");
+  });
+
+  it("fetches nothing for a URL whose answer is empty whatever it finds (Q3)", async () => {
+    const { t, note, url } = await typedWorld();
+    const c = counted(t);
+    for (const extra of ["&type=statuses&offset=1", "&type=hashtags", "&type=collections", "&type=lists"]) {
+      const response = await c.request(`/api/v2/search?resolve=true${extra}&q=${url}`);
+      expect([extra, await response.json()]).toEqual([extra, NOTHING]);
+    }
+    expect(c.calls()).toEqual(Array.from({ length: 4 }, () => ["instanceDomain", "checkCredential"]).flat());
+    expect([t.web.fetched, c.dns]).toEqual([[], []]);
+    // The guarded branch: at offset 0 with type=statuses, the same URL is fetched and found.
+    const found = await c.request(`/api/v2/search?resolve=true&type=statuses&q=${url}`);
+    expect((await found.json<{ statuses: { uri: string }[] }>()).statuses.map((s) => s.uri)).toEqual([note.id]);
+    expect(t.web.fetched).toContain(note.id);
+  });
+
+  it("resolves an address only when accounts are searched", async () => {
+    const { t, bob } = await typedWorld();
+    const c = counted(t);
+    for (const type of ["statuses", "hashtags"]) {
+      const response = await c.request(`/api/v2/search?resolve=true&type=${type}&q=${ADDRESS}`);
+      expect(response.status).toBe(200);
+    }
+    expect(c.calls()).toEqual(["instanceDomain", "search", "instanceDomain", "search"]);
+    expect([t.web.fetched, c.dns]).toEqual([[], []]);
+    // The guarded branch: with type=accounts, the address is resolved.
+    const accounts = await c.request(`/api/v2/search?resolve=true&type=accounts&q=${ADDRESS}`);
+    expect((await accounts.json<{ accounts: { acct: string }[] }>()).accounts.map((a) => a.acct)).toEqual([
+      "bob@mastodon.example",
+    ]);
+    expect(t.web.fetched).toEqual([WEBFINGER, bob.uri, WEBFINGER]);
+  });
+});
+
 // The decision of #1458: resolution stops before any signer read, DNS check or fetch while the Store does not accept
 // writes or the env's MAINTENANCE is not off, and the search answers as without resolve=true.
 describe("a resolving search refused before any network work", () => {

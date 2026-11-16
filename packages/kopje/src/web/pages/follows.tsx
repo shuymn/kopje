@@ -31,7 +31,8 @@ export const FollowsPage: FC<FollowsView> = ({ account, direction, hidden, accou
   const { m } = useUi();
   const { domain } = site;
   const base = followsPath(account.username, direction);
-  // A page with a cursor names its cursor-less page as canonical, and is not indexed.
+  // A page with a cursor names its cursor-less page as canonical. No page is indexed, as Mastodon's
+  // (follower_accounts/index.html.haml, following_accounts/index.html.haml).
   const canonical = `https://${domain}${base}`;
   const allowance = emojiAllowance();
   const owner = authorView(account, domain, allowance);
@@ -51,7 +52,7 @@ export const FollowsPage: FC<FollowsView> = ({ account, direction, hidden, accou
       chrome={site}
       head={
         <>
-          {cursor === null ? null : <meta name="robots" content="noindex, follow" />}
+          <meta name="robots" content="noindex" />
           <link rel="canonical" href={canonical} />
         </>
       }

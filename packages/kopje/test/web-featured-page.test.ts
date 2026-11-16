@@ -51,8 +51,9 @@ type Harness = Awaited<ReturnType<typeof community>>;
 const SITE: Site = { domain: "kopje.test", documents: { privacyPolicy: false, termsOfService: false } };
 
 // The conservative JSON of one presented account, every column at its bound ("Maxima of presented units" in
-// docs/threat-model.md; test/status-bounds.test.ts, "keeps the conservative JSON of every shape within 85%").
-const ACCOUNT_JSON_MAX = 147_990;
+// docs/threat-model.md; test/status-bounds.test.ts, "keeps the conservative JSON of every shape within the ceiling,
+// above every fill").
+const ACCOUNT_JSON_MAX = 150_022;
 
 // The most one featured hashtag of a page takes, from the bounds of what it presents (featured-tags.ts presentFeatured,
 // web-pages/featured.ts): an id of 18 digits; a name within the list's bound (TAG_NAME_JSON_BYTES as JSON); its tagged
@@ -490,14 +491,16 @@ describe("the Featured tab as a page", () => {
     const h = await community(["alice", "bob"]);
     await remote(h, "carol");
     const missing = await (await h.request("/@nobody")).text();
-    for (const path of [
-      "/@nobody/featured",
-      "/@carol@remote.example/featured",
-      "/@alice@other.example/featured",
-      "/@/featured",
-    ]) {
+    // Where Mastodon serves its web app's shell, the same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await (await h.request("/@nobody@kopje.test")).text();
+    for (const [path, bytes] of [
+      ["/@nobody/featured", missing],
+      ["/@carol@remote.example/featured", missingShell],
+      ["/@alice@other.example/featured", missingShell],
+      ["/@/featured", missing],
+    ] as const) {
       const response = await h.request(path);
-      expect([path, response.status, await response.text()]).toEqual([path, 404, missing]);
+      expect([path, response.status, await response.text()]).toEqual([path, 404, bytes]);
     }
     // The guarded branch: the same shapes of a served account answer.
     expect((await h.request("/@alice@kopje.test/featured")).status).toBe(200);

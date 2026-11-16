@@ -1,4 +1,4 @@
--- Kopje Store schema 0104: unreadable scheduled params refused. Never edit after release (checksummed).
+-- Kopje Store schema 0110: unreadable scheduled params refused. Never edit after release (checksummed).
 --
 --   scheduled_statuses.params          text with no NUL anywhere, besides the CHECK of 0011_scheduled_statuses (a JSON
 --                                      object within 128 KiB), which a BLOB passes and whose json_valid stops at a

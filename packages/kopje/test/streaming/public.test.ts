@@ -19,6 +19,7 @@ import {
   domainBlock,
   follow,
   getJson,
+  interactWith,
   mute,
   post,
   remoteAccount,
@@ -317,6 +318,103 @@ describe("update on public and hashtag streams", () => {
       ["hashtag:local #Cats", "status.update", status.id],
     ]);
   });
+
+  // A departure (mastodon-deviations.md, feed streams): Mastodon renders these streams once with no viewer.
+  it("a feed carries the subscriber's own fields, as REST shows them", async () => {
+    const h = await community(["alice", "bob"]);
+    const status = await post(h, h.users.bob, {
+      status: "before #cats",
+      visibility: "public",
+      quote_approval_policy: "public",
+      poll: { options: ["yes", "no"], expires_in: 3600 },
+    });
+    const poll = (status as Status & { poll: { id: string } }).poll.id;
+    await interactWith(h, h.users.alice, status.id);
+    expect((await act(h, h.users.alice, `/api/v1/polls/${poll}/votes`, { choices: [1] })).status).toBe(200);
+    const filter = await h.request(
+      "/api/v2/filters",
+      bearer(
+        h.users.alice.token,
+        json({
+          title: "Later",
+          context: ["public"],
+          filter_action: "warn",
+          keywords_attributes: [{ keyword: "after" }],
+        }),
+      ),
+    );
+    expect(filter.status).toBe(200);
+    const inbox = await subscribed(h, h.users.alice.token, "public:local");
+    inbox.send({ type: "subscribe", stream: "hashtag", tag: "cats" });
+    await settled(h, inbox);
+    // The fan-out presents at the Store's clock, the API at NOW: the same instant, so the poll reads the same.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    try {
+      const edited = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(
+          h.users.bob.token,
+          json(
+            { status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600, multiple: false } },
+            { method: "PUT" },
+          ),
+        ),
+      );
+      expect(edited.status).toBe(200);
+      await drained(h, inbox);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(events(inbox)).toEqual([
+      ["public:local", "status.update", status.id],
+      ["hashtag cats", "status.update", status.id],
+    ]);
+    const rest = await getJson<Status>(h, `/api/v1/statuses/${status.id}`, h.users.alice.token);
+    expect(rest.body).toMatchObject({
+      favourited: true,
+      reblogged: true,
+      bookmarked: true,
+      poll: { voted: true, own_votes: [1] },
+      quote_approval: { current_user: "automatic" },
+      filtered: [{ filter: { title: "Later" }, keyword_matches: ["after"] }],
+    });
+    for (let i = 0; i < 2; i++) {
+      expect(JSON.parse((await inbox.next()).payload!)).toEqual(rest.body);
+    }
+  });
+});
+
+// missing_attribution follows the subscriber's relationship fields here (favourited, reblogged, bookmarked), which
+// Kopje presents for the subscriber where Mastodon's anonymous payload leaves them out (#1625).
+describe("missing_attribution on public and hashtag streams", () => {
+  it("is present exactly when the payload's favourited is, true for the card's unverified author only", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const erin = await remoteAccount(h.store, "erin");
+    const inboxes: [string, Inbox][] = [
+      [alice.id, await feeds(h, alice.token)],
+      [bob.id, await feeds(h, bob.token)],
+    ];
+    const id = await remoteStatus(h, erin);
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+			VALUES (?, 'https://e.example/a', 0, 0, 'T', 1, ?)`,
+      id,
+      alice.id,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, ...inboxes.map(([, inbox]) => inbox));
+    for (const [viewer, inbox] of inboxes) {
+      const sent = inbox.rest();
+      expect(sent.map((m) => m.stream?.[0])).toEqual(["public", "public:remote", "hashtag"]);
+      for (const message of sent) {
+        const payload = JSON.parse(message.payload!) as { favourited?: boolean; card: Record<string, unknown> };
+        expect(payload.card, viewer).toMatchObject({ title: "T", missing_attribution: viewer === alice.id });
+        expect("missing_attribution" in payload.card).toBe("favourited" in payload);
+      }
+    }
+  });
 });
 
 describe("custom emoji on public streams (RES-2)", () => {
@@ -488,7 +586,7 @@ describe("feeds at the caps", () => {
 // past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 83_759, boost: 93_262 };
+  const PLAIN_R = { quote: 141_013, boost: 179_143 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -587,8 +685,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
   // 320,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 223_929, boost: 233_432 }],
-    ["every", FILLS.every, { quote: 234_809, boost: 249_556 }],
+    ["links", FILLS.links, { quote: 281_183, boost: 319_313 }],
+    ["every", FILLS.every, { quote: 327_221, boost: 388_174 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -624,6 +722,39 @@ describe("payloads with descriptions at their length (D8)", () => {
       const shown = measured(json.quote, descriptions);
       expect(shown.descriptions).toEqual(descriptions);
       expect({ quote: shown.rest, boost: measured(json.boost, descriptions).rest }).toEqual(PLAIN_R);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
+  // RES-6: a unit past the limit is measured from its presented object and skipped with no string made. JSON.stringify
+  // is spied while the turn runs (the Store shares the test's isolate): the hub encodes the presented status it sends
+  // (S1, within the limit) and never the one it skips (S2, its descriptions control characters).
+  it("skips a unit past the limit without encoding its payload", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u0001"), ...described("\u0001")];
+      const media = await describedMedia(w.h, w.alice, descriptions);
+      await drained(w.h, w.inbox);
+      const quoted = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
+      const quote = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(MAX_STATUS_MEDIA), quoted);
+      const stringify = vi.spyOn(JSON, "stringify");
+      let encoded: unknown[];
+      try {
+        await w.h.store.streamTick(BUILD);
+        await drained(w.h, w.inbox);
+        encoded = stringify.mock.calls.flatMap(([value]) =>
+          typeof value === "object" && value !== null && "media_attachments" in value ? [(value as Status).id] : [],
+        );
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(encoded).toEqual([quoted]);
+      expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+      expect(skips(warn)).toHaveLength(1);
+      // The quote is the unit skipped: its payload, as REST shows it, passes the limit.
+      expect(payloadBytes(await shownJson(w, quote))).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     } finally {
       warn.mockRestore();
     }
@@ -702,7 +833,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
         rests.push(shown.rest);
       }
-      expect(rests).toEqual([117_226, 131_973]);
+      expect(rests).toEqual([163_432, 224_385]);
       expect(skips(warn)).toEqual([]);
     } finally {
       warn.mockRestore();

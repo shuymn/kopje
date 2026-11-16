@@ -15,6 +15,7 @@ import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-versio
 import type { StoreStub } from "../platform/store-client";
 import { L1Context } from "../web/components/layout";
 import { AboutPage } from "../web/pages/about";
+import { CollectionPage } from "../web/pages/collection";
 import { DocumentPage } from "../web/pages/document";
 import { EmbedPage } from "../web/pages/embed";
 import { FeaturedPage } from "../web/pages/featured";
@@ -60,8 +61,10 @@ function l1Page(c: PublicContext, domain: string, body: Parameters<PublicContext
   return c.html(<L1Context.Provider value={true}>{body}</L1Context.Provider>, 200, l1Headers(domain));
 }
 
+// A 404 or 410 under a URL Mastodon answers with its web app's shell is `noindex`, as that shell is; any other is
+// Mastodon's error page, which sends no robots meta (Robots, mastodonShell).
 function notFound(c: PublicContext, site: Site) {
-  return publicPage(c, 404, <ErrorView chrome={site} status={404} />);
+  return publicPage(c, 404, <ErrorView chrome={site} status={404} shell={mastodonShell(c)} />);
 }
 
 // Mastodon answers a suspended account's pages with 410 Gone.
@@ -69,7 +72,12 @@ function gone(c: PublicContext, site: Site) {
   return publicPage(
     c,
     410,
-    <MessagePage chrome={site} title={STRINGS.errors.goneTitle} message={STRINGS.errors.gone} />,
+    <MessagePage
+      chrome={site}
+      title={STRINGS.errors.goneTitle}
+      message={STRINGS.errors.gone}
+      shell={mastodonShell(c)}
+    />,
   );
 }
 
@@ -89,6 +97,30 @@ function withVary(response: Response): Response {
   const copy = new Response(response.body, response);
   copy.headers.append("vary", "Accept");
   return copy;
+}
+
+// The shapes of the `/@…` paths Mastodon 4.7.5's account and status routes take (config/routes.rb:160-177), as Rails
+// matches them: a username of `[^@/.]+` (their constraint), any other segment of `[^/.?]+` (Rails' default) and an
+// optional `.format` after the last.
+const MASTODON_ACCOUNT_ROUTES: readonly RegExp[] = [
+  "@NAME", // accounts#show
+  // accounts#show (featured, collections, with_replies, media), following_accounts#index, follower_accounts#index, and
+  // statuses#show for any other segment: `/@username/interact` is a status id there.
+  "@NAME/SEGMENT",
+  "@NAME/tagged/SEGMENT", // accounts#show
+  "@NAME/SEGMENT/embed", // statuses#embed
+  "@NAME/wrapstodon/SEGMENT/SEGMENT", // wrapstodon#show
+].map(
+  (route) => new RegExp(`^/${route.replaceAll("NAME", "[^@/.]+").replaceAll("SEGMENT", "[^/.?]+")}(?:\\.[^/.?]+)?$`),
+);
+
+// Whether Mastodon 4.7.5 answers the request's URL with its web app's shell (Robots): a `/@…` path with a name that
+// none of its account routes takes reaches home#index (config/routes.rb:179), such as a status's tabs,
+// `/@username@domain/…`, or a stored username with a dot (cutover keeps one, profile-bounds.ts presents it). The path
+// is squeezed and loses a trailing `/` first, as Rails' router does.
+function mastodonShell(c: PublicContext): boolean {
+  const path = new URL(c.req.url).pathname.replace(/\/{2,}/g, "/").replace(/(.)\/$/, "$1");
+  return /^\/@[^/]/.test(path) && !MASTODON_ACCOUNT_ROUTES.some((route) => route.test(path));
 }
 
 export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
@@ -204,6 +236,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         paging={page.paging}
         site={site}
         actorUri={`https://${site.domain}/ap/users/${page.account.username}`}
+        shell={mastodonShell(c)}
       />,
     );
   };
@@ -287,6 +320,32 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         cursor={cursor}
         paging={page.paging}
         site={page.site}
+        shell={mastodonShell(c)}
+      />,
+    );
+  });
+
+  // A local collection's url (Mastodon's CollectionsController#show): its page, as an anonymous viewer reads it. HTML
+  // only.
+  pageGet("/collections/:id{[0-9]{1,19}}", async (c) => {
+    const page = await pageCall(c, (s, b) => s.webCollectionPage(b, { id: c.req.param("id") }));
+    switch (page.status) {
+      case "not_set_up":
+        return notSetUp(c);
+      case "not_found":
+        return notFound(c, page.site);
+      case "suspended":
+        return gone(c, page.site);
+    }
+    return publicPage(
+      c,
+      200,
+      <CollectionPage
+        collection={page.collection}
+        owner={page.owner}
+        tag={page.tag}
+        accounts={page.accounts}
+        site={page.site}
       />,
     );
   });
@@ -331,6 +390,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         site={page.site}
         embed={embedHtml(page.value, page.site.domain)}
         thread={page.thread === null ? undefined : { ...page.thread, cursor }}
+        shell={mastodonShell(c)}
       />,
     );
   };
@@ -441,6 +501,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   };
   pageGet("/@*", missing);
   pageGet("/tags/*", missing);
+  pageGet("/collections/*", missing);
 
   return app;
 }

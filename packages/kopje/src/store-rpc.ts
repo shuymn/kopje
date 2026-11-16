@@ -33,6 +33,7 @@ import * as annualReports from "./domain/annual-reports";
 import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
+import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
 import * as deliveries from "./domain/deliveries";
 import { directory } from "./domain/directory";
@@ -76,7 +77,8 @@ import * as quoteVerification from "./domain/quote-verification";
 import * as quotes from "./domain/quotes";
 import * as remoteCollections from "./domain/remote-collections";
 import * as remoteMedia from "./domain/remote-media";
-import { resolveSearch } from "./domain/remote-statuses";
+import { refreshPoll, resolveSearch } from "./domain/remote-statuses";
+import * as replyWalks from "./domain/reply-walks";
 import * as reports from "./domain/reports";
 import * as scheduled from "./domain/scheduled-statuses";
 import { search } from "./domain/search";
@@ -89,6 +91,7 @@ import { runModerationJobs, suspendAccount } from "./domain/suspension";
 import * as tags from "./domain/tags";
 import * as timelines from "./domain/timelines";
 import * as trends from "./domain/trends";
+import * as collectionPages from "./domain/web-pages/collection";
 import * as featuredPages from "./domain/web-pages/featured";
 import * as followPages from "./domain/web-pages/follows";
 import * as interactPages from "./domain/web-pages/interact";
@@ -175,6 +178,16 @@ export const STORE_RPC = {
   completeQuote: quoteVerification.completeQuote,
   chargeQuote: quotes.chargeQuote,
   claimQuotes: quotes.claimQuotes,
+
+  // Walks of remote replies collections (domain/reply-walks.ts): claimed, stepped and released by the Worker's job
+  // rounds (federation/replies.ts).
+  claimReplyWalk: replyWalks.claimReplyWalk,
+  completeReplyStep: replyWalks.completeReplyStep,
+  releaseReplyWalk: replyWalks.releaseReplyWalk,
+  // A context read's start of a refresh (mastodon/statuses.ts statusContext), and a refresh by its id
+  // (mastodon/async-refreshes.ts).
+  startRepliesRefresh: replyWalks.startRepliesRefresh,
+  getAsyncRefresh: replyWalks.getAsyncRefresh,
 
   // Verification of local profile links (domain/field-links.ts): claimed, recorded and finished by the cron's round
   // (federation/field-links.ts).
@@ -296,6 +309,7 @@ export const STORE_RPC = {
   webDocument: sitePages.webDocument,
   webProfilePage: profilePages.webProfilePage,
   webFeaturedPage: featuredPages.webFeaturedPage,
+  webCollectionPage: collectionPages.webCollectionPage,
   webFollowsPage: followPages.webFollowsPage,
   webTagPage: tagPages.webTagPage,
   webStatusPage: statusPages.webStatusPage,
@@ -321,6 +335,8 @@ export const STORE_RPC = {
   verifyCredentials: accounts.verifyCredentials,
   userinfo: accounts.userinfo,
   updateCredentials: accountActions.updateCredentials,
+  profile: accountActions.profile,
+  updateProfile: accountActions.updateProfile,
   preferences: accounts.preferences,
   relationships: accounts.relationships,
   familiarFollowers: accounts.familiarFollowers,
@@ -417,6 +433,19 @@ export const STORE_RPC = {
   removeListAccounts: lists.removeListAccounts,
   accountLists: lists.accountLists,
 
+  // Collections (domain/collections.ts); the cron's cleanup is pruneCollectionItems.
+  accountCollections: collections.accountCollections,
+  inCollections: collections.inCollections,
+  showCollection: collections.showCollection,
+  createCollection: collections.createCollection,
+  updateCollection: collections.updateCollection,
+  deleteCollection: collections.deleteCollection,
+  addCollectionItem: collections.addCollectionItem,
+  removeCollectionItem: collections.removeCollectionItem,
+  revokeCollectionItem: collections.revokeCollectionItem,
+  resolvedCollection: collections.resolvedCollection,
+  pruneCollectionItems: collections.pruneCollectionItems,
+
   // Conversations (domain/conversations.ts).
   listConversations: conversations.listConversations,
   markConversation: conversations.markConversation,
@@ -426,8 +455,11 @@ export const STORE_RPC = {
   getMarkers: markers.getMarkers,
   saveMarkers: markers.saveMarkers,
 
-  // Polls (domain/polls.ts).
+  // Polls (domain/polls.ts): a read that may find the poll due for a refresh, the refresh's reservation before the
+  // Worker's fetch, and the refresh that applies what it fetched (remote-statuses.ts).
   getPoll: polls.getPoll,
+  reservePollRefresh: polls.reservePollRefresh,
+  refreshPoll,
   vote: polls.vote,
 
   // The cron's round of polls (jobs/scheduled.ts): those that ended, and the Updates of counts that are due.

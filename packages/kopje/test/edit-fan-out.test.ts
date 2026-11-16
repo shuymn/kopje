@@ -1,13 +1,15 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { QUOTE_BACKOFF_MS } from "../src/domain/quotes";
 import { totalChanges } from "../src/domain/row-budget";
-import { notifyEdited } from "../src/domain/statuses";
+import { notifyEdited } from "../src/domain/update-fan-out";
 import { verifyQuotes } from "../src/federation/quotes";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
+import { BUILD } from "./helpers";
 import { LOCAL, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
@@ -23,16 +25,17 @@ import {
   type Note,
   OTHER,
   PUBLIC,
+  remove,
   type Setup,
   setup,
   statusRow,
   token,
   update,
 } from "./inbox-status-helpers";
-import { quoteRequest, quoting, serveStamp } from "./quote-helpers";
+import { quoteAccept, quoteReject, quoteRequest, quoting, serveStamp } from "./quote-helpers";
 import { observedSql, remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 
-// Mastodon's update fan-out (notifyEdited in src/domain/statuses.ts; docs/visibility.md R15, docs/threat-model.md
+// Mastodon's update fan-out (notifyEdited in src/domain/update-fan-out.ts; docs/visibility.md R15, docs/threat-model.md
 // VIS-10 and RES-4): wherever Mastodon broadcasts an update, the local quoted account of an accepted quote and every
 // active local mention without a kept notification are notified, then the local boosters and quoters. A remote edit
 // broadcasts only when it is significant (ProcessStatusUpdateService#handle_explicit_update!).
@@ -240,10 +243,16 @@ describe("an accepted quote's notification on an edit (notify_quoted_account!)",
   });
 });
 
-describe("an implicit Update's update fan-out (a changed approval stamp)", () => {
-  // bob's status quotes carol's (on another server) with `stamp`, tags alice and addresses her; dave follows bob and
-  // boosts it. alice's mention notification is dismissed. A same-version Update follows (handle_implicit_update!).
-  async function world(stamped: boolean, extra: Record<string, unknown> = {}) {
+describe("a quote's decision and an implicit Update's update fan-out", () => {
+  // bob's status quotes carol's (on another server) with `first` (a stamp, unless !stamped, answering `answer` when
+  // given), tags alice and addresses her; dave follows bob and boosts it. alice's mention notification is dismissed,
+  // her pushes subscribed. The Create's work is decided first unless `undecided`. Updates follow: `implicit` the same
+  // version (handle_implicit_update!), `newer` a later one (handle_explicit_update!).
+  async function world(
+    stamped: boolean,
+    extra: Record<string, unknown> = {},
+    { answer, undecided = false }: { answer?: number; undecided?: boolean } = {},
+  ) {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     await followed(t, bob, DAVE);
@@ -258,18 +267,22 @@ describe("an implicit Update's update fan-out (a changed approval stamp)", () =>
       tag: [mention(ALICE_URI)],
       ...extra,
     });
+    // A stamp of carol's naming `quoting` (bob's status unless given) and her status.
+    const serve = (uri: string, quoting = note.id) => serveStamp(t.web, uri, carol, quoting, target.id);
     if (first !== null) {
-      serveStamp(t.web, first, carol, note.id, target.id);
-    }
-    expect(await t.post(bob, create(bob, note))).toBe(202);
-    if (stamped) {
-      const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
-      for (let round = 0; await verifyQuotes(t.env, deps); round++) {
-        expect(round).toBeLessThan(20);
+      serve(first);
+      if (answer !== undefined) {
+        t.web.fail(first, answer);
       }
     }
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    if (stamped && !undecided) {
+      await decide(t);
+    }
     const statusId = (await statusRow(t.store, note.id))!.id;
-    expect(await quoteState(t, statusId)).toBe(stamped ? "accepted" : "pending");
+    expect(await quoteState(t, statusId)).toBe(
+      !stamped || undecided ? "pending" : answer === undefined ? "accepted" : answer === 404 ? "rejected" : "pending",
+    );
     const boosted = await t.request(`/api/v1/statuses/${statusId}/reblog`, {
       method: "POST",
       headers: { authorization: `Bearer ${t.tokens.dave}` },
@@ -282,37 +295,523 @@ describe("an implicit Update's update fan-out (a changed approval stamp)", () =>
     });
     expect(dismissed.status).toBe(200);
     expect(await pushed(t)).toEqual([]);
-    // The same version (its published time, the stored watermark) of `note` with `extra`.
     const implicit = (extra: Record<string, unknown>) => update(bob, { ...note, ...extra }, note.published as string);
-    return { t, bob, statusId, note, first, stamp, implicit };
+    const newer = (extra: Record<string, unknown>, at = "2026-10-11T12:30:00Z") =>
+      update(bob, { ...note, ...extra }, at);
+    return { t, bob, carol, statusId, note, first, stamp, serve, implicit, newer };
+  }
+
+  // The job rounds at `now`, until no quote's work is due.
+  async function decide(t: Setup, now = NOW) {
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => now };
+    for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+      expect(round).toBeLessThan(20);
+    }
   }
 
   const quoteState = async (t: Setup, statusId: string) =>
     (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", statusId))[0]?.state;
 
-  it.each([
-    ["a new stamp of an accepted quote", true],
-    ["the first stamp of a pending quote (the approval Update)", false],
-  ])("notifies on %s: the mention again, with its push, and the booster", async (_name, stamped) => {
-    const { t, bob, statusId, stamp, implicit } = await world(stamped);
-    expect(await t.post(bob, implicit({ quoteAuthorization: stamp() }))).toBe(202);
+  // The update fan-outs that reached dave, the booster, so far: each replaces his update notification with a new row
+  // (LocalNotificationWorker), so every one is a row id not seen before. Read after each step, as the next replaces it.
+  function broadcasts(t: Setup) {
+    const seen = new Set<string>();
+    return async () => {
+      for (const row of await rowsOf(t, "update")) {
+        seen.add(row.id);
+      }
+      return seen.size;
+    };
+  }
+
+  const SIGNIFICANT = { content: "<p>edited</p>" };
+
+  it("an approval Update notifies when the round accepts the quote, not before", async () => {
+    const { t, bob, statusId, stamp, serve, implicit } = await world(false);
+    const approval = stamp();
+    serve(approval);
+    expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
     expect(await quoteState(t, statusId)).toBe("pending");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("accepted");
     const again = await rowsOf(t, "mention");
     expect(again).toMatchObject([{ account_id: ALICE }]);
     expect(await pushed(t)).toEqual([again[0]!.id]);
     expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
   });
 
-  it("notifies no one when it keeps the stamp, or changes only the quote policy", async () => {
-    const { t, bob, statusId, implicit } = await world(true);
+  it("…when the stamp is gone, the rejection notifies", async () => {
+    const { t, bob, statusId, stamp, implicit } = await world(false);
+    const approval = stamp();
+    t.web.fail(approval, 404);
+    expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("rejected");
+    expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+  });
+
+  it("…a stamp that does not name the quote leaves it pending and notifies no one", async () => {
+    const { t, bob, note, statusId, stamp, serve, implicit } = await world(false);
+    const approval = stamp();
+    serve(approval, `${note.id}/other`);
+    t.web.fetched.length = 0;
+    expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
+    await decide(t);
+    expect(t.web.fetched).toContain(approval);
+    expect(await sql(t.store, "SELECT state, verify_after FROM quotes WHERE status_id = ?", statusId)).toEqual([
+      { state: "pending", verify_after: null },
+    ]);
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("a new stamp on an accepted quote notifies at the Update; its acceptance by the round notifies no more", async () => {
+    const { t, bob, statusId, stamp, serve, implicit } = await world(true);
+    const approval = stamp();
+    serve(approval);
+    expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
+    expect(await quoteState(t, statusId)).toBe("pending");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: ALICE }]);
+    const update = await rowsOf(t, "update");
+    expect(update).toMatchObject([{ account_id: DAVE }]);
+    expect(await pushed(t)).toEqual([again[0]!.id]);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "mention")).toEqual(again);
+    expect(await rowsOf(t, "update")).toEqual(update);
+    expect(await pushed(t)).toEqual([again[0]!.id]);
+  });
+
+  it("a same-version Update with the same stamp verifies an accepted quote again: gone, it is revoked and notified", async () => {
+    const { t, bob, statusId, first, implicit } = await world(true);
+    t.web.fail(first!, 404);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "update")).toEqual([]);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: ALICE }]);
+    expect(await pushed(t)).toEqual([again[0]!.id]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+  });
+
+  it("…valid, it stays accepted and notifies no one, whatever the Updates keep or change of the policy", async () => {
+    const { t, bob, statusId, first, implicit } = await world(true);
+    t.web.fetched.length = 0;
     expect(await t.post(bob, implicit({}))).toBe(202);
     const policy = { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } };
     expect(await t.post(bob, implicit(policy))).toBe(202);
     expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE id = ?", statusId)).not.toEqual([
       { quote_policy: 0 },
     ]);
+    await decide(t);
+    expect(t.web.fetched.filter((url) => url === first)).toHaveLength(1);
     expect(await quoteState(t, statusId)).toBe("accepted");
     expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("a newer Update of an idle quote verifies it again too, and its revocation notifies only through an edit", async () => {
+    const { t, bob, statusId, first, newer } = await world(true);
+    t.web.fail(first!, 404);
+    // Not significant: no edit, so no broadcast (handle_explicit_update!, :64-67 in v4.7.5).
+    expect(await t.post(bob, newer({}))).toBe(202);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("a retried verification notifies when it moves the state", async () => {
+    const { t, statusId, first, serve } = await world(true, {}, { answer: 503 });
+    serve(first!);
+    await decide(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+  });
+
+  it("a first decision of a Create's work notifies no one", async () => {
+    const { t, statusId } = await world(true, {}, { undecided: true });
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await rowsOf(t, "update")).toEqual([]);
+  });
+
+  it("a failing fan-out leaves the decision committed, and logs it", async () => {
+    const { t, bob, statusId, first, implicit } = await world(true);
+    t.web.fail(first!, 404);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    await sql(
+      t.store,
+      `CREATE TRIGGER test_fail_update BEFORE INSERT ON notifications WHEN NEW.type = 'update'
+			BEGIN SELECT RAISE(ABORT, 'notify'); END`,
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(errors).toHaveBeenCalledWith(expect.objectContaining({ event: "kopje.quote.fan_out.failed" }));
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await pushed(t)).toEqual([]);
+  });
+
+  it("a decision writes at most one update fan-out's bound beside its own rows (RES-4)", async () => {
+    const { t, bob, statusId, first, implicit } = await world(true);
+    t.web.fail(first!, 404);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    const work = (await t.store.quoteWork(BUILD, { statusId, now: NOW }))!;
+    expect(work).toMatchObject({ stage: "stamp", fetch: first });
+    const total = async () => (await sql<{ n: number }>(t.store, "SELECT total_changes() AS n"))[0]!.n;
+    const before = await total();
+    await t.store.completeQuote(BUILD, {
+      statusId,
+      now: NOW,
+      origin: LOCAL,
+      quotedUri: work.quotedUri,
+      approvalUri: work.approvalUri,
+      generation: work.generation,
+      stage: work.stage,
+      fetch: work.fetch,
+      signer: work.signer,
+      stamp: { kind: "gone" },
+    });
+    const changes = (await total()) - before;
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    // The fan-out ran: alice's mention written again and pushed, dave's update.
+    expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+    // The decision's own rows: the quote and its target's count (quotes_count_changed). One notifyEdited: at most
+    // 1 + 2·L + MAX_QUOTED_UPDATES notify calls of at most 7 + 2·P_r rows each (RES-4), here L = 2 local accounts, no
+    // local quoter and P_r = 1.
+    const [own, L, P] = [2, 2, 1];
+    expect(changes).toBeLessThanOrEqual(own + (1 + 2 * L) * (7 + 2 * P));
+    // Exactly: those two, alice's mention and its push, dave's update (one fan-out).
+    expect(changes).toBe(own + 2 + 1);
+  });
+
+  // A Delete of the stamp relayed by another server without carol's proof: the quote is checked again (recheckStamp).
+  const RELAY = "https://relay.example";
+  const relayed = (carol: TestActor, stamp: string) => ({
+    "@context": [AS, "https://w3id.org/security/v1"],
+    id: `${carol.uri}#delete-${nextId()}`,
+    type: "Delete",
+    actor: carol.uri,
+    to: [PUBLIC],
+    object: stamp,
+  });
+
+  it("a relayed Delete's recheck that finds the stamp gone revokes and notifies, from an idle work", async () => {
+    const { t, carol, statusId, first } = await world(true);
+    const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+    t.web.fail(first!, 404);
+    expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+  });
+
+  // The round's stamp fetch answered as served when it arrived (the first look), the Delete relayed while it is held,
+  // and the second look held until the first one's decision is read.
+  async function racedRound(t: Setup, stamp: string, during: () => Promise<void>, between: () => Promise<void>) {
+    const first = t.web.hold(stamp, { snapshot: true });
+    const second = t.web.hold(stamp);
+    const round = decide(t);
+    await first.reached;
+    await during();
+    first.release();
+    await second.reached;
+    await between();
+    second.release();
+    await round;
+  }
+
+  const marks = (t: Setup, statusId: string) =>
+    sql(t.store, "SELECT recheck, broadcast FROM quotes WHERE status_id = ?", statusId);
+
+  it("…and from a Create's work whose stamp fetch it raced: the second look revokes and notifies once", async () => {
+    const { t, carol, statusId, first } = await world(true, {}, { undecided: true });
+    const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+    const count = broadcasts(t);
+    await racedRound(
+      t,
+      first!,
+      async () => {
+        t.web.fail(first!, 404);
+        expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+        // Marked, the Create's own flag kept.
+        expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 0 }]);
+      },
+      async () => {
+        // The first look accepted the quote, silently: the Create's acceptance.
+        expect(await quoteState(t, statusId)).toBe("accepted");
+        expect(await count()).toBe(0);
+      },
+    );
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+    expect(await count()).toBe(1);
+  });
+
+  it.each([
+    ["valid", "accepted", 1],
+    ["gone", "revoked", 2],
+  ] as const)(
+    "…and from a same-version Update's work whose fetch it raced: its acceptance notifies, a second look finding the stamp %s only a move",
+    async (_answer, state, expected) => {
+      const { t, bob, carol, statusId, stamp, serve, implicit } = await world(false);
+      const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+      const approval = stamp();
+      serve(approval);
+      expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
+      const count = broadcasts(t);
+      await racedRound(
+        t,
+        approval,
+        async () => {
+          if (state === "revoked") {
+            t.web.fail(approval, 404);
+          }
+          expect(await t.post(dan, relayed(carol, approval))).toBe(202);
+          expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 1 }]);
+        },
+        async () => {
+          // Mastodon's inline verification of the Update accepts the quote and broadcasts it before the Delete.
+          expect(await quoteState(t, statusId)).toBe("accepted");
+          expect(await count()).toBe(1);
+        },
+      );
+      expect(await quoteState(t, statusId)).toBe(state);
+      expect(await count()).toBe(expected);
+    },
+  );
+
+  it("…and from an accepted quote's work whose stamp fetch it raced: the fetch's 404 revokes and notifies", async () => {
+    const { t, bob, carol, statusId, first, newer } = await world(true);
+    const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+    // A newer Update with no significant change renews the work at 0 (it notifies nothing of its own).
+    expect(await t.post(bob, newer({}))).toBe(202);
+    expect(await marks(t, statusId)).toEqual([{ recheck: 0, broadcast: 0 }]);
+    const count = broadcasts(t);
+    await heldRound(t, first!, async () => {
+      t.web.fail(first!, 404);
+      expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+      expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 0 }]);
+    });
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await count()).toBe(1);
+  });
+
+  // An accepted quote's work that no round holds, flagged 0 by a newer Update with no significant change (Mastodon
+  // verifies that one inline and broadcasts nothing): the relayed Delete flags it 1, and its decision notifies.
+  it.each(["due", "backing off"] as const)(
+    "…and from an accepted quote's work that is %s: it is flagged, its due time, attempts and generation kept",
+    async (live) => {
+      const { t, bob, carol, statusId, first, newer } = await world(true);
+      const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+      expect(await t.post(bob, newer({}))).toBe(202);
+      let now = NOW;
+      if (live === "backing off") {
+        // The stamp answers 503 (a retry at 2), then a later newer Update is the first verification after it (0).
+        t.web.fail(first!, 503);
+        await decide(t);
+        now = NOW + QUOTE_BACKOFF_MS[0]!;
+        expect(await t.post(bob, newer({}, "2026-10-11T13:00:00Z"))).toBe(202);
+      }
+      const work = () =>
+        sql(
+          t.store,
+          "SELECT verify_after, attempts, generation, recheck, broadcast FROM quotes WHERE status_id = ?",
+          statusId,
+        );
+      const [before] = await work();
+      expect(before).toMatchObject({ verify_after: now, attempts: live === "due" ? 0 : 1, broadcast: 0 });
+      t.web.fail(first!, 404);
+      expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+      expect(await work()).toEqual([{ ...before, broadcast: 1 }]);
+      const count = broadcasts(t);
+      await decide(t, now);
+      expect(await quoteState(t, statusId)).toBe("revoked");
+      expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+      expect(await count()).toBe(1);
+    },
+  );
+
+  it("a rejected or revoked quote is not verified again by an Update with the same stamp", async () => {
+    const policy = { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } };
+    const due = (t: Setup, statusId: string) =>
+      sql(t.store, "SELECT state, verify_after FROM quotes WHERE status_id = ?", statusId);
+    // Rejected: the Create's stamp answered 404.
+    const rejected = await world(true, {}, { answer: 404 });
+    expect(await due(rejected.t, rejected.statusId)).toEqual([{ state: "rejected", verify_after: null }]);
+    expect(await rejected.t.post(rejected.bob, rejected.implicit(policy))).toBe(202);
+    expect(
+      await sql(rejected.t.store, "SELECT quote_policy FROM statuses WHERE id = ?", rejected.statusId),
+    ).not.toEqual([{ quote_policy: 0 }]);
+    expect(await due(rejected.t, rejected.statusId)).toEqual([{ state: "rejected", verify_after: null }]);
+    // Revoked: carol's own Delete of the stamp.
+    const revoked = await world(true);
+    expect(await revoked.t.post(revoked.carol, remove(revoked.carol, revoked.first!))).toBe(202);
+    expect(await revoked.t.post(revoked.bob, revoked.implicit(policy))).toBe(202);
+    expect(await due(revoked.t, revoked.statusId)).toEqual([{ state: "revoked", verify_after: null }]);
+  });
+
+  it("a flag left on a revoked quote is not read: a newer Update's new stamp starts a work of its own", async () => {
+    const { t, bob, carol, statusId, first, stamp, serve, implicit, newer } = await world(true);
+    // A same-version Update flags the quote's renewed work; carol's Delete revokes it meanwhile (and fans out).
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    expect(await t.post(carol, remove(carol, first!))).toBe(202);
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    const count = broadcasts(t);
+    expect(await count()).toBe(1);
+    const approval = stamp();
+    serve(approval);
+    expect(await t.post(bob, newer({ quoteAuthorization: approval }))).toBe(202);
+    expect(await count()).toBe(1);
+    await decide(t);
+    expect(await quoteState(t, statusId)).toBe("accepted");
+    expect(await count()).toBe(1);
+  });
+
+  // The flag's orders (quotes.broadcast): an accepted quote whose stamp already answers 404, the round's stamp fetch
+  // held while an Update arrives. Each count is Mastodon's for the same order: one broadcast for the first
+  // verification's move, one per significant edit.
+  async function heldRound(t: Setup, stamp: string, during: () => Promise<void>, now = NOW) {
+    const gate = t.web.hold(stamp);
+    const round = decide(t, now);
+    await gate.reached;
+    await during();
+    gate.release();
+    await round;
+  }
+
+  it("a same-version Update then a significant newer one: two notifications", async () => {
+    const { t, bob, statusId, first, implicit, newer } = await world(true);
+    t.web.fail(first!, 404);
+    const count = broadcasts(t);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    await heldRound(t, first!, async () => {
+      expect(await t.post(bob, newer(SIGNIFICANT))).toBe(202);
+      expect(await count()).toBe(1);
+    });
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await count()).toBe(2);
+  });
+
+  it("a significant newer Update then a same-version one: one", async () => {
+    const { t, bob, statusId, first, newer } = await world(true);
+    t.web.fail(first!, 404);
+    const count = broadcasts(t);
+    expect(await t.post(bob, newer(SIGNIFICANT))).toBe(202);
+    expect(await count()).toBe(1);
+    // The same version as the edit's: handle_implicit_update!.
+    await heldRound(t, first!, async () => {
+      expect(await t.post(bob, newer(SIGNIFICANT))).toBe(202);
+      expect(await count()).toBe(1);
+    });
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await count()).toBe(1);
+  });
+
+  it("a same-version Update then a newer one with no significant change: one", async () => {
+    const { t, bob, statusId, first, implicit, newer } = await world(true);
+    t.web.fail(first!, 404);
+    const count = broadcasts(t);
+    expect(await t.post(bob, implicit({}))).toBe(202);
+    await heldRound(t, first!, async () => {
+      expect(await t.post(bob, newer({}))).toBe(202);
+      expect(await count()).toBe(0);
+    });
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await count()).toBe(1);
+  });
+
+  // A Create's stamp answers 503: its retry, one backoff later, finds the stamp gone.
+  describe("after a failure that may pass, the next verification decides", () => {
+    const RETRY = NOW + QUOTE_BACKOFF_MS[0]!;
+    async function failed() {
+      const w = await world(true, {}, { answer: 503 });
+      w.t.web.fail(w.first!, 404);
+      return { ...w, count: broadcasts(w.t) };
+    }
+
+    it("with no Update between: the retry's rejection notifies once", async () => {
+      const { t, statusId, count } = await failed();
+      await decide(t, RETRY);
+      expect(await quoteState(t, statusId)).toBe("rejected");
+      expect(await count()).toBe(1);
+    });
+
+    it.each([
+      ["a same-version Update", "implicit", 1, false],
+      ["a significant newer Update", "newer", 1, false],
+      ["a same-version Update, while the retry is claimed", "implicit", 1, true],
+      ["a significant newer Update, while the retry is claimed", "newer", 1, true],
+    ] as const)("after %s: one notification in all", async (_name, kind, expected, claimed) => {
+      const { t, bob, statusId, first, implicit, newer, count } = await failed();
+      const arrive = async () => {
+        expect(await t.post(bob, kind === "implicit" ? implicit({}) : newer(SIGNIFICANT))).toBe(202);
+        expect(await count()).toBe(kind === "implicit" ? 0 : 1);
+      };
+      if (claimed) {
+        await heldRound(t, first!, arrive, RETRY);
+      } else {
+        await arrive();
+        await decide(t, RETRY);
+      }
+      expect(await quoteState(t, statusId)).toBe("rejected");
+      expect(await count()).toBe(expected);
+    });
+
+    it("after a significant newer Update then a same-version one: the edit only", async () => {
+      const { t, bob, statusId, newer, count } = await failed();
+      expect(await t.post(bob, newer(SIGNIFICANT))).toBe(202);
+      expect(await count()).toBe(1);
+      // The same version as the edit's: handle_implicit_update!.
+      expect(await t.post(bob, newer(SIGNIFICANT))).toBe(202);
+      expect(await count()).toBe(1);
+      await decide(t, RETRY);
+      expect(await quoteState(t, statusId)).toBe("rejected");
+      expect(await count()).toBe(1);
+    });
+  });
+
+  it("a signer's retry keeps the flag: its decision notifies no one", async () => {
+    const t = await setup();
+    const erin = await mastodonActor(t.web, "erin", { key: 7 });
+    const followers = `${erin.uri}/followers`;
+    const own = mastodonNote(erin, { to: [followers], cc: [] });
+    t.web.serve(own.id, { "@context": AS, ...own });
+    t.web.signedOnly.set(own.id, `${ALICE_URI}#main-key`);
+    const quote = quoting(erin, own.id, null);
+    t.web.serve(quote.id, { "@context": AS, ...quote });
+    // Stored by a search while no local account follows erin: the instance actor fetches for it (a work at 0).
+    const found = await t.api<{ statuses: { id: string; uri: string }[] }>(
+      `/api/v2/search?q=${encodeURIComponent(quote.id)}&resolve=true&type=statuses`,
+    );
+    const statusId = found.body.statuses[0]!.id;
+    const boosted = await t.request(`/api/v1/statuses/${statusId}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.dave}` },
+    });
+    expect(boosted.status).toBe(200);
+    // The instance actor's fetch, refused while the Create at alice's inbox names her: a signer's retry.
+    await heldRound(t, own.id, async () => {
+      await followed(t, erin);
+      expect(await t.post(erin, create(erin, quote), { path: "/ap/users/alice/inbox" })).toBe(202);
+    });
+    expect(await sql(t.store, "SELECT state, attempts FROM quotes WHERE status_id = ?", statusId)).toEqual([
+      { state: "pending", attempts: 1 },
+    ]);
+    await decide(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteState(t, statusId)).toBe("accepted");
     expect(await rowsOf(t, "update")).toEqual([]);
   });
 
@@ -327,17 +826,19 @@ describe("an implicit Update's update fan-out (a changed approval stamp)", () =>
     expect(await sql(t.store, "SELECT votes_count, voters_count FROM polls WHERE status_id = ?", statusId)).toEqual([
       { votes_count: 2, voters_count: 2 },
     ]);
+    await decide(t);
     expect(await quoteState(t, statusId)).toBe("accepted");
     expect(await rowsOf(t, "mention")).toEqual([]);
     expect(await rowsOf(t, "update")).toEqual([]);
   });
 
-  it("notifies no one for a legacy form alone, though it writes the quote back", async () => {
+  it("notifies no one for a legacy form alone, and keeps the quote accepted", async () => {
     const { t, bob, statusId, implicit } = await world(true);
     // The same stamp, the quote named by _misskey_quote and quoteUri only (a legacy form).
     expect(await t.post(bob, implicit({ quote: undefined }))).toBe(202);
+    await decide(t);
     expect(await sql(t.store, "SELECT legacy, state FROM quotes WHERE status_id = ?", statusId)).toEqual([
-      { legacy: 1, state: "pending" },
+      { legacy: 0, state: "accepted" },
     ]);
     expect(await rowsOf(t, "mention")).toEqual([]);
     expect(await rowsOf(t, "update")).toEqual([]);
@@ -511,4 +1012,237 @@ describe("the bound of an edit's notifications (docs/threat-model.md RES-4)", ()
     expect(before).toBeGreaterThan(0);
     expect(after).toBe(before);
   }, 60_000);
+});
+
+describe("a quote state change's update fan-out (DistributionWorker with update: true)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function boost(t: Setup, statusId: string) {
+    const boosted = await t.request(`/api/v1/statuses/${statusId}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.dave}` },
+    });
+    expect(boosted.status).toBe(200);
+  }
+
+  async function dismiss(t: Setup, as: "alice" | "dave", id: string) {
+    const dismissed = await t.request(`/api/v1/notifications/${id}/dismiss`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens[as]}` },
+    });
+    expect(dismissed.status).toBe(200);
+  }
+
+  const updates = (t: Setup) =>
+    sql<{ id: string; account_id: string; status_id: string }>(
+      t.store,
+      "SELECT CAST(id AS TEXT) AS id, account_id, status_id FROM notifications WHERE type = 'update' ORDER BY id",
+    );
+
+  const stateOf = async (t: Setup, statusId: string) =>
+    (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", statusId))[0]?.state;
+
+  // bob's quote of carol's status (on another server), accepted by carol's stamp, tags alice, whose mention is
+  // dismissed; bob's other quote names the same stamp, which does not name it (pending). dave follows bob and boosted
+  // both.
+  async function received() {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob, DAVE);
+    const carol = await mastodonActor(t.web, "carol", { origin: OTHER, key: 2 });
+    await subscribe(t, ALICE, ["mention"]);
+    const target = mastodonNote(carol);
+    t.web.serve(target.id, { "@context": AS, ...target });
+    const stamp = `${carol.uri}/quote_authorizations/${nextId()}`;
+    const note = quoting(bob, target.id, stamp, { cc: [FOLLOWERS(bob), ALICE_URI], tag: [mention(ALICE_URI)] });
+    serveStamp(t.web, stamp, carol, note.id, target.id);
+    const other = quoting(bob, target.id, stamp);
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    expect(await t.post(bob, create(bob, other))).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+      expect(round).toBeLessThan(20);
+    }
+    const statusId = (await statusRow(t.store, note.id))!.id;
+    const otherId = (await statusRow(t.store, other.id))!.id;
+    expect([await stateOf(t, statusId), await stateOf(t, otherId)]).toEqual(["accepted", "pending"]);
+    await boost(t, statusId);
+    await boost(t, otherId);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "alice", mentioned!.id);
+    expect(await pushed(t)).toEqual([]);
+    return { t, carol, stamp, statusId, otherId };
+  }
+
+  it("a stamp's Delete fans out the quote it approved, and rejects a pending quote naming it silently", async () => {
+    const { t, carol, stamp, statusId, otherId } = await received();
+    expect(await t.post(carol, remove(carol, stamp))).toBe(202);
+    expect([await stateOf(t, statusId), await stateOf(t, otherId)]).toEqual(["revoked", "rejected"]);
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: ALICE }]);
+    expect(await pushed(t)).toEqual([again[0]!.id]);
+    // The booster hears of the revoked quote only: the rejection moved a state no broadcast follows.
+    expect(await updates(t)).toMatchObject([{ account_id: DAVE, status_id: statusId }]);
+  });
+
+  // The fan-out fails at the booster's update, after alice's mention and its push were written: they are rolled back
+  // with it, and the revocation stays.
+  it("…and still revokes when the fan-out fails part way, keeping none of its notifications, and logs it", async () => {
+    const { t, carol, stamp, statusId } = await received();
+    await sql(
+      t.store,
+      `CREATE TRIGGER test_fail_update BEFORE INSERT ON notifications WHEN NEW.type = 'update'
+			BEGIN SELECT RAISE(ABORT, 'notify'); END`,
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await t.post(carol, remove(carol, stamp))).toBe(202);
+    expect(await stateOf(t, statusId)).toBe("revoked");
+    expect(await sql(t.store, "SELECT authorization FROM quote_revocations")).toEqual([{ authorization: stamp }]);
+    expect(errors).toHaveBeenCalledWith(expect.objectContaining({ event: "kopje.quote.fan_out.failed" }));
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual([]);
+  });
+
+  // alice's quote of bob's status (anyone may quote it), tagging dave: pending until bob answers its QuoteRequest.
+  async function ours() {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    await subscribe(t, DAVE, ["mention", "update"]);
+    const theirs = mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
+    expect(await t.post(bob, create(bob, theirs))).toBe(202);
+    t.web.serve(theirs.id, { "@context": AS, ...theirs });
+    const quoted = (await statusRow(t.store, theirs.id))!.id;
+    const mine = await localStatus(t, { status: "@dave look", visibility: "public", quoted_status_id: quoted });
+    expect(await stateOf(t, mine.id)).toBe("pending");
+    return { t, bob, theirs, mine, stamp: `${bob.uri}/quote_authorizations/${nextId()}` };
+  }
+
+  it("an Accept of our quote request notifies the quote's booster and a dismissed mention", async () => {
+    const { t, bob, mine, stamp } = await ours();
+    await boost(t, mine.id);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "dave", mentioned!.id);
+    expect(await updates(t)).toEqual([]);
+    expect(await t.post(bob, quoteAccept(bob, mine.uri, stamp))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("accepted");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: DAVE }]);
+    const update = await updates(t);
+    expect(update).toMatchObject([{ account_id: DAVE, status_id: mine.id }]);
+    expect(await pushed(t)).toEqual(expect.arrayContaining([again[0]!.id, update[0]!.id]));
+  });
+
+  // reject.rb:37 in v4.7.5: "TODO: broadcast an update?".
+  it("…but a Reject notifies no one, though the quote's state moved", async () => {
+    const { t, bob, mine } = await ours();
+    await boost(t, mine.id);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "dave", mentioned!.id);
+    const pushes = await pushed(t);
+    expect(await t.post(bob, quoteReject(bob, mine.uri))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("rejected");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual(pushes);
+  });
+
+  // quote_request.rb:41 in v4.7.5 broadcasts with skip_notifications.
+  it("accepting a QuoteRequest notifies the quoted author's quote only", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await subscribe(t, DAVE, ["update"]);
+    const mine = await localStatus(t, { status: "quote me", visibility: "public" });
+    const note = quoting(bob, mine.uri, null);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    expect(await t.post(bob, create(bob, note), { path: "/ap/users/alice/inbox" })).toBe(202);
+    const statusId = (await statusRow(t.store, note.id))!.id;
+    expect(await stateOf(t, statusId)).toBe("pending");
+    await boost(t, statusId);
+    expect(await t.post(bob, quoteRequest(bob, mine.uri, note.id))).toBe(202);
+    expect(await stateOf(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "quote")).toMatchObject([{ account_id: ALICE }]);
+    expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual([]);
+  });
+
+  it("a local quote's stamp Delete fans out its status once; a repeated Delete none", async () => {
+    const { t, bob, mine, stamp } = await ours();
+    expect(await t.post(bob, quoteAccept(bob, mine.uri, stamp))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("accepted");
+    await boost(t, mine.id);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "dave", mentioned!.id);
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("revoked");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: DAVE }]);
+    const update = await updates(t);
+    expect(update).toMatchObject([{ account_id: DAVE, status_id: mine.id }]);
+    const pushes = await pushed(t);
+    expect(pushes).toEqual(expect.arrayContaining([again[0]!.id, update[0]!.id]));
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect(await updates(t)).toEqual(update);
+    expect(await pushed(t)).toEqual(pushes);
+  });
+
+  // bob approves alice's quote with the stamp he also serves for erin's quote of the same status: its Delete revokes
+  // the local quote holding it (revokeLocalStamp) and the received one it approved (stampHolder), each fanned out.
+  it("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved", async () => {
+    const { t, bob, theirs, mine, stamp } = await ours();
+    expect(await t.post(bob, quoteAccept(bob, mine.uri, stamp))).toBe(202);
+    const erin = await mastodonActor(t.web, "erin", { key: 7 });
+    await followed(t, erin, DAVE);
+    const note = quoting(erin, theirs.id, stamp);
+    serveStamp(t.web, stamp, bob, note.id, theirs.id);
+    expect(await t.post(erin, create(erin, note))).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+      expect(round).toBeLessThan(20);
+    }
+    const received = (await statusRow(t.store, note.id))!.id;
+    expect([await stateOf(t, mine.id), await stateOf(t, received)]).toEqual(["accepted", "accepted"]);
+    await boost(t, mine.id);
+    await boost(t, received);
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect([await stateOf(t, mine.id), await stateOf(t, received)]).toEqual(["revoked", "revoked"]);
+    const update = await updates(t);
+    expect(update).toMatchObject([
+      { account_id: DAVE, status_id: mine.id },
+      { account_id: DAVE, status_id: received },
+    ]);
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect(await updates(t)).toEqual(update);
+  });
+
+  it("the revoke API fans out the quoting status once; a repeated revoke none", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob, DAVE);
+    await subscribe(t, DAVE, ["update"]);
+    const mine = await localStatus(t, { status: "quote me", visibility: "public" });
+    const note = quoting(bob, mine.uri, null);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    expect(await t.post(bob, quoteRequest(bob, mine.uri, note.id))).toBe(202);
+    const statusId = (await statusRow(t.store, note.id))!.id;
+    expect(await stateOf(t, statusId)).toBe("accepted");
+    await boost(t, statusId);
+    const revoke = () =>
+      t.request(`/api/v1/statuses/${mine.id}/quotes/${statusId}/revoke`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${t.tokens.alice}` },
+      });
+    expect((await revoke()).status).toBe(200);
+    expect(await stateOf(t, statusId)).toBe("revoked");
+    const update = await updates(t);
+    expect(update).toMatchObject([{ account_id: DAVE, status_id: statusId }]);
+    expect(await pushed(t)).toEqual([update[0]!.id]);
+    expect((await revoke()).status).toBe(200);
+    expect(await updates(t)).toEqual(update);
+    expect(await pushed(t)).toEqual([update[0]!.id]);
+  });
 });

@@ -32,6 +32,8 @@ import { StoreUnavailableError } from "../platform/store-errors";
 //   - OAuth: removes apps nobody used for a day (RES-6) and expired codes and web sessions (domain/oauth.ts).
 //   - instance activity: deletes the counts and logins outside the kept days, at most ACTIVITY_PRUNE_ROWS of each
 //     (domain/instance-activity.ts pruneActivity). In the Store's maintenance or readonly state, they wait.
+//   - collections: deletes the rejected and revoked items unchanged for a day, at most RETIRED_ROWS_PER_ROUND
+//     (domain/collections.ts pruneCollectionItems). In the Store's maintenance or readonly state, they wait.
 //   - instance counts: refreshes the kept peer domain count /api/v1/instance presents (domain/instance.ts
 //     refreshDomainCount), one walk of the remote accounts. It is also kept in the Store's readonly state; a skipped
 //     refresh leaves the count to age out (DOMAIN_COUNT_FRESH_MS), and requests then count it.
@@ -71,6 +73,10 @@ export async function handleScheduled(env: Env, deps: ScheduledDeps): Promise<vo
   await cronStep(
     () => callStore(() => store().pruneActivity(deps.build(env), { now: deps.now() })),
     "kopje.scheduled.activity_prune_failed",
+  );
+  await cronStep(
+    () => callStore(() => store().pruneCollectionItems(deps.build(env), { now: deps.now() })),
+    "kopje.scheduled.collection_prune_failed",
   );
   await cronStep(
     () => callStore(() => store().refreshDomainCount(deps.build(env))),

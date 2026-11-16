@@ -3,14 +3,19 @@ import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, STATUSES_ID
 import type { Db } from "../db/sql";
 import { ACTOR_URI_LIMIT, STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
+import { railsBlank } from "../platform/rails-blank";
 import {
   isoTimeSql,
+  presentedContent,
+  presentedSpoiler,
+  spoilerReadSql,
   STATUS_EMOJIS_BYTES,
   statusPublishedSql,
   storedBlurhash,
   storedMediaDescription,
   storedText,
 } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { jsonStringBytes, SPOILER_BYTES, STATUS_CONTENT_BYTES } from "../security/html";
 import {
   type Account,
@@ -97,23 +102,24 @@ import {
   acceptedQuoteWindow,
   answeredRequests,
   ensureQuotedAccess,
-  localQuotedAccount,
+  fanOutQuoteChange,
   localQuoteOf,
   noteQuote,
   type QuotedForPost,
-  quotedUpdates,
   type QuoteState,
   recordLocalQuote,
   retireQuoteOf,
   revocableQuote,
   revokeQuoteRow,
 } from "./quotes";
+import { type Refresh, refreshDue, runningRefresh } from "./reply-walk-reads";
 import { normalizeSearchText } from "./search-text";
 import { editMediaSql, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, pollOptionsSql, statusUriSql } from "./status-bounds";
 import {
   type MediaAttachment,
   type MediaRow,
   measureFilterText,
+  presentedMediaDescription,
   presentedMediaUrl,
   presentMedia,
   presentOwnStatus,
@@ -137,8 +143,10 @@ import {
   renderStatusHtml,
   statusLength,
 } from "./status-text";
+import { journalStatusUpdate } from "./stream-journal";
 import { streamDelete } from "./streaming";
 import { forgetStatusTrend } from "./trends";
+import { notifyEdited } from "./update-fan-out";
 import { edgeRangeSql, readWindow, singleWindow, statusCursor, windowJson, windowPage } from "./windows";
 
 // Statuses: posting, editing and deleting local statuses, the per-status reads, and favourite, reblog and
@@ -360,42 +368,6 @@ export function recountStatuses(db: Db, accountId: string): void {
   );
 }
 
-// The local accounts whose kept boost of the status ?1 an edit of it notifies: one unique seek of
-// statuses_account_reblogs_kept per local account (RES-7), so neither the status's remote boosts nor withdrawn
-// generations are read.
-const LOCAL_BOOSTERS_SQL = `SELECT l.account_id FROM local_accounts l
-	CROSS JOIN statuses r INDEXED BY statuses_account_reblogs_kept
-		ON r.account_id = l.account_id AND r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0`;
-
-// The local accounts the status ?1 mentions, not silently: the local accounts drive, each one's mention sought by the
-// mention's key, so the status's other mention rows are never read; nothing caps them in the schema (a converted or
-// imported status may hold any number), and local accounts are operator-sized (RES-4).
-const LOCAL_MENTIONS_SQL = `SELECT l.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = l.account_id
-	WHERE m.silent = 0`;
-
-// Mastodon's update fan-out, run wherever Mastodon broadcasts an update (each caller says which): FanOutOnWriteService's
-// notifications for `update: true` (fan_out_on_write_service.rb:31-35 in v4.7.5), in its order: the local quoted account of the status's accepted quote (`quote`, notify_quoted_account!, :62-66), each
-// local account the status mentions not silently (`mention`, notify_mentioned_accounts!, :68-75, never limited: an
-// update passes no silenced ids), the local boosters (`update`) and the accepted local quoters (`quoted_update`,
-// notify_about_update!, :87-98). Each goes through LocalNotificationWorker, which writes nothing for a notification
-// that exists (local_notification_worker.rb:15-16): notify's natural key keeps a kept `quote` or `mention`, and one
-// that was dismissed or cleared, or never written (the policy dropped it, R15 refused it), is written now.
-export function notifyEdited(db: Db, statusId: string, fromId: string, now: number): void {
-  const quoted = localQuotedAccount(db, statusId);
-  if (quoted !== null) {
-    notify(db, { recipientId: quoted, type: "quote", fromId, statusId, now });
-  }
-  for (const mention of db.all<{ account_id: string }>(LOCAL_MENTIONS_SQL, statusId)) {
-    notify(db, { recipientId: mention.account_id, type: "mention", fromId, statusId, now });
-  }
-  // A withdrawn boost's booster is not notified (Mastodon discards it).
-  for (const booster of db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, statusId)) {
-    notify(db, { recipientId: booster.account_id, type: "update", fromId, statusId, now });
-  }
-  notifyQuotedUpdate(db, statusId, fromId, now);
-}
-
 // replies_count counts public and unlisted replies, as Mastodon does; reblogs_count the boosts not withdrawn (a
 // withdrawn one is gone for everyone, as its unboost counted it off: removeReblog), read through statuses_reblog: the
 // withdrawal filter would let stale statistics walk the kept boosts' index whole (RES-7).
@@ -483,6 +455,12 @@ export type Prepared =
 // Mastodon's statuses.errors.quoted_user_not_mentioned, as ActiveRecord::RecordInvalid words it.
 const QUOTED_USER_NOT_MENTIONED = "Validation failed: Cannot quote a non-mentioned user in a Private Mention post.";
 
+// Status#prepare_contents: a local status's text or warning as it is stored (storedText), stripped as Ruby's
+// String#strip strips it.
+function preparedText(value: string): string {
+  return rubyStrip(storedText(value));
+}
+
 // PostStatusService#preprocess_attributes! on a post as sent, once the pair as sent is within MAX_RAW_LENGTH (RES-1,
 // checked before blankText reads it or anything moves: preparePost checks only the pair it is given, whose sum drops a
 // blank text): a blank text with a warning that is not blank, quoting nothing, takes the warning as its text, with no
@@ -503,7 +481,7 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
     !blankText(spoilerText) && input.quotedStatusId === undefined
       ? { ...input, text: spoilerText, spoilerText: "", sensitive: true }
       : { ...input, text, spoilerText };
-  return statusLength(post.text, post.spoilerText) > MAX_STATUS_CHARACTERS ? null : post;
+  return statusLength(rubyStrip(post.text), rubyStrip(post.spoilerText)) > MAX_STATUS_CHARACTERS ? null : post;
 }
 
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
@@ -511,11 +489,11 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
 export function preparePost(db: Db, accountId: string, input: PostInput, scheduledId: string | null): Prepared {
   // Checked as writePost stores them, so text of only U+0000 is blank, as an edit's is.
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
-  if (exceedsRawLength(text, spoilerText)) {
+  if (exceedsRawLength(storedText(input.text), storedText(input.spoilerText))) {
     return { status: "invalid", error: TOO_LONG };
   }
+  const text = preparedText(input.text);
+  const spoilerText = preparedText(input.spoilerText);
   const author = localAuthor(db, accountId);
   let parent: ReplyParent | null = null;
   if (input.inReplyToId !== undefined) {
@@ -651,10 +629,11 @@ export function writePost(
   { author, parent, media, visibility, quoted }: PreparedPost,
 ): string {
   const origin = new URL(author.uri).origin;
-  const text = storedText(input.text);
-  const spoilerText = storedText(input.spoilerText);
+  const text = preparedText(input.text);
+  const spoilerText = preparedText(input.spoilerText);
   const composed = compose(db, text, author, quoted === null ? null : quoteLink(db, quoted.id));
-  const sensitive = (input.sensitive ?? author.default_sensitive === 1) || spoilerText !== "";
+  // PostStatusService#preprocess_attributes!: a warning present as sent (Rails' present?) marks the post sensitive.
+  const sensitive = (input.sensitive ?? author.default_sensitive === 1) || !railsBlank(input.spoilerText);
   const language = input.language ?? author.default_language;
   const quotePolicy = storedQuotePolicy(input.quotePolicy ?? author.default_quote_policy, visibility);
   // Status#carried_over_reply_to_account_id: continuing one's own reply keeps the conversation partner.
@@ -924,7 +903,8 @@ type OwnStatus = {
 };
 
 // The viewer's own status `id`, unless it is withdrawn (R2: its author no longer sees it): what an edit, a delete and
-// a write on an own status find (ownStatusId's rule).
+// a write on an own status find (ownStatusId's rule). The warning is read through its byte cut (spoilerReadSql); an
+// edit that keeps it copies the stored value in SQL.
 function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   const resolved = resolveStatusId(db, id);
   if (resolved === null) {
@@ -932,8 +912,9 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   }
   return (
     db.first<OwnStatus>(
-      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text, spoiler_text, sensitive,
-				language, ${statusPublishedSql("statuses")} AS published_at
+      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text,
+				${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive, language,
+				${statusPublishedSql("statuses")} AS published_at
 			FROM statuses WHERE id = ? AND account_id = ? AND withdrawn = 0`,
       resolved,
       accountId,
@@ -941,8 +922,9 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   );
 }
 
-// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL and the blurhash judged
-// again as decoded, as live media are (presentedMediaUrl, storedBlurhash): an imported snapshot may hold any text.
+// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL, the description and
+// the blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription,
+// storedBlurhash): an imported snapshot may hold any text.
 function snapshotMedia(json: string): MediaAttachment[] {
   return (JSON.parse(json) as MediaAttachment[]).map((media) => ({
     ...media,
@@ -950,6 +932,7 @@ function snapshotMedia(json: string): MediaAttachment[] {
     preview_url: presentedMediaUrl(media.preview_url),
     remote_url: presentedMediaUrl(media.remote_url),
     preview_remote_url: presentedMediaUrl(media.preview_remote_url),
+    description: presentedMediaDescription(media.description),
     blurhash: storedBlurhash(media.blurhash),
   }));
 }
@@ -1000,7 +983,8 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // nobody for a status that is not public or unlisted. Where Kopje differs from Mastodon, which counts a changed policy
 // as an edit: the policy is not part of the history, so a change of the policy alone is stored as
 // PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy); it notifies
-// as an edit does (notifyEdited), which the interaction policy endpoint does not.
+// as an edit does (notifyEdited) and sends `status.update` as an edit does (journalStatusUpdate), where the interaction
+// policy endpoint notifies no one and sends it to no one through a mention.
 //
 // Deliberate difference from Mastodon: the audience of a private, direct or limited status never widens. A mention
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
@@ -1031,8 +1015,13 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
   const blankSent = blankText(sentText);
   const keepsWarning = blankSent && quote === undefined;
-  const text = keepsWarning ? sentSpoiler : sentText;
-  const spoilerText = keepsWarning ? current.spoiler_text : sentSpoiler;
+  // The pair as update_immediate_attributes! assigns it, on which significant_changes? judges whether the edit
+  // changes the status; Status#prepare_contents strips it only as it is saved, so the pair written is stripped. A kept
+  // warning is the stored one, compared, counted and written as stored (an imported one is not rewritten).
+  const assignedText = keepsWarning ? sentSpoiler : sentText;
+  const assignedSpoiler = keepsWarning ? current.spoiler_text : sentSpoiler;
+  const text = rubyStrip(assignedText);
+  const spoilerText = keepsWarning ? current.spoiler_text : rubyStrip(sentSpoiler);
   // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
   // written: a kept warning is the stored one.
   if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
@@ -1041,7 +1030,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   if (blankText(text) && media.length === 0 && quote === undefined) {
     return { status: "invalid", error: "Validation failed: Text can't be blank" };
   }
-  const sensitive = (input.sensitive ?? false) || (!keepsWarning && spoilerText !== "");
+  // UpdateStatusService#update_immediate_attributes!: the warning as sent, by Rails' present?.
+  const sensitive = (input.sensitive ?? false) || (!keepsWarning && !railsBlank(input.spoilerText));
   const language = input.language ?? current.language;
   const currentMedia = db.all<{ id: string; description: string; focus_x: number; focus_y: number }>(
     "SELECT id, description, focus_x, focus_y FROM media_attachments WHERE status_id = ? AND shown = 1 ORDER BY position, id",
@@ -1059,8 +1049,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     );
   };
   const unchanged =
-    text === (current.source_text ?? "") &&
-    spoilerText === current.spoiler_text &&
+    assignedText === (current.source_text ?? "") &&
+    assignedSpoiler === current.spoiler_text &&
     (sensitive ? 1 : 0) === current.sensitive &&
     language === current.language &&
     JSON.stringify(media) === JSON.stringify(currentMedia.map((m) => m.id)) &&
@@ -1074,9 +1064,11 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   const policy = input.quotePolicy === undefined ? null : storedQuotePolicy(input.quotePolicy, current.visibility);
   if (unchanged) {
     // UpdateStatusService counts a changed policy as a change (update_status_service.rb:121, :174-176 in v4.7.5), so
-    // the edit broadcasts (:37, :143-146).
+    // the edit broadcasts (:37, :143-146): the update's notifications, and `status.update`, which the edited_at trigger
+    // does not journal here.
     if (policy !== null && setQuotePolicy(db, accountId, current.id, policy, input.now)) {
       notifyEdited(db, current.id, accountId, input.now);
+      journalStatusUpdate(db, current.id, input.now, { mentions: true });
     }
     return status();
   }
@@ -1156,14 +1148,6 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   return status();
 });
 
-// FanOutOnWriteService#notify_about_update!'s quoted_update: each local quoter (quotes.ts quotedUpdates) about their
-// own quoting status, from the quoted author; a later one replaces the earlier (notify).
-function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: number): void {
-  for (const quote of quotedUpdates(db, quotedId)) {
-    notify(db, { recipientId: quote.account_id, type: "quoted_update", fromId, statusId: quote.status_id, now });
-  }
-}
-
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update
 // (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones. Answers
 // whether the stored policy changed.
@@ -1190,7 +1174,8 @@ export type InteractionPolicyInput = {
 // one of the three (else "Record invalid"). The policy sent, or the author's default_quote_policy when none is, is
 // stored as on posting (storedQuotePolicy). A boost has no policy of its own (its original's is shown): it is answered
 // unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy); it notifies
-// no one, as the controller broadcasts with skip_notifications (interaction_policies_controller.rb:24-26 in v4.7.5).
+// no one and sends `status.update` but not through a mention (a quiet edit), as the controller broadcasts with
+// skip_notifications (interaction_policies_controller.rb:13, :24-26 in v4.7.5).
 export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput, Acted<Status>>(
   (db, input, { accountId }, viewer) => {
     const visible = viewable(db, accountId, input.id);
@@ -1212,7 +1197,10 @@ export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput
     }
     if (row.reblog_of_id === null) {
       const name = input.quotePolicy ?? localAuthor(db, accountId).default_quote_policy;
-      setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), Date.parse(viewer.now));
+      const now = Date.parse(viewer.now);
+      if (setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), now)) {
+        journalStatusUpdate(db, visible, now, { mentions: false });
+      }
     }
     return viewed(presentStatus(db, visible, { ...input.present, viewer, proper: true }));
   },
@@ -1501,7 +1489,12 @@ const CONTEXT_LIMITS = {
   user: { ancestors: 4096, descendants: 4096, depth: 4096, traversal: 8192 },
 };
 
-export type Context = { ancestors: Status[]; descendants: Status[] };
+type Context = { ancestors: Status[]; descendants: Status[] };
+
+// A context read's answer: the context, the refresh of the status's replies while it runs, which every answer names
+// (Mastodon's add_async_refresh_header), and whether a signed-in viewer's read starts one (advisory: the start decides
+// again, domain/reply-walks.ts startRepliesRefresh).
+export type ContextRead = Context & { refresh: Refresh | null; refreshDue: boolean };
 
 // The JSON of an empty context: each list's items are counted with a separator, one more than they take.
 const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfies Context);
@@ -1511,8 +1504,9 @@ const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfi
 // that do not. One answer within ANSWER_BYTES (RES-3), under one presentation: the ancestors take half of it, nearest
 // first, and the descendants the rest with what the ancestors left, in their order; each list keeps its order, and
 // the farthest ancestors and the last descendants past it are left out (no paging, as Mastodon's context has none).
-// Each member is sought by id from the traversal (RES-7).
-export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<Context>>(
+// Each member is sought by id from the traversal (RES-7). The refresh of its replies (reply-walk-reads.ts) is read at
+// the viewer's time.
+export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<ContextRead>>(
   (db, { id, present }, viewer) => {
     const { accountId: viewerId, now } = viewer;
     const resolved = viewable(db, viewerId, id);
@@ -1541,7 +1535,16 @@ export const statusContext = optionalUserReadOperation<{ id: string; present: Pr
     const budget = ANSWER_BYTES - CONTEXT_FRAME_BYTES;
     const near = presentStatusesWithin(db, shared, up.toReversed(), Math.floor(budget / 2), true);
     const after = presentStatusesWithin(db, shared, down, budget - near.bytes, near.items.length === 0);
-    return { status: "ok", value: { ancestors: near.items.toReversed(), descendants: after.items } };
+    const at = Date.parse(now);
+    return {
+      status: "ok",
+      value: {
+        ancestors: near.items.toReversed(),
+        descendants: after.items,
+        refresh: runningRefresh(db, resolved, at),
+        refreshDue: viewerId !== null && refreshDue(db, resolved, at),
+      },
+    };
   },
 );
 
@@ -1682,16 +1685,16 @@ export function editVersions(
         created_at: string;
         emojis: string | null;
       }>(
-        `SELECT content, spoiler_text, sensitive, ${editMediaSql("media_json")} AS media_json, poll_options, created_at,
-					emojis
+        `SELECT content, ${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive,
+					${editMediaSql("media_json")} AS media_json, poll_options, created_at, emojis
 				FROM status_edits WHERE id = CAST(? AS INTEGER)`,
         editId,
       );
       yield edit === undefined
         ? undefined
         : {
-            content: edit.content,
-            spoiler_text: edit.spoiler_text,
+            content: presentedContent(edit.content),
+            spoiler_text: presentedSpoiler(edit.spoiler_text),
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
@@ -1763,7 +1766,7 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
     resolved === null
       ? undefined
       : db.first<{ id: string; source_text: string | null; content: string; spoiler_text: string }>(
-          `SELECT id, source_text, content, spoiler_text
+          `SELECT id, source_text, content, ${spoilerReadSql("spoiler_text")} AS spoiler_text
 					FROM statuses WHERE id = ? AND account_id = ? AND reblog_of_id IS NULL AND withdrawn = 0`,
           resolved,
           accountId,
@@ -1771,7 +1774,14 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
   if (row === undefined) {
     return { status: "not_found" };
   }
-  return { status: "ok", value: { id: row.id, text: row.source_text ?? row.content, spoiler_text: row.spoiler_text } };
+  return {
+    status: "ok",
+    value: {
+      id: row.id,
+      text: presentedContent(row.source_text ?? row.content),
+      spoiler_text: presentedSpoiler(row.spoiler_text),
+    },
+  };
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2522,7 +2532,12 @@ export const revokeQuote = userWriteOperation<RevokeInput, RevokeResult>((db, in
     ) {
       return { status: "invalid", error: "The revocation could not be signed" };
     }
-    state = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now) ?? state;
+    const moved = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now);
+    if (moved !== null) {
+      // RevokeQuoteService#distribute_update (revoke_quote_service.rb:17-21 in v4.7.5).
+      fanOutQuoteChange(db, input.quotingId, input.now);
+      state = moved;
+    }
     if (signed !== null) {
       const reach = [statusReach(db, quoted, noteQuote), statusReach(db, input.quotingId, noteQuote)].filter(
         (r) => r !== null,

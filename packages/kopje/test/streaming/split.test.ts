@@ -854,20 +854,22 @@ describe("the turn's payload budget", () => {
   // A turn nearly spent by plain events still starts a unit while UNIT_WORST.bytes is left; the event whose payload
   // passes STREAM_LIMITS.payloadBytes (a quote whose eight descriptions are control characters) is presented, charged
   // whole and skipped, which ends the turn; a small status written after it waits for the next turn. The turn's charge
-  // stays within its hard bound (18,745,008 bytes: test/status-bounds.test.ts, "the most a turn presents").
+  // stays within its hard bound (17,972,684 bytes: test/status-bounds.test.ts, "the most a turn presents").
   it("charges a skipped unit whole and starts no unit after it, within the turn's hard bound", async () => {
     const h = await community(["alice"]);
     const [viewer] = await accounts(h, 1, "4");
     const inbox = await socket(h, viewer!, [{ stream: "public:local" }]);
     const { alice } = h.users;
     await fillProfile(h, alice, FILLS.plain);
-    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions.
+    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions, and
+    // a small status (its text one word, the profile the most of it).
     const ordinary = await describedMedia(h, alice, Array.from({ length: 3 }, () => described("\u{1F600}")).flat());
     const controlled = await describedMedia(h, alice, described("\u0001"));
     const quoted = await writeFilled(h, alice, FILLS.plain, ordinary.slice(0, MAX_STATUS_MEDIA));
     const quotedControls = await writeFilled(h, alice, FILLS.plain, controlled);
     const single = await writeFilled(h, alice, FILLS.plain, ordinary.slice(MAX_STATUS_MEDIA, 2 * MAX_STATUS_MEDIA));
     const quoting = await writeFilled(h, alice, FILLS.plain, ordinary.slice(2 * MAX_STATUS_MEDIA), quoted);
+    const plain = await status(h, alice.id);
     await h.store.streamTick(BUILD);
     await opened(h, [inbox]);
     // The stream presents a status as REST does ("sends a public status ... as REST presents it to the viewer").
@@ -875,17 +877,21 @@ describe("the turn's payload budget", () => {
       utf8Length(JSON.stringify(await (await h.request(`/api/v1/statuses/${id}`, bearer(`split-${viewer}`))).text()));
     const quotePayload = await presented(quoting);
     const singlePayload = await presented(single);
+    const smallPayload = await presented(plain);
     // The oversized event: a quote whose eight descriptions take 7 bytes a character, not 4.
     const oversized = quotePayload + 2 * MAX_STATUS_MEDIA * (7 - 4) * MAX_MEDIA_DESCRIPTION_LENGTH;
     expect(oversized).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
-    // Quotes, then single statuses, until what is left covers UNIT_WORST.bytes and not the oversized payload. The
-    // counts the writes add (alice's statuses, the quoted status's quotes) lengthen each payload by a few bytes, so the
-    // turn is checked below by what the payloads measure once everything is written.
-    const plan: ("quote" | "single")[] = [];
+    // Quotes, then single statuses, then small ones, until what is left covers UNIT_WORST.bytes and not the oversized
+    // payload: a small status is narrower than that window, so the last shape always lands in it. The counts the writes
+    // add (alice's statuses, the quoted status's quotes) lengthen each payload by a few bytes, so the turn is checked
+    // below by what the payloads measure once everything is written.
+    expect(smallPayload).toBeLessThan(oversized - UNIT_WORST.bytes);
+    const plan: ("quote" | "single" | "small")[] = [];
     let left = TURN_BUDGET.bytes;
     for (const [shape, bytes] of [
       ["quote", quotePayload],
       ["single", singlePayload],
+      ["small", smallPayload],
     ] as const) {
       while (left >= oversized && left - bytes >= UNIT_WORST.bytes) {
         plan.push(shape);
@@ -894,16 +900,21 @@ describe("the turn's payload budget", () => {
     }
     expect(left).toBeGreaterThanOrEqual(UNIT_WORST.bytes);
     expect(left).toBeLessThan(oversized);
+    // Media for the quotes and single statuses, which come first in the plan.
     const media = await describedMedia(
       h,
       alice,
-      plan.flatMap(() => described("\u{1F600}")),
+      plan.flatMap((shape) => (shape === "small" ? [] : described("\u{1F600}"))),
     );
     const controls = await describedMedia(h, alice, described("\u0001"));
     await drained(h, inbox);
     STREAM_FAULTS.dropContinuation = () => {};
     const written: string[] = [];
     for (const [i, shape] of plan.entries()) {
+      if (shape === "small") {
+        written.push(await status(h, alice.id));
+        continue;
+      }
       const own = media.slice(i * MAX_STATUS_MEDIA, (i + 1) * MAX_STATUS_MEDIA);
       written.push(await writeFilled(h, alice, FILLS.plain, own, shape === "quote" ? quoted : undefined));
     }
@@ -931,7 +942,7 @@ describe("the turn's payload budget", () => {
       expect(leftAfterSent).toBeLessThan(skippedPayload);
       const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
       expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
-      expect(charged).toBeLessThanOrEqual(18_745_008);
+      expect(charged).toBeLessThanOrEqual(17_972_684);
       await takeAll(inbox);
       await turn(h);
       await echo(inbox);
@@ -940,5 +951,110 @@ describe("the turn's payload budget", () => {
     } finally {
       warn.mockRestore();
     }
+  }, 120_000);
+});
+
+// RES-6: a unit's frames are grouped by the stream as each client named it. Each stream's envelope is made and sent to
+// every socket subscribed with that name before the next is made, so the sends of one envelope are one run and the
+// isolate holds one at a time; a hashtag stream echoes the tag as its socket sent it, so the 16 spellings of one tag
+// on 16 sockets of one account are 16 envelopes, one to each. The server sockets' sends are read through
+// WebSocket.prototype.send (the Store shares the test's isolate).
+describe("a unit's envelopes", () => {
+  it("sends each stream's envelope in one run, echoing each socket's own spelling of its tag once", async () => {
+    const h = await community(["alice"]);
+    const [viewer] = await accounts(h, 1, "5");
+    // The 16 spellings of "cats" by letter case, one a socket; the first two sockets also take public:local, before
+    // their hashtag.
+    const spellings = Array.from({ length: STREAM_LIMITS.socketsPerAccount }, (_, i) =>
+      [..."cats"].map((c, bit) => ((i >> bit) & 1 ? c.toUpperCase() : c)).join(""),
+    );
+    expect(new Set(spellings).size).toBe(STREAM_LIMITS.socketsPerAccount);
+    const inboxes: Inbox[] = [];
+    for (const [i, tag] of spellings.entries()) {
+      inboxes.push(
+        await socket(h, viewer!, [...(i < 2 ? [{ stream: "public:local" }] : []), { stream: "hashtag", tag }]),
+      );
+    }
+    await opened(h, inboxes);
+    const id = await status(h, h.users.alice.id, { tag: "cats" });
+    const send = vi.spyOn(WebSocket.prototype, "send");
+    let frames: string[];
+    try {
+      await h.store.streamTick(BUILD);
+      await drained(h, ...inboxes);
+      frames = send.mock.calls.flatMap(([text]) =>
+        typeof text === "string" && text.includes('"event":"update"') ? [text] : [],
+      );
+    } finally {
+      send.mockRestore();
+    }
+    // Each socket received its own spelling once, and public:local where it subscribed.
+    expect(inboxes.map((inbox) => inbox.rest().map((m) => key(m)))).toEqual(
+      spellings.map((tag, i) => [...(i < 2 ? [`public:local update ${id}`] : []), `hashtag ${tag} update ${id}`]),
+    );
+    // 18 sends of 17 envelopes, each envelope's sends one run: public:local's two, and each spelling's.
+    expect(frames).toHaveLength(STREAM_LIMITS.socketsPerAccount + 2);
+    const runs = frames.filter((text, i) => i === 0 || text !== frames[i - 1]);
+    expect(new Set(runs).size).toBe(runs.length);
+    const streams = (texts: readonly string[]) =>
+      texts.map((text) => JSON.stringify((JSON.parse(text) as StreamMessage).stream)).toSorted();
+    expect(streams(runs)).toEqual(
+      [["public:local"], ...spellings.map((tag) => ["hashtag", tag])].map((s) => JSON.stringify(s)).toSorted(),
+    );
+  }, 120_000);
+
+  // A send that throws closes, with 1011, every socket of the unit left short of its frames, the one it was sent to
+  // included, and leaves open those sent all of theirs: X takes public:local, Y public:local and the hashtag, Z the
+  // hashtag, and the hashtag envelope's first send throws.
+  it("closes the sockets a failed send leaves short of their frames, and only those", async () => {
+    const h = await community(["alice"]);
+    const [viewer] = await accounts(h, 1, "6");
+    const x = await socket(h, viewer!, [{ stream: "public:local" }]);
+    const y = await socket(h, viewer!, [{ stream: "public:local" }, { stream: "hashtag", tag: "cats" }]);
+    const z = await socket(h, viewer!, [{ stream: "hashtag", tag: "cats" }]);
+    await opened(h, [x, y, z]);
+    const id = await status(h, h.users.alice.id, { tag: "cats" });
+    // The runtime's send, called with each server socket as its receiver.
+    const original = Reflect.get(WebSocket.prototype, "send");
+    let thrown = 0;
+    const send = vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, message) {
+      if (thrown === 0 && typeof message === "string" && message.startsWith('{"stream":["hashtag"')) {
+        thrown++;
+        throw new Error("send fault");
+      }
+      return Reflect.apply(original, this, [message]);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await h.store.streamTick(BUILD);
+      await h.store.streamDrained(BUILD);
+      expect(thrown).toBe(1);
+      expect(
+        warn.mock.calls.filter(([entry]) => (entry as { event?: string })?.event === "kopje.stream.send-failed"),
+      ).toHaveLength(1);
+    } finally {
+      send.mockRestore();
+      warn.mockRestore();
+    }
+    // Each close code, or null if the socket is still open after 10 s (the timer cleared either way).
+    const closed = async (inbox: Inbox) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          inbox.closed().then(({ code }) => code),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), 10_000);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      }
+    };
+    expect([await closed(y), await closed(z)]).toEqual([1011, 1011]);
+    await echo(x);
+    expect(x.isClosed).toBe(false);
+    expect(x.rest().map((m) => key(m))).toEqual([`public:local update ${id}`]);
   }, 120_000);
 });

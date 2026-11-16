@@ -94,23 +94,41 @@ describe("moved", () => {
     expect("moved" in ab.moved! || "moved" in ba.moved!).toBe(false);
   });
 
-  it("shows the identity of the target as the full account shows it, but its note and fields", async () => {
+  it("shows the identity and display settings of the target as the full account shows them, but its note, fields and image descriptions", async () => {
     const { account, move, shown } = await fixture();
-    const target = await account({
-      url: "https://remote.example/@target",
-      avatar_url: "https://remote.example/a.png",
-      header_url: "https://remote.example/h.png",
-      locked: 1,
-      actor_type: "Service",
-      followers_count: 7,
-      raw: JSON.stringify({ attachment: [{ type: "PropertyValue", name: "k", value: "v" }] }),
-    });
-    const source = await account();
-    await move(source, target);
-    const full = await shown(target);
-    const nested = (await shown(source)).moved!;
-    expect(full.fields).toHaveLength(1);
-    expect(nested).toEqual({ ...full, note: "", fields: [] });
+    // Each setting off in one target and on in the other.
+    for (const [show_featured, show_media, show_media_replies] of [
+      [0, 1, 0],
+      [1, 0, 1],
+    ] as const) {
+      const target = await account({
+        url: "https://remote.example/@target",
+        avatar_url: "https://remote.example/a.png",
+        header_url: "https://remote.example/h.png",
+        avatar_description: "A cat",
+        header_description: "A field",
+        show_featured,
+        show_media,
+        show_media_replies,
+        locked: 1,
+        actor_type: "Service",
+        followers_count: 7,
+        raw: JSON.stringify({ attachment: [{ type: "PropertyValue", name: "k", value: "v" }] }),
+      });
+      const source = await account();
+      await move(source, target);
+      const full = await shown(target);
+      const nested = (await shown(source)).moved!;
+      expect(full.fields).toHaveLength(1);
+      expect(full).toMatchObject({
+        avatar_description: "A cat",
+        header_description: "A field",
+        show_featured: show_featured === 1,
+        show_media: show_media === 1,
+        show_media_replies: show_media_replies === 1,
+      });
+      expect(nested).toEqual({ ...full, note: "", fields: [], avatar_description: "", header_description: "" });
+    }
   });
 
   it("is null while the source is unavailable, whose target is not read; an unavailable target is redacted", async () => {

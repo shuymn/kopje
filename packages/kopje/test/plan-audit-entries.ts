@@ -14,7 +14,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "account_invitations holds at most 10 rows (account_invitations_cap, migration 0081_account_invitations)",
   },
   {
-    id: "fb6bb4e6f76e0370",
+    id: "f75f1a57ac54b189",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRowsOf < src/domain/accounts.ts#accountsOf < src/domain/status-presenter.ts#<anonymous> < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#present",
     disposition: "deliberate",
@@ -22,7 +22,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "254baf0ebbbeefde",
+    id: "be51ba0c2ef515e6",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRow < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -30,7 +30,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "d6c1bc34dc1b9898",
+    id: "8c93820efeb153a3",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#presentAccountsById < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#unlessSuspended < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -38,7 +38,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "6a866e056d499602",
+    id: "369e40b1b103f543",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
@@ -46,7 +46,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "b545cb2e3f50b312",
+    id: "2cb8455c3fc227be",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountByLookup < src/domain/web-pages/profile.ts#remoteTagged < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> < src/domain/web-pages/site.ts#<anonymous>",
     disposition: "deliberate",
@@ -62,7 +62,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "111ea59fbf5285bb",
+    id: "58b769fa8795fbd2",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
@@ -481,7 +481,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "542bada4bb571d53",
+    id: "a83803de2e21606d",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in claimDeliveries",
     disposition: "background",
@@ -596,7 +596,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the operator's delivery report (deliveriesReport, src/domain/deliveries.ts) counts the activities still expanding: the walk is the report, which only the Access admin reads (GET /admin/deliveries, src/app/admin.ts)",
   },
   {
-    id: "19c057c4ebf7cf4d",
+    id: "77de1c0391c5e5be",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in confirmDelivery",
     disposition: "pending",
@@ -1369,7 +1369,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "ff7ef8116b1cf50f",
+    id: "b100293b1058ce77",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",
@@ -1395,18 +1395,18 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "2e2b65979d04e6c3",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
-    site: "src/domain/statuses.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
+    site: "src/domain/update-fan-out.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'an edit notifies the local boosters: LOCAL_BOOSTERS_SQL (src/domain/statuses.ts) walks the local accounts, each one\'s kept boost sought by statuses_account_reblogs_kept: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+      'an edit notifies the local boosters: LOCAL_BOOSTERS_SQL (src/domain/update-fan-out.ts) walks the local accounts, each one\'s kept boost sought by statuses_account_reblogs_kept: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "9eb5a4e6b24f58b1",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
-    site: "src/domain/statuses.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
+    site: "src/domain/update-fan-out.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "an edit notifies the active local mentions: LOCAL_MENTIONS_SQL (src/domain/statuses.ts) walks the local accounts, each one's mention sought by its key, whatever the status's other mention rows: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"; RES-4)",
+      "an edit notifies the active local mentions: LOCAL_MENTIONS_SQL (src/domain/update-fan-out.ts) walks the local accounts, each one's mention sought by its key, whatever the status's other mention rows: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"; RES-4)",
     witness:
       'test/edit-fan-out.test.ts ("reads no more for 10,000 converted mention rows: one key probe per local account")',
   },

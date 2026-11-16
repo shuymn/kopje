@@ -82,6 +82,26 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
 
    Replace `0049_instance_bounds` with the first migration absent from the previous release.
 
+   If the version changes the compatibility date (`wrangler.jsonc`, `deploy/wrangler.jsonc`) or the workerd versions
+   in `pnpm-lock.yaml` since the previous `kopje-v*` tag, run the held-output bench (`bench/held-output/run.mjs`,
+   #1610). It takes about five hours and uses your wrangler login (`CLOUDFLARE_ACCOUNT_ID` picks the account when it
+   has several): it deploys temporary Workers named `kopje-bench-held-<random>` and deletes them when it ends. A record
+   of each stays in `~/.local/state/kopje/bench-held-output` until its Worker is confirmed gone; if the bench was
+   killed or prints that it could not confirm one, `cleanup` deletes what the records name. A deploy that failed or was
+   stopped may still land, so its record is dropped only when its Worker is still absent 10 minutes after the deploy
+   command ended, on the assumption that Cloudflare finishes or abandons an upload request within that time; once that
+   window has passed, list the account's Workers again and delete any `kopje-bench-held-` Worker left.
+
+   ```sh
+   pnpm --filter kopje bench:held-output
+   pnpm --filter kopje bench:held-output cleanup
+   ```
+
+   Compare its outcomes and the runtime's WebSocket surface (`outcomes.json` in the `held-output-<time>` directory it
+   prints) with RES-6 in `docs/threat-model.md`. A change in an observation the streaming hub's slow-consumer policy
+   rests on, or a new signal of unsent output (`bufferedAmount`, `ping`, or a promise from `send`), changes
+   `STREAM_LIMITS` or the policy before the release.
+
    Merge it.
 
 2. Tag the merge commit on `main` and push the tag:

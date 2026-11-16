@@ -64,17 +64,6 @@ function offsetLink(c: ApiContext, p: Params, route: string, offset: number, lim
   }
 }
 
-// Without a token the answer may be cached by anyone for 15 seconds (cache_if_unauthenticated!), varying as the
-// controller's vary_by.
-function listResponse(c: ApiContext, items: unknown[], anonymous: boolean, vary: string): Response {
-  return anonymous
-    ? c.json(items, 200, {
-        "cache-control": "public, max-age=15, stale-while-revalidate=30, stale-if-error=86400",
-        vary,
-      })
-    : c.json(items);
-}
-
 // GET /api/v1/trends/tags and GET /api/v1/trends (its alias), and GET /api/v1/admin/trends/tags past the admin gate
 // (mastodon/admin.ts).
 export const trendTags: ApiHandler = withParams(async (c, deps, p) => {
@@ -86,7 +75,7 @@ export const trendTags: ApiHandler = withParams(async (c, deps, p) => {
   if (limit > 0) {
     offsetLink(c, p, "/api/v1/trends/tags", offset, limit, page.read === limit ? offset + limit : null);
   }
-  return listResponse(c, page.items, credential === null, "Authorization");
+  return c.json(page.items);
 });
 
 // GET /api/v1/trends/statuses, and GET /api/v1/admin/trends/statuses as trendTags. A page cut by its bytes continues
@@ -102,7 +91,7 @@ export const trendStatuses: ApiHandler = withParams(async (c, deps, p) => {
     const next = page.cut ? offset + page.consumed : page.read === limit ? offset + limit : null;
     offsetLink(c, p, "/api/v1/trends/statuses", offset, limit, next);
   }
-  return listResponse(c, page.items, credential === null, "Authorization, Accept-Language");
+  return c.json(page.items);
 });
 
 // GET /api/v1/trends/links, and GET /api/v1/admin/trends/links as trendTags: the allowed trending links, the
@@ -117,9 +106,5 @@ export const trendLinks: ApiHandler = withParams(async (c, deps, p) => {
   if (limit > 0) {
     offsetLink(c, p, "/api/v1/trends/links", offset, limit, page.read === limit ? offset + limit : null);
   }
-  // vary_by 'Authorization, Accept-Language' (links_controller.rb:4) holds for a signed-in answer too.
-  if (credential !== null) {
-    c.header("Vary", "Authorization, Accept-Language");
-  }
-  return listResponse(c, page.items, credential === null, "Authorization, Accept-Language");
+  return c.json(page.items);
 });

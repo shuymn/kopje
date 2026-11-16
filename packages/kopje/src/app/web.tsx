@@ -8,11 +8,12 @@ import { PROFILE_IMAGES } from "../domain/media";
 import type { Site } from "../domain/web-pages/site";
 import { INTERACTION_PATH, interactionTarget, SESSION_LIFETIME_MS, WEB_SCOPES } from "../domain/web-session";
 import { notSetUp } from "../federation/setup-gate";
-import { credentialChanges, profileFiles, storeProfileImages } from "../mastodon/accounts";
+import { credentialChanges, profileFiles, storeProfileImages, UPLOAD_EXPIRED } from "../mastodon/accounts";
 import { noteActivitySoon } from "../mastodon/activity";
 import { type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/context";
+import { fullMessage, validationBody } from "../mastodon/errors";
 import { discardProfileUploads, type ProfileUpload, sweepSoon } from "../mastodon/media";
-import { Params, readParams } from "../mastodon/params";
+import { API_BODY_LIMIT, Params, readParams } from "../mastodon/params";
 import { PROFILE_IMAGE_LIMIT } from "../platform/images";
 import { decidesHost, offDomain } from "../platform/instance-host";
 import type { Scope } from "../security/scopes";
@@ -31,6 +32,7 @@ import {
   SESSION_COOKIE,
 } from "../web/session";
 import { noticeOf, STRINGS } from "../web/strings";
+import { textareaText } from "../web/textarea";
 import { PRIVATE_HEADERS } from "./web-headers";
 
 // The web UI's signed-in part: sign-in through Access and the settings page. Posting and reading happen in
@@ -79,6 +81,9 @@ function cookieOptions(maxAge: number) {
 const CLEARED = { prefix: "host", path: "/", secure: true } as const;
 
 const BACK = { href: "/settings", text: STRINGS.settings.backToSettings };
+
+// The text a settings form's body may hold (readParams' limit), but the profile form's.
+const FORM_LIMIT = 64 * 1024;
 
 // The credential a web session presents: its digest, then the time (taken after the digest, at the call).
 export async function sessionCredential(session: string, scope: Scope, now: () => number): Promise<UserCredential> {
@@ -286,12 +291,12 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
   });
 
   // WEB-1, WEB-4: the Origin first (no body is read for a cross-site post), then the session and its token.
-  async function checkForm(c: WebContext): Promise<{ session: string; params: Params } | Response> {
+  async function checkForm(c: WebContext, limit = FORM_LIMIT): Promise<{ session: string; params: Params } | Response> {
     if (!sameOrigin(c.req.raw)) {
       return message(c, 403, STRINGS.errors.forbiddenTitle, STRINGS.errors.forbidden, BACK);
     }
     const session = sessionOf(c);
-    const params = await readForm(c);
+    const params = await readForm(c, limit);
     if (params === null) {
       return message(c, 400, STRINGS.errors.invalidFormTitle, STRINGS.errors.invalidForm, BACK);
     }
@@ -301,8 +306,8 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
     return { session, params };
   }
 
-  async function readForm(c: WebContext): Promise<Params | null> {
-    const result = await readParams(c.req.raw, { limit: 64 * 1024 });
+  async function readForm(c: WebContext, limit = FORM_LIMIT): Promise<Params | null> {
+    const result = await readParams(c.req.raw, { limit });
     return result.ok ? result.params : null;
   }
 
@@ -311,22 +316,59 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
     return result.status === "ok" ? then(result.value) : toLogin(c);
   }
 
+  // The form's image descriptions as their textareas hold them (textareaText), before their code points are counted;
+  // the API stores a description as it is sent, as Mastodon does.
+  const DESCRIPTIONS = new Set(PROFILE_IMAGES.map((kind) => `${kind}_description`));
+  function withTextareaDescriptions(params: Params): Params {
+    return new Params(
+      params.entries.map(([name, value]) => [name, DESCRIPTIONS.has(name) ? textareaText(value) : value] as const),
+      params.files,
+      params.objectPrefixes,
+      params.emptyLists,
+    );
+  }
+
+  // The profile form posts update_credentials' names, read with its limit: a note within MAX_RAW_LENGTH code units
+  // may take nine bytes for each as the form encodes it, past FORM_LIMIT.
   app.post("/settings/profile", setup, async (c) => {
-    const checked = await checkForm(c);
+    const checked = await checkForm(c, API_BODY_LIMIT);
     if (checked instanceof Response) {
       return checked;
     }
-    const { changes, problems } = credentialChanges(checked.params);
-    // Only what the form edits; anything else a forged or stale form sends is ignored.
-    const { displayName, note, fields, locked, discoverable, indexable, hideCollections, privacy } = changes;
+    const { changes, problems } = credentialChanges(withTextareaDescriptions(checked.params));
+    // Only what the profile form and the image cards' description forms edit (an absent name keeps its value); anything
+    // else a forged or stale form sends is ignored.
+    const {
+      displayName,
+      note,
+      fields,
+      locked,
+      discoverable,
+      indexable,
+      hideCollections,
+      privacy,
+      avatarDescription,
+      headerDescription,
+    } = changes;
     if (problems.length > 0) {
-      return renderSettings(c, checked.session, problems);
+      return renderSettings(c, checked.session, problems.map(fullMessage));
     }
     const credential = await credentialOf(checked.session, "write:accounts");
     const result = await storeCall(c, deps, (s, b) =>
       s.updateCredentials(b, {
         credential,
-        changes: { displayName, note, fields, locked, discoverable, indexable, hideCollections, privacy },
+        changes: {
+          displayName,
+          note,
+          fields,
+          locked,
+          discoverable,
+          indexable,
+          hideCollections,
+          privacy,
+          avatarDescription,
+          headerDescription,
+        },
         present: present(c),
         now: deps.now(),
       }),
@@ -360,7 +402,7 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
         return toLogin(c);
       }
       const read = await readParams(c.req.raw, {
-        limit: 64 * 1024,
+        limit: FORM_LIMIT,
         files: { names: ["file"], maxBytes: PROFILE_IMAGE_LIMIT },
       });
       if (!read.ok) {
@@ -372,11 +414,9 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
       // The API's checks and pipeline (mastodon/accounts.ts), with the page's one file as the image.
       const file = read.params.file("file");
       const files = file === undefined ? "string" : await profileFiles(new Params([], new Map([[kind, file]])));
-      if (files === "string" || files.problems.length > 0) {
+      if (files === "string" || files.problems[kind].length > 0) {
         const problem =
-          files === "string"
-            ? "Validation failed: File can't be blank"
-            : `Validation failed: ${files.problems.join(", ")}`;
+          files === "string" ? "Validation failed: File can't be blank" : validationBody(files.problems[kind]).error;
         return message(c, 422, STRINGS.errors.uploadFailedTitle, problem, BACK);
       }
       const owned: ProfileUpload[] = [];
@@ -389,8 +429,9 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
           files.images,
           owned,
         );
-        if ("error" in stored) {
-          return await message(c, 422, STRINGS.errors.uploadFailedTitle, stored.error, BACK);
+        if (Array.isArray(stored) || "error" in stored) {
+          const problem = Array.isArray(stored) ? validationBody(stored).error : stored.error;
+          return await message(c, 422, STRINGS.errors.uploadFailedTitle, problem, BACK);
         }
         const result = await storeCall(c, deps, (s, b) =>
           s.updateCredentials(b, {
@@ -405,7 +446,8 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
           return toLogin(c);
         }
         if (result.value.status !== "ok") {
-          return await message(c, 422, STRINGS.errors.uploadFailedTitle, "Validation failed: The upload expired", BACK);
+          const expired = validationBody([UPLOAD_EXPIRED]).error;
+          return await message(c, 422, STRINGS.errors.uploadFailedTitle, expired, BACK);
         }
         committed = true;
         sweepSoon(c, deps);
