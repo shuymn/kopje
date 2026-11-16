@@ -401,6 +401,13 @@ describe("M1, held output against the headroom", () => {
 });
 
 describe("resets and cuts in a deployed run's records", () => {
+  // Why a cause is inferred rather than shown by the records.
+  const WITHIN_READ =
+    "stamped within one state read before the reset's since, where an end of its own (a cut, a close the bench asked " +
+    "for) reads the same";
+  const BY_ORDER =
+    "bound to a reset by the order of the records (its frame 0 names no generation), which a frame 0 recorded after " +
+    "the reset that ended it misleads";
   // A deployed M1 run's records as the driver wrote them, in its order, each time less `base`: frame 0 (`hello`), each
   // end as the object (`server`, its clock) or the client saw it, each start the run saw (the probe's reset, with the
   // latest question the start it replaced answered), each probe's headroom with what its stopped clients held.
@@ -603,11 +610,44 @@ describe("resets and cuts in a deployed run's records", () => {
       { type: "end", run: id, client: `${id}.late`, at: 1_794_796_387_290, side: "server", code: 1006 },
       ...records.slice(at + 1),
     ];
-    const cause = (generation?: number) =>
-      outcome(late(generation), id).clients.find((c) => c.client === `${id}.late`)?.ends[0]?.cause;
-    expect(cause(4)).toBe("reset");
-    // Without the generation, the record order binds it to the next trial's reset, whose window it misses.
-    expect(cause(undefined)).toBe("platform");
+    const end = (generation?: number) => {
+      const found = outcome(late(generation), id).clients.find((c) => c.client === `${id}.late`)?.ends[0];
+      return { cause: found?.cause, inferred: found?.inferred };
+    };
+    expect(end(4)).toEqual({ cause: "reset", inferred: [WITHIN_READ] });
+    // Without the generation, the record order binds it to the next trial's reset, whose window it misses: the cause
+    // that follows is unproven, and says so.
+    expect(end(undefined)).toEqual({ cause: "platform", inferred: [BY_ORDER] });
+  });
+
+  it("marks a reset's claim within the read before its since as inferred, a lone cut there included", () => {
+    const id = "m1-524288b-64m";
+    const generationOf = (client: string) => 3 + Number(client.slice(client.indexOf(".") + 2, client.indexOf(".") + 3));
+    // Trial 1's sockets, named by their generation (4); s1-2 cut alone 3 s before the last answer from that start.
+    const named = reset512k(387_321).map((r): Observation =>
+      r.type === "hand" && r.firstSeq === 0 ? { ...r, generation: generationOf(r.client) } : r,
+    );
+    const cut = named.map((r): Observation =>
+      r.type === "end" && r.client === `${id}.s1-2` && r.side === "server" ? { ...r, at: 1_794_796_384_321 } : r,
+    );
+    const ends = (records: Observation[]) =>
+      outcome(records, id)
+        .clients.filter((c) => c.client.includes(".c1") || c.client.includes(".s1-"))
+        .map((c) => [c.client.slice(id.length + 1), c.ends.map((e) => [e.cause, e.inferred])]);
+    const at = (since: boolean) => ["reset", since ? [] : [WITHIN_READ]];
+    expect(ends(cut)).toEqual([
+      ["c1", [at(true), at(false)]],
+      ["s1-0", [at(false), at(true)]],
+      ["s1-1", [at(false), at(true)]],
+      ["s1-2", [at(false), at(true)]],
+      ["s1-3", [at(false), at(true)]],
+    ]);
+    // The inference changes no verdict: the run and M1 read the same with the cut as without it.
+    const verdicts = (records: Observation[]) => {
+      const report = classify(records);
+      return [report.runs.map((r) => [r.run, r.class, r.reasons]), report.m1?.volumes.map((v) => [v.class, v.reasons])];
+    };
+    expect(verdicts(cut)).toEqual(verdicts(named));
   });
 
   it("lets a reset claim only the sockets of the start it replaced, keeping a later trial's lone cut", () => {

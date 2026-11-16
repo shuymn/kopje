@@ -4,8 +4,9 @@
 //   could not be ordered against the newest (unordered), or with frames handed and neither received nor ended by the
 //   run's end (an unfinished tail), is inconclusive for what it measures; an unfinished tail's largest age is a lower
 //   bound. A reset claims the ends of the sockets of the start it replaced, from one state read before its `since` on
-//   (`resetsOfClients`): such an end is the reset's, never a client drop. What follows the run's `done` record is the
-//   driver's cleanup, not the run's. What was handed is the object's own totals where the run recorded them, and
+//   (`resetsOfClients`): such an end is the reset's, never a client drop. An end's `inferred` names why its cause is
+//   an inference the records do not prove; no verdict reads it. What follows the run's `done` record is the driver's
+//   cleanup, not the run's. What was handed is the object's own totals where the run recorded them, and
 //   otherwise every hand, those whose answer was lost included.
 // - M1 (does held output count against the Store's memory?) is "counted" at a held volume when the headroom falls by
 //   more than the probe's step plus the spread of its attempts; "not detected" when it does not, which excludes
@@ -62,7 +63,7 @@ export const STATE_MS = 5_000;
  *
  * @typedef {{ ms: number, bound: "observed" | "lowerBound" }} Age
  * @typedef {{ at: number, side: "client" | "server", code: number | null, cause: "reset" | "closed" | "platform",
- *   sincePause: number | null, receivedFrames: number, handedFrames: number }} End
+ *   inferred: string[], sincePause: number | null, receivedFrames: number, handedFrames: number }} End
  * @typedef {{ client: string, handed: { frames: number, bytes: number }, received: { frames: number, bytes: number },
  *   outstandingBytes: number, largestBacklog: number, largestAge: Age | null,
  *   trend: "rising" | "falling" | "steady" | null, unfinishedTail: boolean, ends: End[], resumes: number[],
@@ -103,37 +104,45 @@ function resetsOf(starts) {
   return starts.filter((s) => s.kind === "fresh" && (s.listedBefore > 0 || s.heldMibBefore > 0));
 }
 
+// Why an end's cause is inferred rather than shown by the records (`resetsOfClients`).
+const WITHIN_READ =
+  "stamped within one state read before the reset's since, where an end of its own (a cut, a close the bench asked " +
+  "for) reads the same";
+const BY_ORDER =
+  "bound to a reset by the order of the records (its frame 0 names no generation), which a frame 0 recorded after " +
+  "the reset that ended it misleads";
+
 /**
  * The reset that ended each client's socket: the first after the start that accepted it, since a fresh start keeps no
  * socket; so a reset never claims a socket a later start accepted (a later trial's). That start is the generation
- * frame 0 named, or, in records written without it, the newest recorded before frame 0.
+ * frame 0 named, or, in records written without it, the newest recorded before frame 0; that order is unproven (a
+ * frame 0 can arrive after the run recorded the reset that ended its socket), so every end it binds is BY_ORDER.
  *
  * The reset claims the socket's ends from one state read (STATE_MS) before its `since`, the latest question the start
  * it replaced answered. A reset drops every socket at once, but the object stamps their ends with its own clock, and
  * that start can still answer after them: in a deployed run, the read asked 31 ms after the closes the object stamped
  * still listed those sockets open, so the run cannot order an end against the reset more closely than its reads. An
  * end earlier than one read before `since` is a cut of its own, unless the replaced start answered a whole read after
- * dropping its sockets, which no run has shown.
+ * dropping its sockets, which no run has shown. An end within that read is the reset's by inference (WITHIN_READ).
  * @param {Observation[]} records
  * @param {StartRecord[]} resets
  */
 function resetsOfClients(records, resets) {
   const positions = new Map(resets.map((r) => [r, records.indexOf(r)]));
-  /** @type {Map<string, StartRecord>} */
+  /** @type {Map<string, { reset: StartRecord | undefined, byOrder: boolean }>} */
   const ended = new Map();
   for (const [index, record] of records.entries()) {
     if (record.type !== "hand" || record.firstSeq !== 0) {
       continue;
     }
     const { generation } = record;
+    const byOrder = generation === undefined || resets.some((r) => r.generation === undefined);
     const reset = resets.find((r) =>
-      generation === undefined || r.generation === undefined
+      byOrder || generation === undefined || r.generation === undefined
         ? Number(positions.get(r)) > index
         : r.generation > generation,
     );
-    if (reset !== undefined) {
-      ended.set(record.client, reset);
-    }
+    ended.set(record.client, { reset, byOrder });
   }
   return ended;
 }
@@ -285,11 +294,17 @@ function clientsOf(records, end, resets) {
       unfinishedTail,
       ends: ends.map((e) => {
         const pause = pauses.findLast((p) => p.at <= e.at);
-        const reset = resetOf.get(client);
+        const bound = resetOf.get(client);
+        const reset = bound?.reset;
+        /** @type {string[]} */
+        const inferred = bound?.byOrder === true ? [BY_ORDER] : [];
         /** @type {End["cause"]} */
         let cause = "platform";
         if (reset !== undefined && e.at >= reset.since - STATE_MS) {
           cause = "reset";
+          if (e.at < reset.since) {
+            inferred.push(WITHIN_READ);
+          }
         } else if (closed.some((c) => c.at <= e.at)) {
           cause = "closed";
         }
@@ -298,6 +313,7 @@ function clientsOf(records, end, resets) {
           side: e.side,
           code: e.code,
           cause,
+          inferred,
           sincePause: pause === undefined ? null : e.at - pause.at,
           receivedFrames: e.receivedFrames ?? recvs.filter((r) => r.at <= e.at).reduce((sum, r) => sum + r.frames, 0),
           handedFrames: handed.frames,
