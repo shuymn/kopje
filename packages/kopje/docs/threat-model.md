@@ -122,10 +122,11 @@ against their own instance. TLS is assumed between all parties.
   first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
   `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
   request (`verifySpooledRequest`, OPS-9) holds to the same rule. An activity that carries a Linked Data signature is
-  read only where its literal JSON is what Mastodon's compaction reads: its contexts give every ActivityStreams term and
-  every name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a
-  keyword's, set no keyword and name only the preloaded contexts that keep them, and every key of its body is a plain
-  name. Any other is ignored before the gate, on the inbox, its replay and the rollback drain alike
+  read only where its literal JSON is what Mastodon reads (its compaction, patched back to the body's one-element
+  arrays and public collection IRI): its contexts give every ActivityStreams term and every name of Mastodon's
+  `full_context` that context's meaning, give no other name one of those meanings or a keyword's, set no keyword and
+  name only the preloaded contexts that keep them, and every key of its body is a plain name. Any other is ignored
+  before the gate, on the inbox, its replay and the rollback drain alike
   (`ldSignedBodyReadable` in `src/federation/ld-signed-body.ts`, called by the envelope check of
   `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
   `ld-context` and nothing of the body (DATA-5). Its type, actor, object, addressing and mentions are therefore the
@@ -2941,9 +2942,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   JSON-LD work is at most 8 bounded documents and their bounded contexts; the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may
   fetch its actor again); every inbound activity, a status included, is read as received JSON, without JSON-LD (Mastodon
-  compacts an LD-signed one: `docs/mastodon-deviations.md`, Reading inbound activities); the vocabulary check of an
-  LD-signed one visits each value once, `test/inbox-signed-forms.test.ts` ("checks an LD-signed body at the JSON bounds
-  within a generous time");
+  compacts an LD-signed one and patches part of it back: `docs/mastodon-deviations.md`, Reading inbound activities);
+  the vocabulary check of an LD-signed one visits each value once, `test/inbox-signed-forms.test.ts` ("checks an
+  LD-signed body at the JSON bounds within a generous time");
   `test/inbox-statuses.test.ts` ("refuses an activity or a fetched document past the JSON bounds before reading it",
   "caps the attachments, tags and content one status stores"), `test/inbox-statuses-edge.test.ts` ("RES-2: JSON-LD
   contexts past the JSON bounds", "the Store asks for documents at most three times"). A card's oEmbed document is read

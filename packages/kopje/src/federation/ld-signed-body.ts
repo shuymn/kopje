@@ -4,9 +4,13 @@ import { isObject } from "./json-shapes";
 import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
 
 // ID-1, VIS-1: an activity that carries a Linked Data signature is read as received, as every activity is, where
-// Mastodon 4.7 reads it as its compaction under full_context (process_activity_service.rb:23-38;
-// docs/mastodon-deviations.md, "Reading inbound activities"). The two readings agree only where the body's literal JSON
-// is what that compaction reads, so such a body is read only when (ldSignedBodyReadable):
+// Mastodon 4.7 reads it as its compaction under full_context, patched toward the body as received
+// (process_activity_service.rb:23-38 and 66-72, JsonLdHelper#patch_for_forwarding!; docs/mastodon-deviations.md,
+// "Reading inbound activities"). Under each key the body and its compaction share, the patch makes a one-element array
+// the compaction made a single value an array again and as:Public the public collection's IRI again; a key the
+// compaction renamed, a value it expanded or typed, and members it merged or dropped stay as it left them. The two
+// readings agree only where the compaction changes nothing else, so such a body is read only when
+// (ldSignedBodyReadable):
 //
 //   1. its @context is the ActivityStreams URL, or an array of it, of URLs of SIGNED_CONTEXT_URLS in their positions,
 //      and of objects of plain definitions (2);
@@ -18,7 +22,8 @@ import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
 //
 // Then every name of the vocabulary means what full_context makes it, no other name or keyword alias reaches one of its
 // IRIs, no base or vocabulary is set, so the compaction renames no key and merges none, and every string Kopje reads
-// keeps its value. What still differs is listed by form in the deviations page. The tables are built once from the
+// keeps its value but the public collection's IRI, which the patch puts back. What still differs is listed by form in
+// the deviations page. The tables are built once from the
 // preloaded contexts and MASTODON_CONTEXT_TERMS, with no JSON-LD processing; test/ld-signed-vocabulary.test.ts
 // holds them to jsonld.js's processing of Mastodon's full_context and of each preloaded context. Kopje reads, from an
 // activity, no name outside the vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads
