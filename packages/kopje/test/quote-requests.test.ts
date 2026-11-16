@@ -957,6 +957,7 @@ describe("concurrency: the test table", () => {
       generation: claim.generations[0]!,
       stage: "decide",
       fetch: null,
+      signer: null,
     });
     expect(await quoteOf(t, note.id)).toMatchObject({ state: "accepted", authorization_id: authorization });
     // The same after a revoke: it stays revoked.
@@ -970,6 +971,7 @@ describe("concurrency: the test table", () => {
       generation: claim.generations[0]!,
       stage: "decide",
       fetch: null,
+      signer: null,
     });
     expect(await quoteOf(t, note.id)).toMatchObject({ state: "revoked", authorization_id: null });
   });

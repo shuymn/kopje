@@ -1227,6 +1227,10 @@ Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::Ver
   accepting, `verify_quote_service.rb:40-51`), revokes the quote when the stamp answers 404, and resets it when a
   verified stamp changes. A self-quote needs no approval (FEP-044f, and Mastodon's own comment at `:43`). Accepted,
   2026-11-16.
+- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its pending quote's verification is in
+  flight, or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its
+  own, and the wait runs out as it was; Mastodon verifies the quote at each `Update`
+  (`process_status_update_service.rb:60`, `:348`) and has no deferred work to interrupt. Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):

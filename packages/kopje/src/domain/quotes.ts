@@ -307,8 +307,11 @@ export function refreshQuote(
   return false;
 }
 
-// A root re-arrival renews a pending quote's full budget and due time (a new work: its attempts and author fetches
-// start again), using its fetch identity when present.
+// A root re-arrival gives a pending quote its full budget, using its fetch identity when present. An idle work
+// (verify_after null) is renewed: due now, a new generation, its attempts and author fetches starting again. A live one
+// (due, leased or backing off) keeps its generation, due time, attempts and author fetches, so the claim in flight
+// applies its outcome and a backoff runs out: arrivals that keep coming cannot hold a quote undecided. Its budget and
+// signer change nothing current() checks; a fetch refused under a signer the row no longer names is retried (failed).
 // Verification arrivals (fewer hops) promote nothing, nor do quotes of local statuses (no work: recordQuote) or local
 // quoting statuses (no round decides them: test/quote-authoring.test.ts concurrency row 17).
 export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, now: number): void {
@@ -316,8 +319,12 @@ export function promoteQuote(db: Db, statusId: string, arrival: QuoteArrival, no
     return;
   }
   db.run(
-    `UPDATE quotes SET hops = ?2, attempts = 0, author_fetches = 0, verify_after = ?3,
-			fetch_as = COALESCE(?4, fetch_as), updated_at = ?5, generation = ${NEW_GENERATION}
+    `UPDATE quotes SET hops = ?2, fetch_as = COALESCE(?4, fetch_as),
+			attempts = CASE WHEN verify_after IS NULL THEN 0 ELSE attempts END,
+			author_fetches = CASE WHEN verify_after IS NULL THEN 0 ELSE author_fetches END,
+			updated_at = CASE WHEN verify_after IS NULL THEN ?5 ELSE updated_at END,
+			generation = CASE WHEN verify_after IS NULL THEN ${NEW_GENERATION} ELSE generation END,
+			verify_after = COALESCE(verify_after, ?3)
 		WHERE status_id = ?1 AND state = 'pending' AND quoted_uri IS NOT NULL AND local = 0
 			AND NOT EXISTS (SELECT 1 FROM local_accounts l WHERE l.account_id = quotes.quoted_account_id)`,
     statusId,
@@ -510,36 +517,43 @@ function moved(db: Db, row: QuoteRow, now: number): QuoteVerified {
   return { done: false, due: true, state: row.state, next: true };
 }
 
+// The username of the local account whose key fetches for a quote's work: fetch_as, rechecked, so it signs only while
+// it is an available local account that is still a recipient of the quoting status (status_mentions, silent included)
+// or an accepted follower of its author; otherwise null, the instance actor. quoteWork reads it before a stage, and
+// failed() again after one, to tell a refusal under a signer the work has since left.
+function signerOf(db: Db, row: QuoteRow): string | null {
+  if (row.fetch_as === null) {
+    return null;
+  }
+  return (
+    db.first<{ username: string }>(
+      `SELECT a.username FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
+				WHERE l.account_id = ?1 AND ${availableLocalSql("l")}
+					AND (EXISTS (SELECT 1 FROM status_mentions m WHERE m.status_id = ?2 AND m.account_id = ?1)
+						OR EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?3 AND f.state = 'accepted'))`,
+      row.fetch_as,
+      row.status_id,
+      row.account_id,
+    )?.username ?? null
+  );
+}
+
 // The quote of `statusId` when it has work to do (pending, or accepted and being checked again), with the stage it is
-// at. fetch_as is rechecked here: it signs only while it is an available local account that is still a recipient of the
-// quoting status (status_mentions, silent included) or an accepted follower of its author; otherwise the instance
-// actor fetches.
+// at and the signer of its fetch (signerOf).
 export const quoteWork = readOperation<{ statusId: string; now: number }, QuoteWork | null>((db, { statusId, now }) => {
   const row = quoteRow(db, statusId);
   if (row === undefined || row.quoted_uri === null || (row.state !== "pending" && row.state !== "accepted")) {
     return null;
   }
   const { stage, fetch } = stageOf(db, row, now);
-  const signer =
-    row.fetch_as === null
-      ? undefined
-      : db.first<{ username: string }>(
-          `SELECT a.username FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = l.account_id
-					WHERE l.account_id = ?1 AND ${availableLocalSql("l")}
-						AND (EXISTS (SELECT 1 FROM status_mentions m WHERE m.status_id = ?2 AND m.account_id = ?1)
-							OR EXISTS (SELECT 1 FROM follows f WHERE f.account_id = ?1 AND f.target_account_id = ?3 AND f.state = 'accepted'))`,
-          row.fetch_as,
-          row.status_id,
-          row.account_id,
-        );
   return {
     statusId: row.status_id,
     quotedUri: row.quoted_uri,
     approvalUri: row.approval_uri,
     stage,
     fetch,
-    signer: signer?.username ?? null,
+    signer: signerOf(db, row),
     generation: row.generation,
     authorState: stage === "author" && fetch !== null ? actorState(db, fetch) : NO_ACTOR_STATE,
   };
@@ -558,6 +572,8 @@ export type QuoteVerification = {
   generation: number;
   stage: QuoteStage;
   fetch: string | null;
+  // The signer the stage fetched as (quoteWork's): a refusal under another signer than the row names now may pass.
+  signer: string | null;
   // What the stage fetched: the quoted status, its author's document or the stamp.
   quoted?: Fetched<RemoteStatusInput>;
   author?: Fetched<RemoteActorInput>;
@@ -604,8 +620,10 @@ function finish(
 }
 
 // A failed fetch's outcome: gone or unusable end the work; one that may pass (a fetch budget or deadline that ran out
-// included) charges an attempt: the stage had a whole budget of its own. A stale stored author's refetch is not one of
-// these (refreshQuoted).
+// included) charges an attempt: the stage had a whole budget of its own. So does gone or unusable under a signer other
+// than the one the row names now (a root arrival gave the work a recipient's key while the fetch was in flight,
+// promoteQuote): the retry signs with the current one, within the work's attempts. A stale stored author's refetch is
+// not one of these (refreshQuoted).
 function failed(
   db: Db,
   row: QuoteRow,
@@ -614,7 +632,7 @@ function failed(
   input: QuoteVerification,
   held: string | null,
 ) {
-  return fetched.kind !== "transient"
+  return fetched.kind !== "transient" && input.signer === signerOf(db, row)
     ? finish(db, row, keep, "done", input.now)
     : finish(db, row, keep, "retry", input.now, held);
 }

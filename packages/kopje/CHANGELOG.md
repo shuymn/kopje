@@ -313,6 +313,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   none (a quote of a local post, as Mastodon keeps it, or a self-quote,
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification), no longer sets the accepted quote
   back to pending. No Store migration and no `wrangler.jsonc` change.
+- A remote quote post that arrives again (an `Update`, a boost, a search) while its pending quote is being verified no
+  longer discards that verification, nor cuts short its wait after a failure that may pass; a fetch refused under the
+  key the verification no longer uses is retried with the current one. No Store migration and no `wrangler.jsonc`
+  change.
 
 ## [0.5.2] - 2026-11-14
 

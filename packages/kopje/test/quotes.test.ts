@@ -2007,6 +2007,7 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
         generation: read.generation,
         stage: read.stage,
         fetch: read.fetch,
+        signer: read.signer,
         ...outcome,
       });
     return { id, work, complete };
@@ -2062,6 +2063,7 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
       generation: old.generation,
       stage: old.stage,
       fetch: old.fetch,
+      signer: old.signer,
       stamp: {
         kind: "ok",
         value: { ...stamp, interactingObject: pair.quote.id, interactionTarget: pair.target.id },
@@ -2072,7 +2074,7 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "revoked" });
   });
 
-  it("redraws the generation when a promotion renews the work: an older failure charges nothing", async () => {
+  it("keeps the generation when a promotion meets a due work: a fetch in flight still charges its failure", async () => {
     const { t, bob, carol } = await world();
     await followed(t, carol);
     const pair = quotedPair(t, bob, carol);
@@ -2083,7 +2085,7 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     // A verifier fetches the stamp; the fetch will fail.
     const fetching = await work();
     expect(fetching.stage).toBe("stamp");
-    // Meanwhile the quote's status arrives again as a root (the Store's part alone): its work is renewed.
+    // Meanwhile the quote's status arrives again as a root (the Store's part alone): the live work is left as it is.
     await t.store.receiveActivity(BUILD, {
       now: NOW,
       origin: LOCAL,
@@ -2092,10 +2094,157 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
       actorRevision: null,
       activity: { type: "Create", id: `${pair.quote.id}/activity`, object: parseRemoteStatus(pair.quote)! },
     });
-    expect((await work()).generation).not.toBe(fetching.generation);
-    // The older fetch's failure arrives late: it charges nothing to the renewed work.
+    expect((await work()).generation).toBe(fetching.generation);
+    // The fetch's failure applies to the work it belongs to.
     await complete(fetching, { stamp: { kind: "transient" } });
-    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "pending", attempts: 0, verify_after: NOW });
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({
+      state: "pending",
+      attempts: 1,
+      verify_after: NOW + QUOTE_BACKOFF_MS[0]!,
+    });
+  });
+
+  // A pending quote's work as a root arrival may change it (promoteQuote).
+  type Live = {
+    state: string;
+    verify_after: number | null;
+    lease_until: number | null;
+    generation: number;
+    attempts: number;
+    author_fetches: number;
+    hops: number;
+    fetch_as: string | null;
+  };
+  const liveOf = async (t: Setup, uri: string) =>
+    (
+      await sql<Live>(
+        t.store,
+        `SELECT q.state, q.verify_after, q.lease_until, q.generation, q.attempts, q.author_fetches, q.hops, q.fetch_as
+				FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?`,
+        uri,
+      )
+    )[0]!;
+  // `quote`'s same-version Update (handle_implicit_update!), the n-th: it keeps the quote and promotes it.
+  const sameVersion = (bob: TestActor, quote: Note, n: number) => ({
+    ...update(bob, quote, quote.published as string),
+    id: `${quote.id}#same-${n}`,
+  });
+
+  it("leaves a pending quote's verification in flight to finish when its status arrives again", async () => {
+    const { t, bob, carol } = await world();
+    const pair = quotedPair(t, bob, carol);
+    expect(await t.postOnly(bob, create(bob, pair.quote))).toBe(202);
+    const gate = t.web.hold(pair.stamp);
+    const round = verifyQuotes(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW });
+    await gate.reached;
+    const claimed = await liveOf(t, pair.quote.id);
+    expect(claimed).toMatchObject({ state: "pending", attempts: 0, verify_after: NOW + QUOTE_LEASE_MS });
+    // Twenty Updates while the round fetches the stamp: the claim, its generation and its lease stay.
+    for (let n = 0; n < 20; n++) {
+      expect(await t.postOnly(bob, sameVersion(bob, pair.quote, n))).toBe(202);
+      expect(await liveOf(t, pair.quote.id)).toEqual({ ...claimed, hops: QUOTE_HOPS });
+    }
+    gate.release();
+    await round;
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: null, hops: QUOTE_HOPS });
+    expect(t.web.fetched.filter((url) => url === pair.stamp)).toHaveLength(1);
+  });
+
+  it("leaves a pending quote's backoff to run out when its status arrives again", async () => {
+    const { t, bob, carol } = await world();
+    const pair = quotedPair(t, bob, carol);
+    const served = t.web.served.get(pair.stamp)!;
+    t.web.fail(pair.stamp, 503);
+    expect(await t.post(bob, create(bob, pair.quote))).toBe(202);
+    const backingOff = await liveOf(t, pair.quote.id);
+    expect(backingOff).toMatchObject({ state: "pending", attempts: 1, verify_after: NOW + QUOTE_BACKOFF_MS[0]! });
+    t.web.served.set(pair.stamp, served);
+    t.web.fetched.length = 0;
+    // The Update's own rounds find nothing due: the retry answers it.
+    expect(await t.post(bob, sameVersion(bob, pair.quote, 0))).toBe(202);
+    expect(await liveOf(t, pair.quote.id)).toEqual(backingOff);
+    expect(t.web.fetched).not.toContain(pair.stamp);
+    await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: null });
+  });
+
+  it("renews an idle pending quote's work when its status arrives again", async () => {
+    const { t, bob, carol } = await world();
+    const pair = quotedPair(t, bob, carol);
+    t.web.fail(pair.stamp, 503);
+    expect(await t.post(bob, create(bob, pair.quote))).toBe(202);
+    let at = NOW;
+    for (const delay of QUOTE_BACKOFF_MS) {
+      at += delay;
+      await rounds(t, at);
+    }
+    // Given up after its last attempt: idle, with its attempts and the author fetch of its first round spent.
+    const idle = await liveOf(t, pair.quote.id);
+    expect(idle).toMatchObject({
+      state: "pending",
+      verify_after: null,
+      attempts: QUOTE_BACKOFF_MS.length + 1,
+      author_fetches: 1,
+    });
+    expect(await t.postOnly(bob, sameVersion(bob, pair.quote, 0))).toBe(202);
+    const renewed = await liveOf(t, pair.quote.id);
+    expect(renewed).toMatchObject({ state: "pending", verify_after: NOW, attempts: 0, author_fetches: 0 });
+    expect(renewed.generation).not.toBe(idle.generation);
+  });
+
+  // The quote's fetch_as changes while its first fetch is in flight: a refusal under the instance actor is no answer of
+  // the work's current signer.
+  it("retries a fetch refused under a signer the quote no longer names, with the current one", async () => {
+    const { t } = await world();
+    const erin = await mastodonActor(t.web, "erin", { key: 7 });
+    const followers = `${erin.uri}/followers`;
+    const own = mastodonNote(erin, { to: [followers], cc: [] });
+    t.web.serve(own.id, { "@context": AS, ...own });
+    t.web.signedOnly.set(own.id, `${ALICE_URI}#main-key`);
+    const quote = quoting(erin, own.id, null);
+    t.web.serve(quote.id, { "@context": AS, ...quote });
+    // Stored by a search while no local account follows erin: the instance actor fetches for it.
+    const found = await t.api<{ statuses: { uri: string }[] }>(
+      `/api/v2/search?q=${encodeURIComponent(quote.id)}&resolve=true&type=statuses`,
+    );
+    expect(found.body.statuses.map((status) => status.uri)).toEqual([quote.id]);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "pending", verify_after: NOW, fetch_as: null });
+    const gate = t.web.hold(own.id);
+    const round = verifyQuotes(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW });
+    await gate.reached;
+    const claimed = await liveOf(t, quote.id);
+    // alice follows erin, and the Create reaches her inbox: the work now names alice, its claim kept.
+    await followed(t, erin);
+    expect(await t.postOnly(erin, create(erin, quote), { path: "/ap/users/alice/inbox" })).toBe(202);
+    expect(await liveOf(t, quote.id)).toEqual({ ...claimed, fetch_as: ALICE });
+    t.web.signers.length = 0;
+    t.web.fetched.length = 0;
+    gate.release();
+    await round;
+    expect(t.web.signers[t.web.fetched.indexOf(own.id)]).not.toBe(`${ALICE_URI}#main-key`);
+    expect(await quoteOf(t, quote.id)).toMatchObject({
+      state: "pending",
+      attempts: 1,
+      verify_after: NOW + QUOTE_BACKOFF_MS[0]!,
+    });
+    await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+    expect(t.web.signers[t.web.fetched.lastIndexOf(own.id)]).toBe(`${ALICE_URI}#main-key`);
+  });
+
+  it("ends the work when the signer the quote still names is refused", async () => {
+    const { t, bob } = await world();
+    const followers = `${bob.uri}/followers`;
+    const own = mastodonNote(bob, { to: [followers], cc: [] });
+    t.web.serve(own.id, { "@context": AS, ...own });
+    t.web.signedOnly.set(own.id, `${LOCAL}/ap/users/dave#main-key`);
+    const quote = quoting(bob, own.id, null, { to: [followers], cc: [] });
+    expect(await t.postOnly(bob, create(bob, quote), { path: "/ap/users/alice/inbox" })).toBe(202);
+    t.web.signers.length = 0;
+    t.web.fetched.length = 0;
+    await rounds(t, NOW);
+    expect(t.web.signers[t.web.fetched.indexOf(own.id)]).toBe(`${ALICE_URI}#main-key`);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "pending", attempts: 0, verify_after: null });
   });
 
   it("charges a failed Store stage only to the work and stage it read", async () => {
@@ -2829,6 +2978,7 @@ describe("the quoted status of a quote being verified (RES-7)", () => {
         generation: work.generation,
         stage: work.stage,
         fetch: work.fetch,
+        signer: work.signer,
         stamp: { kind: "transient" },
       });
     };
