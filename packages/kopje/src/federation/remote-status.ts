@@ -121,7 +121,7 @@ function audience(object: Json, key: "to" | "cc", activity: Json | null): string
 
 // Tag names Mastodon would accept (Tag::HASHTAG_NAME_RE): letters, marks, digits, _ and the separators it allows,
 // with at least one non-digit.
-const TAG_NAME = /^[\p{L}\p{M}\p{Nd}_·・‌]+$/u;
+const TAG_NAME = /^[\p{L}\p{M}\p{Nd}_\u00B7\u30FB\u200C]+$/u;
 
 function hashtag(name: unknown): string | null {
   if (typeof name !== "string") {

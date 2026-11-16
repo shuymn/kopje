@@ -296,6 +296,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   handoff pages and every page, 404 and 410 at a URL where Mastodon serves its web app: a post's Boosts, Favourites and
   Quotes tabs, the `/@username@domain` spelling and the pages under a stored username with a dot
   ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
+- The Store isolate's memory at rest drops by about 6 MB: the Worker bundle holds no character above U+00FF, so V8
+  keeps its source one byte a character instead of two. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
