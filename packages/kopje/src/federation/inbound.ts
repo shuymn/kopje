@@ -40,6 +40,7 @@ import {
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
+import { ldSignedBodyReadable } from "./ld-signed-body";
 import {
   createContextLoader,
   createSafeLoader,
@@ -179,7 +180,7 @@ function idOf(value: unknown): string | null {
 
 // The types read as a Like: Misskey's reactions (a Like with _misskey_reaction or content), EmojiReact and
 // EmojiReaction (Misskey's isLike, core/activitypub/type.ts). A favourite; the emoji is not kept (as Mastodon).
-const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
+export const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
 
 function refOf(value: unknown): ActivityRef {
   if (!isObject(value)) {
@@ -215,13 +216,19 @@ export function hasActivityStreamsContext(context: unknown): boolean {
 // The activity as Mastodon reads it: compacted JSON with the ActivityStreams context, ids as strings or objects with
 // an id. Other types and objects Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
-// and an actor with an http(s) origin. Shared by the inbox and the cutover rollback's drain, so neither hands on an
-// activity the other would ignore.
+// and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in (ID-1,
+// ldSignedBodyReadable). Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the
+// other would ignore.
 function activityEnvelope(
   json: Json,
-): { ok: true; actor: string; id: string; type: string } | { ok: false; reason: "no-context" | "incomplete" } {
+):
+  | { ok: true; actor: string; id: string; type: string }
+  | { ok: false; reason: "no-context" | "ld-context" | "incomplete" } {
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
+  }
+  if (isObject(json.signature) && !ldSignedBodyReadable(json)) {
+    return { ok: false, reason: "ld-context" };
   }
   const actor = idOf(json.actor);
   const id = typeof json.id === "string" ? json.id : null;

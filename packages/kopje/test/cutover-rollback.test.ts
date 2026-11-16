@@ -800,6 +800,26 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     expect(r.legacy.pending).toEqual([]);
   });
 
+  it("does not hand on an LD-signed activity Kopje's inbox ignores (ID-1, ldSignedBodyReadable)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // A keyword alias beside the literal type: Mastodon reads two types and applies nothing.
+    const ignored = { ...follow(r.carol.uri, 1), "@context": [ctx, { kind: "@type" }], kind: "Like", signature };
+    expect(parseActivity(new TextEncoder().encode(JSON.stringify(ignored)))).toMatchObject({
+      ok: false,
+      reason: "ld-context",
+    });
+    await r.spool("/ap/users/alice/inbox", ignored);
+    // The same Follow LD-signed in ActivityStreams' vocabulary is handed on.
+    await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 2), signature });
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+      `${r.carol.uri}#follows/2`,
+    ]);
+  });
+
   it("stops with journal-full when valid requests exceed the quota, and goes on once it is raised", async () => {
     const store = await importedStore();
     const r = await rollback(store, { CUTOVER_JOURNAL_MAX_ENTRIES: "1" });

@@ -219,6 +219,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- An inbound activity that carries a Linked Data signature is ignored (answered 202) unless its JSON-LD contexts keep
+  the meanings Mastodon reads it by (no redefined ActivityStreams or Mastodon property, no alias of one or of a keyword,
+  no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
+  `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities). Mastodon, Fedify, Misskey
+  and Kopje bodies all pass. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

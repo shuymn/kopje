@@ -1,12 +1,31 @@
+import { preloadedContexts } from "@fedify/fedify";
 import { describe, expect, it } from "vitest";
 
 import { isPublicCollection } from "../src/domain/audience";
-import { parseActivity } from "../src/federation/inbound";
+import { LIKE_TYPES, parseActivity } from "../src/federation/inbound";
+import { ACTIVITY_VOCABULARY, ldSignedBodyReadable } from "../src/federation/ld-signed-body";
+import { ACTOR_TYPES, CONVERTED_TYPES, STATUS_TYPES } from "../src/federation/remote-status";
+import { handleQueue } from "../src/jobs/queue";
+import { MAX_JSON_DEPTH, MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
 import { sql } from "./api-helpers";
+import { harness, inboxDeps, NOW } from "./app-helpers";
+import { fixtureKeyGen } from "./federation-helpers";
 import corpusFixture from "./fixtures/ld-signed/corpus.json";
 import formsFixture from "./fixtures/ld-signed/forms.json";
-import { mastodonActor, type TestActor } from "./inbox-helpers";
-import { ALICE, followed, localStatus, PUBLIC, type Setup, setup, statusRow } from "./inbox-status-helpers";
+import { BUILD } from "./helpers";
+import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import {
+  ALICE,
+  followed,
+  localStatus,
+  mastodonNote,
+  notifications,
+  PUBLIC,
+  type Setup,
+  setup,
+  statusRow,
+} from "./inbox-status-helpers";
+import { quoteAccept } from "./quote-helpers";
 
 // Activities that carry a Linked Data signature, read as received where Mastodon 4.7.5 reads them as their compaction
 // under its full_context (docs/mastodon-deviations.md, "Reading inbound activities"; ID-1, VIS-1, RES-2). The
@@ -467,5 +486,347 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await statusRow(t.store, deleted)).toBeDefined();
     expect(await t.post(bob, plain("Delete object as a one-element array", status, false))).toBe(202);
     expect(await statusRow(t.store, deleted)).toBeUndefined();
+  });
+});
+
+// D4: an LD-signed body is read only in the vocabulary Mastodon reads it in (ldSignedBodyReadable); any other is
+// ignored before the gate (202, ld-context), on the inbox, its spool replay and the cutover rollback's drain alike.
+describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", () => {
+  const LD_CONTEXT = { ok: false, reason: "ld-context" };
+  // Kopje's reading of the body had it no signature: the literal reading D4 keeps from an LD-signed body.
+  const literal = (entry: Entry) => read(without(entry.received, "signature"));
+
+  describe("forms whose literal reading would grant what Mastodon's does not", () => {
+    it.each(["@base after ActivityStreams", "@base before ActivityStreams"])(
+      "ignores an LD-signed activity whose context rebases its IRIs: %s",
+      (name) => {
+        const entry = form(name);
+        expect(kopje(entry)).toEqual(LD_CONTEXT);
+        // Literally public; Mastodon reads it addressed to https://other.example/Public, a limited status.
+        expect(statusOf(literal(entry))).toMatchObject({ to: [PUBLIC] });
+        expect(statusOf(mastodon(entry))).toMatchObject({ to: ["https://other.example/Public"] });
+      },
+    );
+
+    it("ignores an LD-signed activity that aliases a keyword or a member beside the literal one", () => {
+      const twoTypes = ["a keyword alias beside the literal type", "@type beside type"];
+      for (const name of twoTypes) {
+        expect(kopje(form(name)), name).toEqual(LD_CONTEXT);
+        expect(accepted(literal(form(name))), name).toMatchObject({ type: "Like" });
+        // Two types: Mastodon's factory applies nothing.
+        expect(mastodonReading(form(name)).type, name).toEqual(["Like", "Create"]);
+      }
+      const twoObjects = [
+        "an alias of object beside the literal one",
+        "an as:object key holding an object",
+        "an absolute IRI key holding an object",
+      ];
+      for (const name of twoObjects) {
+        expect(kopje(form(name)), name).toEqual(LD_CONTEXT);
+        expect(accepted(literal(form(name))).object, name).toEqual(expect.any(String));
+        expect(mastodonReading(form(name)).object, name).toHaveLength(2);
+        expect(mastodon(form(name)), name).toEqual({ ok: false, reason: "unsupported" });
+      }
+      const aliasedTo = form("an alias of to with to redefined");
+      expect(kopje(aliasedTo)).toEqual(LD_CONTEXT);
+      expect(statusOf(literal(aliasedTo))).toMatchObject({ to: [PUBLIC] });
+      expect(statusOf(mastodon(aliasedTo))).toMatchObject({ to: ["https://mastodon.example/users/bob/followers"] });
+    });
+
+    it.each([
+      ["an inline to", (reading: Json) => !Object.hasOwn(reading.object as Json, "to")],
+      ["a null tag", (reading: Json) => !Object.hasOwn(reading.object as Json, "tag")],
+      ["a redefined Like", (reading: Json) => reading.type === "Dislike"],
+      ["a redefined QuoteRequest", (reading: Json) => reading.type === "https://other.example/QuoteRequest"],
+      [
+        "schema.org after ActivityStreams",
+        (reading: Json) => reading.actor === undefined && reading.object === undefined,
+      ],
+      ["a null context entry", (reading: Json) => reading.type === undefined],
+      ["a scoped definition", (reading: Json) => Object.hasOwn(reading.object as Json, "https://other.example/extra")],
+      ["a context in the object", (reading: Json) => Object.hasOwn(reading.object as Json, "https://other.example/to")],
+      [
+        "a context in a tag entry",
+        (reading: Json) => Object.hasOwn((reading.object as Json).tag as Json, "https://other.example/href"),
+      ],
+    ])("ignores an LD-signed activity whose context changes a name's meaning: %s", (name, renamed) => {
+      expect(kopje(form(name))).toEqual(LD_CONTEXT);
+      expect(literal(form(name)).ok).toBe(true);
+      // Mastodon reads the member renamed, dropped or under another type.
+      expect(renamed(mastodonReading(form(name)))).toBe(true);
+    });
+  });
+
+  describe("forms Mastodon reads, refused where it applies them", () => {
+    it.each([
+      "@id and @type in place of id and type",
+      "@id beside id",
+      "@value in content",
+      "@nest in a status",
+      "@id in inReplyTo",
+      "@id in a Mention's href",
+      "@id in a Follow's object",
+      "@id in an Undo's object",
+      "@id in an Accept's result",
+      "a redefined as",
+      "a prefix naming the ActivityStreams namespace",
+      "a prefix chain",
+      "@vocab set",
+      "@language set",
+      "@propagate before ActivityStreams",
+      "identity/v1 after ActivityStreams",
+      "a context in a proof of the object",
+    ])("ignores %s", (name) => {
+      expect(kopje(form(name))).toEqual(LD_CONTEXT);
+      expect(mastodon(form(name)).ok).toBe(true);
+    });
+
+    it.each([
+      "@graph in the body",
+      "@included in the body",
+      "@reverse in the body",
+      "an unknown context URL",
+      "a nested context array",
+    ])("ignores %s, which Mastodon reads as received", (name) => {
+      expect(kopje(form(name))).toEqual(LD_CONTEXT);
+      expect(form(name).fallback).toEqual(
+        expect.stringMatching(/^(Mastodon::InvalidJsonLdError|JSON::LD::JsonLdError)/),
+      );
+    });
+  });
+
+  describe("reads an LD-signed activity in a real sender's vocabulary", () => {
+    it.each([
+      "Misskey's context",
+      "Mastodon 4.4 and 4.5's forwarded context",
+      "Mastodon 4.6's forwarded context",
+      "Mastodon 4.7's forwarded context",
+      "a name outside the vocabulary with a key of its own",
+      "an inline prefix named https",
+    ])("%s", (name) => {
+      expect(ldSignedBodyReadable(form(name).received)).toBe(true);
+      expect(kopje(form(name))).toEqual(mastodon(form(name)));
+    });
+
+    it("Fedify's contexts, identity/v1 before ActivityStreams, with and without a proof", () => {
+      const fedify = corpus.filter((entry) => entry.sender === "fedify-2.4.5");
+      expect(
+        fedify.every((entry) => (entry.received["@context"] as unknown[])[0] === "https://w3id.org/identity/v1"),
+      ).toBe(true);
+      for (const entry of fedify) {
+        expect(ldSignedBodyReadable(entry.received), entry.name).toBe(true);
+      }
+    });
+  });
+
+  it.each([
+    "@base after ActivityStreams, unsigned",
+    "a keyword alias beside the literal type, unsigned",
+    "an alias of to with to redefined, unsigned",
+  ])("reads an unsigned activity with any context, as Mastodon: %s", (name) => {
+    const entry = form(name);
+    expect(entry.received.signature).toBeUndefined();
+    expect(kopje(entry).ok).toBe(true);
+    expect(kopje(entry)).toEqual(mastodon(entry));
+  });
+
+  it("Kopje's activity types are names of the vocabulary or ones Mastodon does not read", () => {
+    // The types activityOf dispatches on, the status, converted and actor types, and the tag types tagsOf and
+    // emojiCandidates read.
+    const dispatched = ["Follow", "Block", "Accept", "Reject", "Undo", "Move", "QuoteRequest", "Create", "Update"];
+    const more = ["Delete", "Add", "Remove", "Flag", "Announce", "Mention", "Hashtag", "Emoji", "Tombstone"];
+    const read = [...LIKE_TYPES, ...dispatched, ...more, ...STATUS_TYPES, ...CONVERTED_TYPES, ...ACTOR_TYPES];
+    expect(read.filter((type) => !ACTIVITY_VOCABULARY.has(type))).toEqual(["EmojiReact", "EmojiReaction"]);
+  });
+
+  describe("through the inbox", () => {
+    async function world(): Promise<{ t: Setup; bob: TestActor; status: { id: string; uri: string } }> {
+      const t = await setup();
+      const bob = await mastodonActor(t.web, "bob");
+      await followed(t, bob);
+      const status = await localStatus(t, { status: "local", visibility: "public" });
+      return { t, bob, status };
+    }
+
+    const placed = (json: Json, status: { uri: string }) =>
+      JSON.parse(JSON.stringify(json).replaceAll("https://kopje.test/ap/o/local-1", status.uri)) as Json;
+
+    it.each(["@base after ActivityStreams", "@base before ActivityStreams"])(
+      "stores nothing an anonymous viewer can see from a rebased Create: %s",
+      async (name) => {
+        const { t, bob, status } = await world();
+        const received = placed(form(name).received, status);
+        const id = (received.object as Json).id as string;
+        expect(await t.post(bob, received)).toBe(202);
+        expect(await statusRow(t.store, id)).toBeUndefined();
+        const timeline = await t.api<{ uri: string }[]>("/api/v1/timelines/public", null);
+        expect(timeline.body.map((s) => s.uri)).not.toContain(id);
+        // The same body without its signature is read as received: public, as Mastodon reads it.
+        expect(await t.post(bob, without(received, "signature"))).toBe(202);
+        expect(await statusRow(t.store, id)).toMatchObject({ visibility: "public" });
+        const after = await t.api<{ uri: string }[]>("/api/v1/timelines/public", null);
+        expect(after.body.map((s) => s.uri)).toContain(id);
+      },
+    );
+
+    it("applies no favourite and no notification from a Like with a keyword alias beside its type", async () => {
+      const { t, bob, status } = await world();
+      const received = placed(form("a keyword alias beside the literal type").received, status);
+      expect(await t.post(bob, received)).toBe(202);
+      expect(await sql(t.store, "SELECT * FROM favourites")).toEqual([]);
+      expect(await notifications(t.store)).toEqual([]);
+      expect(await t.post(bob, without(received, "signature"))).toBe(202);
+      expect(await sql(t.store, "SELECT count(*) AS n FROM favourites")).toEqual([{ n: 1 }]);
+      expect(await notifications(t.store)).toEqual([{ account_id: ALICE, type: "favourite" }]);
+    });
+
+    it("an Accept whose result is given as {@id} grants no stamp", async () => {
+      const { t, bob } = await world();
+      const note = mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
+      expect(
+        await t.post(bob, {
+          "@context": "https://www.w3.org/ns/activitystreams",
+          id: `${note.id}/activity`,
+          type: "Create",
+          actor: bob.uri,
+          to: note.to,
+          cc: note.cc,
+          object: note,
+        }),
+      ).toBe(202);
+      const theirs = (await statusRow(t.store, note.id))!.id;
+      const mine = await localStatus(t, { status: "quote", quoted_status_id: theirs });
+      const state = async () =>
+        (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", mine.id))[0]?.state;
+      expect(await state()).toBe("pending");
+      const stamp = `${bob.uri}/quote_authorizations/1`;
+      const signature = form("@id in an Accept's result").received.signature;
+      const accept = { ...quoteAccept(bob, mine.uri, null), result: { "@id": stamp }, signature };
+      expect(await t.post(bob, accept)).toBe(202);
+      expect(await state()).toBe("pending");
+      expect(await t.post(bob, { ...quoteAccept(bob, mine.uri, stamp), signature })).toBe(202);
+      expect(await state()).toBe("accepted");
+    });
+
+    it("a spooled LD-signed activity outside the vocabulary is ignored on replay", async () => {
+      const { t, bob, status } = await world();
+      const received = placed(form("a keyword alias beside the literal type").received, status);
+      const maintenance = harness(t.store, { MAINTENANCE: "readonly" }, BUILD, {
+        keygen: fixtureKeyGen,
+        loader: t.web.loader,
+      });
+      const spool = async (body: Json) =>
+        (await maintenance.request("/inbox", await signedInit(bob, "/inbox", body, { at: NOW }))).status;
+      expect(await spool(received)).toBe(202);
+      expect(await spool({ ...without(received, "signature"), id: `${received.id as string}/unsigned` })).toBe(202);
+      const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+      await maintenance.queue.deliver((batch) =>
+        handleQueue(batch, { ...maintenance.env, MAINTENANCE: "off" } as Env, deps),
+      );
+      // Only the unsigned copy, read as received, favourites.
+      expect(await sql(t.store, "SELECT l.uri FROM favourite_likes l")).toEqual([
+        { uri: `${received.id as string}/unsigned` },
+      ]);
+    });
+  });
+
+  // RES-2: the check runs before verification, for any sender, so its witnesses go through the real gate unsigned.
+  describe("checks an LD-signed body at the JSON bounds within a generous time", () => {
+    const GENEROUS_MS = 1_000;
+    const SIGNATURE = { type: "RsaSignature2017", creator: "https://mastodon.example/users/bob#main-key" };
+
+    // The largest `count` for which build(count) stays within the JSON bounds, and that body.
+    function filled(build: (count: number) => Json): Json {
+      let low = 0;
+      let high = MAX_JSON_NODES;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (withinJsonBounds(build(middle))) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
+      }
+      const body = build(low);
+      expect(withinJsonBounds(body)).toBe(true);
+      expect(withinJsonBounds(build(low + 1))).toBe(false);
+      return body;
+    }
+
+    const activity = (context: unknown, extra: Json) => ({
+      "@context": context,
+      id: "https://mastodon.example/users/bob/activities/bounds",
+      type: "Like",
+      actor: "https://mastodon.example/users/bob",
+      object: "https://kopje.test/ap/o/1",
+      signature: SIGNATURE,
+      ...extra,
+    });
+
+    // A chain MAX_JSON_DEPTH deep, then plain keys up to MAX_JSON_NODES in one object.
+    const deep = (count: number) => {
+      let chain: Json = {};
+      for (let depth = 0; depth < MAX_JSON_DEPTH - 3; depth++) {
+        chain = { next: chain };
+      }
+      const wide = Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, i]));
+      return activity("https://www.w3.org/ns/activitystreams", { chain, wide });
+    };
+    // An inline context of as many definitions as fit, each a compact IRI over one inline prefix.
+    const definitions = (count: number) =>
+      activity(
+        [
+          "https://www.w3.org/ns/activitystreams",
+          {
+            p: "https://other.example/ns#",
+            ...Object.fromEntries(Array.from({ length: count }, (_, i) => [`t${i}`, `p:t${i}`])),
+          },
+        ],
+        {},
+      );
+    // Every ActivityStreams term rule (2) admits defined again as ActivityStreams defines it, then filled as
+    // `definitions` is.
+    const ASDefinitions = (preloadedContexts["https://www.w3.org/ns/activitystreams"] as { "@context": Json })[
+      "@context"
+    ];
+    const admitted = (definition: unknown) =>
+      typeof definition === "string" ||
+      ["@set", "@list", undefined].includes((definition as Json)["@container"] as string | undefined);
+    const terms = (count: number) =>
+      activity(
+        [
+          "https://www.w3.org/ns/activitystreams",
+          Object.fromEntries(
+            [...ACTIVITY_VOCABULARY.keys()]
+              .filter((name) => Object.hasOwn(ASDefinitions, name) && admitted(ASDefinitions[name]))
+              .map((name) => [name, ASDefinitions[name]]),
+          ),
+          {
+            p: "https://other.example/ns#",
+            ...Object.fromEntries(Array.from({ length: count }, (_, i) => [`t${i}`, `p:t${i}`])),
+          },
+        ],
+        {},
+      );
+
+    it.each([
+      ["plain keys at the depth bound", deep],
+      ["inline definitions", definitions],
+      ["ActivityStreams' own definitions", terms],
+    ])("%s", async (_, build) => {
+      const body = filled(build);
+      // The body passes the check (the slow path: every value visited), so only the signature refuses it.
+      expect(ldSignedBodyReadable(body)).toBe(true);
+      const t = await setup();
+      const started = performance.now();
+      const response = await t.request("/inbox", {
+        method: "POST",
+        headers: { "content-type": AP },
+        body: JSON.stringify(body),
+      });
+      const elapsed = performance.now() - started;
+      expect(response.status).toBe(401);
+      expect(elapsed).toBeLessThan(GENEROUS_MS);
+    });
   });
 });
