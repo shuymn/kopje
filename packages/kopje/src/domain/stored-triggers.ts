@@ -1,5 +1,9 @@
 import {
   applicationIdPastBoundSql,
+  COLLECTION_MAX_ITEMS,
+  MAX_STORED_COLLECTIONS,
+  MAX_STORED_ITEMS,
+  reportCollectionIdsPastBoundSql,
   blurhashPastBoundSql,
   cardImagePastBoundSql,
   contactUsernamePastBoundSql,
@@ -116,6 +120,22 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 }
 
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
+
+// A count trigger of 0103_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
+// row to another parent, when the parent holds `max` rows already (rows other than the moved one). The count reads at
+// most `max` entries of the parent's index.
+function countTriggers(name: string, table: string, key: string, max: number, message: string): string[] {
+  const held = (row: string) =>
+    `(SELECT count(*) FROM (SELECT 1 FROM ${table} WHERE ${key} = NEW.${key}${row}\n    LIMIT ${max})) >= ${max}`;
+  const body = `BEGIN\n  SELECT RAISE(ABORT, '${table}: ${message}');\nEND;`;
+  return [
+    `CREATE TRIGGER ${name} BEFORE INSERT ON ${table}\nWHEN ${held("")}\n${body}`,
+    `CREATE TRIGGER ${name}_move BEFORE UPDATE OF ${key} ON ${table}\nWHEN NEW.${key} IS NOT OLD.${key}\n  AND ${held(" AND id <> OLD.id")}\n${body}`,
+  ];
+}
+
+const LIVE = " AND state IN (0, 1)";
+const LIVE_REFUSED = "collection_items: past the live bound";
 
 // Each trigger's statement, by the migration that last defines it.
 const STATEMENTS: readonly string[] = [
@@ -362,6 +382,43 @@ END;`,
 BEGIN
   UPDATE polls SET revision = ${nextDocumentRevisionSql("revision")} WHERE status_id = NEW.status_id;
 END;`,
+  // 0103_collections: the per-account and per-collection counts, the live items (an insert or a change into pending
+  // or accepted), and reports.collection_ids.
+  ...countTriggers(
+    "collections_per_account",
+    "collections",
+    "account_id",
+    MAX_STORED_COLLECTIONS,
+    "past the per-account bound",
+  ),
+  ...countTriggers(
+    "collection_items_per_collection",
+    "collection_items",
+    "collection_id",
+    MAX_STORED_ITEMS,
+    "past the per-collection bound",
+  ),
+  `CREATE TRIGGER collection_items_live BEFORE INSERT ON collection_items
+WHEN NEW.state IN (0, 1)
+  AND (SELECT count(*) FROM (SELECT 1 FROM collection_items WHERE collection_id = NEW.collection_id${LIVE}
+    LIMIT ${COLLECTION_MAX_ITEMS})) >= ${COLLECTION_MAX_ITEMS}
+BEGIN
+  SELECT RAISE(ABORT, '${LIVE_REFUSED}');
+END;`,
+  `CREATE TRIGGER collection_items_live_update BEFORE UPDATE OF state, collection_id ON collection_items
+WHEN NEW.state IN (0, 1) AND (OLD.state NOT IN (0, 1) OR NEW.collection_id IS NOT OLD.collection_id)
+  AND (SELECT count(*) FROM (SELECT 1 FROM collection_items WHERE collection_id = NEW.collection_id${LIVE}
+    AND id <> OLD.id LIMIT ${COLLECTION_MAX_ITEMS})) >= ${COLLECTION_MAX_ITEMS}
+BEGIN
+  SELECT RAISE(ABORT, '${LIVE_REFUSED}');
+END;`,
+  ...boundTriggers(
+    "reports_collection_ids",
+    "reports",
+    "collection_ids",
+    reportCollectionIdsPastBoundSql("NEW.collection_ids"),
+    "reports: collection_ids past its stored bound",
+  ),
 ];
 
 // Each registered trigger's statement by its name.

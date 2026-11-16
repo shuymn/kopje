@@ -2,6 +2,8 @@ import { type ByIds, writeEach } from "../db/by-ids";
 import {
   ACCOUNTS_ID_INDEX,
   ACCOUNTS_URI_INDEX,
+  COLLECTION_ITEMS_ID_INDEX,
+  COLLECTIONS_ID_INDEX,
   FEATURED_TAGS_ACCOUNT_INDEX,
   FEATURED_TAGS_ID_INDEX,
   FILTER_STATUSES_ID_INDEX,
@@ -1710,6 +1712,33 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
     "DELETE FROM collection_syncs WHERE account_id IN (SELECT account_id FROM collection_syncs WHERE account_id = ? LIMIT ?)",
     id,
   );
+  // Its items in any collection, then the items of its collections (MAX_STORED_ITEMS each), then each of its
+  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections).
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
+			(SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2)`,
+    id,
+  );
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
+			(SELECT i.id FROM collections c INDEXED BY collections_account
+				CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
+			WHERE c.account_id = ?1 LIMIT ?2)`,
+    id,
+  );
+  spend(
+    db,
+    budget,
+    `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
+			(SELECT c.id FROM collections c INDEXED BY collections_account WHERE c.account_id = ?1
+				AND NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = c.id)
+			LIMIT ?2)`,
+    id,
+  );
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,
@@ -2161,6 +2190,8 @@ export const PURGED_ACCOUNT_CHILDREN: readonly { table: string; check: string; f
   { table: "collection_syncs", check: "account_id = ?1" },
   { table: "remote_field_links", check: "account_id = ?1" },
   { table: "collection_pins_pending", check: "account_id = ?1" },
+  { table: "collection_items", check: "account_id = ?1" },
+  { table: "collections", check: "account_id = ?1" },
 ];
 
 // What names a remote account without a foreign key (logical references, which no delete of the account cascades to):

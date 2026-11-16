@@ -953,6 +953,75 @@ describe("second review: deletion, keys and generations", () => {
     expect(await accountId(t.store, bob.uri)).toBeUndefined();
   });
 
+  it("purges a remote account's collections and memberships within the batch budget", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await t.post(bob, follow(bob));
+    const bobId = (await accountId(t.store, bob.uri))!;
+    // A local collection featuring bob, and 20 of bob's collections of 25 pending unresolved members each: more rows than a
+    // batch, which the purge deletes without a cascade (its items, its collections' items, then its collections).
+    await sql(
+      t.store,
+      "INSERT INTO accounts (id, uri, username) VALUES ('590000000000000001', ?, 'owner')",
+      `${LOCAL}/ap/users/owner`,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			VALUES ('590000000000000002', '590000000000000001', 1, 'local', 0, 1, ?1, ?1)`,
+      new Date(NOW).toISOString(),
+    );
+    await sql(
+      t.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			VALUES ('590000000000000003', '590000000000000002', ?1, 1, 1, ?2, ?2)`,
+      bobId,
+      new Date(NOW).toISOString(),
+    );
+    const owned = 20;
+    const per = 25;
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+			INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+			SELECT printf('58%016d', i), ?1, 0, 'c' || i, 0, 1, ?3 || '/c/' || i, ?4, ?4 FROM n`,
+      bobId,
+      owned,
+      bob.uri,
+      new Date(NOW).toISOString(),
+    );
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 * ?2 - 1)
+			INSERT INTO collection_items (id, collection_id, object_uri, state, position, created_at, updated_at)
+			SELECT printf('57%016d', i), printf('58%016d', i / ?2 + 1), ?3 || '/u/' || i, 0, 1 + i % ?2, ?4, ?4 FROM n`,
+      owned,
+      per,
+      MASTODON,
+      new Date(NOW).toISOString(),
+    );
+    const left = async () => [
+      await count(t.store, "SELECT 1 FROM collection_items WHERE account_id = ?", bobId),
+      await count(t.store, "SELECT 1 FROM collection_items WHERE collection_id GLOB '58*'"),
+      await count(t.store, "SELECT 1 FROM collections WHERE account_id = ?", bobId),
+    ];
+    expect(await left()).toEqual([1, owned * per, owned]);
+    t.web.fail(bob.uri, 410);
+    expect(await t.post(bob, deleteSelf(bob))).toBe(202);
+    // One batch writes at most PURGE_BATCH rows: bob's membership goes first, then his collections' items.
+    const [memberships, items, collections] = (await left()) as [number, number, number];
+    expect(memberships).toBe(0);
+    expect(1 + owned * per - items + owned - collections).toBeLessThanOrEqual(PURGE_BATCH);
+    expect(items + collections).toBeGreaterThan(0);
+    for (let run = 0; run < 4 && (await accountId(t.store, bob.uri)) !== undefined; run++) {
+      await runScheduledJobs({ ...t.env, MAINTENANCE: "off" } as Env, t.deps);
+    }
+    expect(await left()).toEqual([0, 0, 0]);
+    expect(await accountId(t.store, bob.uri)).toBeUndefined();
+    // The local collection stays, without bob.
+    expect(await count(t.store, "SELECT 1 FROM collections WHERE id = '590000000000000002'")).toBe(1);
+  });
+
   it("deletes the pins of a remote status with it, by Delete and by purge, never by cascade alone", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

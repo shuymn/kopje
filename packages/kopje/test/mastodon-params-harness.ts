@@ -166,6 +166,15 @@ export async function world(): Promise<World> {
   ).id;
   ids.report = (await ok<{ id: string }>("POST", "/api/v1/reports", { account_id: remote, comment: "spam" })).id;
   ids.featuredTag = (await ok<{ id: string }>("POST", "/api/v1/featured_tags", { name: "kopje" })).id;
+  // The owner's collection, and bob discoverable, so the owner may feature him.
+  ids.collection = (
+    await ok<{ collection: { id: string } }>("POST", "/api/v1/collections", {
+      name: "kopje",
+      sensitive: false,
+      discoverable: true,
+    })
+  ).collection.id;
+  await ok("PATCH", "/api/v1/accounts/update_credentials", { discoverable: true }, bob.token);
   await ok("POST", "/api/v1/domain_blocks", { domain: "blocked.example" });
   ids.adminDomainBlock = (
     await ok<{ id: string }>("POST", "/api/v1/admin/domain_blocks", {
@@ -318,7 +327,8 @@ export async function observeRoute(
 // before the parameter.
 const PATH_IDS: [RegExp, (w: World) => string][] = [
   [/^\/api\/v1\/statuses$/, (w) => w.ids.status ?? ""],
-  [/^\/api\/v1\/accounts$/, (w) => w.remote],
+  [/^\/api\/v1(_alpha)?\/accounts$/, (w) => w.remote],
+  [/^\/api\/v1(_alpha)?\/collections$/, (w) => w.ids.collection ?? ""],
   [/^\/api\/v1\/tags$/, () => "kopje"],
   [/^\/api\/v1\/timelines\/tag$/, () => "kopje"],
   [/^\/api\/v1\/featured_tags$/, (w) => w.ids.featuredTag ?? ""],

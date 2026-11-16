@@ -54,7 +54,8 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
-    // The names a JSON body sent as null, which read as blank (objects' `nulls` option reads them as absent).
+    // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
+    // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
   ) {}
 
@@ -81,6 +82,12 @@ export class Params {
   // undefined, and the other way round.
   file(name: string): File | undefined {
     return this.files.get(name);
+  }
+
+  // Whether a JSON body sent `name` as null, which get(name) reads as blank: Rails assigns nil, where a blank string
+  // stays a string.
+  sentNull(name: string): boolean {
+    return this.nulls.has(name) && this.get(name) === "";
   }
 
   // Whether `name` or `name[]` was sent at all, even with no value: an explicitly empty list is not an absent one.

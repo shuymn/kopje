@@ -658,6 +658,29 @@ Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD
   `kopje-admin instance wrapstodon=false` (Mastodon's admin setting, on by default). A Mastodon admin can also generate
   a report by hand from a console, which its owner then reads; Kopje has no such path. Accepted, 2026-11-15.
 
+Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_collections`, also under
+`/api/v1_alpha`; R45 in [visibility.md](visibility.md)):
+
+- A collection whose owner is suspended, hidden or otherwise unavailable is not found, and an unavailable member is
+  left out of `items` and `accounts`, where Mastodon shows both: Kopje hides an unavailable account everywhere (R1).
+  Accepted, 2026-11-16.
+- The `Link` headers of `GET /api/v1/accounts/:id/collections` continue while a page is full, step by the page's
+  limit and never carry a negative offset, where Mastodon's `next` stops after the first page (`offset * limit`), its
+  links step by at most 80, and its `prev` can be negative. Accepted, 2026-11-16.
+- `GET /api/v1/accounts/:id/in_collections` lists memberships newest first (Mastodon: no order) and pages by a bounded
+  window of candidates: a page may be short or empty while later memberships exist, and its `Link` headers carry
+  `max_id`/`min_id`, not `offset`; an `offset` is honoured up to 400 and answers an empty page past it. Accepted,
+  2026-11-16.
+- Creating a collection with more than 25 distinct `account_ids[]` answers the too-many error without looking the
+  accounts up, where Mastodon first answers 404 or 403 for an unknown or refused one. Accepted, 2026-11-16.
+- Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
+  allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
+  2026-11-16.
+- Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
+  own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
+  Accepted, 2026-11-16.
+
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
 - Mastodon allows `LOCAL_DOMAIN`, `WEB_DOMAIN` and `ALTERNATE_DOMAINS` as hosts and exempts exactly `/health`; on any
