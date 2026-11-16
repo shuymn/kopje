@@ -700,8 +700,8 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     // The removal's start (remote-removal.ts startRemoval, removeGone), by the statement that writes each row: its job;
     // the streamed delete (streaming.ts streamDelete: its event, a viewer row for each local account listening, the
     // tombstone); the hide (HIDE_ROWS: the status, with its account's last status and its local quote row's copy by
-    // their triggers, and its card); the quote's retirement (≤ 3: the quote, its target's count and the revocation by
-    // their triggers); and its parent's replies_count.
+    // their triggers, and its card); the quote's retirement (retireQuoteOf, ≤ 4: the quote, and its target's count, the
+    // revocation and the streaming journal's row by their triggers); and its parent's replies_count.
     const removal = {
       inbound_jobs: 1,
       stream_events: 1,
@@ -709,7 +709,7 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
       stream_delete_tombstones: 1,
       statuses: HIDE_ROWS - 1 + 1,
       status_cards: 1,
-      quotes: 3,
+      quotes: 4,
     };
     within(call, { ...WALK, ...removal }, removal);
     expect(await sql(t.store, "SELECT withdrawn FROM statuses WHERE id = ?", sId)).toEqual([{ withdrawn: 1 }]);

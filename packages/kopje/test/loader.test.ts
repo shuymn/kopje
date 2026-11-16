@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  answeredStatus,
   BudgetExceededError,
   CappedFetchError,
   createContextLoader,
+  createResolveLoader,
   createSafeLoader,
+  createWebFingerLoader,
   DOCUMENT_BODY_LIMIT,
   DOCUMENT_TIMEOUT_MS,
   isTransientLoadError,
@@ -267,6 +270,62 @@ describe("safe document loader", () => {
     const { fetch: gone } = fakeFetch({ [ACTOR]: () => new Response("gone", { status: 410 }) });
     const error = await loader(gone)(ACTOR).catch((e: unknown) => e);
     expect(error).toMatchObject({ message: expect.stringContaining("HTTP 410"), response: { status: 410 } });
+  });
+
+  // #1687: a document, a WebFinger answer or a JSON-LD context is taken only from a 200, as Mastodon 4.7.5 takes each
+  // (loader.ts readDocument); another 2xx carrying a valid body is a failed fetch of its status, not transient.
+  it.each([201, 203, 206])("takes no document, WebFinger answer or context from a %i", async (code) => {
+    const kinds = [
+      {
+        load: createSafeLoader,
+        body: { "@context": "https://www.w3.org/ns/activitystreams", id: ACTOR, type: "Person" },
+        type: "application/activity+json",
+      },
+      {
+        load: createContextLoader,
+        body: { "@context": { toot: "http://joinmastodon.org/ns#" } },
+        type: "application/ld+json",
+      },
+      {
+        load: createWebFingerLoader,
+        body: { subject: "acct:bob@remote.example", links: [{ rel: "self", href: ACTOR }] },
+        type: "application/jrd+json",
+      },
+    ];
+    for (const { load, body, type } of kinds) {
+      const answering = (status: number) =>
+        fakeFetch({ [ACTOR]: () => Response.json(body, { status, headers: { "content-type": type } }) }).fetch;
+      const deps = (fetch: typeof globalThis.fetch) => ({
+        fetch,
+        checkHost: () => Promise.resolve(),
+        userAgent: "Kopje/test",
+      });
+      // The same answer at 200 is taken: the body is one the loader reads.
+      expect((await load(deps(answering(200)))(ACTOR)).document, load.name).toEqual(body);
+      const error = await load(deps(answering(code)))(ACTOR).catch((e: unknown) => e);
+      expect(error, load.name).toMatchObject({
+        message: expect.stringContaining(`HTTP ${code}`),
+        response: { status: code },
+      });
+      expect(isTransientLoadError(error), load.name).toBe(false);
+    }
+  });
+
+  // The resolve loader's first request hands a non-200 to readDocument, which refuses it with its status, so search
+  // resolution records it as the last answer (answeredStatus).
+  it("the resolve loader takes no document from a 203 at a first request", async () => {
+    const note = { "@context": "https://www.w3.org/ns/activitystreams", id: ACTOR, type: "Note" };
+    const answering = (status: number) =>
+      fakeFetch({ [ACTOR]: () => Response.json(note, { status, headers: AP }) }).fetch;
+    const resolve = (status: number) =>
+      createResolveLoader({ fetch: answering(status), checkHost: () => Promise.resolve(), userAgent: "Kopje/test" })(
+        ACTOR,
+        false,
+      );
+    expect(await resolve(200)).toMatchObject({ kind: "document", remote: { document: note } });
+    const error = await resolve(203).catch((e: unknown) => e);
+    expect(error).toMatchObject({ response: { status: 203 } });
+    expect(answeredStatus(error)).toBe(203);
   });
 
   it("signs every request when given a signer", async () => {

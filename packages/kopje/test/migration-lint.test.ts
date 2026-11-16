@@ -46,6 +46,9 @@ describe("migration lint", () => {
       "0097_profile_descriptions",
       "0100_poll_refresh",
       "0101_pin_refresh",
+      "0102_quote_state_stream",
+      "0104_quote_broadcast",
+      "0105_media_description_bytes",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();
@@ -93,7 +96,12 @@ describe("migration lint", () => {
     `CREATE TRIGGER x BEFORE INSERT ON t BEGIN SELECT CASE WHEN NEW.end THEN 1 END; END;`,
     "CREATE TRIGGER x BEFORE INSERT ON t BEGIN SELECT 1;",
     "CREATE TRIGGER x BEFORE INSERT ON t;",
-    "UPDATE t SET a = CASE WHEN a THEN 1 END;",
+    // Outside a trigger a CASE holds no ';', BEGIN is refused, and END only closes a CASE: an identifier named end
+    // closes it early, which leaves the CASE's own END refused.
+    `UPDATE t SET a = CASE WHEN a THEN 1; ${HIDDEN} END;`,
+    "UPDATE t SET a = CASE WHEN a THEN t.end END;",
+    "UPDATE t SET a = CASE WHEN a THEN t.begin END;",
+    "UPDATE t SET a = CASE WHEN a THEN 1;",
     // The tokenizer splits non-ASCII and words past 256 characters, where SQLite reads one identifier.
     `SELECT 1 AS λbegin; ${HIDDEN} SELECT 1 AS λend;`,
     `SELECT 1 AS ${LONG}begin; ${HIDDEN} SELECT 1 AS ${LONG}end;`,
@@ -115,6 +123,7 @@ describe("migration lint", () => {
 		END;
 		INSERT INTO u (b) VALUES (1);`,
     "WITH n AS (SELECT 1) INSERT INTO u SELECT * FROM n; DELETE FROM u; REPLACE INTO u VALUES (1); SELECT 'end';",
+    "UPDATE t SET a = CASE WHEN a THEN CASE b WHEN 1 THEN 2 END ELSE 3 END WHERE (CASE WHEN a THEN 1 END) IS NOT a;",
   ])("accepts a declaration over %j", (sql) => {
     expect(unchangedProblem(sql)).toBeNull();
   });

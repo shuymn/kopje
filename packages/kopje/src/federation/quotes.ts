@@ -185,6 +185,7 @@ async function verifyQuote(
       generation,
       stage: work.stage,
       fetch: work.fetch,
+      signer: work.signer,
     };
     let gone: FetchedActor | undefined;
     if (work.stage === "quoted" && work.fetch !== null) {

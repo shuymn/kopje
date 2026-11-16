@@ -13,6 +13,9 @@ export const FEATURED_TAGS_ID_INDEX = "sqlite_autoindex_featured_tags_1";
 // (account_id, name)
 export const FEATURED_TAGS_ACCOUNT_INDEX = "sqlite_autoindex_featured_tags_2";
 export const FILTER_STATUSES_ID_INDEX = "sqlite_autoindex_filter_statuses_1";
+// collections (id) and collection_items (id), migration 0103_collections.
+export const COLLECTIONS_ID_INDEX = "sqlite_autoindex_collections_1";
+export const COLLECTION_ITEMS_ID_INDEX = "sqlite_autoindex_collection_items_1";
 export const MEDIA_ID_INDEX = "sqlite_autoindex_media_attachments_1";
 // media_attachments (file_token)
 export const MEDIA_FILE_TOKEN_INDEX = "sqlite_autoindex_media_attachments_2";

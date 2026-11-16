@@ -632,7 +632,13 @@ describe("poll generations past 2^53", () => {
       sql(w.h.store, "SELECT CAST(generation AS TEXT) AS generation FROM polls WHERE status_id = ?", pollId);
     // Each edit changes the choices, which resets the poll. The guarded branch: from the largest generation but one,
     // the reset takes the largest.
-    const choices = (options: string[]) => ({ options, expiresIn: 3600, multiple: false, hideTotals: false });
+    const choices = (options: string[]) => ({
+      options,
+      expiresIn: 3600,
+      multiple: false,
+      hideTotals: false,
+      sent: { options, multiple: false },
+    });
     await inStore(w.h.store, (db) => editPoll(db, pollId, choices(["c", "d"]), NOW));
     expect(await generation()).toEqual([{ generation: INT64_MAX }]);
     await expect(inStore(w.h.store, (db) => editPoll(db, pollId, choices(["e", "f"]), NOW))).rejects.toThrow(

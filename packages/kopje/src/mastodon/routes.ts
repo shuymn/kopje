@@ -18,6 +18,7 @@ import {
   PRIVATE,
   PRIVATE_BY_LANGUAGE,
 } from "./caching";
+import * as collections from "./collections";
 import type { ApiDeps, ApiEnv, ApiHandler } from "./context";
 import * as conversations from "./conversations";
 import * as filters from "./filters";
@@ -71,6 +72,27 @@ const post = route("POST");
 const patch = route("PATCH");
 const put = route("PUT");
 const del = route("DELETE");
+
+// Collections (mastodon/collections.ts) under `prefix`: /api/v1, and /api/v1_alpha, where every collections and items
+// route is deprecated (`deprecate_api '2026-06-10', if: :alpha_path?`; DEPRECATED_ROUTES) but in_collections, whose
+// controller has no DeprecationConcern. The reads are cached as Mastodon's index and show
+// (cache_if_unauthenticated!): in_collections needs a user, so it is never public in practice.
+function collectionRoutes(prefix: "/api/v1" | "/api/v1_alpha"): Route[] {
+  const read = { scope: "read:collections", optional: true } as const;
+  const write = { scope: "write:collections" } as const;
+  return [
+    get(`${prefix}/accounts/:id/collections`, read, collections.accountCollections, ANONYMOUS),
+    get(`${prefix}/accounts/:id/in_collections`, read, collections.inCollections, ANONYMOUS),
+    post(`${prefix}/collections`, write, collections.createCollection),
+    get(`${prefix}/collections/:id`, read, collections.showCollection, ANONYMOUS),
+    patch(`${prefix}/collections/:id`, write, collections.updateCollection),
+    put(`${prefix}/collections/:id`, write, collections.updateCollection),
+    del(`${prefix}/collections/:id`, write, collections.deleteCollection),
+    post(`${prefix}/collections/:id/items`, write, collections.addCollectionItem),
+    del(`${prefix}/collections/:id/items/:item_id`, write, collections.removeCollectionItem),
+    post(`${prefix}/collections/:id/items/:item_id/revoke`, write, collections.revokeCollectionItem),
+  ];
+}
 
 export const ROUTES: readonly Route[] = [
   post("/api/v1/apps", "anonymous", oauth.registerApp),
@@ -210,6 +232,9 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/accounts/:id/email_subscriptions", { optional: true }, placeholders.emailSubscription),
 
   get("/api/v1/accounts/:id/lists", { scope: "read:lists" }, lists.accountLists),
+
+  ...collectionRoutes("/api/v1"),
+  ...collectionRoutes("/api/v1_alpha"),
 
   // Blocks, mutes and domain blocks (mastodon/blocks.ts).
   post("/api/v1/accounts/:id/block", { scope: "write:blocks" }, blocks.block),
@@ -529,7 +554,8 @@ export const ROUTES: readonly Route[] = [
 // The routes Mastodon (v4.7.5) deprecates with deprecate_api, by method and path, with its date: every answer of each
 // carries `Deprecation` (mastodon/caching.ts). /api/v1/trends is deprecated by that path only (Api::V1::Trends::
 // TagsController's `if: -> { request.path == '/api/v1/trends' }`), an alias of /api/v1/trends/tags, and
-// /api/v1/suggestions on its index only; Mastodon's api/v1_alpha collections are not routed here.
+// /api/v1/suggestions on its index only. The collections and items controllers deprecate their actions only under
+// /api/v1_alpha (`if: :alpha_path?`), so those routes are listed under that prefix alone.
 export const DEPRECATED_ROUTES: ReadonlyMap<string, string> = new Map([
   ["GET /api/v1/instance", "2022-11-14"],
   ["GET /api/v1/filters", "2022-11-14"],
@@ -541,6 +567,15 @@ export const DEPRECATED_ROUTES: ReadonlyMap<string, string> = new Map([
   ["GET /api/v1/accounts/:id/identity_proofs", "2022-03-30"],
   ["GET /api/v1/trends", "2022-03-30"],
   ["GET /api/v1/suggestions", "2021-05-16"],
+  ["GET /api/v1_alpha/accounts/:id/collections", "2026-06-10"],
+  ["POST /api/v1_alpha/collections", "2026-06-10"],
+  ["GET /api/v1_alpha/collections/:id", "2026-06-10"],
+  ["PATCH /api/v1_alpha/collections/:id", "2026-06-10"],
+  ["PUT /api/v1_alpha/collections/:id", "2026-06-10"],
+  ["DELETE /api/v1_alpha/collections/:id", "2026-06-10"],
+  ["POST /api/v1_alpha/collections/:id/items", "2026-06-10"],
+  ["DELETE /api/v1_alpha/collections/:id/items/:item_id", "2026-06-10"],
+  ["POST /api/v1_alpha/collections/:id/items/:item_id/revoke", "2026-06-10"],
 ]);
 
 export function mastodonApi(

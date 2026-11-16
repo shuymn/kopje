@@ -14,6 +14,7 @@ import {
   QUOTE_COUNTS_DONE,
   type VerifyReport,
 } from "../src/platform/store-import";
+import { sql } from "./api-helpers";
 import { BUILD, migratedStore, testKernel } from "./helpers";
 import {
   ACCESS,
@@ -435,6 +436,15 @@ describe("writing triggers and the importer", () => {
     const names = Object.keys(WRITING_TRIGGERS).toSorted();
     expect(await probes(target, "reached")).toEqual(names);
     expect(await probes(target, "fired")).toEqual(names.filter((n) => WRITING_TRIGGERS[n]!.fires));
+    // An import inserts its quotes, so their state triggers (stream_quote_state, on an update of state) journal no
+    // status.update, though a listener arms the journal (addProbes) and every state is among them.
+    expect(await sql(target, "SELECT DISTINCT state FROM quotes ORDER BY state")).toEqual(
+      ["accepted", "pending", "revoked"].map((state) => ({ state })),
+    );
+    expect(await sql(target, "SELECT count(*) AS n FROM stream_subscriptions WHERE stream_key = 'user'")).toEqual([
+      { n: 1 },
+    ]);
+    expect(await sql(target, "SELECT count(*) AS n FROM stream_events WHERE kind = 'edit'")).toEqual([{ n: 0 }]);
   });
 
   it("gives the same Store when verification takes the smallest step per call as in one call", async () => {

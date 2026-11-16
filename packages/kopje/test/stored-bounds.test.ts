@@ -11,9 +11,10 @@ import { MAX_SPOILER_LENGTH } from "../src/domain/remote-statuses";
 import { MAX_RAW_LENGTH, parseStatusText, renderFieldValue, renderStatusHtml } from "../src/domain/status-text";
 import { remoteActorInput } from "../src/federation/remote-actor";
 import { parseRemoteStatus } from "../src/federation/remote-status";
-import { REMOTE_USERNAME_LIMIT, STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
+import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT, STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
 import { mediaUrl, SERVED_TYPES } from "../src/platform/media-files";
 import {
+  COLLECTION_URI_BYTES,
   APP_ID_BYTES,
   APP_NAME_BYTES,
   APP_NAME_JSON_BYTES,
@@ -45,6 +46,7 @@ import {
   MAX_MEDIA_DESCRIPTION_LENGTH,
   MAX_REMOTE_OPTION_LENGTH,
   MAX_REMOTE_OPTIONS,
+  MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
   MEDIA_URL_LIMIT,
   mediaDescriptionSql,
@@ -95,7 +97,15 @@ import { bearer } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, freshStore, migratedStore } from "./helpers";
 import { community } from "./status-helpers";
-import { blurhashOf, loneSurrogates, movedCountSql, seedBounded, STATUS, TABLES } from "./stored-bounds-fixtures";
+import {
+  blurhashOf,
+  COLUMNS_0048,
+  loneSurrogates,
+  movedCountSql,
+  seedBounded,
+  STATUS,
+  TABLES,
+} from "./stored-bounds-fixtures";
 
 // RES-2 (src/platform/stored-bounds.ts): for every covered column, evaluated in the Store's SQLite, a writer's output
 // as stored is a fixed point of the column's projection P, and P(P(x)) = P(x). The inputs are random strings with
@@ -301,6 +311,7 @@ const COLUMNS: Column[] = [
     bounds: [
       ["points", MAX_MEDIA_DESCRIPTION_LENGTH],
       ["bytes", MAX_MEDIA_DESCRIPTION_LENGTH],
+      ["bytes", MEDIA_DESCRIPTION_BYTES],
     ],
     runs: 60,
   },
@@ -334,11 +345,12 @@ function checkColumn(sql: Sql, { projection, writer, text }: Column, input: stri
 
 describe("stored bounds (RES-2)", () => {
   it("repeats the bounds it shares with security/html.ts and identity-bounds.ts", () => {
-    expect([BIO_JSON_BYTES, CONTENT_JSON_BYTES, SPOILER_JSON_BYTES, STATUS_URL_LIMIT]).toEqual([
+    expect([BIO_JSON_BYTES, CONTENT_JSON_BYTES, SPOILER_JSON_BYTES, STATUS_URL_LIMIT, COLLECTION_URI_BYTES]).toEqual([
       REMOTE_BIO_BYTES,
       STATUS_CONTENT_BYTES,
       SPOILER_BYTES,
       STATUS_URI_LIMIT,
+      ACTOR_URI_LIMIT,
     ]);
   });
 
@@ -592,7 +604,7 @@ describe("0048_stored_bounds and presented output (RES-2)", () => {
     const sql = MIGRATIONS.find((m) => m.name === "0048_stored_bounds")?.sql ?? "";
     const moved = await runInDurableObject(h.store, (_instance, state) => {
       const store = state.storage.sql;
-      const count = () => TABLES.map((table) => store.exec<{ n: number }>(movedCountSql(table)).one().n);
+      const count = () => TABLES.map((table) => store.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n);
       const was = count();
       state.storage.transactionSync(() => store.exec(sql));
       return { was, now: count() };

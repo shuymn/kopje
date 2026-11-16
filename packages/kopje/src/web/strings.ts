@@ -83,6 +83,12 @@ export const STRINGS: Messages = {
     noHashtags: "No hashtags yet.",
     noAccounts: "No accounts yet.",
   },
+  collection: {
+    title: (name) => name,
+    accounts: "Accounts",
+    noAccounts: "No accounts yet.",
+    sensitive: "Sensitive content",
+  },
   post: {
     inReplyTo: "In reply to",
     sensitiveMedia: "Sensitive media",
