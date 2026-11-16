@@ -13078,8 +13078,8 @@ describe("0099_reply_walks", () => {
     sql.exec("INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, 'https://r.example/s/1', 0)", ROOT);
   };
 
-  it("follows 0095, creates two tables and five indexes, no trigger, and checks every reference", async () => {
-    expect(NAMES[at - 1]).toBe("0095_notification_policy_bots");
+  it("follows 0098, creates two tables and five indexes, no trigger, and checks every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0098_card_attribution");
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
