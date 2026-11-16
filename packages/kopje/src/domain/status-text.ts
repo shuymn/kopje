@@ -1,5 +1,6 @@
 import { LinkifyIt } from "linkify-it";
 
+import { railsBlank } from "../platform/rails-blank";
 import { storedText } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { escapeHtml } from "./plain-text";
@@ -47,12 +48,9 @@ export function exceedsRawLength(text: string, spoilerText: string): boolean {
 // StatusLengthValidator::MAX_CHARS: the most a local status's counted length (statusLength) may be.
 export const MAX_STATUS_CHARACTERS = 500;
 
-// ActiveSupport's String#blank? (/\A[[:space:]]*\z/; [[:space:]] under Unicode, as Ruby has it), over the text as
-// it is stored (storedText): U+0085 is blank and U+FEFF is not, where JavaScript's trim() has it the other way.
-const BLANK = /^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
-
+// ActiveSupport's String#blank? over the text as it is stored (storedText).
 export function blankText(text: string): boolean {
-  return BLANK.test(storedText(text));
+  return railsBlank(storedText(text));
 }
 
 export type MentionRef = { username: string; domain: string | null };
