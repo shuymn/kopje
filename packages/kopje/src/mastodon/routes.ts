@@ -5,6 +5,7 @@ import * as accounts from "./accounts";
 import * as admin from "./admin";
 import * as announcements from "./announcements";
 import * as annualReports from "./annual-reports";
+import * as asyncRefreshes from "./async-refreshes";
 import * as blocks from "./blocks";
 import type { ApiDeps, ApiEnv, ApiHandler } from "./context";
 import * as conversations from "./conversations";
@@ -140,10 +141,11 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/annual_reports/:id/read", { scope: "write:accounts" }, annualReports.read),
   post("/api/v1/annual_reports/:id/generate", { scope: "write:accounts" }, annualReports.generate),
   // E-mail confirmation (any token at the route: placeholders.resendConfirmation checks write:accounts, since Mastodon
-  // takes app tokens there), and async refreshes, which Kopje never starts.
+  // takes app tokens there).
   post("/api/v1/emails/confirmations", "token", placeholders.resendConfirmation),
   get("/api/v1/emails/check_confirmation", { scope: "read:accounts" }, placeholders.checkConfirmation),
-  get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, placeholders.asyncRefresh),
+  // A context's refresh of a status's replies (mastodon/async-refreshes.ts).
+  get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, asyncRefreshes.show),
   // Feature-off answers that read a sent token without requiring one (AUTH-2's exception).
   get("/api/v1/donation_campaigns", { optional: true }, placeholders.donationCampaigns),
 

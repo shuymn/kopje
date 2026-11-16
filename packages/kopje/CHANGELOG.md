@@ -85,6 +85,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
   run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
   so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- A signed-in read of a remote public or unlisted status's context fetches its replies collection in the background, as
+  Mastodon 4.7.5 does, and answers with `Mastodon-Async-Refresh` while that runs, a header the API exposes to browser
+  clients; `GET /api/v1_alpha/async_refreshes/:id` reports the refresh. A refresh reads at most 200 statuses and 100
+  collection documents (Mastodon: 1,000 and 500), from 5 minutes after the status was published and at most every 15
+  minutes, and at most 16 run at once ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies
+  collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
+  hours. Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
+  upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
+  with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
