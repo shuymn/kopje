@@ -1170,8 +1170,9 @@ export const STAMP_HOLDER_CANDIDATES = 16;
 // another author. An inner seek of quotes_approval on (stamp, actor, accepted) reads at most STAMP_HOLDER_CANDIDATES
 // raw candidates in the index's order, and the author and local filters apply outside that LIMIT, the first that passes
 // taken (RES-6). Past the cap only quotes accepted without a stamp's verification can stand ahead of the holder: the
-// actor's own self-quotes naming the stamp, or imported rows. Then nothing is found, and only the actor that flooded its
-// own stamp loses what finding the holder would do; every revocation batch still meets every quote naming the stamp.
+// actor's own self-quotes naming the stamp, or imported rows. Then nothing is found, and only the actor that flooded
+// its own stamp loses what finding the holder would do; every revocation batch still meets every quote naming the
+// stamp.
 export function stampHolder(
   db: Db,
   actor: { id: string },
@@ -1810,11 +1811,11 @@ export function holdsLocalStamp(db: Db, actor: { id: string }, approvalUri: stri
 
 // The first transaction of the actor's Delete of the stamp `approvalUri` (row 10), for the one local quote that holds
 // it (a seek of quotes_local_stamp, whatever the received quotes naming it): an accepted quote becomes revoked, its
-// status's Update without the stamp is recorded and its update fan-out runs (fanOutQuoteChange); and when the Delete is proven (its author's proof verified: `forward`
-// is the body as received), that body is recorded unchanged as one immutable envelope signed by the quoting author,
-// reaching every inbox that received the quoting status or would receive it now (reachOf, its owner's receipts and
-// audience), and the row lets go of the stamp, so a replay forwards nothing more. A retraction: no suspension or
-// admission refuses it. Returns whether a local quote held the stamp.
+// status's Update without the stamp is recorded and its update fan-out runs (fanOutQuoteChange); and when the Delete is
+// proven (its author's proof verified: `forward` is the body as received), that body is recorded unchanged as one
+// immutable envelope signed by the quoting author, reaching every inbox that received the quoting status or would
+// receive it now (reachOf, its owner's receipts and audience), and the row lets go of the stamp, so a replay forwards
+// nothing more. A retraction: no suspension or admission refuses it. Returns whether a local quote held the stamp.
 function revokeLocalStamp(
   db: Db,
   actor: { id: string },
