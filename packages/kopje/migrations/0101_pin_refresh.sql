@@ -1,4 +1,4 @@
--- Kopje Store schema 0099: pin syncs fetch every listed status again. Never edit after release (checksummed).
+-- Kopje Store schema 0101: pin syncs fetch every listed status again. Never edit after release (checksummed).
 --
 --   collection_pins_pending.refresh   whether the row is a refresh row. A sync's read leaves one row for each of the
 --                                     first MAX_REMOTE_PINS distinct URIs the account's featured collection lists on

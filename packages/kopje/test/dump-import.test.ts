@@ -1312,9 +1312,9 @@ describe("dump", () => {
     );
   }, 120_000);
 
-  it("restores a dump taken before 0099_pin_refresh, whose sync rows upgrade to pending rows", async () => {
+  it("restores a dump taken before 0101_pin_refresh, whose sync rows upgrade to pending rows", async () => {
     await restoredBefore(
-      "0099_pin_refresh",
+      "0101_pin_refresh",
       (sql) => {
         sql.exec(
           `INSERT INTO accounts (id, uri, username, domain)
@@ -1326,7 +1326,7 @@ describe("dump", () => {
         );
       },
       async (sql, upgrade) => {
-        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0099_pin_refresh"] });
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0101_pin_refresh"] });
         expect(sql.exec("SELECT uri, refresh FROM collection_pins_pending").toArray()).toEqual([
           { uri: "https://remote.example/users/a/statuses/1", refresh: 0 },
         ]);

@@ -13400,8 +13400,8 @@ describe("0100_poll_refresh", () => {
   });
 });
 
-describe("0099_pin_refresh", () => {
-  const NAME = "0099_pin_refresh";
+describe("0101_pin_refresh", () => {
+  const NAME = "0101_pin_refresh";
   const at = NAMES.indexOf(NAME);
   const ACCOUNT = "100000000000000001";
 

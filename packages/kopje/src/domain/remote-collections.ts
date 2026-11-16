@@ -199,7 +199,7 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 //      round reads only the parts left.
 //      The listed statuses Kopje stores that are pinnable are pinned at once. Every listed status on the account's
 //      origin gets a row in collection_pins_pending: a pending row (refresh 0) for one Kopje does not store, which holds
-//      a pin slot, and a refresh row (refresh 1) for one it stores, which holds none (migration 0099_pin_refresh).
+//      a pin slot, and a refresh row (refresh 1) for one it stores, which holds none (migration 0101_pin_refresh).
 //   2. pins: later rounds fetch the rows' statuses within their budgets, as Mastodon's FetchFeaturedCollectionService
 //      fetches every listed status at every sync (v4.7.5 fetch_featured_collection_service.rb:27-41): one fetched is
 //      applied as the account's own (storeFetchedStatus) and, for a pending row, pinned; one gone at its own URI is

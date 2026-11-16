@@ -116,7 +116,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   applying the account's own edits and removing a public or unlisted post whose address answers 404 (no retraction is
   kept, so the post is stored again if it arrives later) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   "Retractions and edits of remote statuses"). A sync still fetches at most 20 posts and makes at most 552 requests.
-  Migration `0099_pin_refresh` adds a column of `collection_pins_pending` with its default, reading every row for its
+  Migration `0101_pin_refresh` adds a column of `collection_pins_pending` with its default, reading every row for its
   CHECK; the upgrade checks no reference (<ms> for this file in one local run of the migration bench, at a load average
   of <x>). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
   rolling back past it needs a point-in-time restore.

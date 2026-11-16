@@ -898,7 +898,7 @@ describe("reading a remote account’s collections", () => {
 // fetch_remote_status_service.rb:38-48): one Kopje stores is applied as the account's own Update, another author's is
 // left as stored, and a 404 at its own URI, without a redirect, removes a public or unlisted one, whoever's
 // (fetch_remote_status_service.rb:86-98). The rows of a sync's read: a pending row for a status Kopje does not store, a
-// refresh row for one it does (migration 0099_pin_refresh).
+// refresh row for one it does (migration 0101_pin_refresh).
 describe("a sync's fetch of every listed status", () => {
   const EDITED_AT = "2026-10-11T18:00:00Z";
 
