@@ -1,20 +1,39 @@
+import { Person } from "@fedify/vocab";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { type Account, MAX_DISPLAY_NAME, partialAccountsOf, presentAccountsWithin } from "../src/domain/accounts";
 import { jsonBytes } from "../src/domain/answer-budget";
+import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
+import { DOCUMENT_BODY_LIMIT } from "../src/federation/loader";
+import { remoteActorInput } from "../src/federation/remote-actor";
 import { PROFILE_DESCRIPTION_BYTES, PROFILE_DESCRIPTION_LIMIT } from "../src/platform/stored-bounds";
 import { bearer, json, seedAccount, sql } from "./api-helpers";
+import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
+import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import {
+  accountId,
+  announce,
+  AS,
+  followed,
+  mastodonNote,
+  nextId,
+  OTHER,
+  type Setup,
+  setup,
+} from "./inbox-status-helpers";
 import { bytes, multipartForm, TestCodec } from "./media-helpers";
 import { aliceWithFollower } from "./profile-fixtures";
+import { ageAccount } from "./stale-author-helpers";
 import { community, getJson, outbound } from "./status-helpers";
 
 // Account#avatar_description and #header_description (migration 0097_profile_descriptions; Mastodon 4.6,
 // REST::AccountSerializer): presented on every Account and CredentialAccount, '' while the account is unavailable and
 // again after, cut at PROFILE_DESCRIPTION_LIMIT code points after decoding; PartialAccount carries the avatar's.
-// Written through update_credentials (Mastodon 4.6.1), at most PROFILE_DESCRIPTION_LIMIT code points as sent.
+// Written through update_credentials (Mastodon 4.6.1), at most PROFILE_DESCRIPTION_LIMIT code points as sent, and read
+// from a remote actor's icon and image as Mastodon 4.7 reads them, cut at PROFILE_DESCRIPTION_LIMIT.
 // Independent of the images, as in Mastodon: removing or replacing an image keeps its description.
 
 const ORIGIN = "https://kopje.test";
@@ -204,6 +223,11 @@ describe("profile image descriptions through update_credentials", () => {
           "Validation failed: Avatar description is too long (maximum is 150 characters), " +
           "Header description is too long (maximum is 150 characters), " +
           "Display name is too long (maximum is 40 characters)",
+        details: {
+          avatar_description: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 150 characters)" }],
+          header_description: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 150 characters)" }],
+          display_name: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 40 characters)" }],
+        },
       },
     });
     expect(await stored()).toEqual(["", ""]);
@@ -239,10 +263,160 @@ describe("profile image descriptions through update_credentials", () => {
     expect(await stored()).toEqual(["A cat", "A field"]);
   });
 
-  // The actor does not publish them yet: a change of a description alone changes no published document.
-  it("send no Update when only a description changes", async () => {
-    const { h, patch } = await writer();
+  // The actor publishes a description as its image's `summary` (federation.ts image): a change of a description alone
+  // records an Update(Person) while the image exists, and none without it, as the document changes only then.
+  it("send an Update carrying the summary when only a description changes, while the image exists", async () => {
+    const { h, alice, patch } = await writer();
+    const sent = async () => (await outbound(h.store)).filter((o) => o.activity.type === "Update");
     expect((await patch({ avatar_description: "A cat", header_description: "A field" })).status).toBe(200);
-    expect((await outbound(h.store)).filter((o) => o.activity.type === "Update")).toEqual([]);
+    expect(await sent()).toEqual([]);
+    for (const [kind, key] of [
+      ["avatar", "icon"],
+      ["header", "image"],
+    ] as const) {
+      await sql(
+        h.store,
+        `UPDATE accounts SET ${kind}_url = 'https://kopje.test/media/${kind}.webp' WHERE id = ?`,
+        alice.id,
+      );
+      expect((await patch({ [`${kind}_description`]: `${kind} described` })).status).toBe(200);
+      const object = (await sent()).at(-1)?.activity.object as Record<string, unknown> | undefined;
+      expect(object?.[key], kind).toEqual({
+        type: "Image",
+        url: `https://kopje.test/media/${kind}.webp`,
+        summary: `${kind} described`,
+      });
+    }
+  });
+});
+
+describe("remote profile image descriptions", () => {
+  type Remote = Shown & Pick<Account, "show_featured" | "show_media" | "show_media_replies">;
+  // An actor's icon and image as Mastodon 4.7 renders them (ActivityPub::ImageSerializer), the description as summary
+  // when one is set; the avatar's description is given, the header's as its name, which Mastodon reads when the summary
+  // gives none.
+  const images = (origin: string, name: string, avatar?: string, header?: string) => ({
+    icon: { type: "Image", mediaType: "image/png", url: `${origin}/avatars/${name}.png`, summary: avatar },
+    image: { type: "Image", mediaType: "image/png", url: `${origin}/headers/${name}.png`, name: header },
+  });
+  const updateOf = (actor: TestActor) => ({
+    "@context": AS,
+    id: `${actor.uri}#updates/${nextId()}`,
+    type: "Update",
+    actor: actor.uri,
+    object: actor.document,
+  });
+  const shown = async (t: Setup, uri: string) => {
+    const { status, body } = await t.api<Remote>(`/api/v1/accounts/${await accountId(t.store, uri)}`);
+    expect(status).toBe(200);
+    const { avatar_description, header_description, show_featured, show_media, show_media_replies } = body;
+    return [avatar_description, header_description, show_featured, show_media, show_media_replies];
+  };
+
+  // Every path that stores a remote actor's document goes through upsertRemoteActor with remoteActorInput's input: here
+  // an activity's actor (a Follow, then an Update(Person)), the unknown author of a boosted status, and that author
+  // refetched once stale (applyRefresh).
+  it("reads a remote actor's descriptions from every document the inbox stores; one without them clears them", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob", {
+      extra: { ...images(MASTODON, "bob", "A cat", "A field"), showFeatured: false, showMedia: false },
+    });
+    await followed(t, bob);
+    expect(await shown(t, bob.uri)).toEqual(["A cat", "A field", false, false, true]);
+    const plain = await mastodonActor(t.web, "bob", { extra: images(MASTODON, "bob") });
+    expect(await t.post(plain, updateOf(plain))).toBe(202);
+    expect(await shown(t, bob.uri)).toEqual(["", "", false, false, true]);
+
+    const erin = await mastodonActor(t.web, "erin", {
+      origin: OTHER,
+      key: 3,
+      extra: { ...images(OTHER, "erin", "Erin's cat"), showRepliesInMedia: false },
+    });
+    const first = mastodonNote(erin);
+    t.web.serve(first.id, { "@context": AS, ...first });
+    expect(await t.post(bob, announce(bob, first.id))).toBe(202);
+    expect(await shown(t, erin.uri)).toEqual(["Erin's cat", "", true, true, false]);
+    await ageAccount(t, erin.uri, new Date(NOW - ACCOUNT_STALE_MS).toISOString());
+    await mastodonActor(t.web, "erin", { origin: OTHER, key: 3, extra: images(OTHER, "erin", undefined, "A hill") });
+    const second = mastodonNote(erin);
+    t.web.serve(second.id, { "@context": AS, ...second });
+    t.web.fetched.length = 0;
+    expect(await t.post(bob, announce(bob, second.id))).toBe(202);
+    expect(t.web.fetched).toContain(erin.uri);
+    expect(await shown(t, erin.uri)).toEqual(["", "A hill", true, true, false]);
+  });
+
+  // ProcessAccountService#image_url_and_description (process_account_service.rb:354-379) over the forms an icon arrives
+  // in, through remoteActorInput: the property's first value, an object whose type is the string "Image", its summary
+  // else its name by first_lang_string (federation/lang-string.ts), present as Rails judges it, stripped as Ruby does,
+  // then cut at PROFILE_DESCRIPTION_LIMIT code points (Mastodon cuts at 10,000). Fedify's parse refuses a whole
+  // document whose icon has a numeric language-map value (as Mastodon fails it) or a type other than Image, so those
+  // forms never reach the read (test/lang-string.test.ts reads the first).
+  const image = (extra: Record<string, unknown>) => ({ type: "Image", url: "https://remote.example/a.png", ...extra });
+  const MAP = { summaryMap: { en: "b" } };
+  const name = { name: "n" };
+  it.each<[string, unknown, string]>([
+    ["a summary", image({ summary: "A cat", ...name }), "A cat"],
+    ["the name when the summary's first element is blank", image({ summary: ["", "x"], ...name }), "n"],
+    ["an array of an @value", image({ summary: [{ "@value": "a" }] }), "a"],
+    ["a language-tagged value", image({ summary: { "@value": "a", "@language": "en" } }), "a"],
+    ["an empty summary, the map not read", image({ summary: "", ...MAP, ...name }), "n"],
+    ["a null summary, the map read", image({ summary: null, ...MAP, ...name }), "b"],
+    ["a false summary, the map read", image({ summary: false, ...MAP, ...name }), "b"],
+    ["a summary of 0, the map not read", image({ summary: 0, ...MAP, ...name }), "n"],
+    ["a numeric @value", image({ summary: { "@value": 5 }, ...name }), "n"],
+    ["U+3000, blank", image({ summary: "　", ...name }), "n"],
+    ["U+0085, blank", image({ summary: "\u0085", ...name }), "n"],
+    ["U+FEFF, not blank", image({ summary: "﻿", ...name }), "﻿"],
+    ["Ruby's strip", image({ summary: " \t a \n" }), "a"],
+    ["NBSP, which Ruby's strip keeps", image({ summary: " a " }), " a "],
+    ["the name as an array of an @value", image({ name: [{ "@value": "a" }] }), "a"],
+    ["the name's map", image({ name: null, nameMap: { en: "b" } }), "b"],
+    ["a NUL inside, dropped as stored text", image({ summary: "a\u0000b" }), "ab"],
+    ["10,000 code points, cut", image({ summary: "𠀀".repeat(10_000) }), "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT)],
+    ["the first of an array", [image({ summary: "first" }), image({ summary: "second" })], "first"],
+    ["an array whose first is a reference", ["https://remote.example/a", image({ summary: "x" })], ""],
+    ["a reference, not fetched", "https://remote.example/icon", ""],
+    ["an object without a type", { url: "https://remote.example/a.png", summary: "x" }, ""],
+    ["a type given as an array", { type: ["Image"], url: "https://remote.example/a.png", summary: "x" }, ""],
+    ["none", undefined, ""],
+  ])("reads a remote actor's icon description: %s", async (_case, icon, expected) => {
+    const uri = "https://remote.example/users/erin";
+    const document = {
+      "@context": AS,
+      id: uri,
+      type: "Person",
+      preferredUsername: "erin",
+      inbox: `${uri}/inbox`,
+      ...(icon === undefined ? {} : { icon, image: icon }),
+    };
+    const input = await remoteActorInput(await Person.fromJsonLd(document), document);
+    expect([input?.avatarDescription, input?.headerDescription]).toEqual([expected, expected]);
+  });
+
+  // RES-1: the descriptions are read from a fetched actor document of at most DOCUMENT_BODY_LIMIT bytes, which anyone can
+  // serve. Presence, strip and the cut are linear (test/lang-string.test.ts); here runs of whitespace fill the document
+  // between the icon and the image, each run inside a value followed by another character (a regex strip's quadratic
+  // case), a blank summary, and runs at both ends, read through remoteActorInput.
+  it("reads descriptions that fill the document's cap within a generous time", async () => {
+    const uri = "https://remote.example/users/erin";
+    const run = " ".repeat(DOCUMENT_BODY_LIMIT / 5 - 256);
+    const document = {
+      "@context": AS,
+      id: uri,
+      type: "Person",
+      preferredUsername: "erin",
+      inbox: `${uri}/inbox`,
+      icon: image({ summary: `x${run}x` }),
+      image: image({ summary: run, name: `${run}y${run}y${run}` }),
+    };
+    expect(JSON.stringify(document).length).toBeLessThanOrEqual(DOCUMENT_BODY_LIMIT);
+    expect(JSON.stringify(document).length).toBeGreaterThan(DOCUMENT_BODY_LIMIT - 4096);
+    const actor = await Person.fromJsonLd(document);
+    const started = performance.now();
+    const input = await remoteActorInput(actor, document);
+    expect(performance.now() - started).toBeLessThan(1000);
+    const cut = " ".repeat(PROFILE_DESCRIPTION_LIMIT - 1);
+    expect([input?.avatarDescription, input?.headerDescription]).toEqual([`x${cut}`, `y${cut}`]);
   });
 });

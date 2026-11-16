@@ -9,6 +9,10 @@
 //   guards  other require_* callbacks the action runs (informative, not compared)
 //   params  the request parameters the action reads (see "Request parameters" below), which
 //           test/mastodon-params.test.ts checks Kopje reads
+//   cache   what a cache may keep of its answers (see "API caching" below), which test/mastodon-access.test.ts checks
+//           Kopje's caching declarations against
+//   deprecation  the date of the deprecate_api that marks its answers (see "Deprecation" below), which
+//           test/mastodon-access.test.ts checks Kopje's DEPRECATED_ROUTES against
 // and, for the serializers of ENTITIES, the fields they emit (see "Entity fields"), which
 // test-node/mastodon-entities.test.ts checks Kopje's response types carry.
 // Where the Ruby cannot be read with certainty (a conditional callback, an unknown routing statement, a controller
@@ -926,6 +930,223 @@ function access(route, checkout, cache) {
   };
 }
 
+// ---- API caching ----
+
+// Mastodon's Cache-Control helpers (Api::CachingConcern) and whom the public answer they make is for:
+// cache_if_unauthenticated! makes a 2xx public for 15 s to a request without a user, cache_even_if_authenticated! for
+// 5 min to everyone. Without either, an answer stays ApplicationController's `private, no-store`.
+const CACHE_HELPERS = /** @type {const} */ ({
+  "cache_if_unauthenticated!": "anonymous",
+  "cache_even_if_authenticated!": "everyone",
+});
+const HELPER_CALL = /\b(cache_if_unauthenticated!|cache_even_if_authenticated!)/;
+
+// The `vary_by` that decides an action's Vary (CacheConcern: a before_action setting the header, so the last one that
+// applies along the chain wins): its literal value, '' for none. A value that is not a literal, a declaration with an
+// if:/unless: condition or inside a block, or an unreadable only:/except: leaves it unresolved.
+/** @param {string} checkout @param {string[]} chain @param {string} action @param {string[]} unresolved */
+function varyOf(checkout, chain, action, unresolved) {
+  /** @type {{ value: string | null, reason: string | null } | null} */
+  let decided = null;
+  for (const file of chain) {
+    let classIndent = null;
+    for (const { indent, text: stmt } of statements(readFileSync(join(checkout, file), "utf8"))) {
+      if (/^class\b/.test(stmt) && classIndent === null) {
+        classIndent = indent + 2;
+        continue;
+      }
+      const m = /^vary_by\s+(.*)$/s.exec(stmt);
+      if (m === null) {
+        continue;
+      }
+      const [value = "", ...rest] = splitArgs(/** @type {string} */ (m[1]));
+      const { options } = callArgs(rest.join(", "));
+      const only = options.only === undefined ? null : list(options.only);
+      const except = options.except === undefined ? null : list(options.except);
+      if ((options.only !== undefined && only === null) || (options.except !== undefined && except === null)) {
+        unresolved.push(`unreadable only:/except: in \`${stmt}\``);
+        continue;
+      }
+      if ((only !== null && !only.includes(action)) || (except !== null && except.includes(action))) {
+        continue;
+      }
+      const vary = literal(value);
+      const conditional = "if" in options || "unless" in options || indent !== classIndent;
+      decided =
+        typeof vary === "string" && !conditional
+          ? { value: vary, reason: null }
+          : { value: null, reason: `${file}: \`${stmt}\`` };
+    }
+  }
+  if (decided?.reason != null) {
+    unresolved.push(decided.reason);
+  }
+  return decided?.value ?? null;
+}
+
+// The helper calls of an action's definition (`bodies`: its definitions along the chain, parent first; `at`: the one
+// that runs), each with whether a condition decides it: a call nested in a block, or with code before or after it on
+// its line (a modifier if/unless, a ternary, `&&`). `super` runs the parent's definition, under its own line's
+// condition.
+/** @param {(string | null)[]} bodies @param {number} at @param {boolean} under */
+function helperCalls(bodies, at, under) {
+  const body = bodies[at];
+  if (body == null) {
+    return [];
+  }
+  const lines = body.split("\n");
+  const first = /** @type {string} */ (lines[0]);
+  const top = first.length - first.trimStart().length + 2;
+  /** @type {{ helper: string, conditional: boolean }[]} */
+  const calls = [];
+  for (const line of lines.slice(1)) {
+    const code = line.trimEnd();
+    const indent = code.length - code.trimStart().length;
+    const nested = code.trim() !== "" && indent > top;
+    const helper = HELPER_CALL.exec(code);
+    if (helper !== null) {
+      const before = code.slice(0, helper.index).trim();
+      const after = code.slice(helper.index + (helper[1] ?? "").length).trim();
+      calls.push({
+        helper: /** @type {string} */ (helper[1]),
+        conditional: under || nested || before !== "" || after !== "",
+      });
+    }
+    const call = /(^|[^\w.])super\b(?![?!])/.exec(code);
+    if (call !== null) {
+      const before = code.slice(0, call.index + (call[1] ?? "").length).trim();
+      const parent = bodies.slice(0, at).findLastIndex((b) => b !== null);
+      calls.push(...helperCalls(bodies, parent, under || nested || before !== ""));
+    }
+  }
+  return calls;
+}
+
+/**
+ * What Mastodon lets a cache keep of a route's answers: `public`, the helper an action runs ('anonymous' for
+ * cache_if_unauthenticated!, 'everyone' for cache_even_if_authenticated!, null for none), and `vary`, its vary_by
+ * (null for an empty one). Read from the action's definition (and the parent's it calls with `super`) and the
+ * before_action callbacks that apply to it; a call a condition decides, a callback whose method calls a helper, or two
+ * different helpers leave it unresolved.
+ * @param {RawRoute} route @param {string} checkout @param {Map<string, Controller | null>} cache
+ */
+function caching(route, checkout, cache) {
+  /** @type {string[]} */
+  const unresolved = [];
+  const controller =
+    route.controller === null
+      ? null
+      : readController(checkout, `app/controllers/${route.controller}_controller.rb`, cache);
+  if (controller === null || route.action === null) {
+    return { public: null, vary: null, unresolved: ["no controller action"] };
+  }
+  const action = route.action;
+  const texts = controller.chain.map((f) => stripComments(readFileSync(join(checkout, f), "utf8")));
+  const vary = varyOf(checkout, controller.chain, action, unresolved);
+  const bodies = texts.map((t) => actionBody(t, action));
+  const calls = helperCalls(
+    bodies,
+    bodies.findLastIndex((b) => b !== null),
+    false,
+  );
+  /** @type {Callback[]} */
+  const active = [];
+  for (const cb of controller.callbacks) {
+    if (cb.unreadable !== null) {
+      unresolved.push(`unreadable only:/except: in \`${cb.unreadable}\``);
+      continue;
+    }
+    if (cb.after || !applies(cb, action)) {
+      continue;
+    }
+    if (!cb.skip) {
+      active.push(cb);
+      continue;
+    }
+    const skipped = active.filter((a) => a.callback === cb.callback);
+    if (skipped.length > 0 && cb.callback in CACHE_HELPERS && cb.conditional !== null) {
+      unresolved.push(`skip_before_action ${cb.callback} ${cb.conditional}`);
+    }
+    active.splice(0, active.length, ...active.filter((a) => !skipped.includes(a)));
+  }
+  for (const cb of active) {
+    if (cb.callback in CACHE_HELPERS) {
+      calls.push({ helper: cb.callback, conditional: cb.conditional !== null || cb.nested });
+    } else if (HELPER_CALL.test(methodBody(texts, cb.callback) ?? "")) {
+      unresolved.push(`${cb.callback} calls a Cache-Control helper`);
+    }
+  }
+  for (const call of calls.filter((c) => c.conditional)) {
+    unresolved.push(`${call.helper} under a condition`);
+  }
+  const helpers = [...new Set(calls.filter((c) => !c.conditional).map((c) => c.helper))];
+  if (helpers.length > 1) {
+    unresolved.push(`${helpers.join(" and ")} both run`);
+  }
+  const helper = helpers.length === 1 ? /** @type {keyof typeof CACHE_HELPERS} */ (helpers[0]) : null;
+  return {
+    public: helper === null ? null : CACHE_HELPERS[helper],
+    vary: vary === "" ? null : vary,
+    ...(unresolved.length > 0 ? { unresolved } : {}),
+  };
+}
+
+// ---- Deprecation ----
+
+// The deprecate_api (DeprecationConcern) that marks an action's answers with `Deprecation`: a before_action setting the
+// header, so the last one along the chain that applies wins, and its date (`date`, as written; null: none). One with an
+// if:/unless: condition, a sunset:, a date that is not a literal, inside a block, or with an unreadable only:/except:
+// leaves it unresolved.
+/** @param {RawRoute} route @param {string} checkout @param {Map<string, Controller | null>} cache */
+function deprecation(route, checkout, cache) {
+  const controller =
+    route.controller === null
+      ? null
+      : readController(checkout, `app/controllers/${route.controller}_controller.rb`, cache);
+  if (controller === null || route.action === null) {
+    return { date: null, unresolved: ["no controller action"] };
+  }
+  const action = route.action;
+  /** @type {{ date: string | null, reason: string | null }} */
+  let decided = { date: null, reason: null };
+  /** @type {string[]} */
+  const unresolved = [];
+  for (const file of controller.chain) {
+    let classIndent = null;
+    for (const { indent, text: stmt } of statements(readFileSync(join(checkout, file), "utf8"))) {
+      if (/^class\b/.test(stmt) && classIndent === null) {
+        classIndent = indent + 2;
+        continue;
+      }
+      const m = /^deprecate_api\s+(.*)$/s.exec(stmt);
+      if (m === null) {
+        continue;
+      }
+      const [date = "", ...rest] = splitArgs(/** @type {string} */ (m[1]));
+      const { options } = callArgs(rest.join(", "));
+      const only = options.only === undefined ? null : list(options.only);
+      const except = options.except === undefined ? null : list(options.except);
+      if ((options.only !== undefined && only === null) || (options.except !== undefined && except === null)) {
+        unresolved.push(`unreadable only:/except: in \`${stmt}\``);
+        continue;
+      }
+      if ((only !== null && !only.includes(action)) || (except !== null && except.includes(action))) {
+        continue;
+      }
+      const value = literal(date);
+      const decidedElsewhere = "if" in options || "unless" in options || "sunset" in options || indent !== classIndent;
+      decided =
+        typeof value === "string" && !decidedElsewhere
+          ? { date: value, reason: null }
+          : { date: null, reason: `${file}: \`${stmt}\`` };
+    }
+  }
+  if (decided.reason !== null) {
+    unresolved.push(decided.reason);
+  }
+  return { date: decided.date, ...(unresolved.length > 0 ? { unresolved } : {}) };
+}
+
 // ---- Request parameters ----
 
 // The request parameters an action reads, in Kopje's Params form (`a`, `a[]`, `a[b]`, `a[][b]`). Read from the
@@ -1776,7 +1997,12 @@ export function mastodonAccessTable(/** @type {string} */ checkout) {
     .filter((route) => route.path.startsWith("/api/") || OUTSIDE_API.has(route.path) || route.method === "?")
     .map((route) => {
       const params = requestParams(route, checkout, cache, actionPathParams.get(target(route)) ?? new Set());
-      return { ...access(route, checkout, cache), ...(params === null ? {} : { params }) };
+      return {
+        ...access(route, checkout, cache),
+        cache: caching(route, checkout, cache),
+        deprecation: deprecation(route, checkout, cache),
+        ...(params === null ? {} : { params }),
+      };
     });
   const v = version(checkout);
   return {
@@ -1788,6 +2014,8 @@ export function mastodonAccessTable(/** @type {string} */ checkout) {
       "scopes: any one of them is accepted (null: no scope check). user: a token without a user is refused.",
       "Not read: instance settings (DISALLOW_UNAUTHENTICATED_API_ACCESS, limited federation mode), serializers that read the current user.",
       "unresolved: the Ruby could not be read with certainty; the route is not compared until an exception says why.",
+      "cache: public is the Cache-Control helper the action runs (anonymous: cache_if_unauthenticated!, everyone: cache_even_if_authenticated!, null: neither), vary its vary_by (null: empty); cache.unresolved: what could not be read.",
+      "deprecation: date is the date of the deprecate_api that marks the action's answers (null: none); deprecation.unresolved: what could not be read.",
       "params: the request parameters the action reads (names in Params form: a, a[], a[b], a[][b]); params.unresolved: reads it could not name.",
       "entities: the fields each serializer of ENTITIES emits (optional: an if:/unless: decides); entities.unresolved: what could not be read.",
       "On a Mastodon version bump: regenerate, review the new exceptions the tests report, and run a Claude + Codex audit for read-but-dropped parameters.",

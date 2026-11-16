@@ -1312,6 +1312,28 @@ describe("dump", () => {
     );
   }, 120_000);
 
+  it("restores a dump taken before 0101_pin_refresh, whose sync rows upgrade to pending rows", async () => {
+    await restoredBefore(
+      "0101_pin_refresh",
+      (sql) => {
+        sql.exec(
+          `INSERT INTO accounts (id, uri, username, domain)
+					VALUES ('100000000000000001', 'https://remote.example/users/a', 'a', 'remote.example')`,
+        );
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+					VALUES ('100000000000000001', 'https://remote.example/users/a/statuses/1', '2026-11-16T00:00:00.000Z')`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0101_pin_refresh"] });
+        expect(sql.exec("SELECT uri, refresh FROM collection_pins_pending").toArray()).toEqual([
+          { uri: "https://remote.example/users/a/statuses/1", refresh: 0 },
+        ]);
+      },
+    );
+  }, 120_000);
+
   it("round-trips a card's unverified author (0098), and refuses one past its stored bound on import", async () => {
     const source = await seeded(1);
     const [account, status] = await runInDurableObject(source, (_instance, state) => {

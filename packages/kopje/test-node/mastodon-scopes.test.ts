@@ -39,6 +39,8 @@ type Entry = {
   guards?: string[];
   unresolved?: string[];
   params?: { names: string[]; unresolved: string[] };
+  cache?: { public: string | null; vary: string | null; unresolved?: string[] };
+  deprecation?: { date: string | null; unresolved?: string[] };
 };
 
 const route = (path: string, method = "GET") =>
@@ -154,6 +156,212 @@ describe("mastodon-scopes.mjs", () => {
       "GET /oauth/userinfo",
       "POST /oauth/userinfo",
     ]);
+  });
+});
+
+// What a cache may keep of a route's answers (WEB-7): the Cache-Control helper the action runs and its vary_by.
+describe("mastodon-scopes.mjs API caching", () => {
+  const BASE = "class Api::BaseController < ApplicationController\n  vary_by 'Authorization'\nend\n";
+  const routes = (actions: string) =>
+    `namespace :api do\n  namespace :v1 do\n    resources :things, only: [${actions}]\n  end\nend\n`;
+  const controller = (lines: string[], parent = "Api::BaseController") =>
+    [`class Api::V1::ThingsController < ${parent}`, ...lines, "end", ""].join("\n");
+  const cache = (path: string, method = "GET") => route(path, method)?.cache;
+
+  it("reads a helper from the action or a before_action, and the nearest vary_by that applies", async () => {
+    await checkout({
+      "app/controllers/api/base_controller.rb": BASE,
+      "config/routes/api.rb": routes(":index, :show, :create"),
+      "app/controllers/api/v1/things_controller.rb": controller([
+        "  before_action :cache_even_if_authenticated!, only: :show",
+        "  vary_by 'Authorization, Accept-Language', except: :create",
+        "  vary_by '', only: :show",
+        "",
+        "  def index",
+        "    cache_if_unauthenticated!",
+        "    render json: []",
+        "  end",
+        "",
+        "  def show",
+        "    render json: {}",
+        "  end",
+        "",
+        "  def create",
+        "    render json: {}",
+        "  end",
+      ]),
+    });
+    expect(cache("/api/v1/things")).toEqual({ public: "anonymous", vary: "Authorization, Accept-Language" });
+    expect(cache("/api/v1/things/:id")).toEqual({ public: "everyone", vary: null });
+    expect(cache("/api/v1/things", "POST")).toEqual({ public: null, vary: "Authorization" });
+  });
+
+  it.each([
+    ["a modifier condition", ["    cache_if_unauthenticated! unless hidden?"]],
+    ["a block", ["    if open?", "      cache_if_unauthenticated!", "    end"]],
+    ["code before the call", ["    open? && cache_if_unauthenticated!"]],
+  ])("leaves a helper call under %s unresolved", async (_name, body) => {
+    await checkout({
+      "app/controllers/api/base_controller.rb": BASE,
+      "config/routes/api.rb": routes(":index"),
+      "app/controllers/api/v1/things_controller.rb": controller([
+        "  def index",
+        ...body,
+        "    render json: []",
+        "  end",
+      ]),
+    });
+    expect(cache("/api/v1/things")).toEqual({
+      public: null,
+      vary: "Authorization",
+      unresolved: ["cache_if_unauthenticated! under a condition"],
+    });
+  });
+
+  it("leaves a conditional or computed vary_by, a conditional callback and two helpers unresolved", async () => {
+    await checkout({
+      "app/controllers/api/base_controller.rb": BASE,
+      "config/routes/api.rb": routes(":index, :show, :create"),
+      "app/controllers/api/v1/things_controller.rb": controller([
+        "  vary_by '', if: -> { Setting.open }, only: :index",
+        "  vary_by -> { request.path }, only: :show",
+        "  before_action :cache_even_if_authenticated!, if: :open?, only: :create",
+        "",
+        "  def index",
+        "    cache_if_unauthenticated!",
+        "    cache_even_if_authenticated!",
+        "    render json: []",
+        "  end",
+        "",
+        "  def show",
+        "    render json: {}",
+        "  end",
+        "",
+        "  def create",
+        "    render json: {}",
+        "  end",
+      ]),
+    });
+    const file = "app/controllers/api/v1/things_controller.rb";
+    expect(cache("/api/v1/things")).toEqual({
+      public: null,
+      vary: null,
+      unresolved: [
+        `${file}: \`vary_by '', if: -> { Setting.open }, only: :index\``,
+        "cache_if_unauthenticated! and cache_even_if_authenticated! both run",
+      ],
+    });
+    expect(cache("/api/v1/things/:id")).toEqual({
+      public: null,
+      vary: null,
+      unresolved: [`${file}: \`vary_by -> { request.path }, only: :show\``],
+    });
+    expect(cache("/api/v1/things", "POST")).toEqual({
+      public: null,
+      vary: "Authorization",
+      unresolved: ["cache_even_if_authenticated! under a condition"],
+    });
+  });
+
+  it("follows super to the parent's action, under the condition of its own line", async () => {
+    await checkout({
+      "app/controllers/api/base_controller.rb": BASE,
+      "config/routes/api.rb": [
+        "namespace :api do",
+        "  namespace :v1 do",
+        "    resources :things, only: [:index, :show]",
+        "    resources :others, only: [:index]",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/parents_controller.rb": [
+        "class Api::V1::ParentsController < Api::BaseController",
+        "  vary_by 'Authorization, Accept-Language'",
+        "",
+        "  def index",
+        "    cache_if_unauthenticated!",
+        "    render json: []",
+        "  end",
+        "",
+        "  def show",
+        "    cache_if_unauthenticated!",
+        "    render json: {}",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/things_controller.rb": controller(
+        [
+          "  def index",
+          "    if manager?",
+          "      render json: []",
+          "    else",
+          "      super",
+          "    end",
+          "  end",
+          "",
+          "  def show",
+          "    super",
+          "  end",
+        ],
+        "Api::V1::ParentsController",
+      ),
+      "app/controllers/api/v1/others_controller.rb": [
+        "class Api::V1::OthersController < Api::V1::ParentsController",
+        "  skip_before_action :nothing",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(cache("/api/v1/things")).toEqual({
+      public: null,
+      vary: "Authorization, Accept-Language",
+      unresolved: ["cache_if_unauthenticated! under a condition"],
+    });
+    expect(cache("/api/v1/things/:id")).toEqual({ public: "anonymous", vary: "Authorization, Accept-Language" });
+    // An action the subclass does not define runs the parent's.
+    expect(cache("/api/v1/others")).toEqual({ public: "anonymous", vary: "Authorization, Accept-Language" });
+  });
+
+  it("drops a skipped helper callback, and leaves a callback whose method calls a helper unresolved", async () => {
+    await checkout({
+      "app/controllers/api/base_controller.rb": BASE,
+      "config/routes/api.rb": routes(":index, :show"),
+      "app/controllers/api/v1/parents_controller.rb": [
+        "class Api::V1::ParentsController < Api::BaseController",
+        "  before_action :cache_even_if_authenticated!",
+        "end",
+        "",
+      ].join("\n"),
+      "app/controllers/api/v1/things_controller.rb": controller(
+        [
+          "  skip_before_action :cache_even_if_authenticated!, only: :index",
+          "  before_action :set_cache, only: :show",
+          "",
+          "  def index",
+          "    render json: []",
+          "  end",
+          "",
+          "  def show",
+          "    render json: {}",
+          "  end",
+          "",
+          "  private",
+          "",
+          "  def set_cache",
+          "    cache_if_unauthenticated!",
+          "  end",
+        ],
+        "Api::V1::ParentsController",
+      ),
+    });
+    expect(cache("/api/v1/things")).toEqual({ public: null, vary: "Authorization" });
+    expect(cache("/api/v1/things/:id")).toEqual({
+      public: "everyone",
+      vary: "Authorization",
+      unresolved: ["set_cache calls a Cache-Control helper"],
+    });
   });
 });
 
@@ -1122,5 +1330,81 @@ describe("mastodon-scopes.mjs entity fields", () => {
   ])("leaves a subclass that resets only one of its superclass's tables unresolved: %s", async (reset, reason) => {
     await checkout(partial([reset]));
     expect(entityFields(dir, "REST::PartialAccountSerializer")).toEqual({ fields: own, unresolved: [reason] });
+  });
+});
+
+// The deprecate_api that marks a route's answers with Deprecation (test/mastodon-access.test.ts).
+describe("mastodon-scopes.mjs deprecations", () => {
+  const routes = (actions: string) =>
+    `namespace :api do\n  namespace :v1 do\n    resources :things, only: [${actions}]\n  end\nend\n`;
+  const file = "app/controllers/api/v1/things_controller.rb";
+  const deprecation = (path: string, method = "GET") => route(path, method)?.deprecation;
+
+  it("reads the date per action, the last that applies along the chain winning", async () => {
+    await checkout({
+      "config/routes/api.rb": routes(":index, :show, :create, :destroy"),
+      "app/controllers/api/v1/parents_controller.rb": [
+        "class Api::V1::ParentsController < Api::BaseController",
+        "  include DeprecationConcern",
+        "",
+        "  deprecate_api '2020-01-01', except: :destroy",
+        "end",
+        "",
+      ].join("\n"),
+      [file]: [
+        "class Api::V1::ThingsController < Api::V1::ParentsController",
+        "  deprecate_api '2021-05-16', only: [:index]",
+        "  deprecate_api '2022-11-14', only: :create",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    expect(deprecation("/api/v1/things")).toEqual({ date: "2021-05-16" });
+    expect(deprecation("/api/v1/things/:id")).toEqual({ date: "2020-01-01" });
+    expect(deprecation("/api/v1/things", "POST")).toEqual({ date: "2022-11-14" });
+    expect(deprecation("/api/v1/things/:id", "DELETE")).toEqual({ date: null });
+  });
+
+  it("leaves a condition, a sunset, a computed date, a block and an unreadable only: unresolved", async () => {
+    await checkout({
+      "config/routes/api.rb": routes(":index, :show, :create, :update, :destroy"),
+      [file]: [
+        "class Api::V1::ThingsController < Api::BaseController",
+        "  deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/things' }",
+        "  deprecate_api '2026-06-10', only: :show, unless: :alpha_path?",
+        "  deprecate_api '2022-11-14', sunset: '2027-01-01', only: :create",
+        "  deprecate_api DEPRECATED_ON, only: :update",
+        "  deprecate_api '2022-11-14', only: ACTIONS",
+        "  if Rails.env.production?",
+        "    deprecate_api '2022-11-14', only: :destroy",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+    });
+    const unreadable = "unreadable only:/except: in `deprecate_api '2022-11-14', only: ACTIONS`";
+    expect(deprecation("/api/v1/things")).toEqual({
+      date: null,
+      unresolved: [
+        unreadable,
+        `${file}: \`deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/things' }\``,
+      ],
+    });
+    expect(deprecation("/api/v1/things/:id")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2026-06-10', only: :show, unless: :alpha_path?\``],
+    });
+    expect(deprecation("/api/v1/things", "POST")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2022-11-14', sunset: '2027-01-01', only: :create\``],
+    });
+    expect(deprecation("/api/v1/things/:id", "PATCH")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api DEPRECATED_ON, only: :update\``],
+    });
+    expect(deprecation("/api/v1/things/:id", "DELETE")).toEqual({
+      date: null,
+      unresolved: [unreadable, `${file}: \`deprecate_api '2022-11-14', only: :destroy\``],
+    });
   });
 });

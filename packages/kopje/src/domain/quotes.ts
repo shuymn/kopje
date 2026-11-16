@@ -1187,7 +1187,13 @@ export function answerQuoteRequest(
   db: Db,
   actor: { id: string; uri: string },
   request: QuoteRequestInput,
-  ctx: { now: number; origin: string; deliveredTo: string | null; prefetched: RemoteStatusInput | null | undefined },
+  ctx: {
+    now: number;
+    origin: string;
+    deliveredTo: string | null;
+    prefetched: RemoteStatusInput | null | undefined;
+    storeNow: number;
+  },
   store: StoreRemoteStatus,
 ): QuoteRequestOutcome {
   const { now } = ctx;
@@ -1250,6 +1256,7 @@ export function answerQuoteRequest(
       origin: ctx.origin,
       deliveredTo: ctx.deliveredTo,
       fetched: true,
+      readReplies: { storeNow: ctx.storeNow },
     });
     // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
     // than the instrument's is not it.

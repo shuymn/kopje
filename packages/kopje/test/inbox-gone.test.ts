@@ -94,12 +94,14 @@ async function bobWorld() {
   return { t, bob };
 }
 
+// An Update(Person) naming its actor by URI (Mastodon's dereference_object!): it fetches the actor's document whatever
+// its key, where one embedding the document fetches only for its key (test/inbox-actor-update.test.ts).
 const updateOf = (actor: TestActor) => ({
   "@context": AS,
   id: `${actor.uri}#updates/${nextId()}`,
   type: "Update",
   actor: actor.uri,
-  object: actor.document,
+  object: actor.uri,
 });
 const followOf = (actor: TestActor) => ({
   "@context": AS,

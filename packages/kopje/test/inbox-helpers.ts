@@ -51,6 +51,9 @@ export class RemoteWeb {
   readonly fetched: string[] = [];
   // The keyId each fetch was signed with ('unsigned' if none).
   readonly signers: string[] = [];
+  // The key each fetch was signed with, from a draft-cavage Signature or an RFC 9421 Signature-Input ('unsigned' if
+  // neither).
+  readonly keyIds: string[] = [];
   // URLs answered only to a fetch signed with the given keyId (403 otherwise), as a followers-only object is.
   readonly signedOnly = new Map<string, string>();
   // URLs whose next fetch waits at a gate (hold): a deterministic interleaving point, never a timer.
@@ -86,6 +89,8 @@ export class RemoteWeb {
     this.fetched.push(url.href);
     const signer = /keyId="([^"]+)"/.exec(request.headers.get("signature") ?? "")?.[1] ?? "unsigned";
     this.signers.push(signer);
+    const input = /keyid="([^"]+)"/.exec(request.headers.get("signature-input") ?? "")?.[1];
+    this.keyIds.push(signer === "unsigned" ? (input ?? "unsigned") : signer);
     const only = this.signedOnly.get(url.href);
     if (only !== undefined && only !== signer) {
       return Promise.resolve(new Response("Forbidden", { status: 403 }));
@@ -179,6 +184,9 @@ const MASTODON_CONTEXT = [
     indexable: "toot:indexable",
     attributionDomains: { "@id": "toot:attributionDomains", "@type": "@id" },
     focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+    showFeatured: "toot:showFeatured",
+    showMedia: "toot:showMedia",
+    showRepliesInMedia: "toot:showRepliesInMedia",
   },
 ];
 
@@ -381,6 +389,11 @@ export function actorDefaults(): Omit<
     url: null,
     avatarUrl: null,
     headerUrl: null,
+    avatarDescription: "",
+    headerDescription: "",
+    showFeatured: null,
+    showMedia: null,
+    showRepliesInMedia: null,
     locked: false,
     discoverable: null,
     indexable: false,

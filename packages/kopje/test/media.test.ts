@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
 import { handleScheduled } from "../src/jobs/scheduled";
-import { sweepMedia, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
+import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
 import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
@@ -440,6 +440,33 @@ describe("GET and PUT /api/v1/media/:id", () => {
     // Attached media cannot be moved to another status either.
     expect(await posting(h, alice.token, { status: "other", media_ids: [media.id] })).toEqual(mediaNotFound(media.id));
     expect(await sql(h.store, "SELECT id FROM statuses")).toEqual([{ id: status.id }]);
+  });
+
+  // MediaController#set_media_attachment finds own unattached media (404) before update! validates the parameters
+  // (422).
+  it("a too-long description on attached media answers 404", async () => {
+    const h = await users();
+    const { alice, bob } = h.users;
+    const media = await uploaded(h, alice, mediaForm(bytes(JPEG_WITH_GPS)));
+    const update = async (token: string, body: Record<string, unknown>, method = "PUT") => {
+      const response = await h.request(`/api/v1/media/${media.id}`, bearer(token, json(body, { method })));
+      return [method, response.status, await response.json()];
+    };
+    const overlong = { description: OVERLONG_DESCRIPTIONS[1]! };
+    const thumbnail = { thumbnail: "x" };
+    const notFound = { error: "Record not found" };
+    // The checks run on the uploader's own unattached media, and not on anyone else's.
+    expect(await update(alice.token, overlong)).toEqual(["PUT", 422, DESCRIPTION_TOO_LONG]);
+    expect(await update(alice.token, thumbnail)).toEqual(["PUT", 422, { error: THUMBNAIL_MUST_BE_BLANK }]);
+    expect(await update(bob.token, overlong)).toEqual(["PUT", 404, notFound]);
+    await post(h, alice, { status: "with media", media_ids: [media.id] });
+    for (const method of ["PUT", "PATCH"]) {
+      expect(await update(alice.token, overlong, method)).toEqual([method, 404, notFound]);
+      expect(await update(alice.token, thumbnail, method)).toEqual([method, 404, notFound]);
+    }
+    expect(await sql(h.store, "SELECT description FROM media_attachments WHERE id = ?", media.id)).toEqual([
+      { description: "" },
+    ]);
   });
 });
 

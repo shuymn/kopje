@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
+import { spoilerReadSql, statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate, type CardLink } from "./link-cards";
@@ -59,9 +59,16 @@ export type RemoteStatusInput = {
   cardLink?: CardLink | null;
   // The content's anchors a link card may take, at most CARD_CANDIDATES, in document order (link-cards.ts).
   cardCandidates?: CardCandidate[];
+  // Its replies as a Create reads them (reply-walk-create.ts), or null for none; undefined from an earlier build.
+  replies?: RemoteRepliesInput | null;
   // The object as received.
   raw: string;
 };
+
+// A status's replies as Mastodon's Create#fetch_replies reads them (federation/remote-status.ts createRepliesOf): the
+// first ids of its embedded first page on the status's origin, or the URI of its collection or of its first page, on
+// that origin, to fetch.
+export type RemoteRepliesInput = { items: string[] } | { stage: "collection" | "page"; uri: string };
 
 // A quote as StatusParser reads it: the quoted status's uri (null only for a Tombstone without an id), whether the Note
 // had no `quote` property (a legacy quote: Misskey's _misskey_quote or quoteUrl, Fedibird's quoteUri), whether the
@@ -97,7 +104,8 @@ export type StoredStatus = {
 
 export function statusByUri(db: Db, uri: string): StoredStatus | undefined {
   return db.first<StoredStatus>(
-    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language,
+    `SELECT id, account_id, reblog_of_id, visibility, content, ${spoilerReadSql("spoiler_text")} AS spoiler_text,
+			sensitive, language,
 			${statusPublishedSql("statuses")} AS published_at, ${statusEditedSql("statuses")} AS edited_at,
 			CASE WHEN typeof(coalesce(remote_version, edited_at, published_at)) <> 'blob'
 				THEN CAST(coalesce(remote_version, edited_at, published_at) AS TEXT) END AS watermark
