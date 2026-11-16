@@ -426,6 +426,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   the quote. No Store migration and no `wrangler.jsonc` change.
 - A stamp's revocation reads a bounded number of the quotes naming it to find the one it approved. No Store migration
   and no `wrangler.jsonc` change.
+- Editing a post's poll clears its votes as Mastodon does when the edit leaves out `poll[multiple]`, or sends choices
+  that differ from the stored ones before blanks and surrounding whitespace are removed. No Store migration and no
+  `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

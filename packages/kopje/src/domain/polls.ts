@@ -53,8 +53,17 @@ export type PollRequest = {
   hideTotals?: boolean | undefined;
 };
 
-// A local poll as it is checked and written: its choices, its duration in seconds and its options.
-export type PollInput = { options: string[]; expiresIn: number; multiple: boolean; hideTotals: boolean };
+// A local poll as it is checked and written: its choices, its duration in seconds and its options; `sent`, what an
+// edit compares with the stored poll (editPoll): the choices as the request sent them (within its read cap), and
+// poll[multiple] as Rails casts it (undefined for absent or blank, Rails' nil).
+export type PollInput = {
+  options: string[];
+  expiresIn: number;
+  multiple: boolean;
+  hideTotals: boolean;
+  sent: PollSent;
+};
+type PollSent = { options: string[]; multiple: boolean | undefined };
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -115,7 +124,13 @@ export function checkPoll(request: PollRequest): PollInput | { error: string } {
   if (errors.length > 0 || expiresIn === null) {
     return { error: `Validation failed: ${errors.join(", ")}` };
   }
-  return { options, expiresIn, multiple: request.multiple ?? false, hideTotals: request.hideTotals ?? false };
+  return {
+    options,
+    expiresIn,
+    multiple: request.multiple ?? false,
+    hideTotals: request.hideTotals ?? false,
+    sent: { options: request.options, multiple: request.multiple },
+  };
 }
 
 export function isPollInput(value: PollInput | { error: string }): value is PollInput {
@@ -159,18 +174,31 @@ function resetPoll(db: Db, statusId: string, removed: boolean): void {
   requireExactIncrement(row?.exact ?? 1, "a poll's generation");
 }
 
-// The live poll of a status (not removed), with what a change of it compares.
-function livePoll(db: Db, statusId: string) {
-  return db.first<{ options: string; multiple: number; removed: number }>(
-    "SELECT options, multiple, removed FROM polls WHERE status_id = ?",
+// The poll of a status, with what a change of it compares: `same_options` is 1 when the stored choices are the array
+// `sent`, as Ruby's Array#== compares two arrays of strings (as many, each an equal string). It decodes the stored
+// array (json_each), whatever JSON spelling stores it (an import keeps its own), and compares bytes, so a stored
+// element that is not a string, or a string of other bytes, equals no sent choice. Neither side is stripped. Each
+// stored element is matched with the sent one at its index (`->>` with an integer reads `$[n]`), so the walk is the
+// stored array's, not a join of both.
+function livePoll(db: Db, statusId: string, sent: readonly string[]) {
+  return db.first<{ multiple: number; removed: number; same_options: number }>(
+    `SELECT multiple, removed, json_array_length(options) = json_array_length(?2) AND NOT EXISTS (
+				SELECT 1 FROM json_each(options) o
+				WHERE o.type <> 'text' OR (?2 ->> o.key) IS NULL OR o.value <> (?2 ->> o.key)) AS same_options
+			FROM polls WHERE status_id = ?1`,
     statusId,
+    JSON.stringify(sent),
   );
 }
 
 // UpdateStatusService#update_poll! for an edit of a local status: a poll sent replaces the status's (its end moves to
-// `expiresIn` from now, and changed choices or a changed multiple drop the votes cast); none removes it.
+// `expiresIn` from now); none removes it. The votes cast are dropped as Mastodon 4.7.5 drops them
+// (update_status_service.rb:94): when the choices as sent, before Poll#prepare_options strips them, are not the stored
+// ones, or when poll[multiple] cast as Rails casts it is not the stored value, nil (absent or blank) included. A
+// request's choices are read up to one past the most a poll stores (MAX_POLL_OPTIONS_READ), so a longer list, unequal
+// in Mastodon, is unequal here too.
 export function editPoll(db: Db, statusId: string, poll: PollInput | null, now: number): void {
-  const row = livePoll(db, statusId);
+  const row = livePoll(db, statusId, poll?.sent.options ?? []);
   const previous = row?.removed === 0 ? row : undefined;
   if (poll === null) {
     if (previous !== undefined) {
@@ -186,7 +214,9 @@ export function editPoll(db: Db, statusId: string, poll: PollInput | null, now: 
   // A poll added again where one was removed starts from the removal's reset.
   const reset =
     previous !== undefined &&
-    (previous.options !== JSON.stringify(poll.options) || previous.multiple !== (poll.multiple ? 1 : 0));
+    (previous.same_options !== 1 ||
+      poll.sent.multiple === undefined ||
+      previous.multiple !== (poll.sent.multiple ? 1 : 0));
   if (reset) {
     resetPoll(db, statusId, false);
   }

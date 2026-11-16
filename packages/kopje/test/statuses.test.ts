@@ -2192,7 +2192,8 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
     const { alice } = h.users;
     await insertMedia(h, alice.id);
     await insertMedia(h, alice.id, "100000000000000002");
-    const poll = { options: ["a", "b"], expiresIn: 600, multiple: false, hideTotals: false };
+    const options = ["a", "b"];
+    const poll = { options, expiresIn: 600, multiple: false, hideTotals: false, sent: { options, multiple: false } };
     const { result } = await postPlans(h, alice.token, { mediaIds: [ID], poll }, /^$/);
     expect(result).toMatchObject({ value: { status: "ok" } });
     const posted = (result as { value: { value: { id: string } } }).value.value.id;
@@ -2203,7 +2204,7 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
       spoilerText: "",
       mediaIds: ["100000000000000002"],
       mediaAttributes: [],
-      poll: { ...poll, options: ["c", "d"] },
+      poll: { ...poll, options: ["c", "d"], sent: { options: ["c", "d"], multiple: false } },
       now: NOW,
       present: { origin: "https://kopje.test" },
     });
