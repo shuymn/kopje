@@ -58,31 +58,48 @@ export class Params {
     // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
     // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
+    // The body's entries the query replaced (withQuery), which repeated() still counts.
+    private readonly replaced: readonly (readonly [string, string])[] = [],
   ) {}
 
-  // These body parameters with the query's merged in: the body wins for a declared name, whose effective value is
-  // otherwise the query's last; other query entries follow the body's.
+  // These body parameters with the query's merged in, as Rails' `request_parameters.merge(query_parameters)`, a
+  // shallow Hash#merge: each top-level key the query sends replaces the body's whole value under it, so a query
+  // `poll[expires_in]` leaves none of a body's `poll`, its options included, and a query `expires_in[]` replaces a body
+  // `expires_in`. A declared name is the exception: the body wins, and the query's last value is read only when the
+  // body has none (docs/mastodon-deviations.md). The query's entries follow the body's.
   withQuery(query: readonly (readonly [string, string])[], declared: readonly string[]): Params {
     const names = new Set(declared);
+    const keys = new Set(query.map(([key]) => topKey(key)).filter((key) => !names.has(key)));
+    const kept = (name: string) => !keys.has(topKey(name));
     // The maps are read directly: the parameter conformance check counts accessor calls as the handler's reads.
     const sent = (name: string) => this.files.has(name) || this.entries.some(([key]) => key === name);
     const declaredQuery = [...names].flatMap((name): [string, string][] => {
       const value = sent(name) ? undefined : query.findLast(([key]) => key === name)?.[1];
       return value === undefined ? [] : [[name, value]];
     });
-    const entries = [...this.entries, ...query.filter(([key]) => !names.has(key)), ...declaredQuery];
-    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts, this.nulls);
+    // A file part's place counts the body's entries kept before it.
+    const keptBefore = [0];
+    for (const [key] of this.entries) {
+      keptBefore.push((keptBefore.at(-1) ?? 0) + (kept(key) ? 1 : 0));
+    }
+    return new Params(
+      [...this.entries.filter(([key]) => kept(key)), ...query.filter(([key]) => !names.has(key)), ...declaredQuery],
+      this.files,
+      new Set([...this.objectPrefixes].filter(kept)),
+      new Set([...this.emptyLists].filter(kept)),
+      this.fileParts.filter(([name]) => kept(name)).map(([name, at]) => [name, keptBefore[at] ?? 0]),
+      new Set([...this.nulls].filter(kept)),
+      [...this.replaced, ...this.entries.filter(([key]) => !kept(key))],
+    );
   }
 
-  // The body's value wins over the query's.
+  // The first value: the query's, for a top-level key the query sent, else the body's (withQuery).
   get(name: string): string | undefined {
     return this.entries.find(([key]) => key === name)?.[1];
   }
 
-  // Rails' `params[name]`: the query's last value, else the body's last (Rack assigns a repeated plain name, so the
-  // last wins, and Rails merges the query over the body). The entries hold the body's before the query's, and a
-  // declared name's query value only without a body value (withQuery), so the last entry is that value. Integer
-  // parameters are read so.
+  // Rails' `params[name]`: the last value (Rack assigns a repeated plain name, so the last wins), the query's for a
+  // top-level key the query sent, else the body's (withQuery). Integer parameters are read so.
   last(name: string): string | undefined {
     return this.entries.findLast(([key]) => key === name)?.[1];
   }
@@ -116,10 +133,12 @@ export class Params {
     return this.objectPrefixes.has(name) || this.hasObject(name);
   }
 
-  // The first of `names` sent more than once (query and body together), for parameters that must be single
-  // (RFC 6749 §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never named here.
+  // The first of `names` sent more than once (query and body together, a body value the query replaced included), for
+  // parameters that must be single (RFC 6749 §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never
+  // named here.
   repeated(names: readonly string[]): string | undefined {
-    return names.find((name) => this.entries.filter(([key]) => key === name).length > 1);
+    const all = [...this.entries, ...this.replaced];
+    return names.find((name) => all.filter(([key]) => key === name).length > 1);
   }
 
   // The objects of an array parameter: JSON sends `name[0][field]` (indexed), forms send `name[][field]`, where a field
@@ -194,6 +213,13 @@ export class Params {
   getAll(name: string): string[] {
     return this.entries.filter(([key]) => key === name || key === `${name}[]`).map(([, value]) => value);
   }
+}
+
+// Rack's top-level key of a parameter name: what comes before the first `[` after its first character
+// (`poll[options][]` is under `poll`, `[a]` is its own key).
+function topKey(name: string): string {
+  const at = name.indexOf("[", 1);
+  return at === -1 ? name : name.slice(0, at);
 }
 
 export type ParamsResult = { ok: true; params: Params } | { ok: false; status: 400 | 413 };

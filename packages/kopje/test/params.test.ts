@@ -103,15 +103,90 @@ describe("Params#last", () => {
 
   it("reads the query's value over the body's, form or JSON", async () => {
     const form = await read(post("a=1", "application/x-www-form-urlencoded", "?a=3"));
-    expect([form.last("a"), form.get("a")]).toEqual(["3", "1"]);
+    expect([form.last("a"), form.get("a")]).toEqual(["3", "3"]);
     const json = await read(post(JSON.stringify({ a: 1, b: 2 }), "application/json", "?a=4&a=5"));
-    expect([json.last("a"), json.last("b"), json.get("a")]).toEqual(["5", "2", "1"]);
+    expect([json.last("a"), json.last("b"), json.get("a")]).toEqual(["5", "2", "4"]);
     expect((await read(post("b=1", "application/x-www-form-urlencoded"))).last("a")).toBeUndefined();
   });
 
   it("reads a declared file in the body over a query text, as Rails' last-part rule", async () => {
     const p = await read(multipart([["avatar", png()]], "?avatar=q"), { files: FILES });
     expect([p.last("avatar"), p.file("avatar")?.name]).toEqual([undefined, "a.png"]);
+  });
+});
+
+// Rails' request.parameters is request_parameters.merge(query_parameters): a shallow Hash#merge, so a top-level key the
+// query sends replaces the body's whole value under it.
+describe("readParams: the query over the body, by top-level key", () => {
+  const poll = { options: ["a", "b"], expires_in: "600" };
+  const bodies: [string, Request][] = [
+    ["JSON", post(JSON.stringify({ status: "s", poll }), "application/json", "?poll[expires_in]=900")],
+    [
+      "a form",
+      post(
+        new URLSearchParams([
+          ["status", "s"],
+          ["poll[options][]", "a"],
+          ["poll[options][]", "b"],
+          ["poll[expires_in]", "600"],
+        ]),
+        "application/x-www-form-urlencoded",
+        "?poll[expires_in]=900",
+      ),
+    ],
+    [
+      "multipart",
+      multipart(
+        [
+          ["status", "s"],
+          ["poll[options][]", "a"],
+          ["poll[options][]", "b"],
+          ["poll[expires_in]", "600"],
+        ],
+        "?poll[expires_in]=900",
+      ),
+    ],
+  ];
+  it.each(bodies)("leaves none of %s body's poll beside a query poll[expires_in]", async (_, request) => {
+    const p = await read(request);
+    expect([p.last("poll[expires_in]"), p.getAll("poll[options]"), p.get("status")]).toEqual(["900", [], "s"]);
+  });
+
+  it("drops a scalar under a query array or hash of its name", async () => {
+    for (const query of ["?expires_in[]=7200", "?expires_in[a]=7200"]) {
+      const form = await read(post("expires_in=3600&title=t", "application/x-www-form-urlencoded", query));
+      expect([query, form.last("expires_in"), form.get("title")]).toEqual([query, undefined, "t"]);
+      const json = await read(post(JSON.stringify({ expires_in: 3600 }), "application/json", query));
+      expect([query, json.last("expires_in")]).toEqual([query, undefined]);
+    }
+  });
+
+  it("drops what a JSON body noted of a replaced key: an object, an empty list, a null", async () => {
+    const p = await read(
+      post(JSON.stringify({ home: {}, ids: [], note: null }), "application/json", "?home=x&ids[]=1&note="),
+    );
+    expect([p.sentObject("home"), p.list("ids"), p.sentNull("note")]).toEqual([false, ["1"], false]);
+  });
+
+  it("places a file part among the body's entries the query left", async () => {
+    const parts: [string, string | File][] = [
+      ["focus", "1"],
+      ["media_attributes[][id]", "a"],
+      ["media_attributes[][thumbnail]", png()],
+      ["media_attributes[][id]", "b"],
+    ];
+    const left = await read(multipart(parts, "?focus=2"));
+    expect(left.objects("media_attributes", { files: ["thumbnail"] })).toEqual([
+      { id: "a", thumbnail: SENT_FILE },
+      { id: "b" },
+    ]);
+    const replaced = await read(multipart(parts, "?media_attributes[][id]=q"));
+    expect(replaced.objects("media_attributes", { files: ["thumbnail"] })).toEqual([{ id: "q" }]);
+  });
+
+  it("still counts a body value the query replaced as a repeat", async () => {
+    const p = await read(post("code=a", "application/x-www-form-urlencoded", "?code=b"));
+    expect([p.get("code"), p.repeated(["code"])]).toEqual(["b", "code"]);
   });
 });
 
@@ -249,11 +324,12 @@ describe("Params#objects with file fields", () => {
     expect(p.objects("media_attributes")).toEqual([{ id: "a" }]);
   });
 
-  it("keeps the parts through the query merge, and a JSON or urlencoded body has none", async () => {
-    const merged = await read(multipart([["media_attributes[][thumbnail]", png()]], "?media_attributes[][id]=q"), {
-      files: FILES,
-    });
-    expect(merged.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE, id: "q" }]);
+  it("keeps the parts through the query merge of other keys, and a JSON or urlencoded body has none", async () => {
+    const merged = await read(multipart([["media_attributes[][thumbnail]", png()]], "?status=q"), { files: FILES });
+    expect([merged.objects("media_attributes", THUMBNAIL), merged.get("status")]).toEqual([
+      [{ thumbnail: SENT_FILE }],
+      "q",
+    ]);
     const body = {
       media_attributes: [
         { id: "a", thumbnail: null },
@@ -423,10 +499,10 @@ describe("Params#list", () => {
     // A scalar is not a list (strong parameters drop it).
     expect((await json({ a: "1" })).list("a")).toBeUndefined();
     expect((await urlencoded("a=1")).list("a")).toBeUndefined();
-    // Nested names and the query's own entries.
+    // Nested names, and the query's list, which replaces the body's.
     expect((await json({ o: { a: [] } })).list("o[a]")).toEqual([]);
     expect((await json({ a: [] }, "?a[]=2")).list("a")).toEqual(["2"]);
-    expect((await urlencoded("a[]=", "?a[]=")).list("a")).toEqual(["", ""]);
+    expect((await urlencoded("a[]=1", "?a[]=")).list("a")).toEqual([""]);
   });
 
   it("keeps has() and getAll() of a JSON [] as they were", async () => {

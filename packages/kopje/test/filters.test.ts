@@ -69,8 +69,8 @@ async function timeline(h: ApiHarness, path: string, token: string): Promise<Sta
 }
 
 describe("filters API", () => {
-  // expires_in as Rails' params hold it: the last value, the query's over the body's; then Expireable#expires_in=
-  // (blank is no expiry, else Ruby's to_i).
+  // expires_in as Rails' params hold it: the last value, the query's over the body's (a shallow merge by top-level
+  // key); then Expireable#expires_in= (blank is no expiry, else Ruby's to_i).
   it("reads expires_in as Rails' last value on v2 and v1, created and updated", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -106,14 +106,24 @@ describe("filters API", () => {
     for (const [path, fields] of routes) {
       const created = await expiry("POST", path, "", ["60", "3600"], fields);
       expect([path, created.expires_at]).toEqual([path, after(3600)]);
-      expect([path, (await expiry("POST", path, "?expires_in=7200", ["3600"], fields)).expires_at]).toEqual([
-        path,
-        after(7200),
-      ]);
+      for (const [query, expected] of [
+        ["?expires_in=7200", after(7200)],
+        // A query array or hash replaces the body's value, and strong parameters drop it.
+        ["?expires_in[]=7200", null],
+        ["?expires_in[a]=7200", null],
+      ] as const) {
+        expect([path, query, (await expiry("POST", path, query, ["3600"], fields)).expires_at]).toEqual([
+          path,
+          query,
+          expected,
+        ]);
+      }
       const update = `${path}/${created.id}`;
       for (const [query, values, expected] of [
         ["", ["60", "0d3600"], after(3600)],
         ["?expires_in=7200", ["3600"], after(7200)],
+        // Not sent, so the expiry stays.
+        ["?expires_in[]=60", ["3600"], after(7200)],
         ["", ["60", ""], null],
       ] as const) {
         expect([update, query, values, (await expiry("PUT", update, query, [...values], [])).expires_at]).toEqual([
