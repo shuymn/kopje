@@ -188,6 +188,28 @@ describe("collection_update (2-T5)", () => {
     expect(await updates()).toEqual(settled);
   });
 
+  // As an edit's update (notify's replacement): a collection_update a mute drops leaves the earlier one. Fails if notify
+  // deletes the earlier before knowing the new one is written.
+  it("keeps the collection_update written before the mute when a later update is not notified", async () => {
+    const { h, alice, bob } = await world();
+    const collection = await created(h, alice, [bob]);
+    const patch = async (name: string) =>
+      expect((await call(h, "PATCH", `/api/v1/collections/${collection}`, alice, { name })).status).toBe(200);
+    const ids = async () => (await rows(h, "collection_update")).map((row) => row.id);
+    await patch("first");
+    const before = await ids();
+    expect(before).toHaveLength(1);
+    expect((await call(h, "POST", `/api/v1/accounts/${alice.id}/mute`, bob, { notifications: true })).status).toBe(200);
+    await patch("muted");
+    expect(await ids()).toEqual(before);
+    // Unmuted, the next update replaces it.
+    expect((await call(h, "POST", `/api/v1/accounts/${alice.id}/unmute`, bob)).status).toBe(200);
+    await patch("again");
+    const after = await ids();
+    expect(after).toHaveLength(1);
+    expect(after[0]).toBeGreaterThan(before[0]!);
+  });
+
   it("goes with its collection", async () => {
     const { h, alice, bob } = await world();
     const collection = await created(h, alice, [bob]);
