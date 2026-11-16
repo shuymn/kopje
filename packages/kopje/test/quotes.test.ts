@@ -22,7 +22,6 @@ import {
 import { ACCOUNT_STALE_MS } from "../src/domain/remote-actors";
 import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { syncCollections } from "../src/federation/collections";
-import { parseActivity } from "../src/federation/inbound";
 import { REQUEST_DEADLINE_MS } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";
 import { parseRemoteStatus } from "../src/federation/remote-status";
@@ -1433,8 +1432,8 @@ describe("relayed revocations (ID-1’s exception)", () => {
     },
   );
 
-  // ldSignedBodyReadable ignores it before its proof is read: a stamp term redefined is not Mastodon's vocabulary.
-  it("ignores a forwarded stamp Delete whose 4.7 context redefines a stamp term, the quote kept though its stamp is gone", async () => {
+  // ldSignedBodyReadable drops it before its proof is read: a stamp term redefined is not Mastodon's vocabulary.
+  it("drops a forwarded stamp Delete whose 4.7 context redefines a stamp term, the quote kept though its stamp is gone", async () => {
     const { t, carol, dan, stamp, quote, target } = await relayWorld();
     t.web.fail(stamp, 404);
     const context = [
@@ -1443,12 +1442,11 @@ describe("relayed revocations (ID-1’s exception)", () => {
     ];
     // Signed under that context, so that its signature verifies.
     const body = await mastodonSigned({ ...stampDelete(carol, { stamp, quote, target }), "@context": context }, carol);
-    expect(parseActivity(new TextEncoder().encode(JSON.stringify(body)))).toMatchObject({
-      ok: false,
-      reason: "ld-context",
-    });
     const from = t.web.fetched.length;
-    expect(await loggedRefusals(() => t.post(dan, body))).toEqual({ status: 202, refused: [] });
+    expect(await loggedRefusals(() => t.post(dan, body))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "ld-context" }]],
+    });
     await settle(t.store);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
     expect(await revocations(t)).toEqual([]);

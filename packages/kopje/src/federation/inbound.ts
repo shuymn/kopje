@@ -103,8 +103,9 @@ export type InboundRequest = {
 // 202: done or deliberately ignored (a format or authorization problem, as Mastodon answers); 401: the signature or
 // the signer's identity failed; 415: not an ActivityStreams body; 503: a remote fetch failed in a way that may pass.
 // dropped: a 202 for a relay whose signer is established but which applies nothing (its author proof does not hold, or
-// Kopje applies no relay of its type), logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops
-// such a relay after answering 202.
+// Kopje applies no relay of its type), or for an LD-signed body outside the vocabulary Mastodon reads it in
+// (ld-context), logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops such a relay after
+// answering 202.
 export type InboxOutcome = {
   status: 202 | 401 | 415 | 503;
   reason: string;
@@ -656,7 +657,8 @@ export async function receiveInbound(
   // An envelope that names no usable actor cannot be judged, and no handler would read it: it is checked with the
   // Store's keys alone, fetching nothing, and answered as ignored. A request without a valid signature stays refused
   // (ID-1), a wrong signature under a stored key included; one signed with a key id the Store does not hold (a cache
-  // miss: no key was served) is ignored as it would be once that key were fetched.
+  // miss: no key was served) is ignored as it would be once that key were fetched. An LD-signed body Kopje ignores
+  // (ld-context) is logged once, its reason alone, so a server whose activities it ignores is seen.
   // The gate read the block for exactly parsed.actor.
   if (!parsed.ok) {
     if (parsed.actor === undefined) {
@@ -664,7 +666,12 @@ export async function receiveInbound(
       const stored = new Map<string, ServedKey>();
       const checked = await verify(deps, request, headers, none, stored, true, storedKey);
       const missed = "status" in checked && checked.reason === "key-refused" && stored.size === 0;
-      return "status" in checked && !missed ? checked : { status: 202, reason: parsed.reason };
+      if ("status" in checked && !missed) {
+        return checked;
+      }
+      return parsed.reason === "ld-context"
+        ? { status: 202, reason: parsed.reason, dropped: true }
+        : { status: 202, reason: parsed.reason };
     }
     if (blocked) {
       return { status: 202, reason: "domain-blocked" };

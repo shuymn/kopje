@@ -127,8 +127,9 @@ against their own instance. TLS is assumed between all parties.
   keyword's, set no keyword and name only the preloaded contexts that keep them, and every key of its body is a plain
   name. Any other is ignored before the gate, on the inbox, its replay and the rollback drain alike
   (`ldSignedBodyReadable` in `src/federation/ld-signed-body.ts`, called by the envelope check of
-  `src/federation/inbound.ts`). Its type, actor, object, addressing and mentions are therefore the ones Mastodon reads,
-  and the ones VIS-1 reads. The owner is the actor whose document lists the key,
+  `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
+  `ld-context` and nothing of the body (DATA-5). Its type, actor, object, addressing and mentions are therefore the
+  ones Mastodon reads, and the ones VIS-1 reads. The owner is the actor whose document lists the key,
   by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
   first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
   each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key

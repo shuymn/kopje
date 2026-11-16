@@ -223,8 +223,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   the meanings Mastodon reads it by (no redefined ActivityStreams or Mastodon property, no alias of one or of a keyword,
   no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
   `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities). Mastodon, Fedify, Misskey
-  and Kopje bodies all pass. No Store migration and no `wrangler.jsonc` change.
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
+  `kopje.inbox.refused` with reason `ld-context`. Mastodon, Fedify, Misskey and Kopje bodies all pass. No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

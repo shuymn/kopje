@@ -763,15 +763,19 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       ...extra,
     });
 
-    // A chain MAX_JSON_DEPTH deep, then plain keys up to MAX_JSON_NODES in one object.
+    // A chain whose innermost object is at MAX_JSON_DEPTH (the body at 1, `chain` at 2), then plain keys up to
+    // MAX_JSON_NODES in one object.
     const deep = (count: number) => {
       let chain: Json = {};
-      for (let depth = 0; depth < MAX_JSON_DEPTH - 3; depth++) {
+      for (let depth = 0; depth < MAX_JSON_DEPTH - 2; depth++) {
         chain = { next: chain };
       }
       const wide = Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, i]));
       return activity("https://www.w3.org/ns/activitystreams", { chain, wide });
     };
+    // The deepest value's depth as withinJsonBounds counts it: the document at 1, each member one deeper.
+    const depthOf = (value: unknown): number =>
+      typeof value === "object" && value !== null ? 1 + Math.max(0, ...Object.values(value).map(depthOf)) : 1;
     // An inline context of as many definitions as fit, each a compact IRI over one inline prefix.
     const definitions = (count: number) =>
       activity(
@@ -808,6 +812,10 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
         ],
         {},
       );
+
+    it("the depth witness nests exactly MAX_JSON_DEPTH levels", () => {
+      expect(depthOf(filled(deep))).toBe(MAX_JSON_DEPTH);
+    });
 
     it.each([
       ["plain keys at the depth bound", deep],
