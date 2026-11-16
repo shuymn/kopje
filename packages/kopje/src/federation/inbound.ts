@@ -213,8 +213,9 @@ export function hasActivityStreamsContext(context: unknown): boolean {
   return context === AS_CONTEXT || (Array.isArray(context) && context.some((c) => c === AS_CONTEXT));
 }
 
-// The activity as Mastodon reads it: compacted JSON with the ActivityStreams context, ids as strings or objects with
-// an id. Other types and objects Kopje does not store are 'unsupported'.
+// The activity as received (Mastodon reads an LD-signed one compacted; one whose literal JSON is not what that
+// compaction reads is ignored, ldSignedBodyReadable): ids as strings or objects with an id. Other types and objects
+// Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
 // and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in (ID-1,
 // ldSignedBodyReadable). Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the

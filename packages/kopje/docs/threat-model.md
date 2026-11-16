@@ -121,7 +121,14 @@ against their own instance. TLS is assumed between all parties.
   requires. Of a request's RFC 9421 signatures, the rule applies to the `Signature-Input` member Fedify verified, the
   first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
   `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
-  request (`verifySpooledRequest`, OPS-9) holds to the same rule. The owner is the actor whose document lists the key,
+  request (`verifySpooledRequest`, OPS-9) holds to the same rule. An activity that carries a Linked Data signature is
+  read only where its literal JSON is what Mastodon's compaction reads: its contexts give every ActivityStreams term and
+  every name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a
+  keyword's, set no keyword and name only the preloaded contexts that keep them, and every key of its body is a plain
+  name. Any other is ignored before the gate, on the inbox, its replay and the rollback drain alike
+  (`ldSignedBodyReadable` in `src/federation/ld-signed-body.ts`, called by the envelope check of
+  `src/federation/inbound.ts`). Its type, actor, object, addressing and mentions are therefore the ones Mastodon reads,
+  and the ones VIS-1 reads. The owner is the actor whose document lists the key,
   by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
   first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
   each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key
@@ -156,7 +163,12 @@ against their own instance. TLS is assumed between all parties.
   naming an Ed25519 key Kopje serves"), `test/key-entries.test.ts` ("which contexts give the key properties their
   meaning"), `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers
   the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
-  `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
+  `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA", "does not hand on
+  an LD-signed activity Kopje's inbox ignores"), `test/inbox-signed-forms.test.ts` ("ignores an LD-signed activity whose
+  context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
+  "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
+  sender's vocabulary"), `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed
+  context URLs are the preloaded ones"). A stored key list
   (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored:
   every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
@@ -2927,7 +2939,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in `src/federation/federation.ts`); and one request fetches at most 8 documents (the fetch budget), so one activity's
   JSON-LD work is at most 8 bounded documents and their bounded contexts; the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may
-  fetch its actor again); statuses are read as compacted JSON, without JSON-LD, as Mastodon reads them;
+  fetch its actor again); every inbound activity, a status included, is read as received JSON, without JSON-LD (Mastodon
+  compacts an LD-signed one: `docs/mastodon-deviations.md`, Reading inbound activities); the vocabulary check of an
+  LD-signed one visits each value once, `test/inbox-signed-forms.test.ts` ("checks an LD-signed body at the JSON bounds
+  within a generous time");
   `test/inbox-statuses.test.ts` ("refuses an activity or a fetched document past the JSON bounds before reading it",
   "caps the attachments, tags and content one status stores"), `test/inbox-statuses-edge.test.ts` ("RES-2: JSON-LD
   contexts past the JSON bounds", "the Store asks for documents at most three times"). A card's oEmbed document is read
