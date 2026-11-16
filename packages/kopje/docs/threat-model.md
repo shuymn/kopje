@@ -133,17 +133,20 @@ against their own instance. TLS is assumed between all parties.
   other object of keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the
   document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
   property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
-  as fetched. Fedify parses an actor document without its `icon`, `image`, `followers`, `following` and `endpoints`,
-  which Kopje reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), also
-  one it loads itself while verifying an HTTP signature, live, on replay and in the rollback drain (a key at the
-  actor's URL, or a key document's owner: `actorViewLoader`), so a value of a type Fedify does not expect there refuses
-  neither the actor nor its keys; leaving members out never adds a key or changes the id
-  (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
-  Fedify fetches itself, by an actor whose icon is not an Image"). A key id the Store does not hold fresh, or whose
-  stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
-  for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the
-  algorithm its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a
-  signature that does not verify (401), live, on replay and in the rollback drain. A stored key (`remote_keys`, kept
+  as fetched. Fedify parses an actor document holding only the members Kopje reads from its object, by their literal
+  spelling (`FEDIFY_MEMBERS` and `fedifyActorView` in `src/federation/remote-actor.ts`; every other member, in any
+  spelling, Kopje reads by its spelling as Mastodon does, or not at all), also one it loads itself while verifying an
+  HTTP signature, live, on replay and in the rollback drain (a key at the actor's URL, or a key document and its
+  owner's: `actorViewLoader`), so a member Kopje does not read from Fedify refuses neither the actor nor its keys;
+  keeping members out never adds a key or changes the id (`test/remote-actor-images.test.ts`, "verifies a signature by
+  an actor whose icon is not an Image", "verifies a key Fedify fetches itself, by an actor whose icon is not an Image",
+  "verifies a signature by an actor whose … is unreadable, its key at the actor's URL", "verifies a key document
+  served at the key's URL"; `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"). A key id the Store
+  does not hold fresh, or whose stored key fails, is resolved from the document at that id, as Kopje reads an actor's
+  keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an
+  RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key, and one that names any
+  other key is answered as a signature that does not verify (401), live, on replay and in the rollback drain. A
+  stored key (`remote_keys`, kept
   per key id with its owner, whatever the shape of the key URL) is
   trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
   document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
@@ -305,8 +308,9 @@ against their own instance. TLS is assumed between all parties.
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
   after JSON-LD processing, and it must have the origin of the final response URL. The loader's literal `id` check is a
   pre-filter. Cross-origin redirects are refused. An actor's `id` is checked on the view of its document Fedify parses
-  (`fedifyActorView`, ID-1), which only leaves members out. _Enforced (main):_ `src/federation/loader.ts`;
-  `test/remote-identity.test.ts`, `test/loader.test.ts`. A search resolution's alternate (the document an HTML or
+  (`fedifyActorView`, ID-1), which keeps the document's own `id` and leaves only other members out.
+  _Enforced (main):_ `src/federation/loader.ts`; `test/remote-identity.test.ts`, `test/loader.test.ts`. A search
+  resolution's alternate (the document an HTML or
   other non-ActivityPub answer names in its `Link` header or `<link rel="alternate">`, NET-4) may be on another
   origin than the page, as Mastodon's `FetchResourceService` allows; its request follows no redirect, and its
   document is taken only when its `id` is the href literally and the URL requested (Mastodon's `json['id'] != @url ||
