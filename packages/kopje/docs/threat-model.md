@@ -3112,6 +3112,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   triggers `<table>_bounds_insert` and `<table>_bounds_update` (`migrations/0048_stored_bounds.sql`) abort any write
   where `P(NEW.x) IS NOT NEW.x`. Reads take these columns as stored: since P(P(x)) = P(x), a rewritten row presents
   what a read through P presented before. The columns that keep read-time projections are listed at `STORED_COLUMNS`.
+  A media description's P (`mediaDescriptionSql`) bounds it by bytes as well: text within 40,000 UTF-8 bytes
+  (`MEDIA_DESCRIPTION_BYTES`, four a code point) and 10,000 SQLite characters, which count a malformed run as one;
+  migration `0105_media_description_bytes` set every stored description to it (a malformed run past the bytes, or a
+  BLOB, only an import holds) and made `media_attachments`' pair of triggers again with it, so an import refuses one
+  past it; on text within the bytes it is 0048's cut, so no writer's description changes (`test/migrations.test.ts`
+  ("0105_media_description_bytes"), `test/dump-import.test.ts` ("round-trips a media description at its byte bound",
+  "restores a dump taken before 0105_media_description_bytes")).
   `test/stored-bounds.test.ts` ("P is idempotent and the writer's output is its fixed point", "answers every converted
   row after the rewrite"), `test/migrations.test.ts` (0048: "stores each covered value as P(x)", "refuses a value one
   past its bound on insert and update", "fails by its check on an uploaded media URL past the bound"),
@@ -3264,8 +3271,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stored rows, or NULL when an input is not text after affinity (judged in SQL first, so no JavaScript runs on it); a
   text change clears the column in its own SET, so a hide fires no trigger. A stored figure never raises what is matched
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
-  its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
-  imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  its cost is a presentation's: media descriptions are bounded by bytes as well as characters (0105: at most 40,000
+  bytes, so a malformed UTF-8 run in an imported one decodes to at most 40,000 U+FFFD), and the filter text holds each
+  as presented, its first 10,000 code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  `test/status-bounds.test.ts` ("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the
+  filter text"),
   `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at` and `edited_at` have
   no stored bound (TEXT, no CHECK or trigger; adding one would rewrite every status, each row whole), so an imported or
   converted row may hold any value there. The writers store only the 24-byte ISO form: the remote writers (`remoteTime`
@@ -3401,7 +3411,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole,
+  measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
   written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
   length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
@@ -3413,7 +3424,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (RES-2, stored values) and are read as stored, but the content warning, read through a cut of 16,382 stored bytes
   (`spoilerReadSql`, which cuts no value a writer stores): content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
-  descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
+  descriptions within 10,000 code points and `MEDIA_DESCRIPTION_BYTES` (40,000) and presented within 10,000 code
+  points after decoding (`presentedMediaDescription`, live, scheduled, from an edit's snapshot, as a Note's or a legacy
+  Image's `name` and in the filter text), meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. An import may still hold malformed UTF-8 that passes the triggers' counts and decodes
   past them (0xFF and any number of continuation bytes is one character to the warning's `substr`; `json_quote`
   counts a malformed byte as one, and it decodes to a U+FFFD of three bytes), so content, source text and the warning
@@ -4364,13 +4377,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
-  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
-  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
-  turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
-  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
-  status, report and warning together, an announcement), derived from the maxima table
-  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
+  measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
+  sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
+  the largest at most, 47,878,111.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
+  a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
+  conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
+  conversation shows no boost as its last status, `notification` its status, report and warning together, an
+  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The
+  journal records nothing once it spans 4,096 ids,
   and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
@@ -4766,6 +4783,10 @@ bytes) and warning (0xFF and 1,048,575) are malformed, and an edit of it, are ch
 fill's 131,070 bytes of content and source text and 16,382 of the warning, hold a decoded row within `rowHeapSql` of
 the row and that within the raw fill's, and present within the escaped fill's occurrence of each shape
 (`test/status-bounds.test.ts` ("a status of malformed imported text")).
+An imported attachment description of malformed UTF-8 at its stored bound (0xFF and continuation bytes to
+`MEDIA_DESCRIPTION_BYTES`, 40,000) decodes to 40,000 U+FFFD, of which every presenter shows the first 10,000
+(`presentedMediaDescription`): within the escaped fill's description, so the fills stay the maxima; a status of four
+such attachments reads within R (`test/status-bounds.test.ts` ("an attachment of malformed imported text")).
 A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
@@ -4950,8 +4971,9 @@ every item is below it. The model:
   admitted answer's 25.2 MB, the first rejected item's three times its JSON. Every string field counts on its own,
   even one that repeats another's string (an attachment's `remote_url` is its `url`), and rows and presented objects
   often share the same string instances, which the model does not credit either.
-- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`): a string of several
-  MB, which takes up to two bytes a character once one character is wider than Latin-1, is never made.
+- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`), and a stream payload
+  without encoding it twice (`encodedTwiceBytes`): a string of several MB, which takes up to two bytes a character once
+  one character is wider than Latin-1, is never made.
 
 Chunks. `statusStream` (`src/domain/status-presenter.ts`) reads an answer's statuses in chunks of consecutive statuses,
 each presented and measured only when admission reaches it, so while the first rejected status is measured the admitted
@@ -5097,6 +5119,29 @@ the Worker within half of its own. One isolate holding both sides at once, the S
 Worker's are built, would reach about 107 MB; it stays within half (the timelines' peaks above) when the Store drops
 its objects once they are serialized. Groups and reports pass half of the Store isolate (RES-3, the Gap note on their
 heap).
+
+A stream unit (`src/stream-hub.ts`, RES-6) presents one subject for one viewer, outside any answer. Its payload is
+measured from the presented object (`encodedTwiceBytes`), so one past `STREAM_LIMITS.payloadBytes` is skipped with no
+string made, and one within it is encoded once for all its frames, each stream's envelope made and sent to its sockets
+before the next is made. Its peak, per streamed kind, is its rows with 25% headroom at their per-column maxima (a status
+the largest timeline item's; a conversation its read's; a notification its status's, a report notification's and a
+warning's together; an announcement its list's and one presentation's, `ANNOUNCEMENT_ROW_CAPS`), three times its
+conservative JSON (the presented object), and four frames of `MESSAGE_MAX` at two bytes a code unit (the payload encoded
+once and twice, then the twice-encoded payload and one envelope) with its presentation's scratch (a moved-to account's
+emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 525,898 bytes: the payload limit,
+the envelope's keys (31), the longest event (`"announcement.reaction"`, 23) and the longest stream (`["hashtag:local",
+tag]` with a 256-byte tag escaped at six a byte, 1,556). Imported text of malformed UTF-8 reads and presents within the
+fills (the account, status and attachment witnesses of "Maxima of presented units"), so the figures hold for it.
+`test/status-bounds.test.ts` ("bounds a stream unit's isolate peak by the most a subject presents") computes them, each
+within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` and `MESSAGE_MAX` in
+`test/presented-maxima.ts`), which `test-node/presented-maxima.test.ts` compares with this table.
+
+| Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
+| ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
+| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
+| Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
+| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 2.12 MB             | 47.88 MB |
+| Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)
 
