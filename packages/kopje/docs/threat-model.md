@@ -1244,10 +1244,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the cron sends nothing, as Mastodon's. `streamAnnouncement` in `src/domain/stream-journal.ts`, `streamedAnnouncement`
   and `streamedAnnouncementReaction` in `src/domain/announcements.ts`; `test/streaming/announcements.test.ts`.
   _Enforced (main)_ for a quote policy change (`PUT /api/v1/statuses/:id` with only the policy, and
-  `/interaction_policy`): one `edit` event when the stored policy changed, sent as an edit's (`status.update`);
-  `journalStatusUpdate` and `EDIT_LISTENED_SQL` in `src/domain/stream-journal.ts`, its callers in
-  `src/domain/statuses.ts`; `test/streaming/status-update-journal.test.ts` (the listener condition equal to
-  `stream_status_edited`'s for every listener set and visibility).
+  `/interaction_policy`): one `edit` event when the stored policy changed, sent as an edit's (`status.update`), but
+  through `/interaction_policy` a quiet one, sent to no account that only its mention reference shows the status to
+  (Mastodon's `skip_notifications`); `journalStatusUpdate`, `QUIET_EDIT_SUBJECT` and `EDIT_LISTENED_SQL` in
+  `src/domain/stream-journal.ts`, its callers in `src/domain/statuses.ts`, the `quiet_edit` unit in
+  `src/domain/streaming.ts`; `test/streaming/status-update-journal.test.ts` (the listener condition equal to
+  `stream_status_edited`'s for every listener set and visibility, with or without mentions; "a quote policy change and
+  a held mention").
 
 - **VIS-27: a quote reveals nothing its quoted status hides.** R35 applies VIS-1/R2 to the quoted status for the
   same viewer, whatever the quoting status's own visibility: `unauthorized` carries no content, and the filter states

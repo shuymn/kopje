@@ -18,18 +18,27 @@ const EDIT_LISTENED_SQL = `(
       AND (EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key >= 'public' AND stream_key < 'public;')
         OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'hashtag:' AND stream_key < 'hashtag;'))))`;
 
+// The subject of an `edit` row that is sent without its mention reference: this prefix, then the status id (a status
+// id is 18 digits, the statuses CHECK, so no other row's subject starts with it). streaming.ts reads such a row as the
+// event `quiet_edit`: `status.update` to home, the lists and the feeds, not to an account only a held mention shows the
+// status to, as Mastodon's `skip_notifications` skips the mentioned accounts (fan_out_on_write_service.rb:31-35, :76-83
+// in v4.7.5).
+export const QUIET_EDIT_SUBJECT = "quiet:";
+
 // One `edit` event (`status.update`) of the status `statusId`, for a write that changes what its listeners are shown
 // but leaves `edited_at`, whose trigger journals every other edit: a local status's quote policy (statuses.ts, VIS-26).
-// Under EDIT_LISTENED_SQL and JOURNAL_SPAN, as the trigger: at most one row a call.
-export function journalStatusUpdate(db: Db, statusId: string, now: number): void {
+// Without `mentions`, the row is a quiet edit (QUIET_EDIT_SUBJECT). Under EDIT_LISTENED_SQL and JOURNAL_SPAN, as the
+// trigger: at most one row a call.
+export function journalStatusUpdate(db: Db, statusId: string, now: number, { mentions }: { mentions: boolean }): void {
   if (journalFull(db, "edit")) {
     return;
   }
   db.run(
     `INSERT INTO stream_events (kind, subject, created_at)
-		SELECT 'edit', s.id, ?2 FROM statuses s WHERE s.id = ?1 AND ${EDIT_LISTENED_SQL}`,
+		SELECT 'edit', ?3 || s.id, ?2 FROM statuses s WHERE s.id = ?1 AND ${EDIT_LISTENED_SQL}`,
     statusId,
     iso(now),
+    mentions ? "" : QUIET_EDIT_SUBJECT,
   );
 }
 

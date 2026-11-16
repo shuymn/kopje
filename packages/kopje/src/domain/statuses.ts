@@ -1002,8 +1002,8 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // nobody for a status that is not public or unlisted. Where Kopje differs from Mastodon, which counts a changed policy
 // as an edit: the policy is not part of the history, so a change of the policy alone is stored as
 // PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy); it notifies
-// as an edit does (notifyEdited), which the interaction policy endpoint does not, and both send `status.update`
-// (journalStatusUpdate).
+// as an edit does (notifyEdited) and sends `status.update` as an edit does (journalStatusUpdate), where the interaction
+// policy endpoint notifies no one and sends it to no one through a mention.
 //
 // Deliberate difference from Mastodon: the audience of a private, direct or limited status never widens. A mention
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
@@ -1081,7 +1081,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     // does not journal here.
     if (policy !== null && setQuotePolicy(db, accountId, current.id, policy, input.now)) {
       notifyEdited(db, current.id, accountId, input.now);
-      journalStatusUpdate(db, current.id, input.now);
+      journalStatusUpdate(db, current.id, input.now, { mentions: true });
     }
     return status();
   }
@@ -1195,8 +1195,8 @@ export type InteractionPolicyInput = {
 // one of the three (else "Record invalid"). The policy sent, or the author's default_quote_policy when none is, is
 // stored as on posting (storedQuotePolicy). A boost has no policy of its own (its original's is shown): it is answered
 // unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy); it notifies
-// no one and sends `status.update`, as the controller broadcasts with skip_notifications
-// (interaction_policies_controller.rb:13, :24-26 in v4.7.5).
+// no one and sends `status.update` but not through a mention (a quiet edit), as the controller broadcasts with
+// skip_notifications (interaction_policies_controller.rb:13, :24-26 in v4.7.5).
 export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput, Acted<Status>>(
   (db, input, { accountId }, viewer) => {
     const visible = viewable(db, accountId, input.id);
@@ -1220,7 +1220,7 @@ export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput
       const name = input.quotePolicy ?? localAuthor(db, accountId).default_quote_policy;
       const now = Date.parse(viewer.now);
       if (setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), now)) {
-        journalStatusUpdate(db, visible, now);
+        journalStatusUpdate(db, visible, now, { mentions: false });
       }
     }
     return viewed(presentStatus(db, visible, { ...input.present, viewer, proper: true }));

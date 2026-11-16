@@ -9,12 +9,13 @@ import { NOW } from "../app-helpers";
 import { mastodonActor } from "../inbox-helpers";
 import { create, followed, mastodonNote, PUBLIC, setup, update } from "../inbox-status-helpers";
 import { act, community, follow, getJson, post, remoteAccount, seedStatus, type Status } from "../status-helpers";
-import { drained, type Inbox, type StreamMessage, subscribed, takeAll } from "./stream-helpers";
+import { drained, type Inbox, settled, type StreamMessage, subscribed, takeAll } from "./stream-helpers";
 
 // `status.update` for a write that leaves `edited_at` (journalStatusUpdate in src/domain/stream-journal.ts): a local
 // status's quote policy changed through `PUT /api/v1/statuses/:id` (Mastodon's UpdateStatusService broadcasts it as an
-// edit) or `/interaction_policy` (Statuses::InteractionPoliciesController broadcasts it with skip_notifications), under
-// the listener condition and span of the `edit` trigger (stream_status_edited). A remote same-version `Update` that
+// edit) or `/interaction_policy` (Statuses::InteractionPoliciesController broadcasts it with skip_notifications, so
+// FanOutOnWriteService sends the mentioned accounts nothing: a quiet edit), under the listener condition and span of
+// the `edit` trigger (stream_status_edited). A remote same-version `Update` that
 // changes only the policy sends nothing, as ProcessStatusUpdateService#handle_implicit_update! broadcasts only a moved
 // quote state. Absence is proved with the drain barrier.
 
@@ -139,6 +140,63 @@ describe("a local status's quote policy", () => {
   });
 });
 
+// alice's public status with #cats mentioning bob, who follows no one and keeps his mention (not dismissed); carol
+// follows alice and lists her, and dave follows no one. carol listens on `user` and her list, dave on `public` and
+// `hashtag` #cats, bob on `user` and `user:notification`.
+async function heldMention() {
+  const h = await community(["alice", "bob", "carol", "dave"]);
+  const { alice, bob, carol, dave } = h.users;
+  await follow(h, carol, alice.id);
+  const created = await act(h, carol, "/api/v1/lists", { title: "list" });
+  const { id: list } = await created.json<{ id: string }>();
+  expect((await act(h, carol, `/api/v1/lists/${list}/accounts`, { account_ids: [alice.id] })).status).toBe(200);
+  const status = await post(h, alice, {
+    status: "@bob same #cats",
+    visibility: "public",
+    quote_approval_policy: "public",
+  });
+  const listing = await subscribed(h, carol.token, "user");
+  listing.send({ type: "subscribe", stream: "list", list });
+  await settled(h, listing);
+  const fed = await subscribed(h, dave.token, "public");
+  fed.send({ type: "subscribe", stream: "hashtag", tag: "cats" });
+  await settled(h, fed);
+  const mentioned = await subscribed(h, bob.token, "user", "user:notification");
+  expect(
+    await sql(h.store, "SELECT 1 FROM notifications WHERE type = 'mention' AND account_id = ?", bob.id),
+  ).toHaveLength(1);
+  return { h, alice, status, listing, fed, mentioned };
+}
+
+describe("a quote policy change and a held mention", () => {
+  it.for(["PUT", "PATCH"])(
+    "%s /interaction_policy sends nothing through a held mention, and home, the list and the feeds are sent it",
+    async (method) => {
+      const { h, alice, status, listing, fed, mentioned } = await heldMention();
+      const path = `/api/v1/statuses/${status.id}/interaction_policy`;
+      expect((await send(h, alice.token, method, path, { quote_approval_policy: "nobody" })).status).toBe(200);
+      await drained(h, listing, fed, mentioned);
+      expect(events(listing)).toEqual([
+        ["user", "status.update", status.id],
+        ["list", "status.update", status.id],
+      ]);
+      expect(events(fed)).toEqual([
+        ["public", "status.update", status.id],
+        ["hashtag", "status.update", status.id],
+      ]);
+      expect(events(mentioned)).toEqual([]);
+      // An edit of the policy alone is sent to it through the mention (UpdateStatusService broadcasts in full).
+      const edit = { status: "@bob same #cats", quote_approval_policy: "followers" };
+      expect((await send(h, alice.token, "PUT", `/api/v1/statuses/${status.id}`, edit)).status).toBe(200);
+      await drained(h, listing, fed, mentioned);
+      expect(events(mentioned).filter(([, event]) => event === "status.update")).toEqual([
+        ["user", "status.update", status.id],
+        ["user:notification", "status.update", status.id],
+      ]);
+    },
+  );
+});
+
 describe("a remote status's quote policy", () => {
   it("a same-version Update that changes only the policy stores it and sends nothing; a newer one is sent", async () => {
     const t = await setup();
@@ -175,13 +233,14 @@ describe("journalStatusUpdate", () => {
   });
 
   // Each listener set (the subscriptions of one local account) against each status, without a socket: the rows
-  // journalStatusUpdate writes and those stream_status_edited writes for an edited_at change of the same status.
+  // journalStatusUpdate writes, with and without mentions, and those stream_status_edited writes for an edited_at
+  // change of the same status.
   it("journals exactly when the edit trigger does, for every listener set and status", async () => {
     const h = await community(["alice"]);
     const listener = h.users.alice.id;
     const author = await remoteAccount(h.store, "author");
     const statuses: Record<string, string> = {};
-    for (const visibility of ["public", "unlisted", "private", "direct"] as const) {
+    for (const visibility of ["public", "unlisted", "private", "direct", "limited"] as const) {
       statuses[visibility] = await seedStatus(h.store, { accountId: author, visibility });
     }
     statuses["boost"] = await seedStatus(h.store, {
@@ -197,11 +256,15 @@ describe("journalStatusUpdate", () => {
       public: ["public"],
       "public:local:media": ["public:local:media"],
       hashtag: ["hashtag:x"],
+      direct: ["direct"],
+      "public:remote": ["public:remote"],
+      "hashtag:local": ["hashtag:local:x"],
+      "direct and public:local": ["direct", "public:local"],
     };
     const outcome = await runInDurableObject(h.store, (_instance, state) => {
       const db = new Db(state.storage.sql);
       const count = () => db.first<{ n: number }>("SELECT COUNT(*) AS n FROM stream_events")!.n;
-      const rows: Record<string, Record<string, [number, number]>> = {};
+      const rows: Record<string, Record<string, [number, number, number]>> = {};
       let at = 0;
       for (const [set, keys] of Object.entries(sets)) {
         rows[set] = {};
@@ -214,32 +277,39 @@ describe("journalStatusUpdate", () => {
               key,
             );
           }
-          db.run("DELETE FROM stream_events");
-          journalStatusUpdate(db, id, NOW);
-          const journaled = count();
+          const journaled = [true, false].map((mentions) => {
+            db.run("DELETE FROM stream_events");
+            journalStatusUpdate(db, id, NOW, { mentions });
+            return count();
+          });
           db.run("DELETE FROM stream_events");
           db.run("UPDATE statuses SET edited_at = ? WHERE id = ?", iso(NOW + ++at), id);
-          rows[set][name] = [journaled, count()];
+          rows[set][name] = [journaled[0]!, journaled[1]!, count()];
         }
       }
       db.run("DELETE FROM stream_subscriptions");
       db.run("DELETE FROM stream_events");
       return rows;
     });
-    const everywhere = { public: 1, unlisted: 1, private: 1, direct: 1, boost: 1 };
-    const publicOnly = { public: 1, unlisted: 0, private: 0, direct: 0, boost: 0 };
+    const everywhere = { public: 1, unlisted: 1, private: 1, direct: 1, limited: 1, boost: 1 };
+    const publicOnly = { public: 1, unlisted: 0, private: 0, direct: 0, limited: 0, boost: 0 };
+    const nowhere = { public: 0, unlisted: 0, private: 0, direct: 0, limited: 0, boost: 0 };
     const expected = {
-      none: { public: 0, unlisted: 0, private: 0, direct: 0, boost: 0 },
+      none: nowhere,
       user: everywhere,
       "user:notification": everywhere,
       list: everywhere,
       public: publicOnly,
       "public:local:media": publicOnly,
       hashtag: publicOnly,
+      direct: nowhere,
+      "public:remote": publicOnly,
+      "hashtag:local": publicOnly,
+      "direct and public:local": publicOnly,
     };
-    const both = (map: Record<string, number>) =>
-      Object.fromEntries(Object.entries(map).map(([name, n]) => [name, [n, n]]));
-    expect(outcome).toEqual(Object.fromEntries(Object.entries(expected).map(([set, map]) => [set, both(map)])));
+    const all = (map: Record<string, number>) =>
+      Object.fromEntries(Object.entries(map).map(([name, n]) => [name, [n, n, n]]));
+    expect(outcome).toEqual(Object.fromEntries(Object.entries(expected).map(([set, map]) => [set, all(map)])));
   });
 
   it("takes nothing once the journal spans JOURNAL_SPAN ids, and logs it", async () => {
@@ -261,7 +331,7 @@ describe("journalStatusUpdate", () => {
         );
       }
       await runInDurableObject(h.store, (_instance, state) =>
-        journalStatusUpdate(new Db(state.storage.sql), status.id, NOW),
+        journalStatusUpdate(new Db(state.storage.sql), status.id, NOW, { mentions: true }),
       );
       return sql<{ id: number; kind: string; subject: string }>(
         h.store,
