@@ -724,6 +724,39 @@ describe("payloads with descriptions at their length (D8)", () => {
     }
   }, 120_000);
 
+  // RES-6: a unit past the limit is measured from its presented object and skipped with no string made. JSON.stringify
+  // is spied while the turn runs (the Store shares the test's isolate): the hub encodes the presented status it sends
+  // (S1, within the limit) and never the one it skips (S2, its descriptions control characters).
+  it("skips a unit past the limit without encoding its payload", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u0001"), ...described("\u0001")];
+      const media = await describedMedia(w.h, w.alice, descriptions);
+      await drained(w.h, w.inbox);
+      const quoted = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
+      const quote = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(MAX_STATUS_MEDIA), quoted);
+      const stringify = vi.spyOn(JSON, "stringify");
+      let encoded: unknown[];
+      try {
+        await w.h.store.streamTick(BUILD);
+        await drained(w.h, w.inbox);
+        encoded = stringify.mock.calls.flatMap(([value]) =>
+          typeof value === "object" && value !== null && "media_attachments" in value ? [(value as Status).id] : [],
+        );
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(encoded).toEqual([quoted]);
+      expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+      expect(skips(warn)).toHaveLength(1);
+      // The quote is the unit skipped: its payload, as REST shows it, passes the limit.
+      expect(payloadBytes(await shownJson(w, quote))).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
   // From the plain fill's payload P, `a` descriptions' characters U+1F600 become U+0001 (+3 bytes each) and 3a - (t - P)
   // more become U+3042 (-1 each), description by description, each keeping its MAX_MEDIA_DESCRIPTION_LENGTH code
   // points: the payload is t, sent at the limit and skipped one byte past it.

@@ -400,11 +400,25 @@ export const streamDeleteUnits = readOperation<
   };
 });
 
-// What a unit sends: one event, its payload (presented once), and the streams it goes on (by key), each with the
-// scopes a socket's token needs for it; and the reference reads it made.
+// The events a unit sends, as Mastodon's streaming server names them; the longest is part of the largest frame a socket
+// is sent (RES-6, test/status-bounds.test.ts "bounds a stream unit's isolate peak by the most a subject presents").
+export const STREAM_EVENT_NAMES = [
+  "update",
+  "status.update",
+  "delete",
+  "notification",
+  "notifications_merged",
+  "conversation",
+  "announcement",
+  "announcement.delete",
+  "announcement.reaction",
+] as const;
+
+// What a unit sends: one event ("" when it sends nothing), its payload (presented once), and the streams it goes on
+// (by key), each with the scopes a socket's token needs for it; and the reference reads it made.
 export type StreamUnit = {
   grants: Record<string, StreamGrant>;
-  event: string;
+  event: (typeof STREAM_EVENT_NAMES)[number] | "";
   payload: unknown;
   streams: { stream: string; needs: StreamGrant }[];
   checks: number;
@@ -451,7 +465,7 @@ function unitOf(
 ): StreamUnit {
   const { scopes, context } = authorizeStream(db, accountId, tokenHashes, now);
   const grants = Object.fromEntries([...scopes].map(([hash, granted]) => [hash, streamGrant(granted)]));
-  const none = { grants, event: "", payload: null, streams: [], checks: 0 };
+  const none: StreamUnit = { grants, event: "", payload: null, streams: [], checks: 0 };
   const origin = instanceOrigin(db);
   if (context === null || origin === null) {
     return none;

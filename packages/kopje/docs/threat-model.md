@@ -3305,7 +3305,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole,
+  measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
   written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
   length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
@@ -4198,9 +4199,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
-  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
-  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
-  turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
+  measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
+  sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
+  the largest at most, 47,872,237 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
+  a turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
   `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
   status, report and warning together, an announcement), derived from the maxima table
@@ -4775,8 +4779,9 @@ every item is below it. The model:
   admitted answer's 25.2 MB, the first rejected item's three times its JSON. Every string field counts on its own,
   even one that repeats another's string (an attachment's `remote_url` is its `url`), and rows and presented objects
   often share the same string instances, which the model does not credit either.
-- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`): a string of several
-  MB, which takes up to two bytes a character once one character is wider than Latin-1, is never made.
+- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`), and a stream payload
+  without encoding it twice (`encodedTwiceBytes`): a string of several MB, which takes up to two bytes a character once
+  one character is wider than Latin-1, is never made.
 
 Chunks. `statusStream` (`src/domain/status-presenter.ts`) reads an answer's statuses in chunks of consecutive statuses,
 each presented and measured only when admission reaches it, so while the first rejected status is measured the admitted
@@ -4922,6 +4927,29 @@ the Worker within half of its own. One isolate holding both sides at once, the S
 Worker's are built, would reach about 107 MB; it stays within half (the timelines' peaks above) when the Store drops
 its objects once they are serialized. Groups and reports pass half of the Store isolate (RES-3, the Gap note on their
 heap).
+
+A stream unit (`src/stream-hub.ts`, RES-6) presents one subject for one viewer, outside any answer. Its payload is
+measured from the presented object (`encodedTwiceBytes`), so one past `STREAM_LIMITS.payloadBytes` is skipped with no
+string made, and one within it is encoded once for all its frames, each stream's envelope made and sent to its sockets
+before the next is made. Its peak, per streamed kind, is its rows with 25% headroom at their per-column maxima (a status
+the largest timeline item's; a conversation its read's; a notification its status's, a report notification's and a
+warning's together; an announcement its list's and one presentation's, `ANNOUNCEMENT_ROW_CAPS`), three times its
+conservative JSON (the presented object), and four frames of `MESSAGE_MAX` at two bytes a code unit (the payload encoded
+once and twice, then the twice-encoded payload and one envelope) with its presentation's scratch (a moved-to account's
+emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 525,898 bytes: the payload limit,
+the envelope's keys (31), the longest event (`"announcement.reaction"`, 23) and the longest stream (`["hashtag:local",
+tag]` with a 256-byte tag escaped at six a byte, 1,556). Imported text of malformed UTF-8 reads and presents within the
+fills (the account, status and attachment witnesses of "Maxima of presented units"), so the figures hold for it.
+`test/status-bounds.test.ts` ("bounds a stream unit's isolate peak by the most a subject presents") computes them, each
+within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` and `MESSAGE_MAX` in
+`test/presented-maxima.ts`), which `test-node/presented-maxima.test.ts` compares with this table.
+
+| Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
+| ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
+| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
+| Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
+| Notification (its status, report and warning together) | 25.87 MB                | 19.88 MB          | 2.12 MB             | 47.87 MB |
+| Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)
 
