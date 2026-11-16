@@ -156,6 +156,13 @@ dump carries it as it is, so a restored Store's work keeps its count. A dump tak
 restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
 quotes.
 
+A received quote's `broadcast` (migration `0104_quote_broadcast`) is the integer `0`, `1` or `2`: whether its current
+verification work notifies when its decision moves the quote's state (`2` while a failure that may pass waits for the
+next verification). Text that reads as one of them is stored as that integer by the column's affinity, and anything
+else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored Store's work decides as it would
+have. A dump taken before 0104 has no such column: it restores into a Store at its own migrations, whose upgrade gives
+every quote `0`, so a work under way then decides without notifying. A file built from legacy data has no quotes.
+
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
 that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it

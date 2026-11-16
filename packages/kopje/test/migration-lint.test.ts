@@ -47,6 +47,7 @@ describe("migration lint", () => {
       "0100_poll_refresh",
       "0101_pin_refresh",
       "0102_quote_state_stream",
+      "0104_quote_broadcast",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

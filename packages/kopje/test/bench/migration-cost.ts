@@ -123,9 +123,10 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
 // and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
 // (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
-// reads no row (one trigger). A migration that reads another table must add it here before it is measured. The
-// measured time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves
-// only between I/O events, so the clock is read across an await on each side.
+// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
+// quote, as 0094 does. A migration that reads another table must add it here before it is measured. The measured time
+// is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only between
+// I/O events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -1067,6 +1068,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
+    // 0104_quote_broadcast: the column, and the quotes holding its default.
+    const quoteBroadcast = has("quotes", "broadcast")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE broadcast = 0") }
+      : undefined;
     // 0098_card_attribution: the column, and the cards holding NULL.
     const cardAuthors = has("status_cards", "unverified_author_account_id")
       ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
@@ -1143,6 +1148,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           profileSettings,
           cardAuthors,
           pinRefresh,
+          quoteBroadcast,
         },
       };
     }
@@ -1179,6 +1185,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         profileSettings,
         cardAuthors,
         pinRefresh,
+        quoteBroadcast,
       },
     };
   });
@@ -1282,6 +1289,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
   if (applied.includes("0101_pin_refresh")) {
     const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
     expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0104 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0104_quote_broadcast")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.quoteBroadcast).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(
