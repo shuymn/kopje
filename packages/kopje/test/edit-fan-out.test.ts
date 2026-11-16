@@ -587,11 +587,14 @@ describe("a quote state change's update fan-out (DistributionWorker with update:
     expect(await updates(t)).toMatchObject([{ account_id: DAVE, status_id: statusId }]);
   });
 
-  it("…and still revokes when the fan-out fails, logging it", async () => {
+  // The fan-out fails at the booster's update, after alice's mention and its push were written: they are rolled back
+  // with it, and the revocation stays.
+  it("…and still revokes when the fan-out fails part way, keeping none of its notifications, and logs it", async () => {
     const { t, carol, stamp, statusId } = await received();
     await sql(
       t.store,
-      "CREATE TRIGGER test_fail_notify BEFORE INSERT ON notifications BEGIN SELECT RAISE(ABORT, 'notify'); END",
+      `CREATE TRIGGER test_fail_update BEFORE INSERT ON notifications WHEN NEW.type = 'update'
+			BEGIN SELECT RAISE(ABORT, 'notify'); END`,
     );
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await t.post(carol, remove(carol, stamp))).toBe(202);
@@ -600,6 +603,7 @@ describe("a quote state change's update fan-out (DistributionWorker with update:
     expect(errors).toHaveBeenCalledWith(expect.objectContaining({ event: "kopje.quote.fan_out.failed" }));
     expect(await rowsOf(t, "mention")).toEqual([]);
     expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual([]);
   });
 
   // alice's quote of bob's status (anyone may quote it), tagging dave: pending until bob answers its QuoteRequest.

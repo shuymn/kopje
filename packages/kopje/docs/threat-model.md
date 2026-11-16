@@ -1273,8 +1273,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stamp's `Delete` of the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept`
   of a local quote's request) runs the quoting status's update fan-out after the move, in a savepoint of its own, so a
   failing fan-out is logged
-  (`kopje.quote.fan_out.failed`) and does not undo it (`fanOutQuoteChange`; `test/edit-fan-out.test.ts` ("…and still
-  revokes when the fan-out fails, logging it")). Kopje serves a stamp only for the current id of an
+  (`kopje.quote.fan_out.failed`) and does not undo it, nor keeps any notification it wrote before it failed
+  (`fanOutQuoteChange`; `test/edit-fan-out.test.ts` ("…and still revokes when the fan-out fails part way, keeping none
+  of its notifications, and logs it")). Kopje serves a stamp only for the current id of an
   accepted quote of an available author's public or unlisted status, named by that author in the path, with the quoting
   status present and its author not being purged, ids only, `Cache-Control: no-store`; a recorded id answers 404 for
   good. A revoked quote may be accepted again by a later request, with a new id, as Mastodon does; the author's lasting
