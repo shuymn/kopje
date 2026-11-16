@@ -436,9 +436,11 @@ against their own instance. TLS is assumed between all parties.
   author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
   that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
   not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
-  nothing, and a 410 answers nothing, as Mastodon answers a stored status only after a 401, 403 or 404
-  (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version
-  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it")).
+  nothing; a failed fetch answers a stored status only after a 401, 403 or 404 and a stored account only after a 5xx
+  or no answer (`resolve_url_service.rb:38-63`), and the interaction page never a stored status
+  (`test/search-refetch.test.ts`, `test/search-fallback.test.ts`, `test/interaction.test.ts` ("applies a newer version
+  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it",
+  "shows no stored status after a failed fetch")).
   A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
@@ -3512,8 +3514,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
   subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
   each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
-  transient failure: a cut probe, alternate or actor fetch resolves nothing (the search answers as without
-  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle;
+  transient failure: a cut probe, alternate or actor fetch resolves nothing; one refused before it is sent counts as
+  no answer for the stored account of the URL and keeps the earlier answer, and an answer whose body the request's
+  bytes cut counts as its status (`test/search-fallback.test.ts`, "a budget refusal is no answer, a cut read its
+  answer's status"); a cut confirmation stores no new actor and leaves a stored one its handle;
   `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
   more"). A collection sync's document part, the refresh of an invalidated account, reads at most three documents with
   the other parts' room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
