@@ -1029,8 +1029,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes all of its rows in one transaction (a few reads and a write each, no recount of its last status), and a block
   reads the blocker's conversations to find those with the blocked account; both are a local user's action on their
   own data, and rare. Its last
-  status is shown only while the read rule (VIS-1) lets the owner see it, else as null; a block ends the blocker's
-  conversations with the blocked account. _Enforced (main):_ `src/domain/conversations.ts`,
+  status is shown only while the read rule (VIS-1) lets the owner see it and it is not a boost, which no writer links
+  and only a restored row can name (RES-3), else as null; a block ends the blocker's conversations with the blocked
+  account. _Enforced (main):_ `src/domain/conversations.ts`,
   `src/domain/conversation-rows.ts`, migration `0009_conversations` (triggers `statuses_thread` and
   `conversation_statuses_removed`);
   `test/conversations.test.ts`, `test/migrations.test.ts`, `test/policy-endpoints.test.ts`,
@@ -4450,7 +4451,11 @@ four local fields at their limits, each value a verified 255-character link whos
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
 as a string, it is at most 337,412 bytes measured and 476,110 conservative (the encoding at most doubles a byte), under
-the hub's 512 KiB. The
+the hub's 512 KiB. A
+conversation never shows a boost as its last status: no writer links one (`addToConversation`), and its read shows a
+boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
+(`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
+quote is the largest last status it shows. The
 conversation's conservative JSON is 62,897 bytes within 86% of 8 MiB (7,214,202), the least whole percent that keeps
 it at least the 4,096 bytes a change may not cross without a review (#1142). Every remote account shown but the
 account occurrence counts its fields at 33,485 JSON bytes, derived from the constants (32 KiB of names and values as
