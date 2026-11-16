@@ -74,7 +74,8 @@ const SOURCES = sources("src");
 // - unreblog: "captures a local boost removed by unreblog, by its own id, before it is hidden";
 // - startRemoval, for inbox.ts deleteObject: "names the viewers a mention authorized, once, through every batch and a
 //   redelivery", and in test/inbound-job-isolation.test.ts a failing first batch that keeps its capture and a
-//   redelivered Delete whose job exists that captures nothing;
+//   redelivered Delete whose job exists that captures nothing; for remote-collections.ts removeGone, in
+//   test/remote-collections.test.ts "removes a pinned status gone at its URI ...", a capture once through two syncs;
 // - removeBoost: "captures a remote boost removed by Delete or Undo, by its own id".
 // This inventory fails on any other site, which then needs a witness of its own. No capture function runs under a
 // batch's budget (JobBudget, RowBudget): a capture a budget could skip is invisible to those tests, which never

@@ -4,7 +4,9 @@
 // - Policy: Kopje's documented rules, written from the docs and never from src/: docs/threat-model.md ID-7 (its status
 //   paragraph: the Update watermark, the 5-minute skew, the retractions of a Delete, the cap, local boosts withdrawn
 //   once and the 404s while a removal runs, which Update refreshes a poll's counts, and a status fetched again by a
-//   search applied as its author's Update), ID-6 (the authorization table: Create, Update and Delete of statuses),
+//   search applied as its author's Update, and a pin sync's fetch of every status the author's featured collection
+//   lists, applied as its Update or removed by a 404 at its uri with no retraction), ID-6 (the authorization table:
+//   Create, Update and Delete of statuses),
 //   RES-6 (a remote status's removal in bounded batches after its hide), VIS-3 (a proven Delete forwarded through the
 //   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
@@ -334,6 +336,42 @@ export class Policy {
     } else {
       this.create(actor, served, now, true);
     }
+  }
+
+  // ---- pin syncs (ID-7, RES-6) ----
+
+  // The rows of the last read of R's featured collection, by uri: pending for a status not stored when it was read,
+  // refresh for one stored then. A row's fetch ends it.
+  pinRows = new Map<string, "pending" | "refresh">();
+
+  pinRead(uris: readonly string[]): void {
+    this.pinRows = new Map(uris.map((uri) => [uri, this.statuses.has(uri) ? "refresh" : "pending"]));
+  }
+
+  // ID-7: a pin sync's fetch of a row's status, judged on the status stored when it completes, whatever the row's kind:
+  // a served object is applied as R's own (refetch), and a 404 at its uri removes the public or unlisted original
+  // stored under it (every status of the pool is one) unless its removal runs already, recording no retraction and
+  // leaving the removal's batches to the job rounds, where a 410 removes nothing (Mastodon's fetch_status); a row the
+  // sync no longer holds changes nothing. Whether a removal started.
+  pinFetch(actor: string, uri: string, served: Obj | { gone: 404 | 410 }, now: number): boolean {
+    if (!this.pinRows.delete(uri)) {
+      return false;
+    }
+    if (!("gone" in served)) {
+      this.refetch(actor, served, now);
+      return false;
+    }
+    if (served.gone !== 404) {
+      return false;
+    }
+    const stored = this.statuses.get(uri);
+    if (stored === undefined || stored.withdrawn) {
+      return false;
+    }
+    this.jobs.push({ kind: "status", ref: uri, createdAt: now, key: null, doneAt: null });
+    stored.withdrawn = true;
+    stored.snapshot = { ...stored.snapshot, content: "" };
+    return true;
   }
 
   // Whether L's search of `uri` shows it: L may see any of R's statuses that is stored and not hidden (VIS-1).

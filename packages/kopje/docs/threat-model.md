@@ -304,9 +304,11 @@ against their own instance. TLS is assumed between all parties.
   fetches nothing for an address or URL on the instance's domain (`upsertRemoteActor`, `resolutionTarget` in
   `src/domain/remote-statuses.ts`); `test/instance-actor-handle.test.ts`. _Enforced (main)_ for statuses, favourites
   and boosts: a remote object must have its actor's origin and name no other author, and only its stored author
-  updates or deletes it, so a local status is never created, updated or deleted from outside (`storeRemoteStatus` and
-  `updateRemoteStatus` in
-  `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
+  updates or deletes it, except that a 404 at a remote original's own URI to a pin sync's fetch (an answer of that
+  URI's origin, ID-2) removes it whoever's, as Mastodon's `fetch_status` does; so a local status is never created,
+  updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
+  `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`, `removeGone` in
+  `src/domain/remote-collections.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
   `atomUri` (Mastodon's `Create#find_existing_status`, which `Update#update_status` also reaches, `Delete#delete_status`
   and `Undo#undo_announce`) keeps the rule: a `Create` or an `Update` whose `atomUri` names another author's status, a
@@ -433,12 +435,23 @@ against their own instance. TLS is assumed between all parties.
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
-  author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
-  that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
-  not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
-  nothing, and a 410 answers nothing, as Mastodon answers a stored status only after a 401, 403 or 404
-  (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version
-  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it")).
+  author (search, `/authorize_interaction`, and a pin sync, which fetches every status its account's featured
+  collection lists on the account's origin, stored or not: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is
+  applied as that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and
+  one it does not store is its `Create`, its document taken only from its `id` (ID-2); a pin sync applies only its
+  account's own (Mastodon's `expected_actor_uri`), so another author's listed status is fetched and left as stored. A
+  404 or 410 to a search's or an interaction's fetch removes nothing, and a 410 answers nothing, as Mastodon answers a
+  stored status only after a 401, 403 or 404 (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`,
+  `test/interaction.test.ts` ("applies a newer version of a stored status it finds again", "finds nothing for a stored
+  status whose fetch answers 410, and keeps it")). A 404 to a pin sync's fetch, answered by the status's own URI with
+  no redirect, removes the status stored under that URI when the fetch completes, judged on the row stored then (a
+  status whose `Create` arrived after the sync's read included), when it is a remote original, public or unlisted, and
+  not withdrawn, whoever its author, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`): its removal
+  starts as a `Delete`'s does but records no retraction and no deleted object and forwards nothing, as Mastodon's
+  `RemoveStatusService` keeps no tombstone, so a later `Create` of the uri stores it again once the removal ended; a
+  410, a 404 after a redirect, and a private status's 404 remove nothing (`removeGone` in
+  `src/domain/remote-collections.ts`, `goneAt` in `src/federation/actor-gone.ts`; `test/remote-collections.test.ts`
+  ("a sync's fetch of every listed status")).
   A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
@@ -492,7 +505,8 @@ against their own instance. TLS is assumed between all parties.
   new kept key (`statuses_account_reblogs_kept`, migration 0075, unique), and the original's removal continues the
   withdrawn boost's `Undo` instead of recording another (`test/unboost.test.ts`). While
   an original's removal runs (its hide, which marks `statuses.withdrawn`, is done: by a local status's `DELETE`, or by
-  a remote status's `Delete` in its own transaction; or its author's purge started: `removalBegunSql` in
+  a remote status's `Delete` in its own transaction, or by a 404 at its own URI to a pin sync's fetch, judged on the
+  row stored when the fetch completes, which records no retraction; or its author's purge started: `removalBegunSql` in
   `src/domain/audience.ts`), its local boosters cannot undo their boosts: an unreblog of it and a `DELETE` of a boost
   of it answer 404 before any write (as Mastodon's unreblog of a discarded status does), so no second `Undo` is
   recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
@@ -506,7 +520,8 @@ against their own instance. TLS is assumed between all parties.
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
   `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, the `Update`s
-  its poll jobs write 3 minutes after a vote, L's searches of them served from the author's render cache, local
+  its poll jobs write 3 minutes after a vote, L's searches of them and the fetches of syncs of the author's featured
+  collection, served from the author's render cache (a deleted status's 404 removing it), local
   favourites and boosts, job rounds and deliveries, checked after every step against the rules in
   `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
@@ -533,10 +548,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 
 - **VIS-1: one rule decides who may see a status**, Mastodon's `StatusPolicy#show?`: the statuses of an unavailable
   author (a suspended local account, or a remote account whose deletion has started) are seen by nobody; nor is a
-  withdrawn status (`statuses.withdrawn`: its removal runs in a job, its `Delete` or `Undo` recorded or, for an identity
-  past its stored bound, skipped), its author included (it stays a candidate of its author's reads, where the rule hides
-  it: the cursor rule in `docs/visibility.md`); the author sees all else of their own; an author who blocks the viewer
-  hides everything from them; `public`
+  withdrawn status (`statuses.withdrawn`: its removal runs in a job, its `Delete` or `Undo` recorded, or its own URI
+  answered 404 to a pin sync's fetch (ID-7), or, for an identity past its stored bound, skipped), its author included
+  (it stays a candidate of its author's reads, where the rule hides it: the cursor rule in `docs/visibility.md`); the
+  author sees all else of their own; an author who blocks the viewer hides everything from them; `public`
   and `unlisted` are seen by everyone else; `private` by accepted followers and the mentioned (silent included);
   `direct` and `limited` by the mentioned (silent included) only. Every read path uses the same SQL rule, from the one
   policy module (`docs/visibility.md`; `test-node/policy-boundary.test.ts` keeps the rule out of other modules). A
@@ -3796,10 +3811,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
   document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
-  pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches; the network part takes at most 6 a round and
-  54 a generation while no document needs the RFC 9421 retry, a round's whole budget (8 a round, 72 a generation) when
-  each needs a redirect and the retry, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds
-  them before and after the network part reads the outbox", "the network part within one round")).
+  pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The pin claims fetch every status the
+  featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
+  read leaves one row for each of the first `MAX_REMOTE_PINS` distinct URIs listed, a pending row for one Kopje does
+  not store and a refresh row for one it does, so a typical generation now fetches every listed status (up to 20)
+  where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
+  or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
+  `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
+  network part takes at most 6 a round and 54 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 72 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
+  part within one round")).
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice

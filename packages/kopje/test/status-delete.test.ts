@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
 import type { RemoteActorInput } from "../src/domain/remote-actors";
+import { ALL_PARTS } from "../src/domain/remote-collections";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
 import type { Resolved } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
+import { pinFetched } from "../src/federation/collections";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -37,7 +39,8 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
 // state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
 // votes the author's server sends as Updates from a job 3 minutes later (`race` puts an edit between one and its
-// delivery), and L searches R's statuses, which R's server serves from its render cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
+// delivery), L searches R's statuses, which R's server serves from its render cache, and syncs of R's featured
+// collection, which lists the whole pool, fetch each listed status from it. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
 // retraction cap and replays across the retraction TTL.
 
 const AS = "https://www.w3.org/ns/activitystreams";
@@ -216,6 +219,10 @@ async function project(w: World) {
       deliveries: q<{ id: number; lane: string; state: string; token: string | null; activity: number }>(
         "SELECT id, lane, state, lease_token AS token, activity_id AS activity FROM deliveries ORDER BY id",
       ),
+      pinRows: q<{ uri: string; refresh: number }>(
+        "SELECT uri, refresh FROM collection_pins_pending WHERE account_id = ? ORDER BY uri",
+        w.accounts[R]!,
+      ),
     };
   });
   for (const s of raw.statuses) {
@@ -271,6 +278,7 @@ async function project(w: World) {
       superseded: i.superseded === 1,
       stage: i.targets > 0 ? "staged" : i.staged !== null ? "waiting" : "expanded",
     })),
+    pinRows: raw.pinRows.map((row) => ({ uri: row.uri, kind: row.refresh === 1 ? "refresh" : "pending" })),
     lanes: Object.fromEntries(
       LANES.map((lane) => [
         lane,
@@ -364,6 +372,7 @@ function expected(w: World) {
       .map((j) => ({ ref: j.ref, done: j.doneAt }))
       .toSorted((a, b) => a.ref.localeCompare(b.ref)),
     intents: p.intents.map((i) => ({ identity: `${i.type} ${i.ref}`, superseded: i.superseded, stage: i.stage })),
+    pinRows: [...p.pinRows.entries()].toSorted(([a], [b]) => a.localeCompare(b)).map(([uri, kind]) => ({ uri, kind })),
     lanes: Object.fromEntries(
       LANES.map((lane) => [
         lane,
@@ -552,6 +561,69 @@ async function search(w: World, uri: string): Promise<void> {
   const actual = result.value.statuses.map((s) => s.uri);
   w.trace.push(`  -> ${JSON.stringify(actual)}`);
   await check(w, { actual, predicted: w.policy.shown(uri) ? [uri] : [] });
+}
+
+// A sync of R's featured collection reads it (phase 1), through the Store as the Worker's round hands it back
+// (federation/collections.ts): the round's claim of a sync asked for now, then its end with the whole pool listed.
+async function pinRead(w: World): Promise<void> {
+  log(w, "a sync reads R's featured collection");
+  const account = w.accounts[R]!;
+  await sql(w.store, "DELETE FROM collection_syncs WHERE account_id = ?", account);
+  await sql(w.store, "INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 0)", account);
+  const claimed = await w.store.claimCollectionSync(BUILD, { now: w.clock });
+  if (claimed === null || claimed === "more" || claimed.phase !== "read") {
+    throw new Error(`no read claimed: ${JSON.stringify(claimed)}`);
+  }
+  await w.store.completeCollectionRead(BUILD, {
+    now: w.clock,
+    origin: LOCAL,
+    accountUri: R,
+    generation: claimed.generation,
+    token: claimed.token,
+    parts: ALL_PARTS,
+    pins: { uris: [...POOL] },
+    tags: null,
+    hideCollections: null,
+    counts: { statuses: null, following: null, followers: null },
+  });
+  w.policy.pinRead(POOL);
+  await check(w);
+}
+
+// The sync's fetch of `uri` (phase 2), its document what R's server serves now, its cache included, and a status it
+// no longer serves answering `gone` (404 or 410) at its own URI, handed back as the Worker's round hands it
+// (federation/collections.ts pinFetched). A uri the open sync holds no row of is read first (a new sync). The harness
+// makes the sync due with fresh attempts before each claim, so its rounds' schedule, which this model does not check,
+// never drops it.
+async function pinFetch(w: World, uri: string, gone: 404 | 410 = 404): Promise<void> {
+  if (!w.policy.pinRows.has(uri)) {
+    await pinRead(w);
+  }
+  const rendered = w.peer.serve(uri, w.clock);
+  const served = rendered === "gone" ? { gone } : rendered;
+  log(
+    w,
+    `a sync fetches ${uri} (${w.policy.pinRows.get(uri)}) at +${w.clock - NOW}: ${"gone" in served ? served.gone : `${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  await sql(w.store, "UPDATE collection_syncs SET due_at = 0, attempts = 0 WHERE account_id = ?", w.accounts[R]!);
+  const claimed = await w.store.claimCollectionSync(BUILD, { now: w.clock });
+  if (claimed === null || claimed === "more" || claimed.phase !== "pins" || !claimed.uris.includes(uri)) {
+    throw new Error(`no pin fetch of ${uri} claimed: ${JSON.stringify(claimed)}\n${w.trace.join("\n")}`);
+  }
+  const result = await w.store.completePinFetches(BUILD, {
+    now: w.clock,
+    origin: LOCAL,
+    accountUri: R,
+    generation: claimed.generation,
+    token: claimed.token,
+    fetched: {
+      [uri]: "gone" in served ? pinFetched({ kind: "gone", status: served.gone, url: uri }, uri) : input(served),
+    },
+  });
+  const started = w.policy.pinFetch(R, uri, served, w.clock);
+  tally(w.stats, "gone" in served ? `pin fetch ${served.gone} ${started ? "removed" : "kept"}` : "pin fetch served");
+  w.trace.push(`  -> ${JSON.stringify(result)}`);
+  await check(w, { actual: result.jobsPending, predicted: started });
 }
 
 // What R's server renders for `uri` now (its cache aside).
@@ -834,9 +906,10 @@ type Action =
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
   | { k: "vote" | "search" | "race"; s: number }
+  | { k: "pinFetch"; s: number; gone?: 404 | 410 }
   | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
   | { k: LocalKind }
-  | { k: "jobs" | "claim" | "send" }
+  | { k: "jobs" | "claim" | "send" | "pinRead" }
   | { k: "tick"; ms: number };
 
 const snapshotArb: fc.Arbitrary<Snapshot> = fc.record({
@@ -864,6 +937,15 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
   { arbitrary: fc.record({ k: fc.constant("race" as const), s: statusArb }), weight: 2 },
+  {
+    arbitrary: fc.record({
+      k: fc.constant("pinFetch" as const),
+      s: statusArb,
+      gone: fc.constantFrom(404 as const, 404 as const, 410 as const),
+    }),
+    weight: 4,
+  },
+  simple("pinRead", 1),
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -912,6 +994,12 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     case "race":
       await race(w, a.s);
+      return;
+    case "pinRead":
+      await pinRead(w);
+      return;
+    case "pinFetch":
+      await pinFetch(w, POOL[a.s]!, a.gone);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -1095,12 +1183,13 @@ async function quiescence(w: World): Promise<void> {
     const status = w.peer.statuses.get(uri)!;
     const held = state.statuses.find((s) => s.uri === uri);
     if (status.state === "deleted") {
-      // Each deleted status is gone and stays retracted; `*` too once it had been stored.
+      // Each deleted status is gone and stays retracted; `*` too once its Delete found it stored (a pin sync's 404
+      // that removed it first recorded nothing, and its Delete then found no row).
       expect({ uri, held: held ?? null, own: live(R, uri), any: live(ANY, uri) }, context).toEqual({
         uri,
         held: null,
         own: true,
-        any: w.everStored.has(uri),
+        any: (w.answers.get(`${uri}#delete`) ?? []).includes("status-deleted"),
       });
       continue;
     }
@@ -1530,6 +1619,81 @@ describe("status deletes: the author's orders", () => {
     ]);
     expect(w.stats["search 404"]).toBe(1);
     expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
+  });
+
+  // ID-7: a pin sync's read leaves s1 pending; R deletes s1, and its delayed Create arrives before the sync's fetch,
+  // which answers 404: the status stored then is removed with no retraction, so R's Delete finds no row and is recorded
+  // as an unknown object's.
+  it("a pending pin, its delayed Create, then its 404", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      { k: "pinRead" },
+      { k: "delete", s: 0, proven: false },
+      deliver(0),
+      { k: "pinFetch", s: 0 },
+      { k: "jobs" },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect(answersOf(w, "Create", S1)).toEqual(["created"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["retraction-recorded"]);
+  });
+
+  // ID-7: a refresh row's 404 removes s1 with no retraction; R's Create delivered again once the removal ended stores
+  // it again, and R's Delete then removes it.
+  it("a refetch's 404 before a delayed Create retry", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "delete", s: 0, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0 },
+      { k: "jobs" },
+      { k: "redeliver", ...at(0) },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect(answersOf(w, "Create", S1)).toEqual(["created", "created"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: a refresh row's 410 removes nothing (Mastodon's fetch_status acts on a 404 only): s1 stays until R's Delete
+  // removes it.
+  it("a refetch's 410 before the Delete", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "delete", s: 0, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0, gone: 410 },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 410 kept"]).toBe(1);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: R's edit and its proven Delete of s1, which L boosted, delivered while a pin sync's 404 removes s1 and after
+  // the removal ended: the edit applies to the hidden row (which notifies no booster, VIS-1) and goes with it; delivered
+  // again after the removal, it creates s1 anew (no retraction kept it out), which the Delete then removes.
+  it("an Update and the Delete while a 404's removal runs, and after it", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "reblog" },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "delete", s: 0, proven: true },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0 },
+      deliver(0),
+      { k: "jobs" },
+      { k: "redeliver", ...at(1) },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect([answersOf(w, "Update", S1), answersOf(w, "Delete", S1)]).toEqual([
+      ["edited", "created"],
+      ["status-deleted"],
+    ]);
   });
 
   it("a metadata Update, then an older content Update", async () => {

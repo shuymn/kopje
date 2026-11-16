@@ -4,9 +4,10 @@ import { retireQuoteOf } from "./quotes";
 import { streamDelete } from "./streaming";
 
 // The start of a remote status's removal (RES-6, VIS-1), for its author's Delete after the retractions it records
-// (inbox.ts deleteObject): its delete job, the streamed delete, the hide and the end of its quote, each outside the
-// batch's budget, after which the job's batches remove the rest (inbox.ts runJobBatch). The caller decides whether a
-// batch runs in its own transaction.
+// (inbox.ts deleteObject) and for a 404 at its own URI to a pin sync's fetch, which records none (remote-collections.ts
+// removeGone): its delete job, the streamed delete, the hide and the end of its quote, each outside the batch's
+// budget, after which the job's batches remove the rest (inbox.ts runJobBatch). The caller decides whether a batch
+// runs in its own transaction.
 
 // The hide of a remote status whose removal runs (VIS-1): it writes the status, the account's last status, which the
 // trigger of migration 0021_directory moves back, and deletes the status's card (link-cards.ts: a direct status holds
