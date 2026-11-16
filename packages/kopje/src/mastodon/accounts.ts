@@ -150,11 +150,11 @@ function accountChanges(p: Params, images: ImageProblems): { changes: Credential
   // fields_attributes replaces every field (Account#fields_attributes=, app/models/account.rb:399-416), which drops a
   // pair whose name and value are both blank by Rails and stores the rest as sent; Account#fields reads each through
   // Account::Field#sanitize, stripped by Ruby and cut to its first MAX_FIELD_NAME characters, and leaves out one without
-  // a name or a value (sanitize raises on nil). Kopje stores what that read gives, so the count and the labels are
-  // judged on it as Mastodon judges them. An empty JSON object (`{}`, `{"0":{}}`) is a sent, empty hash, which clears
-  // the fields.
+  // a name or a value (sanitize raises on nil), so a JSON null reads as not sent. Kopje stores what that read gives, so
+  // the count and the labels are judged on it as Mastodon judges them. An empty JSON object (`{}`, `{"0":{}}`) is a
+  // sent, empty hash, which clears the fields.
   if (p.has("fields_attributes") || p.sentObject("fields_attributes") || p.objects("fields_attributes").length > 0) {
-    const fields: FieldSource[] = p.objects("fields_attributes").flatMap(({ name, value }) =>
+    const fields: FieldSource[] = p.objects("fields_attributes", { nulls: "absent" }).flatMap(({ name, value }) =>
       name === undefined || value === undefined || (railsBlank(name) && railsBlank(value))
         ? []
         : [

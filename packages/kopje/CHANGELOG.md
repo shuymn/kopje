@@ -285,12 +285,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   the order Mastodon validates: an avatar or header that is too large or not an image is reported as Paperclip reports
   it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. A profile
   field's name or value longer than 255 characters is cut to 255 instead of refused (a change from earlier versions),
-  surrounding whitespace is stripped as Ruby strips it, a field sent without its `name` or `value` parameter is
-  dropped, and a value without a label is refused, as Mastodon reads fields. An attribution domain with a label of 64
-  or more characters as written is refused, as Mastodon refuses it. A profile note is counted as Mastodon counts it
-  (characters as shown, a link as 23, a remote mention by its username), so a note Kopje refused for length may now be
-  saved; a note longer than 10,000 UTF-16 code units as sent is refused, as a post's text is, and the settings page's
-  bio takes up to that many. No Store migration and no `wrangler.jsonc` change.
+  surrounding whitespace is stripped as Ruby strips it, a field sent without its `name` or `value` parameter, or with
+  either as JSON `null`, is dropped, and a value without a label is refused, as Mastodon reads fields. An attribution
+  domain with a label of 64 or more characters as written is refused, as Mastodon refuses it. A profile note is
+  counted as Mastodon counts it (characters as shown, a link as 23, a remote mention by its username), so a note Kopje
+  refused for length may now be saved; a note longer than 10,000 UTF-16 code units as sent is refused, as a post's
+  text is, and the settings page's bio takes up to that many. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
