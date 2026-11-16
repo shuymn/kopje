@@ -26,10 +26,10 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 // given as an IRI (as:Follow, or the absolute one) as the vocabulary's name for it, and Kopje reads the activity's
 // type and its embedded object's so where it shows the compaction succeeds (mastodonCompacts); it writes a name, as a
 // key or a type, only where the name means in the body's contexts what it means in full_context (one full_context
-// defines that the body's contexts leave undefined it writes as a blank node's), and Kopje reads the body so named
-// (namedAsCompacted); it also drops nulls, flattens arrays, and drops or renames what the vocabulary does not define,
-// and the readers on each side read some shapes differently. Those differences
-// are listed by form in the deviations page. The tables are built once from the preloaded contexts and
+// defines that the body's contexts leave undefined it writes as a blank node's), and under it only the values its type
+// takes, and Kopje reads the body so named (namedAsCompacted); it also drops nulls, flattens arrays, and drops or
+// renames what the vocabulary does not define, and the readers on each side read some shapes differently. Those
+// differences are listed by form in the deviations page. The tables are built once from the preloaded contexts and
 // MASTODON_CONTEXT_TERMS, with no JSON-LD processing; test/ld-signed-vocabulary.test.ts holds them to jsonld.js's
 // processing of Mastodon's full_context and of each preloaded context. Kopje reads, from an activity, no name outside
 // the vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads as a favourite, Mastodon
@@ -213,8 +213,16 @@ function definitionIri(definition: unknown, prefix: (name: string) => string | u
 // @type and its containers (but @set, which changes nothing a compaction writes) and any other member but @protected.
 // Two definitions that mean the same have equal keys. A name with no container, typed @id or untyped and with no
 // language or reverse property (a scoped context changes nothing a term is selected by) is one the compaction may write
-// for its IRI as a type (FULL_TYPE_NAMES).
-type Meaning = { iri: string | null; key: string; containers: readonly string[]; typeName: boolean };
+// for its IRI as a type (FULL_TYPE_NAMES). `scoped` is what its own context makes each name it defines mean, inside a
+// node of that type (the data-integrity contexts' DataIntegrityProof, the CID and Multikey contexts' Multikey).
+type Meaning = {
+  iri: string | null;
+  coercion: string | null;
+  key: string;
+  containers: readonly string[];
+  typeName: boolean;
+  scoped: ReadonlyMap<string, Meaning>;
+};
 
 const SELECTION_NEUTRAL = new Set(["@context", "@prefix", "@nest"]);
 
@@ -228,26 +236,32 @@ function meaningOf(definition: unknown, prefix: (name: string) => string | undef
     .map(String);
   const iri = resolve(id);
   const coercion = resolve(type);
+  const context = rest["@context"];
   return {
     iri: typeof iri === "string" ? iri : null,
+    coercion: typeof coercion === "string" ? coercion : null,
     key: JSON.stringify([iri, coercion, containers.toSorted((a, b) => a.localeCompare(b)), rest]),
     containers,
     typeName:
       containers.length === 0 &&
       (coercion === null || coercion === "@id") &&
       Object.keys(rest).every((key) => SELECTION_NEUTRAL.has(key)),
+    scoped: isObject(context) ? meaningsOf(context, prefix) : new Map(),
   };
+}
+
+// What each name a context object defines means, its compact IRIs over its own prefixes or else `outer`'s.
+function meaningsOf(definitions: Json, outer: (name: string) => string | undefined): Map<string, Meaning> {
+  const own = new Map<string, string>();
+  applyPrefixes(definitions, own);
+  const prefix = (name: string) => (Object.hasOwn(definitions, name) ? own.get(name) : outer(name));
+  const names = Object.entries(definitions).filter(([name]) => isName(name));
+  return new Map(names.map(([name, definition]) => [name, meaningOf(definition, prefix)]));
 }
 
 // Each allowed context URL's meanings, its compact IRIs over its own prefixes or ActivityStreams'.
 const URL_MEANINGS = new Map(
-  [...URL_DEFINITIONS].map(([url, definitions]) => {
-    const own = new Map<string, string>();
-    applyPrefixes(definitions, own);
-    const prefix = (name: string) => own.get(name) ?? AS_PREFIXES.get(name);
-    const meanings = Object.entries(definitions).filter(([name]) => isName(name));
-    return [url, new Map(meanings.map(([name, definition]) => [name, meaningOf(definition, prefix)]))];
-  }),
+  [...URL_DEFINITIONS].map(([url, definitions]) => [url, meaningsOf(definitions, (name) => AS_PREFIXES.get(name))]),
 );
 
 // Rules (1) and (2) over a body's @context: the IRI of each name its inline objects define, in order (a later
@@ -482,18 +496,71 @@ function fullTypeNames(): ReadonlyMap<string, string> {
 
 const FULL_TYPE_NAMES = fullTypeNames();
 
+// The values of a value, arrays flattened, as JSON-LD expands them under one term.
+const leaves = (value: unknown): unknown[] => (Array.isArray(value) ? value.flatMap(leaves) : [value]);
+
+// JSON-LD's order of names: by code point (Term Selection's ties, a node's types).
+const byCodePoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+// Whether the compaction under full_context writes one value under a name that means there what it means in the body
+// (Term Selection): one typed @id takes a string (an IRI) or an object (a node), one typed with a datatype anything but
+// an object (a scalar becomes a value of that type), an untyped one any value. Any other value it writes under the
+// name's IRI, which no reader reads. test/ld-signed-vocabulary.test.ts holds every name of full_context to jsonld.js.
+function takes(meaning: Meaning | undefined, value: unknown): boolean {
+  const coercion = meaning?.coercion ?? null;
+  if (coercion === "@id" || coercion === "@vocab") {
+    return typeof value === "string" || isObject(value);
+  }
+  return coercion === null || coercion === "@json" || !isObject(value);
+}
+
+// What the compaction writes under such a name of what the body gives it: a language map only as a map that holds a
+// text (an array or a scalar there is a value it writes under another name, `content` for `contentMap`), a list only if
+// it takes every member (it selects a list's term by all its members), and otherwise each value it takes; undefined for
+// none.
+function writtenUnder(meaning: Meaning | undefined, value: unknown): unknown {
+  if (meaning?.containers.includes("@language") === true) {
+    const texts = isObject(value) && leaves(Object.values(value)).some((text) => text !== null);
+    return value === null || texts ? value : undefined;
+  }
+  const values = leaves(value).filter((item) => item !== null);
+  const taken = values.filter((item) => takes(meaning, item));
+  if (taken.length === values.length) {
+    return value;
+  }
+  return taken.length === 0 || meaning?.containers.includes("@list") === true ? undefined : taken;
+}
+
+// The names full_context defines as it defines a shorter one (or one as long that sorts first), which Term Selection
+// then always prefers: the compaction never writes them (`expiration`, written `expires`).
+function shadowedNames(): ReadonlySet<string> {
+  const first = new Map<string, string>();
+  for (const name of [...FULL_CONTEXT_MEANINGS.keys()].toSorted((a, b) => a.length - b.length || byCodePoint(a, b))) {
+    const { key } = FULL_CONTEXT_MEANINGS.get(name)!;
+    if (!first.has(key)) {
+      first.set(key, name);
+    }
+  }
+  return new Set([...FULL_CONTEXT_MEANINGS].filter(([name, { key }]) => first.get(key) !== name).map(([name]) => name));
+}
+
+const FULL_CONTEXT_SHADOWED = shadowedNames();
+
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context
 // writes them so, whatever D5 decides (ID-1). Mastodon's readers read a member by its name only where the compaction
 // writes that name, and Kopje's readers, given this body, read one only there too; any other is renamed `_:name`, which
 // neither reads:
 //   - a member's name means the same in the body's contexts and in full_context, or is defined by neither (it expands
-//     by ActivityStreams' @vocab "_:" to a blank node's IRI, which the compaction writes as the name again). One
-//     full_context defines that the body leaves undefined (`QuoteRequest`, `Hashtag`, `Emoji`, `PropertyValue`,
-//     `sensitive`, `quote`, `interactionPolicy`, … under the ActivityStreams and security contexts alone) the
-//     compaction writes as `_:name`; one the body defines otherwise (another type or container, or a name full_context
-//     leaves undefined), as its IRI. That last holds for the values a definition coerces; a value of another shape
-//     (an object for a name typed @id, say) the compaction may still write under the name, and Kopje then reads less
-//     than Mastodon;
+//     by ActivityStreams' @vocab "_:" to a blank node's IRI, which the compaction writes as the name again), and holds
+//     only the values the compaction writes under it (writtenUnder: a boolean or a number of a name typed @id, an
+//     object of one typed with a datatype, a language map but a map that holds a text, and any value of a name
+//     full_context writes as another, it writes elsewhere). In a typed node a member means what the type's own context
+//     makes it mean, in the body and in the compaction (scopedBy). One full_context defines that the body leaves
+//     undefined (`QuoteRequest`, `Hashtag`, `Emoji`, `PropertyValue`, `sensitive`, `quote`, `interactionPolicy`, …
+//     under the ActivityStreams and security contexts alone) the compaction writes as `_:name`; one the body defines
+//     otherwise (another type or container, or a name full_context leaves undefined), as its IRI. That last holds for
+//     the values a definition coerces; a value of another shape (an object for a name typed @id, say) the compaction
+//     may still write under the name, and Kopje then reads less than Mastodon;
 //   - a type name is the one the compaction writes for the IRI the body's contexts give it (FULL_TYPE_NAMES), or is
 //     defined by neither. A name aliasing a keyword is left as it is (no reader reads one as a type).
 // Kept as they are: a language map's tags, the top-level @context, signature and proof. A body Kopje can show Mastodon
@@ -501,8 +568,6 @@ const FULL_TYPE_NAMES = fullTypeNames();
 // name so renamed is read less than Mastodon reads it (docs/mastodon-deviations.md).
 function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): Json {
   const blank = (name: string) => `_:${name}`;
-  const named = (name: string) =>
-    meanings.get(name)?.key === FULL_CONTEXT_MEANINGS.get(name)?.key ? name : blank(name);
   const typeNamed = (name: string) => {
     const meaning = meanings.get(name);
     if (meaning === undefined) {
@@ -513,18 +578,52 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
       : blank(name);
   };
   const typed = (value: unknown) => (typeof value === "string" && isName(value) ? typeNamed(value) : value);
-  const member = (key: string, value: unknown): unknown =>
-    key === "type"
-      ? Array.isArray(value)
-        ? value.map(typed)
-        : typed(value)
-      : LANGUAGE_MAPS.has(key) && isObject(value)
-        ? value
-        : node(value);
-  const members = (object: Json, kept?: ReadonlySet<string>): Json =>
-    Object.fromEntries(
-      Object.entries(object).map(([key, value]) => (kept?.has(key) ? [key, value] : [named(key), member(key, value)])),
+  // What a node's types' own contexts make its members mean, in the body (each type a name it defines) and in the
+  // compaction (the name full_context gives the type's IRI), applied in the order of the names.
+  const scopedBy = (types: unknown): [Map<string, Meaning>, Map<string, Meaning>] => {
+    const body = new Map<string, Meaning>();
+    const full = new Map<string, Meaning>();
+    for (const name of leaves(types)
+      .filter((type): type is string => typeof type === "string" && isName(type))
+      .toSorted(byCodePoint)) {
+      const meaning = meanings.get(name);
+      const iri = meaning?.iri ?? null;
+      const compacted = iri === null ? undefined : FULL_TYPE_NAMES.get(iri);
+      for (const [scoped, definitions] of [
+        [body, meaning?.scoped],
+        [full, compacted === undefined ? undefined : FULL_CONTEXT_MEANINGS.get(compacted)?.scoped],
+      ] as const) {
+        for (const [key, value] of definitions ?? []) {
+          scoped.set(key, value);
+        }
+      }
+    }
+    return [body, full];
+  };
+  const member = (
+    key: string,
+    value: unknown,
+    [own, full]: [Map<string, Meaning>, Map<string, Meaning>],
+  ): [string, unknown] => {
+    const meaning = own.get(key) ?? meanings.get(key);
+    if (meaning?.key !== (full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key))?.key) {
+      return [blank(key), node(value)];
+    }
+    if (key === "type") {
+      return [key, Array.isArray(value) ? value.map(typed) : typed(value)];
+    }
+    const written = FULL_CONTEXT_SHADOWED.has(key) ? undefined : writtenUnder(meaning, value);
+    if (written === undefined) {
+      return [blank(key), node(value)];
+    }
+    return [key, meaning?.containers.includes("@language") === true ? written : node(written)];
+  };
+  const members = (object: Json, kept?: ReadonlySet<string>): Json => {
+    const scoped = scopedBy(object.type);
+    return Object.fromEntries(
+      Object.entries(object).map(([key, value]) => (kept?.has(key) ? [key, value] : member(key, value, scoped))),
     );
+  };
   const node = (value: unknown): unknown =>
     Array.isArray(value) ? value.map(node) : isObject(value) ? members(value) : value;
   return members(json, AS_RECEIVED);

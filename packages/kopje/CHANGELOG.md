@@ -249,12 +249,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the
   follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as naming
   nothing. A name, as a member or as a type, is read only where Mastodon's compaction writes it so (where the body's
-  contexts give it the meaning `full_context` does, or neither defines it): a `QuoteRequest`, a hashtag, an emoji, a
-  profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or defines
-  otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a quote; a
-  body Mastodon reads as received (past its JSON-LD limits, or with a data-integrity proof that keeps something once
-  JSON-LD expands it) is read as received, so a proof that expands to nothing, a null value, no longer has such a
-  `QuoteRequest` read as received. No Store migration and no `wrangler.jsonc` change.
+  contexts give it the meaning `full_context` does, or neither defines it, a typed node's members as its type's own
+  context makes them mean), and of its values only those the compaction writes under it: a `QuoteRequest`, a hashtag, an
+  emoji, a profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or
+  defines otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a
+  quote; a `quote` given as `true` no longer makes a Note's other quote a non-legacy one, nor does a poll's `closed`
+  given as an object close it. A body Mastodon reads as received (past its JSON-LD limits, or with a data-integrity
+  proof that keeps something once JSON-LD expands it) is read as received, so a proof that expands to nothing, a null
+  value, no longer has such a `QuoteRequest` read as received. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

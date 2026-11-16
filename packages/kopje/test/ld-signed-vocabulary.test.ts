@@ -37,6 +37,7 @@ const fullContext = (corpus as { reference: string; mastodon?: Json }[]).find((e
   "@context"
 ] as unknown[];
 
+const isObject = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
 const isName = (key: string) => key !== "" && !key.startsWith("@") && !key.includes(":");
 
 function definitions(url: string): Json {
@@ -230,6 +231,118 @@ describe("ldSignedBodyReadable's tables", () => {
     // Each name full_context defines is renamed under the two contexts alone, and the cid and webfinger contexts'
     // names under the extension object too.
     expect(renamed).toBeGreaterThan(names.length);
+  });
+
+  // A name that means in the body what it means in full_context holds only the values the compaction writes under it:
+  // one typed @id no boolean or number, one typed with a datatype no object, a language map only a map that holds a
+  // text, a list only members it takes all of; and `expiration` none, which the compaction writes `expires`. Each name
+  // full_context defines, each given each shape of value, and in an array beside an IRI.
+  it("holds a name's values only where jsonld.js's compaction under full_context writes them under it", async () => {
+    const names = [
+      ...new Set(
+        fullContext.flatMap((entry) => Object.keys(typeof entry === "string" ? definitions(entry) : (entry as Json))),
+      ),
+    ].filter((name) => isName(name) && name !== "id" && name !== "type");
+    const shapes: [string, unknown][] = [
+      ["an IRI", "https://mastodon.example/value"],
+      ["a text", "text"],
+      ["true", true],
+      ["a number", 5],
+      ["a node", { id: "https://mastodon.example/node" }],
+      ["a blank node", { name: "node" }],
+      ["a language map", { en: "text" }],
+      ["an empty language map", { en: null }],
+      ["an IRI and true", ["https://mastodon.example/value", true]],
+      ["a number and a node", [5, { id: "https://mastodon.example/node" }]],
+    ];
+    const kept = new Map<string, number>();
+    for (const [shape, value] of shapes) {
+      for (const name of names) {
+        const body = {
+          "@context": fullContext,
+          id: "https://mastodon.example/users/bob/activities/1",
+          type: "Create",
+          actor: "https://mastodon.example/users/bob",
+          object: { id: "https://mastodon.example/users/bob/statuses/1", [name]: value },
+        };
+        const compacted = (await jsonld.compact(
+          await jsonld.expand(body, options),
+          { "@context": fullContext },
+          options,
+        )) as Json;
+        const read = (ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body.object as Json)[name];
+        const written = (compacted.object as Json)[name];
+        const values = (v: unknown) => (v === undefined ? 0 : [v].flat(Infinity).filter((x) => x !== null).length);
+        expect(read === undefined, `${name} given ${shape}`).toBe(written === undefined);
+        expect(values(read), `${name} given ${shape}`).toBe(values(written));
+        kept.set(shape, (kept.get(shape) ?? 0) + (read === undefined ? 0 : 1));
+      }
+    }
+    // Each shape is written under some names and not others, but a text and a node, which an untyped name takes.
+    for (const [shape, count] of kept) {
+      expect(count, shape).toBeGreaterThan(0);
+    }
+    expect(kept.get("true")).toBeLessThan(names.length);
+    expect(kept.get("a node")).toBeLessThan(names.length);
+  });
+
+  // A type's own context gives a node's members their meaning in it: in the body, the context the type's name has
+  // there (the data-integrity contexts' DataIntegrityProof, the Multikey and CID contexts' Multikey), and in the
+  // compaction, full_context's for the type (the CID context's Multikey and JsonWebKey). A member is read where both
+  // mean the same by it.
+  it("names a typed node's members as jsonld.js's compaction under full_context names them", async () => {
+    const proof = {
+      type: "DataIntegrityProof",
+      cryptosuite: "eddsa-jcs-2022",
+      proofPurpose: "assertionMethod",
+      proofValue: "z3placeholder",
+      verificationMethod: "https://mastodon.example/users/bob#key",
+      created: "2026-11-16T12:00:00Z",
+      name: "proof",
+    };
+    const key = {
+      id: "https://mastodon.example/users/bob#key",
+      type: "Multikey",
+      controller: "https://mastodon.example/users/bob",
+      publicKeyMultibase: "z6Mkplaceholder",
+      expires: "2027-01-01T00:00:00Z",
+      name: "key",
+    };
+    let renamed = 0;
+    for (const context of [
+      [AS, "https://w3id.org/security/v1", "https://w3id.org/security/data-integrity/v2"],
+      [AS, "https://w3id.org/security/v1", "https://w3id.org/security/data-integrity/v1"],
+      [AS, "https://w3id.org/security/v1", "https://w3id.org/security/multikey/v1"],
+      [AS, "https://w3id.org/security/v1", "https://www.w3.org/ns/cid/v1"],
+    ]) {
+      const body = {
+        "@context": context,
+        id: "https://mastodon.example/users/bob/activities/1",
+        type: "Update",
+        actor: "https://mastodon.example/users/bob",
+        object: { id: "https://mastodon.example/users/bob", type: "Person", assertionMethod: key, tag: [proof] },
+      };
+      const compacted = (await jsonld.compact(
+        await jsonld.expand(body, options),
+        { "@context": fullContext },
+        options,
+      )) as Json;
+      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body.object as Json;
+      // Each node wherever the compaction put it (under its member's name or IRI), by its name.
+      const nodeNamed = (object: Json, name: string) =>
+        Object.values(object)
+          .flat()
+          .find((value) => isObject(value) && (value as Json).name === name) as Json;
+      const names = (node: Json) => Object.keys(node).filter(isName).toSorted();
+      for (const name of ["proof", "key"]) {
+        const ours = nodeNamed(read, name);
+        expect(names(ours), `${name} ${JSON.stringify(context)}`).toEqual(
+          names(nodeNamed(compacted.object as Json, name)),
+        );
+        renamed += Object.keys(ours).filter((key) => key.startsWith("_:")).length;
+      }
+    }
+    expect(renamed).toBeGreaterThan(0);
   });
 
   // A name the body's contexts define otherwise than full_context, here each of its extension object's names but its

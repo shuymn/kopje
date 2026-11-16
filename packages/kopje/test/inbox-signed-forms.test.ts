@@ -433,6 +433,24 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       },
     );
 
+    // A value of a shape the name's type does not take, the compaction writes under the name's IRI, which neither reads
+    // (ldSignedReading): a boolean where a quote is an IRI, so the quote is a legacy one (Mastodon's
+    // StatusParser#legacy_quote? asks for a quote key); true in an approval list, so no policy; an object where a
+    // poll's closing is a time, so the poll stays open (Mastodon's PollParser closes it for any object).
+    it.each([
+      ["Note, its quote given as true", (r: Reading) => (statusOf(r).quote as Json).legacy, true],
+      [
+        "Note, its automaticApproval given as an array of true",
+        (r: Reading) => statusOf(r).quotePolicy,
+        { automatic: [], manual: [] },
+      ],
+      ["Question, its closed given as an object", (r: Reading) => (statusOf(r).poll as Json).closedNow, false],
+    ] as [string, (r: Reading) => unknown, unknown][])("%s: read as Mastodon reads it", (name, member, value) => {
+      expect(form(name).fallback).toBeUndefined();
+      expect(member(kopje(form(name)))).toEqual(value);
+      expect(kopje(form(name))).toEqual(mastodon(form(name)));
+    });
+
     // A proof in the data-integrity context, a @graph container: Mastodon reads the body as received only where
     // JSON-LD's expansion leaves something of the proof (its compaction's @graph key the limits refuse); of one that
     // expands to nothing it reads the compaction, the QuoteRequest left undefined a blank node's type, and so does
@@ -1064,6 +1082,18 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect({ sensitive: stored.sensitive, tags: stored.tags ?? [], quote: (stored.quote as Json)?.state }).toEqual(
       expected,
     );
+  });
+
+  // A quote given as true is written under the quote's IRI, so the Note's other quote is a legacy one in both.
+  it("a Note whose quote is true and whose _misskey_quote names alice's status quotes it, legacy", async () => {
+    const { t, bob, status } = await world();
+    const name = "Note, its quote given as true";
+    const received = body(name, status);
+    expect(await t.post(bob, received)).toBe(202);
+    const id = (await statusRow(t.store, (received.object as Json).id as string))!.id;
+    const stored = await sql<{ legacy: number }>(t.store, "SELECT legacy FROM quotes WHERE status_id = ?", id);
+    expect(stored).toEqual([{ legacy: 1 }]);
+    expect(applied(name).effect.statuses).toMatchObject([{ quote: { state: "pending", legacy: true } }]);
   });
 
   it.each([

@@ -16,12 +16,13 @@
 # account (follows/14) and, for an entry named for a block, his block of it (blocks/1) are made there too. For a
 # QuoteRequest, local-1 lets anyone quote it; for an entry named for our quote request, local-2 quotes bob's pinned
 # status, pending, under the request local-2#quote-request.
-# The output lists, per entry, what bob's activity left: statuses (text, spoiler, sensitive, reply, poll and its
-# voters, mentions, visibility, tags, conversation, quote policy, media and their blurhash and focus), his display
-# name, fields, the emojis read from his tags or his status's, whether he is locked or discoverable, follows and
-# follow requests, favourites, blocks, reblogs, pins, featured tags, reports, quotes and the seeded quotes whose state
-# changed, removed statuses, follows and follow requests (his, and the local account's of him), and any error the job
-# would raise (Sidekiq then retries it). effects.json is this over forms.json's entries, run on Mastodon 4.7.5 as alice.
+# The output lists, per entry, what bob's activity left: statuses (text, spoiler, sensitive, reply, poll and its voters,
+# mentions, visibility, tags, conversation, quote (legacy or not) and quote policy, media and their blurhash and focus),
+# his display name, fields, the emojis read from his tags or his status's, whether he is locked or discoverable, follows
+# and follow requests, favourites, blocks, reblogs, pins, featured tags, reports, quotes and the seeded quotes whose
+# state changed, removed statuses, follows and follow requests (his, and the local account's of him), and any error the
+# job would raise (Sidekiq then retries it). effects.json is this over forms.json's entries, run on Mastodon 4.7.5 as
+# alice.
 
 require 'sidekiq/testing'
 Sidekiq::Testing.fake!
@@ -63,7 +64,8 @@ def effect(bob, before) # rubocop:disable Metrics/AbcSize
       uri: s.uri, text: s.text, spoiler: s.spoiler_text, sensitive: s.sensitive, visibility: s.visibility,
       reply_to: s.thread && uri(s.thread), reblog_of: s.reblog && uri(s.reblog), poll: s.preloadable_poll&.options,
       mentions: s.mentions.map { |m| m.account.acct }, media: s.media_attachments.size,
-      quote: s.quote && { uri: s.quote.quoted_status && uri(s.quote.quoted_status), state: s.quote.state },
+      quote: s.quote && { uri: s.quote.quoted_status && uri(s.quote.quoted_status), state: s.quote.state,
+                          **(s.quote.legacy? ? { legacy: true } : {}) },
       voters: s.preloadable_poll&.voters_count, tags: s.tags.map(&:name).presence,
       conversation: s.conversation&.uri, quote_policy: s.quote_approval_policy.nonzero?,
       media_meta: s.media_attachments.filter_map do |m|

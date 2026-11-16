@@ -26068,6 +26068,709 @@
     "fallback": "Mastodon::InvalidJsonLdError: contains unsupported JSON-LD features"
   },
   {
+    "name": "Note, its quote given as true",
+    "received": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        {
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "sensitive": "as:sensitive",
+          "toot": "http://joinmastodon.org/ns#",
+          "votersCount": "toot:votersCount",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "Hashtag": "as:Hashtag"
+        },
+        "https://w3id.org/security/v1"
+      ],
+      "id": "https://mastodon.example/users/bob/activities/187",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/186",
+        "type": "Note",
+        "summary": null,
+        "inReplyTo": null,
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/186",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/186",
+        "content": "<p>note 186</p>",
+        "attachment": [],
+        "tag": [],
+        "quote": true,
+        "_misskey_quote": "https://kopje.test/ap/o/local-1"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "mastodon": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        "https://www.w3.org/ns/cid/v1",
+        "https://purl.archive.org/socialweb/webfinger",
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "sensitive": "as:sensitive",
+          "Hashtag": "as:Hashtag",
+          "movedTo": {
+            "@id": "as:movedTo",
+            "@type": "@id"
+          },
+          "alsoKnownAs": {
+            "@id": "as:alsoKnownAs",
+            "@type": "@id"
+          },
+          "toot": "http://joinmastodon.org/ns#",
+          "Emoji": "toot:Emoji",
+          "featured": {
+            "@id": "toot:featured",
+            "@type": "@id"
+          },
+          "featuredTags": {
+            "@id": "toot:featuredTags",
+            "@type": "@id"
+          },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "focalPoint": {
+            "@container": "@list",
+            "@id": "toot:focalPoint"
+          },
+          "blurhash": "toot:blurhash",
+          "discoverable": "toot:discoverable",
+          "indexable": "toot:indexable",
+          "memorial": "toot:memorial",
+          "votersCount": "toot:votersCount",
+          "suspended": "toot:suspended",
+          "attributionDomains": {
+            "@id": "toot:attributionDomains",
+            "@container": "@set"
+          },
+          "showFeatured": "toot:showFeatured",
+          "showMedia": "toot:showMedia",
+          "showRepliesInMedia": "toot:showRepliesInMedia",
+          "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+          "interactingObject": {
+            "@id": "gts:interactingObject",
+            "@type": "@id"
+          },
+          "interactionTarget": {
+            "@id": "gts:interactionTarget",
+            "@type": "@id"
+          },
+          "FeatureRequest": "https://w3id.org/fep/7aa9#FeatureRequest",
+          "FeaturedCollection": "https://w3id.org/fep/7aa9#FeaturedCollection",
+          "FeaturedItem": "https://w3id.org/fep/7aa9#FeaturedItem",
+          "FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+          "topic": {
+            "@id": "https://w3id.org/fep/7aa9#topic",
+            "@type": "@id"
+          },
+          "featuredObject": {
+            "@id": "https://w3id.org/fep/7aa9#featuredObject",
+            "@type": "@id"
+          },
+          "featureAuthorization": {
+            "@id": "https://w3id.org/fep/7aa9#featureAuthorization",
+            "@type": "@id"
+          }
+        }
+      ],
+      "id": "https://mastodon.example/users/bob/activities/187",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/186",
+        "type": "Note",
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/186",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/186",
+        "content": "<p>note 186</p>",
+        "attachment": [],
+        "tag": [],
+        "https://w3id.org/fep/044f#quote": true,
+        "_misskey_quote": "https://kopje.test/ap/o/local-1"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    }
+  },
+  {
+    "name": "Note, its automaticApproval given as an array of true",
+    "received": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        {
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "sensitive": "as:sensitive",
+          "toot": "http://joinmastodon.org/ns#",
+          "votersCount": "toot:votersCount",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "Hashtag": "as:Hashtag"
+        },
+        "https://w3id.org/security/v1"
+      ],
+      "id": "https://mastodon.example/users/bob/activities/189",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/188",
+        "type": "Note",
+        "summary": null,
+        "inReplyTo": null,
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/188",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/188",
+        "content": "<p>note 188</p>",
+        "attachment": [],
+        "tag": [],
+        "interactionPolicy": {
+          "canQuote": {
+            "automaticApproval": [true]
+          }
+        }
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "mastodon": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        "https://www.w3.org/ns/cid/v1",
+        "https://purl.archive.org/socialweb/webfinger",
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "sensitive": "as:sensitive",
+          "Hashtag": "as:Hashtag",
+          "movedTo": {
+            "@id": "as:movedTo",
+            "@type": "@id"
+          },
+          "alsoKnownAs": {
+            "@id": "as:alsoKnownAs",
+            "@type": "@id"
+          },
+          "toot": "http://joinmastodon.org/ns#",
+          "Emoji": "toot:Emoji",
+          "featured": {
+            "@id": "toot:featured",
+            "@type": "@id"
+          },
+          "featuredTags": {
+            "@id": "toot:featuredTags",
+            "@type": "@id"
+          },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "focalPoint": {
+            "@container": "@list",
+            "@id": "toot:focalPoint"
+          },
+          "blurhash": "toot:blurhash",
+          "discoverable": "toot:discoverable",
+          "indexable": "toot:indexable",
+          "memorial": "toot:memorial",
+          "votersCount": "toot:votersCount",
+          "suspended": "toot:suspended",
+          "attributionDomains": {
+            "@id": "toot:attributionDomains",
+            "@container": "@set"
+          },
+          "showFeatured": "toot:showFeatured",
+          "showMedia": "toot:showMedia",
+          "showRepliesInMedia": "toot:showRepliesInMedia",
+          "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+          "interactingObject": {
+            "@id": "gts:interactingObject",
+            "@type": "@id"
+          },
+          "interactionTarget": {
+            "@id": "gts:interactionTarget",
+            "@type": "@id"
+          },
+          "FeatureRequest": "https://w3id.org/fep/7aa9#FeatureRequest",
+          "FeaturedCollection": "https://w3id.org/fep/7aa9#FeaturedCollection",
+          "FeaturedItem": "https://w3id.org/fep/7aa9#FeaturedItem",
+          "FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+          "topic": {
+            "@id": "https://w3id.org/fep/7aa9#topic",
+            "@type": "@id"
+          },
+          "featuredObject": {
+            "@id": "https://w3id.org/fep/7aa9#featuredObject",
+            "@type": "@id"
+          },
+          "featureAuthorization": {
+            "@id": "https://w3id.org/fep/7aa9#featureAuthorization",
+            "@type": "@id"
+          }
+        }
+      ],
+      "id": "https://mastodon.example/users/bob/activities/189",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/188",
+        "type": "Note",
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/188",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/188",
+        "content": "<p>note 188</p>",
+        "attachment": [],
+        "tag": [],
+        "interactionPolicy": {
+          "canQuote": {
+            "gts:automaticApproval": true
+          }
+        }
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    }
+  },
+  {
+    "name": "Question, its closed given as an object",
+    "received": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        {
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "sensitive": "as:sensitive",
+          "toot": "http://joinmastodon.org/ns#",
+          "votersCount": "toot:votersCount",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "Hashtag": "as:Hashtag"
+        },
+        "https://w3id.org/security/v1"
+      ],
+      "id": "https://mastodon.example/users/bob/activities/191",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/190",
+        "type": "Question",
+        "summary": null,
+        "inReplyTo": null,
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/190",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/190",
+        "content": "<p>poll</p>",
+        "attachment": [],
+        "tag": [],
+        "endTime": "2026-11-17T12:00:00Z",
+        "oneOf": [
+          {
+            "type": "Note",
+            "name": "Yes",
+            "replies": {
+              "type": "Collection",
+              "totalItems": 0
+            }
+          },
+          {
+            "type": "Note",
+            "name": "No",
+            "replies": {
+              "type": "Collection",
+              "totalItems": 0
+            }
+          }
+        ],
+        "closed": {
+          "id": "https://mastodon.example/users/bob/closed"
+        }
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "mastodon": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        "https://www.w3.org/ns/cid/v1",
+        "https://purl.archive.org/socialweb/webfinger",
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "sensitive": "as:sensitive",
+          "Hashtag": "as:Hashtag",
+          "movedTo": {
+            "@id": "as:movedTo",
+            "@type": "@id"
+          },
+          "alsoKnownAs": {
+            "@id": "as:alsoKnownAs",
+            "@type": "@id"
+          },
+          "toot": "http://joinmastodon.org/ns#",
+          "Emoji": "toot:Emoji",
+          "featured": {
+            "@id": "toot:featured",
+            "@type": "@id"
+          },
+          "featuredTags": {
+            "@id": "toot:featuredTags",
+            "@type": "@id"
+          },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "focalPoint": {
+            "@container": "@list",
+            "@id": "toot:focalPoint"
+          },
+          "blurhash": "toot:blurhash",
+          "discoverable": "toot:discoverable",
+          "indexable": "toot:indexable",
+          "memorial": "toot:memorial",
+          "votersCount": "toot:votersCount",
+          "suspended": "toot:suspended",
+          "attributionDomains": {
+            "@id": "toot:attributionDomains",
+            "@container": "@set"
+          },
+          "showFeatured": "toot:showFeatured",
+          "showMedia": "toot:showMedia",
+          "showRepliesInMedia": "toot:showRepliesInMedia",
+          "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+          "interactingObject": {
+            "@id": "gts:interactingObject",
+            "@type": "@id"
+          },
+          "interactionTarget": {
+            "@id": "gts:interactionTarget",
+            "@type": "@id"
+          },
+          "FeatureRequest": "https://w3id.org/fep/7aa9#FeatureRequest",
+          "FeaturedCollection": "https://w3id.org/fep/7aa9#FeaturedCollection",
+          "FeaturedItem": "https://w3id.org/fep/7aa9#FeaturedItem",
+          "FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+          "topic": {
+            "@id": "https://w3id.org/fep/7aa9#topic",
+            "@type": "@id"
+          },
+          "featuredObject": {
+            "@id": "https://w3id.org/fep/7aa9#featuredObject",
+            "@type": "@id"
+          },
+          "featureAuthorization": {
+            "@id": "https://w3id.org/fep/7aa9#featureAuthorization",
+            "@type": "@id"
+          }
+        }
+      ],
+      "id": "https://mastodon.example/users/bob/activities/191",
+      "type": "Create",
+      "actor": "https://mastodon.example/users/bob",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/users/bob/followers"],
+      "object": {
+        "id": "https://mastodon.example/users/bob/statuses/190",
+        "type": "Question",
+        "published": "2026-11-16T12:00:00Z",
+        "url": "https://mastodon.example/@bob/190",
+        "attributedTo": "https://mastodon.example/users/bob",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/users/bob/followers"],
+        "sensitive": false,
+        "atomUri": "https://mastodon.example/users/bob/statuses/190",
+        "content": "<p>poll</p>",
+        "attachment": [],
+        "tag": [],
+        "endTime": "2026-11-17T12:00:00Z",
+        "oneOf": [
+          {
+            "type": "Note",
+            "name": "Yes",
+            "replies": {
+              "type": "Collection",
+              "totalItems": 0
+            }
+          },
+          {
+            "type": "Note",
+            "name": "No",
+            "replies": {
+              "type": "Collection",
+              "totalItems": 0
+            }
+          }
+        ],
+        "as:closed": {
+          "id": "https://mastodon.example/users/bob/closed"
+        }
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "received": {
       "@context": [

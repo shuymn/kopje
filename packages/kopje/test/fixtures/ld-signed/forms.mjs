@@ -711,6 +711,17 @@ const forms = {
       },
     ]),
   ),
+
+  // A value of a shape a name's type does not take: the compaction writes it under the name's IRI, which no reader
+  // reads (a boolean for a name typed @id, an object for one typed with a datatype).
+  "Note, its quote given as true": create(note({ quote: true, _misskey_quote: LOCAL_STATUS })),
+  "Note, its automaticApproval given as an array of true": create(
+    note({ interactionPolicy: { canQuote: { automaticApproval: [true] } } }),
+  ),
+  "Question, its closed given as an object": create({
+    ...question([option("Yes"), option("No")]),
+    closed: { id: `${BOB}/closed` },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

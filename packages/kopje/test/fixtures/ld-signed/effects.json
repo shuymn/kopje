@@ -1515,6 +1515,66 @@
     }
   },
   {
+    "name": "Note, its quote given as true",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/186",
+          "text": "<p>note 186</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0,
+          "quote": {
+            "uri": "https://kopje.test/ap/o/local-1",
+            "state": "pending",
+            "legacy": true
+          }
+        }
+      ],
+      "quotes": [
+        {
+          "status": "https://mastodon.example/users/bob/statuses/186",
+          "state": "pending"
+        }
+      ]
+    }
+  },
+  {
+    "name": "Note, its automaticApproval given as an array of true",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/188",
+          "text": "<p>note 188</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Question, its closed given as an object",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/190",
+          "text": "<p>poll</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "poll": ["Yes", "No"],
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [
