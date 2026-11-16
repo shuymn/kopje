@@ -53,6 +53,8 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
+    // The names a JSON body sent as null, which read as blank (sentNull tells them apart).
+    private readonly nulls: ReadonlySet<string> = new Set(),
   ) {}
 
   // These body parameters with the query's merged in: the body wins for a declared name, whose effective value is
@@ -66,7 +68,7 @@ export class Params {
       return value === undefined ? [] : [[name, value]];
     });
     const entries = [...this.entries, ...query.filter(([key]) => !names.has(key)), ...declaredQuery];
-    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts);
+    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts, this.nulls);
   }
 
   // The body's value wins over the query's.
@@ -78,6 +80,12 @@ export class Params {
   // undefined, and the other way round.
   file(name: string): File | undefined {
     return this.files.get(name);
+  }
+
+  // Whether a JSON body sent `name` as null, which get(name) reads as blank: Rails assigns nil, where a blank string
+  // stays a string.
+  sentNull(name: string): boolean {
+    return this.nulls.has(name) && this.get(name) === "";
   }
 
   // Whether `name` or `name[]` was sent at all, even with no value: an explicitly empty list is not an absent one.
@@ -257,10 +265,11 @@ async function parseCounted(
     const entries: [string, string][] = [];
     const objects = new Set<string>();
     const empty = new Set<string>();
+    const nulls = new Set<string>();
     // JSON.parse keeps the last of duplicate keys, so repeated() sees form and query duplicates only. RFC 6749 defines
     // form bodies alone, and Doorkeeper (Mastodon) lets the last JSON key win as well.
-    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, paths: 0, units: 0 });
-    return { params: selectDeclared(entries, new Map(), objects, empty, declared), formText: null };
+    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, nulls, paths: 0, units: 0 });
+    return { params: selectDeclared(entries, new Map(), objects, empty, nulls, declared), formText: null };
   }
   if (type === "application/x-www-form-urlencoded" || type === "multipart/form-data") {
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
@@ -300,10 +309,11 @@ function selectDeclared(
   files: Map<string, File>,
   objects: Set<string>,
   empty: Set<string>,
+  nulls: Set<string>,
   declared: ReadonlySet<string>,
 ): Params {
   if (declared.size === 0) {
-    return new Params(entries, files, objects, empty);
+    return new Params(entries, files, objects, empty, [], nulls);
   }
   const last = new Map<string, string>();
   for (const [key, value] of entries) {
@@ -311,13 +321,14 @@ function selectDeclared(
       last.set(key, value);
     }
   }
-  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last], files, objects, empty);
+  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last], files, objects, empty, [], nulls);
 }
 
 type Flattening = {
   entries: [string, string][];
   objects: Set<string>;
   empty: Set<string>;
+  nulls: Set<string>;
   paths: number;
   units: number;
 };
@@ -360,7 +371,10 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
       flatten(item, state, prefix === "" ? key : `${prefix}[${key}]`, depth + 1);
     }
   } else if (prefix !== "") {
-    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank.
+    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank (and noted).
+    if (value === null) {
+      state.nulls.add(prefix);
+    }
     state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
   }
 }

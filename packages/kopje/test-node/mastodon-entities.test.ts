@@ -67,10 +67,10 @@ const MAPPING: Record<string, Mapping> = {
   "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
   // No Kopje type yet: the profile API.
   "REST::ProfileSerializer": { deferred: 1583 },
-  "REST::CollectionSerializer": { deferred: 1589 },
-  "REST::CollectionItemSerializer": { deferred: 1589 },
-  "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
-  "REST::ShallowTagSerializer": { deferred: 1589 },
+  "REST::CollectionSerializer": { file: "src/domain/collections.ts", typeName: "Collection" },
+  "REST::CollectionItemSerializer": { file: "src/domain/collections.ts", typeName: "CollectionItem" },
+  "REST::CollectionWithAccountsSerializer": { file: "src/domain/collections.ts", typeName: "CollectionWithAccounts" },
+  "REST::ShallowTagSerializer": { file: "src/domain/collections.ts", typeName: "ShallowTag" },
   "REST::NotificationPolicySerializer": {
     file: "src/mastodon/notification-requests.ts",
     typeName: "NotificationPolicyV2",

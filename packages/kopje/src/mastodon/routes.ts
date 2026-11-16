@@ -6,6 +6,7 @@ import * as admin from "./admin";
 import * as announcements from "./announcements";
 import * as annualReports from "./annual-reports";
 import * as blocks from "./blocks";
+import * as collections from "./collections";
 import type { ApiDeps, ApiEnv, ApiHandler } from "./context";
 import * as conversations from "./conversations";
 import * as filters from "./filters";
@@ -41,6 +42,9 @@ export type Route = {
   path: string;
   access: RouteAccess;
   handler: ApiHandler;
+  // The Deprecation header of every answer, errors included (Mastodon's DeprecationConcern sets it before any other
+  // before_action).
+  deprecation?: string;
 };
 
 const route =
@@ -51,6 +55,27 @@ const post = route("POST");
 const patch = route("PATCH");
 const put = route("PUT");
 const del = route("DELETE");
+
+// Collections (mastodon/collections.ts) under `prefix`: /api/v1, and /api/v1_alpha, where every collections and items
+// route is deprecated (`deprecate_api '2026-06-10', if: :alpha_path?`) but in_collections, whose controller has no
+// DeprecationConcern.
+function collectionRoutes(prefix: "/api/v1" | "/api/v1_alpha"): Route[] {
+  const deprecated = (r: Route): Route => (prefix === "/api/v1_alpha" ? { ...r, deprecation: "@1781049600" } : r);
+  const read = { scope: "read:collections", optional: true } as const;
+  const write = { scope: "write:collections" } as const;
+  return [
+    deprecated(get(`${prefix}/accounts/:id/collections`, read, collections.accountCollections)),
+    get(`${prefix}/accounts/:id/in_collections`, read, collections.inCollections),
+    deprecated(post(`${prefix}/collections`, write, collections.createCollection)),
+    deprecated(get(`${prefix}/collections/:id`, read, collections.showCollection)),
+    deprecated(patch(`${prefix}/collections/:id`, write, collections.updateCollection)),
+    deprecated(put(`${prefix}/collections/:id`, write, collections.updateCollection)),
+    deprecated(del(`${prefix}/collections/:id`, write, collections.deleteCollection)),
+    deprecated(post(`${prefix}/collections/:id/items`, write, collections.addCollectionItem)),
+    deprecated(del(`${prefix}/collections/:id/items/:item_id`, write, collections.removeCollectionItem)),
+    deprecated(post(`${prefix}/collections/:id/items/:item_id/revoke`, write, collections.revokeCollectionItem)),
+  ];
+}
 
 export const ROUTES: readonly Route[] = [
   post("/api/v1/apps", "anonymous", oauth.registerApp),
@@ -179,6 +204,9 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/accounts/:id/email_subscriptions", { optional: true }, placeholders.emailSubscription),
 
   get("/api/v1/accounts/:id/lists", { scope: "read:lists" }, lists.accountLists),
+
+  ...collectionRoutes("/api/v1"),
+  ...collectionRoutes("/api/v1_alpha"),
 
   // Blocks, mutes and domain blocks (mastodon/blocks.ts).
   post("/api/v1/accounts/:id/block", { scope: "write:blocks" }, blocks.block),
@@ -490,7 +518,22 @@ export const ROUTES: readonly Route[] = [
 export function mastodonApi(deps: ApiDeps, routes: readonly Route[] = ROUTES): Hono<ApiEnv> {
   const api = new Hono<ApiEnv>();
   for (const route of routes) {
-    api.on(route.method, route.path, requireAccess(route.access, deps), (c) => route.handler(c, deps));
+    const { deprecation } = route;
+    if (deprecation === undefined) {
+      api.on(route.method, route.path, requireAccess(route.access, deps), (c) => route.handler(c, deps));
+      continue;
+    }
+    // Set on the answer once it exists: an error thrown below is answered (the app's onError) before next() returns.
+    api.on(
+      route.method,
+      route.path,
+      async (c, next) => {
+        await next();
+        c.res.headers.set("Deprecation", deprecation);
+      },
+      requireAccess(route.access, deps),
+      (c) => route.handler(c, deps),
+    );
   }
   return api;
 }

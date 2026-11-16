@@ -1524,6 +1524,24 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
+- **VIS-33: a collection and its members are shown only as R45 allows.** A collection (migration `0099_collections`)
+  is found only while its owner is available; it is shown to a viewer the owner does not block, and listed among the
+  owner's collections only when discoverable or to the owner. A member is shown only while available, accepted (or
+  pending, to the owner), and not blocking the viewer; an account's memberships (`in_collections`) are listed to that
+  account only. An account is added only with its consent: local, available, discoverable, unlocked or following the
+  owner (or the owner itself), with no block either way; a block from either side revokes the blocked account's
+  memberships of the blocker's collections and deletes the blocker's own from the other's, as Mastodon's
+  `BlockService` does. A member alone revokes its membership, which keeps the row (and the collection) but no longer
+  shows it.
+  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
+  `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`,
+  `severCollections` in `src/domain/blocks.ts`; `test/collections.test.ts` ("shows a collection and its items only as
+  R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets
+  only the item's account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes
+  and deletes the collection memberships a block severs"), `test/policy-oracle.test.ts` (against `collectionFound`,
+  `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and `inCollections` in
+  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
+
 ### Authorization (AUTH)
 
 - **AUTH-1: authorization happens inside the operation.** Token validity, expiry, revocation, scope and account
@@ -2994,6 +3012,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   it through the same rule, only with the final URL it writes, and a reset clears it; `test/migrations.test.ts`
   ("0098_card_attribution"), `test/dump-import.test.ts` ("round-trips a card's unverified author (0098), and refuses
   one past its stored bound on import").
+  _Enforced (main)_ for collections: `collections` and `collection_items` rows and `reports.collection_ids`, imports
+  included, meet the [stored bounds](dump-format.md#stored-bounds), enforced by migration `0099_collections`: each
+  column's class and length by locality (a local name of 40 characters and description of 100, a remote one of 256
+  and 2,048), an item's columns tied to its state, at most 50 stored collections an account, 50 stored items and 25
+  live (pending or accepted) items a collection, whether inserted, revived or moved, and at most 50 report collection
+  ids of 18 digits; the writers check the same bounds first (`src/domain/collections.ts`, `reportCollectionIdsOf`);
+  `test/migrations.test.ts` ("0099_collections"), `test/dump-import.test.ts` ("round-trips collections and a report's
+  collection ids (0099), and refuses a dump past their bounds").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3378,6 +3404,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never dumped). `pruneActivity` in `src/domain/instance-activity.ts`; `test/instance-activity.test.ts` ("keeps today,
   the 184 days before it and tomorrow, and the cutoff moves with the day", "prunes by key at most 500 rows a table a run
   at the worst case, with stale statistics").
+  _Enforced (main)_ for collections: an account holds at most 10 collections through the API (`COLLECTION_LIMIT`) and
+  50 stored, a collection at most 25 live items and 50 stored (VIS-33's triggers, RES-2); an add that meets the stored
+  bound deletes the collection's oldest retired item first. The 5-minute cron deletes retired (rejected or revoked)
+  items a day after they retired, at most 500 a run, oldest first, through `collection_items_retired`
+  (`pruneCollectionItems` in `src/domain/collections.ts`). A block's step reads the blocker's and the target's
+  collections (at most 50 each) and writes at most 50 items each way. The purge of a remote account deletes its items,
+  the items of its collections and then its collections, each step counted against the batch's budget
+  (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest retired item when an add meets the stored
+  bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round, keeping younger and live ones"),
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
+  `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget"),
+  `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -4515,6 +4553,17 @@ the bounds (left out), fills 715,687 bytes through the API (`test/tag-history-bo
 past the name bound are refused, and lists leave out stored names past it or not well-formed UTF-8 (`tag-bounds.ts`;
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
+
+A local collection's maximum is derived from its bounds (`COLLECTION_JSON_MAX`, 9,165 bytes;
+`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from the bounds, and fits the answers of a full account")):
+its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest supported,
+its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not
+shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2 bytes of it
+(`local` and `discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at
+the account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
+collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, each
+then within `COLLECTION_JSON_MAX`); a remote collection, stored only by an import yet, has larger text bounds (256 and
+2,048 characters, URIs of 2,048 bytes) and the same 25 shown items.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
 caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the

@@ -26,6 +26,31 @@ type MastodonRoute = (typeof mastodon.routes)[number];
 // Both sides as sides() writes them, and why they differ.
 type Exception = { kopje: string; mastodon: string; reason: string };
 
+// The collections routes under `prefix` (mastodon/collections.ts): R45 is the Store's (Mastodon: Pundit, unresolved),
+// and in_collections answers a request without a user 422 whether or not it sent a token.
+function collectionExceptions(prefix: string): Record<string, Exception> {
+  const read = "optional token, scopes read read:collections, no user required";
+  return {
+    [`GET ${prefix}/accounts/:id/collections`]: {
+      kopje: read,
+      mastodon: `unresolved (Pundit policy: authorize @account, :index_collections?; verify_authorized): ${read}`,
+      reason: "R45 is the Store's (Mastodon: Pundit AccountPolicy#index_collections?, unresolved)",
+    },
+    [`GET ${prefix}/accounts/:id/in_collections`]: {
+      kopje: read,
+      mastodon: "required token, scopes read read:collections, user required",
+      reason:
+        "authorize_if_got_token! then require_user!: without a token the answer is require_user!'s 422, not a 401, " +
+        "which the handler gives (domain/collections.ts inCollections)",
+    },
+    [`GET ${prefix}/collections/:id`]: {
+      kopje: read,
+      mastodon: `unresolved (Pundit policy: authorize @collection, :show?; verify_authorized): ${read}`,
+      reason: "R45 is the Store's (Mastodon: Pundit CollectionPolicy#show?, unresolved)",
+    },
+  };
+}
+
 const EXCEPTIONS: Record<string, Exception> = {
   // Not Mastodon /api routes.
   "POST /oauth/token": {
@@ -145,6 +170,8 @@ const EXCEPTIONS: Record<string, Exception> = {
   },
 
   // Mastodon's StatusPolicy#show? (Pundit) decides per viewer; Kopje's Store applies the visibility rules.
+  ...collectionExceptions("/api/v1"),
+  ...collectionExceptions("/api/v1_alpha"),
   "GET /api/v1/statuses/:id": {
     kopje: "optional token, scopes read read:statuses, no user required",
     mastodon:
