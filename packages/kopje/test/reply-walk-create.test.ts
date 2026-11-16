@@ -785,7 +785,7 @@ describe("the bounds of a create walk at their caps", () => {
         ),
       ).toEqual(s.slice(0, read + 1).map((note) => note.id));
       expect(fetches(t, s[read + 1]!.id)).toBe(0);
-      expect(t.web.fetched.filter((url) => url.startsWith(OTHER_ORIGIN))).toEqual([]);
+      expect(t.web.fetched.filter((url) => new URL(url).origin === OTHER_ORIGIN)).toEqual([]);
     },
   );
 
@@ -967,7 +967,7 @@ describe("claims of create walks", () => {
     expect(await claim(t)).toMatchObject({ statusId: kept, kind: "create" });
     expect(await walkRow(t.store, old)).toBeUndefined();
     expect(await walkNodes(t.store, old)).toEqual([]);
-    expect(t.web.fetched.filter((url) => url.startsWith(OTHER_ORIGIN))).toEqual([]);
+    expect(t.web.fetched.filter((url) => new URL(url).origin === OTHER_ORIGIN)).toEqual([]);
   });
 
   it("drops a create walk whose root is no longer a walk root, deleting it", async () => {
