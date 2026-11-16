@@ -36,7 +36,6 @@ describe("features without data yet", () => {
   const userAnswers: [string, string, string, number, unknown][] = [
     ["GET", "/api/v1/emails/check_confirmation", "read:accounts", 200, true],
     ["POST", "/api/v1/statuses/123/translate", "read:statuses", 404, notFound],
-    ["GET", "/api/v1_alpha/async_refreshes/abc", "read", 404, notFound],
   ];
 
   const send = async (h: ApiHarness, method: string, route: string, token?: string) => {

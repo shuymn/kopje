@@ -25,9 +25,10 @@ import { statusCursor } from "./windows";
 // Each write of a row also takes its owner's next streaming change sequence while the owner has a mark (nextStreamSeq),
 // so the `direct` stream sends the changed conversation.
 // Reading shows the owner's rows only (anyone else's is not found), newest last status first. The last status is
-// shown only if the owner may still see it (R2, through statusReads): one whose author is suspended or blocks the owner
-// is shown as null, as Mastodon shows a last status it can no longer load. The accounts are the other participants
-// (the owner when there are none).
+// shown only if the owner may still see it (R2, through statusReads) and it is not a boost: one whose author is
+// suspended or blocks the owner is shown as null, as Mastodon shows a last status it can no longer load, and so is a
+// boost, which no writer links (addToConversation) but a restored row may name (RES-3). The accounts are the other
+// participants (the owner when there are none).
 
 // The participants one conversation presents: the first by account id, the order the row stores them in
 // (conversation-rows.ts participantsSql). Mastodon presents every participant; this cap keeps one conversation within
@@ -124,8 +125,8 @@ export function leaveConversationsWith(db: Db, ownerId: string, accountId: strin
 }
 
 // The conversations of `rows` in order, for an admission (admit): each one atomic, with its participants and its last
-// status if the owner may see it (R2), presented when the admission reaches it, its accounts and its status read for
-// it alone (one conversation is a chunk). Each last status is sought by id (RES-7).
+// status if the owner may see it (R2) and it is not a boost (RES-3), presented when the admission reaches it, its
+// accounts and its status read for it alone (one conversation is a chunk). Each last status is sought by id (RES-7).
 function* conversationStream(
   db: Db,
   rows: readonly ConversationRow[],
@@ -135,7 +136,11 @@ function* conversationStream(
   const visible = statusReads(viewer, { viewer: "?1" }).select(
     db,
     "visible",
-    { from: "json_each(?2) j CROSS JOIN", join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = j.value` },
+    {
+      from: "json_each(?2) j CROSS JOIN",
+      join: `INDEXED BY ${STATUSES_ID_INDEX} ON s.id = j.value`,
+      and: "s.reblog_of_id IS NULL",
+    },
     viewer.accountId,
     JSON.stringify(rows.map((row) => row.last_status_id)),
   );

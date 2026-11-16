@@ -93,9 +93,18 @@ describe("expression depth guard", () => {
     }
   });
 
-  // A connection to the service that drops is sent again once, with the same statements; anything else fails.
+  // A connection to the service that drops, before the answer's head or within its body, is sent again once, with the
+  // same statements; anything else fails.
   it("retries a dropped connection once, and fails on a second drop or any other error", async () => {
     const dropped = () => Promise.reject(new Error("Network connection lost."));
+    // As the server's refusal of a request it gave up on arrives: a status line, then a reset while the body is read.
+    const cut = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({ pull: (controller) => controller.error(new Error("Network connection lost.")) }),
+          { status: 408 },
+        ),
+      );
     const stub = (...answers: (() => Promise<Response>)[]) => {
       const bodies: string[] = [];
       return {
@@ -109,13 +118,17 @@ describe("expression depth guard", () => {
     const once = stub(dropped, () => Promise.resolve(Response.json([{ limit: 101, sql: "x" }])));
     expect(await measureWith(once as never, ["x"])).toEqual([{ limit: 101, sql: "x" }]);
     expect(once.bodies).toEqual(['["x"]', '["x"]']);
+    const within = stub(cut, () => Promise.resolve(Response.json([])));
+    expect(await measureWith(within as never, ["x"])).toEqual([]);
+    expect(within.bodies).toEqual(['["x"]', '["x"]']);
     await expect(measureWith(stub(dropped, dropped) as never, ["x"])).rejects.toThrow("Network connection lost.");
+    await expect(measureWith(stub(cut, cut) as never, ["x"])).rejects.toThrow("Network connection lost.");
     const other = stub(() => Promise.reject(new Error("other")), dropped);
     await expect(measureWith(other as never, ["x"])).rejects.toThrow("other");
     expect(other.bodies).toHaveLength(1);
-    await expect(
-      measureWith(stub(() => Promise.resolve(new Response("bad", { status: 500 }))) as never, ["x"]),
-    ).rejects.toThrow("bad");
+    const refused = stub(() => Promise.resolve(new Response("bad", { status: 500 })), dropped);
+    await expect(measureWith(refused as never, ["x"])).rejects.toThrow("the SQL depth service answered 500: bad");
+    expect(refused.bodies).toHaveLength(1);
   });
 
   it("refuses a batch, whose later statements it would not measure", async () => {

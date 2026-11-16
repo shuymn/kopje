@@ -83,8 +83,7 @@ export const tagTimeline: ApiHandler = withParams(async (c, deps, p) => {
 });
 
 // GET /api/v1/timelines/link (Api::V1::Timelines::LinkController): a link that has no timeline now, or trends off, is
-// not found (MD-5). `limit` as limit_param reads it, so 0 answers no statuses and no Link header. Without a token the
-// answer may be cached by anyone for 15 seconds (cache_if_unauthenticated!), varying by Authorization.
+// not found (MD-5). `limit` as limit_param reads it, so 0 answers no statuses and no Link header.
 export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
   const page = {
     ...pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT),
@@ -101,12 +100,7 @@ export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
     return recordNotFound();
   }
   linkTimelineLinks(c, p, result);
-  return credential === null
-    ? c.json(result.items, 200, {
-        "cache-control": "public, max-age=15, stale-while-revalidate=30, stale-if-error=86400",
-        vary: "Authorization",
-      })
-    : c.json(result.items);
+  return c.json(result.items);
 });
 
 // The Link header of a link timeline page (Api::V1::Timelines::BaseController#insert_pagination_headers): next at

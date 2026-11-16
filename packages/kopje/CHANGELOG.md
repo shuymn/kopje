@@ -28,6 +28,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   the Store (7,003 ms for this file in one local run of the migration bench, at a load average of 3 to 10).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.
+- Link cards carry `missing_attribution` for a signed-in viewer, as Mastodon 4.6 does: `true` when the linked page names
+  the viewer's account as `fediverse:creator` and none of its attribution domains covers the page, in statuses (their
+  streams included) and trend links. A creator naming the instance by another spelling or an alias names no account
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0098_card_attribution`: a
+  column of `status_cards` and its two triggers, reading no row; as the triggers name `main.statuses`, the upgrade
+  checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 15,089 ms with
+  this file and 14,870 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
@@ -77,6 +85,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
   run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
   so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- A signed-in read of a remote public or unlisted status's context fetches its replies collection in the background, as
+  Mastodon 4.7.5 does, and answers with `Mastodon-Async-Refresh` while that runs, a header the API exposes to browser
+  clients; `GET /api/v1_alpha/async_refreshes/:id` reports the refresh. A refresh reads at most 200 statuses and 100
+  collection documents (Mastodon: 1,000 and 500), from 5 minutes after the status was published and at most every 15
+  minutes, and at most 16 run at once ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies
+  collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
+  hours. Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
+  upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
+  with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
@@ -204,6 +222,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
+  `FALSE`, `off`, `OFF` and a blank value are false, so `False` or `Off` is now true, as in Mastodon (it was read as
+  false). No Store migration and no `wrangler.jsonc` change.
+- Searching the URL of a remote post Kopje already holds, or looking it up on the interaction page, applies the
+  version its server serves now as an edit, as Mastodon does: a newer version replaces the post and adds to its
+  history, and a poll's counts are refreshed. As in Mastodon, a document served at another URL than its `id`, or
+  reached through a redirect, is taken only as its `id` serves it, and a post whose URL answers 410 is not shown (it
+  stays stored). No Store migration and no `wrangler.jsonc` change.
+- An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
+  approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
   and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
   an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
@@ -241,6 +269,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
   name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
   Store migration and no `wrangler.jsonc` change.
+- A status restored from a dump with malformed UTF-8 in its content, source text or content warning is presented
+  within those fields' bounds (content and source text empty past 128 KiB of JSON, the warning cut to 2,730
+  characters past 16 KiB) in the API, streaming, public pages and its ActivityPub Note; a warning was presented at up
+  to about three times its stored size, with no limit on that size. No Store migration and no `wrangler.jsonc`
+  change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
   spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
   every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
@@ -278,6 +311,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
 - The settings page's bio shows a stored note that starts with a line break whole, where the browser dropped that
   line break. No Store migration and no `wrangler.jsonc` change.
+- A conversation whose stored last status is a boost (only a restored row can name one) shows no last status instead
+  of the boost, in `GET /api/v1/conversations`, its read and unread answers and on the `direct` stream. No Store
+  migration and no `wrangler.jsonc` change.
+- Mastodon API answers carry `Cache-Control: private, no-store` and `Vary: Authorization`, as Mastodon's do, errors and
+  the app registration (which holds the client secret) included; the public reads Mastodon lets caches keep (public
+  and hashtag timelines, accounts, statuses, polls, hashtags, instance information, custom emoji) carry its public
+  `Cache-Control`, now written in Rails' order. Every such read that looks at the token (custom emoji, the instance's
+  languages, policies, activity, domain blocks and peer search among them) is public only to a request without one
+  and varies by `Authorization`, so no cache serves a stored answer to a signed-in or suspended account. No Store
+  migration and no `wrangler.jsonc` change.
+- A post's text and content warning are stripped of surrounding whitespace, and a content warning of only whitespace no
+  longer marks the post sensitive, as in Mastodon; a poll choice of only U+0085 is dropped and one of U+FEFF kept; a
+  remote post whose content or content warning is only whitespace reads its language map; a remote account's profile
+  fields are shown without surrounding whitespace. No Store migration and no `wrangler.jsonc` change.
 - `PUT /api/v1/media/:id` answers 404 for media attached to a post before it checks the parameters, as Mastodon does.
   No Store migration and no `wrangler.jsonc` change.
 
