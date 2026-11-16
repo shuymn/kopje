@@ -34,14 +34,22 @@ export function requestCollectionSync(db: Db, accountId: string, now: number, re
 // first value; then an object gives its id; then a string gives the URI Mastodon stores for it (storedCollectionUri),
 // which addressing and quote policies are compared with as Mastodon compares its stored URI; anything else is none,
 // which Mastodon stores as '' (the column's default) and compares as that string, so `[[F]]`, whose first value is an
-// array, is ''. The only place a member's array is unwrapped: every reader hands it the member as parsed, or reads what
-// collectionSql selects, which is the same string.
+// array, is ''. Every reader hands it the member as parsed, or reads what collectionSql selects, which is the same
+// string.
 export function collectionRead(value: unknown): CollectionRead {
+  const uri = collectionValue(value);
+  return uri === null ? NONE : storedCollectionUri(uri);
+}
+
+// valid_collection_uri's unwrap (process_account_service.rb:236-238): an array to its first value, then an object to
+// its id; the string that gives, else null. The only place an actor member's array is unwrapped (collectionRead, and
+// remote-actor.ts sharedInboxUri).
+export function collectionValue(value: unknown): string | null {
   let uri: unknown = Array.isArray(value) ? value[0] : value;
   if (typeof uri === "object" && uri !== null && !Array.isArray(uri)) {
     uri = (uri as { id?: unknown }).id;
   }
-  return typeof uri === "string" ? storedCollectionUri(uri) : NONE;
+  return typeof uri === "string" ? uri : null;
 }
 
 // No collection, as Mastodon stores it.

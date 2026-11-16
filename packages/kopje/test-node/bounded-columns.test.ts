@@ -422,6 +422,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",
+  // A delivery row's provenance within its written bound (domain/deliveries.ts), a JSON array of account ids or NULL.
+  "rowProvenanceSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
   // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
@@ -693,8 +695,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
-  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing).
-  "src/domain/deliveries.ts accounts.uri": { count: 7, reason: IDENTITY },
+  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);
+  // the eighth: a shared-inbox fallback's candidate by its row's provenance, whose host is compared (personalFallback).
+  "src/domain/deliveries.ts accounts.uri": { count: 8, reason: IDENTITY },
   "src/domain/featured-tags.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The last two: a held Reject's actor uris, read as bytes and decoded strictly (replayReject).
   "src/domain/handshake-replays.ts accounts.uri": { count: 4, reason: IDENTITY },
