@@ -936,6 +936,21 @@ describe("the author proof reads the actor's document as the HTTP signature does
     }
   }, 60_000);
 
+  it("verifies a proof by an actor with as:image a Document (#1709)", async () => {
+    const web = new RemoteWeb();
+    const fep = await fepActor(web, "spelled");
+    const header = { type: "Document", mediaType: "image/png", url: `${fep.actor.uri}/header.png` };
+    const document: Json = { ...fep.actor.document, "as:image": header };
+    web.serve(fep.actor.uri, document);
+    const erin = { ...fep, actor: { ...fep.actor, document } };
+    const status = `${erin.actor.uri}/statuses/1`;
+    for (const [form, body] of await deletes(erin, status)) {
+      // Fedify alone, given the document as served, refuses it.
+      expect(await fedifyAccepts(body, erin.actor), form).toBe(false);
+      expect(await proves(body, erin.actor, status), form).toBe(true);
+    }
+  });
+
   it("refuses a proof by a key the actor does not embed", async () => {
     const web = new RemoteWeb();
     const erin = await documentActor(web);

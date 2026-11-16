@@ -1722,17 +1722,21 @@ describe("account moves", () => {
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    // Named as an array, an object with an id, or the expanded property: Fedify reads each as the successor.
+    // Named as an array or an object with an id: Fedify reads each as the successor.
     for (const [n, document] of [
       [4, { ...bob.document, movedTo: [carol.uri] }],
       [5, { ...bob.document, movedTo: { id: carol.uri } }],
-      [6, { ...bob.document, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }],
     ] as const) {
       await refresh(t, bob, { ...bob.document, movedTo: null }, 10 + n);
       expect(await movedTo(t.store, bob.uri)).toBeNull();
       await refresh(t, bob, document, n);
       expect(await movedTo(t.store, bob.uri), String(n)).toBe(carol.uri);
     }
+    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (#1709: Fedify is handed the
+    // literal members alone, federation/remote-actor.ts fedifyActorView).
+    const { movedTo: _literal, ...unmoved } = bob.document;
+    await refresh(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
+    expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, bob.document, 7);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     // An account being purged is not named.

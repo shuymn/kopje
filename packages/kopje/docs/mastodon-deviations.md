@@ -222,6 +222,36 @@ settings page):
   timeline's heap past half the isolate's memory. An image given by reference rather than embedded is not fetched, so
   the account has neither the image nor its description; Mastodon fetches it. A value Mastodon cannot read (a numeric
   `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
+- A remote actor document is read as Mastodon 4.7 reads it, each member by its literal spelling, except that Fedify
+  parses the members Kopje reads from its object (`FEDIFY_MEMBERS` in `src/federation/remote-actor.ts`: the id, type,
+  username, inbox, name, bio, URL, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
+  after JSON-LD expansion. Every other member, in any spelling, is read by spelling or not at all, so none refuses the
+  actor. Mastodon stores the account in three cases where Kopje refuses the actor, because Fedify cannot decode a
+  member it parses: a `url` that is a `Link` whose `href` is not a string, a `publicKey` typed otherwise than a key,
+  and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
+  `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon
+  reads only `name` and `summary`.
+- A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
+  (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
+  `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,
+  `±HH`, `±HHMM` or `±HH:MM`), with a day past the month's end rolled over (`2021-02-29` is 1 March), `24:00` the next
+  midnight and second 60 the next minute, and a day 31 of a shorter month that the offset carries into the next day the
+  last day of the month before, as Ruby's `Time.new` stores it (`2020-04-31T23:59:60-00:01` is 31 March); the fraction
+  is cut to milliseconds, where Mastodon keeps microseconds. Any other value is none and the account is created at the
+  Store's time, a value past 128 characters included, where Mastodon fails the actor: its first save stores the row,
+  then the update every resolve runs (`process_account_service.rb:77,219`) writes nil into the `NOT NULL` column, so the
+  resolve answers 500 and leaves a row with no name or key. Accepted, 2026-11-17. Mastodon reads more forms
+  (`test/fixtures/rails-time.json` lists each with its value), and stores their time where Kopje stores its own: a
+  day-first or named date (`01/02/2020` is 1 February, `Jan 2 2020`, RFC 2822), `20200105T100000Z`, fields of one digit
+  (`2020-1-5`, `T1:00`), a signed, longer or `BC` year (`2020-01-05 BC` is the year -2019), text after the date or time,
+  week and ordinal dates (read against the current day), an hour alone (`T10Z` is midnight), `infinity`, an offset it
+  ignores (`+24:00`, `+09:60`) or reads otherwise (`+9`, `+090` as +01:30, `+0960` as +10:00, `+09:00:30`, a zone name
+  such as `UTC` or `JST`), a zone after a date alone (`2020-01-05+09:00` is 09:00 UTC, `2020-01-05Z` midnight), a `.`
+  with no digits or a fraction after the minutes (ignored), and other spacing (two spaces or a tab before the time or
+  the zone, spaces around a colon, a Unicode space); and it assigns a JSON number as it is. A known account's
+  `created_at` stays the first one Kopje stored and is never later than the time it was stored, where Mastodon assigns
+  `published` on every update, a future time included; so an update whose `published` it cannot cast is applied here,
+  where Mastodon writes nil into the `NOT NULL` column and drops the update.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
