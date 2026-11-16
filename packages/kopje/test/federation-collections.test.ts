@@ -4,15 +4,16 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { actorDocument } from "../src/domain/actor-update";
-import { type ApiHarness, sql } from "./api-helpers";
+import { type ApiHarness, bearer, json, settleDeliveries, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { contexts } from "./quote-helpers";
-import { block, community, remoteAccount } from "./status-helpers";
+import { act, block, community, remoteAccount, remoteFollows, type User } from "./status-helpers";
 
 // Local collections over ActivityPub (FEP-7aa9, src/domain/collection-documents.ts, src/federation/routes.ts): the
-// actor's featuredCollections and canFeature, the four documents, and who is refused them (design §6, PR 3; VIS-33).
+// actor's featuredCollections and canFeature, the four documents, who is refused them, and the activities a change
+// sends (design §6, PR 3; VIS-33).
 
 const AP = { accept: "application/activity+json" };
 const T = "2026-10-11T00:00:00.000Z";
@@ -398,6 +399,15 @@ describe("collections over ActivityPub: the documents (D18)", () => {
     expect(rest.collection.item_count).toBe(1);
     const html = await (await h.request(`/collections/${id}`)).text();
     expect([html.includes("/@bob"), html.includes("/@erin")]).toEqual([false, true]);
+    // An Update sent after the suspension embeds the same projection.
+    await remoteFollows(h.store, await remoteAccount(h.store, "fan", "f.example"), alice.id);
+    expect((await change(h, alice, "PATCH", `/api/v1/collections/${id}`, { name: "Renamed" })).status).toBe(200);
+    const update = (await sent(h)).at(-1)!.activity;
+    expect(update.object).toEqual({
+      ...(await get(h, `/ap/users/alice/collections/${id}`)).body,
+      "@context": undefined,
+    });
+    expect((update.object as { orderedItems: { featuredObject: string }[] }).orderedItems).toHaveLength(1);
     // An unavailable owner's documents are gone for everyone.
     await suspend(h, alice.id);
     for (const path of [
@@ -407,5 +417,219 @@ describe("collections over ActivityPub: the documents (D18)", () => {
     ]) {
       expect((await get(h, path)).status, path).toBe(404);
     }
+  });
+});
+
+// A write through the API with `method`.
+function change(h: ApiHarness, user: User, method: string, path: string, body: Record<string, unknown> = {}) {
+  return h.request(path, bearer(user.token, json(body, { method })));
+}
+
+// Each outbound activity in record order, whether it is superseded, and the inboxes its deliveries were expanded to
+// (sorted: a lane's order is lane's).
+async function sent(h: ApiHarness) {
+  await settleDeliveries(h.store);
+  const rows = await sql<{ id: number; body: string; superseded: number }>(
+    h.store,
+    "SELECT id, body, superseded FROM outbound_activities ORDER BY id",
+  );
+  const deliveries = await sql<{ activity_id: number; inbox_url: string }>(
+    h.store,
+    "SELECT activity_id, inbox_url FROM deliveries ORDER BY id",
+  );
+  return rows.map((row) => ({
+    activity: (JSON.parse(row.body) as { activity: Record<string, unknown> }).activity,
+    superseded: row.superseded,
+    inboxes: deliveries
+      .filter((d) => d.activity_id === row.id)
+      .map((d) => d.inbox_url)
+      .toSorted(),
+  }));
+}
+
+// The types and objects of the activities delivered to `inbox`, in its lane's order.
+async function lane(h: ApiHarness, inbox: string) {
+  const rows = await sql<{ body: string }>(
+    h.store,
+    `SELECT o.body FROM deliveries d JOIN outbound_activities o ON o.id = d.activity_id
+		WHERE d.inbox_url = ? ORDER BY d.id`,
+    inbox,
+  );
+  return rows.map((row) => {
+    const { activity } = JSON.parse(row.body) as { activity: { type: string; object: unknown } };
+    const object = activity.object as string | { type: string };
+    return `${activity.type} ${typeof object === "string" ? object : object.type}`;
+  });
+}
+
+const FAN_INBOX = "https://f.example/inbox";
+const B_INBOX = "https://b.example/inbox";
+const MEMBER_INBOX = "https://m.example/users/mem/inbox";
+
+// alice with a remote follower (fan) and bob and carol discoverable; mem, a remote account, accepted into the
+// collection by a row (a remote member is not featured through the API yet).
+async function audience() {
+  const h = await community(["alice", "bob", "carol"]);
+  await sql(h.store, "UPDATE accounts SET discoverable = 1");
+  const fan = await remoteAccount(h.store, "fan", "f.example");
+  await remoteFollows(h.store, fan, h.users.alice.id);
+  const member = await remoteAccount(h.store, "mem", "m.example");
+  return { h, ...h.users, member };
+}
+
+describe("collections over ActivityPub: the activities (D17)", () => {
+  // 3-T4. Fails if the changed-field test is dropped (an Update of nothing), if an Update is paired with a Create, if
+  // the collection's Remove reads its members after the delete, or if an item's Add is superseded by its Remove.
+  it("sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members", async () => {
+    const { h, alice, bob, carol, member } = await audience();
+    const created = await change(h, alice, "POST", "/api/v1/collections", {
+      name: "Mine",
+      sensitive: false,
+      discoverable: true,
+      account_ids: [bob.id],
+    });
+    expect(created.status).toBe(200);
+    const id = (await created.json<{ collection: { id: string } }>()).collection.id;
+    const uri = `${actor("alice")}/collections/${id}`;
+    const [add] = await sent(h);
+    expect(add).toEqual({
+      activity: {
+        "@context": (await get(h, `/ap/users/alice/collections/${id}`)).body["@context"],
+        id: expect.stringMatching(new RegExp(`^${uri}#adds/\\d{18}$`)),
+        type: "Add",
+        actor: actor("alice"),
+        to: [PUBLIC],
+        target: `${actor("alice")}/featured_collections`,
+        object: { ...(await get(h, `/ap/users/alice/collections/${id}`)).body, "@context": undefined },
+      },
+      superseded: 0,
+      inboxes: [FAN_INBOX],
+    });
+    expect((add!.activity.object as { orderedItems: unknown[] }).orderedItems).toHaveLength(1);
+
+    // mem joins; a change of a federated field goes to the follower and to mem's own inbox, alone; another of the same
+    // value sends nothing; two Updates waiting leave the later.
+    await seedItem(h, id, 90, member, 2);
+    const renamed = await change(h, alice, "PATCH", `/api/v1/collections/${id}`, { name: "Ours" });
+    expect(renamed.status).toBe(200);
+    const updates = (await sent(h)).slice(1);
+    expect(updates.map((u) => [u.activity.type, u.activity.id, u.inboxes])).toEqual([
+      ["Update", expect.stringMatching(new RegExp(`^${uri}#updates/\\d{18}$`)), [FAN_INBOX, MEMBER_INBOX]],
+    ]);
+    expect((updates[0]!.activity.object as { name: string }).name).toBe("Ours");
+    expect((await change(h, alice, "PATCH", `/api/v1/collections/${id}`, { name: "Ours" })).status).toBe(200);
+    expect(await sent(h)).toHaveLength(2);
+    await change(h, alice, "PATCH", `/api/v1/collections/${id}`, { sensitive: true });
+    const waiting = (await sent(h)).filter((u) => u.activity.type === "Update");
+    expect(waiting.map((u) => [(u.activity.object as { sensitive: boolean }).sensitive, u.superseded])).toEqual([
+      [false, 1],
+      [true, 0],
+    ]);
+
+    // carol is added and removed before either is delivered: both go, the Add first, in mem's lane as in the
+    // follower's.
+    const added = await change(h, alice, "POST", `/api/v1/collections/${id}/items`, { account_id: carol.id });
+    const item = (await added.json<{ collection_item: { id: string } }>()).collection_item.id;
+    const featured = (await get(h, `/ap/users/alice/collection_items/${item}`)).body;
+    expect((await change(h, alice, "DELETE", `/api/v1/collections/${id}/items/${item}`)).status).toBe(200);
+    const [itemAdd, itemRemove] = (await sent(h)).filter((a) => a.activity.target === uri);
+    expect(itemAdd).toEqual({
+      activity: {
+        "@context": featured["@context"],
+        id: expect.stringMatching(new RegExp(`^${uri}#adds/\\d{18}$`)),
+        type: "Add",
+        actor: actor("alice"),
+        to: [PUBLIC],
+        target: uri,
+        object: { ...featured, "@context": undefined },
+      },
+      superseded: 0,
+      inboxes: [FAN_INBOX, MEMBER_INBOX],
+    });
+    expect(featured).toMatchObject({ type: "FeaturedItem", featuredObject: actor("carol") });
+    expect(itemRemove).toEqual({
+      activity: {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        id: expect.stringMatching(new RegExp(`^${uri}#removes/\\d{18}$`)),
+        type: "Remove",
+        actor: actor("alice"),
+        to: [PUBLIC],
+        target: uri,
+        object: `${actor("alice")}/collection_items/${item}`,
+      },
+      superseded: 0,
+      inboxes: [FAN_INBOX, MEMBER_INBOX],
+    });
+    expect((await lane(h, MEMBER_INBOX)).slice(-2)).toEqual([
+      "Add FeaturedItem",
+      `Remove ${actor("alice")}/collection_items/${item}`,
+    ]);
+
+    // The collection's Remove reaches mem, read before the delete.
+    expect((await change(h, alice, "DELETE", `/api/v1/collections/${id}`)).status).toBe(200);
+    const remove = (await sent(h)).at(-1)!;
+    expect(remove).toEqual({
+      activity: {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        id: expect.stringMatching(new RegExp(`^${uri}#removes/\\d{18}$`)),
+        type: "Remove",
+        actor: actor("alice"),
+        to: [PUBLIC],
+        target: `${actor("alice")}/featured_collections`,
+        object: uri,
+      },
+      superseded: 0,
+      inboxes: [FAN_INBOX, MEMBER_INBOX],
+    });
+  });
+
+  // 3-T5, and a member's revoke. Fails if the block step or the revoke records no Remove.
+  it("sends the owner's Remove of an item a block or its member's revoke takes out", async () => {
+    const { h, alice, bob, carol, member } = await audience();
+    const fanOfBob = await remoteAccount(h.store, "fob", "b.example");
+    await remoteFollows(h.store, fanOfBob, bob.id);
+    const ofAlice = await seedCollection(h, alice.id, 1);
+    const ofBob = await seedCollection(h, bob.id, 2);
+    const ofCarol = await seedCollection(h, carol.id, 3);
+    await remoteFollows(h.store, await remoteAccount(h.store, "foc", "c.example"), carol.id);
+    const memberItem = await seedItem(h, ofAlice, 1, member, 1);
+    await seedItem(h, ofAlice, 2, bob.id, 2);
+    const aliceInBob = await seedItem(h, ofBob, 3, alice.id, 1);
+    const aliceInCarol = await seedItem(h, ofCarol, 4, alice.id, 1);
+
+    // alice blocks mem: mem's item in her collection is deleted, and its Remove reaches her follower and mem.
+    expect((await act(h, alice, `/api/v1/accounts/${member}/block`)).status).toBe(200);
+    // alice blocks bob: her item in bob's collection is revoked, and bob's Remove reaches his follower.
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    // alice revokes her item in carol's collection, once.
+    expect((await act(h, alice, `/api/v1/collections/${ofCarol}/items/${aliceInCarol}/revoke`)).status).toBe(200);
+    expect((await act(h, alice, `/api/v1/collections/${ofCarol}/items/${aliceInCarol}/revoke`)).status).toBe(200);
+    const removes = (await sent(h)).filter((s) => s.activity.type === "Remove");
+    expect(removes.map((r) => [r.activity.actor, r.activity.target, r.activity.object, r.inboxes])).toEqual([
+      [
+        actor("alice"),
+        `${actor("alice")}/collections/${ofAlice}`,
+        `${actor("alice")}/collection_items/${memberItem}`,
+        [FAN_INBOX, MEMBER_INBOX],
+      ],
+      [
+        actor("bob"),
+        `${actor("bob")}/collections/${ofBob}`,
+        `${actor("bob")}/collection_items/${aliceInBob}`,
+        [B_INBOX],
+      ],
+      [
+        actor("alice"),
+        `${actor("alice")}/collections/${ofAlice}`,
+        `${actor("alice")}/collection_items/${itemId(2)}`,
+        [FAN_INBOX],
+      ],
+      [
+        actor("carol"),
+        `${actor("carol")}/collections/${ofCarol}`,
+        `${actor("carol")}/collection_items/${aliceInCarol}`,
+        ["https://c.example/inbox"],
+      ],
+    ]);
   });
 });

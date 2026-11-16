@@ -673,10 +673,12 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
   "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  // A local collection's FEP-7aa9 documents: its owner's and members' ids, sent whole as the actor documents send theirs.
+  // A local collection's FEP-7aa9 documents and activities: its owner's and members' ids, sent whole as the actor
+  // documents send theirs.
   "src/domain/collection-documents.ts accounts.uri": {
-    count: 8,
-    reason: "an ActivityPub document of a local collection (its owner's and members' ids), not an API answer",
+    count: 12,
+    reason:
+      "an ActivityPub document or activity of a local collection (its owner's and members' ids), not an API answer",
   },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the

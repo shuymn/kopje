@@ -1784,15 +1784,16 @@ export function audienceOf(visibility: Visibility, recipients: readonly Recipien
 // ---------------------------------------------------------------------------------------------------------------
 
 // What an outbound activity does, which decides whom it may reach:
-//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status, Announce. It goes
-//     to no unavailable account (R1) and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an
-//     addressed account the signer blocks or domain-blocks is neither named nor sent to, and a follower on a domain it
-//     blocks (one the domain block's cleanup has not removed yet) is not sent to.
+//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status (or of anything
+//     else but the actor: a collection's, collection-documents.ts), Announce. It goes to no unavailable account (R1)
+//     and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an addressed account the signer
+//     blocks or domain-blocks is neither named nor sent to, and a follower on a domain it blocks (one the domain
+//     block's cleanup has not removed yet) is not sent to.
 //   - a retraction withdraws what was sent: a Delete, an Undo of anything, a Reject that ends a follow we had accepted
 //     (withdraws). It is named to and reaches its whole audience, the blocked included, and every inbox that received
 //     what it withdraws (deliveries.ts).
-//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block) goes to its whole
-//     audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
+//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block, Add, Remove) goes to
+//     its whole audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
 //     BlockService and RejectFollowService send to the account's inbox, and ActivityPub::UpdateDistributionWorker to
 //     followers.inboxes (AccountReachFinder); a domain block ends the follows with the domain instead
 //     (AfterBlockDomainFromAccountService), as its cleanup does here.

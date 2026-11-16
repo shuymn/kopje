@@ -421,7 +421,9 @@ describe("blocks", () => {
       state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW));
       return read();
     });
-    expect(read).toBe(12);
+    // The two statements' 14 rows (with what they return), and the two Removes' 27, each reading its collection with
+    // its owner, its members, an id, the followers and addressed accounts, and an expansion step. None is carol's.
+    expect(read).toBe(41);
   });
 });
 

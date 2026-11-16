@@ -716,7 +716,11 @@ authorization is not found to a fetcher its member blocks or domain-blocks, and 
 accepted, its member local and available. Every member list and count the documents give, embedded copies included,
 is `collectionItemShownSql` with no viewer: accepted items whose member is available, so a suspended member is in
 none of them and its `FeaturedItem` is not found. A non-discoverable collection is served: `discoverable` governs
-listings only.
+listings only. Each change of a local collection is sent, signed by its owner, to the owner's followers and the
+collection's pending and accepted remote members (R23: an `Update` is content, an `Add` or `Remove` other): its `Add`,
+`Update` and `Remove`, and the `Add` and `Remove` of an item, the `Remove` also to the item's member and recorded too
+when a member revokes its item or a block takes it out. Its `Add` and `Update` embed the same projection; a
+suspension sends nothing.
 
 ## Filters
 
@@ -743,7 +747,7 @@ so a keyword deep in a long status of a very large response may be missed; filte
 
 | Kind       | Activities                                                                                           | Followers                                                                                | Addressed accounts                                                         |
 | ---------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| content    | `Create`, `Update` of a status, `Announce`                                                           | accepted remote followers, less unavailable ones and those on a domain the signer blocks | remote, less unavailable ones and those the signer blocks or domain-blocks |
+| content    | `Create`, `Update` of a status or a collection, `Announce`                                           | accepted remote followers, less unavailable ones and those on a domain the signer blocks | remote, less unavailable ones and those the signer blocks or domain-blocks |
 | retraction | `Delete`, `Undo` of anything, a `Reject` that ends an accepted follow                                | every accepted remote follower                                                           | every remote account of the audience, blocked or not                       |
 | other      | `Update` of the actor, `Like`, `Follow`, `Accept`, a `Reject` of a request, `Block`, `Add`, `Remove` | every accepted remote follower                                                           | every remote account of the audience                                       |
 

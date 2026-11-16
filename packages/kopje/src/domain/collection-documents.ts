@@ -1,16 +1,18 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { followersUri } from "./activities";
+import { followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
+import { allocateLocalId } from "./ids";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
 // FEP-7aa9's documents of local collections, as Mastodon 4.7.5 serializes them (ActivityPub::FeaturedCollection-
 // Serializer, FeaturedItemSerializer, FeatureAuthorizationSerializer, and the featured_collections Collection of
 // ActivityPub::FeaturedCollectionsController): served by federation/routes.ts through federation-reads.ts, one read a
-// request (D18). Every member list and count is R45's federation projection: the accepted items whose member is
-// available (collectionItemShownSql with no viewer), so a member R1 hides is in none of them. Each read answers null (404) while the owner is unavailable, and to a fetcher the
-// owner (the member, for an authorization) blocks or whose domain it blocks.
+// request (D18), and embedded in the activities collections.ts records (D17, at the end). Every member list and count
+// is R45's federation projection: the accepted items whose member is available (collectionItemShownSql with no
+// viewer), so a member R1 hides is in none of them. Each read answers null (404) while the owner is unavailable, and to
+// a fetcher the owner (the member, for an authorization) blocks or whose domain it blocks.
 //
 // The fetcher is the account whose stored key the request's signature names by keyId (fetcherOf), unverified: the
 // documents are served to anyone, so naming a key only ever narrows the answer, and a forged keyId refuses only its own
@@ -381,4 +383,153 @@ export function featureAuthorizationDocument(
     interactingObject: row.collection_uri,
     interactionTarget: row.member_uri,
   };
+}
+
+// ---- The activities (D17): each change of a local collection, recorded in its transaction and signed by its owner, to
+// the owner's followers and the collection's pending and accepted remote members (CollectionReachFinder), as
+// Mastodon's CreateCollectionService, UpdateCollectionService, DeleteCollectionService, AddAccountToCollectionService
+// and DeleteCollectionItemService send them. Each carries an id under the collection's (`#adds/<n>`, `#removes/<n>`,
+// `#updates/<n>`, n a local id) and `to` Public, as Kopje's other activities: Mastodon's Add and Remove carry neither,
+// and its parsers ignore both. An Add or Remove of the collection supersedes the other while it waits, and an Update
+// the earlier Update; an item's Add and Remove supersede nothing (deliveries.ts supersededTypes), since a member's
+// server learns the item's id only from its Add. A suspension sends nothing: the next Update or fetch leaves the
+// member out.
+
+// The FeaturedCollection of the local collection `id` as an activity embeds it (no context), whatever its owner's
+// state: the activities are recorded by the owner, who is available then. null for any other.
+function embeddedCollection(db: Db, id: string): Record<string, unknown> | null {
+  const row = db.first<CollectionDocumentRow>(
+    `SELECT ${DOCUMENT_COLUMNS} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+		WHERE c.id = ? AND c.local = 1`,
+    id,
+  );
+  return row === undefined ? null : (documentsOf(db, [row])[0] ?? null);
+}
+
+// The FeaturedItem of the item `id` as an activity embeds it (no context): an item of a local collection with a member.
+function embeddedItem(db: Db, id: string): Record<string, unknown> | null {
+  const row = db.first<ItemDocumentRow & { owner_uri: string }>(
+    `SELECT ${ITEM_COLUMNS}, o.uri AS owner_uri FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+		WHERE i.id = ? AND c.local = 1`,
+    id,
+  );
+  return row === undefined ? null : itemDocument(row, row.owner_uri);
+}
+
+type Reach = { owner: string; ownerUri: string; uri: string; members: string[] };
+
+// The local collection `id`'s owner and uri, and the remote accounts its activities reach besides the owner's
+// followers: its pending and accepted members (Collection#accounts), through collection_items_order (at most
+// MAX_STORED_ITEMS rows). null for any other collection.
+function reachOf(db: Db, id: string): Reach | null {
+  const head = db.first<{ owner: string; owner_uri: string }>(
+    `SELECT c.account_id AS owner, o.uri AS owner_uri FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+		WHERE c.id = ? AND c.local = 1`,
+    id,
+  );
+  if (head === undefined) {
+    return null;
+  }
+  const members = db.all<{ id: string }>(
+    `SELECT i.account_id AS id FROM collection_items i INDEXED BY collection_items_order
+			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+		WHERE i.collection_id = ? AND i.state IN (0, 1) AND m.domain IS NOT NULL`,
+    id,
+  );
+  return {
+    owner: head.owner,
+    ownerUri: head.owner_uri,
+    uri: localCollectionUri(head.owner_uri, id),
+    members: members.map((member) => member.id),
+  };
+}
+
+const ID_KINDS = { Add: "adds", Remove: "removes", Update: "updates" } as const;
+
+// Records an activity of the collection's owner for its reach, and for `also` (an item's member) besides.
+function deliver(
+  db: Db,
+  reach: Reach,
+  now: number,
+  activity: { type: keyof typeof ID_KINDS; context: unknown; target?: string; object: unknown },
+  also: string | null = null,
+): void {
+  recordOutbound(
+    db,
+    reach.owner,
+    {
+      activity: {
+        "@context": activity.context,
+        id: `${reach.uri}#${ID_KINDS[activity.type]}/${allocateLocalId(db, now)}`,
+        type: activity.type,
+        actor: reach.ownerUri,
+        to: [PUBLIC_COLLECTION],
+        ...(activity.target === undefined ? {} : { target: activity.target }),
+        object: activity.object,
+      },
+      audience: {
+        followers: true,
+        accounts: also === null || reach.members.includes(also) ? reach.members : [...reach.members, also],
+      },
+    },
+    now,
+  );
+}
+
+// CreateCollectionService: the collection's Add to the owner's featured_collections, its accepted items embedded.
+export function recordCollectionAdd(db: Db, id: string, now: number): void {
+  const reach = reachOf(db, id);
+  const object = embeddedCollection(db, id);
+  if (reach !== null && object !== null) {
+    const target = featuredCollectionsUri(reach.ownerUri);
+    deliver(db, reach, now, { type: "Add", context: FEATURED_COLLECTION_CONTEXT, target, object });
+  }
+}
+
+// UpdateCollectionService, when a field it federates changed: the collection as it now is.
+export function recordCollectionUpdate(db: Db, id: string, now: number): void {
+  const reach = reachOf(db, id);
+  const object = embeddedCollection(db, id);
+  if (reach !== null && object !== null) {
+    deliver(db, reach, now, { type: "Update", context: FEATURED_COLLECTION_CONTEXT, object });
+  }
+}
+
+// DeleteCollectionService: the collection's Remove from featured_collections, recorded before the delete, so that its
+// members are read and reached (Mastodon's delivery per member reaches the owner's inbox instead).
+export function recordCollectionRemove(db: Db, id: string, now: number): void {
+  const reach = reachOf(db, id);
+  if (reach !== null) {
+    const target = featuredCollectionsUri(reach.ownerUri);
+    deliver(db, reach, now, { type: "Remove", context: AS_CONTEXT, target, object: reach.uri });
+  }
+}
+
+// AddAccountToCollectionService: a local member's item, as accepted, added to the collection.
+export function recordItemAdd(db: Db, item: { id: string; collection: string }, now: number): void {
+  const reach = reachOf(db, item.collection);
+  const object = embeddedItem(db, item.id);
+  if (reach !== null && object !== null) {
+    deliver(db, reach, now, { type: "Add", context: FEATURED_ITEM_CONTEXT, target: reach.uri, object });
+  }
+}
+
+// DeleteCollectionItemService: the item `id` of a local collection removed by its id, whatever its state, which the
+// owner deleted (or a block of its member did) or its member revoked (or blocked the owner). Its member is reached
+// whatever the item's state, so the item may be deleted already.
+export function recordItemRemove(
+  db: Db,
+  item: { id: string; collection: string; account: string | null },
+  now: number,
+): void {
+  const reach = reachOf(db, item.collection);
+  if (reach !== null) {
+    const object = collectionItemUri(reach.ownerUri, item.id);
+    deliver(db, reach, now, { type: "Remove", context: AS_CONTEXT, target: reach.uri, object }, item.account);
+  }
 }

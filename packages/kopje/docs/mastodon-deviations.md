@@ -678,9 +678,14 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
 - Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
-- A collection's ActivityPub documents (its `FeaturedCollection`, as served and on the pages of the owner's
-  `featured_collections`) leave out a member that is suspended or otherwise unavailable, and that member's
-  `FeaturedItem` answers 404, where Mastodon lists every accepted item. Accepted, 2026-11-16.
+- A collection's ActivityPub documents (its `FeaturedCollection`, as served, on the pages of the owner's
+  `featured_collections` and in its `Add` and `Update`) leave out a member that is suspended or otherwise unavailable,
+  and that member's `FeaturedItem` answers 404, where Mastodon lists every accepted item; a suspension sends no
+  `Update`. Accepted, 2026-11-16.
+- A deleted collection's `Remove` reaches its members as well as the owner's followers, where Mastodon's per-member
+  delivery does not reach them. Kopje's collection `Add` and `Remove` carry an `id` and `to`. A member's revocation of
+  its item in a local collection, by its route or by blocking the owner, is sent as the owner's `Remove` of the item,
+  where Mastodon sends the member's `Delete` of its `FeatureAuthorization`. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.

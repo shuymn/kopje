@@ -1620,19 +1620,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   it blocks or domain-blocks; an authorization only while its item is accepted and its member local, available and not
   blocking the fetcher or its domain, and never cached. Every member list and count in them, embedded copies
   included, holds only accepted items whose member is available, so a suspended member is in none and its
-  `FeaturedItem` is not found.
+  `FeaturedItem` is not found. Each change of a local collection (its `Add`, `Update` and `Remove`, an item's `Add`
+  and `Remove`, the owner's `Remove` of an item its member revokes or a block takes out) is sent, signed by the owner,
+  to the owner's followers and the collection's pending and accepted remote members alone (R23), and a suspension
+  sends none.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`, `severCollections`
-  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents in
+  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and activities in
   `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
   collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
   block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
   `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
   `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization
   to one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and
-  the page do"), `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`,
-  `collectionItemShown`, `mayFeature` and `inCollections` in `test/policy-model.ts`),
-  `test-node/policy-boundary.test.ts`.
+  the page do", "sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members",
+  "sends the owner's Remove of an item a block or its member's revoke takes out"), `test/policy-oracle.test.ts`
+  (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and
+  `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
 
 ### Authorization (AUTH)
 
