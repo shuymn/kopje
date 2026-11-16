@@ -3840,9 +3840,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   strings, in at most four nodes) has its contexts processed once a node, and jsonld.js fetches at most 11 context URLs
   for one `@context`, raising past them. The worst bodies measured through the workerd inbox, under the load lock (6
   runs each, a fresh Store each), answer in at most 16 ms (an isolate's first request in 27 ms) and are read in at most
-  6 ms: a body of plain keys at the JSON bounds, every definition real senders write repeated in inline objects to the
+  8 ms: a body of plain keys at the JSON bounds, every definition real senders write repeated in inline objects to the
   bound, in the body's context or in each of four proofs, and proofs expanded at 1,000 values; one repeating a context
-  URL to the bound, or with more proofs, is refused in at most 7 ms. Under the second layer alone, which no inbox
+  URL to the bound, or with more proofs, is refused in at most 8 ms. Under the second layer alone, which no inbox
   request reaches, the worst is a typed node holding about 1,000 objects in an array under a plain name, each of which
   reverts the type's context so that jsonld.js processes it again: read in 19–21 ms (37 ms first), and 16–19 ms for 14
   nested typed nodes alternating two contexts; past the bound the proof is not expanded
