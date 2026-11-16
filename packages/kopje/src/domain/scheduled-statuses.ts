@@ -140,9 +140,12 @@ export function storedParams(text: string | null): Record<string, unknown> | nul
 
 // The held media shown are the first MAX_STATUS_MEDIA by position (PostStatusService#validate_media! takes four):
 // Kopje's writers hold at most that many, and a restored row holding more shows its first.
-// undefined: params that cannot be read (storedParams).
-function presentScheduled(db: Db, row: ScheduledRow): ScheduledStatus | undefined {
-  const params = storedParams(row.params);
+// undefined: params that cannot be read (storedParams). `params`: the row's, when already read.
+function presentScheduled(
+  db: Db,
+  row: ScheduledRow,
+  params: Record<string, unknown> | null = storedParams(row.params),
+): ScheduledStatus | undefined {
   if (params === null) {
     return undefined;
   }
@@ -518,7 +521,8 @@ export const updateScheduled = userWriteOperation<
   UpdateScheduledResult
 >((db, input, { accountId }) => {
   const row = ownScheduled(db, accountId, input.id);
-  if (row === undefined || storedParams(row.params) === null) {
+  const params = row === undefined ? null : storedParams(row.params);
+  if (row === undefined || params === null) {
     return { status: "not_found" };
   }
   const at = input.scheduledAt === undefined ? row.scheduled_at : input.scheduledAt;
@@ -535,7 +539,7 @@ export const updateScheduled = userWriteOperation<
     at,
     row.id,
   );
-  const value = presentScheduled(db, { ...row, scheduled_at: at });
+  const value = presentScheduled(db, { ...row, scheduled_at: at }, params);
   return value === undefined ? { status: "not_found" } : { status: "ok", value };
 });
 
