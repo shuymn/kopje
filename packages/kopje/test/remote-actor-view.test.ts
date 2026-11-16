@@ -246,6 +246,15 @@ describe("an actor's published, as Mastodon assigns it (#1710)", () => {
     expect(counts.read).toBeGreaterThan(50);
     expect(counts.none).toBeGreaterThan(15);
     expect(counts.listed).toBeGreaterThan(35);
+    // Around a month's or a year's end under an offset that crosses a day (time.c vtm_add_offset, vtm_add_day): every
+    // pair is a form Kopje reads, its value Rails'.
+    for (const [value, rails] of railsTimes.crossing as [string, string][]) {
+      const kopje = railsTime(value);
+      expect(kopje === null ? null : Date.parse(kopje), value).toBe(railsInstant(rails));
+    }
+    expect(railsTimes.crossing).toHaveLength(16 * 8 * 12);
+    // A day 31 of a shorter month that the offset carries into the next day is the last day of the month before.
+    expect(railsTime("2020-04-31T23:59:60-00:01")).toBe("2020-03-31T00:01:00.000Z");
     // Those Date.parse reads otherwise: Rails' cast is not Date.parse.
     expect(["0", "2020", "01/02/2020"].map(railsTime)).toEqual([null, null, null]);
     expect(railsTime("2021-02-29T00:00:00Z")).toBe("2021-03-01T00:00:00.000Z");
@@ -269,6 +278,8 @@ describe("an actor's published, as Mastodon assigns it (#1710)", () => {
       // A date alone, which Fedify refused, and a day past the month's end, rolled over as Rails rolls it.
       ["a date", (d) => ({ ...d, published: "2020-01-05" }), "2020-01-05T00:00:00.000Z"],
       ["February 29", (d) => ({ ...d, published: "2021-02-29T00:00:00Z" }), "2021-03-01T00:00:00.000Z"],
+      // An offset carrying April 31 into the next day: Ruby's Time.new gives March 31.
+      ["April 31 across a day", (d) => ({ ...d, published: "2020-04-31T23:59:60-00:01" }), "2020-03-31T00:01:00.000Z"],
     ];
     let n = 0;
     for (const [label, change, created] of cases) {

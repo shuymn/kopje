@@ -8,7 +8,11 @@
 # `rails` is what is assigned: the instant as the PostgreSQL adapter writes it (ISO 8601, cut to microseconds), null
 # when the cast is nil, "blank" when the value is not assigned, or "infinity" and "-infinity". `listed` marks a form
 # only Rails reads (docs/mastodon-deviations.md), passed through as written here. A week or ordinal date is read
-# against the day of the run. Run without a database, in a container of Mastodon's image, without network:
+# against the day of the run. `crossing` holds every date around a month's or a year's end, a day past it included, at
+# the times next to midnight, under each offset that moves it across a day (and none), as `[value, rails]`: Ruby's
+# Time.new moves a day 31 of a shorter month that an offset carries into the next day to the month before (time.c
+# vtm_add_day into struct vtm's 5-bit mday). Run without a database, in a container of Mastodon's image, without
+# network:
 #
 #   docker run --rm -i --network none --entrypoint bundle ghcr.io/mastodon/mastodon:v4.7.5 exec ruby - \
 #     < rails-time.rb > rails-time.json
@@ -176,10 +180,19 @@ rows = [[READ, false], [NONE, false], [LISTED, true]].flat_map do |values, liste
   values.map { |value| { value: value, rails: assigned(value), listed: listed } }
 end
 
-puts JSON.pretty_generate(
-  {
-    activerecord: ActiveRecord.version.to_s,
-    ruby: RUBY_VERSION,
-    rows: rows,
-  }
-)
+DATES = %w[
+  2019-02-28 2019-02-29 2019-02-30 2019-02-31 2020-02-29 2020-02-30 2020-02-31 2020-01-31 2020-03-01 2020-04-30
+  2020-04-31 2020-06-31 2020-12-31 2021-01-01 0000-01-01 9999-12-31
+].freeze
+TIMES = %w[00:00:00 00:30:00 23:30:00 23:59:00 23:59:59 23:59:60 23:59:60.5 24:00:00].freeze
+OFFSETS = ['', 'Z', '-23:59', '-12:00', '-01:00', '-00:30', '-00:01', '+00:01', '+00:30', '+01:00', '+12:00',
+           '+23:59'].freeze
+crossing = DATES.product(TIMES, OFFSETS).map do |date, time, offset|
+  value = "#{date}T#{time}#{offset}"
+  [value, assigned(value)]
+end
+
+# The rows pretty, each crossing pair on one line.
+head = JSON.pretty_generate({ activerecord: ActiveRecord.version.to_s, ruby: RUBY_VERSION, rows: rows })
+pairs = crossing.map { |pair| "    #{JSON.generate(pair)}" }.join(",\n")
+puts "#{head.delete_suffix("\n}")},\n  \"crossing\": [\n#{pairs}\n  ]\n}"
