@@ -3,7 +3,7 @@ import jsonld from "jsonld/dist/jsonld.esm.js";
 
 import { FEDIFY_CONTEXT_TERMS } from "./fedify-context";
 import { isObject } from "./json-shapes";
-import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-context";
+import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS, MASTODON_OLM_TERMS } from "./mastodon-context";
 
 // ID-1, VIS-1: an activity that carries a Linked Data signature is read as received, as every activity is, where
 // Mastodon 4.7 reads it as its compaction under full_context, patched toward the body as received
@@ -25,9 +25,10 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 //      types it cannot sort or a @set it cannot read (typesSortable), which raise an error Mastodon does not rescue, so
 //      that its job applies nothing;
 //   5. it holds only what real senders write (senderShaped): no key with a control character or a line break, no key
-//      that starts with @ but a keyword of JSON-LD 1.1, no inline definition but one Mastodon or Fedify writes, exactly
-//      (MASTODON_CONTEXT_TERMS, FEDIFY_CONTEXT_TERMS), no type but a plain term or an absolute IRI, and a proof only as
-//      Fedify writes one: an object, or an array of them, of a @context and of plain names given strings.
+//      that starts with @ but a keyword of JSON-LD 1.1, no context URL twice in one @context, no inline definition but
+//      one Mastodon or Fedify writes, exactly (MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS, FEDIFY_CONTEXT_TERMS), no
+//      type but a plain term or an absolute IRI, and a proof only as Fedify writes one: an object, or an array of at
+//      most MAX_PROOFS, of a @context and of plain names given strings. It is checked before the others.
 //
 // Rule (5) is the primary guard against a form neither reader expects, where Ruby's json-ld and jsonld.js part or a
 // proof's expansion grows: rule (4) and the proof's comparison (comparableProof) are a second layer under it, refusing
@@ -910,26 +911,31 @@ function controlOrBreak(text: string): boolean {
   return false;
 }
 
-// Each inline definition Mastodon or Fedify writes, by name.
+// Each inline definition Mastodon (3.5 to 4.7.5) or Fedify writes, by name.
 const SENDER_DEFINITIONS = new Map<string, readonly unknown[]>();
-for (const terms of [MASTODON_CONTEXT_TERMS, FEDIFY_CONTEXT_TERMS]) {
+for (const terms of [MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS, FEDIFY_CONTEXT_TERMS]) {
   for (const [name, definitions] of Object.entries(terms)) {
     SENDER_DEFINITIONS.set(name, [...(SENDER_DEFINITIONS.get(name) ?? []), ...definitions]);
   }
 }
 
-// A @context whose every inline definition is one a real sender writes for that name.
-const contextAsSent = (context: unknown) =>
-  [context]
-    .flat()
-    .every(
+// A @context as real senders write one: no URL twice (readContext reads each entry, so a repeated one would multiply its
+// work), and every inline definition one a real sender writes for that name.
+function contextAsSent(context: unknown): boolean {
+  const entries = [context].flat();
+  const urls = entries.filter((entry) => typeof entry === "string");
+  return (
+    new Set(urls).size === urls.length &&
+    entries.every(
       (entry) =>
         typeof entry === "string" ||
         (isObject(entry) &&
           Object.entries(entry).every(([name, definition]) =>
             (SENDER_DEFINITIONS.get(name) ?? []).some((written) => sameDefinition(written, definition)),
           )),
-    );
+    )
+  );
+}
 
 // A type as real senders write one: a plain term (letters, digits, _ and -) or an absolute IRI with no space or
 // control character.
@@ -939,18 +945,21 @@ const typeAsSent = (type: unknown) =>
   typeof type === "string" &&
   (PLAIN_TERM.test(type) || (ABSOLUTE_IRI.test(type) && NO_SPACE.test(type) && !controlOrBreak(type)));
 
-// A proof as Fedify writes one: an object, or an array of them, of plain names given strings and of a @context the
-// rules (1, 2, 5) read.
+// A proof as Fedify writes one: an object, or an array of at most MAX_PROOFS, of plain names given strings and of a
+// @context the rules (1, 2, 5) read. Fedify writes one proof for each Ed25519 key it signs with (one, as real senders
+// configure it, and one alone where the activity embeds a signed object); Mastodon writes none.
+const MAX_PROOFS = 4;
 function proofAsSent(proof: unknown): boolean {
   const items = [proof].flat();
   return (
     items.length > 0 &&
+    items.length <= MAX_PROOFS &&
     items.every(
       (item) =>
         isObject(item) &&
         Object.entries(item).every(([key, value]) =>
           key === "@context"
-            ? readContext(value) !== null && contextAsSent(value)
+            ? contextAsSent(value) && readContext(value) !== null
             : isName(key) && typeof value === "string",
         ),
     )
@@ -958,11 +967,12 @@ function proofAsSent(proof: unknown): boolean {
 }
 
 // Rule (5): the body holds only what real senders write, the primary guard against forms where Ruby's json-ld and
-// jsonld.js part (ID-1) or a proof's expansion grows (RES-6). Mastodon, Fedify (Kopje's own LD-signed deliveries among
-// them) and every corpus sender write no key with a control character or a line break, no key that starts with @ but
-// a keyword, an inline definition only from their own tables, types only as plain terms or absolute IRIs, and a proof
-// (Fedify's FEP-8b32 one) of a @context and of names given strings: a body outside that is refused, so that it
-// applies nothing, where Mastodon may apply it, and the deviations page lists the forms. Each value is visited once.
+// jsonld.js part (ID-1) or a proof's expansion grows (RES-6). Mastodon 3.5 to 4.7.5, Fedify (Kopje's own LD-signed
+// deliveries among them) and every corpus sender write no key with a control character or a line break, no key that
+// starts with @ but a keyword, no context URL twice, an inline definition only from their own tables, types only as
+// plain terms or absolute IRIs, and a proof (Fedify's FEP-8b32 one, one for each key it signs with) of a @context and
+// of names given strings: a body outside that is refused, so that it applies nothing, where Mastodon may apply it, and
+// the deviations page lists the forms. It runs before any context is read, and visits each value once.
 function senderShaped(json: Json): boolean {
   if (!contextAsSent(json["@context"]) || (Object.hasOwn(json, "proof") && !proofAsSent(json.proof))) {
     return false;
@@ -1005,8 +1015,12 @@ export async function ldSignedReading(
   json: Json,
   rules: Rules = {},
 ): Promise<{ readType: TypeReader; body: Json } | null> {
+  // The rules first, rule (5) the first of them, so that readContext reads only a context as senders write one.
+  if (rulesRefuse(json, rules)) {
+    return null;
+  }
   const context = readContext(json["@context"]);
-  if (context === null || rulesRefuse(json, rules)) {
+  if (context === null) {
     return null;
   }
   let compacts: boolean | undefined;
@@ -1025,5 +1039,5 @@ export async function ldSignedReading(
 
 // Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).
 export function ldSignedBodyReadable(json: Json, rules: Rules = {}): boolean {
-  return readContext(json["@context"]) !== null && !rulesRefuse(json, rules);
+  return !rulesRefuse(json, rules) && readContext(json["@context"]) !== null;
 }

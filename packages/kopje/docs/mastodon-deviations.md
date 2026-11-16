@@ -1530,23 +1530,26 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   ignores as well an array of such values alone (`[null, null]`), or one under `@nest`, a language map or a `@value`,
   and a `@set` with a value, which Mastodon's library refuses, and one in a body past Mastodon's JSON-LD limits, each of
   which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
-- An LD-signed activity is ignored as well (answered 202) where it holds anything Mastodon 4.7.5 and Fedify 2.4.5 do
-  not write (Kopje's own LD-signed deletions are Fedify's): a key with a control character or a line break; a key that
-  starts with `@` but is no JSON-LD 1.1 keyword; an inline definition in its `@context` other than one Mastodon (4.4 to
-  4.7.5: `full_context` and its serializers' contexts) or Fedify 2.4.5 (`@fedify/vocab`) writes for that name, compared
-  exactly; a type other than a plain name or an absolute IRI; or a proof other than an object, or an array of them, of
-  a `@context` that names ActivityStreams and of names given strings (FEP-8b32 as Fedify writes it). Each form where
-  Ruby's json-ld and jsonld.js part lies outside what those senders write, so none is read. Where Mastodon applies
-  something of such an activity, Kopje applies nothing: one typed, or with its object typed, as a compact IRI
-  (`as:Like`, `as:Undo`, `as:Block`, `as:Reject`, `as:Follow`, `as:Delete`, `as:Accept`, `as:Note`, `as:Mention`), so
-  such a retraction
-  leaves the follow, the block or the status Mastodon's ends (#1717); one whose context holds a definition another
-  sender writes (Misskey's, whose `featured` is untyped and which defines `Key`, `freeText`, `vcard` and its own
-  `_misskey_*` names, so that Misskey's LD-signed relay deliveries are ignored; an inline name of the sender's own given
-  a key; a prefix named `https`); a status whose context defines `sensitive` otherwise (typed `@id` or as a boolean),
-  which is not stored; and one whose data-integrity proof names a context without ActivityStreams. Of the 147
-  LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26; every body Mastodon
-  4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes. Accepted, 2026-11-17.
+- An LD-signed activity is ignored as well (answered 202) where it holds anything Mastodon (3.5 to 4.7.5) and Fedify
+  2.4.5 do not write (Kopje's own LD-signed deletions are Fedify's): a key with a control character or a line break; a
+  key that starts with `@` but is no JSON-LD 1.1 keyword; a context URL named twice in one `@context`; an inline
+  definition in its `@context` other than one Mastodon (4.4 to 4.7.5: `full_context` and its serializers' contexts;
+  3.5.0 to 4.2.29 also the olm extension every actor's context carries) or Fedify 2.4.5 (`@fedify/vocab`) writes for
+  that name, compared exactly; a type other than a plain term (ASCII letters, digits, `_` and `-`, not starting with a
+  digit or `-`) or an absolute IRI with no space or control character; or a proof other than an object, or an array of
+  at most four, of a `@context` that names ActivityStreams and of names given strings (FEP-8b32 as Fedify writes it, one
+  proof for each key it signs with). Each form where Ruby's json-ld and jsonld.js part lies outside what those senders
+  write, so none is read. Where Mastodon applies something of such an activity, Kopje applies nothing: one typed, or
+  with its object typed, as a compact IRI (`as:Like`, `as:Undo`, `as:Block`, `as:Reject`, `as:Follow`, `as:Delete`,
+  `as:Accept`, `as:Note`, `as:Mention`), so such a retraction leaves the follow, the block or
+  the status Mastodon's ends (#1717); one whose context holds a definition another sender writes (Misskey's, whose
+  `featured` is untyped and which defines `Key`, `freeText`, `vcard` and its own `_misskey_*` names, so that Misskey's
+  LD-signed relay deliveries are ignored; an inline name of the sender's own given a key; a prefix named `https`); a
+  status whose context defines `sensitive` otherwise (typed `@id` or as a boolean), which is not stored; one whose
+  data-integrity proof names a context without ActivityStreams; and one naming a context URL twice or carrying more than
+  four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
+  every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
+  context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

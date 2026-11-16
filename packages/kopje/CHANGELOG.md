@@ -303,13 +303,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
   `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
-  `kopje.inbox.refused` with reason `ld-context`. It is ignored too where it holds anything Mastodon 4.7.5 and Fedify
-  2.4.5 do not write: a key with a control character or a line break, a key that starts with `@` but is no JSON-LD
-  keyword, an inline context definition neither writes for that name (Misskey's LD-signed relay deliveries among them),
-  a type other than a plain name or an absolute IRI (`as:Follow` among them), or a proof other than an object of a
-  context and names given strings; such a `Reject`, `Undo`, `Block` or `Delete` leaves what Mastodon's ends, as the
-  deviations page lists. Mastodon's and Fedify's bodies, Kopje's own among them, pass. The type of one that passes, and
-  its embedded object's, given as an absolute IRI are read as the name
+  `kopje.inbox.refused` with reason `ld-context`. It is ignored too where it holds anything Mastodon (3.5 to 4.7.5) and
+  Fedify 2.4.5 do not write: a key with a control character or a line break, a key that starts with `@` but is no
+  JSON-LD keyword, a context URL named twice, an inline context definition neither writes for that name (Misskey's
+  LD-signed relay deliveries among them), a type other than a plain term (ASCII letters, digits, `_` and `-`) or an
+  absolute IRI (`as:Follow` among them), or a proof other than an object, or an array of at most four, of a context and
+  names given strings; such a `Reject`, `Undo`, `Block` or `Delete` leaves what Mastodon's ends, as the deviations page
+  lists. Mastodon's and Fedify's bodies, Kopje's own and older Mastodon's `Update(Person)` with its olm extension among
+  them, pass. The type of one that passes, and its embedded object's, given as an absolute IRI are read as the name
   Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
   given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
   that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the

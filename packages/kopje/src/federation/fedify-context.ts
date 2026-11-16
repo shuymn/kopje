@@ -2,7 +2,7 @@
 // values), by name, a name with two definitions listing each: what a Fedify sender's LD-signed body, Kopje's own
 // (federation/ld-sign.ts) among them, may define inline. test/ld-signed-vocabulary.test.ts holds the table to
 // @fedify/vocab. Rule (5) of federation/ld-signed-body.ts reads an LD-signed body only where each inline definition
-// is one of these or of Mastodon's (MASTODON_CONTEXT_TERMS).
+// is one of these or of Mastodon's (MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS).
 export const FEDIFY_CONTEXT_TERMS: Readonly<Record<string, readonly unknown[]>> = {
   Agreement: ["vf:Agreement"],
   ChatMessage: ["http://litepub.social/ns#ChatMessage"],

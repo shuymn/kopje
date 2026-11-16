@@ -8,10 +8,13 @@ import {
   ACTIVITY_VOCABULARY,
   FULL_CONTEXT_VALUES,
   inlineDefinitionIris,
+  ldSignedBodyReadable,
   ldSignedReading,
   type Rules,
   SIGNED_CONTEXT_URLS,
 } from "../src/federation/ld-signed-body";
+import { MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS } from "../src/federation/mastodon-context";
+import contextMaps from "./fixtures/ld-signed/context-maps.json";
 import corpus from "./fixtures/ld-signed/corpus.json";
 import forms from "./fixtures/ld-signed/forms.json";
 
@@ -456,5 +459,51 @@ describe("ldSignedBodyReadable's tables", () => {
     }
     expect(classes).toBeGreaterThan(80);
     expect(Object.fromEntries([...written].toSorted(([a], [b]) => (a < b ? -1 : 1)))).toEqual(FEDIFY_CONTEXT_TERMS);
+  });
+
+  // context-maps.json is each Mastodon release's CONTEXT_EXTENSION_MAP from 3.5.0 to 4.3.x (context-maps.rb), whose
+  // parts every serializer writes inline: MASTODON_CONTEXT_TERMS (4.4 to 4.7.5) holds each definition but the olm
+  // extension, which MASTODON_OLM_TERMS holds, and rule (5) reads a body under each release's whole map.
+  it("every inline definition Mastodon 3.5 to 4.3 writes is one rule (5) admits", () => {
+    const same = (a: unknown, b: unknown) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
+    const sorted = (value: unknown) =>
+      isObject(value)
+        ? Object.fromEntries(Object.entries(value as Json).toSorted(([a], [b]) => (a < b ? -1 : 1)))
+        : value;
+    const olm = new Set<string>();
+    const outside: string[] = [];
+    for (const { releases, definitions } of contextMaps) {
+      for (const [name, written] of Object.entries(definitions as Record<string, unknown[]>)) {
+        for (const definition of written) {
+          if ((MASTODON_CONTEXT_TERMS[name] ?? []).some((known) => same(known, definition))) {
+            continue;
+          }
+          if ((MASTODON_OLM_TERMS[name] ?? []).some((known) => same(known, definition))) {
+            olm.add(name);
+          } else {
+            outside.push(`${releases.join(" to ")} ${name}`);
+          }
+        }
+      }
+      const context = [
+        AS,
+        "https://w3id.org/security/v1",
+        Object.fromEntries(
+          Object.entries(definitions as Record<string, unknown[]>).map(([name, written]) => [name, written[0]]),
+        ),
+      ];
+      const update = {
+        ...(corpus.find((entry) => entry.sender === "mastodon-4.7.5" && entry.name === "Update(Person)")!
+          .received as Json),
+        "@context": context,
+      };
+      expect(ldSignedBodyReadable(update), releases.join(" to ")).toBe(true);
+    }
+    expect(outside).toEqual([]);
+    expect([...olm].toSorted()).toEqual(
+      Object.keys(MASTODON_OLM_TERMS)
+        .filter((name) => name !== "toot")
+        .toSorted(),
+    );
   });
 });

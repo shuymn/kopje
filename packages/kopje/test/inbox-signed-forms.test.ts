@@ -11,13 +11,14 @@ import {
   type Rules,
   SIGNED_CONTEXT_URLS,
 } from "../src/federation/ld-signed-body";
-import { MASTODON_CONTEXT_TERMS } from "../src/federation/mastodon-context";
+import { MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS } from "../src/federation/mastodon-context";
 import { ACTOR_TYPES, CONVERTED_TYPES, STATUS_TYPES } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
 import { sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
+import contextMaps from "./fixtures/ld-signed/context-maps.json";
 import corpusFixture from "./fixtures/ld-signed/corpus.json";
 import edgeShapesFixture from "./fixtures/ld-signed/edge-shapes.json";
 import { edgeShapes, KEYWORD_PROOFS } from "./fixtures/ld-signed/edge-shapes.mjs";
@@ -1668,6 +1669,54 @@ describe("rule (5): an LD-signed activity outside what real senders write is ign
     expect(ldSignedBodyReadable(body)).toBe(false);
     expect(ldSignedBodyReadable(body, SECOND_LAYER)).toBe(true);
   });
+
+  // The names Mastodon's actor serializer defines inline (actor_serializer.rb's context_extensions, and those of the
+  // tag, emoji and image it nests), as each release's map defines them (context-maps.json): 3.5.0 to 4.2.29 name the
+  // olm extension, so that each of their LD-signed Update(Person) defines its names (MASTODON_OLM_TERMS).
+  const ACTOR_EXTENSIONS = [
+    "manuallyApprovesFollowers",
+    "toot",
+    "featured",
+    "featuredTags",
+    "alsoKnownAs",
+    "movedTo",
+    "schema",
+    "PropertyValue",
+    "value",
+    "discoverable",
+    ...Object.keys(MASTODON_OLM_TERMS),
+    "suspended",
+    "memorial",
+    "indexable",
+    "Hashtag",
+    "Emoji",
+    "focalPoint",
+  ];
+  it.each(
+    contextMaps.map(({ releases, definitions }) => [releases.join(" to "), definitions as Record<string, unknown[]>]),
+  )("applies Mastodon %s's LD-signed Update(Person) through the inbox", async (_, definitions) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const extension = Object.fromEntries(
+      ACTOR_EXTENSIONS.filter((name) => Object.hasOwn(definitions, name)).map((name) => [name, definitions[name]![0]]),
+    );
+    const { "@context": _context, ...document } = bob.document as Json;
+    const update = {
+      "@context": [AS, "https://w3id.org/security/v1", extension],
+      id: `${bob.uri}#updates/1`,
+      type: "Update",
+      actor: bob.uri,
+      to: [PUBLIC],
+      object: { ...document, name: "Bob renamed", devices: `${bob.uri}/collections/devices` },
+      signature: { type: "RsaSignature2017", creator: `${bob.uri}#main-key`, signatureValue: "placeholder" },
+    };
+    expect(ldSignedBodyReadable(update)).toBe(true);
+    expect(await t.post(bob, update)).toBe(202);
+    expect(await sql(t.store, "SELECT display_name FROM accounts WHERE uri = ?", bob.uri)).toEqual([
+      { display_name: "Bob renamed" },
+    ]);
+  });
 });
 
 // D4: an LD-signed body is read only in the vocabulary Mastodon reads it in (ldSignedBodyReadable); any other is
@@ -2010,7 +2059,7 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       );
 
     // Every context URL a body may name and, in one inline object, every definition Mastodon and Fedify write, then
-    // plain keys to the node bound: the most of a context rule (5) reads.
+    // plain keys to the node bound: the most of a context rule (5) reads in one object.
     const urls = (position: string) => [...SIGNED_CONTEXT_URLS].filter(([, at]) => at === position).map(([url]) => url);
     const ANYWHERE = urls("anywhere");
     const SENDER_CONTEXT = [
@@ -2018,14 +2067,43 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       AS,
       ...ANYWHERE,
       Object.fromEntries(
-        Object.entries({ ...FEDIFY_CONTEXT_TERMS, ...MASTODON_CONTEXT_TERMS }).map(([name, written]) => [
-          name,
-          written.at(-1),
-        ]),
+        Object.entries({ ...FEDIFY_CONTEXT_TERMS, ...MASTODON_OLM_TERMS, ...MASTODON_CONTEXT_TERMS }).map(
+          ([name, written]) => [name, written.at(-1)],
+        ),
       ),
     ];
     const names = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, `v${i}`]));
     const senderDefinitions = (count: number) => activity(SENDER_CONTEXT, { wide: names(count) });
+    // Rule (5) reads no context URL twice, but an inline object as often as the node bound leaves: every definition
+    // real senders write, again and again after every URL once, in the body's context, and in each of four proofs
+    // (MAX_PROOFS), whose contexts are read before any is counted against PROOF_CONTEXT_LIMIT.
+    const repeated = (count: number) => Array.from({ length: count }, () => SENDER_CONTEXT.at(-1));
+    const repeatedDefinitions = (count: number) => activity([AS, ...ANYWHERE, ...repeated(count)], {});
+    const fourProofs = (count: number) =>
+      activity([AS, "https://w3id.org/security/v1", "https://w3id.org/security/data-integrity/v2"], {
+        proof: Array.from({ length: 4 }, () => ({
+          "@context": [...urls("before-activitystreams"), AS, ...ANYWHERE, ...repeated(count)],
+          type: "DataIntegrityProof",
+          proofValue: "z",
+        })),
+      });
+    // What rule (5) refuses before any context is read: a context URL repeated, in the body's context or a proof's, and
+    // more proofs than MAX_PROOFS.
+    const repeatedUrl = (count: number) =>
+      activity(
+        Array.from({ length: count + 1 }, () => AS),
+        {},
+      );
+    const proofRepeatingUrl = (count: number) =>
+      activity([AS], {
+        proof: { "@context": Array.from({ length: count + 1 }, () => AS), type: "DataIntegrityProof" },
+      });
+    const proofsRepeatingUrl = (count: number) =>
+      activity([AS], {
+        proof: Array.from({ length: count }, () => ({ "@context": Array.from({ length: 20 }, () => AS) })),
+      });
+    const manyProofs = (count: number) =>
+      activity([AS], { proof: Array.from({ length: count }, () => ({ "@context": AS, type: "DataIntegrityProof" })) });
 
     it("the depth witness nests exactly MAX_JSON_DEPTH levels", () => {
       expect(depthOf(filled(deep))).toBe(MAX_JSON_DEPTH);
@@ -2034,6 +2112,8 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
     it.each([
       ["plain keys at the depth bound", deep, {}],
       ["every definition real senders write", senderDefinitions, {}],
+      ["every definition real senders write, in inline objects to the node bound", repeatedDefinitions, {}],
+      ["four proofs, each under every context URL and every definition real senders write", fourProofs, {}],
       // Rules (1, 2) read these, and rule (5) refuses their definitions.
       ["inline definitions", definitions, SECOND_LAYER],
       ["ActivityStreams' own definitions", terms, SECOND_LAYER],
@@ -2041,6 +2121,26 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       const body = filled(build);
       // The body passes the check (the slow path: every value visited), so only the signature refuses it.
       expect(ldSignedBodyReadable(body, rules)).toBe(true);
+      const t = await setup();
+      const started = performance.now();
+      const response = await t.request("/inbox", {
+        method: "POST",
+        headers: { "content-type": AP },
+        body: JSON.stringify(body),
+      });
+      const elapsed = performance.now() - started;
+      expect(response.status).toBe(401);
+      expect(elapsed).toBeLessThan(GENEROUS_MS);
+    });
+
+    it.each([
+      ["the ActivityStreams URL repeated in the body's context", repeatedUrl],
+      ["the ActivityStreams URL repeated in a proof's context", proofRepeatingUrl],
+      ["proofs each repeating the ActivityStreams URL in its context", proofsRepeatingUrl],
+      ["more proofs than MAX_PROOFS", manyProofs],
+    ])("refuses %s, to the node bound, before reading a context", async (_, build) => {
+      const body = filled(build);
+      expect(ldSignedBodyReadable(body)).toBe(false);
       const t = await setup();
       const started = performance.now();
       const response = await t.request("/inbox", {
@@ -2174,7 +2274,7 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
     // PROOF_CONTEXT_LIMIT leaves. jsonld.js fetches at most 11 context URLs for one @context (each once an expansion),
     // and data-integrity/v1 redefines terms v2 protects: past either the expansion raises, and the body is read as
     // named. So the body names ten URLs after ActivityStreams, and the proof every one but data-integrity/v1 and then
-    // ActivityStreams to the limit. Each is expanded.
+    // every definition real senders write, again, to the limit (no URL twice). Each is expanded.
     const proofOfNames = (count: number) => dataIntegrity({ type: "DataIntegrityProof", ...names(count) });
     const EXPANDABLE = ANYWHERE.filter((url) => url !== "https://w3id.org/security/data-integrity/v1");
     const proofUnderEveryContext = (count: number) => {
@@ -2184,7 +2284,7 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       const left = 32 - context.length - 2;
       return activity(context, {
         proof: {
-          "@context": [...proofContext, ...Array.from({ length: left - proofContext.length }, () => AS)],
+          "@context": [...proofContext, ...repeated(left - proofContext.length)],
           type: "DataIntegrityProof",
           ...names(count),
         },

@@ -126,13 +126,15 @@ against their own instance. TLS is assumed between all parties.
   to the body's one-element arrays and public collection IRI): its contexts give every ActivityStreams term and every
   name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
   set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
-  `@context`, `signature` and `proof` is a plain name. Above all, it holds only what real senders write
-  (`senderShaped`, the primary guard): no key with a control character or a line break, no key that starts with `@`
-  but a JSON-LD 1.1 keyword, an inline definition only as Mastodon (4.4 to 4.7.5) or Fedify 2.4.5 writes it for that
-  name (`MASTODON_CONTEXT_TERMS`, `FEDIFY_CONTEXT_TERMS`, compared exactly), a type only as a plain term or an absolute
-  IRI, and a proof only as Fedify writes one (an object, or an array of them, of a `@context` and names given strings).
-  Mastodon and Fedify write nothing else, Kopje's own LD-signed deletions included, and the forms where Ruby's json-ld
-  and jsonld.js part lie outside it. Any other is ignored before the gate, on the inbox, its replay
+  `@context`, `signature` and `proof` is a plain name. Above all, it holds only what real senders write (`senderShaped`,
+  the primary guard, checked before any context is read): no key with a control character or a line break, no key that
+  starts with `@` but a JSON-LD 1.1 keyword, no context URL twice in one `@context`, an inline definition only as
+  Mastodon or Fedify 2.4.5 writes it for that name (`MASTODON_CONTEXT_TERMS`, 4.4 to 4.7.5; `MASTODON_OLM_TERMS`, the
+  olm extension 3.5.0 to 4.2.29 write in every actor's context; `FEDIFY_CONTEXT_TERMS`; compared exactly), a type only
+  as a plain term (ASCII letters, digits, `_` and `-`) or an absolute IRI, and a proof only as Fedify writes one (an
+  object, or an array of at most four, `MAX_PROOFS`, of a `@context` and names given strings). Mastodon 3.5 to 4.7.5 and
+  Fedify write nothing else, Kopje's own LD-signed deletions included, and the forms where Ruby's json-ld and jsonld.js
+  part lie outside it. Any other is ignored before the gate, on the inbox, its replay
   and the rollback drain alike (`ldSignedReading` in `src/federation/ld-signed-body.ts`, called by the envelope check of
   `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason `ld-context`
   and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object, or redefine a
@@ -218,7 +220,8 @@ against their own instance. TLS is assumed between all parties.
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
   sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored"),
   `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed context URLs are the
-  preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name"),
+  preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name", "every inline
+  definition Mastodon 3.5 to 4.3 writes is one rule (5) admits"),
   `test/ld-signed-proof-shapes.test.ts` ("… reads as received no body Mastodon compacts, and as named none whose proof
   it keeps but those listed", "… refuses each but a proof as Fedify writes one, and reads more than Mastodon nowhere"
   and "… reads as received no body Mastodon compacts, and refuses each whose job raises", each under the second layer
@@ -3822,24 +3825,29 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   separator, 1,506,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
   it); `GET /admin/emojis` pages hold at most 200.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
-  recipients, collection expansion and notifications. An LD-signed body's data-integrity proof is expanded once, by
+  recipients, collection expansion and notifications. An LD-signed body is read within the JSON bounds (10,000 values,
+  depth 32), each rule visiting each value once, and rule (5) of ID-1 runs before any context is read: no context URL
+  twice in one `@context`, so a context names at most the 17 allowed URLs and otherwise inline objects the values bound,
+  and at most four proofs, each of whose contexts is held to the same. Its data-integrity proof is expanded once, by
   jsonld.js with the preloaded contexts alone, and only within Mastodon's 1,000 values and `PROOF_CONTEXT_LIMIT` (32)
   contexts, types and keys whose definition carries a context (`service`, `DataIntegrityProof`, `proofPurpose`,
   `Multikey`, `JsonWebKey`), counted in every node of the proof, a language map's array included, with the body's
-  context and type (ID-1), each value under such a key counting one. A proof as rule (5) of ID-1 reads it (a context
-  and names given strings, in up to 28 typed nodes of an array) is expanded with its contexts processed once a node, at
-  most 32 in all, and its values at most 1,000; jsonld.js fetches at most 11 context URLs for one `@context`, raising
-  past them. The worst bodies measured through the workerd inbox, under the load lock (6 runs each), answer in at most
-  11 ms (an isolate's first request in 23 ms) and are read in at most 6 ms: a proof of names filled to 1,000 values, one
-  under every context its body and it may name, an array of 27 typed nodes, and a body of plain keys at the JSON
-  bounds. Under the second layer alone, which no inbox request reaches, the worst is a typed node holding about 1,000
-  objects in an array under a plain name, each of which reverts the type's context so that jsonld.js processes it
-  again: read in 19–21 ms (37 ms first), and 16–19 ms for 14 nested typed nodes alternating two contexts; past the
-  bound the proof is not expanded (`test/inbox-signed-forms.test.ts`, "a data-integrity proof expanded within
-  Mastodon's values", "a proof of … is expanded in time" for each path to the bound under the second layer, and "… past
-  PROOF_CONTEXT_LIMIT is not expanded, and the body is read as named"). The revision fence (ID-1) adds no additional
-  inbox receive round; a stale-author refresh fetches its actor again after reading the revision, within the fetch
-  budget. Search resolution makes one more Store call (`actorState`)
+  context and type (ID-1), each value under such a key counting one; a proof rule (5) reads (a context and names given
+  strings, in at most four nodes) has its contexts processed once a node, and jsonld.js fetches at most 11 context URLs
+  for one `@context`, raising past them. The worst bodies measured through the workerd inbox, under the load lock (6
+  runs each, a fresh Store each), answer in at most 16 ms (an isolate's first request in 27 ms) and are read in at most
+  6 ms: a body of plain keys at the JSON bounds, every definition real senders write repeated in inline objects to the
+  bound, in the body's context or in each of four proofs, and proofs expanded at 1,000 values; one repeating a context
+  URL to the bound, or with more proofs, is refused in at most 7 ms. Under the second layer alone, which no inbox
+  request reaches, the worst is a typed node holding about 1,000 objects in an array under a plain name, each of which
+  reverts the type's context so that jsonld.js processes it again: read in 19–21 ms (37 ms first), and 16–19 ms for 14
+  nested typed nodes alternating two contexts; past the bound the proof is not expanded
+  (`test/inbox-signed-forms.test.ts`, "checks an LD-signed body at the JSON bounds within a generous time": "a
+  data-integrity proof expanded within Mastodon's values", "refuses … before reading a context", "a proof of … is
+  expanded in time" for each path to the bound under the second layer, and "… past PROOF_CONTEXT_LIMIT is not expanded,
+  and the body is read as named"). The revision fence (ID-1) adds no additional inbox receive round; a stale-author
+  refresh fetches its actor again after reading the revision, within the fetch budget. Search resolution makes one more
+  Store call (`actorState`)
   before each actor fetch and before a URL's probe, and fetches the actor document a probe or an alternate found a
   second time after it (within the request's fetch budget of 8). It fetches nothing for `limit=0`, for a URL whose
   answer is empty whatever it finds (a `type` with an offset past 0, a `type` other than `accounts` and `statuses`), or
